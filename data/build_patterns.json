@@ -1,0 +1,32 @@
+{
+  "fed394e14e9eaf5c": {
+    "fp": "fed394e14e9eaf5c",
+    "stack": "python",
+    "shape": {
+      "stages": 11,
+      "files": 5
+    },
+    "uses": 1,
+    "wins": 0,
+    "score_sum": 52.07,
+    "last_used": 1781735428.369844,
+    "examples": [],
+    "mean_score": 52.07,
+    "win_rate": 0.0
+  },
+  "ce78070e659f014f": {
+    "fp": "ce78070e659f014f",
+    "stack": "react",
+    "shape": {
+      "stages": 11,
+      "files": 9
+    },
+    "uses": 2,
+    "wins": 2,
+    "score_sum": 200.0,
+    "last_used": 1781735835.268856,
+    "examples": [],
+    "mean_score": 100.0,
+    "win_rate": 1.0
+  }
+}

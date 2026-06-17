@@ -64,11 +64,12 @@ class RagEngine:
         alpha: float = 0.5,
         embedder: Optional[Embedder] = None,
         llm_client: Optional[object] = None,
+        prefer_chroma: bool = True,
     ) -> None:
         self.processor = DocumentProcessor(max_tokens=max_tokens_per_chunk)
         self.embedder = embedder or Embedder()
         self.store = VectorStore(
-            collection=collection, persist_path=persist_path
+            collection=collection, persist_path=persist_path, prefer_chroma=prefer_chroma
         )
         self.retriever = HybridRetriever(
             embedder=self.embedder, vector_store=self.store, alpha=alpha

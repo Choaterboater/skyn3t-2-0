@@ -21,8 +21,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-try:  # optional heavy deps
-    import tree_sitter_languages  # type: ignore
+try:  # optional heavy deps — prefer the 3.13-compatible language pack
+    try:
+        import tree_sitter_language_pack as tree_sitter_languages  # type: ignore
+    except Exception:  # noqa: BLE001
+        import tree_sitter_languages  # type: ignore
     from tree_sitter import Node  # type: ignore  # noqa: F401
 
     _TS_AVAILABLE = True

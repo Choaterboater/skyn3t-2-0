@@ -98,6 +98,9 @@ class StudioRunner:
         planner: Planner | None = None,
         approval_gate: ApprovalGate | None = None,
         stage_timeout: float = 60.0,
+        learning: Any | None = None,
+        patterns: Any | None = None,
+        skills: Any | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.orchestrator = orchestrator
@@ -105,6 +108,11 @@ class StudioRunner:
         self.memory = memory  # MemoryStore | None
         self.planner = planner or Planner(self.settings)
         self.stage_timeout = stage_timeout
+        # Richer self-improvement layer (all optional; the core lesson loop
+        # below works via ``memory`` even when these are absent).
+        self.learning = learning      # intelligence.LearningLoop | None
+        self.patterns = patterns      # intelligence.BuildPatternBoard | None
+        self.skills = skills          # intelligence.SkillLibrary | None
         self.approval_gate = approval_gate or ApprovalGate(
             enabled=bool(self.settings.approval_gates),
             auto_approve=bool(self.settings.cortex_auto_approve_safe),
@@ -139,6 +147,62 @@ class StudioRunner:
                     await self.memory.grade_lesson(lid, helpful)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("lessons.grade_failed", error=str(exc))
+
+    # ---- skills (advisory injection) ------------------------------------
+    def _skill_advice(self, stack: str) -> tuple[str, list[str]]:
+        """Return (advice_text, used_slugs) from the skill library, if wired."""
+        if self.skills is None:
+            return "", []
+        try:
+            relevant = self.skills.relevant(stack, limit=3)
+            slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
+            advice = self.skills.inject(stack, limit=3)
+            return advice, slugs
+        except Exception as exc:  # noqa: BLE001
+            log.warning("skills.inject_failed", error=str(exc))
+            return "", []
+
+    # ---- self-improvement: capture lessons, record pattern, promote skill
+    async def _record_learning(
+        self,
+        manifest: "BuildManifest",
+        plan: BuildPlan,
+        skill_slugs: list[str],
+        *,
+        helpful: bool,
+    ) -> None:
+        """Close every learning edge (design rule #2). Best-effort; never raises."""
+        build = {
+            "build_id": manifest.build_id,
+            "slug": manifest.slug,
+            "stack": plan.stack,
+            "status": manifest.status,
+            "score": manifest.score,
+            "verdict": manifest.verdict,
+            "files": manifest.files_count,
+            "stages": [s.name for s in plan.stages],
+        }
+        # 1. Capture lessons from the outcome.
+        if self.learning is not None:
+            try:
+                await self.learning.capture_from_build(build)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("learning.capture_failed", error=str(exc))
+        # 2. Record the build shape on the pattern scoreboard + maybe promote.
+        if self.patterns is not None:
+            try:
+                shape = {"stages": len(plan.stages), "files": manifest.files_count}
+                rec = self.patterns.record(plan.stack, shape, float(manifest.score or 0.0))
+                if self.skills is not None and rec is not None:
+                    self.skills.maybe_promote_pattern(rec)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("patterns.record_failed", error=str(exc))
+        # 3. Grade the skills that advised this build.
+        if self.skills is not None and skill_slugs:
+            try:
+                self.skills.record_use(skill_slugs, helpful=helpful)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("skills.record_use_failed", error=str(exc))
 
     # ---- single stage submission ----------------------------------------
     async def _submit_stage(
@@ -227,6 +291,12 @@ class StudioRunner:
         reviewer_score = 0.0
         verdict = "no_go"
         used_lessons: list[dict[str, Any]] = []
+
+        # Inject advisory skills for this stack (non-binding) and remember which
+        # ones we used so we can grade them by the build's outcome.
+        skill_advice, skill_slugs = self._skill_advice(plan.stack)
+        if skill_advice:
+            extra = {**extra, "skills_advice": skill_advice}
 
         try:
             for spec in plan.stages:
@@ -334,7 +404,9 @@ class StudioRunner:
             manifest.status = "completed" if delivered_nonempty else "failed"
 
             # Grade lessons by build success (close the learning loop).
-            await self._grade_lessons(used_lessons, helpful=(manifest.status == "completed"))
+            helpful = manifest.status == "completed"
+            await self._grade_lessons(used_lessons, helpful=helpful)
+            await self._record_learning(manifest, plan, skill_slugs, helpful=helpful)
 
             outcome = await self._finalize(manifest, plan, correlation_id, final_score)
             return outcome
@@ -342,6 +414,7 @@ class StudioRunner:
         except _BuildRejected as exc:
             manifest.status = "failed"
             await self._grade_lessons(used_lessons, helpful=False)
+            await self._record_learning(manifest, plan, skill_slugs, helpful=False)
             await self._save_build(manifest)
             await self.event_bus.emit(
                 EventType.BUILD_FAILED,
@@ -355,6 +428,7 @@ class StudioRunner:
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
             await self._grade_lessons(used_lessons, helpful=False)
+            await self._record_learning(manifest, plan, skill_slugs, helpful=False)
             try:
                 await self._save_build(manifest)
             except Exception:  # noqa: BLE001

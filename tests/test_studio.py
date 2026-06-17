@@ -232,9 +232,15 @@ class _StubCodeAgent(BaseAgent):
     async def execute(self, task: TaskRequest) -> TaskResult:
         wt = Path(task.payload["worktree_dir"])
         (wt / "src").mkdir(parents=True, exist_ok=True)
+        (wt / "tests").mkdir(parents=True, exist_ok=True)
+        # Deliver a complete project that satisfies the python checklist so the
+        # objective proof-run legitimately passes (no reviewer-go shortcut).
         (wt / "src" / "main.py").write_text("def main():\n    return 42\n")
-        (wt / "README.md").write_text("# generated\n")
-        return TaskResult(task_id=task.task_id, success=True, output={"files_written": 2, "worktree_dir": str(wt)})
+        (wt / "src" / "__init__.py").write_text("")
+        (wt / "tests" / "test_basic.py").write_text("from src.main import main\n\ndef test_main():\n    assert main() == 42\n")
+        (wt / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.1.0'\n")
+        (wt / "README.md").write_text("# generated\n\nA demo python tool.\n")
+        return TaskResult(task_id=task.task_id, success=True, output={"files_written": 5, "worktree_dir": str(wt)})
 
 
 class _StubReviewer(BaseAgent):

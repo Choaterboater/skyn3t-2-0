@@ -119,7 +119,7 @@ class CodeAgent(BaseAgent):
         return paths
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
-                             plan: dict[str, Any]) -> str:
+                             plan: dict[str, Any]) -> str | None:
         ext = Path(rel_path).suffix.lower()
         tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
         prompt = (
@@ -132,6 +132,10 @@ class CodeAgent(BaseAgent):
         result = await self.llm.complete(
             prompt, tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=4096,
         )
+        # If the call degraded to the stub backend (CLI failure/timeout, missing
+        # key), do NOT write stub prose over the runnable scaffold — keep it.
+        if result.backend == "stub":
+            return None
         return extract_code(result.text)
 
     def _write_files(self, worktree: Path, files: dict[str, str]) -> list[str]:

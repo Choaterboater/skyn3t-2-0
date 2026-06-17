@@ -22,6 +22,7 @@ Import has zero side effects.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -98,6 +99,7 @@ class StudioRunner:
         planner: Planner | None = None,
         approval_gate: ApprovalGate | None = None,
         stage_timeout: float = 60.0,
+        stage_exec_timeout: float = 900.0,
         learning: Any | None = None,
         patterns: Any | None = None,
         skills: Any | None = None,
@@ -110,6 +112,7 @@ class StudioRunner:
         self.memory = memory  # MemoryStore | None
         self.planner = planner or Planner(self.settings)
         self.stage_timeout = stage_timeout
+        self.stage_exec_timeout = stage_exec_timeout
         # Richer self-improvement layer (all optional; the core lesson loop
         # below works via ``memory`` even when these are absent).
         self.learning = learning      # intelligence.LearningLoop | None
@@ -237,7 +240,17 @@ class StudioRunner:
             correlation_id=correlation_id,
             metadata={"stage": spec.name},
         )
-        return await self.orchestrator.submit(task)
+        # Honor the stage-execution timeout (the 'stage_timeout' contract) so a
+        # hung agent can't stall the whole build forever.
+        try:
+            return await asyncio.wait_for(
+                self.orchestrator.submit(task), timeout=self.stage_exec_timeout
+            )
+        except asyncio.TimeoutError:
+            return TaskResult(
+                task_id=task.task_id, success=False,
+                error=f"stage {spec.name} timed out after {self.stage_exec_timeout}s",
+            )
 
     def _base_payload(
         self,
@@ -424,10 +437,11 @@ class StudioRunner:
                 reviewer_score = proof.score
             final_score = round(0.6 * reviewer_score + 0.4 * proof.score, 2)
             manifest.score = final_score
-            # Verdict: must pass proof AND not be empty.
+            # Verdict: a reviewer "go" is necessary but NOT sufficient — the
+            # objective proof and non-empty delivery are ANDed in unconditionally
+            # (design rule #3: verify behavior, not vibes).
             delivered_nonempty = manifest.files_count > 0 and proof.files_substantive > 0
-            if verdict != "go":
-                verdict = "go" if (proof.passed and delivered_nonempty) else "no_go"
+            verdict = "go" if (verdict == "go" and proof.passed and delivered_nonempty) else "no_go"
             manifest.verdict = verdict
             manifest.status = "completed" if delivered_nonempty else "failed"
 

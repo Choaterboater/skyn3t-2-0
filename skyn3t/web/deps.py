@@ -177,21 +177,29 @@ class AppState:
             if rec is None:
                 rec = BuildRecord(build_id=bid, brief=str(ev.payload.get("brief", "")))
                 self.builds[bid] = rec
-            for k in ("slug", "stack", "status", "verdict"):
-                if k in ev.payload:
+            # Identity fields may arrive on any build event.
+            for k in ("slug", "stack"):
+                if ev.payload.get(k):
                     setattr(rec, k, str(ev.payload[k]))
-            if "score" in ev.payload:
-                try:
-                    rec.score = float(ev.payload["score"])
-                except (TypeError, ValueError):
-                    pass
             if "cost_usd" in ev.payload:
                 try:
                     rec.cost_usd = float(ev.payload["cost_usd"])
                 except (TypeError, ValueError):
                     pass
-            if ev.type == EventType.BUILD_COMPLETED:
-                rec.status = "completed"
+            # Build status is driven ONLY by build-level events. Stage events
+            # carry the *stage's* status/verdict/score — never copy those onto
+            # the build record (that was flipping builds to "completed" early).
+            if ev.type == EventType.BUILD_STARTED:
+                rec.status = "running"
+            elif ev.type == EventType.BUILD_COMPLETED:
+                rec.status = str(ev.payload.get("status") or "completed")
+                if ev.payload.get("verdict"):
+                    rec.verdict = str(ev.payload["verdict"])
+                if "score" in ev.payload:
+                    try:
+                        rec.score = float(ev.payload["score"])
+                    except (TypeError, ValueError):
+                        pass
             elif ev.type == EventType.BUILD_FAILED:
                 rec.status = "failed"
             rec.updated_at = time.time()

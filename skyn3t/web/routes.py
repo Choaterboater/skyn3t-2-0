@@ -1,0 +1,376 @@
+"""REST endpoints for the SkyN3t dashboard / control API.
+
+FastAPI is a guarded optional dependency. :func:`build_router` only runs when
+FastAPI is importable; importing this module never requires it. All handlers
+read payloads defensively and degrade gracefully when a spine collaborator is
+absent (design rule #6).
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Any
+
+from skyn3t.core.agent import TaskRequest
+from skyn3t.core.events import Event, EventType
+from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
+
+try:  # pragma: no cover - exercised only when fastapi present
+    from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+    _HAVE_FASTAPI = True
+except Exception:  # noqa: BLE001
+    APIRouter = Body = Depends = HTTPException = Query = Request = None  # type: ignore[assignment,misc]
+    _HAVE_FASTAPI = False
+
+
+# ---------------------------------------------------------------------------
+# Backend-agnostic handler implementations. These take an AppState and plain
+# kwargs so they are unit-testable without FastAPI or a running server.
+# ---------------------------------------------------------------------------
+async def status_payload(state: AppState) -> dict[str, Any]:
+    return state.status()
+
+
+async def agents_payload(state: AppState) -> dict[str, Any]:
+    return {"agents": state.agents_snapshot()}
+
+
+async def llm_backends_payload(state: AppState) -> dict[str, Any]:
+    return state.llm_backends()
+
+
+async def budget_payload(state: AppState) -> dict[str, Any]:
+    return state.budget_snapshot()
+
+
+async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "") -> dict[str, Any]:
+    """Queue a build. Uses the studio if wired, else records + emits an event."""
+    if not brief or not brief.strip():
+        raise ValueError("brief is required")
+    build_id = state.new_build_id()
+    rec = BuildRecord(
+        build_id=build_id,
+        brief=brief.strip(),
+        slug=slug.strip(),
+        stack=stack.strip(),
+        status="queued",
+        correlation_id=build_id,
+    )
+    state.builds[build_id] = rec
+
+    # Prefer a wired StudioRunner (async start(brief, slug=None, extra=None)),
+    # falling back to a legacy submit(...) if present. The build runs as a
+    # background task so the endpoint returns immediately with the build_id.
+    studio = state.studio
+    dispatched = False
+    runner = None
+    if studio is not None:
+        if hasattr(studio, "start"):
+            runner = lambda: studio.start(brief, slug=slug or None, extra={"stack": stack, "build_id": build_id})
+        elif hasattr(studio, "submit"):  # pragma: no cover - legacy shape
+            runner = lambda: studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
+    if runner is not None:
+        try:
+            res = runner()
+            if hasattr(res, "__await__"):
+                import asyncio
+                asyncio.ensure_future(res)  # fire-and-forget; tracked via events
+            dispatched = True
+        except Exception:  # noqa: BLE001 - never let a build crash the API
+            dispatched = False
+
+    await state.event_bus.emit(
+        EventType.BUILD_STARTED,
+        source="web.api",
+        payload={"build_id": build_id, "brief": rec.brief, "slug": rec.slug, "stack": rec.stack},
+        correlation_id=build_id,
+    )
+    if not dispatched:
+        rec.status = "queued_no_studio"
+    return {"build_id": build_id, "status": rec.status, "dispatched": dispatched}
+
+
+async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
+    builds: list[dict[str, Any]] = []
+    # Live cache first.
+    cached = sorted(state.builds.values(), key=lambda r: r.updated_at, reverse=True)
+    builds.extend(r.to_dict() for r in cached[:limit])
+    # Augment with persisted history when memory is available.
+    seen = {b["build_id"] for b in builds}
+    if state.memory is not None and hasattr(state.memory, "recent_builds"):
+        try:  # pragma: no cover - depends on memory backend
+            for row in await state.memory.recent_builds(limit=limit):
+                bid = str(row.get("build_id", ""))
+                if bid and bid not in seen:
+                    builds.append(row)
+                    seen.add(bid)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"builds": builds[:limit]}
+
+
+async def approve_build(state: AppState, build_id: str, approved: bool = True, reason: str = "") -> dict[str, Any]:
+    rec = state.builds.get(build_id)
+    if rec is None:
+        raise KeyError(build_id)
+    rec.status = "approved" if approved else "rejected"
+    rec.updated_at = time.time()
+    await state.event_bus.emit(
+        EventType.PROPOSAL_DECIDED,
+        source="web.api",
+        payload={"build_id": build_id, "approved": approved, "reason": reason, "kind": "build_approval"},
+        correlation_id=rec.correlation_id,
+    )
+    return {"build_id": build_id, "status": rec.status}
+
+
+async def list_proposals(state: AppState, status: str = "") -> dict[str, Any]:
+    items = list(state.proposals.values())
+    if status:
+        items = [p for p in items if p.status == status]
+    items.sort(key=lambda p: p.created_at, reverse=True)
+    return {"proposals": [p.to_dict() for p in items]}
+
+
+async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:
+    rec = state.proposals.get(proposal_id)
+    if rec is None:
+        # Allow deciding an unseen proposal id so cortex can be authoritative.
+        rec = ProposalRecord(proposal_id=proposal_id, kind="unknown", summary="")
+        state.proposals[proposal_id] = rec
+    rec.status = "approved" if approved else "rejected"
+    rec.reason = reason
+    rec.decided_by = decided_by
+    rec.decided_at = time.time()
+
+    cortex = state.cortex
+    if cortex is not None and hasattr(cortex, "decide"):
+        try:  # pragma: no cover - depends on sibling package
+            res = cortex.decide(proposal_id=proposal_id, approved=approved, reason=reason)
+            if hasattr(res, "__await__"):
+                await res
+        except Exception:  # noqa: BLE001
+            pass
+
+    await state.event_bus.emit(
+        EventType.PROPOSAL_DECIDED,
+        source="web.api",
+        payload={"proposal_id": proposal_id, "approved": approved, "reason": reason, "kind": rec.kind},
+    )
+    return {"proposal_id": proposal_id, "status": rec.status}
+
+
+async def list_skills(state: AppState) -> dict[str, Any]:
+    skills = state.skills
+    if skills is not None and hasattr(skills, "list_skills"):
+        try:  # pragma: no cover - depends on sibling package
+            res = skills.list_skills()
+            if hasattr(res, "__await__"):
+                res = await res
+            return {"skills": list(res)}
+        except Exception:  # noqa: BLE001
+            pass
+    # Degraded: surface configured skill-hub paths from settings.
+    paths = [p for p in state.settings.skills_hub_paths.split(",") if p.strip()]
+    return {"skills": [], "hub_paths": paths}
+
+
+async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str, Any]:
+    knowledge = state.knowledge
+    if knowledge is not None and hasattr(knowledge, "search"):
+        try:  # pragma: no cover - depends on sibling package
+            res = knowledge.search(q, limit=limit)
+            if hasattr(res, "__await__"):
+                res = await res
+            return {"query": q, "results": list(res)}
+        except Exception:  # noqa: BLE001
+            pass
+    # Degraded keyword scan over recent lessons when memory is present.
+    results: list[dict[str, Any]] = []
+    if state.memory is not None and hasattr(state.memory, "relevant_lessons"):
+        try:  # pragma: no cover
+            lessons = await state.memory.relevant_lessons(stack="", stage="", limit=limit)
+            ql = q.lower()
+            results = [l for l in lessons if ql in str(l.get("text", "")).lower()] or lessons
+        except Exception:  # noqa: BLE001
+            results = []
+    return {"query": q, "results": results[:limit], "degraded": True}
+
+
+async def metrics_payload(state: AppState) -> dict[str, Any]:
+    s = state.status()
+    counts: dict[str, int] = {}
+    for ev in state.event_bus.history():
+        counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
+    return {
+        "events_published": state.event_bus.published_count,
+        "event_counts": counts,
+        "agents": s["agents"],
+        "builds": s["builds"],
+        "proposals_pending": s["proposals_pending"],
+        "budget": state.budget_snapshot(),
+    }
+
+
+def render_prometheus(metrics: dict[str, Any]) -> str:
+    """Render the metrics dict in Prometheus text exposition format."""
+    lines: list[str] = []
+
+    def _metric(name: str, value: Any, help_text: str, labels: str = "") -> None:
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return
+        lines.append(f"# HELP skyn3t_{name} {help_text}")
+        lines.append(f"# TYPE skyn3t_{name} gauge")
+        lines.append(f"skyn3t_{name}{labels} {num}")
+
+    _metric("events_published_total", metrics.get("events_published", 0), "Total events published")
+    _metric("agents", metrics.get("agents", 0), "Registered agents")
+    _metric("builds", metrics.get("builds", 0), "Known builds")
+    _metric("proposals_pending", metrics.get("proposals_pending", 0), "Pending proposals")
+    budget = metrics.get("budget", {})
+    _metric("budget_spent_day_usd", budget.get("spent_day", 0.0), "USD spent today")
+    _metric("budget_tokens_day", budget.get("tokens_day", 0), "Tokens used today")
+    for et, count in metrics.get("event_counts", {}).items():
+        safe = et.replace(".", "_").replace("*", "all")
+        _metric("event_count", count, "Events by type", labels=f'{{type="{safe}"}}')
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# FastAPI wiring (only constructed when FastAPI is importable).
+# ---------------------------------------------------------------------------
+def build_router(state: AppState) -> Any:
+    """Build and return an ``APIRouter`` bound to ``state``.
+
+    Raises :class:`RuntimeError` if FastAPI is not installed — callers should
+    only reach this from within an app whose creation already required FastAPI.
+    """
+    if not _HAVE_FASTAPI:  # pragma: no cover - environment dependent
+        raise RuntimeError(
+            "FastAPI is not installed; install 'fastapi' to use the web API router."
+        )
+
+    router = APIRouter(prefix="/api")
+
+    async def require_auth(request: Request) -> None:
+        client_host = request.client.host if request.client else None
+        ok = check_auth(
+            state.settings,
+            authorization=request.headers.get("authorization"),
+            client_host=client_host,
+        )
+        if not ok:
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    auth = Depends(require_auth)
+
+    @router.get("/status", dependencies=[auth])
+    async def _status() -> dict[str, Any]:
+        return await status_payload(state)
+
+    @router.get("/agents", dependencies=[auth])
+    async def _agents() -> dict[str, Any]:
+        return await agents_payload(state)
+
+    @router.get("/llm/backends", dependencies=[auth])
+    async def _llm_backends() -> dict[str, Any]:
+        return await llm_backends_payload(state)
+
+    @router.get("/budget", dependencies=[auth])
+    async def _budget() -> dict[str, Any]:
+        return await budget_payload(state)
+
+    @router.post("/studio/build", dependencies=[auth])
+    async def _build(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await submit_build(
+                state,
+                brief=str(body.get("brief", "")),
+                stack=str(body.get("stack", "")),
+                slug=str(body.get("slug", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @router.get("/studio/builds", dependencies=[auth])
+    async def _builds(limit: int = Query(default=25, ge=1, le=200)) -> dict[str, Any]:
+        return await list_builds(state, limit=limit)
+
+    @router.post("/studio/approve", dependencies=[auth])
+    async def _approve(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await approve_build(
+                state,
+                build_id=str(body.get("build_id", "")),
+                approved=bool(body.get("approved", True)),
+                reason=str(body.get("reason", "")),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="build not found")
+
+    @router.get("/proposals", dependencies=[auth])
+    async def _proposals(status: str = Query(default="")) -> dict[str, Any]:
+        return await list_proposals(state, status=status)
+
+    @router.post("/proposals/decide", dependencies=[auth])
+    async def _decide(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        pid = str(body.get("proposal_id", ""))
+        if not pid:
+            raise HTTPException(status_code=422, detail="proposal_id is required")
+        return await decide_proposal(
+            state,
+            proposal_id=pid,
+            approved=bool(body.get("approved", False)),
+            reason=str(body.get("reason", "")),
+            decided_by=str(body.get("decided_by", "api")),
+        )
+
+    @router.get("/skills", dependencies=[auth])
+    async def _skills() -> dict[str, Any]:
+        return await list_skills(state)
+
+    @router.get("/knowledge/search", dependencies=[auth])
+    async def _knowledge(
+        q: str = Query(default=""),
+        limit: int = Query(default=10, ge=1, le=100),
+    ) -> dict[str, Any]:
+        return await knowledge_search(state, q=q, limit=limit)
+
+    @router.get("/metrics", dependencies=[auth])
+    async def _metrics(request: Request) -> Any:
+        data = await metrics_payload(state)
+        accept = request.headers.get("accept", "")
+        if "text/plain" in accept or request.query_params.get("format") == "prometheus":
+            from fastapi.responses import PlainTextResponse
+
+            return PlainTextResponse(render_prometheus(data))
+        return data
+
+    # Trajectory replay / time-travel backend hooks (2.0 backlog P2).
+    @router.get("/trajectory", dependencies=[auth])
+    async def _trajectory(
+        limit: int = Query(default=200, ge=1, le=2000),
+        type: str = Query(default=""),
+        correlation_id: str = Query(default=""),
+        since: float | None = Query(default=None),
+        until: float | None = Query(default=None),
+    ) -> dict[str, Any]:
+        et: EventType | None = None
+        if type:
+            try:
+                et = EventType(type)
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"unknown event type: {type}")
+        events = state.trajectory(
+            limit=limit,
+            event_type=et,
+            correlation_id=correlation_id or None,
+            since=since,
+            until=until,
+        )
+        return {"events": events, "count": len(events)}
+
+    return router

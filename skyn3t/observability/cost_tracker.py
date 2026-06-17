@@ -1,0 +1,127 @@
+"""Token + USD cost tracking.
+
+Reads from :class:`LLMClient.budget` (a ``BudgetTracker``) to surface live
+spend, and mirrors it into Prometheus metrics. Also keeps a per-build ledger so
+the cost of a single build can be attributed and reported in the manifest.
+
+Pure in-memory; no I/O at import. Degrades to its own counters if no LLM client
+is attached (rule #6).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from time import time
+from typing import Any, Optional
+
+from skyn3t.config.settings import Settings, get_settings
+from skyn3t.observability.metrics import MetricsRegistry, get_metrics
+
+
+@dataclass
+class CostSnapshot:
+    spent_build_usd: float
+    spent_day_usd: float
+    tokens_day: int
+    daily_cap_usd: float
+    per_build_cap_usd: float
+    token_cap: int
+
+    @property
+    def daily_remaining_usd(self) -> float:
+        return max(0.0, self.daily_cap_usd - self.spent_day_usd)
+
+    @property
+    def build_remaining_usd(self) -> float:
+        return max(0.0, self.per_build_cap_usd - self.spent_build_usd)
+
+    @property
+    def daily_fraction(self) -> float:
+        return (self.spent_day_usd / self.daily_cap_usd) if self.daily_cap_usd else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "spent_build_usd": round(self.spent_build_usd, 6),
+            "spent_day_usd": round(self.spent_day_usd, 6),
+            "tokens_day": self.tokens_day,
+            "daily_remaining_usd": round(self.daily_remaining_usd, 6),
+            "build_remaining_usd": round(self.build_remaining_usd, 6),
+            "daily_fraction": round(self.daily_fraction, 4),
+        }
+
+
+@dataclass
+class CostTracker:
+    """Attribution layer over the LLM ``BudgetTracker``."""
+
+    settings: Settings = field(default_factory=get_settings)
+    budget: Optional[Any] = None  # an LLMClient.budget (BudgetTracker)
+    metrics: MetricsRegistry = field(default_factory=get_metrics)
+    # build_id -> {"cost_usd": float, "tokens": int, "started": float}
+    _builds: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _last_seen_calls: int = 0
+
+    @classmethod
+    def from_llm(cls, llm: Any, settings: Settings | None = None) -> "CostTracker":
+        return cls(settings=settings or get_settings(), budget=getattr(llm, "budget", None))
+
+    def attach(self, llm: Any) -> None:
+        self.budget = getattr(llm, "budget", None)
+
+    # ---- ingestion -------------------------------------------------------
+    def sync(self) -> None:
+        """Pull any new LLM calls from the budget into Prometheus + ledger."""
+        if self.budget is None:
+            return
+        calls = list(getattr(self.budget, "calls", []))
+        new = calls[self._last_seen_calls:]
+        for r in new:
+            backend = getattr(r, "backend", "unknown")
+            model = getattr(r, "model", "unknown")
+            pt = getattr(r, "prompt_tokens", 0)
+            ct = getattr(r, "completion_tokens", 0)
+            cost = getattr(r, "cost_usd", 0.0)
+            self.metrics.llm_calls_total.labels(backend, model).inc()
+            self.metrics.llm_tokens_total.labels("prompt").inc(pt)
+            self.metrics.llm_tokens_total.labels("completion").inc(ct)
+            self.metrics.llm_cost_usd.inc(cost)
+        self._last_seen_calls = len(calls)
+        snap = self.snapshot()
+        self.metrics.budget_remaining.set(snap.daily_remaining_usd)
+
+    # ---- build attribution ----------------------------------------------
+    def start_build(self, build_id: str) -> None:
+        base_cost = getattr(self.budget, "spent_day", 0.0) if self.budget else 0.0
+        base_tok = getattr(self.budget, "tokens_day", 0) if self.budget else 0
+        self._builds[build_id] = {
+            "started": time(), "base_cost": base_cost, "base_tokens": base_tok,
+            "cost_usd": 0.0, "tokens": 0,
+        }
+
+    def end_build(self, build_id: str) -> dict[str, Any]:
+        self.sync()
+        entry = self._builds.get(build_id)
+        if entry is None:
+            return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0}
+        cur_cost = getattr(self.budget, "spent_day", 0.0) if self.budget else 0.0
+        cur_tok = getattr(self.budget, "tokens_day", 0) if self.budget else 0
+        entry["cost_usd"] = round(max(0.0, cur_cost - entry["base_cost"]), 6)
+        entry["tokens"] = max(0, cur_tok - entry["base_tokens"])
+        entry["duration_s"] = round(time() - entry["started"], 3)
+        return {"build_id": build_id, **{k: entry[k] for k in ("cost_usd", "tokens", "duration_s")}}
+
+    # ---- snapshot --------------------------------------------------------
+    def snapshot(self) -> CostSnapshot:
+        b = self.budget
+        return CostSnapshot(
+            spent_build_usd=getattr(b, "spent_build", 0.0) if b else 0.0,
+            spent_day_usd=getattr(b, "spent_day", 0.0) if b else 0.0,
+            tokens_day=getattr(b, "tokens_day", 0) if b else 0,
+            daily_cap_usd=self.settings.daily_usd_cap,
+            per_build_cap_usd=self.settings.per_build_usd_cap,
+            token_cap=self.settings.daily_token_cap,
+        )
+
+    def report(self) -> dict[str, Any]:
+        self.sync()
+        return self.snapshot().to_dict()

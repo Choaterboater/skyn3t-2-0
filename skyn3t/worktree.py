@@ -1,0 +1,181 @@
+"""Git worktree helper for isolated build trajectories.
+
+A build runs inside an isolated worktree so multiple trajectories (best-of-N)
+never clobber each other or the delivered project. The CRITICAL function is
+:func:`merge_back`, which copies generated files OUT of the worktree and INTO
+the delivered project directory — without this a build would "succeed" while
+delivering an empty project (violating design rule #1: delivered != empty).
+
+The module degrades gracefully: if ``git`` is unavailable or the repo is not a
+git repo, it falls back to a plain isolated directory (a "poor man's worktree").
+Either way the public API is identical. Import has zero side effects.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Files/dirs never copied back into a delivered project.
+_IGNORE_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        ".DS_Store",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+)
+
+
+@dataclass(slots=True)
+class Worktree:
+    """A handle to an isolated working directory for a build trajectory."""
+
+    path: Path
+    slug: str
+    is_git: bool = False
+    branch: str | None = None
+    base_repo: Path | None = None
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def dir(self) -> str:
+        return str(self.path)
+
+
+def _git_available() -> bool:
+    return shutil.which("git") is not None
+
+
+def _is_git_repo(path: Path) -> bool:
+    if not _git_available():
+        return False
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return out.returncode == 0 and out.stdout.strip() == "true"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def create_worktree(
+    base_dir: str | Path,
+    slug: str,
+    *,
+    worktrees_root: str | Path | None = None,
+) -> Worktree:
+    """Create an isolated worktree for ``slug``.
+
+    Uses a real ``git worktree`` when ``base_dir`` is a git repo, otherwise a
+    plain isolated directory. Never raises for the non-git path.
+    """
+    base = Path(base_dir).resolve()
+    token = uuid.uuid4().hex[:8]
+    if worktrees_root is not None:
+        root = Path(worktrees_root)
+    else:
+        root = base.parent / ".skyn3t_worktrees"
+    root.mkdir(parents=True, exist_ok=True)
+    wt_path = root / f"{slug}-{token}"
+
+    if _is_git_repo(base):
+        branch = f"skyn3t/{slug}-{token}"
+        try:
+            subprocess.run(
+                ["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt_path), "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            return Worktree(path=wt_path, slug=slug, is_git=True, branch=branch, base_repo=base)
+        except (OSError, subprocess.SubprocessError):
+            # Fall through to plain directory on any git failure.
+            pass
+
+    wt_path.mkdir(parents=True, exist_ok=True)
+    return Worktree(path=wt_path, slug=slug, is_git=False, base_repo=base)
+
+
+def _iter_files(root: Path):
+    for p in root.rglob("*"):
+        if p.is_dir():
+            continue
+        rel_parts = p.relative_to(root).parts
+        if any(part in _IGNORE_NAMES for part in rel_parts):
+            continue
+        yield p
+
+
+def merge_back(
+    worktree_dir: str | Path,
+    project_dir: str | Path,
+    *,
+    overwrite: bool = True,
+) -> list[str]:
+    """Copy generated files from the worktree INTO the delivered project.
+
+    Returns the list of relative paths copied. This is the function that makes
+    a build's output real on disk. Creating ``project_dir`` if absent.
+    """
+    src = Path(worktree_dir)
+    dst = Path(project_dir)
+    if not src.exists():
+        return []
+    dst.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for f in _iter_files(src):
+        rel = f.relative_to(src)
+        target = dst / rel
+        if target.exists() and not overwrite:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(f, target)
+            copied.append(str(rel))
+        except OSError:
+            # Skip unreadable/locked files but keep delivering the rest.
+            continue
+    return copied
+
+
+def list_files(worktree_dir: str | Path) -> list[str]:
+    """Return relative paths of deliverable files in a worktree."""
+    src = Path(worktree_dir)
+    if not src.exists():
+        return []
+    return [str(f.relative_to(src)) for f in _iter_files(src)]
+
+
+def cleanup_worktree(worktree: Worktree) -> None:
+    """Remove a worktree. Best-effort; never raises."""
+    try:
+        if worktree.is_git and worktree.base_repo is not None and _git_available():
+            subprocess.run(
+                ["git", "-C", str(worktree.base_repo), "worktree", "remove", "--force", str(worktree.path)],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if worktree.branch:
+                subprocess.run(
+                    ["git", "-C", str(worktree.base_repo), "branch", "-D", worktree.branch],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+        if worktree.path.exists():
+            shutil.rmtree(worktree.path, ignore_errors=True)
+    except (OSError, subprocess.SubprocessError):
+        pass

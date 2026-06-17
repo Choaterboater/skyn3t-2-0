@@ -289,6 +289,10 @@ class StudioRunner:
         )
 
         manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
+        # Honor a caller-supplied build_id (e.g. the web API) so its build
+        # record reconciles via BUILD_* events instead of orphaning.
+        if extra.get("build_id"):
+            manifest.build_id = str(extra["build_id"])
         manifest.status = "running"
         manifest.extra["clarification"] = clar.to_dict()
         build_id = manifest.build_id

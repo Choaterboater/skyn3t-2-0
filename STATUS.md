@@ -71,9 +71,19 @@ Done (wired + verified):
   `StudioRunner.start(...)` as a background task. Verified: 20 agents + studio
   wired into the served app; a build through it returns `completed`/`go`.
 
-Remaining follow-ups (optional depth; system works without them):
+- **Cortex cadence (wired):** `build_cortex` now attaches a `MetaTick`
+  heartbeat (runs `MetaAgent.observe_and_publish` → `INSIGHT_PUBLISHED` +
+  `LessonHygiene.sweep` per stack on a cadence) and a started `SelfTuningEngine`
+  that reacts to those insights. `skyn3t start --web` boots the cortex (gated by
+  `autonomous_learning`/`autonomous_builds`). Verified: cortex starts with both
+  components live.
+- **Observability/recovery (wired):** the `StudioRunner` build loop now drives
+  an optional `CostTracker` (`start_build`/`end_build`) and `BudgetGuard`
+  (`reset`/`heartbeat`); `assemble_app_state` runs
+  `RecoveryManager.restore_and_announce` on boot. The dashboard serves the built
+  React SPA from `web/ui/dist/`.
 
-- **Cortex cadence:** `MetaAgent.observe_and_publish`, `SelfTuningEngine`, and
-  `LessonHygiene.sweep` still need a periodic Cortex tick to run autonomously.
-- **Observability/recovery:** wire `BudgetGuard.watchdog` + `CostTracker` into
-  the build loop and `RecoveryManager.restore_and_announce` into app boot.
+Remaining (genuinely optional): `BudgetGuard.check()` is wired for telemetry but
+does not hard-trip studio builds — hard budget enforcement is already handled by
+`LLMClient.budget` (raises `BudgetExceeded`). A standalone `BudgetGuard.watchdog`
+background task is available for the autonomous loop if desired.

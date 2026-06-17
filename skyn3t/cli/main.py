@@ -393,6 +393,23 @@ def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any
     return learning, patterns, skills
 
 
+def _build_observability(settings: Any, llm: Any) -> tuple[Any, Any]:
+    """Construct a cost tracker + budget guard for a build loop (guarded)."""
+    cost_tracker = budget_guard = None
+    try:
+        from skyn3t.observability.cost_tracker import CostTracker
+        if llm is not None:
+            cost_tracker = CostTracker.from_llm(llm, settings)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from skyn3t.self_healing.budget import BudgetGuard
+        budget_guard = BudgetGuard(settings=settings, budget=getattr(llm, "budget", None))
+    except Exception:  # noqa: BLE001
+        pass
+    return cost_tracker, budget_guard
+
+
 async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
@@ -409,6 +426,7 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
             pass
 
     learning, patterns, skills = _build_intelligence(settings, spine["event_bus"], spine["memory"])
+    cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
     runner = StudioRunner(
         spine["event_bus"],
         spine["orchestrator"],
@@ -417,6 +435,8 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
         learning=learning,
         patterns=patterns,
         skills=skills,
+        cost_tracker=cost_tracker,
+        budget_guard=budget_guard,
     )
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:
@@ -436,33 +456,61 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
 
     spine = await _assemble_spine(event_bus=event_bus)
     settings = spine["settings"]
+    bus = spine["event_bus"]
+
+    # Recovery: restore prior state on boot, then announce (best-effort).
+    try:
+        from skyn3t.persistence.recovery import RecoveryManager
+
+        await RecoveryManager().restore_and_announce(bus)
+    except Exception:  # noqa: BLE001
+        pass
+
     studio = None
     try:
         from skyn3t.studio.runner import StudioRunner
 
-        learning, patterns, skills = _build_intelligence(
-            settings, spine["event_bus"], spine["memory"]
-        )
+        learning, patterns, skills = _build_intelligence(settings, bus, spine["memory"])
+        cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
         studio = StudioRunner(
-            spine["event_bus"],
+            bus,
             spine["orchestrator"],
             settings=settings,
             memory=spine["memory"],
             learning=learning,
             patterns=patterns,
             skills=skills,
+            cost_tracker=cost_tracker,
+            budget_guard=budget_guard,
         )
     except Exception:  # noqa: BLE001 - dashboard still works read-only
         studio = None
 
+    # Cortex autonomy heartbeat (gated). build_cortex wires the MetaTick +
+    # SelfTuningEngine; start() spawns the component loops on this loop.
+    cortex = None
+    try:
+        if settings.autonomous_learning or settings.autonomous_builds:
+            from skyn3t.cortex.bootstrap import build_cortex
+
+            cortex = build_cortex(
+                bus, settings,
+                orchestrator=spine["orchestrator"], memory=spine["memory"], llm=spine["llm"],
+            )
+            await cortex.start()
+    except Exception:  # noqa: BLE001 - autonomy is optional
+        cortex = None
+
     return AppState(
         settings=settings,
-        event_bus=spine["event_bus"],
+        event_bus=bus,
         orchestrator=spine["orchestrator"],
         memory=spine["memory"],
         studio=studio,
         llm_client=spine["llm"],
         router=spine["router"],
+        cortex=cortex,
+        skills=getattr(studio, "skills", None),
     )
 
 

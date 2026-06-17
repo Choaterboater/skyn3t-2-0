@@ -8,6 +8,7 @@ focus only on their work.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -78,6 +79,9 @@ class BaseAgent(ABC):
         self.status = AgentStatus.CREATED
         self.metadata: dict[str, Any] = {}
         self._last_heartbeat = time()
+        # Serialize task execution per agent: one agent is one worker, so two
+        # concurrently-routed tasks don't race on status/metadata.
+        self._run_lock = asyncio.Lock()
 
     # ---- capability registration ----------------------------------------
     def add_capability(self, capability: AgentCapability) -> None:
@@ -100,7 +104,15 @@ class BaseAgent(ABC):
         )
 
     async def run(self, task: TaskRequest) -> TaskResult:
-        """Execute a task with timing + event emission around it."""
+        """Execute a task with timing + event emission around it.
+
+        Serialized per agent via ``_run_lock`` so concurrent routing of the same
+        agent doesn't corrupt status/metadata.
+        """
+        async with self._run_lock:
+            return await self._run_locked(task)
+
+    async def _run_locked(self, task: TaskRequest) -> TaskResult:
         self.status = AgentStatus.BUSY
         started = time()
         await self.event_bus.emit(

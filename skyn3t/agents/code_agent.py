@@ -1,0 +1,188 @@
+"""CodeAgent — writes actual source files into the worktree.
+
+This is the most important generative agent. It:
+
+* detects the stack from the plan/brief (default ``react_vite``);
+* with a real LLM backend, generates each planned file from a per-file prompt,
+  routing the tier by file extension via ``file_hint`` so frontend files use the
+  UI tier and backend files use the BACKEND tier;
+* with the OFFLINE stub backend, emits a real, runnable minimal scaffold for the
+  detected stack (e.g. a working Vite+React counter app) so an offline
+  ``skyn3t studio build`` produces a genuinely runnable project (design rule #1);
+* repairs common entrypoint import/export mismatches before returning.
+
+All file writes go under ``task.payload["worktree_dir"]`` (or a temp dir if
+absent) and are confined to that directory.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from skyn3t.adapters.llm import LLMClient
+from skyn3t.agents._common import detect_stack, extract_code, slugify
+from skyn3t.agents._scaffold import scaffold_for
+from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
+from skyn3t.core.events import EventBus
+from skyn3t.core.model_router import Tier
+
+_SYSTEM = (
+    "You are an expert software engineer. Generate the complete contents of a "
+    "single file for the project. Output ONLY the file contents, no commentary, "
+    "no markdown fences."
+)
+
+
+class CodeAgent(BaseAgent):
+    def __init__(self, name: str = "code", *, event_bus: EventBus,
+                 llm: LLMClient | None = None, config: dict | None = None) -> None:
+        super().__init__(name, agent_type="codegen", provider="llm",
+                         event_bus=event_bus, config=config)
+        self.add_capability(AgentCapability(
+            name="codegen", description="Write runnable source files into the worktree",
+            tags=("generative", "code")))
+        self.llm = llm
+
+    async def initialize(self) -> None:
+        if self.llm is None:
+            self.llm = LLMClient()
+        self.metadata["backend"] = self.llm.backend
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        p = task.payload
+        brief = p.get("brief", "") or p.get("slug", "app")
+        plan = p.get("plan") if isinstance(p.get("plan"), dict) else {}
+        stack = detect_stack(
+            brief=brief, plan=plan or p.get("plan"),
+            explicit=p.get("stack", "") or (plan.get("stack", "") if plan else ""),
+        )
+        app_name = slugify(p.get("slug") or brief, "app")
+
+        worktree = self._resolve_worktree(p)
+
+        # Decide what files to write. Prefer the architect's plan; otherwise the
+        # canonical scaffold. The scaffold guarantees a runnable baseline.
+        scaffold = scaffold_for(stack, app_name, brief)
+        files: dict[str, str] = dict(scaffold)
+
+        # Only attempt per-file LLM generation when a real backend is present.
+        if self.llm.backend != "stub":
+            planned = self._planned_paths(plan, scaffold)
+            for rel_path in planned:
+                try:
+                    content = await self._generate_file(rel_path, brief, stack, plan)
+                except Exception:  # noqa: BLE001 - keep the scaffold fallback for this file
+                    content = files.get(rel_path)
+                if content and content.strip():
+                    files[rel_path] = content
+
+        files = self._repair_entrypoints(stack, files)
+
+        written = self._write_files(worktree, files)
+
+        return TaskResult(
+            task_id=task.task_id, success=True,
+            output={
+                "files_written": len(written),
+                "worktree_dir": str(worktree),
+                "stack": stack,
+                "files": written,
+                "backend": self.llm.backend,
+            },
+        )
+
+    # ---- helpers ---------------------------------------------------------
+    def _resolve_worktree(self, payload: dict[str, Any]) -> Path:
+        wd = payload.get("worktree_dir") or payload.get("project_dir")
+        if wd:
+            path = Path(wd)
+        else:
+            path = Path(tempfile.mkdtemp(prefix="skyn3t_code_"))
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _planned_paths(self, plan: dict[str, Any], scaffold: dict[str, str]) -> list[str]:
+        paths: list[str] = []
+        for f in (plan.get("files") or []):
+            if isinstance(f, dict) and f.get("path"):
+                paths.append(str(f["path"]))
+            elif isinstance(f, str):
+                paths.append(f)
+        # Always ensure the scaffold's files exist as a runnable floor.
+        for path in scaffold:
+            if path not in paths:
+                paths.append(path)
+        return paths
+
+    async def _generate_file(self, rel_path: str, brief: str, stack: str,
+                             plan: dict[str, Any]) -> str:
+        ext = Path(rel_path).suffix.lower()
+        tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+        prompt = (
+            f"Project brief: {brief}\n"
+            f"Stack: {stack}\n"
+            f"Plan summary: {plan.get('summary', '')}\n"
+            f"File to write: {rel_path}\n\n"
+            "Write the complete, correct contents of this file."
+        )
+        result = await self.llm.complete(
+            prompt, tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=4096,
+        )
+        return extract_code(result.text)
+
+    def _write_files(self, worktree: Path, files: dict[str, str]) -> list[str]:
+        written: list[str] = []
+        root = worktree.resolve()
+        for rel, content in files.items():
+            target = (worktree / rel).resolve()
+            # Confinement: never escape the worktree.
+            if os.path.commonpath([str(root), str(target)]) != str(root):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            written.append(rel)
+        return sorted(written)
+
+    # ---- entrypoint repair ----------------------------------------------
+    def _repair_entrypoints(self, stack: str, files: dict[str, str]) -> dict[str, str]:
+        """Fix the most common entrypoint import/export mismatches."""
+        if stack == "react_vite":
+            main = files.get("src/main.jsx")
+            app = files.get("src/App.jsx")
+            if app is not None and "export default" not in app and "export {" not in app:
+                # Ensure App has a default export.
+                if re.search(r"function\s+App\b", app):
+                    app = app + "\n\nexport default App\n"
+                    files["src/App.jsx"] = app
+            if main is not None:
+                # Ensure main imports App as default from ./App.jsx.
+                if "App" not in main:
+                    main = "import App from './App.jsx'\n" + main
+                main = main.replace("import { App }", "import App")
+                files["src/main.jsx"] = main
+            # index.html must reference the real entry module.
+            html = files.get("index.html")
+            if html is not None and "/src/main.jsx" not in html and "main.tsx" not in html:
+                html = re.sub(
+                    r'<script type="module"[^>]*></script>',
+                    '<script type="module" src="/src/main.jsx"></script>',
+                    html,
+                )
+                if "/src/main.jsx" not in html:
+                    html = html.replace(
+                        "</body>",
+                        '  <script type="module" src="/src/main.jsx"></script>\n  </body>',
+                    )
+                files["index.html"] = html
+        elif stack == "node_express":
+            server = files.get("server.js")
+            if server is not None and "module.exports" not in server:
+                files["server.js"] = server + "\nmodule.exports = app;\n"
+        return files
+
+    async def health_check(self) -> bool:
+        return self.llm is not None

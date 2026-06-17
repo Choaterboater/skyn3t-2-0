@@ -1,0 +1,504 @@
+"""StudioRunner — the brief->app build pipeline.
+
+Orchestrates a full build end-to-end:
+
+  1. clarify an ambiguous brief (auto-answer when unattended)
+  2. plan the ordered stages + detect stack + file checklist
+  3. emit BUILD_STARTED
+  4. run each stage in an isolated worktree, submitting a TaskRequest to the
+     orchestrator (type=agent_type, caps=(capability,))
+  5. for the code stage, run best-of-N trajectory sampling when configured (P0)
+  6. run verifiers + proof-run, apply the Critic gate (skip if disabled),
+     compute a reviewer score, honour approval gates
+  7. MERGE the winning worktree back into PROJECTS_DIR/<slug>/ (delivered != empty)
+  8. write the manifest + save a BuildRow, emit BUILD_COMPLETED
+
+It runs OFFLINE: a missing agent for a stage records a *skipped* stage and the
+build continues (never crashes). Lessons are injected into stage payloads and
+graded afterward to close the learning loop (design rule #2).
+
+Import has zero side effects.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+import structlog
+
+from skyn3t.config.settings import Settings, get_settings
+from skyn3t.core.agent import TaskRequest, TaskResult
+from skyn3t.core.events import EventBus, EventType
+from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.studio import best_of_n as bon
+from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.studio.clarification import clarify
+from skyn3t.studio.manifest import BuildManifest, StageRecord
+from skyn3t.studio.planner import BuildPlan, Planner
+from skyn3t.studio.proof_run import proof_run
+from skyn3t.studio.stages import StageSpec
+from skyn3t.worktree import (
+    Worktree,
+    cleanup_worktree,
+    create_worktree,
+    list_files,
+    merge_back,
+)
+
+log = structlog.get_logger(__name__)
+
+
+@dataclass(slots=True)
+class BuildOutcome:
+    """Returned by :meth:`StudioRunner.start`."""
+
+    build_id: str
+    slug: str
+    status: str
+    verdict: str
+    score: float
+    stack: str
+    project_dir: str
+    files: list[str] = field(default_factory=list)
+    manifest: dict[str, Any] = field(default_factory=dict)
+    cost_usd: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "build_id": self.build_id,
+            "slug": self.slug,
+            "status": self.status,
+            "verdict": self.verdict,
+            "score": self.score,
+            "stack": self.stack,
+            "project_dir": self.project_dir,
+            "files": list(self.files),
+            "cost_usd": self.cost_usd,
+        }
+
+
+def _slugify(text: str) -> str:
+    base = "".join(c if c.isalnum() else "-" for c in text.lower()).strip("-")
+    base = "-".join(filter(None, base.split("-")))[:48]
+    return base or "app"
+
+
+class StudioRunner:
+    """Coordinates agents, verifiers, gates, and delivery for one build."""
+
+    def __init__(
+        self,
+        event_bus: EventBus,
+        orchestrator: Orchestrator,
+        *,
+        settings: Settings | None = None,
+        memory: Any | None = None,
+        planner: Planner | None = None,
+        approval_gate: ApprovalGate | None = None,
+        stage_timeout: float = 60.0,
+    ) -> None:
+        self.event_bus = event_bus
+        self.orchestrator = orchestrator
+        self.settings = settings or get_settings()
+        self.memory = memory  # MemoryStore | None
+        self.planner = planner or Planner(self.settings)
+        self.stage_timeout = stage_timeout
+        self.approval_gate = approval_gate or ApprovalGate(
+            enabled=bool(self.settings.approval_gates),
+            auto_approve=bool(self.settings.cortex_auto_approve_safe),
+        )
+
+    # ---- agent availability ---------------------------------------------
+    def _has_agent_for(self, spec: StageSpec) -> bool:
+        # An agent can serve a stage if it advertises the required capability
+        # (type match preferred by the orchestrator's router, but not required).
+        return any(
+            agent.has_capabilities((spec.capability,))
+            for agent in self.orchestrator.agents.values()
+        )
+
+    # ---- lessons (learning loop) ----------------------------------------
+    async def _inject_lessons(self, stack: str, stage: str) -> list[dict[str, Any]]:
+        if self.memory is None:
+            return []
+        try:
+            return await self.memory.relevant_lessons(stack, stage=stage, limit=5)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("lessons.inject_failed", error=str(exc))
+            return []
+
+    async def _grade_lessons(self, lessons: list[dict[str, Any]], helpful: bool) -> None:
+        if self.memory is None or not lessons:
+            return
+        for les in lessons:
+            lid = les.get("id")
+            if isinstance(lid, int):
+                try:
+                    await self.memory.grade_lesson(lid, helpful)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("lessons.grade_failed", error=str(exc))
+
+    # ---- single stage submission ----------------------------------------
+    async def _submit_stage(
+        self,
+        spec: StageSpec,
+        payload: dict[str, Any],
+        correlation_id: str,
+    ) -> TaskResult:
+        task = TaskRequest(
+            type=spec.agent_type,
+            payload=payload,
+            capabilities_required=(spec.capability,),
+            correlation_id=correlation_id,
+            metadata={"stage": spec.name},
+        )
+        return await self.orchestrator.submit(task)
+
+    def _base_payload(
+        self,
+        plan: BuildPlan,
+        project_dir: str,
+        worktree_dir: str,
+        prior: dict[str, Any],
+        lessons: list[dict[str, Any]],
+        extra: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "brief": plan.brief,
+            "slug": plan.slug,
+            "project_dir": project_dir,
+            "worktree_dir": worktree_dir,
+            "stack": plan.stack,
+            "plan": plan.to_dict(),
+            "prior": prior,
+            "lessons": lessons,
+            "checklist": list(plan.checklist),
+        }
+        if extra:
+            payload["extra"] = extra
+        return payload
+
+    # ---- main entrypoint -------------------------------------------------
+    async def start(
+        self,
+        brief: str,
+        slug: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> BuildOutcome:
+        extra = extra or {}
+        slug = slug or _slugify(brief)
+        correlation_id = uuid.uuid4().hex
+
+        # Clarify ambiguous briefs (unattended by default).
+        unattended = not bool(extra.get("attended", False))
+        clar = clarify(brief, unattended=unattended, overrides=extra.get("clarify_overrides"))
+
+        # Plan.
+        plan = self.planner.plan(
+            brief,
+            slug,
+            stack_hint=clar.answers.get("stack") or extra.get("stack_hint"),
+            test_first=extra.get("test_first"),
+            best_of_n=extra.get("best_of_n"),
+            gated_stages=tuple(extra.get("gated_stages", ())),
+        )
+
+        manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
+        manifest.status = "running"
+        manifest.extra["clarification"] = clar.to_dict()
+        build_id = manifest.build_id
+
+        projects_dir = self.settings.projects_dir
+        project_dir = str(projects_dir / slug)
+
+        await self.event_bus.emit(
+            EventType.BUILD_STARTED,
+            "studio",
+            {"build_id": build_id, "slug": slug, "stack": plan.stack, "stages": plan.stage_names},
+            correlation_id=correlation_id,
+        )
+
+        prior: dict[str, Any] = {}
+        # The main build worktree for non-code stages and final delivery.
+        main_wt = create_worktree(str(projects_dir), slug)
+        worktrees: list[Worktree] = [main_wt]
+        reviewer_score = 0.0
+        verdict = "no_go"
+        used_lessons: list[dict[str, Any]] = []
+
+        try:
+            for spec in plan.stages:
+                await self.event_bus.emit(
+                    EventType.BUILD_STAGE_STARTED,
+                    "studio",
+                    {"build_id": build_id, "stage": spec.name, "agent_type": spec.agent_type},
+                    correlation_id=correlation_id,
+                )
+                record = StageRecord(
+                    name=spec.name, agent_type=spec.agent_type, capability=spec.capability
+                )
+
+                # Critic gate: skip entirely when disabled.
+                if spec.agent_type == "critic" and not self.settings.critic_enabled:
+                    record.status = "skipped"
+                    record.output_summary = {"reason": "critic_disabled"}
+                    manifest.add_stage(record)
+                    await self._emit_stage_done(build_id, record, correlation_id)
+                    continue
+
+                # No agent -> record skipped and continue (offline tolerance).
+                if not self._has_agent_for(spec):
+                    record.status = "skipped"
+                    record.output_summary = {"reason": "no_agent"}
+                    manifest.add_stage(record)
+                    await self._emit_stage_done(build_id, record, correlation_id)
+                    continue
+
+                lessons = await self._inject_lessons(plan.stack, spec.name)
+                if lessons:
+                    used_lessons.extend(lessons)
+
+                # ---- best-of-N for the code stage (P0) -------------------
+                if spec.agent_type == "code" and plan.best_of_n > 1:
+                    result = await self._run_code_best_of_n(
+                        plan, spec, project_dir, prior, lessons, extra, correlation_id, main_wt, worktrees
+                    )
+                else:
+                    payload = self._base_payload(
+                        plan, project_dir, main_wt.dir, prior, lessons, extra
+                    )
+                    payload.update(spec.extra)
+                    result = await self._submit_stage(spec, payload, correlation_id)
+
+                # Record outcome.
+                if result.success:
+                    record.status = "completed"
+                    record.score = self._extract_score(result.output)
+                    record.agent_name = result.agent_name
+                    record.duration_ms = result.duration_ms
+                    record.output_summary = self._summarize(result.output)
+                    prior[spec.name] = result.output
+                else:
+                    record.status = "failed"
+                    record.error = result.error
+                    record.agent_name = result.agent_name
+                    record.output_summary = {"error": result.error}
+                    prior[spec.name] = {"error": result.error}
+
+                # Reviewer score captured for the build verdict.
+                if spec.agent_type == "reviewer" and result.success:
+                    reviewer_score = self._extract_score(result.output) or 0.0
+                    verdict = str(result.output.get("verdict", "no_go"))
+
+                manifest.add_stage(record)
+                await self._emit_stage_done(build_id, record, correlation_id)
+
+                # Approval gate (after stage completes).
+                if spec.gated:
+                    approval = self.approval_gate.request(
+                        build_id, spec.name, {"score": record.score}
+                    )
+                    decision = await self.approval_gate.wait(approval.approval_id, timeout=self.stage_timeout)
+                    if decision is GateDecision.REJECTED:
+                        manifest.status = "failed"
+                        manifest.verdict = "no_go"
+                        raise _BuildRejected(f"stage {spec.name} rejected at approval gate")
+
+            # ---- delivery: merge worktree -> project dir ----------------
+            copied = merge_back(main_wt.dir, project_dir)
+            manifest.files = copied or list_files(project_dir)
+            manifest.worktree_dir = main_wt.dir
+            manifest.artifact_dir = project_dir
+
+            # Objective proof against the delivered project.
+            proof = proof_run(
+                project_dir,
+                checklist=plan.checklist,
+                execution_backend=self.settings.execution_backend,
+                stack=plan.stack,
+            )
+            manifest.extra["proof"] = proof.to_dict()
+
+            # Final score: blend reviewer score with proof completeness.
+            if reviewer_score <= 0.0:
+                reviewer_score = proof.score
+            final_score = round(0.6 * reviewer_score + 0.4 * proof.score, 2)
+            manifest.score = final_score
+            # Verdict: must pass proof AND not be empty.
+            delivered_nonempty = manifest.files_count > 0 and proof.files_substantive > 0
+            if verdict != "go":
+                verdict = "go" if (proof.passed and delivered_nonempty) else "no_go"
+            manifest.verdict = verdict
+            manifest.status = "completed" if delivered_nonempty else "failed"
+
+            # Grade lessons by build success (close the learning loop).
+            await self._grade_lessons(used_lessons, helpful=(manifest.status == "completed"))
+
+            outcome = await self._finalize(manifest, plan, correlation_id, final_score)
+            return outcome
+
+        except _BuildRejected as exc:
+            manifest.status = "failed"
+            await self._grade_lessons(used_lessons, helpful=False)
+            await self._save_build(manifest)
+            await self.event_bus.emit(
+                EventType.BUILD_FAILED,
+                "studio",
+                {"build_id": build_id, "slug": slug, "reason": str(exc)},
+                correlation_id=correlation_id,
+            )
+            manifest.save(project_dir)
+            return self._outcome(manifest)
+        except Exception as exc:  # noqa: BLE001 - never crash the factory
+            log.error("studio.build_failed", build_id=build_id, error=str(exc))
+            manifest.status = "failed"
+            await self._grade_lessons(used_lessons, helpful=False)
+            try:
+                await self._save_build(manifest)
+            except Exception:  # noqa: BLE001
+                pass
+            await self.event_bus.emit(
+                EventType.BUILD_FAILED,
+                "studio",
+                {"build_id": build_id, "slug": slug, "error": str(exc)},
+                correlation_id=correlation_id,
+            )
+            try:
+                manifest.save(project_dir)
+            except Exception:  # noqa: BLE001
+                pass
+            return self._outcome(manifest)
+        finally:
+            for wt in worktrees:
+                cleanup_worktree(wt)
+
+    # ---- best-of-N orchestration ----------------------------------------
+    async def _run_code_best_of_n(
+        self,
+        plan: BuildPlan,
+        spec: StageSpec,
+        project_dir: str,
+        prior: dict[str, Any],
+        lessons: list[dict[str, Any]],
+        extra: dict[str, Any],
+        correlation_id: str,
+        main_wt: Worktree,
+        worktrees: list[Worktree],
+    ) -> TaskResult:
+        async def trajectory(wt: Worktree, index: int) -> TaskResult:
+            worktrees.append(wt)
+            payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
+            payload.update(spec.extra)
+            payload["trajectory_index"] = index
+            return await self._submit_stage(spec, payload, correlation_id)
+
+        selection = await bon.sample(
+            str(self.settings.projects_dir),
+            plan.slug,
+            plan.best_of_n,
+            trajectory,
+            checklist=plan.checklist,
+            execution_backend=self.settings.execution_backend,
+            stack=plan.stack,
+        )
+
+        if selection.winner is None:
+            return TaskResult(task_id=uuid.uuid4().hex, success=False, error="best_of_n: no candidate")
+
+        # Merge the winning trajectory into the main worktree so downstream
+        # stages and final delivery see the chosen files.
+        merge_back(selection.winner.worktree.dir, main_wt.dir)
+        result = selection.winner.result or TaskResult(
+            task_id=uuid.uuid4().hex,
+            success=selection.winner.passed,
+            output={"files_written": selection.winner.files_written},
+        )
+        result.metadata = dict(result.metadata)
+        result.metadata["best_of_n"] = selection.to_dict()
+        return result
+
+    # ---- helpers ---------------------------------------------------------
+    @staticmethod
+    def _extract_score(output: dict[str, Any]) -> float | None:
+        val = output.get("score")
+        if isinstance(val, (int, float)):
+            return float(val)
+        return None
+
+    @staticmethod
+    def _summarize(output: dict[str, Any]) -> dict[str, Any]:
+        keep = ("score", "verdict", "files_written", "gaps", "worktree_dir")
+        summary = {k: output[k] for k in keep if k in output}
+        if not summary:
+            # Keep a tiny, JSON-safe digest.
+            summary = {k: v for k, v in list(output.items())[:3] if isinstance(v, (str, int, float, bool))}
+        return summary
+
+    async def _emit_stage_done(self, build_id: str, record: StageRecord, correlation_id: str) -> None:
+        await self.event_bus.emit(
+            EventType.BUILD_STAGE_COMPLETED,
+            "studio",
+            {"build_id": build_id, "stage": record.name, "status": record.status, "score": record.score},
+            correlation_id=correlation_id,
+        )
+
+    async def _save_build(self, manifest: BuildManifest) -> None:
+        if self.memory is None:
+            return
+        try:
+            await self.memory.save_build(
+                build_id=manifest.build_id,
+                slug=manifest.slug,
+                brief=manifest.brief,
+                stack=manifest.stack,
+                status=manifest.status,
+                score=manifest.score,
+                verdict=manifest.verdict,
+                cost_usd=manifest.cost_usd,
+                artifact_dir=manifest.artifact_dir,
+                manifest=manifest.to_dict(),
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence must not break delivery
+            log.warning("studio.save_build_failed", error=str(exc))
+
+    async def _finalize(
+        self, manifest: BuildManifest, plan: BuildPlan, correlation_id: str, final_score: float
+    ) -> BuildOutcome:
+        project_dir = manifest.artifact_dir or str(self.settings.projects_dir / manifest.slug)
+        manifest.save(project_dir)
+        await self._save_build(manifest)
+        await self.event_bus.emit(
+            EventType.BUILD_COMPLETED,
+            "studio",
+            {
+                "build_id": manifest.build_id,
+                "slug": manifest.slug,
+                "status": manifest.status,
+                "verdict": manifest.verdict,
+                "score": final_score,
+                "files": manifest.files_count,
+            },
+            correlation_id=correlation_id,
+        )
+        return self._outcome(manifest)
+
+    @staticmethod
+    def _outcome(manifest: BuildManifest) -> BuildOutcome:
+        return BuildOutcome(
+            build_id=manifest.build_id,
+            slug=manifest.slug,
+            status=manifest.status,
+            verdict=manifest.verdict,
+            score=manifest.score,
+            stack=manifest.stack,
+            project_dir=manifest.artifact_dir or "",
+            files=list(manifest.files),
+            manifest=manifest.to_dict(),
+            cost_usd=manifest.cost_usd,
+        )
+
+
+class _BuildRejected(Exception):
+    """Raised internally when an approval gate rejects a stage."""

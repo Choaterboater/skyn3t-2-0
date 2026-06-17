@@ -1,0 +1,385 @@
+"""Web layer shared state, dependencies, and auth.
+
+This module imports with **zero side effects** and **no FastAPI dependency** so
+it can be used (and unit-tested) even when ``fastapi``/``uvicorn`` are absent.
+
+The :class:`AppState` object is the single wiring point between the HTTP/WS
+surface and the SkyN3t spine (event bus, orchestrator, memory, LLM client,
+router). It also owns lightweight in-memory registries for *builds* and
+*proposals* so the API is fully functional in a degraded, dependency-free mode
+(design rule #6: degrade, don't crash; rule #1: delivered != empty).
+
+Trajectory replay / time-travel (2.0 backlog P2, backend hooks only) is served
+here: every state captures the event bus, whose bounded history *is* the
+trajectory. :meth:`AppState.trajectory` exposes a replayable, filterable,
+seekable view over that history.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any
+
+from skyn3t.config.settings import Settings, get_settings
+from skyn3t.core.events import Event, EventBus, EventType
+
+# ---------------------------------------------------------------------------
+# Optional spine collaborators. Everything here is optional so the web layer
+# imports and runs even before sibling packages exist.
+# ---------------------------------------------------------------------------
+try:  # pragma: no cover - depends on sibling package availability
+    from skyn3t.core.orchestrator import Orchestrator
+except Exception:  # noqa: BLE001
+    Orchestrator = None  # type: ignore[assignment,misc]
+
+try:  # pragma: no cover - depends on optional httpx-backed client
+    from skyn3t.adapters.llm import LLMClient
+except Exception:  # noqa: BLE001
+    LLMClient = None  # type: ignore[assignment,misc]
+
+try:  # pragma: no cover
+    from skyn3t.core.model_router import ModelRouter
+except Exception:  # noqa: BLE001
+    ModelRouter = None  # type: ignore[assignment,misc]
+
+
+# ---------------------------------------------------------------------------
+# Lightweight in-memory records (used as the degraded fallback and as the live
+# cache that always reflects the most recent activity).
+# ---------------------------------------------------------------------------
+@dataclass
+class BuildRecord:
+    build_id: str
+    brief: str
+    slug: str = ""
+    stack: str = ""
+    status: str = "queued"
+    score: float | None = None
+    verdict: str = ""
+    cost_usd: float = 0.0
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    correlation_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "build_id": self.build_id,
+            "brief": self.brief,
+            "slug": self.slug,
+            "stack": self.stack,
+            "status": self.status,
+            "score": self.score,
+            "verdict": self.verdict,
+            "cost_usd": self.cost_usd,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "correlation_id": self.correlation_id,
+        }
+
+
+@dataclass
+class ProposalRecord:
+    proposal_id: str
+    kind: str
+    summary: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    status: str = "pending"  # pending | approved | rejected
+    decided_by: str = ""
+    reason: str = ""
+    created_at: float = field(default_factory=time.time)
+    decided_at: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "proposal_id": self.proposal_id,
+            "kind": self.kind,
+            "summary": self.summary,
+            "payload": self.payload,
+            "status": self.status,
+            "decided_by": self.decided_by,
+            "reason": self.reason,
+            "created_at": self.created_at,
+            "decided_at": self.decided_at,
+        }
+
+
+class AppState:
+    """Holds every collaborator the routes and websockets need.
+
+    All collaborators are optional. When one is missing the corresponding
+    endpoints degrade to deterministic, offline behavior rather than failing.
+    """
+
+    def __init__(
+        self,
+        *,
+        settings: Settings | None = None,
+        event_bus: EventBus | None = None,
+        orchestrator: Any | None = None,
+        llm_client: Any | None = None,
+        router: Any | None = None,
+        memory: Any | None = None,
+        studio: Any | None = None,
+        cortex: Any | None = None,
+        knowledge: Any | None = None,
+        skills: Any | None = None,
+    ) -> None:
+        self.settings = settings or get_settings()
+        self.event_bus = event_bus or EventBus()
+        self.orchestrator = orchestrator
+        self.memory = memory
+        self.studio = studio
+        self.cortex = cortex
+        self.knowledge = knowledge
+        self.skills = skills
+
+        if llm_client is None and LLMClient is not None:
+            try:  # pragma: no cover - construction is cheap and offline-safe
+                llm_client = LLMClient(self.settings)
+            except Exception:  # noqa: BLE001
+                llm_client = None
+        self.llm_client = llm_client
+
+        if router is None:
+            router = getattr(llm_client, "router", None)
+        if router is None and ModelRouter is not None:
+            try:  # pragma: no cover
+                router = ModelRouter(self.settings)
+            except Exception:  # noqa: BLE001
+                router = None
+        self.router = router
+
+        # In-memory caches (always present).
+        self.builds: dict[str, BuildRecord] = {}
+        self.proposals: dict[str, ProposalRecord] = {}
+
+        # Mirror cortex proposals into the cache as they are created.
+        self._wire_proposal_capture()
+
+    # ---- event helpers ---------------------------------------------------
+    def _wire_proposal_capture(self) -> None:
+        async def _on_proposal(ev: Event) -> None:  # pragma: no cover - async wiring
+            pid = str(ev.payload.get("proposal_id") or ev.id)
+            if pid not in self.proposals:
+                self.proposals[pid] = ProposalRecord(
+                    proposal_id=pid,
+                    kind=str(ev.payload.get("kind", "generic")),
+                    summary=str(ev.payload.get("summary", "")),
+                    payload=dict(ev.payload),
+                )
+
+        async def _on_build(ev: Event) -> None:  # pragma: no cover - async wiring
+            bid = str(ev.payload.get("build_id") or ev.correlation_id or ev.id)
+            rec = self.builds.get(bid)
+            if rec is None:
+                rec = BuildRecord(build_id=bid, brief=str(ev.payload.get("brief", "")))
+                self.builds[bid] = rec
+            for k in ("slug", "stack", "status", "verdict"):
+                if k in ev.payload:
+                    setattr(rec, k, str(ev.payload[k]))
+            if "score" in ev.payload:
+                try:
+                    rec.score = float(ev.payload["score"])
+                except (TypeError, ValueError):
+                    pass
+            if "cost_usd" in ev.payload:
+                try:
+                    rec.cost_usd = float(ev.payload["cost_usd"])
+                except (TypeError, ValueError):
+                    pass
+            if ev.type == EventType.BUILD_COMPLETED:
+                rec.status = "completed"
+            elif ev.type == EventType.BUILD_FAILED:
+                rec.status = "failed"
+            rec.updated_at = time.time()
+
+        self.event_bus.subscribe(EventType.PROPOSAL_CREATED, _on_proposal)
+        for et in (
+            EventType.BUILD_STARTED,
+            EventType.BUILD_STAGE_STARTED,
+            EventType.BUILD_STAGE_COMPLETED,
+            EventType.BUILD_COMPLETED,
+            EventType.BUILD_FAILED,
+        ):
+            self.event_bus.subscribe(et, _on_build)
+
+    # ---- snapshots used by /api/status -----------------------------------
+    def status(self) -> dict[str, Any]:
+        s = self.settings
+        return {
+            "app": s.app_name,
+            "version": s.version,
+            "ok": True,
+            "events_published": self.event_bus.published_count,
+            "agents": len(self.orchestrator.agents) if self.orchestrator else 0,
+            "builds": len(self.builds),
+            "proposals_pending": sum(
+                1 for p in self.proposals.values() if p.status == "pending"
+            ),
+            "backends": {
+                "orchestrator": self.orchestrator is not None,
+                "llm": self.llm_client is not None,
+                "router": self.router is not None,
+                "memory": self.memory is not None,
+                "studio": self.studio is not None,
+                "cortex": self.cortex is not None,
+                "knowledge": self.knowledge is not None,
+            },
+            "policy": {
+                "free_only": s.free_only,
+                "no_claude": s.no_claude,
+                "autonomous_builds": s.autonomous_builds,
+                "approval_gates": s.approval_gates,
+                "has_any_llm": s.has_any_llm,
+                "claude_available": s.claude_available,
+            },
+        }
+
+    def agents_snapshot(self) -> list[dict[str, Any]]:
+        if not self.orchestrator:
+            return []
+        out: list[dict[str, Any]] = []
+        for name, agent in self.orchestrator.agents.items():
+            out.append(
+                {
+                    "name": name,
+                    "type": getattr(agent, "agent_type", ""),
+                    "provider": getattr(agent, "provider", ""),
+                    "status": getattr(getattr(agent, "status", None), "value", str(getattr(agent, "status", ""))),
+                    "capabilities": [
+                        getattr(c, "name", str(c))
+                        for c in getattr(agent, "capabilities", {}).values()
+                    ]
+                    if isinstance(getattr(agent, "capabilities", None), dict)
+                    else [],
+                }
+            )
+        return out
+
+    def llm_backends(self) -> dict[str, Any]:
+        info: dict[str, Any] = {
+            "backend": getattr(self.llm_client, "backend", "stub" if self.llm_client is None else "unknown"),
+            "available": self.llm_client is not None,
+        }
+        if self.router is not None:
+            try:
+                info["tiers"] = self.router.describe()
+            except Exception:  # noqa: BLE001
+                info["tiers"] = {}
+        else:
+            info["tiers"] = {}
+        info["budget"] = self.budget_snapshot()
+        return info
+
+    def budget_snapshot(self) -> dict[str, Any]:
+        s = self.settings
+        budget = getattr(self.llm_client, "budget", None)
+        snap: dict[str, Any] = {
+            "per_build_usd_cap": s.per_build_usd_cap,
+            "daily_usd_cap": s.daily_usd_cap,
+            "daily_token_cap": s.daily_token_cap,
+        }
+        if budget is not None:
+            snap.update(
+                {
+                    "spent_build": getattr(budget, "spent_build", 0.0),
+                    "spent_day": getattr(budget, "spent_day", 0.0),
+                    "tokens_day": getattr(budget, "tokens_day", 0),
+                    "calls": len(getattr(budget, "calls", [])),
+                }
+            )
+        else:
+            snap.update({"spent_build": 0.0, "spent_day": 0.0, "tokens_day": 0, "calls": 0})
+        return snap
+
+    # ---- trajectory replay / time-travel (P2 backend hooks) --------------
+    def trajectory(
+        self,
+        *,
+        limit: int | None = None,
+        event_type: EventType | None = None,
+        correlation_id: str | None = None,
+        since: float | None = None,
+        until: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a replayable, filterable slice of the event history.
+
+        This is the backend hook for the time-travel UI: the dashboard can
+        page/seek over the full trajectory, scope it to a single build via
+        ``correlation_id``, or window it in time.
+        """
+        events = self.event_bus.history(event_type=event_type)
+        if correlation_id is not None:
+            events = [e for e in events if e.correlation_id == correlation_id]
+        if since is not None:
+            events = [e for e in events if e.timestamp >= since]
+        if until is not None:
+            events = [e for e in events if e.timestamp <= until]
+        if limit is not None:
+            events = events[-limit:]
+        return [e.to_dict() for e in events]
+
+    def trajectory_snapshot(self) -> dict[str, Any]:
+        """Full serialized trajectory for save/restore (time-travel anchor)."""
+        return self.event_bus.snapshot()
+
+    # ---- build / proposal mutation --------------------------------------
+    def new_build_id(self) -> str:
+        return uuid.uuid4().hex[:12]
+
+
+# ---------------------------------------------------------------------------
+# Auth — independent of FastAPI so it is directly unit-testable.
+# ---------------------------------------------------------------------------
+def extract_bearer(authorization: str | None) -> str | None:
+    """Pull the token out of an ``Authorization: Bearer <token>`` header."""
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
+def is_loopback(client_host: str | None) -> bool:
+    """True when the request originates from localhost."""
+    if not client_host:
+        return False
+    if client_host in {"localhost", "testclient"}:
+        return True
+    try:
+        return ipaddress.ip_address(client_host).is_loopback
+    except ValueError:
+        return False
+
+
+def check_auth(
+    settings: Settings,
+    *,
+    authorization: str | None,
+    client_host: str | None,
+) -> bool:
+    """Authorize a request.
+
+    Policy (design rule #4: safe by default):
+      * If ``auth_token`` is configured, a matching bearer token is required
+        from every caller, regardless of origin.
+      * If ``auth_token`` is empty, only loopback callers are permitted.
+    """
+    token = settings.auth_token.strip()
+    if token:
+        presented = extract_bearer(authorization)
+        return bool(presented) and _consteq(presented, token)
+    return is_loopback(client_host)
+
+
+def _consteq(a: str, b: str) -> bool:
+    if len(a) != len(b):
+        return False
+    result = 0
+    for x, y in zip(a, b):
+        result |= ord(x) ^ ord(y)
+    return result == 0

@@ -128,6 +128,12 @@ class Cortex:
             await self._emit_decided(prop)
         return prop
 
+    async def decide(self, proposal_id: str, approved: bool, reason: str = "") -> Proposal | None:
+        """Convenience used by the web API: dispatch to approve/reject."""
+        if approved:
+            return await self.approve(proposal_id, reason or "approved via api")
+        return await self.reject(proposal_id, reason or "rejected via api")
+
     async def apply(self, proposal_id: str) -> Proposal | None:
         prop = self.store.get(proposal_id)
         if prop is None:
@@ -228,4 +234,28 @@ def build_cortex(
                 orchestrator=orchestrator, memory=memory, llm=llm,
             )
         )
+
+    # --- self-improvement heartbeat ------------------------------------
+    # MetaTick periodically observes the system (-> INSIGHT_PUBLISHED) and
+    # sweeps stale lessons; SelfTuningEngine reacts to those insights by
+    # nudging live agent configs. Together they close the learning loop over
+    # time. All guarded — absent memory just means a quieter tick.
+    try:
+        from skyn3t.cortex.meta_tick import MetaTick
+        from skyn3t.memory.hygiene import LessonHygiene
+        from skyn3t.memory.meta_agent import MetaAgent
+        from skyn3t.memory.tuner import SelfTuningEngine
+
+        meta_agent = MetaAgent(event_bus, store=memory) if memory is not None else None
+        hygiene = LessonHygiene(memory) if memory is not None else None
+        cortex.add_component(
+            MetaTick(cortex, event_bus, settings, meta_agent=meta_agent, hygiene=hygiene)
+        )
+        agents = dict(orchestrator.agents) if orchestrator is not None else {}
+        tuner = SelfTuningEngine(event_bus, agents=agents)
+        tuner.start()  # subscribe to KNOWLEDGE_UPDATED / INSIGHT_PUBLISHED
+        cortex.add_component(tuner)  # for stop() on shutdown (no run() -> not double-started)
+    except Exception:  # noqa: BLE001 - autonomy heartbeat is best-effort
+        pass
+
     return cortex

@@ -101,6 +101,8 @@ class StudioRunner:
         learning: Any | None = None,
         patterns: Any | None = None,
         skills: Any | None = None,
+        cost_tracker: Any | None = None,
+        budget_guard: Any | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.orchestrator = orchestrator
@@ -113,6 +115,8 @@ class StudioRunner:
         self.learning = learning      # intelligence.LearningLoop | None
         self.patterns = patterns      # intelligence.BuildPatternBoard | None
         self.skills = skills          # intelligence.SkillLibrary | None
+        self.cost_tracker = cost_tracker  # observability.CostTracker | None
+        self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
         self.approval_gate = approval_gate or ApprovalGate(
             enabled=bool(self.settings.approval_gates),
             auto_approve=bool(self.settings.cortex_auto_approve_safe),
@@ -147,6 +151,21 @@ class StudioRunner:
                     await self.memory.grade_lesson(lid, helpful)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("lessons.grade_failed", error=str(exc))
+
+    # ---- observability / budget guard (best-effort) ---------------------
+    @staticmethod
+    def _obs_call(obj: Any, method: str, *args: Any) -> Any:
+        """Call an optional collaborator's method, swallowing all errors."""
+        if obj is None:
+            return None
+        fn = getattr(obj, method, None)
+        if fn is None:
+            return None
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001 - observability never breaks a build
+            log.warning("obs.call_failed", method=method, error=str(exc))
+            return None
 
     # ---- skills (advisory injection) ------------------------------------
     def _skill_advice(self, stack: str) -> tuple[str, list[str]]:
@@ -298,8 +317,13 @@ class StudioRunner:
         if skill_advice:
             extra = {**extra, "skills_advice": skill_advice}
 
+        # Observability + budget guard for this build (all best-effort).
+        self._obs_call(self.cost_tracker, "start_build", build_id)
+        self._obs_call(self.budget_guard, "reset")
+
         try:
             for spec in plan.stages:
+                self._obs_call(self.budget_guard, "heartbeat")
                 await self.event_bus.emit(
                     EventType.BUILD_STAGE_STARTED,
                     "studio",
@@ -407,6 +431,7 @@ class StudioRunner:
             helpful = manifest.status == "completed"
             await self._grade_lessons(used_lessons, helpful=helpful)
             await self._record_learning(manifest, plan, skill_slugs, helpful=helpful)
+            self._obs_call(self.cost_tracker, "end_build", build_id)
 
             outcome = await self._finalize(manifest, plan, correlation_id, final_score)
             return outcome

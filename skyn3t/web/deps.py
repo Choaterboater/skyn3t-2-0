@@ -95,6 +95,7 @@ class ProposalRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "proposal_id": self.proposal_id,
+            "id": self.proposal_id,  # SPA reads p.id for the decide URL + React key
             "kind": self.kind,
             "summary": self.summary,
             "payload": self.payload,

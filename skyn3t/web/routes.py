@@ -12,9 +12,25 @@ import time
 import uuid
 from typing import Any
 
+import structlog
+
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import Event, EventType
 from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
+
+log = structlog.get_logger(__name__)
+
+# Strong references to in-flight background build tasks (prevent GC mid-run).
+_BUILD_TASKS: set = set()
+
+
+def _reap_build_task(task: Any) -> None:
+    _BUILD_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:  # build task should never raise (runner catches), but log if it does
+        log.error("web.build_task_crashed", error=str(exc))
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -75,7 +91,11 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
             res = runner()
             if hasattr(res, "__await__"):
                 import asyncio
-                asyncio.ensure_future(res)  # fire-and-forget; tracked via events
+                # Keep a strong reference so the build task isn't garbage-
+                # collected mid-run, and retrieve any exception on completion.
+                task = asyncio.ensure_future(res)
+                _BUILD_TASKS.add(task)
+                task.add_done_callback(_reap_build_task)
             dispatched = True
         except Exception:  # noqa: BLE001 - never let a build crash the API
             dispatched = False

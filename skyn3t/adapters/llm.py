@@ -170,6 +170,7 @@ class LLMClient:
         full = prompt if not system else f"{system}\n\n{prompt}"
         if json_mode:
             full += "\n\nRespond with ONLY valid JSON — no prose, no code fences."
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, full,
@@ -179,8 +180,13 @@ class LLMClient:
             out, err = await asyncio.wait_for(
                 proc.communicate(), timeout=self.settings.cli_llm_timeout
             )
-        except (asyncio.TimeoutError, FileNotFoundError, Exception) as exc:  # noqa: BLE001
+        except asyncio.TimeoutError:
+            log.warning("llm.cli_timeout", provider=provider, timeout=self.settings.cli_llm_timeout)
+            await self._terminate(proc)  # don't orphan the CLI subprocess
+            return self._stub(f"{provider}-cli", prompt, system, json_mode)
+        except Exception as exc:  # noqa: BLE001
             log.warning("llm.cli_failed", provider=provider, error=str(exc)[:160])
+            await self._terminate(proc)
             return self._stub(f"{provider}-cli", prompt, system, json_mode)
 
         text = (out or b"").decode("utf-8", "replace").strip()
@@ -195,6 +201,17 @@ class LLMClient:
             text=text, model=f"{provider}-cli", backend=f"{provider}_cli",
             prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
         )
+
+    @staticmethod
+    async def _terminate(proc) -> None:
+        """Kill + reap a subprocess so it is never orphaned."""
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---- backends --------------------------------------------------------
     async def _openrouter(self, model, prompt, system, max_tokens, json_mode) -> LLMResult:
@@ -212,10 +229,17 @@ class LLMClient:
         }
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+            # HTTP errors (429/5xx) propagate so the orchestrator's transient
+            # retry classification can retry them.
             resp.raise_for_status()
             data = resp.json()
-        text = data["choices"][0]["message"]["content"]
-        usage = data.get("usage", {})
+        # A 200 with a malformed/empty body must degrade, not crash the build.
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            log.warning("llm.openrouter_malformed", error=str(exc)[:160])
+            return self._stub(model, prompt, system, json_mode)
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
         pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         # :free models cost $0; otherwise rough estimate.
         cost = 0.0 if model.endswith(":free") else (pt + ct) / 1_000_000 * 0.5

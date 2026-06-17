@@ -53,23 +53,27 @@ RAG) without changing the core flow.
 - See [docs/ROADMAP.md](docs/ROADMAP.md) for the P0/P1/P2 backlog and which
   items are implemented vs. planned.
 
-## Cross-package wiring follow-ups
+## Cross-package wiring — status
 
-Each package ships a correct, tested API; these are the integration call-sites
-that deepen the system but are not yet wired (the offline path works without
-them):
+Done (wired + verified):
 
-- **Learning depth:** the studio closes the core loop directly via
-  `MemoryStore.relevant_lessons` + `grade_lesson`. The richer
-  `intelligence.LearningLoop` / `BuildPatternBoard` / `SkillLibrary.maybe_promote_pattern`
-  APIs exist but are not yet called from the studio completion hook.
-- **LLM-blended grading:** `ReviewerAgent` / `CriticAgent` / `TestAuthorAgent`
-  run heuristic/static-only until an `LLMClient` is injected by the studio when
-  a key is present.
+- **Learning depth (wired):** the studio now drives the full self-improvement
+  layer — `LearningLoop.capture_from_build`, `BuildPatternBoard.record`,
+  `SkillLibrary.maybe_promote_pattern` + `record_use`, and advisory skill
+  injection — on top of the core `MemoryStore` lesson loop. Verified firing
+  (`learning.captured`, `data/build_patterns.json` written, lessons graded by
+  outcome).
+- **LLM-blended grading (wired):** the CLI auto-injects the `LLMClient` into
+  `ReviewerAgent` / `CriticAgent` / `TestAuthorAgent`; they switch from
+  heuristic-only to LLM-blended the moment an OpenRouter key is present.
+- **Web ↔ studio (wired):** `skyn3t start --web` assembles the spine + a live
+  `StudioRunner` and serves them on one event loop; `/api/studio/build` calls
+  `StudioRunner.start(...)` as a background task. Verified: 20 agents + studio
+  wired into the served app; a build through it returns `completed`/`go`.
+
+Remaining follow-ups (optional depth; system works without them):
+
 - **Cortex cadence:** `MetaAgent.observe_and_publish`, `SelfTuningEngine`, and
-  `LessonHygiene.sweep` need a periodic Cortex tick to run autonomously.
-- **Web ↔ studio (fixed):** `/api/studio/build` now calls the real
-  `StudioRunner.start(brief, slug, extra)` as a background task; verify once
-  `[web]` extras are installed.
+  `LessonHygiene.sweep` still need a periodic Cortex tick to run autonomously.
 - **Observability/recovery:** wire `BudgetGuard.watchdog` + `CostTracker` into
   the build loop and `RecoveryManager.restore_and_announce` into app boot.

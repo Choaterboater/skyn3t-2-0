@@ -175,17 +175,18 @@ def build_agents(*, event_bus: Any, llm: Any = None, memory: Any = None) -> list
 # ---------------------------------------------------------------------------
 # Spine assembly — shared by ``start`` and ``studio build``.
 # ---------------------------------------------------------------------------
-async def _assemble_spine(*, with_memory: bool = True) -> dict[str, Any]:
+async def _assemble_spine(*, with_memory: bool = True, event_bus: Any | None = None) -> dict[str, Any]:
     """Wire event bus, orchestrator, llm, router, memory, and agents.
 
     Returns a dict of collaborators. Every piece degrades independently.
+    Pass ``event_bus`` to share one bus with the web layer's WebSocket bridge.
     """
     from skyn3t.config.settings import get_settings
     from skyn3t.core.events import EventBus
     from skyn3t.core.orchestrator import Orchestrator
 
     settings = get_settings()
-    event_bus = EventBus()
+    event_bus = event_bus or EventBus()
 
     llm = None
     router = None
@@ -245,6 +246,19 @@ def start(
 ) -> None:
     """Boot the orchestrator, register available agents, optionally run the web UI."""
     console = _console()
+
+    # Web path: assemble + serve on one event loop (studio wired into the app).
+    if web:
+        try:
+            asyncio.run(_serve_web(console, host, port))
+        except KeyboardInterrupt:  # pragma: no cover - manual stop
+            console.print("Stopped.")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Web server unavailable:[/red] {exc}")
+            console.print("Install with: [cyan]pip install -e \".[web]\"[/cyan]")
+            raise typer.Exit(code=1)
+        return
+
     spine = asyncio.run(_assemble_spine())
     settings = spine["settings"]
     orchestrator = spine["orchestrator"]
@@ -261,28 +275,10 @@ def start(
             getattr(agent, "provider", ""),
         )
     console.print(table)
-
-    if not web:
-        console.print(
-            "Spine is ready. Run [cyan]skyn3t studio build \"<brief>\"[/cyan] to build, "
-            "or pass [cyan]--web[/cyan] to start the control plane."
-        )
-        return
-
-    try:
-        from skyn3t.web import app as web_app
-
-        if not web_app.fastapi_available():
-            raise RuntimeError("fastapi/uvicorn not installed")
-        console.print(
-            f"Starting web control plane on "
-            f"http://{host or settings.host}:{port or settings.port} ..."
-        )
-        web_app.run(host=host or None, port=port or None)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Web server unavailable:[/red] {exc}")
-        console.print("Install with: [cyan]pip install fastapi uvicorn[/cyan]")
-        raise typer.Exit(code=1)
+    console.print(
+        "Spine is ready. Run [cyan]skyn3t studio build \"<brief>\"[/cyan] to build, "
+        "or pass [cyan]--web[/cyan] to start the control plane."
+    )
 
 
 @app.command()
@@ -372,6 +368,31 @@ def studio_build(
         raise typer.Exit(code=2)
 
 
+def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any, Any, Any]:
+    """Construct the self-improvement layer (learning loop, pattern board, skills).
+
+    Each piece is guarded — a missing module just yields ``None`` and the runner
+    falls back to the core MemoryStore lesson loop.
+    """
+    learning = patterns = skills = None
+    try:
+        from skyn3t.intelligence.learning_loop import LearningLoop
+        learning = LearningLoop(store=memory, event_bus=event_bus)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from skyn3t.intelligence.build_patterns import BuildPatternBoard
+        patterns = BuildPatternBoard(settings.data_dir / "build_patterns.json")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from skyn3t.intelligence.skill_library import SkillLibrary
+        skills = SkillLibrary(settings.data_dir / "skills")
+    except Exception:  # noqa: BLE001
+        pass
+    return learning, patterns, skills
+
+
 async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
@@ -387,17 +408,86 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
         except Exception:  # noqa: BLE001
             pass
 
+    learning, patterns, skills = _build_intelligence(settings, spine["event_bus"], spine["memory"])
     runner = StudioRunner(
         spine["event_bus"],
         spine["orchestrator"],
         settings=settings,
         memory=spine["memory"],
+        learning=learning,
+        patterns=patterns,
+        skills=skills,
     )
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:
         extra["best_of_n"] = best_of
     outcome = await runner.start(brief, slug=slug or None, extra=extra)
     return outcome.to_dict()
+
+
+async def assemble_app_state(event_bus: Any | None = None) -> Any:
+    """Build a fully-wired web ``AppState`` (spine + studio + intelligence).
+
+    Assembled on the *current* event loop so all async primitives bind to the
+    serving loop — call this from inside the uvicorn loop, not via a separate
+    ``asyncio.run``.
+    """
+    from skyn3t.web.deps import AppState
+
+    spine = await _assemble_spine(event_bus=event_bus)
+    settings = spine["settings"]
+    studio = None
+    try:
+        from skyn3t.studio.runner import StudioRunner
+
+        learning, patterns, skills = _build_intelligence(
+            settings, spine["event_bus"], spine["memory"]
+        )
+        studio = StudioRunner(
+            spine["event_bus"],
+            spine["orchestrator"],
+            settings=settings,
+            memory=spine["memory"],
+            learning=learning,
+            patterns=patterns,
+            skills=skills,
+        )
+    except Exception:  # noqa: BLE001 - dashboard still works read-only
+        studio = None
+
+    return AppState(
+        settings=settings,
+        event_bus=spine["event_bus"],
+        orchestrator=spine["orchestrator"],
+        memory=spine["memory"],
+        studio=studio,
+        llm_client=spine["llm"],
+        router=spine["router"],
+    )
+
+
+async def _serve_web(console: Any, host: str, port: int) -> None:
+    """Assemble a wired app and serve it — assembly + serving share one loop."""
+    import uvicorn
+
+    from skyn3t.web import app as web_app
+
+    if not web_app.fastapi_available():
+        raise RuntimeError("fastapi/uvicorn not installed")
+
+    state = await assemble_app_state()
+    application = web_app.create_app(state=state)
+    settings = state.settings
+    bind_host = host or settings.host
+    bind_port = port or settings.port
+    console.print(
+        f"[bold]{settings.app_name} {settings.version}[/bold] — "
+        f"[green]{len(state.orchestrator.agents)}[/green] agents · studio "
+        f"[green]{'wired' if state.studio else 'unavailable'}[/green]"
+    )
+    console.print(f"Control plane on [cyan]http://{bind_host}:{bind_port}[/cyan]  (Ctrl-C to stop)")
+    config = uvicorn.Config(application, host=bind_host, port=bind_port, log_level="info")
+    await uvicorn.Server(config).serve()
 
 
 @studio_app.command("approve")

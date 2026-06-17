@@ -179,8 +179,8 @@ def test_hash_text_stable():
 
 # -- rag engine end to end -------------------------------------------------
 def test_rag_engine_offline_answer():
-    engine = RagEngine(embedder=Embedder(prefer_st=False, dim=128))
-    # force in-memory backends
+    engine = RagEngine(embedder=Embedder(prefer_st=False, dim=128), prefer_chroma=False)
+    # force in-memory backends (deterministic regardless of chromadb install)
     assert engine.store.backend == "memory"
     engine.ingest_text(
         "The SkyN3t orchestrator routes tasks to agents using an event bus.",
@@ -210,7 +210,7 @@ def test_rag_engine_llm_path():
             return _FakeResult()
 
     engine = RagEngine(
-        embedder=Embedder(prefer_st=False, dim=64), llm_client=_FakeLLM()
+        embedder=Embedder(prefer_st=False, dim=64), llm_client=_FakeLLM(), prefer_chroma=False
     )
     engine.ingest_text("The orchestrator routes tasks via the event bus.", "d.txt")
     ans = asyncio.run(engine.answer("how are tasks routed?"))
@@ -220,7 +220,7 @@ def test_rag_engine_llm_path():
 
 
 def test_rag_engine_info():
-    engine = RagEngine(embedder=Embedder(prefer_st=False))
+    engine = RagEngine(embedder=Embedder(prefer_st=False), prefer_chroma=False)
     info = engine.info()
     assert info["vector_backend"] == "memory"
     assert "bm25_backend" in info

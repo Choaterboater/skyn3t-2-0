@@ -50,8 +50,10 @@ class Orchestrator:
         self._sem = asyncio.Semaphore(max_concurrency)
         self._persist = persist
         self._idempotency: dict[str, TaskResult] = {}
+        self._inflight: dict[str, asyncio.Future[TaskResult]] = {}
         self._self_healing: SelfHealingManager | None = None
         self._results: dict[str, TaskResult] = {}
+        self._results_max = 1000  # bound memory in long-lived (web) processes
 
     # ---- registry --------------------------------------------------------
     async def register(self, agent: BaseAgent) -> None:
@@ -94,11 +96,34 @@ class Orchestrator:
 
     # ---- submission ------------------------------------------------------
     async def submit(self, task: TaskRequest) -> TaskResult:
-        # Idempotency: identical key returns the cached result.
-        if task.idempotency_key and task.idempotency_key in self._idempotency:
-            log.info("task.idempotent_hit", key=task.idempotency_key)
-            return self._idempotency[task.idempotency_key]
+        key = task.idempotency_key
+        if not key:
+            return await self._do_submit(task)
+        # Completed result for this key -> return it.
+        cached = self._idempotency.get(key)
+        if cached is not None:
+            log.info("task.idempotent_hit", key=key)
+            return cached
+        # Identical key already running -> join it instead of executing twice.
+        inflight = self._inflight.get(key)
+        if inflight is not None:
+            log.info("task.idempotent_join", key=key)
+            return await inflight
+        fut: asyncio.Future[TaskResult] = asyncio.get_event_loop().create_future()
+        self._inflight[key] = fut
+        try:
+            result = await self._do_submit(task)
+            if not fut.done():
+                fut.set_result(result)
+            return result
+        except BaseException as exc:  # propagate to joiners, then re-raise
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            self._inflight.pop(key, None)
 
+    async def _do_submit(self, task: TaskRequest) -> TaskResult:
         await self.event_bus.emit(
             EventType.TASK_SUBMITTED, "orchestrator",
             {"task_id": task.task_id, "type": task.type},
@@ -155,7 +180,13 @@ class Orchestrator:
 
     async def _finalize(self, task: TaskRequest, result: TaskResult) -> None:
         self._results[task.task_id] = result
-        if task.idempotency_key:
+        # Bound memory in long-lived processes: evict oldest results past the cap.
+        if len(self._results) > self._results_max:
+            for old in list(self._results)[: len(self._results) - self._results_max]:
+                self._results.pop(old, None)
+        # Cache ONLY successful results under the idempotency key, so a transient
+        # failure doesn't poison the key forever (a retry can still succeed).
+        if task.idempotency_key and result.success:
             self._idempotency[task.idempotency_key] = result
         if self._persist is not None:
             try:

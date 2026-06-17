@@ -317,6 +317,44 @@ async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -
 
 
 # ---------------------------------------------------------------------------
+# Compatibility payloads for the SPA's endpoint names.
+# ---------------------------------------------------------------------------
+async def health_payload(state: AppState) -> dict[str, Any]:
+    base = await status_payload(state)
+    backend = state.llm_client.backend if state.llm_client is not None else "stub"
+    active = sum(1 for b in state.builds.values() if b.status in ("queued", "running"))
+    return {**base, "ok": True, "backend": backend, "llm_backend": backend,
+            "active_builds": active, "agent_count": base.get("agents", 0)}
+
+
+async def brain_payload(state: AppState) -> dict[str, Any]:
+    agents = len(state.orchestrator.agents) if state.orchestrator else 0
+    lessons = 0
+    documents = 0
+    try:
+        if state.memory is not None:
+            rows = await state.memory.recent_builds(limit=200)
+            documents = len(rows)
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "activity": state.event_bus.published_count,
+        "agents": agents,
+        "builds": len(state.builds),
+        "documents": documents,
+        "lessons": lessons,
+        "proposals": len(state.proposals),
+    }
+
+
+async def settings_payload(state: AppState) -> dict[str, Any]:
+    s = state.settings
+    keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
+            "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend")
+    return {k: getattr(s, k, None) for k in keys}
+
+
+# ---------------------------------------------------------------------------
 # FastAPI wiring (only constructed when FastAPI is importable).
 # ---------------------------------------------------------------------------
 def build_router(state: AppState) -> Any:
@@ -359,6 +397,50 @@ def build_router(state: AppState) -> Any:
     @router.get("/budget", dependencies=[auth])
     async def _budget() -> dict[str, Any]:
         return await budget_payload(state)
+
+    # ---- SPA compatibility aliases (frontend endpoint names) ------------
+    @router.get("/health", dependencies=[auth])
+    async def _health() -> dict[str, Any]:
+        return await health_payload(state)
+
+    @router.get("/brain", dependencies=[auth])
+    async def _brain() -> dict[str, Any]:
+        return await brain_payload(state)
+
+    @router.get("/settings", dependencies=[auth])
+    async def _settings() -> dict[str, Any]:
+        return await settings_payload(state)
+
+    @router.get("/builds", dependencies=[auth])
+    async def _builds_alias(limit: int = Query(default=25, ge=1, le=200)) -> dict[str, Any]:
+        return await list_builds(state, limit=limit)
+
+    @router.post("/builds", dependencies=[auth])
+    async def _build_alias(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await submit_build(
+                state,
+                brief=str(body.get("brief", "")),
+                stack=str(body.get("stack", "")),
+                slug=str(body.get("slug", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @router.get("/cortex/proposals", dependencies=[auth])
+    async def _cortex_proposals(status: str = Query(default="")) -> dict[str, Any]:
+        return await list_proposals(state, status=status)
+
+    @router.post("/cortex/proposals/{proposal_id}/decide", dependencies=[auth])
+    async def _cortex_decide(
+        proposal_id: str, body: dict[str, Any] = Body(default_factory=dict)
+    ) -> dict[str, Any]:
+        decision = str(body.get("decision", body.get("approved", ""))).lower()
+        approved = decision in ("approve", "approved", "accept", "true", "yes", "1")
+        return await decide_proposal(
+            state, proposal_id=proposal_id, approved=approved,
+            reason=str(body.get("reason", "")), decided_by="dashboard",
+        )
 
     @router.get("/llm/secrets", dependencies=[auth])
     async def _llm_secrets() -> dict[str, Any]:

@@ -23,14 +23,14 @@ from skyn3t.web.routes import build_router
 from skyn3t.web.websockets import ConnectionHub, build_ws_router
 
 try:  # pragma: no cover - exercised only when fastapi present
-    from fastapi import FastAPI
-    from fastapi.responses import HTMLResponse
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import FileResponse, HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
     _HAVE_FASTAPI = True
     _IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # noqa: BLE001
-    FastAPI = HTMLResponse = StaticFiles = None  # type: ignore[assignment,misc]
+    FastAPI = HTMLResponse = StaticFiles = FileResponse = HTTPException = None  # type: ignore[assignment,misc]
     _HAVE_FASTAPI = False
     _IMPORT_ERROR = exc
 
@@ -128,12 +128,23 @@ def create_app(
     # ---- SPA / minimal status page --------------------------------------
     index_html = UI_DIST_DIR / "index.html"
     if UI_DIST_DIR.is_dir() and index_html.is_file():
-        # Mount the built SPA at the root, with HTML fallback for client routes.
-        app.mount(
-            "/",
-            StaticFiles(directory=str(UI_DIST_DIR), html=True),
-            name="spa",
-        )
+        # Serve hashed assets, then fall back to index.html for every
+        # client-side route (/overview, /agents, …) so deep links + refresh
+        # work. /api and /ws are registered above and take precedence.
+        assets_dir = UI_DIST_DIR / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+        index_text = index_html.read_text()
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def _spa(full_path: str) -> Any:
+            # Real 404s for unknown API/WS paths (don't mask them as the SPA).
+            if full_path.startswith(("api/", "api", "ws")):
+                raise HTTPException(status_code=404, detail="not found")
+            candidate = UI_DIST_DIR / full_path
+            if full_path and candidate.is_file() and candidate.is_relative_to(UI_DIST_DIR):
+                return FileResponse(str(candidate))
+            return HTMLResponse(index_text)
     else:
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
         async def _index() -> Any:

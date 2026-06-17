@@ -1,10 +1,11 @@
 import React, { useState } from "react";
 
 const TYPE_COLOR = (type) => {
-  if (type.endsWith("FAILED")) return "text-rose-400";
-  if (type.endsWith("COMPLETED")) return "text-emerald-400";
-  if (type.startsWith("BUILD")) return "text-brand";
-  if (type.includes("KNOWLEDGE") || type.includes("LESSON"))
+  const t = (type || "").toUpperCase();
+  if (t.includes("FAIL")) return "text-rose-400";
+  if (t.includes("COMPLETED")) return "text-emerald-400";
+  if (t.startsWith("BUILD")) return "text-brand";
+  if (t.includes("KNOWLEDGE") || t.includes("LESSON"))
     return "text-violet-400";
   return "text-slate-300";
 };
@@ -15,7 +16,7 @@ export default function Activity({ stream }) {
   const filtered = filter
     ? events.filter(
         (e) =>
-          e.type.toLowerCase().includes(filter.toLowerCase()) ||
+          (e.type || "").toLowerCase().includes(filter.toLowerCase()) ||
           (e.source || "").toLowerCase().includes(filter.toLowerCase())
       )
     : events;

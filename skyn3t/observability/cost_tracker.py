@@ -91,6 +91,11 @@ class CostTracker:
 
     # ---- build attribution ----------------------------------------------
     def start_build(self, build_id: str) -> None:
+        # Reset the per-build spend counter so the per-build USD cap applies to
+        # THIS build, not cumulatively across a long-lived (web) process.
+        reset = getattr(self.budget, "reset_build", None)
+        if callable(reset):
+            reset()
         base_cost = getattr(self.budget, "spent_day", 0.0) if self.budget else 0.0
         base_tok = getattr(self.budget, "tokens_day", 0) if self.budget else 0
         self._builds[build_id] = {

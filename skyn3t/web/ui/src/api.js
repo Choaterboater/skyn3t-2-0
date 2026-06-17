@@ -72,7 +72,14 @@ export function useEventStream({ maxEvents = 200 } = {}) {
 
     function connect() {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = `${proto}://${window.location.host}/ws`;
+      // Browsers can't set headers on a WebSocket, so pass the bearer token as a
+      // query param when one is configured (the server accepts ?token=).
+      const token =
+        typeof localStorage !== "undefined"
+          ? localStorage.getItem("skyn3t_token")
+          : null;
+      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+      const url = `${proto}://${window.location.host}/ws${qs}`;
       let ws;
       try {
         ws = new WebSocket(url);

@@ -115,9 +115,15 @@ class ReviewerAgent(BaseAgent):
             score = round(0.7 * score + 0.3 * llm_score, 2)
             blend_meta["blended_score"] = score
 
-        verdict = "go" if score >= GO_THRESHOLD and root is not None else "no_go"
+        # Hard gate: a project with no substantive source content is never "go",
+        # however high the additive heuristic climbs (entrypoint name + manifest
+        # + parseable config alone could clear the threshold on an empty repo).
+        no_source = root is None or vc.non_empty_source_count(root) == 0
+        verdict = "go" if (score >= GO_THRESHOLD and not no_source) else "no_go"
         if root is None and "no project directory" not in " ".join(gaps):
             gaps.append("no project directory could be resolved from payload")
+        elif no_source and "no non-empty source files found" not in " ".join(gaps):
+            gaps.append("no non-empty source files found")
 
         return TaskResult(
             task_id=task.task_id,

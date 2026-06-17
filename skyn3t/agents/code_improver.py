@@ -80,9 +80,11 @@ class CodeImproverAgent(BaseAgent):
             try:
                 result = await self.llm.complete(prompt, tier=tier, system=_SYSTEM,
                                                  file_hint=rel, max_tokens=4096)
-                fixed = extract_code(result.text)
-                if fixed and fixed.strip():
-                    return fixed
+                # Degraded-to-stub result must not clobber a working file.
+                if result.backend != "stub":
+                    fixed = extract_code(result.text)
+                    if fixed and fixed.strip():
+                        return fixed
             except Exception:  # noqa: BLE001 - fall through to deterministic touch-up
                 pass
         return self._deterministic_fix(rel, original, stack)

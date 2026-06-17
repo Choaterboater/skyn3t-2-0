@@ -62,8 +62,12 @@ class WriterAgent(BaseAgent):
             try:
                 result = await self.llm.complete(prompt, tier=Tier.DOCS, system=_SYSTEM,
                                                  max_tokens=2048)
-                readme = result.text.strip() or self._offline_readme(title, brief, stack, file_list)
-                model, backend = result.model, result.backend
+                if result.backend == "stub":  # degraded — compose a real README offline
+                    readme = self._offline_readme(title, brief, stack, file_list)
+                    model, backend = "offline", "stub"
+                else:
+                    readme = result.text.strip() or self._offline_readme(title, brief, stack, file_list)
+                    model, backend = result.model, result.backend
             except Exception:  # noqa: BLE001
                 readme = self._offline_readme(title, brief, stack, file_list)
                 model, backend = "offline", "stub"

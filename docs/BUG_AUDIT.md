@@ -1,0 +1,166 @@
+# SkyN3t 2.0 — Bug Audit (adversarial multi-agent review)
+
+54 confirmed of 55 claims. Status: [ ] open  [x] fixed
+
+- [ ] **HIGH** `agents_ext` — EnvScanner skip-dir check matches ancestor path components, silently scans zero files
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/agents/env_scanner.py:108
+  - fix: In _iter_source_files (line 108), test only path components below the scan root: `if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):`. Since rglob paths are guaranteed to be under root this relative_to is safe. (Minor: 'out' is not actually in _SKIP_DIRS, only build/dist/venv/.venv
+- [ ] **HIGH** `studio` — Reviewer 'go' verdict bypasses the proof-run, shipping broken/empty builds as go
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/studio/runner.py:429
+  - fix: Always run the proof gate regardless of the reviewer verdict. Replace the conditional at runner.py:429-430 with an unconditional enforcement that ANDs the proof result into the verdict, e.g.: `verdict = "go" if (verdict == "go" and proof.passed and delivered_nonempty) else "no_go"`. This way a revie
+- [ ] **HIGH** `agents_verify` — Reviewer returns GO for a project with zero non-empty source files
+  - skyn3t/agents/reviewer.py:118
+  - fix: Add a hard gate so zero substantive source content forces no_go regardless of the additive heuristic. In heuristic_score (or execute), if vc.non_empty_source_count(root) == 0, cap the score below GO_THRESHOLD or set a force_no_go flag, e.g.: `no_source = src == 0; ...; verdict = 'go' if (score >= GO
+- [ ] **HIGH** `memory_rag` — _call_engine targets methods RagEngine does not have and passes a dict where text is expected
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/memory/ingestor.py:146
+  - fix: Make _call_engine target RagEngine's real API: call engine.ingest_text(doc["content"], source=doc.get("source",""), kind=doc.get("tags",{}).get("kind"), metadata=doc.get("tags")) instead of passing the whole dict to nonexistent add/ingest methods. Prefer an explicit adapter that maps the doc dict to
+- [ ] **HIGH** `cortex` — Auto-applied TUNING proposals have no effect on the running system (overrides dict is read by nothing)
+  - skyn3t/cortex/handlers.py:82
+  - fix: Make the overrides dict actually live. Two viable approaches: (1) Wire HandlerRegistry.overrides to something the runtime reads: have bootstrap pass an overrides dict that the Planner/runner consult (e.g. Planner._resolve_best_of_n checks cortex overrides before falling back to settings), or (2) in 
+- [ ] **HIGH** `web` — Cortex proposal decide uses wrong identity field (id vs proposal_id) — approve/reject always 404/no-op
+  - skyn3t/web/deps.py:95
+  - fix: Align the identity field contract. Simplest: in ProposalRecord.to_dict() add "id": self.proposal_id (deps.py:96) so the SPA's p.id resolves; or change Cortex.jsx to use p.proposal_id everywhere (lines 42, 46, 59, 66). Also consider making decide_proposal reject unknown ids (or 404) instead of silent
+- [ ] **HIGH** `web` — Browser WebSocket clients can never connect when auth_token is set (SPA omits ?token=)
+  - skyn3t/web/ui/src/api.js:76
+  - fix: In useEventStream's connect() (api.js:73-82), append the stored bearer token as a query param when present, e.g. `const token = localStorage.getItem("skyn3t_token"); const qs = token ? `?token=${encodeURIComponent(token)}` : ""; const url = `${proto}://${window.location.host}/ws${qs}`;`. The server 
+- [ ] **HIGH** `cli_config` — CLI subprocess is orphaned (leaked) on timeout in _cli
+  - skyn3t/adapters/llm.py:179
+  - fix: Wrap the wait_for in try/except that, on asyncio.TimeoutError, kills and reaps the child before returning the stub; or better, use a finally that always cleans up. E.g.: on TimeoutError do `proc.kill()` (or terminate) then `await proc.wait()` (optionally guarded by a short secondary wait_for) to rea
+- [ ] **HIGH** `cli_config` — `skyn3t snapshot` always writes an empty snapshot
+  - skyn3t/cli/main.py:629
+  - fix: Instead of snapshotting a fresh in-memory EventBus, load persisted state from disk: e.g. `cp = CheckpointManager(settings).load("latest")` and write `cp.event_bus` (the stored snapshot dict), or `restore` it into a bus first and snapshot that. Handle the no-checkpoint case gracefully (report that no
+- [ ] **HIGH** `agents_gen` — CodeImproverAgent overwrites good files with stub prose on CLI degradation
+  - skyn3t/agents/code_improver.py:73
+  - fix: Make _improve_one check the actual backend of the call result, not the client property. Capture the LLMResult and only trust it when `result.backend != "stub"`: e.g. `result = await self.llm.complete(...)`, then `if result.backend != "stub": fixed = extract_code(result.text); if fixed and fixed.stri
+- [ ] **HIGH** `memory_rag` — ExperienceIngestor imports non-existent class RAGEngine — auto-ingestion silently dead
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/memory/ingestor.py:68
+  - fix: Fix the typo at ingestor.py:68/70 to import and instantiate `RagEngine` (the actual class name). Alternatively add an alias `RAGEngine = RagEngine` in rag/__init__.py or rag_engine.py. Additionally, narrow the `except Exception` at line 71 to at least log when the RAG engine fails to resolve so that
+- [ ] **HIGH** `cli_config` — `studio approve`/`reject` silently lose the decision (no-op)
+  - skyn3t/cli/main.py:565
+  - fix: The CLI must reach the live spine rather than a throwaway bus. Either (a) call the running control-plane HTTP API (POST /studio/approve in web/routes.py:476, which mutates the durable build record and emits on the shared AppState bus), or (b) write the decision to the shared persistent store (Memory
+- [ ] **HIGH** `core` — Idempotency only dedups AFTER completion — concurrent duplicate submits both execute fully
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/core/orchestrator.py:98
+  - fix: At submit() entry, atomically reserve the key before any await. Store an asyncio.Future (or in-flight marker) in self._idempotency under the key when it is first seen; concurrent submits that find an existing entry should await that Future and return its result instead of executing. Populate/resolve
+- [ ] **HIGH** `core` — Failed results are cached under idempotency_key forever, permanently poisoning the key
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/core/orchestrator.py:158
+  - fix: In _finalize (or before writing the cache), only store successful results: `if task.idempotency_key and result.success: self._idempotency[task.idempotency_key] = result`. Alternatively, store failures with a TTL/expiry so transient failures can be retried after a cooldown, but caching only successes
+- [ ] **HIGH** `studio` — Stage submission has no timeout despite the 'stage_timeout' contract; a hung agent hangs the whole build forever
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/studio/runner.py:240
+  - fix: Wrap actual stage execution in a timeout. Simplest: in runner._submit_stage, `return await asyncio.wait_for(self.orchestrator.submit(task), timeout=self.stage_timeout)` and convert asyncio.TimeoutError into a failed TaskResult so the build records a failed stage instead of hanging. For best-of-N, wr
+- [ ] **HIGH** `agents_gen` — CodeAgent overwrites runnable scaffold files with stub prose when CLI backend degrades
+  - skyn3t/agents/code_agent.py:73
+  - fix: In CodeAgent._generate_file, check the per-call result backend, not the client-level property. Have complete() return the LLMResult (or expose result.backend) to _generate_file and skip overwriting the scaffold when result.backend == "stub". Concretely: change _generate_file to return (extract_code(
+- [ ] **HIGH** `agents_verify` — Reward-hacking checks #1 and #4 are dead in the real pipeline (claims_success never true)
+  - skyn3t/agents/build_verifier.py:174
+  - fix: Have the code stage (and/or contract/build verifier wiring) surface real outcome signals into the claimed dict the verifier inspects. Concretely: (a) make CodeAgent emit a "success"/"ok" and any test/log signals in its output so prior["code"] carries them, or (b) in build_verifier.execute(), derive 
+- [ ] **HIGH** `intelligence` — Docker timeout silently re-runs the command inline with no sandbox (double execution + isolation loss)
+  - skyn3t/intelligence/docker_backend.py:165
+  - fix: Catch the timeout distinctly instead of routing it to the inline fallback. In _blocking, wrap container.wait(timeout=timeout) and on requests.exceptions.ReadTimeout/ConnectionError (or docker.errors.APIError), first stop/kill the container (container.stop/kill) BEFORE remove(force=True) to avoid lea
+- [ ] **HIGH** `core` — BaseAgent.run mutates shared status with no concurrency guard; orchestrator routes same agent concurrently
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/core/agent.py:102
+  - fix: Track real concurrency instead of a single status field. Add a per-agent in-flight counter (e.g. self._active: int) incremented at the start of run() and decremented in a finally block, and derive busy-ness from _active>0 rather than overwriting self.status; update _route's least-loaded heuristic to
+- [ ] **HIGH** `cortex` — AutonomousLoop.stop()/teardown never cancels in-flight build tasks
+  - skyn3t/cortex/autonomous_loop.py:179
+  - fix: In run()'s finally block (or in stop()/_teardown), cancel all in-flight build tasks. After cancelling the monitor, iterate self._active: for each not-done task call task.cancel(), then await them with contextlib.suppress(asyncio.CancelledError, Exception) (e.g. await asyncio.gather(*self._active.val
+- [ ] **HIGH** `cortex` — ReviewWatcher dispatches a repair orchestrator task regardless of the proposal triage/gating decision
+  - skyn3t/cortex/components.py:265
+  - fix: Gate the dispatch on the triage outcome. After result = await self.cortex.submit(prop), only call _dispatch_repair when the proposal was actually approved/applied — e.g. `if result and result.status in (ProposalStatus.APPROVED, ProposalStatus.APPLIED): await self._dispatch_repair(...)`. Apply the sa
+- [ ] **HIGH** `integrations_obs` — docker_available() runs blocking subprocess/SDK calls inside the async run() path, stalling the event loop
+  - skyn3t/security/sandbox.py:88-111
+  - fix: Offload the blocking probe off the event loop. Make the auto-path async: in run(), await an async backend chooser that calls `await asyncio.to_thread(self.docker_available)` (or wrap the from_env/ping and subprocess.run inside docker_available in run_in_executor). Keep the _docker_ok cache so only t
+- [ ] **MEDIUM** `studio` — proof_run never uses the sandbox under the default execution_backend='auto', silently degrading all proofs to local file checks
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/studio/proof_run.py:127
+  - fix: Make proof_run honor "auto" the same way security/sandbox.py does. Change proof_run.py:126-131 so that when execution_backend in ("auto", "docker") and _DOCKER_IMPORTABLE, it probes _docker_daemon_ok() and sets mode="sandbox" if the daemon responds; only "inline" should force local. For example: `if
+- [ ] **MEDIUM** `agents_ext` — Static deploy falls back to serving the entire project dir (incl. .env / source) on success
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/agents/deploy_agent.py:59
+  - fix: In _resolve_static_root, do not fall back to the raw project directory: return None (or sentinel) when no candidate contains index.html. In _deploy_static, treat that as a failure — return {"ok": False, "url": None, "error": "deploy unavailable: no static site (no index.html in dist/build/out/public
+- [ ] **MEDIUM** `core` — Unbounded growth of _results and _idempotency dicts (memory leak)
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/core/orchestrator.py:157
+  - fix: Bound both dicts. Simplest: replace _results with an OrderedDict/collections.OrderedDict (or use cachetools.TTLCache / LRU) and evict oldest entries past a max size in _finalize, e.g. after insert: while len(self._results) > MAX: self._results.popitem(last=False). Apply the same bounding to _idempot
+- [ ] **MEDIUM** `studio` — Blocking proof_run (rglob + py_compile of every .py + docker ping) runs on the event loop, including N times under asyncio.gather
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/studio/best_of_n.py:118
+  - fix: Offload the synchronous proof_run to a worker thread at both call sites so it does not block the event loop. E.g. in best_of_n.py:118 and runner.py:414 replace the direct call with: cand.proof = await asyncio.to_thread(proof_run, cand.worktree.dir, checklist=checklist, execution_backend=execution_ba
+- [ ] **MEDIUM** `agents_gen` — WriterAgent writes stub prose as README on CLI degradation
+  - skyn3t/agents/writer.py:57
+  - fix: Don't gate on the pre-call `self.llm.backend` property alone. After calling `complete`, check the returned `result.backend`: if it is "stub" (i.e. the CLI degraded), fall back to `self._offline_readme(...)`. E.g. `if result.backend == "stub" or not result.text.strip(): readme = self._offline_readme(
+- [ ] **MEDIUM** `agents_verify` — test_author generates a syntactically broken / injectable acceptance test from unsanitized LLM criteria
+  - skyn3t/agents/test_author.py:117
+  - fix: Sanitize criteria before embedding. Either escape newlines/control chars in render_test_file (e.g. use json.dumps(c) per element, or repr(c), instead of the manual replace at line 117-118), or normalize incoming strings in _maybe_llm_enrich (and ideally derive_acceptance) by collapsing/stripping new
+- [ ] **MEDIUM** `agents_ext` — summarize_commits top_paths is always empty — list-commits API never returns per-commit files
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/agents/github_ingestor.py:113
+  - fix: After fetching the commit list, fetch per-commit detail to obtain files: for each commit in the list, GET /repos/{slug}/commits/{sha} and read resp.json()["files"], then feed those file lists into summarize_commits. Alternatively, derive churn from GET /repos/{slug}/commits?path=... or the compare e
+- [ ] **MEDIUM** `intelligence` — Non-atomic JSON persistence can corrupt and silently wipe the scoreboard/tournament on crash
+  - skyn3t/intelligence/build_patterns.py:101
+  - fix: Make both save() methods atomic, mirroring CheckpointManager._atomic_write in skyn3t/persistence/checkpoint.py: write JSON to a temp file in the same directory (tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")), flush + os.fsync the fd, then os.replace(tmp, self.path); clean up the temp file on
+- [ ] **MEDIUM** `cortex` — USD budget guard is ineffective: spend is recorded only after a build completes and there is no per-build pre-check
+  - skyn3t/cortex/autonomous_loop.py:135
+  - fix: Add a pre-charge / pre-check in can_start_build (or _maybe_start_build) using per_build_usd_cap: estimate the next build's cost and refuse to start if spend_usd + estimate would exceed daily_usd_cap, matching the docstring. Account for in-flight builds by reserving/escrowing the per-build estimate a
+- [ ] **MEDIUM** `web` — Concurrent send_text on a single WebSocket: hub fan-out races the per-connection history priming
+  - skyn3t/web/websockets.py:145
+  - fix: Prime the connection from history BEFORE calling hub.add: move the for-loop over state.event_bus.history(limit=50) to run before await hub.add(channel, ws), so the socket only becomes a fan-out target after priming completes. This eliminates both the concurrent send_text race and the duplicate (repl
+- [ ] **MEDIUM** `cli_config` — Per-build budget cap never resets across builds in long-lived process (web mode)
+  - skyn3t/adapters/llm.py:95
+  - fix: Reset the per-build counter at the start of each build. In StudioRunner.start (skyn3t/studio/runner.py around line 326, alongside the existing self._obs_call(self.budget_guard, "reset")), also reset the underlying BudgetTracker, e.g. self._obs_call(getattr(self, 'llm', None) and self.llm.budget, 're
+- [ ] **MEDIUM** `cli_config` — `--no-critic` permanently mutates the cached settings singleton for the process
+  - skyn3t/cli/main.py:424
+  - fix: Do not mutate the shared singleton. Instead derive a per-run copy and pass it down: settings = spine['settings']; if no_critic: settings = settings.model_copy(update={'critic_enabled': False}). Then use this local `settings` for _build_intelligence/_build_observability/StudioRunner. Alternatively, p
+- [ ] **MEDIUM** `cli_config` — OpenRouter backend crashes instead of degrading on HTTP error or malformed response
+  - skyn3t/adapters/llm.py:200
+  - fix: Wrap the OpenRouter HTTP call and response parsing in try/except inside _openrouter (or in complete() around the _openrouter dispatch), and on httpx.HTTPStatusError, httpx.RequestError/network errors, or KeyError/IndexError/ValueError from response parsing, log a warning and return self._stub(model,
+- [ ] **MEDIUM** `integrations_obs` — Outbound delivery text and event preview are never scrubbed of secrets
+  - skyn3t/integrations/gateway.py:104-127
+  - fix: Give DeliveryGateway a reference to the SecretsStore (or accept a scrub callable) and run text through scrub_text(text, secrets) before passing it to channel.send and before building the EventBus preview. Apply in _try_send (line 106) and _emit (line 123) — or scrub once in send/broadcast before fan
+- [ ] **MEDIUM** `integrations_obs` — Per-build cost attribution double-counts and is wrong under overlapping builds
+  - skyn3t/observability/cost_tracker.py:93-111
+  - fix: Attribute cost per build by tagging each LLM call with the owning build_id rather than diffing a shared global counter. Concretely: thread a build_id/context into LLMClient.complete (e.g. contextvars or an explicit arg) so each LLMResult/record carries its build_id; then in CostTracker.sync/start_bu
+- [ ] **MEDIUM** `intelligence` — Inline subprocess not reaped after kill on timeout (resource/transport leak)
+  - skyn3t/intelligence/docker_backend.py:226
+  - fix: In the except asyncio.TimeoutError branch, after proc.kill(), drain and reap the child before returning, e.g.: `proc.kill(); try: await asyncio.wait_for(proc.communicate(), timeout=5) except (asyncio.TimeoutError, Exception): try: await proc.wait() except Exception: pass`. At minimum add `await proc
+- [ ] **MEDIUM** `agents_verify` — Contract verifier marks host files outside the project as satisfied (absolute path / traversal)
+  - skyn3t/agents/contract_verifier.py:58
+  - fix: In build_checklist, normalize and constrain rel to root before inspecting. Reject absolute paths and traversal, e.g.: skip/mark unsatisfied any rel where Path(rel).is_absolute(); then target = (root / rel).resolve() and require os.path.commonpath([str(root.resolve()), str(target)]) == str(root.resol
+- [ ] **MEDIUM** `memory_rag` — LessonHygiene.sweep scans highest-scored lessons but only low/negative-scored ones are stale
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/memory/hygiene.py:131
+  - fix: The retirement sweep must scan the WORST-scored lessons, not the best. Options: (a) add a store method (or extend relevant_lessons with an order/ascending flag) that returns lessons ordered by LessonRow.score.asc() for hygiene, so the lowest-score (most-stale) rows are retrieved within scan_limit; (
+- [ ] **MEDIUM** `web` — Fire-and-forget build task can be garbage-collected mid-run; exceptions silently lost
+  - skyn3t/web/routes.py:78
+  - fix: Retain a strong reference to the task and surface failures. Add a set on AppState (e.g. `self._build_tasks: set[asyncio.Task] = set()`), then at routes.py:78 do `task = asyncio.ensure_future(res); state._build_tasks.add(task); task.add_done_callback(state._build_tasks.discard)`. In the done-callback
+- [ ] **MEDIUM** `studio` — Best-of-N candidate worktrees can leak when a trajectory or proof raises / gather is interrupted
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/studio/best_of_n.py:111
+  - fix: Make sample() own cleanup of the worktrees it creates instead of relying on the runner's trajectory-append side effect. Wrap the gather in try/finally inside sample() and cleanup_worktree() every candidate.worktree that is not the selected winner (and let the caller merge+clean the winner), OR have 
+- [ ] **LOW** `agents_gen` — node_express scaffold declares a test script pointing at a non-existent file
+  - skyn3t/agents/_scaffold.py:214
+  - fix: In _node_express (skyn3t/agents/_scaffold.py), either (a) add a "test.js" entry to the returned dict that actually exercises server.js (e.g. require('./server.js') plus a trivial assertion via Node's built-in assert, or hit the /health route), or (b) change the package.json test script to something 
+- [ ] **LOW** `integrations_obs` — NL schedule 'every N minutes' with N>59 produces a cron that silently fires only at minute 0
+  - skyn3t/integrations/scheduler.py:77-80
+  - fix: In parse_nl_schedule, when the minute step N>59 (or hour step N>23, etc.), don't emit an out-of-range cron step. Either (a) reject/raise so the user gets an error, or (b) convert to an equivalent valid schedule. The clean fix is to compute an actual interval-based next-run rather than a step cron: f
+- [ ] **LOW** `memory_rag` — relevant_lessons omits helpful/hurt, disabling hit-rate logic in effective_score
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/memory/store.py:108
+  - fix: Add `helpful` and `hurt` to the dict returned by `relevant_lessons` in store.py:108, e.g. `{"id": r.id, "text": r.text, "score": r.score, "times_used": r.times_used, "helpful": r.helpful, "hurt": r.hurt}`. The columns already exist on LessonRow (models.py:70-71). hygiene.py already reads these keys 
+- [ ] **LOW** `studio` — proof_run mutates the delivered project by writing __pycache__/.pyc during the syntax check
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/studio/proof_run.py:91
+  - fix: Pass an explicit throwaway cfile so the .pyc is never written into the delivered dir, e.g. compile to a temp path: `py_compile.compile(str(f), cfile=os.devnull, doraise=True)` (or write to a NamedTemporaryFile / tempdir path). Alternatively, replace the compile-to-disk with an in-memory syntax check
+- [ ] **LOW** `agents_verify` — boot_verifier treats any import timeout as a successful boot (false pass)
+  - skyn3t/agents/boot_verifier.py:104
+  - fix: Do not treat an import timeout as success. Options: (1) return ok=False (verdict "fail") on TimeoutError, optionally with a distinct mode like "import-hang" so the pipeline surfaces an indeterminate boot rather than greening it; or (2) actually distinguish serving from hung — e.g., run the import wi
+- [ ] **LOW** `agents_ext` — Generic key=value redaction also deletes the key name, can corrupt non-secret config text
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/agents/github_ingestor.py:55
+  - fix: Reinsert the key name and only redact the value, e.g. use a capture for the quote/value and a replacement function: `pat.sub(lambda m: f"{m.group(1)}=" + '"[REDACTED]"', text)` (or capture the quote char and key/operator separately). Optionally tighten the value pattern to look more secret-like (e.g
+- [ ] **LOW** `agents_verify` — Timed-out subprocesses are killed but never reaped (resource leak)
+  - skyn3t/agents/build_verifier.py:266
+  - fix: After proc.kill() in the TimeoutError handler, await the process to reap it and drain pipes, with a bounded guard, e.g.: `proc.kill(); try: await asyncio.wait_for(proc.wait(), timeout=5) except (asyncio.TimeoutError, ProcessLookupError): pass`. Better, use `await proc.communicate()` (shielded/with i
+- [ ] **LOW** `core` — Handler exceptions silently swallowed — no logging, no failure signal
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/core/events.py:116
+  - fix: Add structlog to events.py and log the swallowed exception instead of a bare pass, e.g. `log = structlog.get_logger(__name__)` then in the loop: `for h, r in zip(handlers, results): if isinstance(r, Exception): log.warning("event_handler_failed", event_type=event.type.value, source=event.source, han
+- [ ] **LOW** `memory_rag` — grade_lesson read-modify-write of counters is racy under concurrent grading
+  - /Users/stephenchoate/Documents/skyn3t 2.0/skyn3t/memory/store.py:110
+  - fix: Replace the absolute-value UPDATE with SQL-side atomic increments so the database performs the arithmetic under its own write lock, e.g.: update(LessonRow).where(LessonRow.id == lesson_id).values(times_used=LessonRow.times_used + 1, helpful=LessonRow.helpful + (1 if helpful else 0), hurt=LessonRow.h
+- [ ] **LOW** `agents_gen` — CodeImproverAgent can rewrite files in the current working directory when no worktree is provided
+  - skyn3t/agents/code_improver.py:48
+  - fix: Mirror the other agents: replace the `or "."` fallback at code_improver.py:48 with either a tempfile.mkdtemp() fallback (as CodeAgent._resolve_worktree does) or an explicit guard that returns a failed/no-op TaskResult with error "no project_dir in payload" when both worktree_dir and project_dir are 
+- [ ] **LOW** `agents_verify` — consistency_reviewer pollutes local_tops with leaf module names, suppressing real broken-import detection
+  - skyn3t/agents/consistency_reviewer.py:43
+  - fix: Drop line 43 (`mods.add(parts[-1])`) entirely — bare leaf names are not valid importable top-level modules and only create self-satisfying collisions. If the intent was to allow flat single-file projects (e.g. root-level `foo.py` imported as `import foo`), that case is already covered because `".".j
+- [ ] **LOW** `web` — metrics history scan rebuilds full per-type counts on every /api/metrics call (O(history) each request)
+  - skyn3t/web/routes.py:204
+  - fix: Maintain monotonic per-type counters on the EventBus alongside _published (increment a dict[EventType,int] in publish()), and expose them via a property; have metrics_payload read those counters instead of scanning history(). This makes skyn3t_event_count reconcile with skyn3t_events_published_total

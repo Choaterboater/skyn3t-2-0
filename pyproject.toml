@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skyn3t"
+version = "2.0.0"
+description = "SkyN3t 2.0 — Autonomous Multi-Agent App Factory"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Stephen Choate" }]
+
+# Lightweight core: the spine (config, core, memory, cli) runs on just these.
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "sqlalchemy>=2.0",
+    "aiosqlite>=0.19",
+    "greenlet>=3.0",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+# Heavy ML/RAG stack — optional; the system degrades gracefully without it.
+ml = [
+    "chromadb>=0.5",
+    "sentence-transformers>=3.0",
+    "tree-sitter>=0.21",
+    "tree-sitter-languages>=1.10",
+    "rank-bm25>=0.2",
+]
+# Web dashboard + API.
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12.0",
+    "jinja2>=3.1",
+]
+# Optional messaging + observability integrations.
+integrations = [
+    "prometheus-client>=0.20",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+skyn3t = "skyn3t.cli.main:app"
+
+[tool.setuptools.packages.find]
+include = ["skyn3t*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

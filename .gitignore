@@ -8,6 +8,11 @@ __pycache__/
 .coverage
 data/*.db
 data/vector_db/
+data/build_patterns.json
+data/skills/
+data/cortex/
+data/proposals/
+data/checkpoints/
 logs/*.log
 .env
 node_modules/

@@ -65,9 +65,9 @@ class ExperienceIngestor:
             return self._rag
         self._rag_resolved = True
         try:
-            from skyn3t.rag.rag_engine import RAGEngine  # type: ignore
+            from skyn3t.rag.rag_engine import RagEngine
 
-            self._rag = RAGEngine()
+            self._rag = RagEngine()
         except Exception:  # ImportError, missing deps, ctor failure -> degrade
             self._rag = None
         return self._rag
@@ -142,8 +142,24 @@ class ExperienceIngestor:
             self.buffered += 1
 
     async def _call_engine(self, engine: Any, doc: dict[str, Any]) -> None:
-        """Call the RAG engine's add/ingest method, tolerant of its signature."""
-        for attr in ("aadd_document", "add_document", "aingest", "ingest", "add"):
+        """Ingest the experience's text into the RAG engine.
+
+        Experience docs carry their prose under ``content``; RagEngine ingests
+        raw text via ``ingest_text(text, source=...)``.
+        """
+        # Preferred: the real RagEngine ingests raw text (text, source=...).
+        text_fn = getattr(engine, "ingest_text", None) or getattr(engine, "aingest_text", None)
+        if text_fn is not None:
+            text = doc.get("content") or doc.get("text") or ""
+            if not text:
+                return
+            source = str(doc.get("source") or doc.get("id") or "experience")
+            res = text_fn(text, source=source)
+            if hasattr(res, "__await__"):
+                await res
+            return
+        # Fallback: alternative engines that accept the whole doc dict.
+        for attr in ("add_document", "aadd_document", "aingest", "ingest", "add"):
             fn = getattr(engine, attr, None)
             if fn is None:
                 continue

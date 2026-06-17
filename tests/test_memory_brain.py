@@ -99,7 +99,11 @@ def test_lesson_hygiene_retires_stale():
 # ---- ingestor ------------------------------------------------------------
 def test_ingestor_buffers_when_no_rag():
     bus = EventBus()
-    ing = ExperienceIngestor(bus)  # no rag engine, none installed
+    ing = ExperienceIngestor(bus)
+    # Force the "no RAG available" path deterministically (don't depend on
+    # whether the optional rag stack happens to be installed).
+    ing._rag_resolved = True
+    ing._rag = None
     ing.start()
     ev = Event(type=EventType.BUILD_COMPLETED, source="studio",
                payload={"build_id": "b1", "slug": "app", "score": 90.0, "verdict": "go"})

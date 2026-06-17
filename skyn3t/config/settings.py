@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     kimi_api_key: str = ""
 
+    # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
+    # auto picks: openrouter (if key) -> a detected CLI -> stub.
+    llm_backend: str = "auto"  # auto|stub|openrouter|claude_cli|kimi_cli|copilot_cli|openai_cli
+    cli_llm_provider: str = "claude"  # which CLI when auto selects one
+    cli_llm_timeout: int = 180
+
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
     no_claude: bool = False

@@ -4,17 +4,24 @@ One entry point — :meth:`LLMClient.complete` — resolves a tier to a model vi
 the :class:`ModelRouter`, then dispatches to a backend:
 
 * ``openrouter`` — real HTTP (primary) when ``OPENROUTER_API_KEY`` is set.
+* ``<provider>_cli`` — shells out to a locally-installed CLI (``claude``,
+  ``kimi``, ``copilot``) in headless print mode. Real generation with **no API
+  key** — handy when you already have a coding-agent CLI signed in.
 * ``stub`` — deterministic offline responses so the full pipeline (and the
   test suite) runs with **no keys and no network**. This is what makes
   "brief -> runnable app" demonstrable out of the box.
 
-Every call is metered (tokens + estimated USD) and checked against budget
-caps — design rules #5 (cheap by default) and #6 (degrade, don't crash).
+Backend selection (``settings.llm_backend``): ``auto`` prefers OpenRouter (if a
+key is set), then a detected CLI, then the stub. It can be pinned to any
+specific backend. Every call is metered and checked against budget caps —
+design rules #5 (cheap by default) and #6 (degrade, don't crash).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 from dataclasses import dataclass, field
 
 import httpx
@@ -26,6 +33,28 @@ from skyn3t.core.model_router import ModelRouter, Tier
 log = structlog.get_logger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Headless print-mode invocation per CLI provider. The prompt is appended as
+# the final argv. Confirmed: ``claude -p "<prompt>"`` prints the reply.
+_CLI_COMMANDS: dict[str, list[str]] = {
+    "claude": ["claude", "-p"],
+    "kimi": ["kimi", "-p"],
+    "copilot": ["copilot", "-p"],
+}
+_KNOWN_CLI_PROVIDERS = ("claude", "kimi", "copilot")
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip a leading/trailing ```json ... ``` fence if a CLI added one."""
+    t = text.strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        t = "\n".join(lines).strip()
+    return t
 
 
 @dataclass
@@ -81,9 +110,33 @@ class LLMClient:
             token_cap=self.settings.daily_token_cap,
         )
 
+    _cli_cache: dict[str, bool] = {}
+
+    @classmethod
+    def _cli_available(cls, provider: str) -> bool:
+        if provider not in cls._cli_cache:
+            cls._cli_cache[provider] = shutil.which(provider) is not None
+        return cls._cli_cache[provider]
+
     @property
     def backend(self) -> str:
-        return "openrouter" if self.settings.openrouter_api_key else "stub"
+        """Resolve the active backend from policy + availability."""
+        pref = (self.settings.llm_backend or "auto").lower()
+        if pref == "stub":
+            return "stub"
+        if pref == "openrouter":
+            return "openrouter" if self.settings.openrouter_api_key else "stub"
+        if pref.endswith("_cli"):
+            prov = pref[:-4]
+            return f"{prov}_cli" if self._cli_available(prov) else "stub"
+        # auto: OpenRouter key wins, else a detected CLI, else stub.
+        if self.settings.openrouter_api_key:
+            return "openrouter"
+        preferred = (self.settings.cli_llm_provider or "claude").lower()
+        for prov in (preferred, *_KNOWN_CLI_PROVIDERS):
+            if self._cli_available(prov):
+                return f"{prov}_cli"
+        return "stub"
 
     async def complete(
         self,
@@ -96,13 +149,52 @@ class LLMClient:
         json_mode: bool = False,
     ) -> LLMResult:
         model = self.router.resolve(tier, file_hint)
-        if self.backend == "openrouter":
+        backend = self.backend
+        if backend == "openrouter":
             result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
+        elif backend.endswith("_cli"):
+            result = await self._cli(backend[:-4], prompt, system, json_mode)
         else:
             result = self._stub(model, prompt, system, json_mode)
         self.budget.record(result)
         self.budget.check()
         return result
+
+    async def _cli(self, provider, prompt, system, json_mode) -> LLMResult:
+        """Run a locally-installed coding-agent CLI in headless print mode.
+
+        Degrades to the stub backend (never raises) if the CLI fails or times
+        out, so a build keeps moving (design rule #6).
+        """
+        argv = _CLI_COMMANDS.get(provider, [provider, "-p"])
+        full = prompt if not system else f"{system}\n\n{prompt}"
+        if json_mode:
+            full += "\n\nRespond with ONLY valid JSON — no prose, no code fences."
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, full,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(
+                proc.communicate(), timeout=self.settings.cli_llm_timeout
+            )
+        except (asyncio.TimeoutError, FileNotFoundError, Exception) as exc:  # noqa: BLE001
+            log.warning("llm.cli_failed", provider=provider, error=str(exc)[:160])
+            return self._stub(f"{provider}-cli", prompt, system, json_mode)
+
+        text = (out or b"").decode("utf-8", "replace").strip()
+        if proc.returncode != 0 and not text:
+            log.warning("llm.cli_nonzero", provider=provider,
+                        err=(err or b"").decode("utf-8", "replace")[:160])
+            return self._stub(f"{provider}-cli", prompt, system, json_mode)
+        if json_mode:
+            text = _strip_code_fences(text)
+        approx_p = max(1, len(full) // 4)
+        return LLMResult(
+            text=text, model=f"{provider}-cli", backend=f"{provider}_cli",
+            prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
+        )
 
     # ---- backends --------------------------------------------------------
     async def _openrouter(self, model, prompt, system, max_tokens, json_mode) -> LLMResult:

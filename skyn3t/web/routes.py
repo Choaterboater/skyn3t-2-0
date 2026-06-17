@@ -240,6 +240,83 @@ def render_prometheus(metrics: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Runtime LLM configuration (set keys / switch backend from the dashboard).
+# ---------------------------------------------------------------------------
+_PROVIDER_FIELDS = {
+    "openrouter": "openrouter_api_key",
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+    "kimi": "kimi_api_key",
+}
+
+
+def _persist_env_var(name: str, value: str) -> None:
+    """Upsert ``NAME=value`` in the repo .env (best-effort; never raises)."""
+    try:
+        from skyn3t.config.settings import REPO_ROOT
+
+        env = REPO_ROOT / ".env"
+        lines = env.read_text().splitlines() if env.exists() else []
+        out: list[str] = []
+        found = False
+        for ln in lines:
+            stripped = ln.strip().lstrip("#").strip()
+            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if key == name:
+                out.append(f"{name}={value}")
+                found = True
+            else:
+                out.append(ln)
+        if not found:
+            out.append(f"{name}={value}")
+        env.write_text("\n".join(out) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
+    s = state.settings
+    backend = state.llm_client.backend if state.llm_client is not None else "n/a"
+    return {
+        "providers": {p: bool(getattr(s, f, "")) for p, f in _PROVIDER_FIELDS.items()},
+        "backend": backend,
+        "backend_pref": getattr(s, "llm_backend", "auto"),
+        "cli_provider": getattr(s, "cli_llm_provider", "claude"),
+    }
+
+
+async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = True) -> dict[str, Any]:
+    field = _PROVIDER_FIELDS.get((provider or "").lower())
+    if field is None:
+        raise ValueError(f"unknown provider {provider!r}")
+    key = (key or "").strip()
+    setattr(state.settings, field, key)
+    if state.llm_client is not None:
+        try:
+            state.llm_client.settings = state.settings  # same singleton, kept explicit
+        except Exception:  # noqa: BLE001
+            pass
+    if persist:
+        _persist_env_var(f"SKYN3T_{field.upper()}", key)
+    backend = state.llm_client.backend if state.llm_client is not None else "n/a"
+    return {"provider": provider.lower(), "configured": bool(key), "backend": backend}
+
+
+async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -> dict[str, Any]:
+    backend = (backend or "auto").lower()
+    state.settings.llm_backend = backend
+    if state.llm_client is not None:
+        try:
+            state.llm_client.settings = state.settings
+        except Exception:  # noqa: BLE001
+            pass
+    if persist:
+        _persist_env_var("SKYN3T_LLM_BACKEND", backend)
+    active = state.llm_client.backend if state.llm_client is not None else backend
+    return {"requested": backend, "active": active}
+
+
+# ---------------------------------------------------------------------------
 # FastAPI wiring (only constructed when FastAPI is importable).
 # ---------------------------------------------------------------------------
 def build_router(state: AppState) -> Any:
@@ -282,6 +359,21 @@ def build_router(state: AppState) -> Any:
     @router.get("/budget", dependencies=[auth])
     async def _budget() -> dict[str, Any]:
         return await budget_payload(state)
+
+    @router.get("/llm/secrets", dependencies=[auth])
+    async def _llm_secrets() -> dict[str, Any]:
+        return await llm_secrets_payload(state)
+
+    @router.post("/llm/key", dependencies=[auth])
+    async def _set_llm_key(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await set_llm_key(state, str(body.get("provider", "")), str(body.get("key", "")))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @router.post("/llm/backend", dependencies=[auth])
+    async def _set_llm_backend(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await set_llm_backend(state, str(body.get("backend", "auto")))
 
     @router.post("/studio/build", dependencies=[auth])
     async def _build(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:

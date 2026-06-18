@@ -12,6 +12,7 @@ the autonomy layer still has something to triage (design rules #1 and #6).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from urllib.parse import quote
 
@@ -155,3 +156,32 @@ class RepoScout:
                     EventType.PROPOSAL_CREATED, "repo_scout", prop.to_dict()
                 )
         return proposals
+
+    # ---- cortex component lifecycle --------------------------------------
+    _SCOUT_TOPICS = ("react dashboard", "fastapi service", "python cli tool", "automation agent")
+
+    def stop(self) -> None:
+        self._stop = True
+
+    async def run(self) -> None:
+        """Periodically scout a rotating set of topics, filing gated INGEST
+        proposals. Idle unless ``autonomous_learning`` is on (degrade, don't
+        crash). Approved proposals are what pull a repo into RAG.
+        """
+        if not getattr(self.settings, "autonomous_learning", False):
+            return
+        self._stop = False
+        interval = float(getattr(self.settings, "scout_interval", 1800.0))
+        i = 0
+        while not self._stop:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:  # pragma: no cover - shutdown
+                break
+            if self._stop:
+                break
+            try:
+                await self.scout(self._SCOUT_TOPICS[i % len(self._SCOUT_TOPICS)])
+                i += 1
+            except Exception:  # noqa: BLE001
+                pass

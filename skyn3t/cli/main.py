@@ -368,13 +368,16 @@ def studio_build(
         raise typer.Exit(code=2)
 
 
-def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any, Any, Any]:
-    """Construct the self-improvement layer (learning loop, pattern board, skills).
+def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any, Any, Any, Any]:
+    """Construct the self-improvement layer (learning loop, pattern board, skills, rag).
 
     Each piece is guarded — a missing module just yields ``None`` and the runner
-    falls back to the core MemoryStore lesson loop.
+    falls back to the core MemoryStore lesson loop. The RAG engine is SHARED:
+    the ExperienceIngestor writes build outcomes into it and the studio reads
+    recall out of it, so the system learns from its own past builds (and from
+    GitHub repos ingested via `domain ingest`).
     """
-    learning = patterns = skills = None
+    learning = patterns = skills = rag = None
     try:
         from skyn3t.intelligence.learning_loop import LearningLoop
         learning = LearningLoop(store=memory, event_bus=event_bus)
@@ -386,11 +389,24 @@ def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any
     except Exception:  # noqa: BLE001
         pass
     try:
-        from skyn3t.intelligence.skill_library import SkillLibrary
+        from skyn3t.intelligence.skill_library import SkillLibrary, seed_default_skills
         skills = SkillLibrary(settings.data_dir / "skills")
+        seed_default_skills(skills)  # starter skills so builds have advice from day 1
     except Exception:  # noqa: BLE001
         pass
-    return learning, patterns, skills
+    # Shared persistent RAG + live experience ingestion. The ingestor subscribes
+    # to build/task events and writes outcomes into the SAME store the studio
+    # recalls from — closing the learn-from-experience loop into build prompts.
+    try:
+        from skyn3t.rag.rag_engine import RagEngine
+
+        rag = RagEngine(persist_path=settings.vector_db_path)
+        from skyn3t.memory.ingestor import ExperienceIngestor
+
+        ExperienceIngestor(event_bus, rag_engine=rag).start()
+    except Exception:  # noqa: BLE001
+        rag = None
+    return learning, patterns, skills, rag
 
 
 def _build_observability(settings: Any, llm: Any) -> tuple[Any, Any]:
@@ -427,7 +443,7 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
         except Exception:  # noqa: BLE001 - degrade, don't crash
             pass
 
-    learning, patterns, skills = _build_intelligence(settings, spine["event_bus"], spine["memory"])
+    learning, patterns, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
     cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
     runner = StudioRunner(
         spine["event_bus"],
@@ -439,6 +455,7 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
         skills=skills,
         cost_tracker=cost_tracker,
         budget_guard=budget_guard,
+        rag=rag,
     )
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:
@@ -472,7 +489,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
     try:
         from skyn3t.studio.runner import StudioRunner
 
-        learning, patterns, skills = _build_intelligence(settings, bus, spine["memory"])
+        learning, patterns, skills, rag = _build_intelligence(settings, bus, spine["memory"])
         cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
         studio = StudioRunner(
             bus,
@@ -484,6 +501,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
             skills=skills,
             cost_tracker=cost_tracker,
             budget_guard=budget_guard,
+            rag=rag,
         )
     except Exception:  # noqa: BLE001 - dashboard still works read-only
         studio = None
@@ -707,6 +725,17 @@ async def _ingest_source(source: str) -> int:
     except Exception:  # noqa: BLE001
         return -1
 
+    # Learn from a GitHub repo: pull README + metadata (redacted) into RAG so it
+    # informs future builds. Uses SKYN3T_GITHUB_TOKEN if configured (UI/​.env).
+    if "github.com/" in source:
+        text = await _fetch_github_repo(source)
+        if not text:
+            return 0
+        try:
+            return engine.ingest_text(text, source=source, kind="github")
+        except Exception:  # noqa: BLE001
+            return 0
+
     if source.startswith(("http://", "https://")):
         text = await _fetch_url(source)
         if text is None:
@@ -739,6 +768,57 @@ async def _fetch_url(url: str) -> str | None:
             return resp.text
     except Exception:  # noqa: BLE001
         return None
+
+
+async def _fetch_github_repo(url: str) -> str | None:
+    """Fetch a repo's description + README via the GitHub API, redacted.
+
+    Honors SKYN3T_GITHUB_TOKEN (set in the dashboard or .env) for higher rate
+    limits + private repos. Read-only; secrets are scrubbed before ingest.
+    """
+    import os
+    import re as _re
+
+    try:
+        import httpx
+    except Exception:  # noqa: BLE001
+        return None
+    m = _re.search(r"github\.com/([^/\s]+)/([^/\s#?]+)", url)
+    if not m:
+        return None
+    owner, repo = m.group(1), m.group(2).removesuffix(".git")
+    token = os.environ.get("SKYN3T_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    parts: list[str] = [f"GitHub repo: {owner}/{repo}"]
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            meta = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
+            if meta.status_code == 200:
+                d = meta.json()
+                parts.append(f"Description: {d.get('description') or ''}")
+                parts.append(f"Language: {d.get('language') or ''} · Stars: {d.get('stargazers_count', 0)}")
+                if d.get("topics"):
+                    parts.append("Topics: " + ", ".join(d.get("topics", [])))
+            readme = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/readme",
+                headers={**headers, "Accept": "application/vnd.github.raw"},
+            )
+            if readme.status_code == 200:
+                parts.append("README:\n" + readme.text[:8000])
+    except Exception:  # noqa: BLE001 - degrade, don't crash
+        if len(parts) <= 1:
+            return None
+    text = "\n\n".join(parts)
+    # Scrub any secret-shaped strings before storing.
+    try:
+        from skyn3t.security.secrets import scrub_text
+
+        text = scrub_text(text)
+    except Exception:  # noqa: BLE001
+        pass
+    return text
 
 
 # ---------------------------------------------------------------------------

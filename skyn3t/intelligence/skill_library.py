@@ -256,3 +256,40 @@ class SkillLibrary:
             source="auto-promoted",
             slug=slug,
         )
+
+
+# Starter skills so the library is useful from build #1 (auto-promotion only
+# kicks in after many wins). Idempotent: existing slugs are left untouched.
+_SEED_SKILLS = [
+    ("Vite + React app shape", "react",
+     "Deliver a runnable Vite+React app: package.json with dev/build/preview "
+     "scripts and react/react-dom deps; index.html with <div id=\"root\">; "
+     "src/main.jsx mounting <App/>; src/App.jsx as a DEFAULT export. Keep state "
+     "local with hooks; no unused imports. Ensure `npm install && npm run build` "
+     "succeeds.", ["react", "vite", "frontend"]),
+    ("FastAPI service shape", "fastapi",
+     "Deliver a runnable FastAPI service: app = FastAPI(); a GET /health route; "
+     "pydantic models for request/response; uvicorn entrypoint; requirements.txt "
+     "pinning fastapi+uvicorn. Provide a Dockerfile + .env.example so a stranger "
+     "can `docker compose up`.", ["fastapi", "python", "backend"]),
+    ("Python CLI shape", "python",
+     "Deliver a runnable Python tool: a clear entrypoint (argparse or typer), "
+     "src/__init__.py, pyproject.toml with name+version, and at least one real "
+     "test under tests/. Code must import and `python -m` run without errors.",
+     ["python", "cli"]),
+    ("Delivered != empty", "generic",
+     "Every delivered project needs a real entrypoint, a README, and a manifest, "
+     "and must pass install + build + boot. Never ship a config-puzzle or an "
+     "empty scaffold; verify behavior, not vibes.", ["quality", "verification"]),
+]
+
+
+def seed_default_skills(library: "SkillLibrary") -> int:
+    """Add the built-in starter skills the library doesn't already have."""
+    added = 0
+    for title, stack, body, tags in _SEED_SKILLS:
+        slug = _slugify(title)
+        if library.get(slug) is None:
+            library.add(title=title, body=body, stack=stack, tags=tags, source="seed", slug=slug)
+            added += 1
+    return added

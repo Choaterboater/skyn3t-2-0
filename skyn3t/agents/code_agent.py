@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, extract_code, slugify
+from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
 from skyn3t.agents._scaffold import scaffold_for
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
@@ -71,10 +71,11 @@ class CodeAgent(BaseAgent):
 
         # Only attempt per-file LLM generation when a real backend is present.
         if self.llm.backend != "stub":
+            knowledge = knowledge_block(p)
             planned = self._planned_paths(plan, scaffold)
             for rel_path in planned:
                 try:
-                    content = await self._generate_file(rel_path, brief, stack, plan)
+                    content = await self._generate_file(rel_path, brief, stack, plan, knowledge)
                 except Exception:  # noqa: BLE001 - keep the scaffold fallback for this file
                     content = files.get(rel_path)
                 if content and content.strip():
@@ -119,10 +120,11 @@ class CodeAgent(BaseAgent):
         return paths
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
-                             plan: dict[str, Any]) -> str | None:
+                             plan: dict[str, Any], knowledge: str = "") -> str | None:
         ext = Path(rel_path).suffix.lower()
         tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
         prompt = (
+            f"{knowledge}"
             f"Project brief: {brief}\n"
             f"Stack: {stack}\n"
             f"Plan summary: {plan.get('summary', '')}\n"

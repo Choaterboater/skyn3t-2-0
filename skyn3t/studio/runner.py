@@ -105,6 +105,7 @@ class StudioRunner:
         skills: Any | None = None,
         cost_tracker: Any | None = None,
         budget_guard: Any | None = None,
+        rag: Any | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.orchestrator = orchestrator
@@ -120,6 +121,7 @@ class StudioRunner:
         self.skills = skills          # intelligence.SkillLibrary | None
         self.cost_tracker = cost_tracker  # observability.CostTracker | None
         self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
+        self.rag = rag                    # rag.RagEngine | None — recall into prompts
         self.approval_gate = approval_gate or ApprovalGate(
             enabled=bool(self.settings.approval_gates),
             auto_approve=bool(self.settings.cortex_auto_approve_safe),
@@ -183,6 +185,21 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
             return "", []
+
+    # ---- RAG recall (past builds + ingested GitHub repos) ----------------
+    def _recall(self, brief: str, stack: str) -> list[dict[str, Any]]:
+        """Retrieve relevant prior knowledge to inject into stage prompts."""
+        if self.rag is None:
+            return []
+        try:
+            hits = self.rag.query(f"{stack} project: {brief}", top_k=5)
+            return [
+                {"text": getattr(h, "text", str(h)), "score": getattr(h, "score", 0.0)}
+                for h in (hits or [])
+            ]
+        except Exception as exc:  # noqa: BLE001 - recall is best-effort
+            log.warning("recall.failed", error=str(exc))
+            return []
 
     # ---- self-improvement: capture lessons, record pattern, promote skill
     async def _record_learning(
@@ -331,8 +348,9 @@ class StudioRunner:
         # Inject advisory skills for this stack (non-binding) and remember which
         # ones we used so we can grade them by the build's outcome.
         skill_advice, skill_slugs = self._skill_advice(plan.stack)
-        if skill_advice:
-            extra = {**extra, "skills_advice": skill_advice}
+        recall = self._recall(brief, plan.stack)
+        if skill_advice or recall:
+            extra = {**extra, "skills_advice": skill_advice, "recall": recall}
 
         # Observability + budget guard for this build (all best-effort).
         self._obs_call(self.cost_tracker, "start_build", build_id)

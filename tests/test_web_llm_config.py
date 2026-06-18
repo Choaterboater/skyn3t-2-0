@@ -51,3 +51,21 @@ async def test_switch_backend():
 async def test_unknown_provider_rejected():
     with pytest.raises(ValueError):
         await set_llm_key(_state(), "bogus", "x", persist=False)
+
+
+async def test_integration_credential_config(monkeypatch):
+    monkeypatch.delenv("SKYN3T_TELEGRAM_BOT_TOKEN", raising=False)
+    from skyn3t.web.routes import integrations_payload, set_integration_credential
+
+    st = _state()
+    assert (await integrations_payload(st))["channels"]["telegram"]["configured"] is False
+    r = await set_integration_credential(st, "telegram", token="123:ABC", target="-100", persist=False)
+    assert r["configured"] is True and r["target_set"] is True
+    assert (await integrations_payload(st))["channels"]["telegram"]["configured"] is True
+
+
+async def test_integration_unknown_channel_rejected():
+    from skyn3t.web.routes import set_integration_credential
+
+    with pytest.raises(ValueError):
+        await set_integration_credential(_state(), "bogus", token="x", persist=False)

@@ -347,6 +347,52 @@ async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = 
     return {"provider": provider.lower(), "configured": bool(key), "backend": backend}
 
 
+# Messaging channels read their credentials from the environment via
+# integrations.channels.env_token(); configuring one means persisting to .env
+# AND setting os.environ so it takes effect without a restart. (Live bot
+# delivery is wired separately — this is the config surface.)
+_CHANNEL_ENV = {
+    "telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"),
+    "discord": ("DISCORD_BOT_TOKEN", "DISCORD_CHANNEL_ID"),
+    "slack": ("SLACK_BOT_TOKEN", "SLACK_CHANNEL"),
+}
+
+
+async def integrations_payload(state: AppState) -> dict[str, Any]:
+    import os
+
+    channels = {}
+    for name, (tok, tgt) in _CHANNEL_ENV.items():
+        configured = bool(os.environ.get(f"SKYN3T_{tok}") or os.environ.get(tok))
+        target_set = bool(os.environ.get(f"SKYN3T_{tgt}") or os.environ.get(tgt))
+        channels[name] = {"configured": configured, "target_set": target_set}
+    return {"channels": channels}
+
+
+async def set_integration_credential(
+    state: AppState, channel: str, token: str = "", target: str = "", persist: bool = True
+) -> dict[str, Any]:
+    import os
+
+    env = _CHANNEL_ENV.get((channel or "").lower())
+    if env is None:
+        raise ValueError(f"unknown channel {channel!r}")
+    tok_var, tgt_var = env
+    if token:
+        os.environ[f"SKYN3T_{tok_var}"] = token.strip()
+        if persist:
+            _persist_env_var(f"SKYN3T_{tok_var}", token.strip())
+    if target:
+        os.environ[f"SKYN3T_{tgt_var}"] = target.strip()
+        if persist:
+            _persist_env_var(f"SKYN3T_{tgt_var}", target.strip())
+    return {
+        "channel": channel.lower(),
+        "configured": bool(token) or bool(os.environ.get(f"SKYN3T_{tok_var}")),
+        "target_set": bool(target) or bool(os.environ.get(f"SKYN3T_{tgt_var}")),
+    }
+
+
 async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -> dict[str, Any]:
     backend = (backend or "auto").lower()
     state.settings.llm_backend = backend
@@ -501,6 +547,20 @@ def build_router(state: AppState) -> Any:
     @router.post("/llm/backend", dependencies=[auth])
     async def _set_llm_backend(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
         return await set_llm_backend(state, str(body.get("backend", "auto")))
+
+    @router.get("/integrations", dependencies=[auth])
+    async def _integrations() -> dict[str, Any]:
+        return await integrations_payload(state)
+
+    @router.post("/integrations/credential", dependencies=[auth])
+    async def _set_integration(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await set_integration_credential(
+                state, str(body.get("channel", "")),
+                token=str(body.get("token", "")), target=str(body.get("target", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
     @router.post("/studio/build", dependencies=[auth])
     async def _build(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:

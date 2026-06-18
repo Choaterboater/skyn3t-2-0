@@ -94,18 +94,18 @@ _SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
 
 
 def _largest_source_bytes(worktree_dir: str) -> int:
-    """Bytes of the biggest implementation file — substance over file count."""
+    """Total implementation bytes — substance over file count (excludes tests)."""
     from pathlib import Path
 
-    biggest = 0
+    total = 0
     try:
         for p in Path(worktree_dir).rglob("*"):
             if (p.is_file() and p.suffix.lower() in _SOURCE_EXTS
-                    and "test" not in p.name.lower() and p.name != "__init__.py"):
-                biggest = max(biggest, p.stat().st_size)
+                    and "test" not in p.name.lower()):
+                total += p.stat().st_size
     except OSError:
         pass
-    return biggest
+    return total
 
 
 async def sample(

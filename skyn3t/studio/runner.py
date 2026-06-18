@@ -207,25 +207,26 @@ class StudioRunner:
             a.has_capabilities((capability,)) for a in self.orchestrator.agents.values()
         )
 
-    # Minimum bytes the largest real source file must have for a "go" — below
-    # this the build is a stub, not an app, however complete its structure.
-    _substance_floor = 600
+    # Minimum TOTAL implementation bytes for a "go" — below this the build is a
+    # stub, not an app. We sum across source files (incl. __init__.py, which can
+    # legitimately hold the whole implementation) and exclude only tests.
+    _substance_floor = 800
     _SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
                     ".go", ".rs", ".java", ".rb", ".php")
 
     def _largest_source_bytes(self, project_dir: str) -> int:
-        """Bytes of the biggest implementation file — the stub-vs-app signal."""
+        """Total implementation bytes — the stub-vs-app signal (excludes tests)."""
         from pathlib import Path
 
-        biggest = 0
+        total = 0
         try:
             for p in Path(project_dir).rglob("*"):
                 if (p.is_file() and p.suffix.lower() in self._SOURCE_EXTS
-                        and "test" not in p.name.lower() and p.name != "__init__.py"):
-                    biggest = max(biggest, p.stat().st_size)
+                        and "test" not in p.name.lower()):
+                    total += p.stat().st_size
         except OSError:
             pass
-        return biggest
+        return total
 
     @staticmethod
     def _stub_for(rel: str, plan: BuildPlan, brief: str) -> str | None:

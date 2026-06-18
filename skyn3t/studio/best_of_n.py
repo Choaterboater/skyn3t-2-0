@@ -32,6 +32,7 @@ class Candidate:
     result: TaskResult | None = None
     proof: ProofResult | None = None
     files_written: int = 0
+    source_bytes: int = 0  # largest implementation file — substance/richness
     error: str | None = None
 
     @property
@@ -40,11 +41,13 @@ class Candidate:
 
     @property
     def rank_key(self) -> tuple:
-        """Higher is better. (passed, proof_score, substantive_files, files_written)."""
+        """Higher is better. Substance (source_bytes) outranks raw file count so
+        a rich implementation beats a thin stub that merely has more files."""
         p = self.proof
         return (
             1 if self.passed else 0,
             p.score if p else 0.0,
+            self.source_bytes,
             p.files_substantive if p else 0,
             self.files_written,
         )
@@ -86,6 +89,25 @@ def _files_written(result: TaskResult | None, worktree: Worktree) -> int:
     return len(list_files(worktree.dir))
 
 
+_SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+                ".go", ".rs", ".java", ".rb", ".php")
+
+
+def _largest_source_bytes(worktree_dir: str) -> int:
+    """Bytes of the biggest implementation file — substance over file count."""
+    from pathlib import Path
+
+    biggest = 0
+    try:
+        for p in Path(worktree_dir).rglob("*"):
+            if (p.is_file() and p.suffix.lower() in _SOURCE_EXTS
+                    and "test" not in p.name.lower() and p.name != "__init__.py"):
+                biggest = max(biggest, p.stat().st_size)
+    except OSError:
+        pass
+    return biggest
+
+
 async def sample(
     base_dir: str,
     slug: str,
@@ -115,6 +137,7 @@ async def sample(
             cand.error = str(exc)
             cand.result = None
         cand.files_written = _files_written(cand.result, cand.worktree)
+        cand.source_bytes = _largest_source_bytes(cand.worktree.dir)
         # proof_run is synchronous and I/O-/CPU-heavy (dir walk, syntax compile,
         # docker ping); offload it so it neither blocks the event loop nor
         # serializes the N candidates under gather. Keep it inside the try so a

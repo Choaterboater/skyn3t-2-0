@@ -571,7 +571,9 @@ class StudioRunner:
                         raise _BuildRejected(f"stage {spec.name} rejected at approval gate")
 
             # ---- delivery: merge worktree -> project dir ----------------
-            copied = merge_back(main_wt.dir, project_dir)
+            # clean=True so a re-build of the same slug delivers a fresh tree
+            # instead of accumulating stale files from previous builds.
+            copied = merge_back(main_wt.dir, project_dir, clean=True)
             manifest.files = copied or list_files(project_dir)
             manifest.worktree_dir = main_wt.dir
             manifest.artifact_dir = project_dir

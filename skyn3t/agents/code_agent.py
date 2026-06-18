@@ -31,9 +31,11 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
 
 _SYSTEM = (
-    "You are an expert software engineer. Generate the complete contents of a "
-    "single file for the project. Output ONLY the file contents, no commentary, "
-    "no markdown fences."
+    "You are an expert software engineer. Generate the COMPLETE, production-quality "
+    "contents of a single file: fully implemented with real functionality and "
+    "error handling, NO placeholders, NO TODOs, NO '...' elisions, no stub bodies. "
+    "Write it as if shipping to production. Output ONLY the file contents — no "
+    "commentary, no markdown fences."
 )
 
 
@@ -123,16 +125,33 @@ class CodeAgent(BaseAgent):
                              plan: dict[str, Any], knowledge: str = "") -> str | None:
         ext = Path(rel_path).suffix.lower()
         tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+        # Give the model the file's assigned purpose + the full project file
+        # list so each independently-generated file is substantial AND coheres
+        # (correct imports/wiring across siblings).
+        files = plan.get("files") or []
+        purpose = ""
+        manifest_lines = []
+        for f in files:
+            if isinstance(f, dict) and f.get("path"):
+                manifest_lines.append(f"  {f['path']} — {f.get('purpose', '')}")
+                if f["path"] == rel_path:
+                    purpose = str(f.get("purpose", ""))
+        file_list = "\n".join(manifest_lines) or "(see scaffold)"
         prompt = (
             f"{knowledge}"
             f"Project brief: {brief}\n"
             f"Stack: {stack}\n"
-            f"Plan summary: {plan.get('summary', '')}\n"
-            f"File to write: {rel_path}\n\n"
-            "Write the complete, correct contents of this file."
+            f"Architecture summary: {plan.get('summary', '')}\n"
+            f"All files in this project:\n{file_list}\n\n"
+            f"File to write: {rel_path}\n"
+            f"This file's purpose: {purpose or 'implement the part of the brief this path implies'}\n\n"
+            "Write the COMPLETE, production-quality implementation of THIS file. "
+            "Fully implement every behavior it owns, with real logic and error "
+            "handling. Import from the other project files above where appropriate "
+            "so the codebase coheres. No placeholders, no TODOs, no stub functions."
         )
         result = await self.llm.complete(
-            prompt, tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=4096,
+            prompt, tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=8192,
         )
         # If the call degraded to the stub backend (CLI failure/timeout, missing
         # key), do NOT write stub prose over the runnable scaffold — keep it.

@@ -80,7 +80,7 @@ def test_largest_source_bytes(tmp_path):
     # __init__.py counts (can hold the real implementation); bytes SUM
     (proj / "src" / "__init__.py").write_text("z" * 2000)
     assert runner._largest_source_bytes(str(proj)) == 2050
-    assert runner._substance_floor == 800
+    assert runner._substance_floor == 1500
 
 
 def test_best_of_n_prefers_richer_over_more_files():

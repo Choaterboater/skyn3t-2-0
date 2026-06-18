@@ -99,7 +99,7 @@ class StudioRunner:
         planner: Planner | None = None,
         approval_gate: ApprovalGate | None = None,
         stage_timeout: float = 60.0,
-        stage_exec_timeout: float = 900.0,
+        stage_exec_timeout: float = 1800.0,
         learning: Any | None = None,
         patterns: Any | None = None,
         skills: Any | None = None,

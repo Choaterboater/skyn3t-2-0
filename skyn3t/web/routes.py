@@ -183,12 +183,27 @@ async def decide_proposal(state: AppState, proposal_id: str, approved: bool, rea
 
 async def list_skills(state: AppState) -> dict[str, Any]:
     skills = state.skills
-    if skills is not None and hasattr(skills, "list_skills"):
-        try:  # pragma: no cover - depends on sibling package
-            res = skills.list_skills()
+    # SkillLibrary exposes .all() -> list[Skill]; serialize for the SPA.
+    getter = getattr(skills, "all", None) or getattr(skills, "list_skills", None)
+    if skills is not None and getter is not None:
+        try:
+            res = getter()
             if hasattr(res, "__await__"):
                 res = await res
-            return {"skills": list(res)}
+            out = []
+            for s in res:
+                if isinstance(s, dict):
+                    out.append(s)
+                else:
+                    out.append({
+                        "slug": getattr(s, "slug", ""),
+                        "title": getattr(s, "title", ""),
+                        "stack": getattr(s, "stack", ""),
+                        "tags": list(getattr(s, "tags", []) or []),
+                        "score": getattr(s, "score", 0),
+                        "source": getattr(s, "source", ""),
+                    })
+            return {"skills": out}
         except Exception:  # noqa: BLE001
             pass
     # Degraded: surface configured skill-hub paths from settings.

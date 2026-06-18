@@ -381,7 +381,27 @@ async def integrations_payload(state: AppState) -> dict[str, Any]:
         configured = bool(os.environ.get(f"SKYN3T_{tok}") or os.environ.get(tok))
         target_set = bool(os.environ.get(f"SKYN3T_{tgt}") or os.environ.get(tgt))
         channels[name] = {"configured": configured, "target_set": target_set}
-    return {"channels": channels}
+    listener = {"running": False, "available": state.messaging is not None}
+    if state.messaging is not None:
+        try:
+            listener.update(state.messaging.status())
+        except Exception:  # noqa: BLE001
+            pass
+    return {"channels": channels, "listener": listener}
+
+
+async def messaging_control(state: AppState, action: str) -> dict[str, Any]:
+    if state.messaging is None:
+        raise ValueError("messaging service unavailable")
+    if action == "start":
+        res = state.messaging.start_listeners()
+        return await res if hasattr(res, "__await__") else res
+    if action == "stop":
+        return state.messaging.stop()
+    if action == "test":
+        sent = await state.messaging.notify("🔔 SkyN3t test notification — messaging is wired.")
+        return {"sent": sent}
+    raise ValueError(f"unknown action {action!r}")
 
 
 async def set_integration_credential(
@@ -574,6 +594,13 @@ def build_router(state: AppState) -> Any:
                 state, str(body.get("channel", "")),
                 token=str(body.get("token", "")), target=str(body.get("target", "")),
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    @router.post("/integrations/listener", dependencies=[auth])
+    async def _messaging_control(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await messaging_control(state, str(body.get("action", "")))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 

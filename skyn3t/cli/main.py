@@ -521,6 +521,16 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
     except Exception:  # noqa: BLE001 - autonomy is optional
         cortex = None
 
+    # Messaging service: outbound build notifications wired immediately; the
+    # inbound bot listener is opt-in (started from the dashboard).
+    messaging = None
+    try:
+        from skyn3t.integrations.service import MessagingService
+
+        messaging = MessagingService(bus, settings, studio=studio)
+    except Exception:  # noqa: BLE001
+        messaging = None
+
     return AppState(
         settings=settings,
         event_bus=bus,
@@ -531,6 +541,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
         router=spine["router"],
         cortex=cortex,
         skills=getattr(studio, "skills", None),
+        messaging=messaging,
     )
 
 

@@ -98,6 +98,18 @@ export default function Settings() {
     }
   }
 
+  async function controlListener(action) {
+    try {
+      const r = await apiPost("/integrations/listener", { action });
+      if (action === "test") setChMsg(`test sent to ${r.sent ?? 0} channel(s)`);
+      else if (r.error) setChMsg(r.error);
+      else setChMsg(`bot ${r.running ? "started — listening on Telegram" : "stopped"}`);
+      integrations.refetch();
+    } catch (e) {
+      setChMsg(String(e.message));
+    }
+  }
+
   const flags = data
     ? {
         free_only: data.free_only,
@@ -206,14 +218,30 @@ export default function Settings() {
             right={
               integrations.error ? (
                 <Pill tone="ember">unreachable</Pill>
-              ) : null
+              ) : (
+                <Pill tone={integrations.data?.listener?.running ? "plasma" : "ash"}>
+                  bot · {integrations.data?.listener?.running ? "listening" : "stopped"}
+                </Pill>
+              )
             }
           />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
-              Wire the swarm into chat. Save a bot token (and optional chat id /
-              channel) to receive build notifications.
+              Wire the swarm into chat. Save a bot token (+ chat id / channel),
+              then start the bot to submit briefs from Telegram (<span className="font-mono text-bone">/build &lt;idea&gt;</span>) and
+              receive build notifications.
             </p>
+            <div className="mb-4 flex flex-wrap gap-2">
+              <button onClick={() => controlListener("start")} className="btn-ember">
+                Start bot
+              </button>
+              <button onClick={() => controlListener("stop")} className="btn-ghost">
+                Stop
+              </button>
+              <button onClick={() => controlListener("test")} className="btn-ghost">
+                Send test
+              </button>
+            </div>
             <div className="mb-4 flex flex-wrap gap-2">
               {CHANNELS.map((c) => {
                 const info = chData[c] || {};

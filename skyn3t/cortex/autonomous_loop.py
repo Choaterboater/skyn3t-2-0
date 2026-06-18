@@ -42,6 +42,10 @@ class GuardrailState:
         self._build_starts: list[float] = []
         self._spend_usd: float = 0.0
         self._spend_window_start: float = time()
+        # Optimistic per-build reservations for in-flight builds, keyed by
+        # correlation id. Reserved (escrowed) spend keeps concurrent launches
+        # from each seeing spend_usd==0 and collectively overshooting the cap.
+        self._reserved: dict[str, float] = {}
 
     def prune(self, now: float) -> None:
         cutoff = now - _DAY_SECONDS
@@ -60,6 +64,23 @@ class GuardrailState:
 
     def record_spend(self, usd: float) -> None:
         self._spend_usd += max(0.0, usd)
+
+    def reserve(self, correlation_id: str, usd: float) -> None:
+        """Escrow an optimistic per-build estimate while a build is in flight."""
+        self._reserved[correlation_id] = max(0.0, usd)
+
+    def release(self, correlation_id: str) -> None:
+        """Drop a build's reservation (after its real spend is recorded)."""
+        self._reserved.pop(correlation_id, None)
+
+    @property
+    def reserved_usd(self) -> float:
+        return sum(self._reserved.values())
+
+    @property
+    def committed_usd(self) -> float:
+        """Spend already booked plus optimistic in-flight reservations."""
+        return self._spend_usd + self.reserved_usd
 
     @property
     def spend_usd(self) -> float:
@@ -132,8 +153,24 @@ class AutonomousLoop:
         cap = self.settings.autonomous_daily_build_cap
         return cap >= 0 and self.state.builds_today() >= cap
 
+    def _next_build_estimate(self) -> float:
+        """Optimistic cost estimate for the next build (per-build cap)."""
+        try:
+            return max(0.0, float(self.settings.per_build_usd_cap))
+        except (TypeError, ValueError):
+            return 0.0
+
     def _budget_exhausted(self) -> bool:
         return self.state.spend_usd >= self.settings.daily_usd_cap
+
+    def _budget_would_overshoot(self) -> bool:
+        """Per-build pre-check: would launching the next build blow the cap?
+
+        Accounts for in-flight builds via reserved/escrowed spend so concurrent
+        launches don't each see spend_usd==0 and collectively overshoot.
+        """
+        projected = self.state.committed_usd + self._next_build_estimate()
+        return projected > self.settings.daily_usd_cap
 
     def can_start_build(self) -> tuple[bool, str]:
         """Return (allowed, reason). Reason is empty when allowed."""
@@ -143,6 +180,12 @@ class AutonomousLoop:
             return False, f"daily build cap reached ({self.settings.autonomous_daily_build_cap})"
         if self._budget_exhausted():
             return False, f"daily USD cap reached (${self.settings.daily_usd_cap})"
+        if self._budget_would_overshoot():
+            return False, (
+                f"daily USD cap would be exceeded by next build "
+                f"(committed ${self.state.committed_usd:.2f} + est "
+                f"${self._next_build_estimate():.2f} > ${self.settings.daily_usd_cap})"
+            )
         return True, ""
 
     # ---- event wiring (feeds the stall detector) -------------------------
@@ -174,7 +217,25 @@ class AutonomousLoop:
             monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await monitor
+            await self._drain_active()
             self._teardown()
+
+    async def _drain_active(self) -> None:
+        """Cancel and await every in-flight build task on shutdown.
+
+        Without this, stopping the loop would leave build tasks running
+        detached. _drive_build already handles CancelledError (emits
+        BUILD_FAILED 'aborted', drops heartbeat/reservation/_active), so
+        draining gives a clean, budget-safe shutdown.
+        """
+        tasks = list(self._active.values())
+        if not tasks:
+            return
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._active.clear()
 
     def stop(self) -> None:
         self._running = False
@@ -223,6 +284,9 @@ class AutonomousLoop:
         now = time()
         self.state.record_build_start(now)
         correlation_id = f"autobuild-{int(now)}"
+        # Escrow an optimistic per-build estimate so any concurrent launch sees
+        # this build's committed spend (reconciled to actual in _drive_build).
+        self.state.reserve(correlation_id, self._next_build_estimate())
         self.heartbeat.start(correlation_id)
         await self.event_bus.emit(
             EventType.BUILD_STARTED, "cortex.autonomous_loop",
@@ -264,6 +328,9 @@ class AutonomousLoop:
                 {"error": str(exc), "brief": brief}, correlation_id=correlation_id,
             )
         finally:
+            # Reconcile: drop the optimistic reservation now that real spend
+            # (if any) has been recorded above.
+            self.state.release(correlation_id)
             self.heartbeat.drop(correlation_id)
             self._active.pop(correlation_id, None)
 

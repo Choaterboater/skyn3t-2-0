@@ -25,7 +25,9 @@ from typing import Any, Protocol
 
 
 class _StoreLike(Protocol):
-    async def relevant_lessons(self, stack: str, stage: str = "", limit: int = 5) -> list[dict[str, Any]]: ...
+    async def relevant_lessons(
+        self, stack: str, stage: str = "", limit: int = 5, *, ascending: bool = False
+    ) -> list[dict[str, Any]]: ...
     async def grade_lesson(self, lesson_id: int, helpful: bool) -> None: ...
 
 
@@ -127,8 +129,17 @@ class LessonHygiene:
         We never delete rows (store.py is owned by another package).
         """
         report = HygieneReport()
+        # Retirement targets the WORST-scored (most-stale) lessons, so scan in
+        # ascending score order — a score-DESC top-N would cut off the very rows
+        # this sweep exists to retire. Fall back to the default ordering for
+        # stores that don't support the ``ascending`` flag.
         try:
-            lessons = await self.store.relevant_lessons(stack, stage, limit=scan_limit)
+            try:
+                lessons = await self.store.relevant_lessons(
+                    stack, stage, limit=scan_limit, ascending=True
+                )
+            except TypeError:
+                lessons = await self.store.relevant_lessons(stack, stage, limit=scan_limit)
         except Exception:  # degrade, don't crash
             return report
 

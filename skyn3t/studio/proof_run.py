@@ -13,7 +13,6 @@ Import has zero side effects (no subprocess, no network).
 
 from __future__ import annotations
 
-import py_compile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -87,11 +86,14 @@ def _scan(project_dir: Path) -> tuple[int, int, list[str]]:
         if name not in _TRIVIAL_FILES and (is_source or size >= _MIN_SUBSTANTIVE_BYTES):
             substantive += 1
         if f.suffix == ".py" and size > 0:
+            # In-memory syntax check: validates syntax WITHOUT emitting a
+            # __pycache__/.pyc cache into the delivered project (proof must not
+            # pollute the artifact it proves).
             try:
-                py_compile.compile(str(f), doraise=True)
-            except py_compile.PyCompileError as exc:  # noqa: PERF203
-                syntax_errors.append(f"{f.relative_to(project_dir)}: {exc.msg}")
-            except (SyntaxError, ValueError, OSError) as exc:
+                compile(f.read_text(encoding="utf-8", errors="replace"), str(f), "exec")
+            except SyntaxError as exc:  # noqa: PERF203
+                syntax_errors.append(f"{f.relative_to(project_dir)}: {exc}")
+            except (ValueError, OSError) as exc:
                 syntax_errors.append(f"{f.relative_to(project_dir)}: {exc}")
     return total, substantive, syntax_errors
 
@@ -124,7 +126,9 @@ def proof_run(
     checklist = checklist or []
 
     mode = "local"
-    if execution_backend == "docker" and _DOCKER_IMPORTABLE:
+    # "auto" means "use Docker if available" (matches security/sandbox.py and the
+    # rest of the codebase); only "inline" forces the degraded local check.
+    if execution_backend in ("docker", "auto") and _DOCKER_IMPORTABLE:
         # Even with docker importable, a daemon may be absent. We probe lazily and
         # fall back to local rather than crashing (degrade, don't crash).
         if _docker_daemon_ok():

@@ -60,6 +60,9 @@ class CostTracker:
     # build_id -> {"cost_usd": float, "tokens": int, "started": float}
     _builds: dict[str, dict[str, Any]] = field(default_factory=dict)
     _last_seen_calls: int = 0
+    # id() of LLMResult call records already attributed to a finished build, so
+    # overlapping builds never double-count the same call.
+    _claimed_call_ids: set[int] = field(default_factory=set)
 
     @classmethod
     def from_llm(cls, llm: Any, settings: Settings | None = None) -> "CostTracker":
@@ -96,10 +99,13 @@ class CostTracker:
         reset = getattr(self.budget, "reset_build", None)
         if callable(reset):
             reset()
-        base_cost = getattr(self.budget, "spent_day", 0.0) if self.budget else 0.0
-        base_tok = getattr(self.budget, "tokens_day", 0) if self.budget else 0
+        # Snapshot the call ledger length at start. Cost is attributed by
+        # summing the individual LLM call records appended *after* this point
+        # (and not already claimed by another build), so concurrent/overlapping
+        # builds do not double-count via a shared daily counter delta.
+        base_calls = len(getattr(self.budget, "calls", [])) if self.budget else 0
         self._builds[build_id] = {
-            "started": time(), "base_cost": base_cost, "base_tokens": base_tok,
+            "started": time(), "base_calls": base_calls,
             "cost_usd": 0.0, "tokens": 0,
         }
 
@@ -108,10 +114,21 @@ class CostTracker:
         entry = self._builds.get(build_id)
         if entry is None:
             return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0}
-        cur_cost = getattr(self.budget, "spent_day", 0.0) if self.budget else 0.0
-        cur_tok = getattr(self.budget, "tokens_day", 0) if self.budget else 0
-        entry["cost_usd"] = round(max(0.0, cur_cost - entry["base_cost"]), 6)
-        entry["tokens"] = max(0, cur_tok - entry["base_tokens"])
+        calls = list(getattr(self.budget, "calls", [])) if self.budget else []
+        # Attribute only the calls recorded during this build's lifetime that
+        # have not already been claimed by an earlier-finishing overlapping
+        # build. Each call is owned by exactly one build.
+        cost = 0.0
+        tokens = 0
+        for r in calls[entry["base_calls"]:]:
+            rid = id(r)
+            if rid in self._claimed_call_ids:
+                continue
+            self._claimed_call_ids.add(rid)
+            cost += getattr(r, "cost_usd", 0.0)
+            tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
+        entry["cost_usd"] = round(max(0.0, cost), 6)
+        entry["tokens"] = max(0, tokens)
         entry["duration_s"] = round(time() - entry["started"], 3)
         return {"build_id": build_id, **{k: entry[k] for k in ("cost_usd", "tokens", "duration_s")}}
 

@@ -88,12 +88,23 @@ def test_doctor_runs_and_reports(monkeypatch, tmp_path) -> None:
 # ---------------------------------------------------------------------------
 def test_snapshot_writes_file(monkeypatch, tmp_path) -> None:
     _isolate_settings(monkeypatch, tmp_path)
+    # Seed a durable checkpoint so snapshot has real persisted state to export
+    # (a fresh in-memory bus would always snapshot zero events).
+    import asyncio
+    import json
+
+    from skyn3t.config.settings import get_settings
+    from skyn3t.core.events import EventBus, EventType
+    from skyn3t.persistence.checkpoint import CheckpointManager
+
+    bus = EventBus()
+    asyncio.run(bus.emit(EventType.SYSTEM, "test", {"x": 1}))
+    CheckpointManager(get_settings()).save(event_bus=bus)
+
     target = tmp_path / "snap.json"
     result = runner.invoke(app, ["snapshot", "--out", str(target)])
     assert result.exit_code == 0
     assert target.is_file()
-    import json
-
     data = json.loads(target.read_text())
     assert "history" in data
 
@@ -108,16 +119,19 @@ def test_project_list_empty(monkeypatch, tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# studio approve / reject — record a decision event, never crash.
+# studio approve / reject — deliver to the running control plane; with no live
+# process, report a clear failure instead of silently discarding the decision.
 # ---------------------------------------------------------------------------
 def test_studio_approve_and_reject(monkeypatch, tmp_path) -> None:
     _isolate_settings(monkeypatch, tmp_path)
+    # No control plane is running, so the decision can't be delivered: the CLI
+    # must surface a clean non-zero failure (not a fake success, not a crash).
     ap = runner.invoke(app, ["studio", "approve", "build-xyz"])
-    assert ap.exit_code == 0
-    assert "approved" in ap.output
+    assert ap.exit_code != 0
+    assert "Could not record decision" in ap.output
     rj = runner.invoke(app, ["studio", "reject", "build-xyz"])
-    assert rj.exit_code == 0
-    assert "rejected" in rj.output
+    assert rj.exit_code != 0
+    assert "Could not record decision" in rj.output
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ Stage output: {"ok": bool, "verdict": "pass"|"fail", "missing": [...],
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +55,20 @@ def extract_planned_files(payload: dict[str, Any]) -> list[str]:
 def build_checklist(root: Path | None, planned: list[str]) -> list[dict[str, Any]]:
     """Turn the planned files into a satisfied/missing checklist."""
     checklist: list[dict[str, Any]] = []
+    root_resolved = root.resolve() if root else None
     for rel in planned:
-        target = (root / rel) if root else None
+        target: Path | None = None
+        if root_resolved is not None and not Path(rel).is_absolute():
+            # Constrain to the project tree: an absolute path or '../' traversal
+            # in the (LLM-produced) plan must NOT be satisfied by a host file
+            # outside the delivered project (would yield a false 'pass').
+            candidate = (root_resolved / rel).resolve()
+            try:
+                common = os.path.commonpath([str(root_resolved), str(candidate)])
+            except ValueError:
+                common = ""
+            if common == str(root_resolved):
+                target = candidate
         exists = bool(target and target.exists() and target.is_file())
         size = vc.file_size(target) if (target and exists) else 0
         checklist.append({

@@ -105,7 +105,7 @@ class EnvScanner:
         for path in root.rglob("*"):
             if not path.is_file():
                 continue
-            if any(part in _SKIP_DIRS for part in path.parts):
+            if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
                 continue
             if path.suffix.lower() in _SCAN_EXTS:
                 yield path

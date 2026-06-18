@@ -18,7 +18,7 @@ from typing import Any
 
 from skyn3t.core.agent import TaskResult
 from skyn3t.studio.proof_run import ProofResult, proof_run
-from skyn3t.worktree import Worktree, create_worktree, list_files
+from skyn3t.worktree import Worktree, cleanup_worktree, create_worktree, list_files
 
 # A factory that runs ONE code-stage trajectory in a given worktree and returns
 # the stage TaskResult. Provided by the StudioRunner.
@@ -115,15 +115,37 @@ async def sample(
             cand.error = str(exc)
             cand.result = None
         cand.files_written = _files_written(cand.result, cand.worktree)
-        cand.proof = proof_run(
-            cand.worktree.dir,
-            checklist=checklist,
-            execution_backend=execution_backend,
-            stack=stack,
-        )
+        # proof_run is synchronous and I/O-/CPU-heavy (dir walk, syntax compile,
+        # docker ping); offload it so it neither blocks the event loop nor
+        # serializes the N candidates under gather. Keep it inside the try so a
+        # proof_run crash is isolated to this candidate, not the whole gather.
+        try:
+            cand.proof = await asyncio.to_thread(
+                proof_run,
+                cand.worktree.dir,
+                checklist=checklist,
+                execution_backend=execution_backend,
+                stack=stack,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate proof failures per candidate
+            cand.proof = None
+            if cand.error is None:
+                cand.error = f"proof_run failed: {exc}"
 
-    await asyncio.gather(*(_run(c) for c in candidates))
-    return select(candidates)
+    selection: SelectionResult | None = None
+    try:
+        await asyncio.gather(*(_run(c) for c in candidates))
+        selection = select(candidates)
+        return selection
+    finally:
+        # Own cleanup of every worktree we created that is NOT the selected
+        # winner, so a raised/cancelled gather never leaks worktrees. The caller
+        # merges + cleans the winner. cleanup_worktree is idempotent/best-effort.
+        winner = selection.winner if selection is not None else None
+        for cand in candidates:
+            if winner is not None and cand is winner:
+                continue
+            cleanup_worktree(cand.worktree)
 
 
 def select(candidates: list[Candidate]) -> SelectionResult:

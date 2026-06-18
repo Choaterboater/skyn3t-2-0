@@ -77,6 +77,16 @@ def parse_nl_schedule(text: str) -> Optional[str]:
     m = re.search(r"every\s+(\d+)\s*min", s)
     if m:
         n = max(1, int(m.group(1)))
+        # A '*/N' minute step is only valid for N within the 0..59 field range;
+        # the pure-Python (and standard) cron evaluator matches a step only when
+        # (value-start) % N == 0 within range, so '*/90' would silently fire at
+        # minute 0 only (~once/hour). Refuse to emit an out-of-range step rather
+        # than producing a schedule that misleads the user (design rule #2).
+        if n > 59:
+            raise ValueError(
+                f"'every {n} minutes' cannot be expressed as a cron minute step "
+                f"(must be <= 59); use 'every N hours' or a longer interval"
+            )
         return f"*/{n} * * * *"
     if re.search(r"every\s+minute", s):
         return "* * * * *"
@@ -85,6 +95,13 @@ def parse_nl_schedule(text: str) -> Optional[str]:
     m = re.search(r"every\s+(\d+)\s*hour", s)
     if m:
         n = max(1, int(m.group(1)))
+        # Same out-of-range guard for the hour field (0..23): '*/25' would only
+        # ever match hour 0, firing once/day instead of every 25 hours.
+        if n > 23:
+            raise ValueError(
+                f"'every {n} hours' cannot be expressed as a cron hour step "
+                f"(must be <= 23)"
+            )
         return f"0 */{n} * * *"
     if "hourly" in s or re.search(r"every\s+hour", s):
         return "0 * * * *"

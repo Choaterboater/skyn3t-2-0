@@ -114,8 +114,12 @@ def render_test_file(acceptance: list[str], brief: str, slug: str = "app") -> st
         "ACCEPTANCE = [",
     ]
     for c in acceptance:
-        safe = c.replace("\\", "\\\\").replace('"', '\\"')
-        lines.append(f'    "{safe}",')
+        # json.dumps yields a valid Python string literal that correctly escapes
+        # all literal-breaking chars (newlines, quotes, control chars). The manual
+        # replace only escaped \\ and " — an LLM-supplied criterion containing a
+        # newline produced an unterminated string literal -> SyntaxError, breaking
+        # both the authored suite and build_verifier's py_compile of the artifact.
+        lines.append(f"    {json.dumps(str(c))},")
     lines += [
         "]",
         "",

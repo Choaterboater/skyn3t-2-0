@@ -227,6 +227,12 @@ def _node_express(app_name: str, brief: str) -> dict[str, str]:
             "}\n"
             "module.exports = app;\n"
         ),
+        "test.js": (
+            "const assert = require('assert');\n"
+            "const app = require('./server.js');\n\n"
+            "assert.strictEqual(typeof app, 'function', 'server.js must export the express app');\n"
+            "console.log('ok');\n"
+        ),
         ".gitignore": "node_modules\n",
         "README.md": (
             f"# {title}\n\n```bash\nnpm install\nnpm start\n```\n"

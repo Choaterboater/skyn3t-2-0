@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.integrations.channels import Channel, ChannelRegistry
+from skyn3t.security.secrets import SecretsStore, scrub_text
 
 
 @dataclass(slots=True)
@@ -59,11 +60,26 @@ class DeliveryGateway:
         self,
         registry: ChannelRegistry,
         event_bus: Optional[EventBus] = None,
+        secrets: Optional[SecretsStore] = None,
     ) -> None:
         self.registry = registry
         self.event_bus = event_bus
+        #: optional secrets store; outbound text + previews are scrubbed of any
+        #: tracked secret values and well-known token patterns before egress.
+        self.secrets = secrets
         #: optional default reply targets per channel name
         self.default_targets: dict[str, str] = {}
+
+    def _scrub(self, text: str) -> str:
+        """Redact secrets from text before it leaves the process.
+
+        Always applies regex token patterns (sk-/ghp_/xox/AKIA/AIza/...); also
+        redacts known tracked values when a SecretsStore is attached.
+        """
+        try:
+            return scrub_text(text, self.secrets)
+        except Exception:  # noqa: BLE001 - rule #6, never block delivery on scrub
+            return text
 
     async def send(self, channel_name: str, target: str, text: str) -> DeliveryResult:
         """Send to one channel. Returns a result; never raises."""
@@ -103,10 +119,10 @@ class DeliveryGateway:
 
     async def _try_send(self, channel: Channel, target: str, text: str) -> DeliveryResult:
         try:
-            ok = await channel.send(target, text)
+            ok = await channel.send(target, self._scrub(text))
             return DeliveryResult(channel.name, target, bool(ok), None if ok else "send_failed")
         except Exception as exc:  # noqa: BLE001 - rule #6, gateway never raises
-            return DeliveryResult(channel.name, target, False, str(exc))
+            return DeliveryResult(channel.name, target, False, self._scrub(str(exc)))
 
     async def _emit(self, res: DeliveryResult, text: str) -> None:
         if self.event_bus is None:
@@ -120,7 +136,7 @@ class DeliveryGateway:
                     "target": res.target,
                     "ok": res.ok,
                     "error": res.error,
-                    "preview": text[:120],
+                    "preview": self._scrub(text)[:120],
                 },
             )
         except Exception:  # noqa: BLE001

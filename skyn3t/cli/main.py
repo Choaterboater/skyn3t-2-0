@@ -419,10 +419,12 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
     spine = await _assemble_spine()
     settings = spine["settings"]
     if no_critic:
-        # Per-run override; the runner reads settings.critic_enabled defensively.
+        # Per-run override on a *copy* so we never mutate the cached
+        # get_settings() singleton (which would silently disable the critic for
+        # every subsequent build / reader in this process).
         try:
-            settings.critic_enabled = False
-        except Exception:  # noqa: BLE001
+            settings = settings.model_copy(update={"critic_enabled": False})
+        except Exception:  # noqa: BLE001 - degrade, don't crash
             pass
 
     learning, patterns, skills = _build_intelligence(settings, spine["event_bus"], spine["memory"])
@@ -551,32 +553,61 @@ def studio_reject(build_id: str = typer.Argument(..., help="Build id to reject."
 
 
 def _decide_build(build_id: str, *, approve: bool) -> None:
-    """Persist an approval/rejection as a DECIDED event.
+    """Deliver an approval/rejection to the *running* control plane.
 
-    Gated builds run inside a live process; out-of-band approval is recorded as
-    an event so any attached process (or the next snapshot) reflects the
-    decision. We never crash if no spine is live.
+    A gated build is blocked inside a live process waiting on its in-process
+    ``approval_gate``. The only way the CLI can unblock it is by reaching that
+    process, so we POST the decision to the running web control plane
+    (``/studio/approve``), which mutates the durable build record and resolves
+    the gate on the shared spine.
+
+    Emitting onto a throwaway in-process ``EventBus`` (the old behavior) would
+    silently discard the decision — no subscriber, no persistence — yet still
+    print success. We instead only report success on a confirmed 2xx, and
+    surface a clear error when no live build process is reachable.
     """
     console = _console()
 
-    async def _emit() -> None:
-        from skyn3t.core.events import EventBus, EventType
+    async def _post() -> tuple[bool, str]:
+        try:
+            import httpx
+        except Exception:  # noqa: BLE001 - httpx is optional
+            return False, "httpx is not installed; cannot reach the control plane"
 
-        bus = EventBus()
-        await bus.emit(
-            EventType.PROPOSAL_DECIDED,
-            "cli",
-            {
-                "build_id": build_id,
-                "decision": "approved" if approve else "rejected",
-                "decided_by": "cli",
-            },
-        )
+        from skyn3t.config.settings import get_settings
+
+        settings = get_settings()
+        url = f"http://{settings.host}:{settings.port}/studio/approve"
+        headers = {}
+        token = settings.auth_token.strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        payload = {
+            "build_id": build_id,
+            "approved": approve,
+            "reason": "",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+        except Exception:  # noqa: BLE001 - connection refused => no live process
+            return False, (
+                "no live build process to receive this decision "
+                f"(is the control plane running at {settings.host}:{settings.port}?)"
+            )
+        if resp.status_code == 404:
+            return False, f"build {build_id} not found on the running control plane"
+        if resp.status_code // 100 != 2:
+            return False, f"control plane refused the decision (HTTP {resp.status_code})"
+        return True, ""
 
     try:
-        asyncio.run(_emit())
+        ok, err = asyncio.run(_post())
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Could not record decision:[/red] {exc}")
+        raise typer.Exit(code=1)
+    if not ok:
+        console.print(f"[red]Could not record decision:[/red] {err}")
         raise typer.Exit(code=1)
     verb = "approved" if approve else "rejected"
     color = "green" if approve else "red"
@@ -623,11 +654,22 @@ def snapshot(
     """Save spine state (event history snapshot) to a JSON file."""
     console = _console()
     from skyn3t.config.settings import get_settings
-    from skyn3t.core.events import EventBus
+    from skyn3t.persistence.checkpoint import CheckpointManager
 
     settings = get_settings()
-    bus = EventBus()
-    snap = bus.snapshot()
+    # Capture *persisted* spine state, not a fresh empty in-memory bus. The
+    # running spine periodically checkpoints its EventBus snapshot to disk;
+    # ``latest`` is that durable state. A brand-new EventBus() would always
+    # snapshot zero events.
+    cp = CheckpointManager(settings).load("latest")
+    if cp is None:
+        console.print(
+            "[yellow]No spine state available[/yellow] — no checkpoint found "
+            f"under [cyan]{settings.data_dir / 'checkpoints'}[/cyan]. "
+            "Run the spine first ([cyan]skyn3t start[/cyan])."
+        )
+        raise typer.Exit(code=1)
+    snap = cp.event_bus or {}
     target = Path(out) if out else (settings.data_dir / "snapshot.json")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,7 @@ from pathlib import Path
 from time import time
 from typing import Any
 
+from skyn3t.config.settings import Settings, get_settings
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
 
 # A handler takes a proposal and returns a result dict. It must not raise.
@@ -32,15 +33,32 @@ class HandlerRegistry:
     ``overrides`` is a live dict the rest of the process can read to pick up
     tuning changes without touching the settings file. ``stage_dir`` is where
     non-tuning proposals are written for downstream pickup.
+
+    ``settings`` is the live runtime configuration object that the rest of the
+    process actually reads (Planner, StudioRunner, components). Applied tuning
+    changes are pushed onto it via ``setattr`` so the change is *observable* by
+    the code that uses it — otherwise the ``overrides`` dict would be a dead
+    record nothing consults. When not supplied we resolve the shared
+    ``get_settings()`` singleton (the same object StudioRunner/Planner read).
     """
 
     def __init__(
         self,
         overrides: dict[str, Any] | None = None,
         stage_dir: Path | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.overrides: dict[str, Any] = overrides if overrides is not None else {}
         self.stage_dir = Path(stage_dir) if stage_dir else None
+        # Fall back to the process-wide settings singleton so tuning changes
+        # land on the object live consumers read (degrade gracefully if the
+        # config layer is unavailable for any reason).
+        if settings is None:
+            try:
+                settings = get_settings()
+            except Exception:  # noqa: BLE001 - never let config break the loop
+                settings = None
+        self.settings = settings
         self._handlers: dict[ProposalType, Handler] = {
             ProposalType.TUNING: self._apply_tuning,
             ProposalType.FEATURE: self._stage_feature,
@@ -80,7 +98,46 @@ class HandlerRegistry:
             return {"applied": False, "error": "tuning proposal had no setting/overrides"}
         before = {k: self.overrides.get(k) for k in applied}
         self.overrides.update(applied)
-        return {"applied": True, "changed": applied, "previous": before}
+        # Make the change actually live: push each key that is a real runtime
+        # settings field onto the live settings object so Planner / runner /
+        # components observe it. Keys that don't map to a known field (or fail
+        # validation) stay in ``overrides`` only and are reported as unobserved.
+        observed: dict[str, Any] = {}
+        unobserved: list[str] = []
+        for k, v in applied.items():
+            if self._set_setting(k, v):
+                observed[k] = v
+            else:
+                unobserved.append(k)
+        result: dict[str, Any] = {
+            "applied": True,
+            "changed": applied,
+            "previous": before,
+            "observed": observed,
+        }
+        if unobserved:
+            result["unobserved"] = unobserved
+        return result
+
+    def _set_setting(self, key: str, value: Any) -> bool:
+        """Apply one tuning key onto the live settings object.
+
+        Returns True only if the value was actually set (i.e. the key is a real
+        settings field and the assignment validated). This keeps ``observed``
+        honest: a key reported as observed is genuinely readable by consumers.
+        """
+        settings = self.settings
+        if settings is None:
+            return False
+        # Only touch declared fields — never inject arbitrary attributes.
+        fields = getattr(type(settings), "model_fields", None)
+        if not fields or key not in fields:
+            return False
+        try:
+            setattr(settings, key, value)
+        except Exception:  # noqa: BLE001 - bad value is data, not a crash
+            return False
+        return True
 
     async def _stage_feature(self, proposal: Proposal) -> dict[str, Any]:
         return self._stage(proposal, "feature")

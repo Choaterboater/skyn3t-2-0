@@ -92,7 +92,8 @@ class SandboxRunner:
         ok = False
         if _HAS_DOCKER_SDK:
             try:
-                client = _docker.from_env()  # type: ignore[union-attr]
+                # Bound the probe so a hung daemon can't stall indefinitely.
+                client = _docker.from_env(timeout=5)  # type: ignore[union-attr]
                 client.ping()
                 self._client = client
                 ok = True
@@ -120,6 +121,27 @@ class SandboxRunner:
         # auto
         return "docker" if self.docker_available() else "subprocess"
 
+    async def _choose_backend_async(self) -> str:
+        """Async backend chooser that never blocks the event loop.
+
+        For the ``auto`` path the Docker daemon probe performs blocking I/O
+        (SDK from_env/ping + ``docker info`` subprocess, up to ~5s). Offload it
+        to a worker thread so the asyncio loop (channels, gateway, watchdog,
+        web) is not frozen on the first sandbox run. The ``_docker_ok`` cache
+        means only the first probe pays this cost.
+        """
+        backend = self.settings.execution_backend
+        if backend == "docker":
+            return "docker"
+        if backend == "inline":
+            return "subprocess"
+        # auto: probe off the loop (cached after first call)
+        if self._docker_ok is not None:
+            ok = self._docker_ok
+        else:
+            ok = await asyncio.to_thread(self.docker_available)
+        return "docker" if ok else "subprocess"
+
     # ---- public run ------------------------------------------------------
     async def run(
         self,
@@ -133,7 +155,7 @@ class SandboxRunner:
         network: bool = False,
     ) -> SandboxResult:
         """Execute ``command`` in the safest backend available."""
-        backend = self._choose_backend()
+        backend = await self._choose_backend_async()
         clean_env = filter_env(env)
         if backend == "docker":
             return await self._run_docker(

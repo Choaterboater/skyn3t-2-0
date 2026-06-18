@@ -80,17 +80,24 @@ class CodeAgent(BaseAgent):
             # Offline: deliver the runnable scaffold as-is.
             pass
         elif getattr(self.llm, "supports_agentic", False):
-            # CLI backend is a coding AGENT: lay the scaffold as a floor, then
-            # ONE agentic session authors the whole coherent multi-file app into
-            # the worktree. Far better than N per-file completions that time out.
-            self._write_files(worktree, files)
+            # CLI backend is a coding AGENT: ONE agentic session authors the
+            # whole coherent multi-file app — including its OWN entrypoint —
+            # into a CLEAN worktree. (Pre-laying the scaffold left a stub main.py
+            # masquerading as the entrypoint while the real code sat in a package.)
+            # The scaffold is a fallback only if the agent under-delivers.
             res = await self.llm.agentic_build(
                 self._agentic_prompt(brief, stack, plan, knowledge), str(worktree)
             )
             self.metadata["agentic"] = res
             disk = self._read_files(worktree)
-            if disk:
-                files = disk  # whatever the agent wrote becomes the delivery
+            code_bytes = sum(
+                len(c) for f, c in disk.items()
+                if f.rsplit(".", 1)[-1] in ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
+            )
+            if disk and code_bytes >= 800:
+                files = disk  # the agent's real app becomes the delivery
+            else:
+                self._write_files(worktree, files)  # under-delivered -> scaffold floor
         else:
             # Completion backend (OpenRouter): per-file, generated CONCURRENTLY
             # (bounded) so a multi-file app's wall-clock is the slowest file.
@@ -161,8 +168,10 @@ class CodeAgent(BaseAgent):
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "
             "Make it a real, fully-featured, MULTI-FILE app — implement every feature in the "
             "brief with real logic and error handling. No placeholders, no TODOs, no stub "
-            "functions. Ensure it installs/builds and runs, with a clear runnable entrypoint "
-            "and a README. Do not ask questions — just build it."
+            "functions. CRITICAL: provide a WORKING entrypoint at the project ROOT that wires "
+            "the whole app together (for Python a top-level main.py whose `python main.py` "
+            "actually runs the app; for web a real index/app entry) — do NOT leave a hello/"
+            "greeting placeholder. Include a README. Do not ask questions — just build it."
         )
 
     _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next"})

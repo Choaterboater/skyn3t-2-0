@@ -123,16 +123,29 @@ def merge_back(
     project_dir: str | Path,
     *,
     overwrite: bool = True,
+    clean: bool = False,
 ) -> list[str]:
     """Copy generated files from the worktree INTO the delivered project.
 
     Returns the list of relative paths copied. This is the function that makes
     a build's output real on disk. Creating ``project_dir`` if absent.
+
+    ``clean=True`` first removes the project dir's existing contents (except
+    ``.git``) so a re-build of the same slug delivers a CLEAN tree instead of
+    accumulating stale files from previous builds.
     """
     src = Path(worktree_dir)
     dst = Path(project_dir)
     if not src.exists():
         return []
+    if clean and dst.exists():
+        for child in dst.iterdir():
+            if child.name == ".git":
+                continue
+            try:
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
+            except OSError:
+                pass
     dst.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for f in _iter_files(src):

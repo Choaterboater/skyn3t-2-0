@@ -202,6 +202,48 @@ class LLMClient:
             prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
         )
 
+    @property
+    def supports_agentic(self) -> bool:
+        """CLI backends are full coding agents that can write a whole project."""
+        return self.backend.endswith("_cli")
+
+    async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None) -> dict:
+        """Run a local coding-agent CLI that writes files directly into workdir.
+
+        This is the RIGHT way to use claude/kimi/copilot for codegen: one
+        agentic session that authors a coherent multi-file app, instead of N
+        slow per-file completion calls that spin up an agent each and time out.
+        Returns {ok, backend, error}. Only meaningful for *_cli backends.
+        """
+        backend = self.backend
+        if not backend.endswith("_cli"):
+            return {"ok": False, "backend": backend, "error": "agentic unsupported"}
+        provider = backend[:-4]
+        # acceptEdits lets the headless agent write files without prompting.
+        argv = {
+            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits"],
+            "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits"],
+            "copilot": ["copilot", "-p", prompt],
+        }.get(provider, [provider, "-p", prompt])
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, cwd=workdir,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout or (self.settings.cli_llm_timeout * 3),
+            )
+        except Exception as exc:  # noqa: BLE001 - never raise into the build
+            await self._terminate(proc)
+            log.warning("llm.agentic_failed", provider=provider, error=str(exc)[:160])
+            return {"ok": False, "backend": backend, "error": str(exc)[:160]}
+        ok = proc.returncode == 0
+        if not ok:
+            log.warning("llm.agentic_nonzero", provider=provider,
+                        err=(err or b"").decode("utf-8", "replace")[:160])
+        return {"ok": ok, "backend": backend}
+
     @staticmethod
     async def _terminate(proc) -> None:
         """Kill + reap a subprocess so it is never orphaned."""

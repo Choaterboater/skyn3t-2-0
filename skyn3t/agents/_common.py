@@ -124,6 +124,52 @@ def slugify(text: str, fallback: str = "app") -> str:
     return s or fallback
 
 
+def knowledge_block(payload: Any) -> str:
+    """Assemble injected prior knowledge into an advisory prompt preamble.
+
+    Pulls skill advice, graded lessons, and RAG recall (which is fed by past
+    build outcomes AND ingested GitHub repos) out of the stage payload so the
+    generative agents actually USE what the system has learned. Returns "" when
+    there is nothing to inject. Advisory only — the model applies what fits.
+    """
+    if not isinstance(payload, dict):
+        return ""
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    parts: list[str] = []
+
+    advice = extra.get("skills_advice") or payload.get("skills_advice")
+    if advice:
+        parts.append(str(advice).strip())
+
+    lessons = payload.get("lessons") or []
+    if lessons:
+        lines = [
+            f"- {(l.get('text') if isinstance(l, dict) else l)}"
+            for l in lessons[:5]
+            if (l.get("text") if isinstance(l, dict) else l)
+        ]
+        if lines:
+            parts.append("Lessons from past builds (apply where they fit):\n" + "\n".join(lines))
+
+    recall = extra.get("recall") or payload.get("recall") or []
+    if isinstance(recall, list):
+        lines = [
+            f"- {(r.get('text') if isinstance(r, dict) else r)}"[:280]
+            for r in recall[:5]
+            if (r.get("text") if isinstance(r, dict) else r)
+        ]
+        recall = "\n".join(lines)
+    if recall:
+        parts.append(
+            "Relevant patterns from the knowledge base (past builds + ingested "
+            "GitHub repos):\n" + str(recall)[:1600]
+        )
+
+    if not parts:
+        return ""
+    return "## Prior knowledge (advisory — reuse what fits)\n" + "\n\n".join(parts) + "\n\n"
+
+
 def extract_code(text: str) -> str:
     """Pull a single code block out of an LLM response, or return it verbatim."""
     if not text:

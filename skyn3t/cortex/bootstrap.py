@@ -258,4 +258,17 @@ def build_cortex(
     except Exception:  # noqa: BLE001 - autonomy heartbeat is best-effort
         pass
 
+    # --- GitHub learning: scout repos -> gated ingest proposals ----------
+    try:
+        import os
+
+        from skyn3t.cortex.repo_scout import RepoScout
+
+        token = os.environ.get("SKYN3T_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        cortex.add_component(
+            RepoScout(cortex, event_bus, settings, github_token=token)
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     return cortex

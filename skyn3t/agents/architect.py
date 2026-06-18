@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, parse_json, slugify
+from skyn3t.agents._common import detect_stack, knowledge_block, parse_json, slugify
 from skyn3t.agents._scaffold import scaffold_for
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
@@ -51,10 +51,11 @@ class ArchitectAgent(BaseAgent):
         )
 
         prompt = (
-            f"Brief: {brief}\n"
-            f"Detected stack: {stack}\n"
-            f"Research: {research}\n\n"
-            "Design the build plan as JSON."
+            knowledge_block(p)
+            + f"Brief: {brief}\n"
+            + f"Detected stack: {stack}\n"
+            + f"Research: {research}\n\n"
+            + "Design the build plan as JSON."
         )
         result = await self.llm.complete(prompt, tier=Tier.STRONG, system=_SYSTEM, json_mode=True)
         parsed = parse_json(result.text)

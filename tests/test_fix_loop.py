@@ -66,3 +66,30 @@ async def test_fix_loop_stops_when_proof_passes(tmp_path):
     proof = proof_run(str(proj), checklist=plan.checklist, stack=plan.stack)
     out = await runner._fix_loop(_M(), plan, str(proj), proof, "cid", {"max_fix_attempts": 2})
     assert out.passed is True
+
+
+# ---- substance gate + best-of-N richness ranking -------------------------
+def test_largest_source_bytes(tmp_path):
+    runner = _runner()
+    proj = tmp_path / "p"
+    (proj / "src").mkdir(parents=True)
+    (proj / "main.py").write_text("x" * 50)            # thin
+    (proj / "README.md").write_text("y" * 5000)         # not source
+    assert runner._largest_source_bytes(str(proj)) == 50
+    (proj / "src" / "app.py").write_text("z" * 2000)    # rich source
+    assert runner._largest_source_bytes(str(proj)) == 2000
+    assert runner._substance_floor == 600
+
+
+def test_best_of_n_prefers_richer_over_more_files():
+    from skyn3t.studio.best_of_n import Candidate, select
+
+    class _Proof:
+        passed = True
+        score = 90.0
+        files_substantive = 3
+
+    rich = Candidate(index=0, worktree=None, proof=_Proof(), files_written=2, source_bytes=28000)
+    thin = Candidate(index=1, worktree=None, proof=_Proof(), files_written=8, source_bytes=559)
+    res = select([thin, rich])
+    assert res.winner is rich  # substance beats raw file count

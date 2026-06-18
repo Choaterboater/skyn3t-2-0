@@ -207,6 +207,26 @@ class StudioRunner:
             a.has_capabilities((capability,)) for a in self.orchestrator.agents.values()
         )
 
+    # Minimum bytes the largest real source file must have for a "go" — below
+    # this the build is a stub, not an app, however complete its structure.
+    _substance_floor = 600
+    _SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+                    ".go", ".rs", ".java", ".rb", ".php")
+
+    def _largest_source_bytes(self, project_dir: str) -> int:
+        """Bytes of the biggest implementation file — the stub-vs-app signal."""
+        from pathlib import Path
+
+        biggest = 0
+        try:
+            for p in Path(project_dir).rglob("*"):
+                if (p.is_file() and p.suffix.lower() in self._SOURCE_EXTS
+                        and "test" not in p.name.lower() and p.name != "__init__.py"):
+                    biggest = max(biggest, p.stat().st_size)
+        except OSError:
+            pass
+        return biggest
+
     @staticmethod
     def _stub_for(rel: str, plan: BuildPlan, brief: str) -> str | None:
         """Minimal valid content for a missing checklist file."""
@@ -578,10 +598,27 @@ class StudioRunner:
             final_score = round(0.6 * reviewer_score + 0.4 * proof.score, 2)
             manifest.score = final_score
             # Verdict: a reviewer "go" is necessary but NOT sufficient — the
-            # objective proof and non-empty delivery are ANDed in unconditionally
-            # (design rule #3: verify behavior, not vibes).
+            # objective proof, non-empty delivery, AND real substance are ANDed
+            # in (design rule #3: verify behavior, not vibes). A structurally
+            # complete but thin stub (e.g. a 559-byte entrypoint) is NOT "go".
             delivered_nonempty = manifest.files_count > 0 and proof.files_substantive > 0
-            verdict = "go" if (verdict == "go" and proof.passed and delivered_nonempty) else "no_go"
+            biggest = self._largest_source_bytes(project_dir)
+            manifest.extra["largest_source_bytes"] = biggest
+            # Substance gate applies only to REAL LLM backends: a stub build's
+            # minimal scaffold is acceptable degraded output, but a real model
+            # that emitted a 559-byte stub genuinely under-delivered -> no_go.
+            code_backend = str((prior.get("code") or {}).get("backend", "stub"))
+            substantive = code_backend == "stub" or biggest >= self._substance_floor
+            verdict = (
+                "go"
+                if (verdict == "go" and proof.passed and delivered_nonempty and substantive)
+                else "no_go"
+            )
+            if not substantive:
+                manifest.extra["substance_gate"] = (
+                    f"largest source {biggest}B < {self._substance_floor}B floor "
+                    f"(backend={code_backend}) — looks like a stub, not an app"
+                )
             manifest.verdict = verdict
             manifest.status = "completed" if delivered_nonempty else "failed"
 

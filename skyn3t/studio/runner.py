@@ -210,7 +210,7 @@ class StudioRunner:
     # Minimum TOTAL implementation bytes for a "go" — below this the build is a
     # stub, not an app. We sum across source files (incl. __init__.py, which can
     # legitimately hold the whole implementation) and exclude only tests.
-    _substance_floor = 800
+    _substance_floor = 1500
     _SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
                     ".go", ".rs", ".java", ".rb", ".php")
 

@@ -18,10 +18,16 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
 
 _SYSTEM = (
-    "You are a software architect. Given a brief and research, design a minimal "
-    "but complete build plan. Respond with JSON: "
+    "You are a senior software architect. Design a COMPLETE, production-grade "
+    "build plan for the brief — NOT a minimal stub or single-file script. "
+    "Decompose into MULTIPLE files with real separation of concerns: an entry "
+    "point, core/domain logic split across modules, UI components/routes (for "
+    "web apps), data models, utilities, config, and tests. A real application is "
+    "many cohesive files, each with one clear purpose. Respond with JSON: "
     '{"stack": str, "summary": str, "files": [{"path": str, "purpose": str}], '
-    '"build_order": [str], "components": [str]}.'
+    '"build_order": [str], "components": [str]}. Include EVERY file needed for a '
+    "fully-featured implementation — typically 6-15 files. Make each file's "
+    "purpose specific and substantial."
 )
 
 
@@ -55,7 +61,9 @@ class ArchitectAgent(BaseAgent):
             + f"Brief: {brief}\n"
             + f"Detected stack: {stack}\n"
             + f"Research: {research}\n\n"
-            + "Design the build plan as JSON."
+            + "Design the COMPLETE, multi-file build plan as JSON — every module, "
+            + "component, model, utility, config, and test needed for a real, "
+            + "fully-featured implementation of the brief. Not a minimal stub."
         )
         result = await self.llm.complete(prompt, tier=Tier.STRONG, system=_SYSTEM, json_mode=True)
         parsed = parse_json(result.text)

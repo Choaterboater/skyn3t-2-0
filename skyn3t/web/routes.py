@@ -195,10 +195,14 @@ async def list_skills(state: AppState) -> dict[str, Any]:
                 if isinstance(s, dict):
                     out.append(s)
                 else:
+                    title = getattr(s, "title", "")
+                    body = str(getattr(s, "body", "") or "")
                     out.append({
                         "slug": getattr(s, "slug", ""),
-                        "title": getattr(s, "title", ""),
+                        "title": title,
+                        "name": title,  # SPA card reads s.name
                         "stack": getattr(s, "stack", ""),
+                        "description": body[:160] + ("…" if len(body) > 160 else ""),
                         "tags": list(getattr(s, "tags", []) or []),
                         "score": getattr(s, "score", 0),
                         "source": getattr(s, "source", ""),

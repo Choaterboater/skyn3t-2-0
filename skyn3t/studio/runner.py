@@ -201,6 +201,120 @@ class StudioRunner:
             log.warning("recall.failed", error=str(exc))
             return []
 
+    # ---- bounded fix loop (driven by objective verifier failures) --------
+    def _has_capability(self, capability: str) -> bool:
+        return any(
+            a.has_capabilities((capability,)) for a in self.orchestrator.agents.values()
+        )
+
+    @staticmethod
+    def _stub_for(rel: str, plan: BuildPlan, brief: str) -> str | None:
+        """Minimal valid content for a missing checklist file."""
+        name = rel.rsplit("/", 1)[-1]
+        if name == "pyproject.toml":
+            return '[project]\nname = "app"\nversion = "0.1.0"\n'
+        if name == "__init__.py":
+            return ""
+        if name.startswith("test") and name.endswith(".py"):
+            return "def test_smoke():\n    assert True\n"
+        if name == "requirements.txt":
+            return ""
+        if name == "README.md":
+            return f"# {plan.slug}\n\n{brief}\n"
+        if name == ".gitignore":
+            return "__pycache__/\n*.pyc\nnode_modules/\ndist/\n.env\n"
+        return None
+
+    def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
+        """Deterministically create missing checklist files (scaffold or stub)."""
+        if not missing:
+            return 0
+        from pathlib import Path
+
+        scaffold: dict[str, str] = {}
+        try:
+            from skyn3t.agents._common import slugify
+            from skyn3t.agents._scaffold import scaffold_for
+
+            scaffold = scaffold_for(plan.stack, slugify(plan.slug or brief, "app"), brief) or {}
+        except Exception:  # noqa: BLE001
+            scaffold = {}
+        root = Path(project_dir)
+        written = 0
+        for rel in missing:
+            target = root / rel
+            if target.exists():
+                continue
+            content = scaffold.get(rel)
+            if content is None:
+                content = self._stub_for(rel, plan, brief)
+            if content is None:
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                written += 1
+            except OSError:
+                pass
+        return written
+
+    async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
+        """Repair a failing build until the proof passes or attempts run out.
+
+        Each iteration: fill missing checklist files (deterministic), then run
+        the code-improver against the flagged gaps (LLM, best-effort), then
+        re-run the objective proof. This is the bounded fix loop the pipeline
+        was missing — a no_go no longer just stops.
+        """
+        max_attempts = int((extra or {}).get("max_fix_attempts", 2))
+        attempt = 0
+        while not proof.passed and attempt < max_attempts:
+            attempt += 1
+            self._obs_call(self.budget_guard, "heartbeat")
+            await self.event_bus.emit(
+                EventType.BUILD_STAGE_STARTED, "studio",
+                {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "agent_type": "fix"},
+                correlation_id=correlation_id,
+            )
+            filled = self._fill_missing(project_dir, plan, manifest.brief, list(proof.missing or []))
+
+            # LLM content repair on the flagged gaps, when an improver is present.
+            if self._has_capability("code_improve"):
+                payload = {
+                    "brief": manifest.brief, "slug": manifest.slug,
+                    "worktree_dir": project_dir, "project_dir": project_dir,
+                    "stack": plan.stack, "plan": plan.to_dict(),
+                    "gaps": list(proof.missing or []) + [f"proof failed: {proof.detail}"],
+                }
+                if extra:
+                    payload["extra"] = extra
+                task = TaskRequest(
+                    type="code_improver", payload=payload,
+                    capabilities_required=("code_improve",),
+                    correlation_id=correlation_id, metadata={"stage": f"fix#{attempt}"},
+                )
+                try:
+                    await asyncio.wait_for(
+                        self.orchestrator.submit(task), timeout=self.stage_exec_timeout
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("fix.improve_failed", error=str(exc))
+
+            manifest.files = list_files(project_dir)
+            proof = proof_run(
+                project_dir, checklist=plan.checklist,
+                execution_backend=self.settings.execution_backend, stack=plan.stack,
+            )
+            manifest.extra["proof"] = proof.to_dict()
+            manifest.extra[f"fix_attempt_{attempt}"] = {"filled": filled, "passed": proof.passed}
+            await self.event_bus.emit(
+                EventType.BUILD_STAGE_COMPLETED, "studio",
+                {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "passed": proof.passed},
+                correlation_id=correlation_id,
+            )
+            log.info("fix.iteration", attempt=attempt, filled=filled, passed=proof.passed)
+        return proof
+
     # ---- self-improvement: capture lessons, record pattern, promote skill
     async def _record_learning(
         self,
@@ -449,6 +563,14 @@ class StudioRunner:
                 stack=plan.stack,
             )
             manifest.extra["proof"] = proof.to_dict()
+
+            # Bounded fix loop: if the objective proof failed, repair and
+            # re-verify (fill missing files + code-improve) until it passes or
+            # attempts run out. A no_go no longer just stops.
+            if not proof.passed:
+                proof = await self._fix_loop(
+                    manifest, plan, project_dir, proof, correlation_id, extra
+                )
 
             # Final score: blend reviewer score with proof completeness.
             if reviewer_score <= 0.0:

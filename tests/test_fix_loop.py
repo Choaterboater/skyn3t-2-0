@@ -73,12 +73,14 @@ def test_largest_source_bytes(tmp_path):
     runner = _runner()
     proj = tmp_path / "p"
     (proj / "src").mkdir(parents=True)
-    (proj / "main.py").write_text("x" * 50)            # thin
-    (proj / "README.md").write_text("y" * 5000)         # not source
+    (proj / "main.py").write_text("x" * 50)            # thin source
+    (proj / "README.md").write_text("y" * 5000)         # not source (excluded)
+    (proj / "test_x.py").write_text("z" * 9000)         # test (excluded)
     assert runner._largest_source_bytes(str(proj)) == 50
-    (proj / "src" / "app.py").write_text("z" * 2000)    # rich source
-    assert runner._largest_source_bytes(str(proj)) == 2000
-    assert runner._substance_floor == 600
+    # __init__.py counts (can hold the real implementation); bytes SUM
+    (proj / "src" / "__init__.py").write_text("z" * 2000)
+    assert runner._largest_source_bytes(str(proj)) == 2050
+    assert runner._substance_floor == 800
 
 
 def test_best_of_n_prefers_richer_over_more_files():

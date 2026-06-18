@@ -19,6 +19,10 @@ from enum import Enum
 from time import time
 from typing import Any
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 EventHandler = Callable[["Event"], Awaitable[None]]
 
 
@@ -84,6 +88,7 @@ class EventBus:
         self._history: deque[Event] = deque(maxlen=history_size)
         self._lock = asyncio.Lock()
         self._published = 0
+        self._handler_errors = 0
 
     def subscribe(self, event_type: EventType, handler: EventHandler) -> Callable[[], None]:
         """Register an async handler. Returns an unsubscribe callable."""
@@ -113,10 +118,19 @@ class EventBus:
         results = await asyncio.gather(
             *(h(event) for h in handlers), return_exceptions=True
         )
-        for r in results:
-            if isinstance(r, Exception):  # pragma: no cover - defensive
-                # A subscriber failing must not break the bus.
-                pass
+        for h, r in zip(handlers, results):
+            if isinstance(r, Exception):
+                # A subscriber failing must not break the bus (design rule #6),
+                # but it must not fail invisibly either — log it so a
+                # consistently broken subscriber is observable.
+                self._handler_errors += 1
+                log.warning(
+                    "event_handler_failed",
+                    event_type=event.type.value,
+                    source=event.source,
+                    handler=getattr(h, "__qualname__", repr(h)),
+                    error=str(r),
+                )
 
     async def emit(
         self,
@@ -141,6 +155,11 @@ class EventBus:
     @property
     def published_count(self) -> int:
         return self._published
+
+    @property
+    def handler_errors(self) -> int:
+        """Count of subscriber exceptions swallowed (isolated) during publish."""
+        return self._handler_errors
 
     def snapshot(self) -> dict[str, Any]:
         """Serialize recent history for restore-on-boot."""

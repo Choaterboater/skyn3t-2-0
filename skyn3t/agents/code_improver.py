@@ -45,7 +45,14 @@ class CodeImproverAgent(BaseAgent):
     async def execute(self, task: TaskRequest) -> TaskResult:
         p = task.payload
         brief = p.get("brief", "") or p.get("slug", "app")
-        worktree = Path(p.get("worktree_dir") or p.get("project_dir") or ".")
+        root = p.get("worktree_dir") or p.get("project_dir")
+        if not root:
+            # Never default a write-capable target root to the process cwd:
+            # safe-by-default, no-op rather than mutating arbitrary files.
+            return TaskResult(task_id=task.task_id, success=False,
+                              output={"files_improved": 0, "files": []},
+                              error="no project_dir in payload")
+        worktree = Path(root)
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
 
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}

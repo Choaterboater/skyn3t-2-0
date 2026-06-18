@@ -162,7 +162,29 @@ class ExecutionBackend:
                 kwargs["cap_drop"] = ["ALL"]
             container = client.containers.run(self.image, **{k: v for k, v in kwargs.items() if v is not None})
             try:
-                res = container.wait(timeout=timeout)
+                try:
+                    res = container.wait(timeout=timeout)
+                except Exception as wait_exc:  # noqa: BLE001
+                    # container.wait() raises (requests ReadTimeout/ConnectionError)
+                    # on timeout expiry instead of returning a result. Treat a wait
+                    # timeout as a genuine command timeout — NOT a docker failure.
+                    # Stop/kill the still-running container before removal so we do
+                    # not leak a running container, then report timed_out.
+                    try:
+                        container.kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    out = ""
+                    err = "timed out"
+                    try:
+                        out = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
+                        err = container.logs(stdout=False, stderr=True).decode("utf-8", "replace") or "timed out"
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _ = wait_exc
+                    return ExecResult(
+                        124, out, err, "docker", timed_out=True, command=cmd_str
+                    )
                 code = int(res.get("StatusCode", 1))
                 out = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
                 err = container.logs(stdout=False, stderr=True).decode("utf-8", "replace")
@@ -176,9 +198,22 @@ class ExecutionBackend:
         try:
             return await asyncio.to_thread(_blocking)
         except Exception as exc:  # noqa: BLE001
-            _warn(f"Docker execution failed ({exc}); falling back to inline.")
-            self._resolved = "inline"
-            return await self._run_inline(cmd_list, cmd_str, workdir, timeout, env)
+            # A docker setup/startup failure (e.g. daemon gone, image pull error)
+            # surfaced before/around container creation. Do NOT silently re-run
+            # the command on the host: re-executing agent code outside the
+            # sandbox is an isolation hole, and the command may already have run
+            # (partially) in the container. Report the failure instead.
+            _warn(
+                f"Docker execution failed ({exc}); NOT re-running on host "
+                "(would lose isolation / risk double execution)."
+            )
+            return ExecResult(
+                1,
+                "",
+                f"docker execution failed: {exc}",
+                "docker",
+                command=cmd_str,
+            )
 
     # ---- inline (LOUD, but still out-of-process) ----------------------
     async def _run_inline(
@@ -229,6 +264,16 @@ class ExecutionBackend:
                 proc.kill()
             except Exception:  # noqa: BLE001
                 pass
+            # Drain pipes and reap the child so its transport closes and we
+            # don't leak FDs / leave a zombie until incidental GC. wait_for
+            # bounds the drain in case communicate() hangs.
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=5)
+            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+                try:
+                    await proc.wait()
+                except Exception:  # noqa: BLE001
+                    pass
             return ExecResult(124, "", "timed out", "inline", timed_out=True, command=cmd_str)
 
         return ExecResult(

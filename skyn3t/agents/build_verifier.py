@@ -171,8 +171,32 @@ class BuildVerifierAgent(BaseAgent):
         stack = vc.detect_stack(root, payload)
 
         # Reward-hardening gate runs FIRST: never green a gamed project.
-        claimed = payload.get("prior", {}).get("code", {}) if isinstance(payload.get("prior"), dict) else {}
-        claimed = {**claimed, **{k: payload.get(k) for k in ("success", "score", "tests_passed", "log", "details") if k in payload}}
+        prior = payload.get("prior") if isinstance(payload.get("prior"), dict) else {}
+        code_out = prior.get("code") if isinstance(prior.get("code"), dict) else {}
+        claimed = {**code_out}
+        claimed.update({k: payload.get(k) for k in ("success", "score", "tests_passed", "log", "details") if k in payload})
+        # The real code stage emits {files_written, worktree_dir, stack, files,
+        # backend} and never the explicit success keys, so derive the implicit
+        # success claim from what it actually reports: producing files IS the
+        # claim of a delivered project. Without this, reward-hacking checks #1
+        # and #4 are dead on production data (they gate on claims_success).
+        if "success" not in claimed and "ok" not in claimed:
+            files_written = code_out.get("files_written")
+            files_list = code_out.get("files")
+            implied = bool(
+                (isinstance(files_written, int) and files_written > 0)
+                or (isinstance(files_list, (list, tuple, dict)) and len(files_list) > 0)
+            )
+            if implied:
+                claimed["success"] = True
+        # Feed any generation/build log the code stage reported into the
+        # fabricated-log heuristic (check #4) when no explicit log was passed.
+        if "log" not in claimed and "details" not in claimed:
+            for key in ("log", "details", "output", "summary"):
+                val = code_out.get(key)
+                if isinstance(val, str) and val:
+                    claimed["log"] = val
+                    break
         reward = detect_reward_hacking(str(root) if root else None, claimed)
 
         ran_real, build_ok, mode, details = await self._build(root, stack)
@@ -264,6 +288,12 @@ class BuildVerifierAgent(BaseAgent):
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             except asyncio.TimeoutError:
                 proc.kill()
+                # Reap the killed child / drain pipes so repeated timeouts (npm
+                # install/build at 300s) don't accumulate zombies + open FDs.
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except (asyncio.TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
+                    pass
                 return False, f"command timed out after {timeout}s: {' '.join(cmd)}"
             text = (out or b"").decode("utf-8", errors="replace")
             return proc.returncode == 0, text

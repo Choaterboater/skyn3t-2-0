@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -98,7 +100,22 @@ class BuildPatternBoard:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             payload = {fp: r.to_dict() for fp, r in self._records.items()}
-            self.path.write_text(json.dumps(payload, indent=2, default=str))
+            # Atomic write: temp file in the same dir + os.replace, so a crash
+            # mid-write can never truncate/corrupt the existing scoreboard and
+            # silently wipe accumulated stats.
+            fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(payload, indent=2, default=str))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, self.path)
+            finally:
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:

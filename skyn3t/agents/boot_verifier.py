@@ -83,7 +83,8 @@ class BootVerifierAgent(BaseAgent):
                     return False, "compile", f"{rel}: {exc}"
             return True, "compile", "entrypoints byte-compiled (no python runtime to import)"
 
-        # Prefer a non-serving module to import; skip wsgi/asgi serve loops.
+        # Import the python entrypoint. A blocking serve loop is reported as an
+        # indeterminate hang (see the timeout handler below), not a pass.
         target = next((e for e in entrypoints if Path(e).suffix == ".py"), None)
         if target is None:
             return True, "structural", "no python entrypoint; structural check passed"
@@ -96,14 +97,26 @@ class BootVerifierAgent(BaseAgent):
         try:
             proc = await asyncio.create_subprocess_exec(
                 py, "-c", code, cwd=str(root),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
             except asyncio.TimeoutError:
                 proc.kill()
-                # An import that blocks usually means it starts serving = it boots.
-                return True, "import-timeout", "import blocked (likely a serve loop) — treated as boot"
+                # Reap the killed child and drain its pipes so we don't leak the
+                # transport / leave a zombie until GC (bounded so a stuck process
+                # can't re-hang us here).
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except (asyncio.TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
+                    pass
+                # A hung import is INDETERMINATE, not a pass: we cannot tell a
+                # serve loop from a module-level deadlock/infinite loop/blocking
+                # call. stdin is closed above so input() raises EOFError instead
+                # of blocking; a genuine hang here is treated as a boot failure
+                # rather than silently greened (rule #3).
+                return False, "import-hang", "import did not complete within 20s (hung or blocking at import time)"
             text = (out or b"").decode("utf-8", errors="replace")
             if proc.returncode == 0:
                 return True, "import", "entrypoint imported cleanly"

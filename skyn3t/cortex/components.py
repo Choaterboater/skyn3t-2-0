@@ -26,7 +26,7 @@ from typing import Any
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import Event, EventBus, EventType
-from skyn3t.cortex.proposal_store import Proposal, ProposalType
+from skyn3t.cortex.proposal_store import Proposal, ProposalStatus, ProposalType
 
 
 class _BaseComponent:
@@ -262,7 +262,11 @@ class ReviewWatcher(_BaseComponent):
             dedupe_key=dedupe,
         )
         result = await self.cortex.submit(prop)
-        await self._dispatch_repair("ci_failure", prop.payload, prop.id)
+        # Only fire a repair task once the proposal has actually cleared triage
+        # (approved/applied). A GATED code_patch is held for human approval —
+        # dispatching here would bypass that gate (design rules #2, #4).
+        if self._cleared_gate(result):
+            await self._dispatch_repair("ci_failure", prop.payload, prop.id)
         return result
 
     # ---- PR comment rework loop (P2) ------------------------------------
@@ -294,8 +298,17 @@ class ReviewWatcher(_BaseComponent):
             dedupe_key=dedupe,
         )
         result = await self.cortex.submit(prop)
-        await self._dispatch_repair("pr_rework", prop.payload, prop.id)
+        if self._cleared_gate(result):
+            await self._dispatch_repair("pr_rework", prop.payload, prop.id)
         return result
+
+    @staticmethod
+    def _cleared_gate(result: Proposal | None) -> bool:
+        """True only if the proposal was approved/applied (passed triage gating)."""
+        return result is not None and result.status in (
+            ProposalStatus.APPROVED,
+            ProposalStatus.APPLIED,
+        )
 
     async def _dispatch_repair(self, repair_type: str, payload: dict[str, Any], proposal_id: str) -> None:
         """Best-effort dispatch of a repair task to the orchestrator.

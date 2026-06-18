@@ -142,12 +142,15 @@ def build_ws_router(state: AppState, hub: ConnectionHub) -> Any:
             await ws.close(code=4401)
             return
         await ws.accept()
-        await hub.add(channel, ws)
-        # Prime with recent trajectory so a fresh client has context.
+        # Prime with recent trajectory BEFORE registering as a fan-out target,
+        # so the hub never sends concurrently with the priming loop on the same
+        # socket (Starlette WebSockets don't support concurrent sends) and the
+        # client doesn't receive duplicate (replayed + live) frames.
         try:
             for ev in state.event_bus.history(limit=50):
                 if _channel_match(channel, ev):
                     await ws.send_text(json.dumps({"event": ev.to_dict()}))
+            await hub.add(channel, ws)
             while True:
                 # Keep the socket open; ignore inbound (clients are receivers).
                 await ws.receive_text()

@@ -97,30 +97,54 @@ class MemoryStore:
             await s.commit()
             return row.id
 
-    async def relevant_lessons(self, stack: str, stage: str = "", limit: int = 5) -> list[dict[str, Any]]:
-        """Return lessons for a stack/stage, best-scored first (score = helpful - hurt)."""
+    async def relevant_lessons(
+        self, stack: str, stage: str = "", limit: int = 5, *, ascending: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return lessons for a stack/stage, best-scored first (score = helpful - hurt).
+
+        Set ``ascending=True`` to return the WORST-scored lessons first instead;
+        the hygiene retirement sweep needs the low/negative-score (most-stale)
+        rows, which a score-DESC ordering would push past ``limit``.
+        """
         async with self._session() as s:
             stmt = select(LessonRow).where(LessonRow.stack == stack)
             if stage:
                 stmt = stmt.where(LessonRow.stage == stage)
-            stmt = stmt.order_by(LessonRow.score.desc()).limit(limit)
+            order = LessonRow.score.asc() if ascending else LessonRow.score.desc()
+            stmt = stmt.order_by(order).limit(limit)
             rows = (await s.execute(stmt)).scalars().all()
-            return [{"id": r.id, "text": r.text, "score": r.score, "times_used": r.times_used} for r in rows]
+            return [
+                {
+                    "id": r.id,
+                    "text": r.text,
+                    "score": r.score,
+                    "times_used": r.times_used,
+                    "helpful": r.helpful,
+                    "hurt": r.hurt,
+                }
+                for r in rows
+            ]
 
     async def grade_lesson(self, lesson_id: int, helpful: bool) -> None:
         """Grade a lesson by the outcome of the build that reused it."""
         async with self._session() as s:
-            row = await s.get(LessonRow, lesson_id)
-            if row is None:
-                return
-            row.times_used += 1
-            if helpful:
-                row.helpful += 1
-            else:
-                row.hurt += 1
-            row.score = float(row.helpful - row.hurt)
-            await s.execute(
-                update(LessonRow).where(LessonRow.id == lesson_id)
-                .values(times_used=row.times_used, helpful=row.helpful, hurt=row.hurt, score=row.score)
+            # SQL-side atomic increments so the database performs the arithmetic
+            # under its own write lock — safe against concurrent grading
+            # (no lost-update from a Python read-modify-write).
+            help_inc = 1 if helpful else 0
+            hurt_inc = 0 if helpful else 1
+            new_helpful = LessonRow.helpful + help_inc
+            new_hurt = LessonRow.hurt + hurt_inc
+            result = await s.execute(
+                update(LessonRow)
+                .where(LessonRow.id == lesson_id)
+                .values(
+                    times_used=LessonRow.times_used + 1,
+                    helpful=new_helpful,
+                    hurt=new_hurt,
+                    score=(new_helpful - new_hurt),
+                )
             )
+            if result.rowcount == 0:
+                return
             await s.commit()

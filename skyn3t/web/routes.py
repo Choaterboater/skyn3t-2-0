@@ -218,11 +218,36 @@ async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str
     return {"query": q, "results": results[:limit], "degraded": True}
 
 
+def _event_counts(state: AppState) -> dict[str, int]:
+    """Return monotonic per-type event counts.
+
+    Avoids the O(history) rescan on every scrape and, unlike scanning the
+    bounded history ring, does not silently undercount once the buffer wraps.
+    A counter dict is attached to the event bus and kept current via a single
+    ALL-subscription registered lazily on first use; it is seeded once from the
+    current history so counts reconcile with ``events_published_total``.
+    """
+    bus = state.event_bus
+    counts: dict[str, int] | None = getattr(bus, "_skyn3t_event_counts", None)
+    if counts is None:
+        counts = {}
+        for ev in bus.history():
+            counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
+        try:
+            bus._skyn3t_event_counts = counts  # type: ignore[attr-defined]
+
+            async def _tick(ev: Event) -> None:  # pragma: no cover - async wiring
+                counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
+
+            bus.subscribe(EventType.ALL, _tick)
+        except Exception:  # noqa: BLE001 - degrade to per-call scan if subscribe unavailable
+            return counts
+    return dict(counts)
+
+
 async def metrics_payload(state: AppState) -> dict[str, Any]:
     s = state.status()
-    counts: dict[str, int] = {}
-    for ev in state.event_bus.history():
-        counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
+    counts = _event_counts(state)
     return {
         "events_published": state.event_bus.published_count,
         "event_counts": counts,

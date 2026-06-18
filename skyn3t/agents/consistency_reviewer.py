@@ -39,8 +39,13 @@ def _py_modules(root: Path) -> set[str]:
         else:
             parts[-1] = parts[-1][:-3]
         if parts:
+            # Only the full dotted name is a valid importable module. Adding the
+            # bare leaf (parts[-1]) for nested modules polluted local_tops/
+            # local_mods, so a dangling `import models` was treated as resolved
+            # whenever any nested file was named models.py — suppressing the very
+            # cross-file dangling reference this agent exists to catch. Root-level
+            # modules already equal their own leaf via ".".join(parts).
             mods.add(".".join(parts))
-            mods.add(parts[-1])  # also allow bare top-level name
     return mods
 
 

@@ -50,13 +50,19 @@ def _free_port(preferred: int = 0) -> int:
         return s.getsockname()[1]
 
 
-def _resolve_static_root(directory: Path) -> Path:
-    """Pick the directory that actually holds the static site."""
+def _resolve_static_root(directory: Path) -> Path | None:
+    """Pick the directory that actually holds the static site.
+
+    Returns ``None`` when no candidate directory contains an ``index.html``.
+    We deliberately do *not* fall back to the raw project directory: serving
+    that would expose ``.env``/source/config via directory listing and falsely
+    report success for a non-static project (safe by default — design rule #4).
+    """
     for candidate in ("dist", "build", "out", "public", "."):
         p = directory / candidate if candidate != "." else directory
         if p.is_dir() and (p / "index.html").is_file():
             return p
-    return directory
+    return None
 
 
 class DeployAgent(BaseAgent):
@@ -93,9 +99,10 @@ class DeployAgent(BaseAgent):
             return {"ok": False, "url": None, "error": f"deploy unavailable: {exc}"}
 
         root = _resolve_static_root(directory)
-        if not root.is_dir():
+        if root is None or not root.is_dir():
             return {"ok": False, "url": None,
-                    "error": f"deploy unavailable: no servable directory at {directory}"}
+                    "error": ("deploy unavailable: no static site "
+                              "(no index.html in dist/build/out/public/.)")}
         bind_port = _free_port(port)
         try:
             handler = partial(SimpleHTTPRequestHandler, directory=str(root))

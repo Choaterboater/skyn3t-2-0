@@ -43,7 +43,7 @@ except Exception:  # noqa: BLE001
 _API_ROOT = "https://api.github.com"
 _HTTP_TIMEOUT = 12.0
 
-# Secret-shaped patterns to redact from any ingested text.
+# Secret-shaped patterns to redact wholesale from any ingested text.
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9]{16,}"),                       # OpenAI-style
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}"),               # Anthropic
@@ -52,9 +52,21 @@ _SECRET_PATTERNS = (
     re.compile(r"AIza[0-9A-Za-z_\-]{30,}"),                   # Google API key
     re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}"),            # Slack
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),        # PEM private keys
-    re.compile(r"""(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['"][^'"]{8,}['"]"""),
+)
+# Catch-all key=value pattern. Captured groups: (1) key, (2) operator, (3) value.
+# The value is restricted to a single secret-shaped token (no whitespace) so it
+# does not fire on prose like 'token: "see docs here"'. Only the value is
+# redacted; the key name + operator are preserved so non-secret config text is
+# not corrupted.
+_KV_SECRET_PATTERN = re.compile(
+    r"""(?i)(api[_-]?key|secret|token|password)(\s*[:=]\s*)['"]([^'"\s]{8,})['"]"""
 )
 _REDACTION = "[REDACTED]"
+
+
+def _redact_kv(match: "re.Match[str]") -> str:
+    key, op = match.group(1), match.group(2)
+    return f'{key}{op}"{_REDACTION}"'
 
 
 def redact_secrets(text: str) -> str:
@@ -64,6 +76,7 @@ def redact_secrets(text: str) -> str:
     out = text
     for pat in _SECRET_PATTERNS:
         out = pat.sub(_REDACTION, out)
+    out = _KV_SECRET_PATTERN.sub(_redact_kv, out)
     return out
 
 
@@ -159,7 +172,12 @@ def provenance_match(snippet: str, corpus_blobs: dict[str, str],
 
 
 async def fetch_recent_commits(repo: str, limit: int = 30) -> list[dict[str, Any]] | None:
-    """Fetch recent commits from the GitHub API. None on failure."""
+    """Fetch recent commits from the GitHub API. None on failure.
+
+    The list-commits endpoint does NOT return a per-commit ``files`` array, so
+    callers that need churn/top-path signal should additionally call
+    :func:`fetch_commit_files` (or :func:`enrich_commits_with_files`).
+    """
     if not _HTTPX_AVAILABLE:
         return None
     slug = _normalize_repo(repo)
@@ -174,6 +192,59 @@ async def fetch_recent_commits(repo: str, limit: int = 30) -> list[dict[str, Any
             return data if isinstance(data, list) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+async def _fetch_commit_files(client: Any, slug: str, sha: str) -> list[dict[str, Any]]:
+    """Fetch the per-commit ``files`` array via the single-commit detail endpoint.
+
+    The list-commits endpoint omits ``files``; only GET
+    ``/repos/{slug}/commits/{sha}`` returns it. Returns [] on any failure so
+    enrichment degrades rather than crashing.
+    """
+    try:
+        resp = await client.get(f"{_API_ROOT}/repos/{slug}/commits/{sha}",
+                                headers=_auth_headers())
+        if resp.status_code != 200:
+            return []
+        body = resp.json()
+        files = body.get("files") if isinstance(body, dict) else None
+        return files if isinstance(files, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def enrich_commits_with_files(repo: str, commits: list[dict[str, Any]],
+                                    limit: int = 30) -> list[dict[str, Any]]:
+    """Populate each commit's ``files`` array via the detail endpoint.
+
+    Detail fetches are capped at ``limit`` and run concurrently to bound API
+    cost. Degrades to the original commits (no ``files``) if httpx is missing
+    or detail fetches fail. Never raises.
+    """
+    if not _HTTPX_AVAILABLE or not commits:
+        return commits
+    import asyncio
+
+    slug = _normalize_repo(repo)
+    targets = commits[:max(0, limit)]
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:  # type: ignore
+            shas = [c.get("sha") for c in targets]
+            results = await asyncio.gather(
+                *[_fetch_commit_files(client, slug, sha) if sha else _noop_files()
+                  for sha in shas],
+                return_exceptions=True,
+            )
+        for commit, files in zip(targets, results):
+            if isinstance(files, list):
+                commit["files"] = files
+    except Exception:  # noqa: BLE001
+        return commits
+    return commits
+
+
+async def _noop_files() -> list[dict[str, Any]]:
+    return []
 
 
 class GithubIngestor(BaseAgent):
@@ -216,6 +287,9 @@ class GithubIngestor(BaseAgent):
             out["degraded"] = True
             out["error"] = "could not fetch commit history (offline/rate-limited)"
             return out
+        # The list-commits endpoint omits per-commit files; fetch detail so
+        # top_paths is populated. Capped at commit_limit and run concurrently.
+        commits = await enrich_commits_with_files(repo, commits, limit=commit_limit)
         out["commit_summary"] = summarize_commits(commits).to_dict()
         return out
 

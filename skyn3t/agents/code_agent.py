@@ -17,6 +17,7 @@ absent) and are confined to that directory.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
@@ -40,6 +41,9 @@ _SYSTEM = (
 
 
 class CodeAgent(BaseAgent):
+    # Max concurrent per-file generations (bounds nested claude -p instances).
+    _gen_concurrency = 4
+
     def __init__(self, name: str = "code", *, event_bus: EventBus,
                  llm: LLMClient | None = None, config: dict | None = None) -> None:
         super().__init__(name, agent_type="codegen", provider="llm",
@@ -75,11 +79,20 @@ class CodeAgent(BaseAgent):
         if self.llm.backend != "stub":
             knowledge = knowledge_block(p)
             planned = self._planned_paths(plan, scaffold)
-            for rel_path in planned:
-                try:
-                    content = await self._generate_file(rel_path, brief, stack, plan, knowledge)
-                except Exception:  # noqa: BLE001 - keep the scaffold fallback for this file
-                    content = files.get(rel_path)
+            # Generate files CONCURRENTLY (bounded) so a multi-file app's
+            # wall-clock is the slowest file, not the sum — otherwise N slow
+            # claude -p calls serialize past the stage timeout and every file
+            # degrades to the scaffold stub.
+            sem = asyncio.Semaphore(self._gen_concurrency)
+
+            async def _one(rel_path: str) -> tuple[str, str | None]:
+                async with sem:
+                    try:
+                        return rel_path, await self._generate_file(rel_path, brief, stack, plan, knowledge)
+                    except Exception:  # noqa: BLE001 - keep scaffold fallback for this file
+                        return rel_path, None
+
+            for rel_path, content in await asyncio.gather(*(_one(p) for p in planned)):
                 if content and content.strip():
                     files[rel_path] = content
 

@@ -2,10 +2,12 @@ import React, { Suspense, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
+import { PageHeader, Panel, PanelHead, Stat, Pill } from "../components/ui.jsx";
 
 // A lightweight stand-in "brain": an icosahedron core wrapped in a wireframe
 // shell with orbiting synapse nodes. Pure r3f/three primitives — no asset
 // loading, so it builds and runs without external models.
+// Themed in SYNAPSE violet (the mind) with EMBER accents (active thought).
 function BrainMesh({ activity = 0.3 }) {
   const core = useRef();
   const shell = useRef();
@@ -37,8 +39,8 @@ function BrainMesh({ activity = 0.3 }) {
       <mesh ref={core}>
         <icosahedronGeometry args={[1.2, 1]} />
         <meshStandardMaterial
-          color="#0ea5e9"
-          emissive="#38bdf8"
+          color="#A688FF"
+          emissive="#A688FF"
           emissiveIntensity={glow}
           roughness={0.3}
           metalness={0.5}
@@ -46,14 +48,14 @@ function BrainMesh({ activity = 0.3 }) {
       </mesh>
       <mesh ref={shell}>
         <icosahedronGeometry args={[1.9, 1]} />
-        <meshStandardMaterial color="#38bdf8" wireframe transparent opacity={0.25} />
+        <meshStandardMaterial color="#A688FF" wireframe transparent opacity={0.25} />
       </mesh>
       {synapses.map((pos, i) => (
         <mesh key={i} position={pos}>
           <sphereGeometry args={[0.07, 12, 12]} />
           <meshStandardMaterial
-            color="#7dd3fc"
-            emissive="#7dd3fc"
+            color={i % 3 === 0 ? "#FF6A3D" : "#C9B6FF"}
+            emissive={i % 3 === 0 ? "#FF6A3D" : "#A688FF"}
             emissiveIntensity={glow}
           />
         </mesh>
@@ -80,46 +82,61 @@ export default function Brain({ stream }) {
     (data?.activity != null ? Number(data.activity) : 0) +
     Math.min(learningEvents / 20, 1);
 
+  const hot = activity > 0.5;
+
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold">Brain</h1>
-        <p className="text-sm text-slate-500">
-          Knowledge graph activity. Glow scales with learning events.
-        </p>
-      </header>
+    <div>
+      <PageHeader
+        eyebrow="Foundry · The Mind"
+        title="Brain"
+        sub="Knowledge graph activity. The core glows as the swarm learns — synapses fire with every lesson captured."
+        actions={
+          <Pill tone={hot ? "ember" : "synapse"}>
+            {hot ? "thinking" : "at rest"}
+          </Pill>
+        }
+      />
 
-      <div className="card h-[480px] overflow-hidden p-0">
-        <Canvas camera={{ position: [0, 0, 6], fov: 50 }}>
-          <ambientLight intensity={0.4} />
-          <pointLight position={[5, 5, 5]} intensity={1.2} />
-          <pointLight position={[-5, -3, -5]} intensity={0.6} color="#38bdf8" />
-          <Suspense fallback={null}>
-            <BrainMesh activity={activity} />
-          </Suspense>
-        </Canvas>
+      <div className="mb-6 grid grid-cols-3 gap-4">
+        <Stat
+          label="Documents"
+          value={data?.documents ?? "—"}
+          tone="synapse"
+        />
+        <Stat
+          label="Lessons"
+          value={data?.lessons ?? "—"}
+          tone="synapse"
+        />
+        <Stat
+          label="Learning events"
+          value={learningEvents}
+          tone={learningEvents ? "ember" : "bone"}
+          hint="this session"
+        />
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <div className="card">
-          <div className="text-xs uppercase text-slate-500">Documents</div>
-          <div className="mt-1 text-2xl font-semibold">
-            {data?.documents ?? "—"}
-          </div>
+      <Panel className="overflow-hidden" glow={hot}>
+        <PanelHead
+          label="Knowledge graph"
+          right={
+            <span className="font-mono text-[11px] text-synapse">
+              activity · {activity.toFixed(2)}
+            </span>
+          }
+        />
+        <div className="relative h-[480px] bg-void">
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-synapse/10 blur-3xl" />
+          <Canvas camera={{ position: [0, 0, 6], fov: 50 }}>
+            <ambientLight intensity={0.4} />
+            <pointLight position={[5, 5, 5]} intensity={1.2} color="#A688FF" />
+            <pointLight position={[-5, -3, -5]} intensity={0.6} color="#FF6A3D" />
+            <Suspense fallback={null}>
+              <BrainMesh activity={activity} />
+            </Suspense>
+          </Canvas>
         </div>
-        <div className="card">
-          <div className="text-xs uppercase text-slate-500">Lessons</div>
-          <div className="mt-1 text-2xl font-semibold">
-            {data?.lessons ?? "—"}
-          </div>
-        </div>
-        <div className="card">
-          <div className="text-xs uppercase text-slate-500">
-            Learning events
-          </div>
-          <div className="mt-1 text-2xl font-semibold">{learningEvents}</div>
-        </div>
-      </div>
+      </Panel>
     </div>
   );
 }

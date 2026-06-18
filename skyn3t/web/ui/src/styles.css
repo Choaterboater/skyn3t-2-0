@@ -12,17 +12,105 @@ body,
   height: 100%;
 }
 
-@layer components {
-  .card {
-    @apply rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-lg shadow-black/20;
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  /* faint forge-floor grid + a low ember glow bleeding up from the base */
+  background-color: #0a0e17;
+  background-image:
+    radial-gradient(120% 80% at 50% 120%, rgba(255, 106, 61, 0.08), transparent 60%),
+    linear-gradient(to right, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+  background-size: 100% 100%, 40px 40px, 40px 40px;
+}
+
+@layer base {
+  h1, h2, h3, .font-display {
+    font-family: "Space Grotesk", system-ui, sans-serif;
   }
+}
+
+@layer components {
+  /* Raised slate panel with a hairline edge and inset top-light. */
+  .panel {
+    @apply rounded-lg border border-hairline bg-panel/80 shadow-panel backdrop-blur-sm;
+  }
+  /* Back-compat alias used by not-yet-redesigned pages. */
+  .card {
+    @apply rounded-lg border border-hairline bg-panel/80 p-4 shadow-panel;
+  }
+
+  /* Mono, wide-tracked, uppercase section label — the structural voice. */
+  .eyebrow {
+    @apply font-mono text-[10px] font-medium uppercase tracking-eyebrow text-ash;
+  }
+
   .nav-link {
-    @apply block rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-slate-100;
+    @apply flex items-center gap-2 rounded-md px-3 py-2 font-mono text-[13px] text-ash transition-colors;
+  }
+  .nav-link:hover {
+    @apply bg-white/5 text-bone;
   }
   .nav-link-active {
-    @apply bg-slate-800 text-brand;
+    @apply bg-ember/10 text-ember;
   }
+  /* ember rail on the active nav item */
+  .nav-link-active::before {
+    content: "";
+    @apply absolute left-0 h-5 w-[2px] -translate-x-3 rounded-full bg-ember;
+    box-shadow: 0 0 10px 0 rgba(255, 106, 61, 0.8);
+  }
+
   .badge {
-    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center rounded-full border border-hairline px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide;
+  }
+
+  /* Telemetry number: big, mono, tabular. */
+  .metric {
+    @apply font-mono text-3xl font-semibold tabular-nums text-bone;
+  }
+
+  /* Primary action — molten. */
+  .btn-ember {
+    @apply inline-flex items-center justify-center gap-2 rounded-md bg-ember px-4 py-2 font-mono text-sm font-semibold text-void transition;
+  }
+  .btn-ember:hover {
+    @apply bg-ember-soft shadow-ember;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-sm text-ash transition;
+  }
+  .btn-ghost:hover {
+    @apply border-ember/50 text-bone;
+  }
+
+  .field {
+    @apply w-full rounded-md border border-hairline bg-void px-3 py-2 font-mono text-sm text-bone outline-none transition;
+  }
+  .field:focus {
+    @apply border-ember/60 shadow-ember;
+  }
+}
+
+@layer utilities {
+  /* the heat states */
+  .heat-hot {
+    color: #ff6a3d;
+    text-shadow: 0 0 12px rgba(255, 106, 61, 0.55);
+  }
+  .heat-cool {
+    color: #3dd9c4;
+  }
+  .ring-heat {
+    box-shadow: 0 0 0 1px rgba(255, 106, 61, 0.4), 0 0 20px -4px rgba(255, 106, 61, 0.7);
+  }
+}
+
+/* respect reduced motion globally */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

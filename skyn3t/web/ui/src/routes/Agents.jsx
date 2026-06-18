@@ -1,15 +1,17 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
+import { PageHeader, Panel, PanelHead, Stat, Empty, Pill } from "../components/ui.jsx";
 
-const STATUS_BADGE = {
-  idle: "bg-slate-700 text-slate-300",
-  running: "bg-amber-500/20 text-amber-300",
-  busy: "bg-amber-500/20 text-amber-300",
-  healthy: "bg-emerald-500/20 text-emerald-300",
-  failed: "bg-rose-500/20 text-rose-300",
-  unregistered: "bg-slate-800 text-slate-500",
-};
+// Status -> heat. Busy/running flares ember; ready/healthy cools to plasma;
+// everything else stays ash-quiet.
+function statusHeat(status) {
+  const s = String(status || "idle").toLowerCase();
+  if (s === "busy" || s === "running") return "ember";
+  if (s === "ready" || s === "healthy") return "plasma";
+  if (s === "failed") return "ember";
+  return "ash";
+}
 
 export default function Agents({ stream }) {
   const { data, isLoading, error } = useQuery({
@@ -25,54 +27,103 @@ export default function Agents({ stream }) {
 
   const agents = Array.isArray(data) ? data : data?.agents || [];
 
+  const forging = agents.filter((a) => statusHeat(a.status) === "ember").length;
+  const ready = agents.filter((a) => statusHeat(a.status) === "plasma").length;
+
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold">Swarm</h1>
-        <p className="text-sm text-slate-500">
-          Registered agents and their live status.
-        </p>
-      </header>
+    <div>
+      <PageHeader
+        eyebrow="Foundry · Swarm"
+        title="Agents"
+        sub="Registered agents and their live status. Heat is work — nodes flare ember while forging."
+        actions={
+          <span className="badge border-hairline text-ash">
+            roster · <span className="ml-1 text-plasma">{agents.length}</span>
+          </span>
+        }
+      />
 
       {error ? (
-        <div className="card border-rose-800 text-sm text-rose-300">
+        <Panel className="mb-6 border-ember/40 p-4 text-sm text-ember">
           {String(error.message)}
-        </div>
+        </Panel>
       ) : null}
 
-      {isLoading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
-      ) : agents.length === 0 ? (
-        <p className="text-sm text-slate-500">No agents registered.</p>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {agents.map((a) => {
-            const status = a.status || "idle";
-            return (
-              <div key={a.name} className="card">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-slate-100">{a.name}</span>
-                  <span
-                    className={`badge ${
-                      STATUS_BADGE[status] || STATUS_BADGE.idle
-                    }`}
-                  >
-                    {status}
-                  </span>
-                </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  {a.agent_type || a.type} · {a.provider || "local"}
-                </div>
-                {lastBySource[a.name] ? (
-                  <div className="mt-2 font-mono text-xs text-brand">
-                    {lastBySource[a.name]}
+      <div className="mb-6 grid grid-cols-3 gap-4">
+        <Stat label="Registered" value={agents.length} />
+        <Stat
+          label="Forging"
+          value={forging}
+          tone={forging ? "ember" : "plasma"}
+          hint={forging ? "agents hot" : "all idle"}
+        />
+        <Stat label="Ready" value={ready} tone="plasma" />
+      </div>
+
+      <Panel className="overflow-hidden">
+        <PanelHead
+          label="The Roster"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              {forging}/{agents.length} forging
+            </span>
+          }
+        />
+
+        {isLoading ? (
+          <Empty icon="⬡">Loading the swarm…</Empty>
+        ) : agents.length === 0 ? (
+          <Empty icon="⬡">No agents registered yet.</Empty>
+        ) : (
+          <div className="grid grid-cols-1 gap-px bg-hairline/40 sm:grid-cols-2 lg:grid-cols-3">
+            {agents.map((a) => {
+              const status = a.status || "idle";
+              const heat = statusHeat(status);
+              const hot = heat === "ember";
+              const last = lastBySource[a.name];
+              return (
+                <div
+                  key={a.name}
+                  className={`relative flex flex-col gap-3 bg-panel p-4 transition-all duration-300 ${
+                    hot ? "ring-heat" : ""
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                          hot
+                            ? "bg-ember animate-forgepulse"
+                            : heat === "plasma"
+                            ? "bg-plasma"
+                            : "bg-ash/40"
+                        }`}
+                      />
+                      <span className="font-display text-sm font-semibold text-bone">
+                        {a.name}
+                      </span>
+                    </div>
+                    <Pill tone={heat}>{status}</Pill>
                   </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      )}
+
+                  <div className="flex items-center gap-2 font-mono text-[11px] text-ash">
+                    <span className="text-bone/80">{a.agent_type || a.type}</span>
+                    <span className="text-ash/40">·</span>
+                    <span>{a.provider || "local"}</span>
+                  </div>
+
+                  {last ? (
+                    <div className="mt-auto flex items-center gap-2 border-t border-hairline/60 pt-2 font-mono text-[11px]">
+                      <span className="eyebrow text-ash/60">last</span>
+                      <span className={hot ? "text-ember" : "text-plasma"}>{last}</span>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }

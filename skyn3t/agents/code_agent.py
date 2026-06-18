@@ -75,14 +75,26 @@ class CodeAgent(BaseAgent):
         scaffold = scaffold_for(stack, app_name, brief)
         files: dict[str, str] = dict(scaffold)
 
-        # Only attempt per-file LLM generation when a real backend is present.
-        if self.llm.backend != "stub":
-            knowledge = knowledge_block(p)
+        knowledge = knowledge_block(p)
+        if self.llm.backend == "stub":
+            # Offline: deliver the runnable scaffold as-is.
+            pass
+        elif getattr(self.llm, "supports_agentic", False):
+            # CLI backend is a coding AGENT: lay the scaffold as a floor, then
+            # ONE agentic session authors the whole coherent multi-file app into
+            # the worktree. Far better than N per-file completions that time out.
+            self._write_files(worktree, files)
+            res = await self.llm.agentic_build(
+                self._agentic_prompt(brief, stack, plan, knowledge), str(worktree)
+            )
+            self.metadata["agentic"] = res
+            disk = self._read_files(worktree)
+            if disk:
+                files = disk  # whatever the agent wrote becomes the delivery
+        else:
+            # Completion backend (OpenRouter): per-file, generated CONCURRENTLY
+            # (bounded) so a multi-file app's wall-clock is the slowest file.
             planned = self._planned_paths(plan, scaffold)
-            # Generate files CONCURRENTLY (bounded) so a multi-file app's
-            # wall-clock is the slowest file, not the sum — otherwise N slow
-            # claude -p calls serialize past the stage timeout and every file
-            # degrades to the scaffold stub.
             sem = asyncio.Semaphore(self._gen_concurrency)
 
             async def _one(rel_path: str) -> tuple[str, str | None]:
@@ -133,6 +145,44 @@ class CodeAgent(BaseAgent):
             if path not in paths:
                 paths.append(path)
         return paths
+
+    def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str) -> str:
+        files = plan.get("files") or []
+        manifest = "\n".join(
+            f"  {f['path']} — {f.get('purpose', '')}"
+            for f in files if isinstance(f, dict) and f.get("path")
+        )
+        return (
+            f"{knowledge}"
+            f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
+            f"{brief}\n\n"
+            f"Architecture summary: {plan.get('summary', '')}\n"
+            + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
+            + "Write ALL files into the CURRENT directory (create subfolders as needed). "
+            "Make it a real, fully-featured, MULTI-FILE app — implement every feature in the "
+            "brief with real logic and error handling. No placeholders, no TODOs, no stub "
+            "functions. Ensure it installs/builds and runs, with a clear runnable entrypoint "
+            "and a README. Do not ask questions — just build it."
+        )
+
+    _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next"})
+
+    def _read_files(self, worktree: Path) -> dict[str, str]:
+        """Read every text file the agent wrote into the worktree."""
+        root = Path(worktree)
+        out: dict[str, str] = {}
+        for p in root.rglob("*"):
+            if not p.is_file() or p.name == ".DS_Store":
+                continue
+            if any(part in self._SKIP_PARTS for part in p.relative_to(root).parts):
+                continue
+            try:
+                if p.stat().st_size > 500_000:
+                    continue  # skip oversized/binary artifacts
+                out[str(p.relative_to(root))] = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+        return out
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
                              plan: dict[str, Any], knowledge: str = "") -> str | None:

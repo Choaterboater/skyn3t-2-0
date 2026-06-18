@@ -1,6 +1,15 @@
 import React, { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiPost } from "../api.js";
+import {
+  PageHeader,
+  Panel,
+  PanelHead,
+  Stat,
+  Pill,
+  Empty,
+  verdictTone,
+} from "../components/ui.jsx";
 
 // Canonical pipeline stages (mirrors the stage vocabulary in the backend).
 const STAGES = [
@@ -27,12 +36,53 @@ function stageState(stage, events) {
   return state;
 }
 
-const DOT = {
-  pending: "bg-slate-700",
-  running: "bg-amber-400 animate-pulseglow",
-  done: "bg-emerald-500",
-  failed: "bg-rose-500",
-};
+// The forge line. Each stage is a node on a horizontal rail: it ignites EMBER
+// while running, cools to PLASMA when done, sits ASH while pending, flares the
+// hot ember on failure.
+function ForgeStage({ stage, state }) {
+  const hot = state === "running";
+  const done = state === "done";
+  const failed = state === "failed";
+
+  const nodeCls = hot
+    ? "border-ember/60 bg-ember/10 ring-heat animate-emberflare"
+    : done
+    ? "border-plasma/40 bg-plasma/5"
+    : failed
+    ? "border-ember/60 bg-ember/10"
+    : "border-hairline bg-void/60";
+
+  const dotCls = hot
+    ? "bg-ember animate-forgepulse"
+    : done
+    ? "bg-plasma"
+    : failed
+    ? "bg-ember"
+    : "bg-ash/40";
+
+  const labelCls = hot
+    ? "text-ember"
+    : done
+    ? "text-plasma"
+    : failed
+    ? "text-ember"
+    : "text-ash";
+
+  return (
+    <div
+      title={`${stage} · ${state}`}
+      className={`flex min-w-[7.5rem] flex-col gap-2 rounded-md border px-3 py-2.5 transition-all duration-300 ${nodeCls}`}
+    >
+      <div className="flex items-center gap-2">
+        <span className={`h-1.5 w-1.5 rounded-full ${dotCls}`} />
+        <span className={`font-mono text-[11px] ${labelCls}`}>{stage}</span>
+      </div>
+      <span className="eyebrow text-[9px] text-ash/70">
+        {failed ? "failed" : state}
+      </span>
+    </div>
+  );
+}
 
 export default function Studio({ stream }) {
   const qc = useQueryClient();
@@ -59,91 +109,131 @@ export default function Studio({ stream }) {
 
   const recentBuilds = Array.isArray(builds) ? builds : builds?.builds || [];
 
+  const running = pipeline.filter((p) => p.state === "running").length;
+  const done = pipeline.filter((p) => p.state === "done").length;
+
   return (
-    <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold">Studio</h1>
-        <p className="text-sm text-slate-500">
-          Submit a build brief and watch the pipeline.
-        </p>
-      </header>
+    <div>
+      <PageHeader
+        eyebrow="Foundry · Build Console"
+        title="Studio"
+        sub="Forge a brief into running software. Watch the line ignite as the swarm works."
+        actions={
+          <span className="badge border-hairline text-ash">
+            forge line ·{" "}
+            <span className={`ml-1 ${running ? "text-ember" : "text-plasma"}`}>
+              {running ? "live" : "idle"}
+            </span>
+          </span>
+        }
+      />
 
-      <form
-        className="card flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (brief.trim()) submit.mutate({ brief: brief.trim() });
-        }}
-      >
-        <input
-          className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm outline-none focus:border-brand"
-          placeholder="Describe the app to build…"
-          value={brief}
-          onChange={(e) => setBrief(e.target.value)}
-        />
-        <button
-          type="submit"
-          disabled={submit.isPending || !brief.trim()}
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50"
+      <Panel className="mb-6 p-4">
+        <form
+          className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (brief.trim()) submit.mutate({ brief: brief.trim() });
+          }}
         >
-          {submit.isPending ? "Submitting…" : "Build"}
-        </button>
-      </form>
+          <input
+            className="field flex-1"
+            placeholder="Describe the app to build…"
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+          />
+          <button
+            type="submit"
+            disabled={submit.isPending || !brief.trim()}
+            className="btn-ember disabled:opacity-50"
+          >
+            {submit.isPending ? "Forging…" : "Forge build"}
+          </button>
+        </form>
+        {submit.isError ? (
+          <p className="mt-3 font-mono text-xs text-ember">
+            {String(submit.error.message)}
+          </p>
+        ) : null}
+      </Panel>
 
-      {submit.isError ? (
-        <div className="card border-rose-800 text-sm text-rose-300">
-          {String(submit.error.message)}
-        </div>
-      ) : null}
-
-      <section className="card">
-        <h2 className="mb-4 text-sm font-semibold text-slate-300">
-          Pipeline (live)
-        </h2>
-        <ol className="flex flex-wrap items-center gap-x-2 gap-y-3">
+      <Panel className="mb-6 overflow-hidden">
+        <PanelHead
+          label="Forge line"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              {running ? (
+                <span className="text-ember">{running} igniting</span>
+              ) : (
+                <span className="text-plasma">{done}/{STAGES.length} cooled</span>
+              )}
+            </span>
+          }
+        />
+        <div className="flex items-stretch gap-1 overflow-x-auto p-4">
           {pipeline.map((p, i) => (
-            <li key={p.stage} className="flex items-center gap-2">
-              <span className={`h-3 w-3 rounded-full ${DOT[p.state]}`} />
-              <span className="text-xs text-slate-300">{p.stage}</span>
+            <React.Fragment key={p.stage}>
+              <ForgeStage stage={p.stage} state={p.state} />
               {i < pipeline.length - 1 ? (
-                <span className="text-slate-700">→</span>
+                <span
+                  className={`mx-0.5 flex-shrink-0 self-center font-mono text-sm ${
+                    p.state === "done" ? "text-plasma/60" : "text-ash/30"
+                  }`}
+                >
+                  →
+                </span>
               ) : null}
-            </li>
+            </React.Fragment>
           ))}
-        </ol>
-      </section>
+        </div>
+      </Panel>
 
-      <section className="card">
-        <h2 className="mb-3 text-sm font-semibold text-slate-300">
-          Recent builds
-        </h2>
+      <Panel>
+        <PanelHead
+          label="Recent builds"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              {recentBuilds.length} total
+            </span>
+          }
+        />
         {recentBuilds.length === 0 ? (
-          <p className="text-sm text-slate-500">No builds yet.</p>
+          <Empty icon="⬡">No builds yet. Submit a brief to fire the forge.</Empty>
         ) : (
-          <table className="w-full text-left text-sm">
-            <thead className="text-xs uppercase text-slate-500">
-              <tr>
-                <th className="py-1">Slug</th>
-                <th className="py-1">Status</th>
-                <th className="py-1">Score</th>
-                <th className="py-1">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentBuilds.map((b) => (
-                <tr key={b.build_id || b.slug} className="border-t border-slate-800">
-                  <td className="py-1.5 font-mono text-xs">{b.slug}</td>
-                  <td className="py-1.5">{b.status}</td>
-                  <td className="py-1.5">{b.score ?? "—"}</td>
-                  <td className="py-1.5">
-                    {b.cost_usd != null ? `$${Number(b.cost_usd).toFixed(4)}` : "—"}
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="eyebrow border-b border-hairline text-ash">
+                  <th className="px-4 py-2 font-normal">Slug</th>
+                  <th className="px-4 py-2 font-normal">Status</th>
+                  <th className="px-4 py-2 font-normal">Score</th>
+                  <th className="px-4 py-2 font-normal">Cost</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-hairline/60">
+                {recentBuilds.map((b) => (
+                  <tr key={b.build_id || b.slug}>
+                    <td className="px-4 py-2 font-mono text-xs text-bone">
+                      {b.slug}
+                    </td>
+                    <td className="px-4 py-2">
+                      <Pill tone={verdictTone(b.status)}>{b.status}</Pill>
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs text-ash">
+                      {b.score ?? "—"}
+                    </td>
+                    <td className="px-4 py-2 font-mono text-xs text-ash">
+                      {b.cost_usd != null
+                        ? `$${Number(b.cost_usd).toFixed(4)}`
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-      </section>
+      </Panel>
     </div>
   );
 }

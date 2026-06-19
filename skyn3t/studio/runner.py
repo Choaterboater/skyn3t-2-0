@@ -656,7 +656,8 @@ class StudioRunner:
                 await self.event_bus.emit(
                     EventType.BUILD_STAGE_STARTED,
                     "studio",
-                    {"build_id": build_id, "stage": spec.name, "agent_type": spec.agent_type},
+                    {"build_id": build_id, "stage": spec.name, "capability": spec.capability,
+                     "agent_type": spec.agent_type},
                     correlation_id=correlation_id,
                 )
                 record = StageRecord(
@@ -917,11 +918,17 @@ class StudioRunner:
         return summary
 
     async def _emit_stage_done(self, build_id: str, record: StageRecord, correlation_id: str) -> None:
+        # Include capability (so the dashboard's stage axis matches) and gaps (so
+        # FeatureSuggester, which keys off payload['gaps'], can actually fire).
+        payload: dict[str, Any] = {
+            "build_id": build_id, "stage": record.name, "capability": record.capability,
+            "status": record.status, "score": record.score,
+        }
+        gaps = record.output_summary.get("gaps") if isinstance(record.output_summary, dict) else None
+        if gaps:
+            payload["gaps"] = list(gaps)
         await self.event_bus.emit(
-            EventType.BUILD_STAGE_COMPLETED,
-            "studio",
-            {"build_id": build_id, "stage": record.name, "status": record.status, "score": record.score},
-            correlation_id=correlation_id,
+            EventType.BUILD_STAGE_COMPLETED, "studio", payload, correlation_id=correlation_id,
         )
 
     async def _save_build(self, manifest: BuildManifest) -> None:
@@ -955,6 +962,11 @@ class StudioRunner:
             {
                 "build_id": manifest.build_id,
                 "slug": manifest.slug,
+                # stack + brief so ExperienceIngestor tags the doc by stack and
+                # records the intent — otherwise recall (keyed on stack/brief)
+                # can never match a prior build.
+                "stack": manifest.stack,
+                "brief": manifest.brief,
                 "status": manifest.status,
                 "verdict": manifest.verdict,
                 "score": final_score,

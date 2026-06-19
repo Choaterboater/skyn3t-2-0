@@ -29,9 +29,10 @@ function stageState(stage, events) {
   events.forEach((e) => {
     const s = (e.payload && (e.payload.stage || e.payload.capability)) || "";
     if (s !== stage) return;
-    if (e.type === "BUILD_STAGE_STARTED") state = "running";
-    if (e.type === "BUILD_STAGE_COMPLETED") state = "done";
-    if (e.type === "TASK_FAILED" || e.type === "BUILD_FAILED") state = "failed";
+    // EventType.value is lowercase-dotted on the wire (events.py), not the enum NAME.
+    if (e.type === "build.stage.started") state = "running";
+    if (e.type === "build.stage.completed") state = "done";
+    if (e.type === "task.failed" || e.type === "build.failed") state = "failed";
   });
   return state;
 }

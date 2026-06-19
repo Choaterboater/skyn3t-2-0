@@ -23,6 +23,11 @@ export default function Cortex() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
   });
 
+  const scout = useMutation({
+    mutationFn: () => apiPost("/cortex/scout", {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+
   const proposals = Array.isArray(data) ? data : data?.proposals || [];
 
   return (
@@ -36,6 +41,14 @@ export default function Cortex() {
             <span className="badge border-hairline text-ash">
               open · <span className="ml-1 text-ember">{proposals.length}</span>
             </span>
+            <button
+              onClick={() => scout.mutate()}
+              disabled={scout.isPending}
+              className="btn-ember disabled:opacity-50"
+              title="Scout GitHub now for repos to ingest (files gated proposals)"
+            >
+              {scout.isPending ? "Scouting…" : "Scout now"}
+            </button>
             <button
               onClick={() => clear.mutate("resolved")}
               disabled={clear.isPending}

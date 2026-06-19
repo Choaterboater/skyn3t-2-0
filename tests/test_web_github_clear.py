@@ -58,3 +58,33 @@ def test_clear_proposals_all():
     assert res["cleared"] == 3
     assert res["remaining"] == 0
     assert st.proposals == {}
+
+
+def test_scout_now_triggers_repo_scout():
+    class RepoScout:  # class name matters: scout_now matches by type().__name__
+        def __init__(self):
+            self.topics = []
+
+        async def scout(self, topic):
+            self.topics.append(topic)
+            return ["prop1", "prop2"]
+
+    class _Cortex:
+        def __init__(self, scout):
+            self._components = [object(), scout]
+
+    st = _state()
+    sc = RepoScout()
+    st.cortex = _Cortex(sc)
+    res = asyncio.run(routes.scout_now(st, topic="python cli tool"))
+    assert res["scouted"] == 2
+    assert res["topic"] == "python cli tool"
+    assert sc.topics == ["python cli tool"]
+
+
+def test_scout_now_without_cortex_is_safe():
+    st = _state()
+    st.cortex = None
+    res = asyncio.run(routes.scout_now(st))
+    assert res["scouted"] == 0
+    assert "error" in res

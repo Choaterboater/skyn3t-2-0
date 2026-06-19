@@ -289,3 +289,39 @@ async def test_gated_tuner_counts_low_scores_per_stage():
     for _ in range(2):
         await bus.emit(EventType.BUILD_STAGE_COMPLETED, "studio", {"stage": "review", "score": 40.0})
     assert len(cortex.submitted) == 1
+
+
+async def test_reflection_loop_closes_tuning_loop():
+    """A finished no_go build flows reflection -> KNOWLEDGE_UPDATED suggestions
+    -> SelfTuningEngine, enabling reflective_retry on a live agent."""
+    from skyn3t.cortex.components import ReflectionLoop
+    from skyn3t.memory.tuner import SelfTuningEngine
+
+    class _FakeAgent:
+        def __init__(self) -> None:
+            self.config = {"reflective_retry": False}
+
+    class _NullCortex:
+        async def submit(self, proposal):
+            return proposal
+
+    bus = EventBus()
+    agent = _FakeAgent()
+    tuner = SelfTuningEngine(bus, {"coder": agent})
+    tuner.start()
+    loop = ReflectionLoop(_NullCortex(), bus, settings=_settings())
+    await loop.run()  # subscribe to BUILD_COMPLETED
+
+    await bus.emit(
+        EventType.BUILD_COMPLETED, "studio",
+        {"slug": "app", "stack": "fastapi", "score": 30.0, "verdict": "no_go"},
+    )
+    assert agent.config["reflective_retry"] is True
+
+    # A successful build must NOT churn configs (no suggestions emitted).
+    agent.config["reflective_retry"] = False
+    await bus.emit(
+        EventType.BUILD_COMPLETED, "studio",
+        {"slug": "app2", "stack": "fastapi", "score": 95.0, "verdict": "go"},
+    )
+    assert agent.config["reflective_retry"] is False

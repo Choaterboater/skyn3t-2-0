@@ -108,6 +108,36 @@ class GatedTuner(_BaseComponent):
         )
 
 
+class ReflectionLoop(_BaseComponent):
+    """Turns each finished build into a reflection.
+
+    On ``BUILD_COMPLETED`` it asks a :class:`Reflector` to distil keep/change
+    findings and emit ``KNOWLEDGE_UPDATED`` (with safe ``suggestions``), which
+    the already-running ``SelfTuningEngine`` consumes — closing the
+    outcome -> reflection -> config-nudge loop that was previously severed
+    (the reflector was never instantiated and emitted no ``suggestions``).
+    """
+
+    name = "reflection_loop"
+
+    def __init__(
+        self, cortex: Any, event_bus: EventBus, settings: Settings | None = None, llm: Any | None = None
+    ) -> None:
+        super().__init__(cortex, event_bus, settings)
+        from skyn3t.intelligence.reflection import Reflector
+
+        self._reflector = Reflector(event_bus=event_bus, llm=llm)
+
+    async def run(self) -> None:
+        self._running = True
+
+        async def on_build(ev: Event) -> None:
+            with contextlib.suppress(Exception):
+                await self._reflector.reflect_and_publish(ev.payload or {})
+
+        self._unsubs.append(self.event_bus.subscribe(EventType.BUILD_COMPLETED, on_build))
+
+
 class FeatureSuggester(_BaseComponent):
     """Proposes new features (always gated — never auto-applied)."""
 

@@ -142,6 +142,25 @@ class Reflector:
         await self._publish(ref)
         return ref
 
+    @staticmethod
+    def _suggestions(ref: "Reflection") -> list[dict[str, Any]]:
+        """Conservative, safe tuning nudges the SelfTuningEngine can apply.
+
+        Free-text findings are NOT mapped to specific numeric knobs (that would
+        be guesswork). A build that fell short only enables ``reflective_retry``
+        — a safe, reversible, only-ever-turned-on flag — so the loop does
+        something useful without risk. A successful build suggests nothing.
+        """
+        if ref.success:
+            return []
+        return [
+            {
+                "agent": None,  # broadcast to every registered agent
+                "reason": ref.summary or f"{ref.subject}: build fell short",
+                "changes": {"reflective_retry": True},
+            }
+        ]
+
     async def _publish(self, ref: Reflection) -> None:
         if self.event_bus is None:
             return
@@ -151,7 +170,12 @@ class Reflector:
             await self.event_bus.emit(
                 EventType.KNOWLEDGE_UPDATED,
                 source="intelligence.reflection",
-                payload={"reflection": ref.to_dict()},
+                payload={
+                    "reflection": ref.to_dict(),
+                    # `suggestions` is the key SelfTuningEngine consumes; without
+                    # it the reflection was emitted but never drove any tuning.
+                    "suggestions": self._suggestions(ref),
+                },
             )
         except Exception as exc:  # noqa: BLE001
             if _log:

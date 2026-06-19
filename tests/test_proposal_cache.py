@@ -8,6 +8,22 @@ from skyn3t.core.events import EventBus, EventType
 from skyn3t.web.deps import AppState
 
 
+def test_proposal_shows_type_and_title_not_generic():
+    async def go():
+        bus = EventBus()
+        app = AppState(event_bus=bus)
+        await bus.emit(
+            EventType.PROPOSAL_CREATED,
+            "repo_scout",
+            {"proposal_id": "x1", "type": "ingest", "title": "ingest patterns from pallets/flask"},
+        )
+        rec = app.proposals["x1"].to_dict()
+        assert rec["kind"] == "ingest"  # not "generic"
+        assert rec["title"] == "ingest patterns from pallets/flask"
+
+    asyncio.run(go())
+
+
 def test_decided_proposals_leave_the_pending_count():
     async def go():
         bus = EventBus()

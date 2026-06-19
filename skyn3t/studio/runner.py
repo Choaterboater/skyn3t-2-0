@@ -423,6 +423,50 @@ class StudioRunner:
         return proof
 
     # ---- self-improvement: capture lessons, record pattern, promote skill
+    def _distill_win_skill(self, manifest: "BuildManifest", plan: BuildPlan, project_dir: str) -> None:
+        """Author a new Skill from a genuine win — the factory GROWS its own.
+
+        Idempotent per stack (slug-guarded) so repeated wins don't spam the
+        library; the distilled skill captures the delivered structure (entrypoint
+        + key files) as reusable, advisory guidance. Best-effort; never raises.
+        """
+        if self.skills is None:
+            return
+        slug = f"won-{plan.stack}-shape"
+        try:
+            if self.skills.get(slug) is not None:
+                return  # already learned a winning shape for this stack
+            from pathlib import Path
+
+            from skyn3t.agents import _verify_common as vc
+
+            root = Path(project_dir)
+            entrypoints = vc.find_entrypoints(root)[:4]
+            srcs = [
+                str(p.relative_to(root))
+                for p in vc.iter_files(root)
+                if p.suffix in vc.SOURCE_SUFFIXES and vc.file_size(p) > 0
+            ]
+            srcs = sorted(srcs)[:14]
+            body = (
+                f"A real **{plan.stack}** build scored {manifest.score:.0f} (go) with this "
+                f"structure — reuse it as a starting shape:\n\n"
+                f"- Entrypoint(s): {', '.join(entrypoints) or '(none detected)'}\n"
+                f"- Files ({len(srcs)} shown): {', '.join(srcs)}\n\n"
+                f"Example brief it satisfied: {str(manifest.brief)[:160]}"
+            )
+            self.skills.add(
+                title=f"Winning {plan.stack} build shape",
+                body=body,
+                stack=plan.stack,
+                tags=[plan.stack, "build-distilled"],
+                source="build-distilled",
+                slug=slug,
+            )
+            log.info("skills.distilled", slug=slug, stack=plan.stack, score=manifest.score)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("skills.distill_failed", error=str(exc))
+
     async def _record_learning(
         self,
         manifest: "BuildManifest",
@@ -431,6 +475,8 @@ class StudioRunner:
         *,
         helpful: bool,
         gaps: list[str] | None = None,
+        code_backend: str = "stub",
+        project_dir: str | None = None,
     ) -> None:
         """Close every learning edge (design rule #2). Best-effort; never raises."""
         build = {
@@ -471,6 +517,16 @@ class StudioRunner:
                 self.skills.record_use(skill_slugs, helpful=helpful)
             except Exception as exc:  # noqa: BLE001
                 log.warning("skills.record_use_failed", error=str(exc))
+        # 4. GROW: distill a new skill from a genuine, non-stub win. A stub
+        # build is just the canned scaffold, not a learned win — don't author
+        # from it. This is what makes the factory "find new skills" over time.
+        if (
+            self.skills is not None
+            and manifest.verdict == "go"
+            and code_backend != "stub"
+            and project_dir
+        ):
+            self._distill_win_skill(manifest, plan, project_dir)
 
     # ---- single stage submission ----------------------------------------
     async def _submit_stage(
@@ -745,7 +801,8 @@ class StudioRunner:
             helpful = manifest.verdict == "go"
             await self._grade_lessons(used_lessons, helpful=helpful)
             await self._record_learning(
-                manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps
+                manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps,
+                code_backend=code_backend, project_dir=project_dir,
             )
             self._obs_call(self.cost_tracker, "end_build", build_id)
 

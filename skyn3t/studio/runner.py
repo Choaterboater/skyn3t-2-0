@@ -618,7 +618,8 @@ class StudioRunner:
         await self.event_bus.emit(
             EventType.BUILD_STARTED,
             "studio",
-            {"build_id": build_id, "slug": slug, "stack": plan.stack, "stages": plan.stage_names},
+            {"build_id": build_id, "slug": slug, "brief": brief, "stack": plan.stack,
+             "stages": plan.stage_names},
             correlation_id=correlation_id,
         )
 

@@ -97,6 +97,8 @@ class ProposalRecord:
             "proposal_id": self.proposal_id,
             "id": self.proposal_id,  # SPA reads p.id for the decide URL + React key
             "kind": self.kind,
+            # SPA renders p.title prominently; surface the real proposal title.
+            "title": self.payload.get("title", "") or self.summary,
             "summary": self.summary,
             "payload": self.payload,
             "status": self.status,
@@ -167,11 +169,14 @@ class AppState:
         async def _on_proposal(ev: Event) -> None:  # pragma: no cover - async wiring
             pid = str(ev.payload.get("proposal_id") or ev.id)
             if pid not in self.proposals:
+                # PROPOSAL_CREATED carries type/title (not kind/summary); map them
+                # so the dashboard shows the real proposal instead of "generic".
+                p = ev.payload
                 self.proposals[pid] = ProposalRecord(
                     proposal_id=pid,
-                    kind=str(ev.payload.get("kind", "generic")),
-                    summary=str(ev.payload.get("summary", "")),
-                    payload=dict(ev.payload),
+                    kind=str(p.get("kind") or p.get("type") or "proposal"),
+                    summary=str(p.get("summary") or p.get("title") or ""),
+                    payload=dict(p),
                 )
 
         async def _on_proposal_decided(ev: Event) -> None:  # pragma: no cover - async wiring

@@ -49,12 +49,13 @@ class Cortex:
         store: ProposalStore | None = None,
         handlers: HandlerRegistry | None = None,
         auto_approve_threshold: float = DEFAULT_AUTO_APPROVE_THRESHOLD,
+        rag: Any | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.settings = settings or get_settings()
         self.store = store or ProposalStore()
         stage_dir = self.settings.data_dir / "cortex" / "staged"
-        self.handlers = handlers or HandlerRegistry(stage_dir=stage_dir)
+        self.handlers = handlers or HandlerRegistry(stage_dir=stage_dir, rag=rag)
         self.auto_approve_threshold = auto_approve_threshold
         self._components: list[Any] = []
         self._tasks: list[asyncio.Task[Any]] = []
@@ -202,6 +203,7 @@ def build_cortex(
     orchestrator: Any | None = None,
     memory: Any | None = None,
     llm: Any | None = None,
+    rag: Any | None = None,
 ) -> Cortex:
     """Construct a Cortex with the standard component set attached.
 
@@ -209,7 +211,7 @@ def build_cortex(
     optional deps in any single component never block the others.
     """
     settings = settings or get_settings()
-    cortex = Cortex(event_bus, settings)
+    cortex = Cortex(event_bus, settings, rag=rag)
 
     # Import here (not at module top) to keep bootstrap import side-effect free
     # and to isolate any component-level import issues.

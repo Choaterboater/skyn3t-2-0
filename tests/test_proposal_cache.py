@@ -24,6 +24,22 @@ def test_proposal_shows_type_and_title_not_generic():
     asyncio.run(go())
 
 
+def test_build_started_carries_brief_into_the_record():
+    async def go():
+        bus = EventBus()
+        app = AppState(event_bus=bus)
+        await bus.emit(
+            EventType.BUILD_STARTED,
+            "studio",
+            {"build_id": "b1", "slug": "s", "brief": "a fastapi todo service", "stack": "fastapi"},
+        )
+        rec = app.builds["b1"]
+        assert rec.brief == "a fastapi todo service"  # not empty
+        assert rec.stack == "fastapi"
+
+    asyncio.run(go())
+
+
 def test_decided_proposals_leave_the_pending_count():
     async def go():
         bus = EventBus()

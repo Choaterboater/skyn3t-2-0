@@ -19,7 +19,7 @@ from skyn3t.web.deps import (
     extract_bearer,
     is_loopback,
 )
-from skyn3t.web.websockets import ConnectionHub, _channel_match
+from skyn3t.web.websockets import ConnectionHub, _channel_match, _ws_authorized
 
 
 def _state(**kw) -> AppState:
@@ -71,6 +71,38 @@ def test_check_auth_loopback_only_when_no_token():
     s.auth_token = ""
     assert check_auth(s, authorization=None, client_host="127.0.0.1") is True
     assert check_auth(s, authorization=None, client_host="8.8.8.8") is False
+
+
+# ---- websocket auth (token via subprotocol, never query string) -----------
+class _FakeWS:
+    def __init__(self, *, headers=None, subprotocols=None, client_host="127.0.0.1"):
+        self.headers = headers or {}
+        self.scope = {"subprotocols": list(subprotocols or [])}
+        self.client = type("_C", (), {"host": client_host})()
+
+
+def test_ws_authorized_via_subprotocol():
+    st = _state()
+    st.settings.auth_token = "secret"
+    # token carried as the skyn3t-bearer subprotocol -> authorized (even off-loopback)
+    assert _ws_authorized(st, _FakeWS(subprotocols=["skyn3t-bearer", "secret"], client_host="8.8.8.8")) is True
+    # wrong token rejected
+    assert _ws_authorized(st, _FakeWS(subprotocols=["skyn3t-bearer", "nope"], client_host="8.8.8.8")) is False
+
+
+def test_ws_authorized_via_header_bearer():
+    st = _state()
+    st.settings.auth_token = "secret"
+    assert _ws_authorized(st, _FakeWS(headers={"authorization": "Bearer secret"}, client_host="8.8.8.8")) is True
+
+
+def test_ws_authorized_ignores_query_token():
+    st = _state()
+    st.settings.auth_token = "secret"
+    # A ?token= query param must NOT authorize anymore (it leaked into logs).
+    ws = _FakeWS(client_host="8.8.8.8")
+    ws.query_params = {"token": "secret"}
+    assert _ws_authorized(st, ws) is False
 
 
 # ---- state snapshots -------------------------------------------------------

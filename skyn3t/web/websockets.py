@@ -107,20 +107,47 @@ class ConnectionHub:
             pass
 
 
+# Subprotocol that carries the bearer token for browser WebSocket clients.
+# Browsers can't set request headers on a WebSocket, but they CAN offer
+# subprotocols, which travel in ``Sec-WebSocket-Protocol`` — not in the URL —
+# so the token never lands in uvicorn/proxy access logs the way ``?token=`` did.
+_WS_AUTH_SUBPROTOCOL = "skyn3t-bearer"
+
+
+def _ws_headers(ws: Any) -> dict[str, str]:
+    raw = getattr(ws, "headers", None)
+    if hasattr(raw, "raw"):
+        return {k.decode().lower(): v.decode() for k, v in raw.raw}
+    return {str(k).lower(): str(v) for k, v in dict(raw or {}).items()}
+
+
+def _client_subprotocols(ws: Any) -> list[str]:
+    """Subprotocols the client offered, from the ASGI scope or the header."""
+    scope = getattr(ws, "scope", None)
+    if isinstance(scope, dict) and scope.get("subprotocols"):
+        return [str(p) for p in scope["subprotocols"]]
+    raw = _ws_headers(ws).get("sec-websocket-protocol")
+    return [p.strip() for p in raw.split(",") if p.strip()] if raw else []
+
+
+def _ws_bearer_from_subprotocol(ws: Any) -> str | None:
+    """Token offered as ``[_WS_AUTH_SUBPROTOCOL, <token>]`` (scheme, then token)."""
+    protos = _client_subprotocols(ws)
+    if len(protos) >= 2 and protos[0] == _WS_AUTH_SUBPROTOCOL:
+        return protos[1]
+    return None
+
+
 def _ws_authorized(state: AppState, ws: Any) -> bool:
-    """Authorize a websocket handshake using header or ?token= query param."""
-    headers = {k.decode().lower(): v.decode() for k, v in getattr(ws, "headers", {}).raw} if hasattr(getattr(ws, "headers", None), "raw") else dict(getattr(ws, "headers", {}))
-    authorization = headers.get("authorization")
+    """Authorize a handshake via the Authorization header or the ``skyn3t-bearer``
+    subprotocol. The token is deliberately never read from the query string —
+    that path leaked it into access logs."""
+    authorization = _ws_headers(ws).get("authorization")
     token = state.settings.auth_token.strip()
     if token and not authorization:
-        # Allow token via query param for browser WebSocket clients.
-        qp_token = None
-        try:
-            qp_token = ws.query_params.get("token")
-        except Exception:  # noqa: BLE001
-            qp_token = None
-        if qp_token:
-            authorization = f"Bearer {qp_token}"
+        sub_token = _ws_bearer_from_subprotocol(ws)
+        if sub_token:
+            authorization = f"Bearer {sub_token}"
     client_host = None
     client = getattr(ws, "client", None)
     if client is not None:
@@ -141,7 +168,11 @@ def build_ws_router(state: AppState, hub: ConnectionHub) -> Any:
         if not _ws_authorized(state, ws):
             await ws.close(code=4401)
             return
-        await ws.accept()
+        # Echo the auth subprotocol back when the client offered it, so the
+        # handshake completes (a client that offers a subprotocol expects the
+        # server to select one).
+        chosen = _WS_AUTH_SUBPROTOCOL if _WS_AUTH_SUBPROTOCOL in _client_subprotocols(ws) else None
+        await ws.accept(subprotocol=chosen)
         # Prime with recent trajectory BEFORE registering as a fan-out target,
         # so the hub never sends concurrently with the priming loop on the same
         # socket (Starlette WebSockets don't support concurrent sends) and the

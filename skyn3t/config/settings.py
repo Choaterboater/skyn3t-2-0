@@ -27,6 +27,34 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        """Insert persisted Cortex tuning as a low-priority source.
+
+        Precedence (highest first): explicit init kwargs > OS env > persisted
+        tuning overrides > .env > secrets. So a tuned value carries into the next
+        build, but an env var or explicit kwarg always wins. The overrides file
+        is allow-list-filtered and read defensively (empty on any error), so this
+        is a no-op when nothing has been tuned.
+        """
+        from pydantic_settings.sources import InitSettingsSource
+
+        try:
+            from skyn3t.cortex.tuning_store import load_overrides  # local: no import cycle
+
+            data = load_overrides(REPO_ROOT / "data")
+        except Exception:  # noqa: BLE001 - never let tuning break config construction
+            data = {}
+        overrides_source = InitSettingsSource(settings_cls, data)
+        return (init_settings, env_settings, overrides_source, dotenv_settings, file_secret_settings)
+
     # ---- Identity / paths ------------------------------------------------
     app_name: str = "SkyN3t"
     version: str = "2.0.0"

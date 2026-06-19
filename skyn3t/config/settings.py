@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     autonomous_learning: bool = True
     approval_gates: bool = True
     cortex_auto_approve_safe: bool = True
+    # CuriosityLoop emits a generic, target-less "scout for new build patterns"
+    # INGEST proposal every hour — always gated, regenerated after each decision,
+    # and redundant with RepoScout (which scouts real, named repos). Off by
+    # default so it stops nagging for approvals; enable for periodic curiosity.
+    curiosity_loop_enabled: bool = False
 
     # ---- Sandbox ---------------------------------------------------------
     execution_backend: str = "auto"  # auto | docker | inline

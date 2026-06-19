@@ -48,6 +48,7 @@ class HandlerRegistry:
         stage_dir: Path | None = None,
         settings: Settings | None = None,
         rag: Any | None = None,
+        skills: Any | None = None,
     ) -> None:
         self.overrides: dict[str, Any] = overrides if overrides is not None else {}
         self.stage_dir = Path(stage_dir) if stage_dir else None
@@ -55,6 +56,10 @@ class HandlerRegistry:
         # ingest the source into the corpus (so recall improves future builds).
         # When None we fall back to staging intent only (unchanged behaviour).
         self.rag = rag
+        # Optional SkillLibrary: when present, an ingested repo also distills a
+        # reusable, advisory skill (so approvals surface on the Skills page, not
+        # only in RAG recall).
+        self.skills = skills
         # Fall back to the process-wide settings singleton so tuning changes
         # land on the object live consumers read (degrade gracefully if the
         # config layer is unavailable for any reason).
@@ -184,7 +189,64 @@ class HandlerRegistry:
             staged["degraded"] = True
             staged["error"] = f"rag ingest failed: {exc}"
             return staged
-        return {"applied": True, "ingested": n, "source": url}
+        # Also distill a reusable, advisory skill so the approval surfaces on the
+        # Skills page (best-effort; never affects the ingest result).
+        skill_slug = self._distill_repo_skill(url, text, proposal.payload or {})
+        result = {"applied": True, "ingested": n, "source": url}
+        if skill_slug:
+            result["skill"] = skill_slug
+        return result
+
+    # ---- skill distillation from an ingested repo ------------------------
+    _LANG_STACK = {
+        "python": "python", "javascript": "react", "typescript": "react",
+        "tsx": "react", "jsx": "react", "go": "go", "rust": "rust",
+    }
+
+    def _distill_repo_skill(self, url: str, text: str, payload: dict[str, Any]) -> str | None:
+        """Turn an ingested repo into an advisory Skill. Returns the slug or None."""
+        if self.skills is None:
+            return None
+        try:
+            import re as _re
+
+            m = _re.search(r"github\.com/([^/\s]+)/([^/\s#?]+)", url)
+            owner, repo = (m.group(1), m.group(2)) if m else ("", url.rsplit("/", 1)[-1])
+            full = f"{owner}/{repo}".strip("/") or repo
+            desc = str(payload.get("description") or "").strip()
+            lang = str(payload.get("language") or "").strip()
+            stars = payload.get("stars")
+            stack = self._LANG_STACK.get(lang.lower(), "generic")
+            # A short README excerpt as reference material.
+            excerpt = ""
+            if "README:" in text:
+                excerpt = text.split("README:", 1)[1].strip()[:600]
+            body = (
+                f"Reference patterns from **{full}**"
+                + (f" ({stars}★)" if stars else "")
+                + (f" — {desc}" if desc else "")
+                + ".\n\nWhen building similar "
+                + (f"{lang} " if lang else "")
+                + "projects, consider this repo's structure and approach."
+                + (f"\n\nREADME excerpt:\n{excerpt}" if excerpt else "")
+            )
+            from skyn3t.agents._common import slugify
+
+            slug = slugify(f"gh-{full}", "gh-repo")
+            tags = ["github-distilled"]
+            if lang:
+                tags.append(lang.lower())
+            self.skills.add(
+                title=f"Patterns: {full}",
+                body=body,
+                stack=stack,
+                tags=tags,
+                source="github-distilled",
+                slug=slug,
+            )
+            return slug
+        except Exception:  # noqa: BLE001 - distillation is best-effort
+            return None
 
     async def _stage_code_patch(self, proposal: Proposal) -> dict[str, Any]:
         return self._stage(proposal, "code_patch")

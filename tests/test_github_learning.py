@@ -85,6 +85,47 @@ def test_handler_rag_error_degrades_not_failed(monkeypatch):
     assert "error" in res
 
 
+class _FakeSkills:
+    def __init__(self):
+        self.added = []
+
+    def add(self, title, body, *, stack="generic", tags=None, source="manual", slug=None):
+        self.added.append(
+            {"title": title, "body": body, "stack": stack, "tags": tags, "source": source, "slug": slug}
+        )
+        return None
+
+
+def test_handler_distills_skill_on_ingest(monkeypatch):
+    rag = _FakeRag(n=2)
+    skills = _FakeSkills()
+    reg = HandlerRegistry(rag=rag, skills=skills)
+    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    res = asyncio.run(reg.apply(_prop({
+        "url": "https://github.com/pallets/flask",
+        "description": "web framework",
+        "language": "Python",
+    })))
+    assert res["applied"] is True
+    assert res.get("skill")  # slug returned
+    assert skills.added, "a skill should be distilled from the ingested repo"
+    sk = skills.added[0]
+    assert sk["source"] == "github-distilled"
+    assert "flask" in sk["slug"]
+    assert sk["stack"] == "python"  # mapped from language 'Python'
+    assert "github-distilled" in sk["tags"]
+
+
+def test_handler_no_skills_lib_still_ingests(monkeypatch):
+    # Skills lib absent -> ingest still works, no skill, no error.
+    rag = _FakeRag(n=1)
+    reg = HandlerRegistry(rag=rag)  # no skills
+    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    res = asyncio.run(reg.apply(_prop({"url": "https://github.com/x/y"})))
+    assert res["applied"] is True
+    assert "skill" not in res
+
+
 def test_fetch_non_github_returns_none():
     assert asyncio.run(gh.fetch_github_repo_text("https://example.com/x/y")) is None
 

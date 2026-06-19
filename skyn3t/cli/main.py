@@ -528,6 +528,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
 
     studio = None
     rag = None  # hoisted: shared with the cortex block below (NameError-safe if studio init fails)
+    skills = None  # hoisted likewise: threaded into the cortex for skill distillation
     try:
         from skyn3t.studio.runner import StudioRunner
 
@@ -559,6 +560,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
                 bus, settings,
                 orchestrator=spine["orchestrator"], memory=spine["memory"], llm=spine["llm"],
                 rag=rag,  # cortex ingestion writes into the same corpus studio recalls from
+                skills=skills,  # ingested repos also distill into advisory skills
             )
             await cortex.start()
     except Exception:  # noqa: BLE001 - autonomy is optional

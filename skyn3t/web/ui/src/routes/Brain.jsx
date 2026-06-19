@@ -1,4 +1,4 @@
-import React, { Suspense, useRef } from "react";
+import React, { Suspense, useEffect, useRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
@@ -65,6 +65,27 @@ function BrainMesh({ activity = 0.3 }) {
 }
 
 export default function Brain({ stream }) {
+  // Hold the WebGL renderer so we can free its GPU context on unmount.
+  const glRef = useRef(null);
+
+  // Free the context when leaving the page. Without this, each visit leaks a
+  // WebGL context; browsers cap them (~16) and force-lose old ones, which spams
+  // "THREE.WebGLRenderer: Context Lost".
+  useEffect(() => {
+    return () => {
+      const gl = glRef.current;
+      if (gl) {
+        try {
+          gl.forceContextLoss();
+          gl.dispose();
+        } catch (_) {
+          /* best-effort */
+        }
+      }
+      glRef.current = null;
+    };
+  }, []);
+
   // Drive the glow from recent knowledge/learning events if the API is present.
   const { data } = useQuery({
     queryKey: ["brain"],
@@ -127,7 +148,19 @@ export default function Brain({ stream }) {
         />
         <div className="relative h-[480px] bg-void">
           <div className="pointer-events-none absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-synapse/10 blur-3xl" />
-          <Canvas camera={{ position: [0, 0, 6], fov: 50 }}>
+          <Canvas
+            camera={{ position: [0, 0, 6], fov: 50 }}
+            gl={{ powerPreference: "low-power" }}
+            onCreated={({ gl }) => {
+              glRef.current = gl;
+              // Swallow context-loss so a transient GPU hiccup doesn't throw.
+              gl.domElement.addEventListener(
+                "webglcontextlost",
+                (e) => e.preventDefault(),
+                false
+              );
+            }}
+          >
             <ambientLight intensity={0.4} />
             <pointLight position={[5, 5, 5]} intensity={1.2} color="#A688FF" />
             <pointLight position={[-5, -3, -5]} intensity={0.6} color="#FF6A3D" />

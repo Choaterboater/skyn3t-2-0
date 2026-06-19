@@ -637,6 +637,13 @@ class StudioRunner:
         recall = self._recall(brief, plan.stack)
         if skill_advice or recall:
             extra = {**extra, "skills_advice": skill_advice, "recall": recall}
+        # Observable record of what RAG recall fed this build (so you can verify
+        # it pulled from prior knowledge / ingested repos).
+        manifest.extra["recall_used"] = [
+            {"score": round(float(h.get("score", 0.0)), 3), "text": str(h.get("text", ""))[:200]}
+            for h in (recall or [])
+        ]
+        manifest.extra["skills_used"] = list(skill_slugs)
 
         # Observability + budget guard for this build (all best-effort).
         self._obs_call(self.cost_tracker, "start_build", build_id)

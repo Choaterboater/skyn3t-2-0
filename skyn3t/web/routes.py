@@ -404,7 +404,12 @@ async def scout_now(state: AppState, topic: str = "") -> dict[str, Any]:
     )
     if scout is None:
         return {"scouted": 0, "error": "repo scout unavailable"}
-    topic = (topic or "").strip() or "python cli tool"
+    # No explicit topic -> rotate through the scout's topic list so repeated
+    # clicks vary instead of re-proposing the same repos for one fixed topic.
+    topic = (topic or "").strip()
+    if not topic and hasattr(scout, "_next_topic"):
+        topic = scout._next_topic()
+    topic = topic or "python cli tool"
     try:
         proposals = await scout.scout(topic)
         return {"scouted": len(proposals), "topic": topic}

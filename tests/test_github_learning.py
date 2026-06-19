@@ -130,6 +130,16 @@ def test_fetch_non_github_returns_none():
     assert asyncio.run(gh.fetch_github_repo_text("https://example.com/x/y")) is None
 
 
+def test_repo_scout_rotates_topics():
+    from skyn3t.cortex.repo_scout import RepoScout
+
+    s = RepoScout()
+    topics = [s._next_topic() for _ in range(5)]
+    assert topics[0] != topics[1]  # consecutive scouts use different topics
+    assert len(set(topics[:4])) == 4  # all four distinct before wrap
+    assert topics[4] == topics[0]  # wraps around
+
+
 def test_build_cortex_threads_rag():
     from skyn3t.core.events import EventBus
     from skyn3t.cortex.bootstrap import build_cortex

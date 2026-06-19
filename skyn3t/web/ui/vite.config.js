@@ -11,6 +11,22 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: false,
+    // three.js is inherently large; it's isolated into its own chunk and only
+    // loaded with the Brain route, so allow it past the default 500 kB warning.
+    chunkSizeWarningLimit: 850,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("three") || id.includes("@react-three")) return "three";
+          if (id.includes("react-router")) return "router";
+          if (id.includes("@tanstack")) return "query";
+          if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/scheduler/"))
+            return "react-vendor";
+          return undefined;
+        },
+      },
+    },
   },
   server: {
     port: 5173,

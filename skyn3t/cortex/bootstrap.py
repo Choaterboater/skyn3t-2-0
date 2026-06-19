@@ -269,7 +269,12 @@ def build_cortex(
 
         from skyn3t.cortex.repo_scout import RepoScout
 
-        token = os.environ.get("SKYN3T_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        token = (
+            os.environ.get("SKYN3T_GITHUB_TOKEN")
+            or os.environ.get("GITHUB_TOKEN")
+            or getattr(settings, "github_token", "")
+            or None
+        )
         cortex.add_component(
             RepoScout(cortex, event_bus, settings, github_token=token)
         )

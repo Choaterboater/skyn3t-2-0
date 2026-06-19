@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     cli_llm_provider: str = "claude"  # which CLI when auto selects one
     cli_llm_timeout: int = 300  # generating a substantial file via claude -p needs room
 
+    # GitHub token (env SKYN3T_GITHUB_TOKEN) for RepoScout search + repo ingest.
+    # Authenticated search lifts the rate limit so scouting returns real, varied
+    # repos instead of degrading to the built-in seed list.
+    github_token: str = ""
+
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
     no_claude: bool = False

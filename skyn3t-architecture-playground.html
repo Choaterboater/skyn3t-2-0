@@ -384,7 +384,7 @@ function renderAll(){
 /* ============================================================ COMMENTS + MODAL */
 let editingId=null;
 function openModal(id){
-  const n=nodeById[id]; editingId=id;
+  const n=nodeById[id]; if(!n) return; editingId=id;
   document.getElementById('mTitle').textContent=n.label;
   document.getElementById('mFile').textContent=n.sub||'';
   document.getElementById('mDesc').textContent=n.desc||'';
@@ -395,7 +395,8 @@ function openModal(id){
 }
 function closeModal(){ document.getElementById('modal').classList.remove('open'); editingId=null; }
 function saveComment(){
-  const n=nodeById[editingId], text=document.getElementById('mText').value.trim();
+  const n=nodeById[editingId]; if(!n){ closeModal(); return; }
+  const text=document.getElementById('mText').value.trim();
   state.comments=state.comments.filter(c=>c.target!==editingId);
   if(text) state.comments.push({target:n.id,label:n.label,file:n.sub||'',text});
   closeModal(); renderAll();
@@ -439,11 +440,26 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
 document.getElementById('zin').onclick =()=>{ state.zoom=Math.min(2.2,state.zoom+0.15); renderAll(); };
 document.getElementById('zout').onclick=()=>{ state.zoom=Math.max(0.5,state.zoom-0.15); renderAll(); };
 document.getElementById('zrst').onclick=()=>{ state.zoom=1; renderAll(); };
+function flashCopy(btn, ok){
+  btn.textContent = ok ? 'Copied!' : 'Copy failed';
+  btn.classList.toggle('ok', ok);
+  setTimeout(()=>{ btn.textContent='Copy Prompt'; btn.classList.remove('ok'); },1400);
+}
+function fallbackCopy(text){
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=text; ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok=document.execCommand('copy'); document.body.removeChild(ta); return ok;
+  }catch(e){ return false; }
+}
 document.getElementById('copy').onclick=function(){
-  navigator.clipboard.writeText(document.getElementById('ptext').textContent).then(()=>{
-    this.textContent='Copied!'; this.classList.add('ok');
-    setTimeout(()=>{ this.textContent='Copy Prompt'; this.classList.remove('ok'); },1400);
-  });
+  const btn=this, text=document.getElementById('ptext').textContent;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>flashCopy(btn,true)).catch(()=>flashCopy(btn, fallbackCopy(text)));
+  }else{
+    flashCopy(btn, fallbackCopy(text));   // file:// / insecure context: no async clipboard
+  }
 };
 applyPreset(DEFAULT_PRESET);
 </script>

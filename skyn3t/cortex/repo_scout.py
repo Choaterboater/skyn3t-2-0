@@ -76,6 +76,7 @@ class RepoScout:
         self.github_token = github_token
         self.min_stars = min_stars
         self.max_results = max_results
+        self._scout_i = 0  # rotates the topic so repeated scouts vary
 
     @property
     def online(self) -> bool:
@@ -163,6 +164,17 @@ class RepoScout:
     def stop(self) -> None:
         self._stop = True
 
+    def _next_topic(self) -> str:
+        """Return the next topic in the rotation (advances the cursor)."""
+        topic = self._SCOUT_TOPICS[self._scout_i % len(self._SCOUT_TOPICS)]
+        self._scout_i += 1
+        return topic
+
+    async def scout_next(self) -> list[Proposal]:
+        """Scout the next rotating topic — used by the loop AND on-demand scouts
+        so repeated triggers cycle topics instead of re-proposing the same repos."""
+        return await self.scout(self._next_topic())
+
     async def run(self) -> None:
         """Periodically scout a rotating set of topics, filing gated INGEST
         proposals. Idle unless ``autonomous_learning`` is on (degrade, don't
@@ -175,7 +187,6 @@ class RepoScout:
         # Eager first scout shortly after boot so the inbox isn't empty for a full
         # interval; then settle into the periodic cadence.
         delay = float(getattr(self.settings, "scout_initial_delay", 10.0))
-        i = 0
         while not self._stop:
             try:
                 await asyncio.sleep(delay)
@@ -184,8 +195,7 @@ class RepoScout:
             if self._stop:
                 break
             try:
-                await self.scout(self._SCOUT_TOPICS[i % len(self._SCOUT_TOPICS)])
-                i += 1
+                await self.scout_next()
             except Exception:  # noqa: BLE001
                 pass
             delay = interval  # subsequent scouts on the normal cadence

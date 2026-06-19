@@ -254,6 +254,15 @@ class _StubReviewer(BaseAgent):
         return TaskResult(task_id=task.task_id, success=True, output={"score": 88.0, "verdict": "go", "gaps": []})
 
 
+def test_final_build_status_marks_no_go_distinctly():
+    from skyn3t.studio.runner import _final_build_status
+
+    assert _final_build_status(True, "go") == "completed"
+    assert _final_build_status(True, "no_go") == "completed_no_go"
+    assert _final_build_status(False, "go") == "failed"
+    assert _final_build_status(False, "no_go") == "failed"
+
+
 def test_studio_runner_end_to_end_offline(tmp_path):
     async def run():
         settings = Settings(

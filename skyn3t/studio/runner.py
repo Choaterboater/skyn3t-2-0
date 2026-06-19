@@ -51,6 +51,17 @@ from skyn3t.worktree import (
 log = structlog.get_logger(__name__)
 
 
+def _final_build_status(delivered_nonempty: bool, verdict: str) -> str:
+    """Build-level status from delivery + verdict.
+
+    A no_go build that still delivered real files is ``completed_no_go`` — it
+    finished but did not pass — so it stops masquerading as ``completed``.
+    """
+    if not delivered_nonempty:
+        return "failed"
+    return "completed" if verdict == "go" else "completed_no_go"
+
+
 @dataclass(slots=True)
 class BuildOutcome:
     """Returned by :meth:`StudioRunner.start`."""
@@ -802,7 +813,7 @@ class StudioRunner:
                     f"(backend={code_backend}) — looks like a stub, not an app"
                 )
             manifest.verdict = verdict
-            manifest.status = "completed" if delivered_nonempty else "failed"
+            manifest.status = _final_build_status(delivered_nonempty, verdict)
 
             # Grade the learning loop by the REAL outcome (a 'go'), not merely
             # "files were written". Crediting every non-empty no_go as helpful is

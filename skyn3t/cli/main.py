@@ -461,6 +461,47 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
     if best_of and best_of > 1:
         extra["best_of_n"] = best_of
     outcome = await runner.start(brief, slug=slug or None, extra=extra)
+
+    # --- C: one bounded, gated learning tick (no loop, no autonomous builds) ---
+    # The web path runs the cortex continuously; the CLI 'studio build' path
+    # never did, so MetaTick/SelfTuning never fired and learned tuning never
+    # carried forward. Run ONE synchronous observe tick (gated by
+    # autonomous_learning), persist any SAFE tuning, then detach. Best-effort.
+    try:
+        if settings.autonomous_learning:
+            from skyn3t.cortex.bootstrap import build_cortex
+            from skyn3t.cortex.meta_tick import MetaTick
+            from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING, persist_overrides
+            from skyn3t.memory.meta_agent import MetaAgent
+            from skyn3t.memory.tuner import SelfTuningEngine
+
+            bus, mem = spine["event_bus"], spine["memory"]
+            cortex = build_cortex(
+                bus, settings,
+                orchestrator=spine["orchestrator"], memory=mem, llm=spine["llm"],
+            )
+            # The SelfTuningEngine in the cortex is already subscribed to
+            # INSIGHT_PUBLISHED. We deliberately do NOT call cortex.start() — one
+            # synchronous tick, no background loops, no autonomous builds.
+            meta_agent = MetaAgent(bus, store=mem) if mem is not None else None
+            await MetaTick(cortex, bus, settings, meta_agent=meta_agent).tick_once()
+
+            # Read applied tuning from the tuner's history (the source the
+            # INSIGHT->SelfTuning path populates), then persist only SAFE keys.
+            tuner = next(
+                (c for c in cortex._components if isinstance(c, SelfTuningEngine)), None
+            )
+            applied: dict[str, Any] = {}
+            if tuner is not None:
+                for ch in tuner.history:
+                    if ch.key in PERSISTABLE_TUNING:
+                        applied[ch.key] = ch.new
+            if applied:
+                persist_overrides(settings.data_dir, applied)
+            await cortex.stop()
+    except Exception:  # noqa: BLE001 - learning is best-effort; never fail a build
+        pass
+
     return outcome.to_dict()
 
 

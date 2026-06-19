@@ -7,12 +7,19 @@ export default function Cortex() {
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["proposals"],
-    queryFn: queryFn("/cortex/proposals"),
+    // Inbox = only proposals genuinely awaiting a decision (not already
+    // approved/rejected/deduped ones lingering in the cache).
+    queryFn: queryFn("/cortex/proposals?status=pending"),
   });
 
   const decide = useMutation({
     mutationFn: ({ id, decision }) =>
       apiPost(`/cortex/proposals/${id}/decide`, { decision }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+
+  const clear = useMutation({
+    mutationFn: (scope) => apiPost("/cortex/proposals/clear", { scope }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
   });
 
@@ -25,9 +32,27 @@ export default function Cortex() {
         title="Cortex"
         sub="Self-evolution proposals awaiting your decision. The swarm wants to reshape itself."
         actions={
-          <span className="badge border-hairline text-ash">
-            open · <span className="ml-1 text-ember">{proposals.length}</span>
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="badge border-hairline text-ash">
+              open · <span className="ml-1 text-ember">{proposals.length}</span>
+            </span>
+            <button
+              onClick={() => clear.mutate("resolved")}
+              disabled={clear.isPending}
+              className="btn-ghost disabled:opacity-50"
+              title="Drop already-decided / duplicate proposals from the cache"
+            >
+              Clear resolved
+            </button>
+            <button
+              onClick={() => clear.mutate("all")}
+              disabled={clear.isPending}
+              className="btn-ghost disabled:opacity-50"
+              title="Dismiss every cached proposal (including pending)"
+            >
+              Dismiss all
+            </button>
+          </div>
         }
       />
 

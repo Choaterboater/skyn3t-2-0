@@ -10,6 +10,7 @@ No I/O happens here — these are pure functions returning dicts of strings.
 
 from __future__ import annotations
 
+import re as _re
 from typing import Callable
 
 
@@ -137,34 +138,73 @@ def _static_html(app_name: str, brief: str) -> dict[str, str]:
 
 
 def _python_cli(app_name: str, brief: str) -> dict[str, str]:
-    pkg = app_name.replace("-", "_") or "app"
+    pkg = (app_name.replace("-", "_").strip() or "app")
+    # a valid python identifier for the package dir
+    if not pkg[0].isalpha() and pkg[0] != "_":
+        pkg = f"app_{pkg}"
     title = brief.strip() or app_name
     return {
+        "pyproject.toml": (
+            "[project]\n"
+            f'name = "{app_name}"\n'
+            'version = "0.1.0"\n'
+            f'description = "{title}"\n'
+            'requires-python = ">=3.10"\n\n'
+            "[project.scripts]\n"
+            f'{app_name} = "{pkg}.cli:main"\n\n'
+            "[build-system]\n"
+            'requires = ["setuptools>=61"]\n'
+            'build-backend = "setuptools.build_meta"\n'
+        ),
         "main.py": (
-            '"""' + f"{title} — a runnable CLI generated offline by SkyN3t." + '"""\n\n'
+            '"""Root entrypoint: ``python main.py`` runs the CLI."""\n'
             "from __future__ import annotations\n\n"
-            "import argparse\n\n\n"
+            f"from {pkg}.cli import main\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    raise SystemExit(main())\n"
+        ),
+        f"{pkg}/__init__.py": (
+            f'"""{title} — generated offline by SkyN3t."""\n\n'
+            '__version__ = "0.1.0"\n'
+        ),
+        f"{pkg}/core.py": (
+            '"""Core logic for the tool (pure, easily testable)."""\n'
+            "from __future__ import annotations\n\n\n"
             "def greet(name: str) -> str:\n"
-            '    return f"Hello, {name}!"\n\n\n'
-            "def main(argv: list[str] | None = None) -> int:\n"
-            '    parser = argparse.ArgumentParser(description="' + title + '")\n'
+            '    """Return a friendly greeting."""\n'
+            "    name = (name or \"world\").strip() or \"world\"\n"
+            '    return f"Hello, {name}!"\n'
+        ),
+        f"{pkg}/cli.py": (
+            '"""Command-line interface."""\n'
+            "from __future__ import annotations\n\n"
+            "import argparse\n\n"
+            f"from {pkg}.core import greet\n\n\n"
+            "def build_parser() -> argparse.ArgumentParser:\n"
+            f'    parser = argparse.ArgumentParser(prog="{app_name}", description="{title}")\n'
             '    parser.add_argument("--name", default="world", help="who to greet")\n'
-            "    args = parser.parse_args(argv)\n"
+            "    return parser\n\n\n"
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    args = build_parser().parse_args(argv)\n"
             "    print(greet(args.name))\n"
             "    return 0\n\n\n"
             'if __name__ == "__main__":\n'
             "    raise SystemExit(main())\n"
         ),
-        "test_main.py": (
-            "from main import greet\n\n\n"
-            "def test_greet():\n"
-            '    assert greet("world") == "Hello, world!"\n'
+        "tests/test_core.py": (
+            f"from {pkg}.core import greet\n\n\n"
+            "def test_greet_default():\n"
+            '    assert greet("world") == "Hello, world!"\n\n\n'
+            "def test_greet_strips():\n"
+            '    assert greet("  ada ") == "Hello, ada!"\n'
         ),
-        "requirements.txt": "",
         "README.md": (
             f"# {title}\n\n"
-            "```bash\npython main.py --name you\n```\n"
+            "A runnable Python CLI.\n\n"
+            "```bash\npython main.py --name you\n```\n\n"
+            "## Develop\n\n```bash\npip install -e .\npytest\n```\n"
         ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\ndist/\n*.egg-info/\n",
     }
 
 
@@ -257,3 +297,145 @@ def scaffold_for(stack: str, app_name: str, brief: str = "") -> dict[str, str]:
     builder = _BUILDERS.get(stack, _react_vite)
     safe_name = (app_name or "app").strip() or "app"
     return builder(safe_name, brief)
+
+
+# ---- entrypoint synthesis (repair an agentic build with no runnable root) ----
+# A coding agent often authors a real package (foo/manager.py, foo/cli.py, …)
+# but forgets the runnable ROOT the rest of the pipeline (proof, boot, reviewer)
+# expects. These pure helpers detect that and synthesize a real, wired
+# ``main.py`` so ``python main.py`` actually runs the produced code — instead of
+# the old behaviour of papering over it with an empty stub.
+
+_ENTRYPOINT_BASENAMES = frozenset(
+    {"main.py", "__main__.py", "app.py", "cli.py", "run.py", "manage.py", "wsgi.py", "asgi.py"}
+)
+# Module-level only (no leading indent): an indented ``def main(self)`` inside a
+# class is a method, not an importable ``from module import main`` symbol.
+_DEF_ENTRY_RE = _re.compile(r"^def\s+(main|run|cli)\s*\(", _re.MULTILINE)
+
+
+def _norm(rel: str) -> str:
+    return rel.replace("\\", "/")
+
+
+def _module_path(rel: str) -> str:
+    rel = _norm(rel)
+    return rel[:-3].replace("/", ".") if rel.endswith(".py") else rel
+
+
+def has_python_entrypoint(files: dict[str, str]) -> bool:
+    """True if any file looks like a runnable Python entrypoint."""
+    for rel in files:
+        base = _norm(rel).rsplit("/", 1)[-1]
+        if base in _ENTRYPOINT_BASENAMES:
+            return True
+    return False
+
+
+def top_level_packages(files: dict[str, str]) -> list[str]:
+    """Names of depth-1 packages (a dir directly holding ``__init__.py``)."""
+    pkgs = {
+        _norm(rel).split("/")[0]
+        for rel in files
+        if len(_norm(rel).split("/")) == 2 and _norm(rel).endswith("/__init__.py")
+    }
+    return sorted(pkgs)
+
+
+def _find_entry_callable(files: dict[str, str]) -> tuple[str, str] | None:
+    """Find a ``module, func`` exposing a callable named main/run/cli."""
+
+    def rank(rel: str) -> int:
+        base = _norm(rel).rsplit("/", 1)[-1]
+        return {"cli.py": 0, "__main__.py": 1, "app.py": 2, "main.py": 3}.get(base, 9)
+
+    for rel in sorted(files, key=rank):
+        if not _norm(rel).endswith(".py"):
+            continue
+        m = _DEF_ENTRY_RE.search(files[rel] or "")
+        if m:
+            return _module_path(rel), m.group(1)
+    return None
+
+
+def synthesize_python_entrypoint(files: dict[str, str]) -> dict[str, str]:
+    """Return ``{"main.py": <shim>}`` wiring an existing package to a root runner.
+
+    Returns ``{}`` when the tree already has an entrypoint or there is nothing to
+    wire. The shim imports the produced code so ``python main.py`` is genuinely
+    runnable (and importable by the boot/proof checks).
+    """
+    if has_python_entrypoint(files):
+        return {}
+    target = _find_entry_callable(files)
+    pkgs = top_level_packages(files)
+    if target is None and not pkgs:
+        return {}
+
+    if target is not None:
+        module, func = target
+        shim = (
+            '"""Application entrypoint (auto-wired by SkyN3t).\n\n'
+            f"Delegates to ``{module}.{func}`` so ``python main.py`` runs the app.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            f"from {module} import {func} as _entry\n\n\n"
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    result = _entry()\n"
+            "    return result if isinstance(result, int) else 0\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    raise SystemExit(main())\n"
+        )
+        return {"main.py": shim}
+
+    pkg = pkgs[0]
+    shim = (
+        '"""Application entrypoint (auto-generated by SkyN3t).\n\n'
+        f"Best-effort runner: imports the ``{pkg}`` package and invokes its\n"
+        "main()/run()/cli() if one exists.\n"
+        '"""\n'
+        "from __future__ import annotations\n\n"
+        "import importlib\n\n"
+        "_MODULES = (\n"
+        f'    "{pkg}.cli",\n'
+        f'    "{pkg}.__main__",\n'
+        f'    "{pkg}.main",\n'
+        f'    "{pkg}.app",\n'
+        f'    "{pkg}",\n'
+        ")\n"
+        '_FUNCS = ("main", "run", "cli")\n\n\n'
+        "def _resolve():\n"
+        "    for name in _MODULES:\n"
+        "        try:\n"
+        "            mod = importlib.import_module(name)\n"
+        "        except Exception:\n"
+        "            continue\n"
+        "        for fn in _FUNCS:\n"
+        "            cand = getattr(mod, fn, None)\n"
+        "            if callable(cand):\n"
+        "                return cand\n"
+        "    return None\n\n\n"
+        "def main(argv: list[str] | None = None) -> int:\n"
+        "    entry = _resolve()\n"
+        "    if entry is None:\n"
+        f'        print("{pkg}: imported OK, but no main()/run()/cli() entrypoint was found.")\n'
+        "        return 0\n"
+        "    result = entry()\n"
+        "    return result if isinstance(result, int) else 0\n\n\n"
+        'if __name__ == "__main__":\n'
+        "    raise SystemExit(main())\n"
+    )
+    return {"main.py": shim}
+
+
+def default_pyproject(slug: str) -> str:
+    """A minimal but real pyproject for a python project keyed off the slug."""
+    name = (slug or "app").strip() or "app"
+    return (
+        "[project]\n"
+        f'name = "{name}"\n'
+        'version = "0.1.0"\n'
+        'requires-python = ">=3.10"\n\n'
+        "[project.scripts]\n"
+        f'{name} = "main:main"\n'
+    )

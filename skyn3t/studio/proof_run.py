@@ -115,6 +115,8 @@ def proof_run(
     checklist: list[str] | None = None,
     execution_backend: str = "auto",
     stack: str = "",
+    run_tests: bool = False,
+    test_timeout: int = 90,
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
@@ -155,6 +157,38 @@ def proof_run(
     if checklist and present < max(1, len(checklist) // 2):
         passed = False
 
+    # Behaviour, not vibes (rule #3): a code project that has no runnable
+    # entrypoint, or whose entrypoint cannot even be imported, has NOT been
+    # proven — a missing/broken root was the exact failure the old static-only
+    # proof greenlit. Web/static stacks count index.html as an entrypoint.
+    entrypoints, boot_error = _entrypoint_check(pdir, stack)
+    detail: dict[str, Any] = {"stack": stack, "entrypoints": entrypoints}
+    if total > 0 and not entrypoints:
+        passed = False
+        detail["reason"] = "no runnable entrypoint found"
+        if "<entrypoint>" not in missing:
+            missing = [*missing, "<entrypoint>"]
+    elif boot_error:
+        passed = False
+        detail["boot_error"] = boot_error
+
+    # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
+    # A real failure fails the proof (and routes into the fix loop). Inability to
+    # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
+    if run_tests and passed:
+        ran, tests_passed, summary = _run_generated_tests(pdir, stack, test_timeout)
+        if ran:
+            detail["tests"] = "passed" if tests_passed else "failed"
+            detail["test_summary"] = summary
+            if not tests_passed:
+                passed = False
+                if "<tests>" not in missing:
+                    missing = [*missing, "<tests>"]
+        else:
+            detail["tests"] = "skipped"
+            if summary:
+                detail["test_summary"] = summary
+
     return ProofResult(
         passed=passed,
         mode=mode,
@@ -165,8 +199,140 @@ def proof_run(
         missing=missing,
         syntax_errors=syntax_errors,
         score=score,
-        detail={"stack": stack},
+        detail=detail,
     )
+
+
+# Stacks for which a runnable entrypoint is expected before we call it "proven".
+_CODE_STACKS = ("cli", "python", "fastapi", "flask", "django", "node", "express", "nextjs")
+
+
+def _entrypoint_check(pdir: Path, stack: str) -> tuple[list[str], str]:
+    """Return (entrypoints found, boot_error). Boot is a guarded import smoke.
+
+    Degrades to a static presence check when no python runtime is available or
+    the stack isn't a python code project (degrade, don't crash — rule #6).
+    """
+    try:
+        from skyn3t.agents import _verify_common as vc
+    except Exception:  # noqa: BLE001 - keep proof self-contained if import fails
+        return ([], "")
+    entrypoints = vc.find_entrypoints(pdir)
+    if not entrypoints:
+        return ([], "")
+
+    low = (stack or "").lower()
+    is_python = low in ("cli", "python", "fastapi", "flask", "django") or any(
+        e.endswith(".py") for e in entrypoints
+    )
+    if not is_python:
+        return (entrypoints, "")  # node/web: presence is the local-mode signal
+
+    py = _python_executable()
+    target = next((e for e in entrypoints if e.endswith(".py")), None)
+    if py is None or target is None:
+        return (entrypoints, "")  # no runtime -> presence-only (already syntax-checked)
+
+    module = target[:-3].replace("/", ".")
+    import os
+    import subprocess
+
+    # -B + PYTHONDONTWRITEBYTECODE so the smoke import never leaves a
+    # __pycache__/.pyc inside the delivered artifact (the proof must not pollute
+    # what it proves).
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    try:
+        proc = subprocess.run(
+            [py, "-B", "-c", f"import sys; sys.path.insert(0, '.'); import importlib; importlib.import_module({module!r})"],
+            cwd=str(pdir),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        # A hung/uncrunnable import is indeterminate, not a pass.
+        return (entrypoints, "entrypoint import did not complete (hung or unrunnable)")
+    if proc.returncode == 0:
+        return (entrypoints, "")
+    tail = (proc.stderr or proc.stdout or "")[-400:]
+    # Missing third-party deps are not a code defect (offline env); the syntax
+    # pass already validated the source compiles.
+    if "ModuleNotFoundError" in tail or "ImportError" in tail:
+        return (entrypoints, "")
+    return (entrypoints, tail.strip())
+
+
+def _python_executable() -> str | None:
+    import shutil
+
+    return shutil.which("python") or shutil.which("python3")
+
+
+def _has_python_tests(pdir: Path) -> bool:
+    for f in _iter_files(pdir):
+        if f.suffix != ".py":
+            continue
+        name = f.name
+        if name.startswith("test_") or name.endswith("_test.py") or "tests" in f.relative_to(pdir).parts:
+            return True
+    return False
+
+
+def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
+    """Run the generated project's own test suite.
+
+    Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no test
+    runner, no deps, or no tests) and must NOT fail the proof. Never raises.
+    """
+    import os
+    import subprocess
+
+    py = _python_executable()
+    low = (stack or "").lower()
+    is_python = low in ("cli", "python", "fastapi", "flask", "django")
+    if py is None or not (is_python or _has_python_tests(pdir)):
+        return (False, False, "")  # node/web tests need an install step we skip
+    if not _has_python_tests(pdir):
+        return (False, False, "")
+
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(pdir)}
+    # pytest must be importable; otherwise soft-skip rather than fail a build for
+    # a missing dev tool in the environment.
+    try:
+        probe = subprocess.run([py, "-c", "import pytest"], capture_output=True, timeout=15)
+    except (subprocess.TimeoutExpired, OSError):
+        return (False, False, "")
+    if probe.returncode != 0:
+        return (False, False, "pytest not installed — tests skipped")
+
+    try:
+        proc = subprocess.run(
+            [py, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "addopts=", str(pdir)],
+            cwd=str(pdir),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return (True, False, f"tests timed out after {timeout}s")
+    except (OSError, ValueError):
+        return (False, False, "")
+
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    tail = out[-500:]
+    rc = proc.returncode
+    if rc == 0:
+        return (True, True, tail)
+    if rc == 5:
+        return (False, False, "no tests collected")  # soft skip
+    # Collection/import errors from missing third-party deps aren't a code defect.
+    if rc in (2, 3, 4) and ("ModuleNotFoundError" in out or "ImportError" in out):
+        return (False, False, "tests need uninstalled deps — skipped")
+    return (True, False, tail)
 
 
 def _docker_daemon_ok() -> bool:

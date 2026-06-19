@@ -109,7 +109,11 @@ class MemoryStore:
         async with self._session() as s:
             stmt = select(LessonRow).where(LessonRow.stack == stack)
             if stage:
-                stmt = stmt.where(LessonRow.stage == stage)
+                # Match stage-specific lessons AND stage-agnostic ones (stored
+                # with stage=''). The build pipeline mints lessons with an empty
+                # stage, so an exact ``== stage`` filter matched nothing and
+                # severed the capture->inject edge entirely.
+                stmt = stmt.where(LessonRow.stage.in_(("", stage)))
             order = LessonRow.score.asc() if ascending else LessonRow.score.desc()
             stmt = stmt.order_by(order).limit(limit)
             rows = (await s.execute(stmt)).scalars().all()

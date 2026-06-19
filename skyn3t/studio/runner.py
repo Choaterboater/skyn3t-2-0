@@ -229,11 +229,49 @@ class StudioRunner:
         return total
 
     @staticmethod
+    def _has_entrypoint_on_disk(project_dir: str) -> bool:
+        """True if the delivered tree has a recognizable runnable entrypoint."""
+        from pathlib import Path
+
+        try:
+            from skyn3t.agents import _verify_common as vc
+
+            return bool(vc.find_entrypoints(Path(project_dir)))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _rescore_delivered(self, project_dir: str) -> tuple[str, float, list[str]]:
+        """Run the reviewer heuristic against the delivered tree (post-fix).
+
+        Returns (verdict, score, gaps). Pure/offline — works even when no
+        reviewer agent is registered. Never raises.
+        """
+        from pathlib import Path
+
+        try:
+            from skyn3t.agents import _verify_common as vc
+            from skyn3t.agents.reviewer import GO_THRESHOLD, heuristic_score
+
+            root = Path(project_dir)
+            score, gaps = heuristic_score(root, {"project_dir": project_dir})
+            no_source = vc.non_empty_source_count(root) == 0
+            verdict = "go" if (score >= GO_THRESHOLD and not no_source) else "no_go"
+            return verdict, float(score), list(gaps)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("rescore.failed", error=str(exc))
+            return "no_go", 0.0, []
+
+    @staticmethod
     def _stub_for(rel: str, plan: BuildPlan, brief: str) -> str | None:
         """Minimal valid content for a missing checklist file."""
         name = rel.rsplit("/", 1)[-1]
         if name == "pyproject.toml":
-            return '[project]\nname = "app"\nversion = "0.1.0"\n'
+            try:
+                from skyn3t.agents._scaffold import default_pyproject
+
+                return default_pyproject(plan.slug or "app")
+            except Exception:  # noqa: BLE001
+                return f'[project]\nname = "{plan.slug or "app"}"\nversion = "0.1.0"\n'
         if name == "__init__.py":
             return ""
         if name.startswith("test") and name.endswith(".py"):
@@ -246,27 +284,71 @@ class StudioRunner:
             return "__pycache__/\n*.pyc\nnode_modules/\ndist/\n.env\n"
         return None
 
+    @staticmethod
+    def _read_python_files(root: "Path") -> dict[str, str]:
+        """Read the delivered python files so a real entrypoint can be wired."""
+        out: dict[str, str] = {}
+        try:
+            for p in root.rglob("*.py"):
+                if any(part in {".git", "__pycache__", ".venv", "node_modules"}
+                       for part in p.relative_to(root).parts):
+                    continue
+                try:
+                    if p.stat().st_size <= 200_000:
+                        out[str(p.relative_to(root))] = p.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return out
+
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
-        """Deterministically create missing checklist files (scaffold or stub)."""
+        """Deterministically create missing checklist files.
+
+        A missing runnable root is WIRED to the delivered code (a real
+        entrypoint), not stub-filled. The scaffold vocabulary is normalized so a
+        CLI build is no longer handed a React scaffold.
+        """
         if not missing:
             return 0
         from pathlib import Path
 
         scaffold: dict[str, str] = {}
         try:
-            from skyn3t.agents._common import slugify
+            from skyn3t.agents._common import detect_stack, slugify
             from skyn3t.agents._scaffold import scaffold_for
 
-            scaffold = scaffold_for(plan.stack, slugify(plan.slug or brief, "app"), brief) or {}
+            # planner stack vocabulary ('cli'/'python'/'react') -> scaffold key
+            # ('python_cli'/'react_vite'/…) so scaffold_for stops defaulting to
+            # the React builder for everything it doesn't recognize.
+            scaffold_stack = detect_stack(explicit=plan.stack) or plan.stack
+            scaffold = scaffold_for(scaffold_stack, slugify(plan.slug or brief, "app"), brief) or {}
         except Exception:  # noqa: BLE001
             scaffold = {}
         root = Path(project_dir)
+
+        # If a runnable root is among the gaps, synthesize one wired to the
+        # already-delivered package before reaching for the generic scaffold.
+        synthesized: dict[str, str] = {}
+        if any(m.rsplit("/", 1)[-1] in ("main.py", "<entrypoint>") for m in missing):
+            try:
+                from skyn3t.agents._scaffold import synthesize_python_entrypoint
+
+                synthesized = synthesize_python_entrypoint(self._read_python_files(root)) or {}
+            except Exception:  # noqa: BLE001
+                synthesized = {}
+
         written = 0
-        for rel in missing:
+        targets = [m for m in missing if m != "<entrypoint>"]
+        if synthesized and "main.py" not in targets and not (root / "main.py").exists():
+            targets.append("main.py")
+        for rel in targets:
             target = root / rel
             if target.exists():
                 continue
-            content = scaffold.get(rel)
+            content = synthesized.get(rel)
+            if content is None:
+                content = scaffold.get(rel)
             if content is None:
                 content = self._stub_for(rel, plan, brief)
             if content is None:
@@ -325,6 +407,8 @@ class StudioRunner:
             proof = proof_run(
                 project_dir, checklist=plan.checklist,
                 execution_backend=self.settings.execution_backend, stack=plan.stack,
+                run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
             )
             manifest.extra["proof"] = proof.to_dict()
             manifest.extra[f"fix_attempt_{attempt}"] = {"filled": filled, "passed": proof.passed}
@@ -344,6 +428,7 @@ class StudioRunner:
         skill_slugs: list[str],
         *,
         helpful: bool,
+        gaps: list[str] | None = None,
     ) -> None:
         """Close every learning edge (design rule #2). Best-effort; never raises."""
         build = {
@@ -355,6 +440,10 @@ class StudioRunner:
             "verdict": manifest.verdict,
             "files": manifest.files_count,
             "stages": [s.name for s in plan.stages],
+            # The specific gaps make a lesson actionable ("avoid: no entrypoint")
+            # instead of the generic "build failed — re-check the plan".
+            "gaps": list(gaps or []),
+            "brief": manifest.brief,
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:
@@ -365,7 +454,10 @@ class StudioRunner:
         # 2. Record the build shape on the pattern scoreboard + maybe promote.
         if self.patterns is not None:
             try:
-                shape = {"stages": len(plan.stages), "files": manifest.files_count}
+                # Fingerprint the durable SHAPE (stage pipeline), not the volatile
+                # per-build file count — otherwise every build minted a fresh
+                # fingerprint and uses never accumulated toward promotion.
+                shape = {"stages": len(plan.stages)}
                 rec = self.patterns.record(plan.stack, shape, float(manifest.score or 0.0))
                 if self.skills is not None and rec is not None:
                     self.skills.maybe_promote_pattern(rec)
@@ -478,6 +570,7 @@ class StudioRunner:
         worktrees: list[Worktree] = [main_wt]
         reviewer_score = 0.0
         verdict = "no_go"
+        reviewer_gaps: list[str] = []
         used_lessons: list[dict[str, Any]] = []
 
         # Inject advisory skills for this stack (non-binding) and remember which
@@ -551,10 +644,11 @@ class StudioRunner:
                     record.output_summary = {"error": result.error}
                     prior[spec.name] = {"error": result.error}
 
-                # Reviewer score captured for the build verdict.
+                # Reviewer score/gaps captured for the build verdict.
                 if spec.agent_type == "reviewer" and result.success:
                     reviewer_score = self._extract_score(result.output) or 0.0
                     verdict = str(result.output.get("verdict", "no_go"))
+                    reviewer_gaps = list(result.output.get("gaps") or [])
 
                 manifest.add_stage(record)
                 await self._emit_stage_done(build_id, record, correlation_id)
@@ -578,12 +672,15 @@ class StudioRunner:
             manifest.worktree_dir = main_wt.dir
             manifest.artifact_dir = project_dir
 
-            # Objective proof against the delivered project.
+            # Objective proof against the delivered project (boots it AND runs
+            # its own test suite when enabled).
             proof = proof_run(
                 project_dir,
                 checklist=plan.checklist,
                 execution_backend=self.settings.execution_backend,
                 stack=plan.stack,
+                run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
             )
             manifest.extra["proof"] = proof.to_dict()
 
@@ -595,18 +692,30 @@ class StudioRunner:
                     manifest, plan, project_dir, proof, correlation_id, extra
                 )
 
+            # Re-score the DELIVERED tree. The reviewer/critic/verifier stages ran
+            # on the pre-merge worktree BEFORE the fix loop, so their verdict is
+            # stale — a repaired build was frozen at the broken verdict and could
+            # never recover. Gate on a fresh measurement of what we actually ship.
+            re_verdict, re_score, re_gaps = self._rescore_delivered(project_dir)
+            manifest.extra["rescore"] = {"verdict": re_verdict, "score": re_score, "gaps": re_gaps}
+            reviewer_score = max(reviewer_score, re_score)
+            review_gaps = reviewer_gaps or re_gaps
+            verdict = re_verdict
+
             # Final score: blend reviewer score with proof completeness.
             if reviewer_score <= 0.0:
                 reviewer_score = proof.score
             final_score = round(0.6 * reviewer_score + 0.4 * proof.score, 2)
             manifest.score = final_score
-            # Verdict: a reviewer "go" is necessary but NOT sufficient — the
-            # objective proof, non-empty delivery, AND real substance are ANDed
-            # in (design rule #3: verify behavior, not vibes). A structurally
-            # complete but thin stub (e.g. a 559-byte entrypoint) is NOT "go".
+            # Verdict: the (re-scored) reviewer "go" is necessary but NOT
+            # sufficient — the objective proof, non-empty delivery, real
+            # substance, AND a runnable entrypoint are ANDed in (rule #3: verify
+            # behavior, not vibes). A package with no runnable root is NOT "go".
             delivered_nonempty = manifest.files_count > 0 and proof.files_substantive > 0
             biggest = self._largest_source_bytes(project_dir)
             manifest.extra["largest_source_bytes"] = biggest
+            has_entry = self._has_entrypoint_on_disk(project_dir)
+            manifest.extra["has_entrypoint"] = has_entry
             # Substance gate applies only to REAL LLM backends: a stub build's
             # minimal scaffold is acceptable degraded output, but a real model
             # that emitted a 559-byte stub genuinely under-delivered -> no_go.
@@ -614,7 +723,8 @@ class StudioRunner:
             substantive = code_backend == "stub" or biggest >= self._substance_floor
             verdict = (
                 "go"
-                if (verdict == "go" and proof.passed and delivered_nonempty and substantive)
+                if (verdict == "go" and proof.passed and delivered_nonempty
+                    and substantive and has_entry)
                 else "no_go"
             )
             if not substantive:
@@ -625,10 +735,14 @@ class StudioRunner:
             manifest.verdict = verdict
             manifest.status = "completed" if delivered_nonempty else "failed"
 
-            # Grade lessons by build success (close the learning loop).
-            helpful = manifest.status == "completed"
+            # Grade the learning loop by the REAL outcome (a 'go'), not merely
+            # "files were written". Crediting every non-empty no_go as helpful is
+            # what trained the factory backwards.
+            helpful = manifest.verdict == "go"
             await self._grade_lessons(used_lessons, helpful=helpful)
-            await self._record_learning(manifest, plan, skill_slugs, helpful=helpful)
+            await self._record_learning(
+                manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps
+            )
             self._obs_call(self.cost_tracker, "end_build", build_id)
 
             outcome = await self._finalize(manifest, plan, correlation_id, final_score)

@@ -46,8 +46,13 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     "react": ("README.md", "package.json", "src/App.jsx", "src/main.jsx", "index.html"),
     "nextjs": ("README.md", "package.json", "app/page.tsx", "app/layout.tsx"),
     "express": ("README.md", "package.json", "src/index.js", "test/app.test.js"),
-    "cli": ("README.md", "pyproject.toml", "src/main.py", "tests/test_cli.py"),
-    "python": ("README.md", "pyproject.toml", "src/__init__.py", "tests/test_basic.py"),
+    # CLI/python: a runnable root ``main.py`` (synthesized if the codegen only
+    # produced a package) + a manifest + README. Tests are scored as substance,
+    # not required as an exact path, so the checklist stops demanding files the
+    # codegen never names (the old ``src/main.py`` could never be satisfied by a
+    # package layout and forced the fix loop to stub-fill).
+    "cli": ("README.md", "pyproject.toml", "main.py"),
+    "python": ("README.md", "pyproject.toml", "main.py"),
     "static": ("README.md", "index.html", "styles.css", "script.js"),
 }
 

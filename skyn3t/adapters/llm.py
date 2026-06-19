@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import signal
 from dataclasses import dataclass, field
 
 import httpx
@@ -176,6 +178,7 @@ class LLMClient:
                 *argv, full,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # own process group -> killable as a tree
             )
             out, err = await asyncio.wait_for(
                 proc.communicate(), timeout=self.settings.cli_llm_timeout
@@ -184,6 +187,11 @@ class LLMClient:
             log.warning("llm.cli_timeout", provider=provider, timeout=self.settings.cli_llm_timeout)
             await self._terminate(proc)  # don't orphan the CLI subprocess
             return self._stub(f"{provider}-cli", prompt, system, json_mode)
+        except asyncio.CancelledError:
+            # An outer stage timeout cancelled us — kill the tree before unwinding
+            # so a slow ``claude -p`` can't keep running for 90 minutes orphaned.
+            await self._terminate(proc)
+            raise
         except Exception as exc:  # noqa: BLE001
             log.warning("llm.cli_failed", provider=provider, error=str(exc)[:160])
             await self._terminate(proc)
@@ -230,10 +238,16 @@ class LLMClient:
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=workdir,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # own process group -> killable as a tree
             )
             out, err = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout or (self.settings.cli_llm_timeout * 3),
             )
+        except asyncio.CancelledError:
+            # Outer stage timeout / build cancellation: kill the whole agent tree
+            # before unwinding so it can't keep building orphaned for an hour.
+            await self._terminate(proc)
+            raise
         except Exception as exc:  # noqa: BLE001 - never raise into the build
             await self._terminate(proc)
             log.warning("llm.agentic_failed", provider=provider, error=str(exc)[:160])
@@ -246,12 +260,23 @@ class LLMClient:
 
     @staticmethod
     async def _terminate(proc) -> None:
-        """Kill + reap a subprocess so it is never orphaned."""
+        """Kill + reap a subprocess TREE so it is never orphaned.
+
+        The CLI agents (``claude -p`` etc.) spawn children; killing only the
+        parent leaves those running. We kill the whole process group (the
+        subprocess was started with ``start_new_session=True``) and reap it under
+        a bounded wait so a stuck process can't re-hang us here.
+        """
         if proc is None or proc.returncode is not None:
             return
         try:
-            proc.kill()
-            await proc.wait()
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()  # fall back to single-process kill
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            pass
         except Exception:  # noqa: BLE001
             pass
 

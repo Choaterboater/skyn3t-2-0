@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.
     run_generated_tests: bool = True
     generated_test_timeout: int = 90
+    # Compile node/react builds for real in the proof (npm install + npm run
+    # build / typecheck), bounded + guarded. Catches type/build errors a static
+    # check misses; soft-skips offline (no npm / registry). The build error is
+    # fed to the fix loop as a gap so a real backend can repair it.
+    run_generated_build: bool = True
+    generated_build_timeout: int = 300
     visual_self_heal: bool = False  # 2.0: drive rendered UI (needs browser)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 

@@ -169,9 +169,18 @@ class CuriosityLoop(_BaseComponent):
         super().__init__(cortex, event_bus, settings)
         self.interval_seconds = interval_seconds
 
+    def _enabled(self) -> bool:
+        return bool(
+            self.settings.autonomous_learning
+            and getattr(self.settings, "curiosity_loop_enabled", False)
+        )
+
     async def run(self) -> None:
         self._running = True
-        if not self.settings.autonomous_learning:
+        # Off by default: a target-less hourly INGEST proposal is always gated and
+        # regenerates after every decision — pure approval noise. Opt in via
+        # curiosity_loop_enabled. RepoScout covers real, named-repo ingestion.
+        if not self._enabled():
             return
         try:
             while self._running:
@@ -182,14 +191,16 @@ class CuriosityLoop(_BaseComponent):
 
     async def tick(self) -> Proposal | None:
         """One curiosity pass. Returns the proposal it made (if any)."""
-        if not self.settings.autonomous_learning:
+        if not self._enabled():
             return None
         prop = Proposal(
             type=ProposalType.INGEST,
             title="scout for new build patterns",
             source=self.name,
             rationale="periodic curiosity sweep",
-            payload={"topic": "build patterns", "ts": time()},
+            # No volatile timestamp: keep the dedupe_key stable so repeats while
+            # one is still open are rejected as duplicates.
+            payload={"topic": "build patterns"},
             confidence=0.4,
             safe=False,  # external ingest is always gated
         )

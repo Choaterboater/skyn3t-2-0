@@ -226,7 +226,10 @@ def build_cortex(
 
     cortex.add_component(GatedTuner(cortex, event_bus, settings))
     cortex.add_component(FeatureSuggester(cortex, event_bus, settings, llm=llm))
-    cortex.add_component(CuriosityLoop(cortex, event_bus, settings))
+    # CuriosityLoop is opt-in: by default it only spams the approval queue with a
+    # generic, target-less ingest proposal. Only attach it when enabled.
+    if getattr(settings, "curiosity_loop_enabled", False):
+        cortex.add_component(CuriosityLoop(cortex, event_bus, settings))
     cortex.add_component(ReviewWatcher(cortex, event_bus, settings))
     cortex.add_component(AutoCleanup(cortex, event_bus, settings))
     if orchestrator is not None:

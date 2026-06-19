@@ -28,6 +28,15 @@ async def fetch_github_repo_text(url: str) -> str | None:
         return None
     owner, repo = m.group(1), m.group(2).removesuffix(".git")
     token = os.environ.get("SKYN3T_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        # Fall back to the configured token (.env -> Settings.github_token), which
+        # is NOT exported to os.environ by pydantic-settings.
+        try:
+            from skyn3t.config.settings import get_settings
+
+            token = getattr(get_settings(), "github_token", "") or None
+        except Exception:  # noqa: BLE001
+            token = None
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

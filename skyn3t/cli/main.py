@@ -486,6 +486,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
         pass
 
     studio = None
+    rag = None  # hoisted: shared with the cortex block below (NameError-safe if studio init fails)
     try:
         from skyn3t.studio.runner import StudioRunner
 
@@ -516,6 +517,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
             cortex = build_cortex(
                 bus, settings,
                 orchestrator=spine["orchestrator"], memory=spine["memory"], llm=spine["llm"],
+                rag=rag,  # cortex ingestion writes into the same corpus studio recalls from
             )
             await cortex.start()
     except Exception:  # noqa: BLE001 - autonomy is optional
@@ -782,54 +784,14 @@ async def _fetch_url(url: str) -> str | None:
 
 
 async def _fetch_github_repo(url: str) -> str | None:
-    """Fetch a repo's description + README via the GitHub API, redacted.
+    """Fetch a repo's description + README (redacted) for RAG ingestion.
 
-    Honors SKYN3T_GITHUB_TOKEN (set in the dashboard or .env) for higher rate
-    limits + private repos. Read-only; secrets are scrubbed before ingest.
+    Thin delegate to :func:`skyn3t.agents.github_fetch.fetch_github_repo_text`,
+    the single source of truth shared with the Cortex INGEST handler.
     """
-    import os
-    import re as _re
+    from skyn3t.agents.github_fetch import fetch_github_repo_text
 
-    try:
-        import httpx
-    except Exception:  # noqa: BLE001
-        return None
-    m = _re.search(r"github\.com/([^/\s]+)/([^/\s#?]+)", url)
-    if not m:
-        return None
-    owner, repo = m.group(1), m.group(2).removesuffix(".git")
-    token = os.environ.get("SKYN3T_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    parts: list[str] = [f"GitHub repo: {owner}/{repo}"]
-    try:
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            meta = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
-            if meta.status_code == 200:
-                d = meta.json()
-                parts.append(f"Description: {d.get('description') or ''}")
-                parts.append(f"Language: {d.get('language') or ''} · Stars: {d.get('stargazers_count', 0)}")
-                if d.get("topics"):
-                    parts.append("Topics: " + ", ".join(d.get("topics", [])))
-            readme = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/readme",
-                headers={**headers, "Accept": "application/vnd.github.raw"},
-            )
-            if readme.status_code == 200:
-                parts.append("README:\n" + readme.text[:8000])
-    except Exception:  # noqa: BLE001 - degrade, don't crash
-        if len(parts) <= 1:
-            return None
-    text = "\n\n".join(parts)
-    # Scrub any secret-shaped strings before storing.
-    try:
-        from skyn3t.security.secrets import scrub_text
-
-        text = scrub_text(text)
-    except Exception:  # noqa: BLE001
-        pass
-    return text
+    return await fetch_github_repo_text(url)
 
 
 # ---------------------------------------------------------------------------

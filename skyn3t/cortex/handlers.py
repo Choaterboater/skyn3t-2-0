@@ -47,9 +47,14 @@ class HandlerRegistry:
         overrides: dict[str, Any] | None = None,
         stage_dir: Path | None = None,
         settings: Settings | None = None,
+        rag: Any | None = None,
     ) -> None:
         self.overrides: dict[str, Any] = overrides if overrides is not None else {}
         self.stage_dir = Path(stage_dir) if stage_dir else None
+        # Optional RAG engine: when present, INGEST proposals actually fetch +
+        # ingest the source into the corpus (so recall improves future builds).
+        # When None we fall back to staging intent only (unchanged behaviour).
+        self.rag = rag
         # Fall back to the process-wide settings singleton so tuning changes
         # land on the object live consumers read (degrade gracefully if the
         # config layer is unavailable for any reason).
@@ -143,7 +148,43 @@ class HandlerRegistry:
         return self._stage(proposal, "feature")
 
     async def _stage_ingest(self, proposal: Proposal) -> dict[str, Any]:
+        """Ingest the source into RAG when an engine is wired; else stage intent.
+
+        Strictly opt-in on ``self.rag``: with no engine this is byte-for-byte the
+        old staging behaviour. Offline / RAG errors degrade to a *retryable*
+        staged record (not ``applied: False``) so a transient failure doesn't
+        mark the proposal permanently FAILED.
+        """
+        payload = proposal.payload or {}
+        repo_or_url = payload.get("url") or payload.get("repo")
+        if self.rag is not None and repo_or_url:
+            result = await self._ingest_github(str(repo_or_url), proposal)
+            if result is not None:
+                return result
         return self._stage(proposal, "ingest")
+
+    async def _ingest_github(self, repo_or_url: str, proposal: Proposal) -> dict[str, Any] | None:
+        url = repo_or_url if "github.com/" in repo_or_url else f"https://github.com/{repo_or_url}"
+        try:
+            from skyn3t.agents.github_fetch import fetch_github_repo_text
+
+            text = await fetch_github_repo_text(url)
+        except Exception:  # noqa: BLE001
+            text = None
+        if not text:
+            staged = self._stage(proposal, "ingest")  # offline -> keep intent, retryable
+            staged["ingested"] = 0
+            staged["degraded"] = True
+            return staged
+        try:
+            n = self.rag.ingest_text(text, source=url, kind="github")
+        except Exception as exc:  # noqa: BLE001 - transient RAG error -> degraded, retryable
+            staged = self._stage(proposal, "ingest")
+            staged["ingested"] = 0
+            staged["degraded"] = True
+            staged["error"] = f"rag ingest failed: {exc}"
+            return staged
+        return {"applied": True, "ingested": n, "source": url}
 
     async def _stage_code_patch(self, proposal: Proposal) -> dict[str, Any]:
         return self._stage(proposal, "code_patch")

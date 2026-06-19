@@ -17,22 +17,30 @@ def _runner():
     return StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"))
 
 
-def test_fill_missing_repairs_python_checklist(tmp_path):
+def test_fill_missing_synthesizes_real_entrypoint(tmp_path):
+    # A package with real code but NO runnable root — the exact failure mode the
+    # old pipeline shipped (taskcli-v4). The proof must reject it, and the fix
+    # loop must WIRE a real entrypoint to the delivered code, not stub-fill.
     runner = _runner()
-    plan = Planner(Settings()).plan("build a million dollar idea", "mdi")
+    plan = Planner(Settings()).plan("a python cli task tool", "mdi")
     proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / "main.py").write_text("def main():\n    print('idea')\n")
+    pkg = proj / "mdi"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "core.py").write_text("def run():\n    print('idea')\n    return 0\n")
     (proj / "README.md").write_text("# mdi\n")
 
     before = proof_run(str(proj), checklist=plan.checklist, stack=plan.stack)
-    assert before.passed is False and before.checklist_present < before.checklist_total
+    assert before.passed is False  # no runnable entrypoint -> not proven
 
-    filled = runner._fill_missing(str(proj), plan, "build a million dollar idea", list(before.missing))
+    filled = runner._fill_missing(str(proj), plan, "a python cli task tool", list(before.missing))
     assert filled >= 1
+    # A real wired entrypoint was synthesized (not an empty stub).
+    main_py = (proj / "main.py").read_text()
+    assert "from mdi.core import run" in main_py
+
     after = proof_run(str(proj), checklist=plan.checklist, stack=plan.stack)
     assert after.passed is True
-    assert after.checklist_present == after.checklist_total
 
 
 def test_stub_for_known_files():
@@ -95,3 +103,66 @@ def test_best_of_n_prefers_richer_over_more_files():
     thin = Candidate(index=1, worktree=None, proof=_Proof(), files_written=8, source_bytes=559)
     res = select([thin, rich])
     assert res.winner is rich  # substance beats raw file count
+
+
+# ---- proof gating: runnable entrypoint + the generated suite -------------
+def test_proof_rejects_package_with_no_entrypoint(tmp_path):
+    # Real package code but no runnable root: NOT proven (the taskcli failure).
+    proj = tmp_path / "p"
+    pkg = proj / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "core.py").write_text("def run():\n    return 0\n")
+    res = proof_run(str(proj), stack="python")
+    assert res.passed is False
+    assert "<entrypoint>" in res.missing
+
+
+def _proj_with_test(tmp_path, body: str):
+    proj = tmp_path / "p"
+    tests = proj / "tests"
+    tests.mkdir(parents=True)
+    (proj / "main.py").write_text("def add(a, b):\n    return a + b\n")
+    (tests / "test_add.py").write_text(body)
+    return proj
+
+
+def test_proof_runs_generated_tests_pass(tmp_path):
+    proj = _proj_with_test(
+        tmp_path, "from main import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+    )
+    res = proof_run(str(proj), stack="python", run_tests=True)
+    assert res.passed is True
+    assert res.detail.get("tests") == "passed"
+
+
+def test_proof_runs_generated_tests_fail(tmp_path):
+    proj = _proj_with_test(
+        tmp_path, "from main import add\n\n\ndef test_add():\n    assert add(1, 2) == 99\n"
+    )
+    res = proof_run(str(proj), stack="python", run_tests=True)
+    assert res.passed is False
+    assert res.detail.get("tests") == "failed"
+    assert "<tests>" in res.missing
+
+
+def test_proof_soft_skips_when_no_tests(tmp_path):
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "main.py").write_text("def add(a, b):\n    return a + b\n")
+    res = proof_run(str(proj), stack="python", run_tests=True)
+    assert res.passed is True  # no tests is a soft skip, never a hard fail
+    assert res.detail.get("tests") == "skipped"
+
+
+def test_proof_does_not_run_tests_by_default(tmp_path):
+    # run_tests defaults OFF: a failing test in the tree must NOT fail a proof
+    # unless test execution is explicitly enabled (offline/CI kill-switch).
+    proj = tmp_path / "p"
+    tests = proj / "tests"
+    tests.mkdir(parents=True)
+    (proj / "main.py").write_text("def add(a, b):\n    return a + b\n")
+    (tests / "test_x.py").write_text("def test_x():\n    assert False\n")
+    res = proof_run(str(proj), stack="python")  # no run_tests
+    assert res.passed is True
+    assert "tests" not in res.detail

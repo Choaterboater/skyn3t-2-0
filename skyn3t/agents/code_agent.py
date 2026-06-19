@@ -26,7 +26,11 @@ from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
-from skyn3t.agents._scaffold import scaffold_for
+from skyn3t.agents._scaffold import (
+    default_pyproject,
+    scaffold_for,
+    synthesize_python_entrypoint,
+)
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
@@ -115,7 +119,7 @@ class CodeAgent(BaseAgent):
                 if content and content.strip():
                     files[rel_path] = content
 
-        files = self._repair_entrypoints(stack, files)
+        files = self._repair_entrypoints(stack, files, app_name)
 
         written = self._write_files(worktree, files)
 
@@ -245,8 +249,28 @@ class CodeAgent(BaseAgent):
         return sorted(written)
 
     # ---- entrypoint repair ----------------------------------------------
-    def _repair_entrypoints(self, stack: str, files: dict[str, str]) -> dict[str, str]:
-        """Fix the most common entrypoint import/export mismatches."""
+    @staticmethod
+    def _has_manifest(files: dict[str, str]) -> bool:
+        names = {f.replace("\\", "/").rsplit("/", 1)[-1] for f in files}
+        return bool(names & {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"})
+
+    def _repair_entrypoints(
+        self, stack: str, files: dict[str, str], app_name: str = "app"
+    ) -> dict[str, str]:
+        """Fix the most common entrypoint/manifest gaps left by the codegen.
+
+        The agentic backend reliably authors real package code but often forgets
+        the runnable root + manifest the rest of the pipeline expects. For python
+        stacks we synthesize a wired ``main.py`` and a real ``pyproject.toml`` so
+        a package-only delivery is genuinely runnable (not a dangling import).
+        """
+        if stack in ("python_cli", "python"):
+            entry = synthesize_python_entrypoint(files)
+            if entry:
+                files.update(entry)
+            if not self._has_manifest(files):
+                files["pyproject.toml"] = default_pyproject(app_name)
+            return files
         if stack == "react_vite":
             main = files.get("src/main.jsx")
             app = files.get("src/App.jsx")

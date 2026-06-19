@@ -94,11 +94,17 @@ class BootVerifierAgent(BaseAgent):
             "import importlib, sys; sys.path.insert(0, '.'); "
             f"importlib.import_module({module_path!r})"
         )
+        # -B + PYTHONDONTWRITEBYTECODE so the smoke import never drops a
+        # __pycache__/.pyc into the worktree (which would then be delivered).
+        import os as _os
+
+        env = {**_os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         try:
             proc = await asyncio.create_subprocess_exec(
-                py, "-c", code, cwd=str(root),
+                py, "-B", "-c", code, cwd=str(root),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                env=env,
             )
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)

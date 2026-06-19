@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     asset_gen: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     critic_enabled: bool = True  # 2.0: adversarial pre-delivery critic
+    # Execute the GENERATED project's own test suite during the proof (pytest /
+    # npm test), bounded + guarded. A real failure fails the proof and routes
+    # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.
+    run_generated_tests: bool = True
+    generated_test_timeout: int = 90
     visual_self_heal: bool = False  # 2.0: drive rendered UI (needs browser)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 

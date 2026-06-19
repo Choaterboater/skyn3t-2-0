@@ -31,8 +31,30 @@ except Exception:  # pragma: no cover - defensive
     _log = None  # type: ignore[assignment]
 
 
-PROMOTE_MIN_USES = 20
-PROMOTE_MIN_RATE = 0.90
+# Promotion thresholds. The old 20-use / 90%-win gate could never fire (the
+# busiest shape ever observed had 8 uses), so no pattern was ever promoted to a
+# skill — the factory never "grew". Lowered to a reachable bar while still
+# requiring a real, repeated win before a shape becomes advice.
+PROMOTE_MIN_USES = 4
+PROMOTE_MIN_RATE = 0.66
+
+# Group equivalent stack vocabularies so a build's detected stack matches skills
+# tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
+_STACK_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset({"python", "python_cli", "cli", "script"}),
+    frozenset({"react", "react_vite", "vite", "nextjs", "frontend"}),
+    frozenset({"node", "node_express", "express"}),
+    frozenset({"fastapi", "flask", "django", "python_api"}),
+    frozenset({"static", "static_html", "html"}),
+)
+
+
+def _stack_aliases(stack: str) -> frozenset[str]:
+    s = (stack or "").strip().lower()
+    for group in _STACK_GROUPS:
+        if s in group:
+            return group
+    return frozenset({s}) if s else frozenset()
 
 
 @dataclass(slots=True)
@@ -175,9 +197,11 @@ class SkillLibrary:
     ) -> list[Skill]:
         """Most relevant skills for a stack/tags, ranked by score."""
         tagset = {t.lower() for t in (tags or [])}
+        aliases = _stack_aliases(stack)
 
         def _match(sk: Skill) -> tuple[int, float]:
-            stack_hit = 1 if sk.stack in (stack, "generic") else 0
+            stack_hit = 1 if (sk.stack in aliases or sk.stack == "generic"
+                              or sk.stack == stack) else 0
             tag_hit = len(tagset & {t.lower() for t in sk.tags})
             return (stack_hit + tag_hit, sk.score)
 

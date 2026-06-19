@@ -172,10 +172,13 @@ class RepoScout:
             return
         self._stop = False
         interval = float(getattr(self.settings, "scout_interval", 1800.0))
+        # Eager first scout shortly after boot so the inbox isn't empty for a full
+        # interval; then settle into the periodic cadence.
+        delay = float(getattr(self.settings, "scout_initial_delay", 10.0))
         i = 0
         while not self._stop:
             try:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(delay)
             except asyncio.CancelledError:  # pragma: no cover - shutdown
                 break
             if self._stop:
@@ -185,3 +188,4 @@ class RepoScout:
                 i += 1
             except Exception:  # noqa: BLE001
                 pass
+            delay = interval  # subsequent scouts on the normal cadence

@@ -392,6 +392,26 @@ async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str,
     return {"cleared": len(drop), "remaining": len(state.proposals)}
 
 
+async def scout_now(state: AppState, topic: str = "") -> dict[str, Any]:
+    """Trigger one GitHub RepoScout pass immediately (on-demand), bypassing the
+    periodic timer. Returns how many ingest proposals it filed. Never raises."""
+    cortex = state.cortex
+    if cortex is None:
+        return {"scouted": 0, "error": "cortex not running"}
+    scout = next(
+        (c for c in getattr(cortex, "_components", []) if type(c).__name__ == "RepoScout"),
+        None,
+    )
+    if scout is None:
+        return {"scouted": 0, "error": "repo scout unavailable"}
+    topic = (topic or "").strip() or "python cli tool"
+    try:
+        proposals = await scout.scout(topic)
+        return {"scouted": len(proposals), "topic": topic}
+    except Exception as exc:  # noqa: BLE001
+        return {"scouted": 0, "topic": topic, "error": str(exc)[:160]}
+
+
 async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = True) -> dict[str, Any]:
     field = _PROVIDER_FIELDS.get((provider or "").lower())
     if field is None:
@@ -641,6 +661,10 @@ def build_router(state: AppState) -> Any:
     @router.post("/cortex/proposals/clear", dependencies=[auth])
     async def _clear_proposals_alias(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
         return await clear_proposals(state, scope=str(body.get("scope", "resolved")))
+
+    @router.post("/cortex/scout", dependencies=[auth])
+    async def _scout_now(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await scout_now(state, topic=str(body.get("topic", "")))
 
     @router.get("/integrations", dependencies=[auth])
     async def _integrations() -> dict[str, Any]:

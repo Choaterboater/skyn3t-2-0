@@ -339,14 +339,57 @@ def _persist_env_var(name: str, value: str) -> None:
 
 
 async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
+    import os
+
     s = state.settings
     backend = state.llm_client.backend if state.llm_client is not None else "n/a"
+    github = bool(
+        getattr(s, "github_token", "")
+        or os.environ.get("SKYN3T_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+    )
     return {
         "providers": {p: bool(getattr(s, f, "")) for p, f in _PROVIDER_FIELDS.items()},
         "backend": backend,
         "backend_pref": getattr(s, "llm_backend", "auto"),
         "cli_provider": getattr(s, "cli_llm_provider", "claude"),
+        "github": github,
     }
+
+
+async def set_github_token(state: AppState, key: str, persist: bool = True) -> dict[str, Any]:
+    """Set the GitHub token used by RepoScout search + repo ingest.
+
+    Updates the live Settings object AND os.environ (so a running cortex picks it
+    up on its next build) and persists to .env. Mirrors :func:`set_llm_key`.
+    """
+    import os
+
+    key = (key or "").strip()
+    try:
+        setattr(state.settings, "github_token", key)
+    except Exception:  # noqa: BLE001
+        pass
+    if key:
+        os.environ["SKYN3T_GITHUB_TOKEN"] = key
+    else:
+        os.environ.pop("SKYN3T_GITHUB_TOKEN", None)
+    if persist:
+        _persist_env_var("SKYN3T_GITHUB_TOKEN", key)
+    return {"configured": bool(key)}
+
+
+async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str, Any]:
+    """Drop cached proposals. ``scope='resolved'`` keeps genuinely-pending ones;
+    ``scope='all'`` clears everything. In-memory only — never raises."""
+    if scope == "all":
+        n = len(state.proposals)
+        state.proposals.clear()
+        return {"cleared": n, "remaining": 0}
+    drop = [pid for pid, rec in state.proposals.items() if rec.status != "pending"]
+    for pid in drop:
+        state.proposals.pop(pid, None)
+    return {"cleared": len(drop), "remaining": len(state.proposals)}
 
 
 async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = True) -> dict[str, Any]:
@@ -586,6 +629,18 @@ def build_router(state: AppState) -> Any:
     @router.post("/llm/backend", dependencies=[auth])
     async def _set_llm_backend(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
         return await set_llm_backend(state, str(body.get("backend", "auto")))
+
+    @router.post("/settings/github", dependencies=[auth])
+    async def _set_github(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await set_github_token(state, str(body.get("token", body.get("key", ""))))
+
+    @router.post("/proposals/clear", dependencies=[auth])
+    async def _clear_proposals(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await clear_proposals(state, scope=str(body.get("scope", "resolved")))
+
+    @router.post("/cortex/proposals/clear", dependencies=[auth])
+    async def _clear_proposals_alias(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await clear_proposals(state, scope=str(body.get("scope", "resolved")))
 
     @router.get("/integrations", dependencies=[auth])
     async def _integrations() -> dict[str, Any]:

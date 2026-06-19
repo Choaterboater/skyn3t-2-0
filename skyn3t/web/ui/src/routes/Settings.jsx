@@ -47,6 +47,9 @@ export default function Settings() {
   const [key, setKey] = useState("");
   const [msg, setMsg] = useState("");
 
+  const [ghToken, setGhToken] = useState("");
+  const [ghMsg, setGhMsg] = useState("");
+
   const [channel, setChannel] = useState("telegram");
   const [chToken, setChToken] = useState("");
   const [chTarget, setChTarget] = useState("");
@@ -69,6 +72,17 @@ export default function Settings() {
       secrets.refetch();
     } catch (e) {
       setMsg(String(e.message));
+    }
+  }
+
+  async function saveGithub() {
+    try {
+      const r = await apiPost("/settings/github", { token: ghToken });
+      setGhToken("");
+      setGhMsg(r.configured ? "saved → RepoScout now searches GitHub" : "cleared");
+      secrets.refetch();
+    } catch (e) {
+      setGhMsg(String(e.message));
     }
   }
 
@@ -209,6 +223,41 @@ export default function Settings() {
                 Save key
               </button>
             </div>
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            label="GitHub token"
+            right={
+              <Pill tone={secrets.data?.github ? "plasma" : "ash"}>
+                {secrets.data?.github ? "configured ✓" : "not set"}
+              </Pill>
+            }
+          />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              Stored in the server&apos;s <code className="font-mono text-bone">.env</code> as{" "}
+              <span className="font-mono text-bone">SKYN3T_GITHUB_TOKEN</span>. Lets the
+              Cortex <span className="font-mono text-bone">RepoScout</span> search GitHub for
+              real (authenticated, higher rate limit) and ingest repos into the knowledge
+              base — without a token it falls back to a small seed list.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <input
+                type="password"
+                className="field min-w-[12rem] flex-1"
+                placeholder="GitHub token (ghp_… / gho_…)"
+                value={ghToken}
+                onChange={(e) => setGhToken(e.target.value)}
+              />
+              <button onClick={saveGithub} className="btn-ember">
+                Save token
+              </button>
+            </div>
+            {ghMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{ghMsg}</p>
+            ) : null}
           </div>
         </Panel>
 

@@ -94,7 +94,8 @@ export default function Brain({ stream }) {
   });
 
   const learningEvents = (stream?.events || []).filter((e) =>
-    ["KNOWLEDGE_UPDATED", "INSIGHT_PUBLISHED", "LESSON_CAPTURED"].includes(
+    // EventType.value is lowercase-dotted on the wire, not the enum NAME.
+    ["knowledge.updated", "insight.published", "lesson.captured"].includes(
       e.type
     )
   ).length;

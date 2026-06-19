@@ -105,6 +105,9 @@ export function useEventStream({ maxEvents = 200 } = {}) {
         } catch (_) {
           return;
         }
+        // The hub wraps frames as {event:{…}} — unwrap to the bare Event shape
+        // the UI expects (e.type/e.payload/e.source/e.timestamp).
+        if (evt && evt.event) evt = evt.event;
         setLast(evt);
         setEvents((prev) => {
           const next = [...prev, evt];

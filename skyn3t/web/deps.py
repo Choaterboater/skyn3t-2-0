@@ -174,6 +174,30 @@ class AppState:
                     payload=dict(ev.payload),
                 )
 
+        async def _on_proposal_decided(ev: Event) -> None:  # pragma: no cover - async wiring
+            # Keep the cache honest. The cortex emits PROPOSAL_DECIDED for every
+            # gate / approve / reject / apply AND for store-rejected duplicates.
+            # Without this, every proposal stayed "pending" forever, so the
+            # dashboard's pending count inflated with duplicates + decided items.
+            pid = str(ev.payload.get("proposal_id") or ev.id)
+            rec = self.proposals.get(pid)
+            if rec is None:
+                return
+            payload = ev.payload or {}
+            # Two emitter shapes: the web API sends {"approved": bool}; the cortex
+            # sends {"status": "<ProposalStatus>"}. Handle both; never clobber on
+            # an unrecognized payload (leave the prior status intact).
+            if "approved" in payload:
+                rec.status = "approved" if payload.get("approved") else "rejected"
+                return
+            raw = str(payload.get("status", "")).lower()
+            if raw in ("approved", "applied"):
+                rec.status = "approved"
+            elif raw in ("rejected", "failed"):
+                rec.status = "rejected"
+            elif raw in ("gated", "pending"):
+                rec.status = "pending"  # genuinely awaiting a human decision
+
         async def _on_build(ev: Event) -> None:  # pragma: no cover - async wiring
             bid = str(ev.payload.get("build_id") or ev.correlation_id or ev.id)
             rec = self.builds.get(bid)
@@ -208,6 +232,7 @@ class AppState:
             rec.updated_at = time.time()
 
         self.event_bus.subscribe(EventType.PROPOSAL_CREATED, _on_proposal)
+        self.event_bus.subscribe(EventType.PROPOSAL_DECIDED, _on_proposal_decided)
         for et in (
             EventType.BUILD_STARTED,
             EventType.BUILD_STAGE_STARTED,

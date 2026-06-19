@@ -166,3 +166,58 @@ def test_proof_does_not_run_tests_by_default(tmp_path):
     res = proof_run(str(proj), stack="python")  # no run_tests
     assert res.passed is True
     assert "tests" not in res.detail
+
+
+# ---- proof gating: real node/react compile (npm install + npm run build) ----
+import json as _json
+import shutil
+
+import pytest
+
+
+def _node_proj(tmp_path, build_script: str | None):
+    proj = tmp_path / "p"
+    (proj / "src").mkdir(parents=True)
+    pkg = {"name": "t", "version": "1.0.0", "private": True}
+    if build_script is not None:
+        pkg["scripts"] = {"build": build_script}
+    (proj / "package.json").write_text(_json.dumps(pkg, indent=2) + "\n")
+    (proj / "index.html").write_text(
+        '<!doctype html><html><body><div id="root"></div>'
+        '<script type="module" src="/src/main.jsx"></script></body></html>\n'
+    )
+    (proj / "src" / "main.jsx").write_text("console.log('hi')\n")
+    return proj
+
+
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
+def test_proof_node_build_pass(tmp_path):
+    proj = _node_proj(tmp_path, 'node -e "process.exit(0)"')
+    res = proof_run(str(proj), stack="react", run_build=True, build_timeout=120)
+    assert res.passed is True
+    assert res.detail.get("build") == "passed"
+
+
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
+def test_proof_node_build_fail(tmp_path):
+    proj = _node_proj(tmp_path, 'node -e "process.exit(1)"')
+    res = proof_run(str(proj), stack="react", run_build=True, build_timeout=120)
+    assert res.passed is False
+    assert res.detail.get("build") == "failed"
+    assert "<build>" in res.missing
+
+
+def test_proof_node_build_soft_skip_no_script(tmp_path):
+    proj = _node_proj(tmp_path, None)  # no build script
+    res = proof_run(str(proj), stack="react", run_build=True)
+    assert res.passed is True  # no build script -> soft skip, never a hard fail
+    assert res.detail.get("build") == "skipped"
+
+
+def test_proof_does_not_run_build_by_default(tmp_path):
+    # run_build defaults OFF at the call site (heavyweight/network); only the
+    # runner turns it on from settings.
+    proj = _node_proj(tmp_path, 'node -e "process.exit(1)"')
+    res = proof_run(str(proj), stack="react")  # no run_build
+    assert res.passed is True
+    assert "build" not in res.detail

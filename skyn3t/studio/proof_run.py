@@ -117,6 +117,8 @@ def proof_run(
     stack: str = "",
     run_tests: bool = False,
     test_timeout: int = 90,
+    run_build: bool = False,
+    build_timeout: int = 300,
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
@@ -188,6 +190,23 @@ def proof_run(
             detail["tests"] = "skipped"
             if summary:
                 detail["test_summary"] = summary
+
+    # Behaviour, not vibes for node/web: actually COMPILE it (npm install + npm
+    # run build). A static "package.json exists" check greenlit a build that
+    # didn't type-check/compile; this catches that. Soft-skips offline.
+    if run_build and passed:
+        ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout)
+        if ran:
+            detail["build"] = "passed" if build_ok else "failed"
+            detail["build_summary"] = summary
+            if not build_ok:
+                passed = False
+                if "<build>" not in missing:
+                    missing = [*missing, "<build>"]
+        else:
+            detail.setdefault("build", "skipped")
+            if summary:
+                detail["build_summary"] = summary
 
     return ProofResult(
         passed=passed,
@@ -333,6 +352,67 @@ def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bo
     if rc in (2, 3, 4) and ("ModuleNotFoundError" in out or "ImportError" in out):
         return (False, False, "tests need uninstalled deps — skipped")
     return (True, False, tail)
+
+
+_NODE_STACKS = ("react", "react_vite", "node", "node_express", "express", "nextjs", "static")
+
+
+def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
+    """Compile a node/web project for real: npm install + npm run build.
+
+    Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no npm, no
+    build script, or the install failed — e.g. offline) and must NOT fail the
+    proof. A non-zero build IS a real failure. Never raises.
+    """
+    import json as _json
+    import os
+    import shutil
+    import subprocess
+
+    pkg_path = pdir / "package.json"
+    low = (stack or "").lower()
+    if low not in _NODE_STACKS and not pkg_path.exists():
+        return (False, False, "")
+    npm = shutil.which("npm")
+    if npm is None or not pkg_path.exists():
+        return (False, False, "npm or package.json missing — build skipped")
+    try:
+        scripts = (_json.loads(pkg_path.read_text(encoding="utf-8")) or {}).get("scripts") or {}
+    except (OSError, ValueError):
+        return (False, False, "")
+    build_cmd = "build" if "build" in scripts else ("typecheck" if "typecheck" in scripts else None)
+    if build_cmd is None:
+        return (False, False, "no build/typecheck script — skipped")
+
+    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    # Install (bounded). A failure here is environmental (offline registry), not
+    # a code defect -> soft skip rather than fail the build.
+    install_budget = max(30, int(timeout * 0.6))
+    try:
+        inst = subprocess.run(
+            [npm, "install", "--no-audit", "--no-fund", "--no-progress"],
+            cwd=str(pdir), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=install_budget, env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return (False, False, "npm install timed out/failed (offline?) — build skipped")
+    if inst.returncode != 0:
+        return (False, False, "npm install failed (offline?) — build skipped")
+
+    try:
+        bld = subprocess.run(
+            [npm, "run", build_cmd],
+            cwd=str(pdir), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=max(30, timeout - install_budget), env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return (True, False, f"npm run {build_cmd} timed out after build budget")
+    except (OSError, ValueError):
+        return (False, False, "")
+    out = ((bld.stdout or "") + (bld.stderr or "")).strip()
+    if bld.returncode == 0:
+        return (True, True, out[-300:])
+    return (True, False, out[-700:])
 
 
 def _docker_daemon_ok() -> bool:

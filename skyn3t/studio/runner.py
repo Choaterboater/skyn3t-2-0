@@ -409,6 +409,8 @@ class StudioRunner:
                 execution_backend=self.settings.execution_backend, stack=plan.stack,
                 run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
                 test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
             manifest.extra["proof"] = proof.to_dict()
             manifest.extra[f"fix_attempt_{attempt}"] = {"filled": filled, "passed": proof.passed}
@@ -681,6 +683,8 @@ class StudioRunner:
                 stack=plan.stack,
                 run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
                 test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
             manifest.extra["proof"] = proof.to_dict()
 

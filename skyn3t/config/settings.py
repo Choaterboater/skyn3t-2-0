@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
     no_claude: bool = False
-    model_evolution: bool = True
+    model_evolution: bool = False  # not yet wired: LearnedModelRouter is never instantiated
     openrouter_max_concurrency: int = Field(default=4, ge=1)
 
     # ---- Cost caps (hard backstops) -------------------------------------
@@ -101,10 +101,10 @@ class Settings(BaseSettings):
     autonomous_daily_build_cap: int = 10
 
     # ---- Feature flags ---------------------------------------------------
-    debate_enabled: bool = False
+    debate_enabled: bool = False  # not yet wired: run_debate() has no production caller
     a2a_conversation: bool = False
     reflective_retry: bool = True
-    auto_route: bool = True
+    auto_route: bool = False  # not yet wired: learned-router gate; nothing reads this
     asset_gen: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     critic_enabled: bool = True  # 2.0: adversarial pre-delivery critic

@@ -1,15 +1,18 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { useEventStream } from "./api.js";
 
-import Overview from "./routes/Overview.jsx";
-import Agents from "./routes/Agents.jsx";
-import Studio from "./routes/Studio.jsx";
-import Cortex from "./routes/Cortex.jsx";
-import Brain from "./routes/Brain.jsx";
-import Skills from "./routes/Skills.jsx";
-import Activity from "./routes/Activity.jsx";
-import Settings from "./routes/Settings.jsx";
+// Lazy-load each route so its code (and heavy deps) ships in its own chunk and
+// loads on demand. In particular the Brain page pulls in three.js / r3f (~800KB)
+// — lazy-loading keeps it out of the initial bundle entirely.
+const Overview = lazy(() => import("./routes/Overview.jsx"));
+const Agents = lazy(() => import("./routes/Agents.jsx"));
+const Studio = lazy(() => import("./routes/Studio.jsx"));
+const Cortex = lazy(() => import("./routes/Cortex.jsx"));
+const Brain = lazy(() => import("./routes/Brain.jsx"));
+const Skills = lazy(() => import("./routes/Skills.jsx"));
+const Activity = lazy(() => import("./routes/Activity.jsx"));
+const Settings = lazy(() => import("./routes/Settings.jsx"));
 
 const NAV = [
   { to: "/overview", label: "Overview", glyph: "◇" },
@@ -77,18 +80,27 @@ export default function App() {
 
       <main className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-8 py-8">
-          <Routes>
-            <Route path="/" element={<Navigate to="/overview" replace />} />
-            <Route path="/overview" element={<Overview stream={stream} />} />
-            <Route path="/agents" element={<Agents stream={stream} />} />
-            <Route path="/studio" element={<Studio stream={stream} />} />
-            <Route path="/cortex" element={<Cortex stream={stream} />} />
-            <Route path="/brain" element={<Brain stream={stream} />} />
-            <Route path="/skills" element={<Skills />} />
-            <Route path="/activity" element={<Activity stream={stream} />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Navigate to="/overview" replace />} />
-          </Routes>
+          <Suspense
+            fallback={
+              <div className="flex items-center gap-2 px-1 py-8 font-mono text-[11px] text-ash">
+                <span className="h-2 w-2 animate-forgepulse rounded-full bg-ember" />
+                loading…
+              </div>
+            }
+          >
+            <Routes>
+              <Route path="/" element={<Navigate to="/overview" replace />} />
+              <Route path="/overview" element={<Overview stream={stream} />} />
+              <Route path="/agents" element={<Agents stream={stream} />} />
+              <Route path="/studio" element={<Studio stream={stream} />} />
+              <Route path="/cortex" element={<Cortex stream={stream} />} />
+              <Route path="/brain" element={<Brain stream={stream} />} />
+              <Route path="/skills" element={<Skills />} />
+              <Route path="/activity" element={<Activity stream={stream} />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="*" element={<Navigate to="/overview" replace />} />
+            </Routes>
+          </Suspense>
         </div>
       </main>
     </div>

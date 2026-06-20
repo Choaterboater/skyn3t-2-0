@@ -39,6 +39,7 @@ from skyn3t.studio.clarification import clarify
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import proof_run
+from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
 from skyn3t.worktree import (
     Worktree,
@@ -46,6 +47,7 @@ from skyn3t.worktree import (
     create_worktree,
     list_files,
     merge_back,
+    sync_preview,
 )
 
 log = structlog.get_logger(__name__)
@@ -371,6 +373,38 @@ class StudioRunner:
             except OSError:
                 pass
         return written
+
+    async def _improve_once(
+        self, *, work_dir: str, plan, gaps: list[str], correlation_id: str,
+        extra: dict | None, label: str, brief: str = "", slug: str = "",
+    ) -> bool:
+        """Run the code-improver once against ``work_dir`` for the flagged gaps.
+
+        Returns True if an improver task was dispatched. Best-effort: a missing
+        capability or a failed submission returns False and never raises. Used by
+        the per-stage debug pass (``_debug_and_snapshot``).
+        """
+        if not self._has_capability("code_improve"):
+            return False
+        payload = {
+            "brief": brief, "slug": slug,
+            "worktree_dir": work_dir, "project_dir": work_dir,
+            "stack": plan.stack, "plan": plan.to_dict() if hasattr(plan, "to_dict") else {},
+            "gaps": list(gaps),
+        }
+        if extra:
+            payload["extra"] = extra
+        task = TaskRequest(
+            type="code_improver", payload=payload,
+            capabilities_required=("code_improve",),
+            correlation_id=correlation_id, metadata={"stage": label},
+        )
+        try:
+            await asyncio.wait_for(self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("debug.improve_failed", label=label, error=str(exc))
+            return False
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Repair a failing build until the proof passes or attempts run out.
@@ -731,6 +765,12 @@ class StudioRunner:
                 manifest.add_stage(record)
                 await self._emit_stage_done(build_id, record, correlation_id)
 
+                # Per-stage autonomous debug + live preview snapshot (Phase A).
+                await self._debug_and_snapshot(
+                    build_id, spec, record, main_wt, project_dir, plan,
+                    correlation_id, extra, brief=brief, slug=slug,
+                )
+
                 # Approval gate (after stage completes).
                 if spec.gated:
                     approval = self.approval_gate.request(
@@ -927,6 +967,43 @@ class StudioRunner:
             # Keep a tiny, JSON-safe digest.
             summary = {k: v for k, v in list(output.items())[:3] if isinstance(v, (str, int, float, bool))}
         return summary
+
+    async def _debug_and_snapshot(
+        self, build_id: str, spec, record, main_wt, project_dir: str,
+        plan, correlation_id: str, extra: dict, *, brief: str = "", slug: str = "",
+    ) -> None:
+        """Per-stage: debug the just-run stage (autonomous), then snapshot the
+        worktree into ``.preview`` so the cockpit can show files-so-far. Only
+        stages that actually ran are debugged. Never raises."""
+        if record.status != "completed":
+            return
+
+        async def emit(event_type, payload):
+            await self.event_bus.emit(event_type, "studio", payload, correlation_id=correlation_id)
+
+        improve = None
+        if spec.agent_type == "code":
+            async def improve(gaps):  # noqa: E306 - closure over loop vars is intended
+                return await self._improve_once(
+                    work_dir=main_wt.dir, plan=plan, gaps=gaps,
+                    correlation_id=correlation_id, extra=extra,
+                    label=f"debug:{spec.name}", brief=brief, slug=slug,
+                )
+
+        result = await debug_stage(
+            build_id=build_id, spec=spec, record=record, worktree_dir=main_wt.dir,
+            plan=plan, settings=self.settings, emit=emit, improve=improve,
+            max_attempts=int((extra or {}).get("max_debug_attempts", 3)),
+        )
+        summary = dict(record.output_summary or {})
+        summary["debug"] = {
+            "passed": result.passed, "degraded": result.degraded, "attempts": result.attempts,
+        }
+        record.output_summary = summary
+
+        files = sync_preview(main_wt.dir, project_dir)
+        await emit(EventType.STAGE_ARTIFACT_SNAPSHOT,
+                   {"build_id": build_id, "stage": spec.name, "files": files[:200]})
 
     async def _emit_stage_done(self, build_id: str, record: StageRecord, correlation_id: str) -> None:
         # Include capability (so the dashboard's stage axis matches) and gaps (so

@@ -739,7 +739,17 @@ class StudioRunner:
                         plan, project_dir, main_wt.dir, prior, lessons, extra
                     )
                     payload.update(spec.extra)
-                    result = await self._submit_stage(spec, payload, correlation_id)
+                    call = self._submit_stage(spec, payload, correlation_id)
+                    if spec.agent_type == "code":
+                        # Long agentic code stage: stream files-so-far to the
+                        # cockpit while the agent writes, instead of going dark
+                        # until the stage completes.
+                        result = await self._with_live_snapshots(
+                            call, build_id=build_id, spec=spec, main_wt=main_wt,
+                            project_dir=project_dir, correlation_id=correlation_id,
+                        )
+                    else:
+                        result = await call
 
                 # Record outcome.
                 if result.success:
@@ -967,6 +977,40 @@ class StudioRunner:
             # Keep a tiny, JSON-safe digest.
             summary = {k: v for k, v in list(output.items())[:3] if isinstance(v, (str, int, float, bool))}
         return summary
+
+    async def _with_live_snapshots(
+        self, coro, *, build_id: str, spec, main_wt, project_dir: str,
+        correlation_id: str, interval: float = 4.0,
+    ):
+        """Run a long stage coroutine while periodically snapshotting the worktree
+        into ``.preview`` + emitting STAGE_ARTIFACT_SNAPSHOT, so the cockpit shows
+        files as the agent writes them (not only at stage end). The poller is
+        always cancelled when the stage returns. Streaming never breaks a build."""
+        async def poller() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    files = sync_preview(main_wt.dir, project_dir)
+                    await self.event_bus.emit(
+                        EventType.STAGE_ARTIFACT_SNAPSHOT, "studio",
+                        {"build_id": build_id, "stage": spec.name,
+                         "files": files[:200], "live": True},
+                        correlation_id=correlation_id,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - streaming must never break a build
+                log.warning("live_snapshot.failed", error=str(exc))
+
+        task = asyncio.create_task(poller())
+        try:
+            return await coro
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def _debug_and_snapshot(
         self, build_id: str, spec, record, main_wt, project_dir: str,

@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
     no_claude: bool = False
-    model_evolution: bool = False  # not yet wired: LearnedModelRouter is never instantiated
+    model_evolution: bool = False  # opt-in: with auto_route, route via the learned ModelTournament router
     openrouter_max_concurrency: int = Field(default=4, ge=1)
 
     # ---- Cost caps (hard backstops) -------------------------------------
@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     debate_enabled: bool = False  # not yet wired: run_debate() has no production caller
     a2a_conversation: bool = False
     reflective_retry: bool = True
-    auto_route: bool = False  # not yet wired: learned-router gate; nothing reads this
+    auto_route: bool = False  # opt-in: gates the learned router; enable together with model_evolution
     asset_gen: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     critic_enabled: bool = True  # 2.0: adversarial pre-delivery critic

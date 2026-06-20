@@ -701,9 +701,9 @@ def build_router(state: AppState) -> Any:
         try:
             resolved = resolve_project_file(state, slug, path)
         except ValueError:
-            raise HTTPException(status_code=400, detail="invalid path")
+            raise HTTPException(status_code=400, detail="invalid path") from None
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="not found")
+            raise HTTPException(status_code=404, detail="not found") from None
         return FileResponse(str(resolved))
 
     @router.get("/cortex/proposals", dependencies=[auth])

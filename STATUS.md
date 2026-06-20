@@ -49,7 +49,6 @@ RAG) without changing the core flow.
 - Out-of-band `studio approve/reject` records a decision event but does not yet
   reattach to a live in-process gated build; for now gates resolve within the
   build process (auto-approve when unattended).
-- URL ingestion does no HTML-to-text cleanup; it stores raw response text.
 - See [docs/ROADMAP.md](docs/ROADMAP.md) for the P0/P1/P2 backlog and which
   items are implemented vs. planned.
 

@@ -102,10 +102,33 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+def _build_router(settings: Settings) -> ModelRouter:
+    """The deterministic base router, or the learned router when BOTH
+    ``model_evolution`` and ``auto_route`` are enabled (opt-in).
+
+    The learned router prefers models the :class:`ModelTournament` has seen win;
+    with no evidence it abstains and behaves exactly like the base router. Any
+    failure degrades safely to the base router (design rules #4 safe, #6 degrade).
+    """
+    if getattr(settings, "model_evolution", False) and getattr(settings, "auto_route", False):
+        try:
+            from skyn3t.intelligence.model_tournament import ModelTournament
+            from skyn3t.intelligence.routing_recommendations import (
+                LearnedModelRouter,
+                RoutingRecommender,
+            )
+
+            tournament = ModelTournament(settings.data_dir / "model_tournament.json")
+            return LearnedModelRouter(RoutingRecommender(tournament), settings=settings)
+        except Exception:  # noqa: BLE001 - routing must never break the client
+            pass
+    return ModelRouter(settings)
+
+
 class LLMClient:
     def __init__(self, settings: Settings | None = None, router: ModelRouter | None = None) -> None:
         self.settings = settings or get_settings()
-        self.router = router or ModelRouter(self.settings)
+        self.router = router or _build_router(self.settings)
         self.budget = BudgetTracker(
             per_build_cap=self.settings.per_build_usd_cap,
             daily_cap=self.settings.daily_usd_cap,

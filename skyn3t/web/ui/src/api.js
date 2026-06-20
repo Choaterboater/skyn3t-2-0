@@ -72,17 +72,19 @@ export function useEventStream({ maxEvents = 200 } = {}) {
 
     function connect() {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      // Browsers can't set headers on a WebSocket, so pass the bearer token as a
-      // query param when one is configured (the server accepts ?token=).
+      // Browsers can't set headers on a WebSocket, so carry the bearer token as
+      // a subprotocol (Sec-WebSocket-Protocol) rather than a ?token= query param
+      // — the query param leaks the token into uvicorn/proxy access logs.
       const token =
         typeof localStorage !== "undefined"
           ? localStorage.getItem("skyn3t_token")
           : null;
-      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-      const url = `${proto}://${window.location.host}/ws${qs}`;
+      const url = `${proto}://${window.location.host}/ws`;
       let ws;
       try {
-        ws = new WebSocket(url);
+        ws = token
+          ? new WebSocket(url, ["skyn3t-bearer", token])
+          : new WebSocket(url);
       } catch (_) {
         scheduleReconnect();
         return;

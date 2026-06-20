@@ -370,6 +370,53 @@ def studio_build(
         raise typer.Exit(code=2)
 
 
+async def _run_debate(question: str, settings: Any | None = None) -> Any:
+    """Run a multi-model debate, gated by ``debate_enabled``, feeding the
+    ModelTournament that the learned router reads. Returns ``None`` if the LLM
+    stack is unavailable."""
+    try:
+        from skyn3t.adapters.llm import LLMClient
+        from skyn3t.config.settings import get_settings
+        from skyn3t.core.events import EventBus
+        from skyn3t.intelligence.debate import run_debate
+        from skyn3t.intelligence.model_tournament import ModelTournament
+    except Exception:  # noqa: BLE001 - optional stack
+        return None
+    settings = settings or get_settings()
+    llm = LLMClient(settings)
+    tournament = ModelTournament(settings.data_dir / "model_tournament.json")
+    return await run_debate(
+        llm,
+        question,
+        enabled=bool(settings.debate_enabled),
+        tournament=tournament,
+        event_bus=EventBus(),
+    )
+
+
+@app.command()
+def debate(
+    question: str = typer.Argument(..., help="The question to debate across models."),
+) -> None:
+    """Multi-model debate: propose -> cross-examine -> vote -> synthesise.
+
+    Gated by SKYN3T_DEBATE_ENABLED: off (default) is a single cheap completion;
+    on runs several models and records the winner into the ModelTournament that
+    feeds the learned router. Degrades deterministically on the stub backend.
+    """
+    console = _console()
+    result = asyncio.run(_run_debate(question))
+    if result is None:
+        console.print("[red]LLM stack unavailable — cannot debate.[/red]")
+        raise typer.Exit(code=1)
+    mode = "full debate" if result.enabled else "single completion (SKYN3T_DEBATE_ENABLED=0)"
+    console.print(f"[cyan]mode[/cyan]: {mode}")
+    if result.winner is not None:
+        console.print(f"[cyan]winner model[/cyan]: {result.winner.model}")
+    console.print("\n[bold]Synthesis[/bold]\n")
+    console.print(result.synthesis or "(empty)")
+
+
 def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any, Any, Any, Any]:
     """Construct the self-improvement layer (learning loop, pattern board, skills, rag).
 

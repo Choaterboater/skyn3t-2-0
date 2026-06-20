@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     autonomous_daily_build_cap: int = 10
 
     # ---- Feature flags ---------------------------------------------------
-    debate_enabled: bool = False  # not yet wired: run_debate() has no production caller
+    debate_enabled: bool = False  # opt-in: when on, `skyn3t debate` runs a full multi-model debate
     a2a_conversation: bool = False
     reflective_retry: bool = True
     auto_route: bool = False  # opt-in: gates the learned router; enable together with model_evolution

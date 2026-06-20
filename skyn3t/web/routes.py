@@ -37,9 +37,11 @@ def _reap_build_task(task: Any) -> None:
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+    from fastapi.responses import FileResponse
     _HAVE_FASTAPI = True
 except Exception:  # noqa: BLE001
     APIRouter = Body = Depends = HTTPException = Query = Request = None  # type: ignore[assignment,misc]
+    FileResponse = None  # type: ignore[assignment,misc]
     _HAVE_FASTAPI = False
 
 
@@ -689,6 +691,20 @@ def build_router(state: AppState) -> Any:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+
+    @router.get("/preview/{slug}", dependencies=[auth])
+    async def _preview(slug: str) -> dict[str, Any]:
+        return await preview_payload(state, slug)
+
+    @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
+    async def _project_file(slug: str, path: str) -> Any:
+        try:
+            resolved = resolve_project_file(state, slug, path)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid path")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(str(resolved))
 
     @router.get("/cortex/proposals", dependencies=[auth])
     async def _cortex_proposals(status: str = Query(default="")) -> dict[str, Any]:

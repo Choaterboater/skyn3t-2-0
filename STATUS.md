@@ -78,6 +78,11 @@ Done (wired + verified):
   (`reset`/`heartbeat`); `assemble_app_state` runs
   `RecoveryManager.restore_and_announce` on boot. The dashboard serves the built
   React SPA from `web/ui/dist/`.
+- **Live build cockpit (wired, Phase A):** a per-stage autonomous debug pass
+  (verify → fix → re-check, no prompts) plus `STAGE_DEBUG_*` /
+  `STAGE_ARTIFACT_SNAPSHOT` events, auth-gated `/api/preview` + `/api/projects`
+  routes, a read-only `.preview/` worktree snapshot, and cockpit panels (debug
+  timeline, files-so-far, live preview). Spec + plan in `docs/superpowers/`.
 
 Remaining (genuinely optional): `BudgetGuard.check()` is wired for telemetry but
 does not hard-trip studio builds — hard budget enforcement is already handled by

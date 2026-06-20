@@ -130,19 +130,45 @@ async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
     return {"builds": builds[:limit]}
 
 
+def _resolve_live_gate(state: AppState, build_id: str, approved: bool, reason: str) -> int:
+    """Resolve pending approval(s) on the live runner's in-process gate, so an
+    out-of-band approve/reject actually UNBLOCKS the waiting build instead of
+    only recording a status + event (and then waiting out the gate timeout).
+    Returns how many gate decisions were applied (0 if nothing was pending)."""
+    gate = getattr(getattr(state, "studio", None), "approval_gate", None)
+    if gate is None:
+        return 0
+    resolved = 0
+    try:
+        for pending in gate.pending(build_id):
+            approval_id = pending.get("approval_id")
+            if not approval_id:
+                continue
+            ok = gate.approve(approval_id, reason) if approved else gate.reject(approval_id, reason)
+            if ok:
+                resolved += 1
+    except Exception:  # noqa: BLE001 - gate resolution must never break the API
+        pass
+    return resolved
+
+
 async def approve_build(state: AppState, build_id: str, approved: bool = True, reason: str = "") -> dict[str, Any]:
     rec = state.builds.get(build_id)
     if rec is None:
         raise KeyError(build_id)
     rec.status = "approved" if approved else "rejected"
     rec.updated_at = time.time()
+    # Reattach to the live gated build: resolve its in-process approval gate so a
+    # blocked build resumes at once rather than waiting out the gate timeout.
+    gate_resolved = _resolve_live_gate(state, build_id, approved, reason)
     await state.event_bus.emit(
         EventType.PROPOSAL_DECIDED,
         source="web.api",
-        payload={"build_id": build_id, "approved": approved, "reason": reason, "kind": "build_approval"},
+        payload={"build_id": build_id, "approved": approved, "reason": reason,
+                 "kind": "build_approval", "gate_resolved": gate_resolved},
         correlation_id=rec.correlation_id,
     )
-    return {"build_id": build_id, "status": rec.status}
+    return {"build_id": build_id, "status": rec.status, "gate_resolved": gate_resolved}
 
 
 async def list_proposals(state: AppState, status: str = "") -> dict[str, Any]:

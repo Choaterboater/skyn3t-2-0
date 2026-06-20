@@ -1,0 +1,51 @@
+import pytest
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from skyn3t.config.settings import Settings  # noqa: E402
+from skyn3t.web.app import create_app  # noqa: E402
+from skyn3t.web.deps import AppState  # noqa: E402
+
+
+def _client(tmp_path, token=""):
+    state = AppState(settings=Settings(projects_dir=tmp_path, auth_token=token))
+    proj = tmp_path / "demo" / ".preview"
+    proj.mkdir(parents=True)
+    (proj / "index.html").write_text("<h1>hi</h1>")
+    app = create_app(state=state)
+    return TestClient(app)
+
+
+def test_preview_lists_files(tmp_path):
+    client = _client(tmp_path)
+    res = client.get("/api/preview/demo")
+    assert res.status_code == 200
+    assert "index.html" in res.json()["files"]
+
+
+def test_project_file_serves_content(tmp_path):
+    client = _client(tmp_path)
+    res = client.get("/api/projects/demo/index.html")
+    assert res.status_code == 200
+    assert "<h1>hi</h1>" in res.text
+
+
+def test_project_file_traversal_rejected(tmp_path):
+    client = _client(tmp_path)
+    # Encode the slashes so the client does NOT normalize the `..` away before
+    # the request reaches the handler; the resolver must reject the escape and
+    # never serve outside the preview root.
+    res = client.get("/api/projects/demo/..%2f..%2f..%2f..%2fetc%2fpasswd")
+    assert res.status_code in (400, 404)
+    assert "root:" not in res.text
+
+
+def test_preview_requires_auth_when_token_set(tmp_path):
+    client = _client(tmp_path, token="secret")
+    assert client.get(
+        "/api/preview/demo", headers={"Authorization": "Bearer secret"}
+    ).status_code == 200
+    assert client.get(
+        "/api/preview/demo", headers={"Authorization": "Bearer wrong"}
+    ).status_code == 401

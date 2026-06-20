@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import structlog
 
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import Event, EventType
+from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
+from skyn3t.worktree import PREVIEW_SUBDIR, list_files
 
 log = structlog.get_logger(__name__)
 
@@ -34,9 +37,11 @@ def _reap_build_task(task: Any) -> None:
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+    from fastapi.responses import FileResponse
     _HAVE_FASTAPI = True
 except Exception:  # noqa: BLE001
     APIRouter = Body = Depends = HTTPException = Query = Request = None  # type: ignore[assignment,misc]
+    FileResponse = None  # type: ignore[assignment,misc]
     _HAVE_FASTAPI = False
 
 
@@ -58,6 +63,42 @@ async def llm_backends_payload(state: AppState) -> dict[str, Any]:
 
 async def budget_payload(state: AppState) -> dict[str, Any]:
     return state.budget_snapshot()
+
+
+# ---- live build preview (cockpit, Phase A) --------------------------------
+def _preview_root(state: AppState, slug: str) -> Path:
+    """The dir the cockpit serves: the live ``.preview`` snapshot while a build
+    runs, else the delivered project root after delivery."""
+    base = Path(state.settings.projects_dir) / slug
+    preview = base / PREVIEW_SUBDIR
+    return preview if preview.is_dir() else base
+
+
+async def preview_payload(state: AppState, slug: str) -> dict[str, Any]:
+    """Manifest + file tree for a build's live (or delivered) artifact."""
+    root = _preview_root(state, slug)
+    files = list_files(root) if root.is_dir() else []
+    manifest = BuildManifest.load(Path(state.settings.projects_dir) / slug)
+    return {
+        "slug": slug,
+        "root": str(root),
+        "files": sorted(files),
+        "manifest": manifest.to_dict() if manifest is not None else None,
+    }
+
+
+def resolve_project_file(state: AppState, slug: str, rel_path: str) -> Path:
+    """Resolve a preview-relative path to an absolute file, refusing escapes.
+
+    Raises ``ValueError`` if the path escapes the preview root, ``FileNotFoundError``
+    if no such file exists. This is the security boundary for the file route."""
+    root = _preview_root(state, slug).resolve()
+    candidate = (root / rel_path).resolve()
+    if not candidate.is_relative_to(root):
+        raise ValueError(f"path escapes preview root: {rel_path!r}")
+    if not candidate.is_file():
+        raise FileNotFoundError(rel_path)
+    return candidate
 
 
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "") -> dict[str, Any]:
@@ -650,6 +691,20 @@ def build_router(state: AppState) -> Any:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+
+    @router.get("/preview/{slug}", dependencies=[auth])
+    async def _preview(slug: str) -> dict[str, Any]:
+        return await preview_payload(state, slug)
+
+    @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
+    async def _project_file(slug: str, path: str) -> Any:
+        try:
+            resolved = resolve_project_file(state, slug, path)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid path") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
+        return FileResponse(str(resolved))
 
     @router.get("/cortex/proposals", dependencies=[auth])
     async def _cortex_proposals(status: str = Query(default="")) -> dict[str, Any]:

@@ -141,6 +141,32 @@ def test_reflection_all_passing_no_candidate():
     assert r.propose_prompt_improvement("a", transcripts) is None
 
 
+async def test_reflection_emits_safe_suggestions():
+    """The emitted KNOWLEDGE_UPDATED must carry a `suggestions` list (the key the
+    SelfTuningEngine consumes), not just a bare `reflection`."""
+    from skyn3t.core.events import EventBus, EventType
+
+    bus = EventBus()
+    captured = []
+
+    async def _cap(e):
+        captured.append(e)
+
+    bus.subscribe(EventType.KNOWLEDGE_UPDATED, _cap)
+    r = Reflector(event_bus=bus)
+
+    await r.reflect_and_publish({"stack": "fastapi", "score": 30.0, "verdict": "no_go"})
+    assert len(captured) == 1
+    payload = captured[0].payload
+    assert "reflection" in payload and "suggestions" in payload
+    assert payload["suggestions"][0]["changes"] == {"reflective_retry": True}
+
+    # A successful build suggests nothing (no churn).
+    captured.clear()
+    await r.reflect_and_publish({"stack": "fastapi", "score": 95.0, "verdict": "go"})
+    assert captured[0].payload["suggestions"] == []
+
+
 # ---- debate ------------------------------------------------------------
 def test_parse_vote():
     assert _parse_vote("Proposal 2", 3) == 1

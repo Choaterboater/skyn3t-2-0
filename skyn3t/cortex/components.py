@@ -63,7 +63,7 @@ class GatedTuner(_BaseComponent):
 
     def __init__(self, cortex: Any, event_bus: EventBus, settings: Settings | None = None) -> None:
         super().__init__(cortex, event_bus, settings)
-        self._low_scores = 0
+        self._low_scores: dict[str, int] = {}  # per-stage consecutive low-score counts
         self._threshold = 3
 
     async def run(self) -> None:
@@ -82,27 +82,60 @@ class GatedTuner(_BaseComponent):
             score = float(score)
         except (TypeError, ValueError):
             return
+        # Count low scores PER STAGE, so "N consecutive low <stage> scores" is
+        # actually about one stage rather than a global mix of different stages.
+        stage = str(ev.payload.get("stage") or "unknown")
         if score >= 70:
-            self._low_scores = 0
+            self._low_scores[stage] = 0
             return
-        self._low_scores += 1
-        if self._low_scores < self._threshold:
+        self._low_scores[stage] = self._low_scores.get(stage, 0) + 1
+        if self._low_scores[stage] < self._threshold:
             return
-        self._low_scores = 0
+        self._low_scores[stage] = 0
         current = int(self.settings.best_of_n)
         if current >= 8:
             return
         await self.cortex.submit(
             Proposal(
                 type=ProposalType.TUNING,
-                title="increase best_of_n after repeated low review scores",
+                title="increase best_of_n after repeated low stage scores",
                 source=self.name,
-                rationale=f"{self._threshold} consecutive reviews under 70",
+                rationale=f"{self._threshold} consecutive '{stage}' scores under 70",
                 payload={"setting": "best_of_n", "value": min(current + 1, 8)},
                 confidence=0.8,
                 safe=True,
             )
         )
+
+
+class ReflectionLoop(_BaseComponent):
+    """Turns each finished build into a reflection.
+
+    On ``BUILD_COMPLETED`` it asks a :class:`Reflector` to distil keep/change
+    findings and emit ``KNOWLEDGE_UPDATED`` (with safe ``suggestions``), which
+    the already-running ``SelfTuningEngine`` consumes — closing the
+    outcome -> reflection -> config-nudge loop that was previously severed
+    (the reflector was never instantiated and emitted no ``suggestions``).
+    """
+
+    name = "reflection_loop"
+
+    def __init__(
+        self, cortex: Any, event_bus: EventBus, settings: Settings | None = None, llm: Any | None = None
+    ) -> None:
+        super().__init__(cortex, event_bus, settings)
+        from skyn3t.intelligence.reflection import Reflector
+
+        self._reflector = Reflector(event_bus=event_bus, llm=llm)
+
+    async def run(self) -> None:
+        self._running = True
+
+        async def on_build(ev: Event) -> None:
+            with contextlib.suppress(Exception):
+                await self._reflector.reflect_and_publish(ev.payload or {})
+
+        self._unsubs.append(self.event_bus.subscribe(EventType.BUILD_COMPLETED, on_build))
 
 
 class FeatureSuggester(_BaseComponent):

@@ -68,6 +68,6 @@ export function Empty({ icon = "◇", children }) {
 export function verdictTone(v) {
   const s = String(v || "").toLowerCase();
   if (s === "go" || s === "completed" || s === "applied") return "plasma";
-  if (s === "no_go" || s === "failed" || s === "rejected") return "ember";
+  if (s === "no_go" || s === "failed" || s === "rejected" || s === "completed_no_go") return "ember";
   return "ash";
 }

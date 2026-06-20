@@ -53,6 +53,11 @@ class EventType(str, Enum):
     BUILD_STAGE_COMPLETED = "build.stage.completed"
     BUILD_COMPLETED = "build.completed"
     BUILD_FAILED = "build.failed"
+    # Per-stage autonomous debug loop + live artifact snapshots (cockpit, Phase A)
+    STAGE_DEBUG_STARTED = "build.stage.debug.started"
+    STAGE_DEBUG_ATTEMPT = "build.stage.debug.attempt"
+    STAGE_DEBUG_RESOLVED = "build.stage.debug.resolved"
+    STAGE_ARTIFACT_SNAPSHOT = "build.stage.artifact.snapshot"
 
     # Cortex autonomy
     PROPOSAL_CREATED = "proposal.created"

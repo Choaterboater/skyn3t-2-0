@@ -25,6 +25,32 @@ class MemoryStore:
     async def init_db(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(self._drop_orphan_fts_triggers)
+
+    @staticmethod
+    def _drop_orphan_fts_triggers(conn: Any) -> None:
+        """Remove stale full-text-search triggers left by an older/foreign schema.
+
+        SkyN3t 2.0 defines NO ``fts_*`` triggers. A database created by a
+        different/older schema can carry e.g. ``fts_tasks_insert`` referencing
+        columns this schema's ``tasks`` table lacks (``NEW.title``/``description``/
+        ``id``), so EVERY task INSERT fails — which also starves the cortex that
+        reads the tasks table. Drop them so persistence works again. SQLite-only;
+        best-effort, never raises into startup.
+        """
+        try:
+            if conn.dialect.name != "sqlite":
+                return
+            names = [
+                r[0]
+                for r in conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'fts_%'"
+                ).fetchall()
+            ]
+            for name in names:
+                conn.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{name}"')
+        except Exception:  # noqa: BLE001 - self-heal must never break startup
+            pass
 
     async def close(self) -> None:
         await self._engine.dispose()

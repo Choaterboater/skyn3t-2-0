@@ -171,6 +171,26 @@ def list_files(worktree_dir: str | Path) -> list[str]:
     return [str(f.relative_to(src)) for f in _iter_files(src)]
 
 
+# Subdirectory under a delivered project that holds the live, read-only preview
+# snapshot the cockpit watches while a build is still running. Disposable; the
+# final clean merge_back removes it at delivery (the API then serves project root).
+PREVIEW_SUBDIR = ".preview"
+
+
+def sync_preview(
+    worktree_dir: str | Path,
+    project_dir: str | Path,
+    *,
+    subdir: str = PREVIEW_SUBDIR,
+) -> list[str]:
+    """Mirror the in-progress worktree into ``project_dir/<subdir>`` for the
+    cockpit. Read-only snapshot, replaced (clean) each call so it reflects the
+    current state. Reuses :func:`merge_back`; never raises for a missing source.
+    """
+    preview_dir = Path(project_dir) / subdir
+    return merge_back(worktree_dir, preview_dir, clean=True)
+
+
 def cleanup_worktree(worktree: Worktree) -> None:
     """Remove a worktree. Best-effort; never raises."""
     try:

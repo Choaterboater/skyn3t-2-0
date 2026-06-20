@@ -10,6 +10,7 @@ import {
   Empty,
   verdictTone,
 } from "../components/ui.jsx";
+import { DebugTimeline, FilesSoFar, PreviewPanel } from "../components/cockpit.jsx";
 
 // Canonical pipeline stages (mirrors the stage vocabulary in the backend).
 const STAGES = [
@@ -188,6 +189,20 @@ export default function Studio({ stream }) {
           ))}
         </div>
       </Panel>
+
+      {/* Cockpit: per-stage debug timeline + live artifact (Phase A) */}
+      <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Panel className="overflow-hidden">
+          <PanelHead label="Stage debug" />
+          <DebugTimeline events={events} />
+        </Panel>
+        <Panel className="overflow-hidden">
+          <PanelHead label="Live preview" />
+          <PreviewPanel events={events} />
+          <PanelHead label="Files so far" />
+          <FilesSoFar events={events} />
+        </Panel>
+      </div>
 
       <Panel>
         <PanelHead

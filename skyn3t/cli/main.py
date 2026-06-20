@@ -26,8 +26,10 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import html
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -812,6 +814,29 @@ async def _ingest_source(source: str) -> int:
     return 0
 
 
+_HTML_HINT = re.compile(r"(?is)<(!doctype html|html|head|body|div|p|span|a|article|section)\b")
+
+
+def _looks_like_html(text: str) -> bool:
+    return bool(_HTML_HINT.search(text or ""))
+
+
+def _html_to_text(raw: str) -> str:
+    """Strip HTML to readable text without a heavy dependency (no bs4).
+
+    Drops script/style/noscript/template blocks, turns block-level closers into
+    line breaks so words don't run together, removes remaining tags, unescapes
+    entities, and collapses whitespace. Degrades gracefully on malformed input.
+    """
+    no_blocks = re.sub(r"(?is)<(script|style|noscript|template)\b.*?</\1>", " ", raw or "")
+    broken = re.sub(r"(?i)<(br|/p|/div|/li|/h[1-6]|/tr|/section|/article)\s*/?>", "\n", no_blocks)
+    no_tags = re.sub(r"(?s)<[^>]+>", " ", broken)
+    text = html.unescape(no_tags)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n[ \t]*\n[ \t\n]*", "\n\n", text)
+    return text.strip()
+
+
 async def _fetch_url(url: str) -> str | None:
     try:
         import httpx
@@ -821,7 +846,13 @@ async def _fetch_url(url: str) -> str | None:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            return resp.text
+            text = resp.text
+            ctype = resp.headers.get("content-type", "").lower()
+            # Store readable text, not raw markup: a web page ingested as raw
+            # HTML pollutes the RAG corpus with tags/scripts/styles.
+            if "html" in ctype or (not ctype and _looks_like_html(text)):
+                text = _html_to_text(text)
+            return text
     except Exception:  # noqa: BLE001
         return None
 

@@ -49,3 +49,23 @@ def test_static_preferred_when_only_html(tmp_path):
     (tmp_path / "index.html").write_text("<h1>x</h1>")
     spec = build_run_spec(tmp_path, "")
     assert spec is not None and spec.kind == "static"
+
+
+def test_cli_entrypoint_with_html_serves_static_not_python(tmp_path):
+    # a non-web main.py next to an index.html must serve the HTML statically,
+    # NOT run `python main.py`.
+    (tmp_path / "main.py").write_text("print('cli only')\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    (tmp_path / "index.html").write_text("<h1>hi</h1>")
+    spec = build_run_spec(tmp_path, "python")
+    assert spec is not None and spec.kind == "static"
+
+
+def test_node_without_dev_or_start_falls_through_to_python_web(tmp_path):
+    # package.json with no dev/start script + a python web entrypoint -> python_web
+    import json as _json
+    (tmp_path / "package.json").write_text(_json.dumps({"scripts": {"test": "jest"}}))
+    (tmp_path / "main.py").write_text("import fastapi\n")
+    (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n")
+    spec = build_run_spec(tmp_path, "python")
+    assert spec is not None and spec.kind == "python_web"

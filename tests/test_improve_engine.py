@@ -98,3 +98,17 @@ def test_improve_emits_lifecycle_events(tmp_path):
     engine = ImproveEngine(bus, _FakeOrchestrator(), settings=settings)
     asyncio.run(engine.improve("demo", "g"))
     assert EventType.IMPROVE_STARTED in seen and EventType.IMPROVE_COMPLETED in seen
+
+
+def test_improve_handles_worktree_creation_failure(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    _seed_project(settings.projects_dir, "demo")
+    import skyn3t.studio.improve as improve_mod
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(improve_mod, "create_worktree", _boom)
+    engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings)
+    outcome = asyncio.run(engine.improve("demo", "g"))  # must NOT raise
+    assert outcome.status == "failed" and "disk full" in outcome.detail.get("error", "")

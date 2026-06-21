@@ -83,3 +83,49 @@ def test_dedupes_per_agent():
         assert len(cortex.proposals) == 1  # one proposal per agent, not spammed
 
     asyncio.run(go())
+
+
+def test_maybe_propose_survives_concurrent_buf_mutation():
+    # Reviewer finding: _maybe_propose awaits cortex.submit() mid-loop; a
+    # concurrent build event mutating self._buf during the await must not raise
+    # "dictionary changed size during iteration" (which skipped later agents).
+    async def go():
+        bus = EventBus()
+
+        class _MutatingCortex:
+            def __init__(self):
+                self.proposals = []
+
+            async def submit(self, p):
+                self.proposals.append(p)
+                # Simulate a concurrent on_stage adding a new _buf key mid-await.
+                comp._buf.setdefault("brainstorm", [])
+
+        cortex = _MutatingCortex()
+        comp = PromptReflectionLoop(cortex, bus, min_each=2)
+        t = comp._Transcript
+
+        def mixed(agent):
+            return [
+                t(
+                    instruction=f"agent:{agent}",
+                    task_id=f"{agent}:{i}",
+                    output=("clean build" if i < 2 else f"{agent} failed missing broken entrypoint"),
+                    passed=(i < 2),
+                    score=(90.0 if i < 2 else 20.0),
+                    tags=[agent],
+                )
+                for i in range(4)
+            ]
+
+        # Two qualifying agents so the loop must iterate PAST the first (which
+        # triggers the mutation). The bug skipped everything after the first.
+        comp._buf["code"] = mixed("code")
+        comp._buf["design"] = mixed("design")
+
+        await comp._maybe_propose()  # must NOT raise
+
+        agents = {p.payload["agent"] for p in cortex.proposals}
+        assert agents == {"code", "design"}  # both processed despite the mutation
+
+    asyncio.run(go())

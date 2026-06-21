@@ -46,7 +46,7 @@ _DEFAULT_STACK = "python"
 # Minimal expected deliverable file set per stack. Used to verify the build is
 # not an empty scaffold and to give the code stage a concrete target.
 _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
-    "fastapi": ("README.md", "requirements.txt", "app/main.py", "app/__init__.py", "tests/test_app.py"),
+    "fastapi": ("README.md", "requirements.txt", "main.py", "test_main.py"),
     "flask": ("README.md", "requirements.txt", "app.py", "tests/test_app.py"),
     "django": ("README.md", "requirements.txt", "manage.py", "project/settings.py"),
     "react": ("README.md", "package.json", "src/App.jsx", "src/main.jsx", "index.html"),
@@ -63,7 +63,7 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # package layout and forced the fix loop to stub-fill).
     "cli": ("README.md", "pyproject.toml", "main.py"),
     "python": ("README.md", "pyproject.toml", "main.py"),
-    "static": ("README.md", "index.html", "styles.css", "script.js"),
+    "static": ("README.md", "index.html", "styles.css", "main.js"),
 }
 
 

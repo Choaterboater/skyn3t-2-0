@@ -38,8 +38,11 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
 
 def _balanced(content: str) -> tuple[bool, str]:
     """Cheap brace/bracket/paren balance check for JS/TS (no toolchain needed).
-    Ignores chars inside strings/line comments. Best-effort, never false-negatives
-    a real syntax error class but only catches gross imbalance."""
+    Ignores chars inside strings/line comments/block comments. Best-effort, never
+    false-negatives a real syntax error class but only catches gross imbalance.
+    Known blind spot: regex literals (e.g. /[{]/) — reliably detecting a regex
+    needs full JS semantics, so an unbalanced brace inside a regex literal may
+    false-positive; acceptable for this best-effort check."""
     pairs = {")": "(", "]": "[", "}": "{"}
     opens = set("([{")
     stack: list[str] = []
@@ -58,6 +61,12 @@ def _balanced(content: str) -> tuple[bool, str]:
         elif c == "/" and i + 1 < n and content[i + 1] == "/":
             while i < n and content[i] != "\n":
                 i += 1
+            continue
+        elif c == "/" and i + 1 < n and content[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (content[i] == "*" and content[i + 1] == "/"):
+                i += 1
+            i += 2  # skip the closing */
             continue
         elif c in opens:
             stack.append(c)

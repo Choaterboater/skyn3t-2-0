@@ -122,7 +122,7 @@ function CleanupPanel({ qc }) {
                   <ul className="mt-1.5 space-y-0.5">
                     {items.map((item, idx) => (
                       <li
-                        key={idx}
+                        key={`${item.path}-${idx}`}
                         className="font-mono text-[11px] text-ash/70"
                       >
                         {item.path}{" "}

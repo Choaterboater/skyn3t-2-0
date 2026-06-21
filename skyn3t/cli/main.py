@@ -614,6 +614,29 @@ def studio_serve(
         console.print("\n[dim]stopped.[/dim]")
 
 
+@studio_app.command("shoot")
+def studio_shoot(
+    url: str = typer.Argument(..., help="URL to screenshot (e.g. http://127.0.0.1:8088/)."),
+    out: str = typer.Option("", "--out", "-o", help="Output PNG path (default: a temp file)."),
+) -> None:
+    """Capture a screenshot of a running app (needs Playwright)."""
+    import tempfile as _tempfile
+
+    from skyn3t.studio.visual_check import playwright_available, screenshot
+
+    console = _console()
+    if not playwright_available():
+        console.print("[yellow]Playwright not installed.[/yellow] "
+                      "Run [cyan]pip install playwright && playwright install chromium[/cyan] to enable screenshots.")
+        raise typer.Exit(code=1)
+    out_path = out or _tempfile.mkstemp(prefix="skyn3t-shot-", suffix=".png")[1]
+    result = screenshot(url, out_path)
+    if result is None:
+        console.print(f"[red]Screenshot failed[/red] for {url} (page didn't load or no browser binary).")
+        raise typer.Exit(code=2)
+    console.print(f"[green]Saved[/green] screenshot to [cyan]{result}[/cyan]")
+
+
 @studio_app.command("improve")
 def studio_improve(
     project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),

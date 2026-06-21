@@ -277,7 +277,22 @@ class CodeAgent(BaseAgent):
         # key), do NOT write stub prose over the runnable scaffold — keep it.
         if result.backend == "stub":
             return None
-        return extract_code(result.text)
+        from skyn3t.agents.validate import validate_source
+        code = extract_code(result.text)
+        ok, err = validate_source(rel_path, code)
+        if not ok:
+            retry = await self.llm.complete(
+                prompt + f"\n\nThe previous attempt had an error: {err}\n"
+                "Return the COMPLETE corrected file.",
+                tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=8192,
+            )
+            if retry.backend != "stub":
+                recode = extract_code(retry.text)
+                ok2, _ = validate_source(rel_path, recode)
+                if ok2:
+                    return recode
+            # fall through: keep the best-effort original (never lose work)
+        return code
 
     def _write_files(self, worktree: Path, files: dict[str, str]) -> list[str]:
         written: list[str] = []

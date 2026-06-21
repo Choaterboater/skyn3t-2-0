@@ -802,8 +802,10 @@ def _decide_build(build_id: str, *, approve: bool) -> None:
     A gated build is blocked inside a live process waiting on its in-process
     ``approval_gate``. The only way the CLI can unblock it is by reaching that
     process, so we POST the decision to the running web control plane
-    (``/studio/approve``), which mutates the durable build record and resolves
-    the gate on the shared spine.
+    (``/api/studio/approve`` — the router is mounted under the ``/api`` prefix;
+    posting to the bare ``/studio/approve`` hits the SPA catch-all and 405s),
+    which mutates the durable build record and resolves the gate on the shared
+    spine.
 
     Emitting onto a throwaway in-process ``EventBus`` (the old behavior) would
     silently discard the decision — no subscriber, no persistence — yet still
@@ -821,7 +823,7 @@ def _decide_build(build_id: str, *, approve: bool) -> None:
         from skyn3t.config.settings import get_settings
 
         settings = get_settings()
-        url = f"http://{settings.host}:{settings.port}/studio/approve"
+        url = f"http://{settings.host}:{settings.port}/api/studio/approve"
         headers = {}
         token = settings.auth_token.strip()
         if token:

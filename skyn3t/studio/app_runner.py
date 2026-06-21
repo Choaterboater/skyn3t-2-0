@@ -5,17 +5,29 @@ Detection is content-based: the stack LABEL is advisory (python-stacked apps are
 often real FastAPI/Flask sites). Never raises; localhost-only."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import shutil
+import signal
 import socket
+import subprocess
 import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 _PY_ENTRYPOINTS = ("main.py", "app.py", "server.py")
 _WEB_HINTS = ("fastapi", "flask", "uvicorn", "django", "starlette", "aiohttp")
+
+_log = None
+
+_URL_RE = re.compile(r"https?://(?:127\.0\.0\.1|localhost):(\d+)")
 
 
 @dataclass(slots=True)
@@ -99,20 +111,33 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
 
 
 # ---------------------------------------------------------------------------
+# Shared teardown helper
+# ---------------------------------------------------------------------------
+
+def _kill_group(pid: int, *, wait_s: float = 5.0) -> None:
+    """Terminate a process group: SIGTERM, wait for exit, then SIGKILL. Never raises."""
+    def _sig(s):
+        try:
+            os.killpg(os.getpgid(pid), s)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(pid, s)
+            except OSError:
+                pass
+    _sig(signal.SIGTERM)
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)        # still alive?
+        except OSError:
+            return                  # exited cleanly
+        time.sleep(0.05)
+    _sig(signal.SIGKILL)            # ignored SIGTERM -> force kill
+
+
+# ---------------------------------------------------------------------------
 # AppRunner — launch/stop a generated app as a live localhost server.
 # ---------------------------------------------------------------------------
-import asyncio
-import re
-import signal
-import subprocess
-import tempfile
-import time
-import urllib.request
-
-_log = None
-
-_URL_RE = re.compile(r"https?://(?:127\.0\.0\.1|localhost):(\d+)")
-
 
 class AppRunner:
     """Launch/stop a generated app as a live localhost server. Never raises."""
@@ -126,17 +151,19 @@ class AppRunner:
                               project_dir=str(pdir), status="no_preview",
                               detail={"reason": "no web entrypoint"})
         log_fd, log_path = tempfile.mkstemp(prefix=f"skyn3t-serve-{pdir.name}-", suffix=".log")
+        logf = os.fdopen(log_fd, "w")
         try:
-            logf = os.fdopen(log_fd, "w")
             proc = subprocess.Popen(
                 spec.cmd, cwd=spec.cwd, env=spec.env,
                 stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 start_new_session=True,  # own process group for clean teardown
             )
         except OSError as exc:
+            logf.close()
             return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
                               project_dir=str(pdir), log_path=log_path, status="failed",
                               detail={"error": str(exc)})
+        logf.close()  # subprocess inherited the fd; close the parent's copy
 
         url, real_port = await self._await_ready(proc, log_path, spec.port, ready_timeout)
         if url is None:
@@ -167,31 +194,10 @@ class AppRunner:
     def stop(self, app: RunningApp) -> None:
         if app.pid is None:
             return
-        try:
-            os.killpg(os.getpgid(app.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                os.kill(app.pid, signal.SIGTERM)
-            except OSError:
-                pass
-        # Wait briefly for the process group to exit so callers can rely on the
-        # port being closed immediately after stop() returns.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            try:
-                os.kill(app.pid, 0)  # 0 = existence check (raises if gone)
-            except OSError:
-                break  # process is gone
-            time.sleep(0.05)
+        _kill_group(app.pid)
 
     def _terminate(self, proc) -> None:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+        _kill_group(proc.pid, wait_s=2.0)
 
 
 def _port_answers(port: int) -> bool:

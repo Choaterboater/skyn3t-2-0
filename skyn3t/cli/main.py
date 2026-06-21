@@ -761,6 +761,39 @@ def project_list(limit: int = typer.Option(20, "--limit", help="Max builds to sh
     console.print(table)
 
 
+@project_app.command("cleanup")
+def project_cleanup(
+    apply_changes: bool = typer.Option(False, "--apply", help="Actually move to trash (default: dry-run)."),
+    categories: str = typer.Option("", "--categories", help="Comma list: failed,superseded,orphaned_worktrees,orphaned_projects,stray_previews."),
+) -> None:
+    """Report (and with --apply, trash) failed/superseded/orphaned build artifacts."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.cleanup import apply as cleanup_apply
+    from skyn3t.studio.cleanup import scan as cleanup_scan
+
+    console = _console()
+    s = get_settings()
+    worktrees = s.projects_dir.parent / ".skyn3t_worktrees"
+    report = cleanup_scan(s.projects_dir, worktrees)
+    cats = [c.strip() for c in categories.split(",") if c.strip()] or None
+    items = report.all_items(cats)
+    table = _table("Cleanup candidates", ["category", "path", "reason", "MB"])
+    for name in ("failed", "superseded", "orphaned_worktrees", "orphaned_projects", "stray_previews"):
+        if cats and name not in cats:
+            continue
+        for it in getattr(report, name):
+            table.add_row(name, it.path.name, it.reason, f"{it.size_bytes/1e6:.1f}")
+    console.print(table)
+    trash = s.projects_dir.parent / ".skyn3t_trash"
+    res = cleanup_apply(report, trash_dir=trash, dry_run=not apply_changes, categories=cats)
+    if res.dry_run:
+        console.print(f"[yellow]dry-run[/yellow]: would free {res.freed_bytes/1e6:.1f} MB "
+                      f"from {len(items)} items. Re-run with --apply to trash them.")
+    else:
+        console.print(f"[green]moved[/green] {len(res.moved)} items to {trash} "
+                      f"({res.freed_bytes/1e6:.1f} MB).")
+
+
 async def _recent_builds(limit: int) -> list[dict[str, Any]]:
     try:
         from skyn3t.config.settings import get_settings

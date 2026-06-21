@@ -22,3 +22,5 @@ def test_web_stack_surfaces_design_skill_first():
 def test_non_web_stack_does_not_force_design_tags():
     assert _web_design_tags("python") is None
     assert "react" in _WEB_STACKS and "fastapi" in _WEB_STACKS and "python" not in _WEB_STACKS
+    # fastapi is intentionally a web stack (serves UIs / has interface-design concerns)
+    assert _web_design_tags("fastapi") is not None

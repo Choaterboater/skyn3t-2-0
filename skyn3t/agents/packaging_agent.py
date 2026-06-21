@@ -147,25 +147,57 @@ def _env_example(env: EnvScanResult) -> str:
 
 
 def _readme(slug: str, report: StackReport, env: EnvScanResult) -> str:
-    out = [f"# {slug or 'project'}", ""]
-    out.append(f"Stack: **{report.family}**"
-               + (f" ({', '.join(report.frameworks)})" if report.frameworks else ""))
+    title = slug or "project"
+    out = [f"# {title}", ""]
+    out.append(
+        f"A **{report.family}** project"
+        + (f" built with {', '.join(report.frameworks)}" if report.frameworks else "")
+        + ", packaged by SkyN3t so a fresh clone runs out of the box."
+    )
     out.append("")
-    out.append("## Getting started")
+
+    # Features — derived from what the stack analysis found, so it is never empty.
+    out += ["## Features", ""]
+    feats: list[str] = []
+    if report.has_web:
+        feats.append("Web front-end")
+    if report.has_server:
+        feats.append("Dockerized backend service")
+    for fw in report.frameworks:
+        feats.append(f"{fw} integration")
+    if env.variables:
+        feats.append("Configurable via environment variables")
+    if not feats:
+        feats.append("Runnable starter project")
+    out += [f"- {f}" for f in feats]
     out.append("")
+
+    # Installation — concrete dependency-install commands for the detected stack.
+    out += ["## Installation", ""]
     if report.has_web and "python" not in report.languages:
-        out += ["```bash", "npm install", "npm run dev", "```", ""]
+        out += ["```bash", "npm install", "```", ""]
+    if "python" in report.languages:
+        out += ["```bash", "pip install -r requirements.txt", "```", ""]
+
+    out += ["## Usage", ""]
+    if report.has_web and "python" not in report.languages:
+        out += ["```bash", "npm run dev", "```", ""]
     if report.has_server:
         if "python" in report.languages:
-            out += ["```bash", "pip install -r requirements.txt",
-                    "python -m uvicorn main:app --reload", "```", ""]
+            out += ["```bash", "python -m uvicorn main:app --reload", "```", ""]
         out += ["Or with Docker:", "", "```bash", "docker compose up --build", "```", ""]
+    if not report.has_web and not report.has_server:
+        out += ["See the project files for how to run it.", ""]
+
     if env.variables:
         out += ["## Configuration", "",
                 "Copy `.env.example` to `.env` and set:", ""]
         for v in env.variables:
             out.append(f"- `{v}`")
         out.append("")
+
+    out += ["## Project structure", "",
+            "See the files in this directory; key entry points are listed above.", ""]
     return "\n".join(out)
 
 

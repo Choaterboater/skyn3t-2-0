@@ -1,0 +1,50 @@
+# tests/test_cleanup.py
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from skyn3t.studio.cleanup import apply, scan
+
+
+def _project(root: Path, slug: str, *, status="completed", created="2026-06-20T00:00:00+00:00"):
+    d = root / slug
+    d.mkdir(parents=True)
+    (d / "skyn3t_manifest.json").write_text(json.dumps(
+        {"slug": slug, "status": status, "created_at": created, "verdict": "go"}))
+    (d / "main.py").write_text("print('x')\n")
+    return d
+
+
+def test_scan_buckets(tmp_path):
+    projects = tmp_path / "Projects"
+    worktrees = tmp_path / ".skyn3t_worktrees"
+    projects.mkdir(); worktrees.mkdir()
+    _project(projects, "good")
+    _project(projects, "broken", status="failed")
+    (projects / "no-manifest").mkdir()           # orphaned project
+    (projects / "good" / ".preview").mkdir()      # stray preview
+    (worktrees / "loose-abcd1234").mkdir()        # orphaned worktree
+
+    report = scan(projects, worktrees, known_worktrees=())
+    assert [i.path.name for i in report.failed] == ["broken"]
+    assert [i.path.name for i in report.orphaned_projects] == ["no-manifest"]
+    assert any(i.path.name == ".preview" for i in report.stray_previews)
+    assert [i.path.name for i in report.orphaned_worktrees] == ["loose-abcd1234"]
+
+
+def test_apply_dry_run_moves_nothing(tmp_path):
+    projects = tmp_path / "Projects"; projects.mkdir()
+    _project(projects, "broken", status="failed")
+    report = scan(projects, tmp_path / "wt", known_worktrees=())
+    res = apply(report, trash_dir=tmp_path / "trash", dry_run=True)
+    assert res.dry_run and res.moved == [] and (projects / "broken").exists()
+
+
+def test_apply_moves_to_trash(tmp_path):
+    projects = tmp_path / "Projects"; projects.mkdir()
+    _project(projects, "broken", status="failed")
+    report = scan(projects, tmp_path / "wt", known_worktrees=())
+    res = apply(report, trash_dir=tmp_path / "trash", dry_run=False, categories=["failed"])
+    assert not (projects / "broken").exists()
+    assert res.moved and (tmp_path / "trash").exists()

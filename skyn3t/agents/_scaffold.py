@@ -700,15 +700,41 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
             "});\n"
         ),
         ".gitignore": "node_modules/\n.expo/\ndist/\nweb-build/\n*.log\n",
-        "README.md": (
-            f"# {title}\n\n"
-            "A runnable Expo (React Native + TypeScript) app generated offline by "
-            "SkyN3t.\n\n"
-            "## Run\n\n"
-            "```bash\nnpm install\nnpm start        # opens Expo; scan the QR with Expo Go\n```\n\n"
-            "Mobile apps run on a device/simulator and cannot be previewed in an "
-            "iframe like the web stacks. CI proves the build with a type check:\n\n"
-            "```bash\nnpm run typecheck\n```\n"
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Expo + React Native + TypeScript",
+            install=(
+                "```bash\nnpm install\n```\n\n"
+                "Requires Node.js 18+ and the Expo CLI (`npx expo`)."
+            ),
+            usage=(
+                "Start the app (opens the Expo dev tools):\n\n"
+                "```bash\nnpm start\n```\n\n"
+                "Then press `i` for the iOS simulator, `a` for Android, or scan the QR "
+                "code with the Expo Go app on your phone. Type-check the app:\n\n"
+                "```bash\nnpm run typecheck\n```"
+            ),
+            structure=[
+                ("App.tsx", "Root screen — default-exported <App />, wires the UI together"),
+                ("src/components/Counter.tsx", "Reusable component with typed props + local state"),
+                ("app.json", "Expo app config (name, slug, platforms)"),
+                ("package.json", "Dependencies and npm scripts (start, ios, android, typecheck)"),
+                ("tsconfig.json", "TypeScript config (extends expo/tsconfig.base)"),
+                ("babel.config.js", "Babel preset for Expo"),
+                ("__tests__/App.test.tsx", "Smoke test for the Counter component"),
+            ],
+            features=[
+                "Cross-platform iOS + Android from one codebase via Expo",
+                "TypeScript with a reusable, typed component",
+                "Local state with React hooks",
+                "Type-checked (tsc --noEmit) instead of a web dev-server preview",
+            ],
+            extra=(
+                "> **Note:** mobile apps run on a device/simulator and cannot be "
+                "previewed in an iframe like the web stacks. The proof for this stack "
+                "is a type check (`npm run typecheck`), not a dev-server boot."
+            ),
         ),
     }
 

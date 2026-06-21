@@ -28,6 +28,7 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "python_cli": ("requirements.txt", "pyproject.toml"),
     "fastapi": ("requirements.txt",),
     "node_express": ("package.json",),
+    "react_native": ("package.json",),
 }
 
 

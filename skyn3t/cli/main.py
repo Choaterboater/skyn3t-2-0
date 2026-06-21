@@ -557,6 +557,48 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
     return outcome.to_dict()
 
 
+async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
+    try:
+        from skyn3t.studio.improve import ImproveEngine
+    except Exception:  # noqa: BLE001 - optional studio package
+        return None
+    spine = await _assemble_spine()
+    settings = spine["settings"]
+    _learning, _patterns, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
+    engine = ImproveEngine(
+        spine["event_bus"], spine["orchestrator"],
+        settings=settings, memory=spine["memory"], skills=skills, rag=rag,
+    )
+    outcome = await engine.improve(project, goal)
+    return outcome.to_dict()
+
+
+@studio_app.command("improve")
+def studio_improve(
+    project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
+    goal: str = typer.Option(..., "--goal", "-g", help="What to add/change, in plain English."),
+) -> None:
+    """Improve an already-built project toward a goal (audit -> edit -> verify -> deliver)."""
+    console = _console()
+    outcome = asyncio.run(_run_improve(project, goal=goal))
+    if outcome is None:
+        console.print("[red]Improve pipeline unavailable (studio package missing).[/red]")
+        raise typer.Exit(code=1)
+    color = "green" if outcome.get("proof_passed") else "yellow"
+    table = _table("Improve result", ["field", "value"])
+    table.add_row("slug", str(outcome.get("slug", "")))
+    table.add_row("stack", str(outcome.get("stack", "")))
+    table.add_row("goal", str(outcome.get("goal", "")))
+    table.add_row("status", str(outcome.get("status", "")))
+    table.add_row("files_changed", str(len(outcome.get("files_changed", []))))
+    table.add_row("proof", f"[{color}]{'passed' if outcome.get('proof_passed') else 'check'}[/{color}]")
+    table.add_row("score", str(outcome.get("score", "")))
+    table.add_row("project", str(outcome.get("project_dir", "")))
+    console.print(table)
+    if outcome.get("status") != "completed":
+        raise typer.Exit(code=2)
+
+
 async def assemble_app_state(event_bus: Any | None = None) -> Any:
     """Build a fully-wired web ``AppState`` (spine + studio + intelligence).
 

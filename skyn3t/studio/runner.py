@@ -66,12 +66,19 @@ def _web_design_tags(stack: str) -> list[str] | None:
     return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _WEB_STACKS else None
 
 
-def _resolve_stack_pin(clar_answers: dict, extra: dict) -> str:
-    """Resolve an explicit stack pin from clarification answers or the build
-    `extra` dict. Accepts both the canonical ``extra['stack']`` and the legacy
-    ``extra['stack_hint']`` key. Returns "" when no pin is present."""
-    return (clar_answers.get("stack") or extra.get("stack")
-            or extra.get("stack_hint") or "")
+def _resolve_stack_pin(extra: dict) -> str:
+    """Resolve an EXPLICIT stack pin from the build ``extra`` dict — the
+    canonical ``extra['stack']`` or the legacy ``extra['stack_hint']``. Returns
+    "" when no explicit pin is present.
+
+    The clarifier's auto-answered stack (a heuristic DEFAULT — e.g. "python")
+    is deliberately NOT treated as a pin. Doing so bypassed the intelligent
+    stack selector and mis-stacked briefs like "a website for ..." as
+    python_cli (the clarifier defaults to "python" and never sees
+    "website"/"site" as web signals). Only a real user/CLI/API pin should
+    override the selector; an unpinned brief flows to ``select_stack`` (LLM +
+    keyword fallback) which reads the brief itself."""
+    return extra.get("stack") or extra.get("stack_hint") or ""
 
 
 def _final_build_status(delivered_nonempty: bool, verdict: str) -> str:
@@ -668,7 +675,7 @@ class StudioRunner:
 
         # Plan.
         from skyn3t.studio.stack_selector import select_stack
-        pin = _resolve_stack_pin(clar.answers, extra)
+        pin = _resolve_stack_pin(extra)
         choice = await select_stack(
             brief, pin=pin, llm=getattr(self, "llm", None),
             attended=bool(extra.get("attended", False)),

@@ -68,8 +68,12 @@ class CodeImproverAgent(BaseAgent):
             original = target.read_text(encoding="utf-8")
             new_content = await self._improve_one(rel, original, brief, gaps, stack)
             if new_content and new_content.strip() and new_content != original:
-                target.write_text(new_content, encoding="utf-8")
-                improved.append(rel)
+                from skyn3t.agents.validate import validate_source
+                ok, _ = validate_source(rel, new_content)
+                if ok:
+                    target.write_text(new_content, encoding="utf-8")
+                    improved.append(rel)
+                # else keep original (the improvement broke syntax) — never regress
 
         return TaskResult(task_id=task.task_id, success=True,
                           output={"files_improved": len(improved), "files": sorted(improved),

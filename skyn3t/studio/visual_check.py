@@ -62,6 +62,7 @@ def _extract_json(text: str) -> str:
     if "```" in t:
         t = t.split("```")[1].removeprefix("json").strip()
     a, b = t.find("{"), t.rfind("}")
+    # no '{' -> returns raw text; json.loads then fails and inspect() soft-skips (safe).
     return t[a:b + 1] if a >= 0 and b > a else t
 
 
@@ -114,10 +115,16 @@ class VisualChecker:
         else:
             fd, path = tempfile.mkstemp(prefix="skyn3t-shot-", suffix=".png")
             os.close(fd)
-            shot = screenshot(url, path)
-            if shot is None:
-                verdict = VisualVerdict(skipped=True, reason="screenshot failed")
-            else:
-                verdict = inspect(shot, goal, vision_fn=vision_fn)
+            try:
+                shot = screenshot(url, path)
+                if shot is None:
+                    verdict = VisualVerdict(skipped=True, reason="screenshot failed")
+                else:
+                    verdict = inspect(shot, goal, vision_fn=vision_fn)
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
         await self._emit({"url": url, "goal": goal, **verdict.to_dict()}, correlation_id)
         return verdict

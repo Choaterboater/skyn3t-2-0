@@ -95,6 +95,18 @@ class StackDetector:
             for key in ("dependencies", "devDependencies", "peerDependencies"):
                 deps.update(pkg.get(key, {}) or {})
             dep_names = {d.lower() for d in deps}
+            # Mobile (Expo / React Native) is NEITHER web nor server — it runs on
+            # a device/simulator. Detect it BEFORE the web/server scoring so the
+            # packaging agent doesn't slap a Dockerfile / compose / .env / web
+            # config onto a mobile app (which has `react` in deps + a `start`
+            # script, both of which would otherwise misclassify it as fullstack).
+            if {"expo", "react-native"} & dep_names:
+                report.family = "mobile"
+                report.frameworks.append(
+                    "expo" if "expo" in dep_names else "react-native"
+                )
+                report.reasons.append("mobile app (expo/react-native deps)")
+                return report
             for hint in _WEB_DEP_HINTS:
                 if hint in dep_names:
                     web_score += 2

@@ -2,7 +2,10 @@
 """studio shoot delegates to screenshot and reports the saved path (or skip)."""
 from __future__ import annotations
 
-from skyn3t.studio import visual_check as vc
+import pytest
+import typer
+import skyn3t.studio.visual_check as vc
+from skyn3t.cli.main import studio_shoot
 
 
 def test_screenshot_soft_skips_without_playwright(monkeypatch, tmp_path):
@@ -11,17 +14,24 @@ def test_screenshot_soft_skips_without_playwright(monkeypatch, tmp_path):
     assert vc.screenshot("http://127.0.0.1:9/", str(tmp_path / "x.png")) is None
 
 
-def test_screenshot_returns_path_when_capture_succeeds(monkeypatch, tmp_path):
-    monkeypatch.setattr(vc, "playwright_available", lambda: True)
+def test_shoot_command_exits_1_without_playwright(monkeypatch):
+    monkeypatch.setattr(vc, "playwright_available", lambda: False)
+    with pytest.raises(typer.Exit) as e:
+        studio_shoot("http://127.0.0.1:9/", "")
+    assert e.value.exit_code == 1
 
-    # fake the Playwright body by replacing screenshot's effect at a higher level
+
+def test_shoot_command_success_prints_path(monkeypatch, tmp_path):
     out = str(tmp_path / "shot.png")
+    monkeypatch.setattr(vc, "playwright_available", lambda: True)
+    monkeypatch.setattr(vc, "screenshot", lambda url, path, **k: out)
+    # success path must NOT raise typer.Exit
+    studio_shoot("http://127.0.0.1:9/", out)
 
-    def fake_shot(url, path, **k):
-        # simulate a real capture writing bytes
-        from pathlib import Path
-        Path(path).write_bytes(b"\x89PNG fake")
-        return path
 
-    monkeypatch.setattr(vc, "screenshot", fake_shot)
-    assert vc.screenshot("http://127.0.0.1:9/", out) == out
+def test_shoot_command_exits_2_on_capture_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(vc, "playwright_available", lambda: True)
+    monkeypatch.setattr(vc, "screenshot", lambda url, path, **k: None)
+    with pytest.raises(typer.Exit) as e:
+        studio_shoot("http://127.0.0.1:9/", str(tmp_path / "x.png"))
+    assert e.value.exit_code == 2

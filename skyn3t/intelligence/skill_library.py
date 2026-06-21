@@ -43,6 +43,7 @@ PROMOTE_MIN_RATE = 0.66
 _STACK_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"python", "python_cli", "cli", "script"}),
     frozenset({"react", "react_vite", "vite", "nextjs", "frontend"}),
+    frozenset({"react_native", "mobile", "expo"}),
     frozenset({"node", "node_express", "express"}),
     frozenset({"fastapi", "flask", "django", "python_api"}),
     frozenset({"static", "static_html", "html"}),

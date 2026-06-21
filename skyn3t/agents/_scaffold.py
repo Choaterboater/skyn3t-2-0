@@ -280,8 +280,164 @@ def _node_express(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
+    """A genuinely runnable minimal Expo (React Native + TypeScript) app.
+
+    Mobile can't be iframe-previewed like the web stacks, so the proof for this
+    stack is a type-check (``npm run typecheck`` -> ``tsc --noEmit``) rather than
+    a dev server. The app ships a real default-exported root screen with a
+    reusable component and local state, plus a test, so ``delivered != empty``.
+    """
+    title = brief.strip() or app_name
+    # A JSON-safe display title (for app.json) and a JS-string-literal title (for
+    # the JSX), plus a slug for the Expo config.
+    safe_title = title.replace('"', "'")
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'")
+    slug = _re.sub(r"[^a-z0-9-]+", "-", app_name.lower()).strip("-") or "app"
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{slug}",\n'
+            '  "version": "0.1.0",\n'
+            '  "private": true,\n'
+            '  "main": "node_modules/expo/AppEntry.js",\n'
+            '  "scripts": {\n'
+            '    "start": "expo start",\n'
+            '    "android": "expo start --android",\n'
+            '    "ios": "expo start --ios",\n'
+            '    "typecheck": "tsc --noEmit",\n'
+            '    "test": "jest"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "expo": "~51.0.0",\n'
+            '    "expo-status-bar": "~1.12.1",\n'
+            '    "react": "18.2.0",\n'
+            '    "react-native": "0.74.5"\n'
+            "  },\n"
+            '  "devDependencies": {\n'
+            '    "@types/react": "~18.2.45",\n'
+            '    "typescript": "~5.3.3"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "app.json": (
+            "{\n"
+            '  "expo": {\n'
+            f'    "name": "{safe_title}",\n'
+            f'    "slug": "{slug}",\n'
+            '    "version": "1.0.0",\n'
+            '    "orientation": "portrait",\n'
+            '    "userInterfaceStyle": "light",\n'
+            '    "splash": {\n'
+            '      "resizeMode": "contain",\n'
+            '      "backgroundColor": "#ffffff"\n'
+            "    },\n"
+            '    "ios": { "supportsTablet": true },\n'
+            '    "android": {},\n'
+            '    "web": { "bundler": "metro" }\n'
+            "  }\n"
+            "}\n"
+        ),
+        "tsconfig.json": (
+            "{\n"
+            '  "extends": "expo/tsconfig.base",\n'
+            '  "compilerOptions": {\n'
+            '    "strict": true,\n'
+            '    "jsx": "react-native",\n'
+            '    "esModuleInterop": true,\n'
+            '    "skipLibCheck": true\n'
+            "  }\n"
+            "}\n"
+        ),
+        "babel.config.js": (
+            "module.exports = function (api) {\n"
+            "  api.cache(true);\n"
+            "  return {\n"
+            "    presets: ['babel-preset-expo'],\n"
+            "  };\n"
+            "};\n"
+        ),
+        "App.tsx": (
+            "import { useState } from 'react';\n"
+            "import { StatusBar } from 'expo-status-bar';\n"
+            "import { StyleSheet, Text, View } from 'react-native';\n\n"
+            "import { Counter } from './src/components/Counter';\n\n"
+            "export default function App(): JSX.Element {\n"
+            "  const [taps, setTaps] = useState(0);\n"
+            "  return (\n"
+            "    <View style={styles.container}>\n"
+            "      <Text style={styles.title}>{'" + js_title + "'}</Text>\n"
+            "      <Text style={styles.subtitle}>\n"
+            "        A runnable Expo app generated offline by SkyN3t.\n"
+            "      </Text>\n"
+            "      <Counter value={taps} onPress={() => setTaps((n) => n + 1)} />\n"
+            "      <StatusBar style=\"auto\" />\n"
+            "    </View>\n"
+            "  );\n"
+            "}\n\n"
+            "const styles = StyleSheet.create({\n"
+            "  container: {\n"
+            "    flex: 1,\n"
+            "    backgroundColor: '#fff',\n"
+            "    alignItems: 'center',\n"
+            "    justifyContent: 'center',\n"
+            "    padding: 24,\n"
+            "  },\n"
+            "  title: { fontSize: 24, fontWeight: '600', marginBottom: 8 },\n"
+            "  subtitle: { fontSize: 14, color: '#555', textAlign: 'center', marginBottom: 24 },\n"
+            "});\n"
+        ),
+        "src/components/Counter.tsx": (
+            "import { Pressable, StyleSheet, Text } from 'react-native';\n\n"
+            "export interface CounterProps {\n"
+            "  value: number;\n"
+            "  onPress: () => void;\n"
+            "}\n\n"
+            "export function Counter({ value, onPress }: CounterProps): JSX.Element {\n"
+            "  return (\n"
+            "    <Pressable accessibilityRole=\"button\" style={styles.button} onPress={onPress}>\n"
+            "      <Text style={styles.label}>Tapped {value} times</Text>\n"
+            "    </Pressable>\n"
+            "  );\n"
+            "}\n\n"
+            "const styles = StyleSheet.create({\n"
+            "  button: {\n"
+            "    backgroundColor: '#1f6feb',\n"
+            "    paddingHorizontal: 20,\n"
+            "    paddingVertical: 12,\n"
+            "    borderRadius: 8,\n"
+            "  },\n"
+            "  label: { color: '#fff', fontSize: 16 },\n"
+            "});\n"
+        ),
+        "__tests__/App.test.tsx": (
+            "import { Counter } from '../src/components/Counter';\n\n"
+            "// A lightweight smoke test: the component is a function and accepts\n"
+            "// the documented props. (Full render tests need @testing-library/\n"
+            "// react-native, which we keep out of the offline scaffold.)\n"
+            "describe('Counter', () => {\n"
+            "  it('is a renderable component function', () => {\n"
+            "    expect(typeof Counter).toBe('function');\n"
+            "  });\n"
+            "});\n"
+        ),
+        ".gitignore": "node_modules/\n.expo/\ndist/\nweb-build/\n*.log\n",
+        "README.md": (
+            f"# {title}\n\n"
+            "A runnable Expo (React Native + TypeScript) app generated offline by "
+            "SkyN3t.\n\n"
+            "## Run\n\n"
+            "```bash\nnpm install\nnpm start        # opens Expo; scan the QR with Expo Go\n```\n\n"
+            "Mobile apps run on a device/simulator and cannot be previewed in an "
+            "iframe like the web stacks. CI proves the build with a type check:\n\n"
+            "```bash\nnpm run typecheck\n```\n"
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
+    "react_native": _react_native_expo,
     "static_html": _static_html,
     "python_cli": _python_cli,
     "fastapi": _fastapi,

@@ -354,7 +354,10 @@ def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bo
     return (True, False, tail)
 
 
-_NODE_STACKS = ("react", "react_vite", "node", "node_express", "express", "nextjs", "static")
+# react_native is a node stack for proof purposes: its package.json ships a
+# `typecheck` script (tsc --noEmit), so _run_node_build proves it with a type
+# check rather than a long-running Expo dev server.
+_NODE_STACKS = ("react", "react_vite", "react_native", "node", "node_express", "express", "nextjs", "static")
 
 
 def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:

@@ -78,9 +78,9 @@ def scan(projects_dir, worktrees_dir, *, known_worktrees=()) -> CleanupReport:
             status = str(man.get("status", ""))
             if status in _FAILED:
                 rep.failed.append(CleanupItem(d, f"status={status}", _dir_size(d)))
-            else:
-                by_slug.setdefault(man.get("slug", d.name), []).append(
-                    (str(man.get("created_at", "")), d))
+                continue  # whole dir is a cleanup target; its .preview goes with it
+            by_slug.setdefault(man.get("slug", d.name), []).append(
+                (str(man.get("created_at", "")), d))
             preview = d / ".preview"
             if preview.is_dir():
                 rep.stray_previews.append(CleanupItem(preview, "stray .preview", _dir_size(preview)))

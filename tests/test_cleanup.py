@@ -39,6 +39,7 @@ def test_apply_dry_run_moves_nothing(tmp_path):
     report = scan(projects, tmp_path / "wt", known_worktrees=())
     res = apply(report, trash_dir=tmp_path / "trash", dry_run=True)
     assert res.dry_run and res.moved == [] and (projects / "broken").exists()
+    assert res.freed_bytes > 0
 
 
 def test_apply_moves_to_trash(tmp_path):
@@ -48,3 +49,24 @@ def test_apply_moves_to_trash(tmp_path):
     res = apply(report, trash_dir=tmp_path / "trash", dry_run=False, categories=["failed"])
     assert not (projects / "broken").exists()
     assert res.moved and (tmp_path / "trash").exists()
+
+
+def test_apply_collision_deduplication(tmp_path):
+    projects = tmp_path / "Projects"; projects.mkdir()
+    _project(projects, "broken", status="failed")
+    trash = tmp_path / "trash"
+    (trash / "broken").mkdir(parents=True)  # pre-existing collision
+    report = scan(projects, tmp_path / "wt", known_worktrees=())
+    res = apply(report, trash_dir=trash, dry_run=False, categories=["failed"])
+    assert (trash / "broken").exists() and (trash / "broken.1").exists()
+    assert res.moved
+
+
+def test_failed_project_preview_not_in_stray_previews(tmp_path):
+    projects = tmp_path / "Projects"; projects.mkdir()
+    d = _project(projects, "broken", status="failed")
+    (d / ".preview").mkdir()  # .preview inside a failed project
+    report = scan(projects, tmp_path / "wt", known_worktrees=())
+    # the failed dir is already a cleanup target; .preview must NOT appear separately
+    assert not any(i.path.name == ".preview" for i in report.stray_previews)
+    assert [i.path.name for i in report.failed] == ["broken"]

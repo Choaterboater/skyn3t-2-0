@@ -52,6 +52,17 @@ from skyn3t.worktree import (
 
 log = structlog.get_logger(__name__)
 
+# Web/site stacks (planner + builder vocab) that should pull frontend/design skills.
+_WEB_STACKS = frozenset({
+    "react", "react_vite", "nextjs", "static", "static_html",
+    "fastapi", "node_express", "express",
+})
+_WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+
+
+def _web_design_tags(stack: str) -> list[str] | None:
+    return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _WEB_STACKS else None
+
 
 def _resolve_stack_pin(clar_answers: dict, extra: dict) -> str:
     """Resolve an explicit stack pin from clarification answers or the build
@@ -201,9 +212,11 @@ class StudioRunner:
         if self.skills is None:
             return "", []
         try:
-            relevant = self.skills.relevant(stack, limit=3)
+            tags = _web_design_tags(stack)
+            limit = 4 if tags else 3
+            relevant = self.skills.relevant(stack, tags=tags, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
-            advice = self.skills.inject(stack, limit=3)
+            advice = self.skills.inject(stack, tags=tags, limit=limit)
             return advice, slugs
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))

@@ -37,7 +37,8 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("express", ("express", "node api", "nodejs", "node.js")),
     ("cli", ("cli", "command line", "command-line", "terminal tool")),
     ("python", ("python", "script", "library", "package", "data")),
-    ("static", ("static site", "landing page", "html", "website")),
+    ("static", ("static site", "landing page", "html", "website", "web site",
+                "web app", "webapp", "web page", "webpage", "site")),
 )
 
 _DEFAULT_STACK = "python"

@@ -103,6 +103,12 @@ export default function Studio({ stream }) {
     },
   });
 
+  const approve = useMutation({
+    mutationFn: ({ build_id, approved }) =>
+      apiPost("/studio/approve", { build_id, approved, reason: "" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
+  });
+
   const events = stream?.events || [];
   const pipeline = useMemo(
     () => STAGES.map((s) => ({ stage: s, state: stageState(s, events) })),
@@ -224,6 +230,7 @@ export default function Studio({ stream }) {
                   <th className="px-4 py-2 font-normal">Status</th>
                   <th className="px-4 py-2 font-normal">Score</th>
                   <th className="px-4 py-2 font-normal">Cost</th>
+                  <th className="px-4 py-2 font-normal"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-hairline/60">
@@ -242,6 +249,36 @@ export default function Studio({ stream }) {
                       {b.cost_usd != null
                         ? `$${Number(b.cost_usd).toFixed(4)}`
                         : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() =>
+                            approve.mutate({
+                              build_id: b.build_id || b.slug,
+                              approved: true,
+                            })
+                          }
+                          disabled={approve.isPending}
+                          className="btn-ember disabled:opacity-50"
+                          title="Approve this build"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={() =>
+                            approve.mutate({
+                              build_id: b.build_id || b.slug,
+                              approved: false,
+                            })
+                          }
+                          disabled={approve.isPending}
+                          className="btn-ghost disabled:opacity-50"
+                          title="Reject this build"
+                        >
+                          Reject
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

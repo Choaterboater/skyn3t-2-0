@@ -86,8 +86,9 @@ class ImproveEngine:
                          {"slug": slug, "stack": stack, "goal": goal,
                           "project_dir": str(project_dir)}, cid)
 
-        wt = create_worktree(str(self.settings.projects_dir), f"improve-{slug}")
+        wt = None
         try:
+            wt = create_worktree(str(self.settings.projects_dir), f"improve-{slug}")
             # Seed the worktree with the existing project files.
             merge_back(str(project_dir), wt.dir, overwrite=True, clean=False)
             repo_ctx = get_repo_map(wt.dir, max_tokens=2000)
@@ -122,7 +123,8 @@ class ImproveEngine:
             return ImproveOutcome(project_dir=str(project_dir), slug=slug, stack=stack,
                                   goal=goal, status="failed", detail={"error": str(exc)})
         finally:
-            cleanup_worktree(wt)
+            if wt is not None:
+                cleanup_worktree(wt)
 
     async def _run_improver(self, worktree_dir: str, slug: str, stack: str,
                             goal: str, repo_ctx: str, cid: str) -> list[str]:

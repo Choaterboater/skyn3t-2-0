@@ -53,6 +53,14 @@ from skyn3t.worktree import (
 log = structlog.get_logger(__name__)
 
 
+def _resolve_stack_pin(clar_answers: dict, extra: dict) -> str:
+    """Resolve an explicit stack pin from clarification answers or the build
+    `extra` dict. Accepts both the canonical ``extra['stack']`` and the legacy
+    ``extra['stack_hint']`` key. Returns "" when no pin is present."""
+    return (clar_answers.get("stack") or extra.get("stack")
+            or extra.get("stack_hint") or "")
+
+
 def _final_build_status(delivered_nonempty: bool, verdict: str) -> str:
     """Build-level status from delivery + verdict.
 
@@ -647,7 +655,7 @@ class StudioRunner:
         plan = self.planner.plan(
             brief,
             slug,
-            stack_hint=clar.answers.get("stack") or extra.get("stack") or extra.get("stack_hint"),
+            stack_hint=_resolve_stack_pin(clar.answers, extra),
             test_first=extra.get("test_first"),
             best_of_n=extra.get("best_of_n"),
             gated_stages=tuple(extra.get("gated_stages", ())),

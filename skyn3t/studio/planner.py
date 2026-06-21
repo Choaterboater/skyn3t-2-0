@@ -24,6 +24,12 @@ from skyn3t.studio.stages import StageSpec, default_pipeline, test_author_spec
 # Ordered: first matching signature wins. Each entry: (stack, keywords).
 _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("nextjs", ("next.js", "nextjs", "next ")),
+    # react_native must precede `react`/`nextjs`: "react native expo app" and
+    # "ios app" should resolve to the mobile stack, not the web React scaffold.
+    ("react_native", (
+        "mobile app", "react native", "react-native", "expo",
+        "ios app", "android app", "mobile application",
+    )),
     ("react", ("react", "vite", "spa", "single page", "frontend", "dashboard ui")),
     ("fastapi", ("fastapi", "rest api", "http api", "backend api", "endpoint")),
     ("flask", ("flask",)),
@@ -45,6 +51,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     "django": ("README.md", "requirements.txt", "manage.py", "project/settings.py"),
     "react": ("README.md", "package.json", "src/App.jsx", "src/main.jsx", "index.html"),
     "nextjs": ("README.md", "package.json", "app/page.tsx", "app/layout.tsx"),
+    # Expo mobile app: the manifest (package.json), the Expo config (app.json),
+    # the root screen (App.tsx) and a test. No index.html — mobile has no DOM
+    # root and cannot be iframe-previewed like the web stacks.
+    "react_native": ("README.md", "package.json", "app.json", "App.tsx", "__tests__/App.test.tsx"),
     "express": ("README.md", "package.json", "src/index.js", "test/app.test.js"),
     # CLI/python: a runnable root ``main.py`` (synthesized if the codegen only
     # produced a package) + a manifest + README. Tests are scored as substance,

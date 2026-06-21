@@ -15,6 +15,7 @@ from typing import Any
 # Canonical stacks the CodeAgent can scaffold offline.
 KNOWN_STACKS = (
     "react_vite",
+    "react_native",
     "static_html",
     "python_cli",
     "fastapi",
@@ -51,6 +52,13 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         return "node_express"
     if any(k in text for k in ("cli", "command line", "command-line", "terminal tool", "script")):
         return "python_cli"
+    # Mobile must precede react_vite: "mobile app" / "react native" / "ios app"
+    # are mobile, not the web React scaffold.
+    if any(k in text for k in (
+        "mobile app", "react native", "react-native", "expo",
+        "ios app", "android app", "mobile application",
+    )):
+        return "react_native"
     if any(k in text for k in ("react", "vite", "spa", "frontend", "front-end", "single page")):
         return "react_vite"
     if any(k in text for k in ("static site", "landing page", "plain html", "static html")):
@@ -66,6 +74,12 @@ def _normalize_stack(value: str) -> str:
         "react_vite": "react_vite",
         "vite_react": "react_vite",
         "spa": "react_vite",
+        "mobile": "react_native",
+        "expo": "react_native",
+        "react_native": "react_native",
+        "reactnative": "react_native",
+        "ios": "react_native",
+        "android": "react_native",
         "html": "static_html",
         "static": "static_html",
         "static_html": "static_html",

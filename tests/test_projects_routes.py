@@ -69,3 +69,9 @@ def test_delete_project_refuses_running_build(tmp_path):
     _project(state.settings.projects_dir, "live")
     with pytest.raises(ValueError):
         asyncio.run(delete_project(state, "live"))
+
+
+def test_delete_project_refuses_root_slug(tmp_path):
+    state = _state(tmp_path)
+    with pytest.raises(ValueError):
+        asyncio.run(delete_project(state, "."))

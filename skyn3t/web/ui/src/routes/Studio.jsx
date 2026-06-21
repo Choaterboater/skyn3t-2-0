@@ -89,6 +89,7 @@ function ForgeStage({ stage, state }) {
 export default function Studio({ stream }) {
   const qc = useQueryClient();
   const [brief, setBrief] = useState("");
+  const [pendingBuildId, setPendingBuildId] = React.useState(null);
 
   const { data: builds } = useQuery({
     queryKey: ["builds"],
@@ -101,6 +102,13 @@ export default function Studio({ stream }) {
       setBrief("");
       qc.invalidateQueries({ queryKey: ["builds"] });
     },
+  });
+
+  const approve = useMutation({
+    mutationFn: ({ build_id, approved }) =>
+      apiPost("/studio/approve", { build_id, approved, reason: "" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
+    onSettled: () => setPendingBuildId(null),
   });
 
   const events = stream?.events || [];
@@ -213,6 +221,11 @@ export default function Studio({ stream }) {
             </span>
           }
         />
+        {approve.isError ? (
+          <p className="px-4 py-3 font-mono text-xs text-ember">
+            {String(approve.error?.message || approve.error)}
+          </p>
+        ) : null}
         {recentBuilds.length === 0 ? (
           <Empty icon="⬡">No builds yet. Submit a brief to fire the forge.</Empty>
         ) : (
@@ -224,6 +237,7 @@ export default function Studio({ stream }) {
                   <th className="px-4 py-2 font-normal">Status</th>
                   <th className="px-4 py-2 font-normal">Score</th>
                   <th className="px-4 py-2 font-normal">Cost</th>
+                  <th className="px-4 py-2 font-normal"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-hairline/60">
@@ -242,6 +256,42 @@ export default function Studio({ stream }) {
                       {b.cost_usd != null
                         ? `$${Number(b.cost_usd).toFixed(4)}`
                         : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      {["running", "queued", "pending", "awaiting_approval"].includes(b.status) ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => {
+                              setPendingBuildId(b.build_id || b.slug);
+                              approve.mutate({
+                                build_id: b.build_id || b.slug,
+                                approved: true,
+                                reason: "",
+                              });
+                            }}
+                            disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                            className="btn-ember disabled:opacity-50"
+                            title="Approve this build"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => {
+                              setPendingBuildId(b.build_id || b.slug);
+                              approve.mutate({
+                                build_id: b.build_id || b.slug,
+                                approved: false,
+                                reason: "",
+                              });
+                            }}
+                            disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                            className="btn-ghost disabled:opacity-50"
+                            title="Reject this build"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

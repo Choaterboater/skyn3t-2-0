@@ -159,14 +159,16 @@ class StudioRunner:
             log.warning("lessons.inject_failed", error=str(exc))
             return []
 
-    async def _grade_lessons(self, lessons: list[dict[str, Any]], helpful: bool) -> None:
+    async def _grade_lessons(
+        self, lessons: list[dict[str, Any]], helpful: bool, quality: float | None = None
+    ) -> None:
         if self.memory is None or not lessons:
             return
         for les in lessons:
             lid = les.get("id")
             if isinstance(lid, int):
                 try:
-                    await self.memory.grade_lesson(lid, helpful)
+                    await self.memory.grade_lesson(lid, helpful, quality=quality)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("lessons.grade_failed", error=str(exc))
 
@@ -874,7 +876,11 @@ class StudioRunner:
             # "files were written". Crediting every non-empty no_go as helpful is
             # what trained the factory backwards.
             helpful = manifest.verdict == "go"
-            await self._grade_lessons(used_lessons, helpful=helpful)
+            # Continuous reward: grade lessons by HOW WELL this build scored, not
+            # just go/no_go — so a lesson reused by strong builds outranks one
+            # scraping a low 'go' (Phase B, extends B1's skill reward to lessons).
+            lesson_quality = max(0.0, min(1.0, final_score / 100.0))
+            await self._grade_lessons(used_lessons, helpful=helpful, quality=lesson_quality)
             await self._record_learning(
                 manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps,
                 code_backend=code_backend, project_dir=project_dir,
@@ -886,7 +892,10 @@ class StudioRunner:
 
         except _BuildRejected as exc:
             manifest.status = "failed"
-            await self._grade_lessons(used_lessons, helpful=False)
+            await self._grade_lessons(
+                used_lessons, helpful=False,
+                quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
+            )
             await self._record_learning(manifest, plan, skill_slugs, helpful=False)
             await self._save_build(manifest)
             await self.event_bus.emit(
@@ -900,7 +909,10 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - never crash the factory
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
-            await self._grade_lessons(used_lessons, helpful=False)
+            await self._grade_lessons(
+                used_lessons, helpful=False,
+                quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
+            )
             await self._record_learning(manifest, plan, skill_slugs, helpful=False)
             try:
                 await self._save_build(manifest)

@@ -290,21 +290,24 @@ class LearningLoop:
 
     # ---- grade (close the loop) ---------------------------------------
     async def grade_injected(
-        self, injected: InjectedLessons, *, helpful: bool
+        self, injected: InjectedLessons, *, helpful: bool, quality: float | None = None
     ) -> None:
-        """Grade every injected lesson by the new build's outcome."""
+        """Grade every injected lesson by the new build's outcome.
+
+        ``quality`` (0..1) gives a continuous reward; omitted -> binary +1/-1.
+        """
         for lid in injected.lesson_ids:
-            await self._grade(lid, helpful)
+            await self._grade(lid, helpful, quality)
         _info(
             "learning.graded",
             count=len(injected.lesson_ids),
             helpful=helpful,
         )
 
-    async def _grade(self, lesson_id: int, helpful: bool) -> None:
+    async def _grade(self, lesson_id: int, helpful: bool, quality: float | None = None) -> None:
         if self.store is not None:
             try:
-                await self.store.grade_lesson(lesson_id, helpful)
+                await self.store.grade_lesson(lesson_id, helpful, quality=quality)
                 return
             except Exception as exc:  # noqa: BLE001
                 _info("learning.store_grade_failed", error=str(exc))

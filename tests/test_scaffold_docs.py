@@ -92,3 +92,13 @@ def test_node_manifests_list_real_dependencies() -> None:
         pkg = scaffold_for(stack, "demo-app", _BRIEF).get("package.json", "")
         assert '"dependencies"' in pkg, f"{stack} package.json has no dependencies block"
         assert '"description"' in pkg, f"{stack} package.json has no description"
+
+
+def test_react_native_scaffold_survives_multiline_brief() -> None:
+    # A brief with a newline (from a web-form textarea) must not break app.json
+    # (invalid JSON) or App.tsx (unterminated string literal). Reviewer finding.
+    import json
+
+    files = scaffold_for("react_native", "demo-app", "A task manager\nthat tracks todos")
+    json.loads(files["app.json"])  # valid JSON despite the embedded newline
+    assert "App.tsx" in files

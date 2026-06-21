@@ -182,13 +182,18 @@ def sync_preview(
     project_dir: str | Path,
     *,
     subdir: str = PREVIEW_SUBDIR,
+    clean: bool = True,
 ) -> list[str]:
     """Mirror the in-progress worktree into ``project_dir/<subdir>`` for the
-    cockpit. Read-only snapshot, replaced (clean) each call so it reflects the
-    current state. Reuses :func:`merge_back`; never raises for a missing source.
+    cockpit. Reuses :func:`merge_back`; never raises for a missing source.
+
+    ``clean=True`` (default) replaces the snapshot so it reflects current state.
+    The live poller passes ``clean=False`` to avoid a delete-then-copy window
+    that could race HTTP readers with a transient 404 (it just accumulates; the
+    per-stage + final snapshots settle the tree with clean=True).
     """
     preview_dir = Path(project_dir) / subdir
-    return merge_back(worktree_dir, preview_dir, clean=True)
+    return merge_back(worktree_dir, preview_dir, clean=clean)
 
 
 def cleanup_worktree(worktree: Worktree) -> None:

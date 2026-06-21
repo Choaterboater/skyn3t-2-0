@@ -112,3 +112,23 @@ def test_improve_handles_worktree_creation_failure(tmp_path, monkeypatch):
     engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings)
     outcome = asyncio.run(engine.improve("demo", "g"))  # must NOT raise
     assert outcome.status == "failed" and "disk full" in outcome.detail.get("error", "")
+
+
+def test_improve_failed_improver_preserves_original(tmp_path):
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+
+    class _FailingOrchestrator:
+        async def submit(self, task):
+            return SimpleNamespace(success=False, output={}, error="LLM unavailable")
+
+    engine = ImproveEngine(EventBus(), _FailingOrchestrator(), settings=settings)
+    outcome = asyncio.run(engine.improve("demo", "g"))  # must NOT raise
+
+    # Safe re-delivery: the original files survive intact, untouched.
+    assert (project / "main.py").read_text() == "print('original')\n"
+    assert (project / "README.md").exists()
+    # Honest reporting: distinguishable from a successful no-op.
+    assert outcome.detail.get("improver_success") is False
+    assert "unavailable" in outcome.detail.get("improver_error", "")
+    assert outcome.files_changed == []

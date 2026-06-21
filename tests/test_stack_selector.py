@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import types
 
 from skyn3t.studio.stack_selector import (
     REAL_BUILDER_STACKS, StackChoice, keyword_choice, select_stack,
@@ -25,9 +24,14 @@ def test_keyword_fallback_when_no_llm():
 
 
 def test_nextjs_brief_collapses_to_real_builder():
-    # nextjs has no builder -> must map to a real-builder stack (react).
+    # nextjs has no builder -> must collapse to react specifically.
     c = keyword_choice("a next.js app")
-    assert c.stack in REAL_BUILDER_STACKS
+    assert c.stack == "react"
+
+
+def test_collapsed_pin_is_accepted():
+    c = asyncio.run(select_stack("anything", pin="nextjs", llm=None))
+    assert c.method == "pin" and c.stack == "react"
 
 
 def test_llm_choice_used_when_available():

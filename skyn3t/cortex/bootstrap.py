@@ -223,12 +223,16 @@ def build_cortex(
         CuriosityLoop,
         FeatureSuggester,
         GatedTuner,
+        PromptReflectionLoop,
         ReflectionLoop,
         ReviewWatcher,
     )
 
     cortex.add_component(GatedTuner(cortex, event_bus, settings))
     cortex.add_component(ReflectionLoop(cortex, event_bus, settings, llm=llm))
+    # Self-improving instructions: propose fixes to the app-writing agents from
+    # their own win/fail transcripts (gated, never auto-applied). [Phase B/B2]
+    cortex.add_component(PromptReflectionLoop(cortex, event_bus, settings))
     cortex.add_component(FeatureSuggester(cortex, event_bus, settings, llm=llm))
     # CuriosityLoop is opt-in: by default it only spams the approval queue with a
     # generic, target-less ingest proposal. Only attach it when enabled.

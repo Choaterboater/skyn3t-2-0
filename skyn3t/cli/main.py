@@ -346,10 +346,11 @@ def studio_build(
     best_of: int = typer.Option(0, "--best-of", "-n", help="Best-of-N code trajectories."),
     no_critic: bool = typer.Option(False, "--no-critic", help="Disable the adversarial critic gate."),
     slug: str = typer.Option("", "--slug", help="Override the project slug."),
+    stack: str = typer.Option("", "--stack", help="Pin the stack: react|react_native|fastapi|static|python|express."),
 ) -> None:
     """Run a build end to end and print the result + artifact path."""
     console = _console()
-    outcome = asyncio.run(_run_build(brief, best_of=best_of, no_critic=no_critic, slug=slug))
+    outcome = asyncio.run(_run_build(brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack))
     if outcome is None:
         console.print("[red]Build pipeline unavailable (studio package missing).[/red]")
         raise typer.Exit(code=1)
@@ -475,7 +476,7 @@ def _build_observability(settings: Any, llm: Any) -> tuple[Any, Any]:
     return cost_tracker, budget_guard
 
 
-async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) -> dict[str, Any] | None:
+async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, stack: str = "") -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
     except Exception:  # noqa: BLE001
@@ -509,6 +510,8 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:
         extra["best_of_n"] = best_of
+    if stack:
+        extra["stack"] = stack
     outcome = await runner.start(brief, slug=slug or None, extra=extra)
 
     # --- C: one bounded, gated learning tick (no loop, no autonomous builds) ---
@@ -756,6 +759,47 @@ def project_list(limit: int = typer.Option(20, "--limit", help="Max builds to sh
             str(b.get("score", "")),
         )
     console.print(table)
+
+
+@project_app.command("cleanup")
+def project_cleanup(
+    apply_changes: bool = typer.Option(False, "--apply", help="Actually move to trash (default: dry-run)."),
+    categories: str = typer.Option("", "--categories", help="Comma list: failed,superseded,orphaned_worktrees,orphaned_projects,stray_previews."),
+) -> None:
+    """Report (and with --apply, trash) failed/superseded/orphaned build artifacts."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.cleanup import apply as cleanup_apply
+    from skyn3t.studio.cleanup import scan as cleanup_scan
+
+    console = _console()
+    s = get_settings()
+    worktrees = s.projects_dir.parent / ".skyn3t_worktrees"
+    report = cleanup_scan(s.projects_dir, worktrees)
+    cats = [c.strip() for c in categories.split(",") if c.strip()]
+    if not cats:
+        # Safe default: failed/superseded/stray_previews require a saved manifest
+        # with a terminal status, so an in-flight build (no manifest yet) is never
+        # selected. orphaned_worktrees/orphaned_projects need --categories to opt in.
+        cats = ["failed", "superseded", "stray_previews"]
+        console.print("[dim]orphaned_worktrees/orphaned_projects are excluded by default "
+                      "(they can't be told apart from an in-flight build). Opt in with "
+                      "--categories orphaned_worktrees,orphaned_projects only when no build is running.[/dim]")
+    items = report.all_items(cats)
+    table = _table("Cleanup candidates", ["category", "path", "reason", "MB"])
+    for name in ("failed", "superseded", "orphaned_worktrees", "orphaned_projects", "stray_previews"):
+        if name not in cats:
+            continue
+        for it in getattr(report, name):
+            table.add_row(name, it.path.name, it.reason, f"{it.size_bytes/1e6:.1f}")
+    console.print(table)
+    trash = s.projects_dir.parent / ".skyn3t_trash"
+    res = cleanup_apply(report, trash_dir=trash, dry_run=not apply_changes, categories=cats)
+    if res.dry_run:
+        console.print(f"[yellow]dry-run[/yellow]: would free {res.freed_bytes/1e6:.1f} MB "
+                      f"from {len(items)} items. Re-run with --apply to trash them.")
+    else:
+        console.print(f"[green]moved[/green] {len(res.moved)} items to {trash} "
+                      f"({res.freed_bytes/1e6:.1f} MB).")
 
 
 async def _recent_builds(limit: int) -> list[dict[str, Any]]:

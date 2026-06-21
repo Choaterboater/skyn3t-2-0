@@ -96,7 +96,8 @@ class ImproveEngine:
                              {"slug": slug, "stage": "localize",
                               "repo_map_chars": len(repo_ctx)}, cid)
 
-            files_changed = await self._run_improver(wt.dir, slug, stack, goal, repo_ctx, cid)
+            files_changed, improver_ok, improver_err = await self._run_improver(
+                wt.dir, slug, stack, goal, repo_ctx, cid)
 
             proof = proof_run(
                 wt.dir, stack=stack,
@@ -113,7 +114,8 @@ class ImproveEngine:
                 project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
                 files_changed=sorted(files_changed), proof_passed=bool(proof.passed),
                 score=float(proof.score), status="completed",
-                detail={"delivered": len(delivered), "proof": proof.to_dict()},
+                detail={"delivered": len(delivered), "proof": proof.to_dict(),
+                        "improver_success": improver_ok, "improver_error": improver_err},
             )
             await self._emit(EventType.IMPROVE_COMPLETED, outcome.to_dict(), cid)
             return outcome
@@ -127,7 +129,7 @@ class ImproveEngine:
                 cleanup_worktree(wt)
 
     async def _run_improver(self, worktree_dir: str, slug: str, stack: str,
-                            goal: str, repo_ctx: str, cid: str) -> list[str]:
+                            goal: str, repo_ctx: str, cid: str) -> tuple[list[str], bool, str]:
         task = TaskRequest(
             type="code_improver",
             payload={"worktree_dir": worktree_dir, "brief": goal, "slug": slug,
@@ -136,9 +138,10 @@ class ImproveEngine:
             correlation_id=cid,
         )
         result = await self.orchestrator.submit(task)
-        if result and getattr(result, "success", False):
-            return list((getattr(result, "output", None) or {}).get("files", []))
-        return []
+        ok = bool(result and getattr(result, "success", False))
+        files = list((getattr(result, "output", None) or {}).get("files", [])) if ok else []
+        err = "" if ok else str(getattr(result, "error", "") or "improver did not succeed")
+        return files, ok, err
 
     def _record_history(self, manifest: BuildManifest | None, project_dir: Path,
                         goal: str, delivered: list[str], proof: Any,

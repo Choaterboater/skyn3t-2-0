@@ -138,6 +138,104 @@ class ReflectionLoop(_BaseComponent):
         self._unsubs.append(self.event_bus.subscribe(EventType.BUILD_COMPLETED, on_build))
 
 
+class PromptReflectionLoop(_BaseComponent):
+    """Self-improving INSTRUCTIONS (Phase B): the factory proposes fixes to the
+    agents that WRITE the apps, not just its own knobs.
+
+    It accumulates per-agent transcripts from build-stage events; when an agent
+    shows both wins and failures, it asks the :class:`Reflector` for a
+    Pareto-style instruction improvement (offline, deterministic) and submits it
+    as a GATED proposal (``safe=False``) — never auto-applied. Applying an
+    accepted candidate to the live agent is a deferred follow-up; surfacing the
+    proposal is what makes the factory's self-improvement visible + reviewable.
+    """
+
+    name = "prompt_reflection_loop"
+
+    def __init__(
+        self,
+        cortex: Any,
+        event_bus: EventBus,
+        settings: Settings | None = None,
+        *,
+        max_per_agent: int = 30,
+        min_each: int = 2,
+        pass_score: float = 70.0,
+    ) -> None:
+        super().__init__(cortex, event_bus, settings)
+        from skyn3t.intelligence.reflection import Reflector, Transcript
+
+        self._reflector = Reflector(event_bus=event_bus)
+        self._Transcript = Transcript
+        self._buf: dict[str, list[Any]] = {}  # agent -> recent Transcripts
+        self._proposed: set[str] = set()  # agents already proposed for (dedupe)
+        self._max = max_per_agent
+        self._min_each = min_each
+        self._pass = pass_score
+
+    async def run(self) -> None:
+        self._running = True
+
+        async def on_stage(ev: Event) -> None:
+            with contextlib.suppress(Exception):
+                self._record(ev)
+
+        async def on_build(ev: Event) -> None:
+            with contextlib.suppress(Exception):
+                await self._maybe_propose()
+
+        self._unsubs.append(self.event_bus.subscribe(EventType.BUILD_STAGE_COMPLETED, on_stage))
+        self._unsubs.append(self.event_bus.subscribe(EventType.BUILD_COMPLETED, on_build))
+
+    def _record(self, ev: Event) -> None:
+        p = ev.payload or {}
+        agent = str(p.get("capability") or p.get("stage") or "")
+        score = p.get("score")
+        if not agent or score is None:
+            return  # only stages with a real score give a meaningful pass/fail split
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            return
+        gaps = [str(g) for g in (p.get("gaps") or [])]
+        t = self._Transcript(
+            instruction=f"agent:{agent}",
+            task_id=f"{p.get('build_id', '')}:{p.get('stage', '')}",
+            output=" ".join([str(p.get("stage", "")), *gaps]),
+            passed=score >= self._pass,
+            score=score,
+            tags=[str(p.get("stage", ""))] + gaps,
+        )
+        buf = self._buf.setdefault(agent, [])
+        buf.append(t)
+        if len(buf) > self._max:
+            del buf[: len(buf) - self._max]
+
+    async def _maybe_propose(self) -> None:
+        for agent, buf in self._buf.items():
+            if agent in self._proposed:
+                continue
+            passing = sum(1 for t in buf if t.passed)
+            failing = sum(1 for t in buf if not t.passed)
+            if passing < self._min_each or failing < self._min_each:
+                continue
+            cand = self._reflector.propose_prompt_improvement(agent, buf)
+            if cand is None:
+                continue
+            self._proposed.add(agent)
+            await self.cortex.submit(
+                Proposal(
+                    type=ProposalType.TUNING,
+                    title=f"improve '{agent}' agent instruction from {failing} failures",
+                    source=self.name,
+                    rationale=cand.rationale,
+                    payload={"agent": agent, "prompt_candidate": cand.to_dict()},
+                    confidence=0.6,
+                    safe=False,  # instruction change -> gated, never auto-applied
+                )
+            )
+
+
 class FeatureSuggester(_BaseComponent):
     """Proposes new features (always gated — never auto-applied)."""
 

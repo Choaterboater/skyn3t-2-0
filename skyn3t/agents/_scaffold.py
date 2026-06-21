@@ -628,7 +628,11 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
             '    "jsx": "react-native",\n'
             '    "esModuleInterop": true,\n'
             '    "skipLibCheck": true\n'
-            "  }\n"
+            "  },\n"
+            # Exclude the Jest test from the typecheck proof: it uses Jest globals
+            # (describe/it/expect) with no @types/jest, which made `tsc --noEmit`
+            # fail and every react_native build read no_go. The test still ships.
+            '  "exclude": ["node_modules", "__tests__"]\n'
             "}\n"
         ),
         "babel.config.js": (

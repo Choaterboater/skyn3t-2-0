@@ -573,6 +573,47 @@ async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
     return outcome.to_dict()
 
 
+@studio_app.command("serve")
+def studio_serve(
+    project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
+    port: int = typer.Option(0, "--port", "-p", help="Preferred port (0 = auto)."),
+) -> None:
+    """Run a generated project as a live local server and print its URL."""
+    import time as _time
+    from pathlib import Path as _Path
+
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.app_runner import AppRunner
+
+    console = _console()
+    s = get_settings()
+    cand = _Path(project)
+    pdir = cand if cand.is_absolute() else (s.projects_dir / project)
+    man = None
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+        man = BuildManifest.load(pdir)
+    except Exception:  # noqa: BLE001
+        man = None
+    stack = man.stack if man else ""
+    runner = AppRunner()
+    app = asyncio.run(runner.start(pdir, stack, port=port or None))
+    if app.status == "no_preview":
+        console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
+        raise typer.Exit(code=1)
+    if app.status != "running":
+        console.print(f"[red]Failed to start[/red]: {app.detail.get('log_tail', '')[-400:]}")
+        raise typer.Exit(code=2)
+    console.print(f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] (pid {app.pid}). "
+                  "Press Ctrl+C to stop.")
+    try:
+        while True:
+            _time.sleep(1)
+    except KeyboardInterrupt:
+        runner.stop(app)
+        console.print("\n[dim]stopped.[/dim]")
+
+
 @studio_app.command("improve")
 def studio_improve(
     project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),

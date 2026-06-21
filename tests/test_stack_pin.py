@@ -10,13 +10,13 @@ def test_planner_honors_explicit_pin_over_brief():
     assert plan.stack == "fastapi"
 
 
-def test_resolve_stack_pin_prefers_extra_stack_key():
+def test_resolve_stack_pin_uses_explicit_pin_only():
     from skyn3t.studio.runner import _resolve_stack_pin
-    # The web API writes the pin to extra["stack"]; it must win when present.
-    assert _resolve_stack_pin({}, {"stack": "fastapi"}) == "fastapi"
+    # The web API / CLI writes the pin to extra["stack"]; it must win when present.
+    assert _resolve_stack_pin({"stack": "fastapi"}) == "fastapi"
     # Legacy key still honored.
-    assert _resolve_stack_pin({}, {"stack_hint": "react"}) == "react"
-    # Clarification answer wins over both.
-    assert _resolve_stack_pin({"stack": "static"}, {"stack": "fastapi"}) == "static"
-    # No pin -> empty string.
-    assert _resolve_stack_pin({}, {}) == ""
+    assert _resolve_stack_pin({"stack_hint": "react"}) == "react"
+    # No EXPLICIT pin -> "" so the intelligent selector decides. The clarifier's
+    # auto-answered default (e.g. "python") must NOT pin and bypass selection —
+    # that mis-stacked "website" briefs as python_cli.
+    assert _resolve_stack_pin({}) == ""

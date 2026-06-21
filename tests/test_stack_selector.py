@@ -65,3 +65,12 @@ def test_stub_backend_falls_back_to_keyword():
             return StubResult()
     c = asyncio.run(select_stack("a react dashboard", llm=StubLLM()))
     assert c.method == "keyword" and c.stack == "react"
+
+
+def test_website_brief_picks_web_not_python():
+    # Regression: a "website" brief with NO explicit pin must not come out
+    # python. Previously the clarifier's auto-default ("python") was treated as
+    # a pin and bypassed selection; now the keyword fallback (and the LLM, when
+    # available) reads the brief — "website" maps to the static web stack.
+    c = keyword_choice("a website for kids to print off coloring pages of pandas")
+    assert c.stack == "static" and c.stack != "python"

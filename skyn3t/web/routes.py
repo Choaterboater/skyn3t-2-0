@@ -178,6 +178,52 @@ async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
     return {"builds": builds[:limit]}
 
 
+async def list_projects(state: AppState) -> dict[str, Any]:
+    from skyn3t.studio.cleanup import _dir_size, _load_manifest
+    pdir = Path(state.settings.projects_dir)
+    out: list[dict[str, Any]] = []
+    if pdir.is_dir():
+        for d in sorted(p for p in pdir.iterdir() if p.is_dir() and not p.name.startswith(".")):
+            man = _load_manifest(d)
+            m = man or {}
+            out.append({
+                "slug": m.get("slug", d.name),
+                "stack": m.get("stack", ""),
+                "status": m.get("status", ""),
+                "verdict": m.get("verdict", ""),
+                "score": m.get("score", 0.0),
+                "created_at": m.get("created_at", ""),
+                "updated_at": m.get("updated_at", ""),
+                "size_bytes": _dir_size(d),
+                "has_preview": (d / "index.html").exists(),
+                "has_manifest": man is not None,
+            })
+    return {"projects": out}
+
+
+async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
+    import shutil
+    projects_root = Path(state.settings.projects_dir).resolve()
+    target = (projects_root / slug).resolve()
+    if target == projects_root or not target.is_relative_to(projects_root):
+        raise ValueError(f"invalid slug: {slug!r}")
+    if not target.is_dir():
+        raise FileNotFoundError(slug)
+    active = {getattr(r, "slug", "") for r in state.builds.values()
+              if getattr(r, "status", "") == "running"}
+    if target.name in active or slug in active:
+        raise ValueError("project belongs to a running build")
+    trash = projects_root.parent / ".skyn3t_trash"
+    trash.mkdir(parents=True, exist_ok=True)
+    dest = trash / target.name
+    n = 1
+    while dest.exists():
+        dest = trash / f"{target.name}.{n}"
+        n += 1
+    shutil.move(str(target), str(dest))
+    return {"slug": slug, "trashed_to": str(dest)}
+
+
 def _resolve_live_gate(state: AppState, build_id: str, approved: bool, reason: str) -> int:
     """Resolve pending approval(s) on the live runner's in-process gate, so an
     out-of-band approve/reject actually UNBLOCKS the waiting build instead of
@@ -731,6 +777,19 @@ def build_router(state: AppState) -> Any:
                             dry_run=bool(body.get("dry_run", True)),
                             categories=body.get("categories"))
         return {"moved": res.moved, "freed_bytes": res.freed_bytes, "dry_run": res.dry_run}
+
+    @router.get("/projects", dependencies=[auth])
+    async def _projects() -> dict[str, Any]:
+        return await list_projects(state)
+
+    @router.delete("/projects/{slug}", dependencies=[auth])
+    async def _delete_project(slug: str) -> dict[str, Any]:
+        try:
+            return await delete_project(state, slug)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid or active project")
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found")
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
     async def _project_file(slug: str, path: str) -> Any:

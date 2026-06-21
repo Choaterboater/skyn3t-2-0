@@ -65,15 +65,13 @@ def _is_python_web(pdir: Path) -> bool:
                 blob += p.read_text(encoding="utf-8", errors="ignore").lower()
             except OSError:
                 pass
-    if any(h in blob for h in _WEB_HINTS):
-        return True
-    return (pdir / "index.html").exists()
+    return any(h in blob for h in _WEB_HINTS)
 
 
 def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None = None) -> RunSpec | None:
     """Map a project to a run command by inspecting its contents. None = no web preview."""
     pdir = Path(project_dir)
-    port = port or free_port()
+    port = port if port is not None else free_port()
 
     pkg = pdir / "package.json"
     if pkg.exists():

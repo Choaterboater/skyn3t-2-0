@@ -68,11 +68,24 @@ class Skill:
     helpful: int = 0
     created: float = field(default_factory=time.time)
     source: str = "manual"
+    # Continuous reward (Phase B): sum of per-use quality in [0,1]. Defaults to
+    # the binary `helpful` count for skills graded before this field existed, so
+    # their score is unchanged (backward compatible).
+    quality_sum: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.quality_sum is None:
+            self.quality_sum = float(self.helpful)
 
     @property
     def score(self) -> float:
-        """Helpfulness rate in [0, 1]; unused skills default to 0.5."""
-        return self.helpful / self.uses if self.uses else 0.5
+        """Mean per-use quality in [0, 1]; unused skills default to 0.5.
+
+        Continuous: a build that scored 0.92 rewards more than one that scraped a
+        0.61 'go', and a 0.35 no_go still records partial signal — unlike the old
+        binary helpful/uses rate.
+        """
+        return (self.quality_sum or 0.0) / self.uses if self.uses else 0.5
 
     def to_markdown(self) -> str:
         fm = [
@@ -83,6 +96,7 @@ class Skill:
             f"tags: {', '.join(self.tags)}",
             f"uses: {self.uses}",
             f"helpful: {self.helpful}",
+            f"quality_sum: {self.quality_sum or 0.0:.4f}",
             f"score: {self.score:.3f}",
             f"source: {self.source}",
             "---",
@@ -124,6 +138,7 @@ def parse_skill(text: str, *, fallback_slug: str = "skill") -> Skill:
         stack=meta.get("stack", "generic"),
         uses=int(meta.get("uses", "0") or 0),
         helpful=int(meta.get("helpful", "0") or 0),
+        quality_sum=float(meta["quality_sum"]) if meta.get("quality_sum") else None,
         source=meta.get("source", "manual"),
     )
 
@@ -223,10 +238,16 @@ class SkillLibrary:
         )
 
     # ---- scoring (close the loop) -------------------------------------
-    def record_use(self, slugs: list[str] | str, *, helpful: bool) -> None:
-        """Grade skills after a build by whether they helped."""
+    def record_use(
+        self, slugs: list[str] | str, *, helpful: bool, quality: float | None = None
+    ) -> None:
+        """Grade skills after a build. ``quality`` (in [0,1], e.g. the build's
+        final score / 100) gives a CONTINUOUS reward; when omitted it falls back
+        to the binary helpful signal (1.0 or 0.0), preserving old behavior."""
         if isinstance(slugs, str):
             slugs = [slugs]
+        q = quality if quality is not None else (1.0 if helpful else 0.0)
+        q = max(0.0, min(1.0, q))
         for slug in slugs:
             sk = self._skills.get(slug)
             if sk is None:
@@ -234,6 +255,7 @@ class SkillLibrary:
             sk.uses += 1
             if helpful:
                 sk.helpful += 1
+            sk.quality_sum = (sk.quality_sum or 0.0) + q
             self._persist(sk)
 
     # ---- auto-promotion from build patterns ---------------------------

@@ -559,7 +559,10 @@ class StudioRunner:
         # 3. Grade the skills that advised this build.
         if self.skills is not None and skill_slugs:
             try:
-                self.skills.record_use(skill_slugs, helpful=helpful)
+                # Continuous reward (Phase B): grade advisory skills by HOW MUCH
+                # this build scored (0..1), not just go/no_go — sharper signal.
+                quality = max(0.0, min(1.0, float(manifest.score or 0.0) / 100.0))
+                self.skills.record_use(skill_slugs, helpful=helpful, quality=quality)
             except Exception as exc:  # noqa: BLE001
                 log.warning("skills.record_use_failed", error=str(exc))
         # 4. GROW: distill a new skill from a genuine, non-stub win. A stub

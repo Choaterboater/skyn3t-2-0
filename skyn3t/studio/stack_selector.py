@@ -20,8 +20,10 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "express": "a Node.js web server / API",
 }
 
-# Planner stacks that have NO builder -> collapse to a real one.
-_COLLAPSE = {"nextjs": "react", "flask": "fastapi", "django": "fastapi"}
+# Planner stacks that have NO builder of their own -> collapse to a real one.
+# "cli" MUST map to python (not the react default below) — a command-line brief
+# is a python_cli, never a React app.
+_COLLAPSE = {"nextjs": "react", "flask": "fastapi", "django": "fastapi", "cli": "python"}
 
 
 @dataclass(slots=True)
@@ -35,7 +37,9 @@ class StackChoice:
 def _to_real_builder(stack: str) -> str:
     s = (stack or "").strip().lower()
     s = _COLLAPSE.get(s, s)
-    return s if s in REAL_BUILDER_STACKS else "react"
+    # Unknown/unmapped -> python (the planner's own default). Defaulting to react
+    # mis-stacked CLI/ambiguous briefs as a web app.
+    return s if s in REAL_BUILDER_STACKS else "python"
 
 
 def _validate_pin(pin: str) -> str:

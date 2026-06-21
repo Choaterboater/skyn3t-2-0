@@ -85,3 +85,10 @@ def test_typoed_site_brief_picks_web_via_keyword():
         "webiste for kids to print off coloring pages - so a site for templates for cloring"
     )
     assert c.stack == "static" and c.stack != "python"
+
+
+def test_cli_brief_maps_to_python_not_react():
+    # Swarm-debug bug: "cli" had no _COLLAPSE entry + the last-resort default was
+    # "react", so a command-line brief came out a React app. Must be python.
+    c = keyword_choice("a cli tool to rename files in a folder")
+    assert c.stack == "python" and c.stack != "react"

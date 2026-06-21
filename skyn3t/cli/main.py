@@ -630,13 +630,20 @@ def studio_shoot(
         console.print("[yellow]Playwright not installed.[/yellow] "
                       "Run [cyan]pip install playwright && playwright install chromium[/cyan] to enable screenshots.")
         raise typer.Exit(code=1)
+    _owned_tmp = False
     if out:
         out_path = out
     else:
         _fd, out_path = _tempfile.mkstemp(prefix="skyn3t-shot-", suffix=".png")
         os.close(_fd)
+        _owned_tmp = True
     result = screenshot(url, out_path)
     if result is None:
+        if _owned_tmp:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
         console.print(f"[red]Screenshot failed[/red] for {url} (page didn't load or no browser binary).")
         raise typer.Exit(code=2)
     console.print(f"[green]Saved[/green] screenshot to [cyan]{result}[/cyan]")

@@ -62,3 +62,20 @@ def test_check_runs_vision_when_screenshot_succeeds(monkeypatch):
     v = asyncio.run(checker.check("http://127.0.0.1:9/", "make it blue",
                                   vision_fn=lambda i, p: '{"matches": true, "confidence": 1.0}'))
     assert v.matches and not v.skipped
+
+
+def test_check_skips_and_emits_when_screenshot_fails(monkeypatch):
+    import skyn3t.studio.visual_check as vc
+    monkeypatch.setattr(vc, "playwright_available", lambda: True)
+    monkeypatch.setattr(vc, "screenshot", lambda url, path, **k: None)
+    bus = EventBus()
+    seen = []
+
+    async def _h(ev):
+        seen.append(ev.type)
+
+    bus.subscribe(EventType.ALL, _h)
+    checker = VisualChecker(event_bus=bus)
+    v = asyncio.run(checker.check("http://127.0.0.1:9/", "g"))  # must NOT raise
+    assert v.skipped and "screenshot failed" in v.reason
+    assert EventType.VISUAL_CHECK in seen

@@ -60,10 +60,11 @@ def _load_manifest(d: Path) -> dict | None:
         return None
 
 
-def scan(projects_dir, worktrees_dir, *, known_worktrees=()) -> CleanupReport:
+def scan(projects_dir, worktrees_dir, *, known_worktrees=(), active_slugs=()) -> CleanupReport:
     projects_dir = Path(projects_dir)
     worktrees_dir = Path(worktrees_dir)
     known = {str(Path(w)) for w in known_worktrees}
+    active = {str(s).strip() for s in active_slugs if str(s).strip()}
     rep = CleanupReport()
 
     by_slug: dict[str, list[tuple[str, Path]]] = {}
@@ -72,6 +73,9 @@ def scan(projects_dir, worktrees_dir, *, known_worktrees=()) -> CleanupReport:
             if d.name.startswith("."):
                 continue
             man = _load_manifest(d)
+            slug = (man or {}).get("slug", d.name)
+            if d.name in active or slug in active:
+                continue  # belongs to a running build — never touch
             if man is None:
                 rep.orphaned_projects.append(CleanupItem(d, "no manifest", _dir_size(d)))
                 continue
@@ -79,7 +83,7 @@ def scan(projects_dir, worktrees_dir, *, known_worktrees=()) -> CleanupReport:
             if status in _FAILED:
                 rep.failed.append(CleanupItem(d, f"status={status}", _dir_size(d)))
                 continue  # whole dir is a cleanup target; its .preview goes with it
-            by_slug.setdefault(man.get("slug", d.name), []).append(
+            by_slug.setdefault(slug, []).append(
                 (str(man.get("created_at", "")), d))
             preview = d / ".preview"
             if preview.is_dir():
@@ -93,9 +97,13 @@ def scan(projects_dir, worktrees_dir, *, known_worktrees=()) -> CleanupReport:
                 rep.superseded.append(CleanupItem(d, "superseded (older same-slug)", _dir_size(d)))
 
     if worktrees_dir.is_dir():
+        active_prefixes = tuple(f"{s}-" for s in active)
         for w in sorted(p for p in worktrees_dir.iterdir() if p.is_dir()):
-            if str(w) not in known:
-                rep.orphaned_worktrees.append(CleanupItem(w, "no live/persisted build", _dir_size(w)))
+            if str(w) in known:
+                continue
+            if active_prefixes and w.name.startswith(active_prefixes):
+                continue
+            rep.orphaned_worktrees.append(CleanupItem(w, "no live/persisted build", _dir_size(w)))
     return rep
 
 

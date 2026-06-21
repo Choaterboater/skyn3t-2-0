@@ -89,6 +89,7 @@ function ForgeStage({ stage, state }) {
 export default function Studio({ stream }) {
   const qc = useQueryClient();
   const [brief, setBrief] = useState("");
+  const [pendingBuildId, setPendingBuildId] = React.useState(null);
 
   const { data: builds } = useQuery({
     queryKey: ["builds"],
@@ -107,6 +108,7 @@ export default function Studio({ stream }) {
     mutationFn: ({ build_id, approved }) =>
       apiPost("/studio/approve", { build_id, approved, reason: "" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
+    onSettled: () => setPendingBuildId(null),
   });
 
   const events = stream?.events || [];
@@ -253,26 +255,30 @@ export default function Studio({ stream }) {
                     <td className="px-4 py-2 text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button
-                          onClick={() =>
+                          onClick={() => {
+                            setPendingBuildId(b.build_id || b.slug);
                             approve.mutate({
                               build_id: b.build_id || b.slug,
                               approved: true,
-                            })
-                          }
-                          disabled={approve.isPending}
+                              reason: "",
+                            });
+                          }}
+                          disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
                           className="btn-ember disabled:opacity-50"
                           title="Approve this build"
                         >
                           Approve
                         </button>
                         <button
-                          onClick={() =>
+                          onClick={() => {
+                            setPendingBuildId(b.build_id || b.slug);
                             approve.mutate({
                               build_id: b.build_id || b.slug,
                               approved: false,
-                            })
-                          }
-                          disabled={approve.isPending}
+                              reason: "",
+                            });
+                          }}
+                          disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
                           className="btn-ghost disabled:opacity-50"
                           title="Reject this build"
                         >

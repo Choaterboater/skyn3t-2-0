@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 from skyn3t.cli import main as cli
@@ -27,7 +26,6 @@ def test_run_improve_returns_outcome(tmp_path, monkeypatch):
     from skyn3t.core.events import EventBus
     monkeypatch.setattr(cli, "_assemble_spine", lambda: _fake_spine(settings, _Orch(), EventBus()))
     monkeypatch.setattr(cli, "_build_intelligence", lambda *a, **k: (None, None, None, None))
-    monkeypatch.setattr(cli, "_build_observability", lambda *a, **k: (None, None))
 
     out = asyncio.run(cli._run_improve("demo", goal="add a docstring"))
     assert out is not None and out["status"] == "completed" and out["slug"] == "demo"

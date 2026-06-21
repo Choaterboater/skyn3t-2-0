@@ -558,7 +558,10 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
 
 
 async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
-    from skyn3t.studio.improve import ImproveEngine
+    try:
+        from skyn3t.studio.improve import ImproveEngine
+    except Exception:  # noqa: BLE001 - optional studio package
+        return None
     spine = await _assemble_spine()
     settings = spine["settings"]
     _learning, _patterns, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])

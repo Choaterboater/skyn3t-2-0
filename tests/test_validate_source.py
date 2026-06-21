@@ -28,3 +28,24 @@ def test_unvalidatable_extension_soft_skips():
     # No validator for .md -> treated as valid (never block).
     ok, err = validate_source("README.md", "# anything {[(")
     assert ok and err == ""
+
+
+def test_valid_toml_passes():
+    ok, _ = validate_source("pyproject.toml", '[tool.x]\nname = "a"\n')
+    assert ok
+
+
+def test_broken_toml_fails():
+    ok, err = validate_source("pyproject.toml", "[tool.x\nname = 1")
+    assert not ok and err
+
+
+def test_balanced_js_with_block_comment_passes():
+    # brace inside a block comment must NOT trip the balance check
+    ok, _ = validate_source("app.jsx", "/* note: {issue} */\nfunction f() { return 1 }\n")
+    assert ok
+
+
+def test_unbalanced_js_fails():
+    ok, err = validate_source("app.jsx", "function f() { return 1 \n")
+    assert not ok and err

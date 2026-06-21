@@ -64,6 +64,7 @@ class EventType(str, Enum):
     IMPROVE_STAGE = "improve.stage"
     IMPROVE_COMPLETED = "improve.completed"
     IMPROVE_FAILED = "improve.failed"
+    VISUAL_CHECK = "improve.visual_check"
 
     # Cortex autonomy
     PROPOSAL_CREATED = "proposal.created"

@@ -46,12 +46,12 @@ def test_studio_injects_skills_and_recall_into_payload():
     from skyn3t.studio.runner import StudioRunner
 
     class _Skills:
-        def relevant(self, stack, limit=3):
+        def relevant(self, stack, tags=None, limit=3):
             class S:
                 slug = "vite-react-app-shape"
             return [S()]
 
-        def inject(self, stack, limit=3):
+        def inject(self, stack, tags=None, limit=3):
             return "Relevant skills: ship a runnable vite app"
 
     class _Hit:

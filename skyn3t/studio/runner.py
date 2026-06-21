@@ -52,6 +52,27 @@ from skyn3t.worktree import (
 
 log = structlog.get_logger(__name__)
 
+# Web/site stacks that should also pull frontend/design skills. `fastapi` is
+# included deliberately: SkyN3t's fastapi builds are web apps that serve a UI
+# and always have API/interface-design concerns; the design skills are advisory.
+_WEB_STACKS = frozenset({
+    "react", "react_vite", "nextjs", "static", "static_html",
+    "fastapi", "node_express", "express",
+})
+_WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+
+
+def _web_design_tags(stack: str) -> list[str] | None:
+    return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _WEB_STACKS else None
+
+
+def _resolve_stack_pin(clar_answers: dict, extra: dict) -> str:
+    """Resolve an explicit stack pin from clarification answers or the build
+    `extra` dict. Accepts both the canonical ``extra['stack']`` and the legacy
+    ``extra['stack_hint']`` key. Returns "" when no pin is present."""
+    return (clar_answers.get("stack") or extra.get("stack")
+            or extra.get("stack_hint") or "")
+
 
 def _final_build_status(delivered_nonempty: bool, verdict: str) -> str:
     """Build-level status from delivery + verdict.
@@ -193,9 +214,11 @@ class StudioRunner:
         if self.skills is None:
             return "", []
         try:
-            relevant = self.skills.relevant(stack, limit=3)
+            tags = _web_design_tags(stack)
+            limit = 4 if tags else 3
+            relevant = self.skills.relevant(stack, tags=tags, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
-            advice = self.skills.inject(stack, limit=3)
+            advice = self.skills.inject(stack, tags=tags, limit=limit)
             return advice, slugs
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
@@ -644,10 +667,16 @@ class StudioRunner:
         clar = clarify(brief, unattended=unattended, overrides=extra.get("clarify_overrides"))
 
         # Plan.
+        from skyn3t.studio.stack_selector import select_stack
+        pin = _resolve_stack_pin(clar.answers, extra)
+        choice = await select_stack(
+            brief, pin=pin, llm=getattr(self, "llm", None),
+            attended=bool(extra.get("attended", False)),
+        )
         plan = self.planner.plan(
             brief,
             slug,
-            stack_hint=clar.answers.get("stack") or extra.get("stack_hint"),
+            stack_hint=choice.stack,
             test_first=extra.get("test_first"),
             best_of_n=extra.get("best_of_n"),
             gated_stages=tuple(extra.get("gated_stages", ())),
@@ -660,6 +689,10 @@ class StudioRunner:
             manifest.build_id = str(extra["build_id"])
         manifest.status = "running"
         manifest.extra["clarification"] = clar.to_dict()
+        manifest.extra["stack_selection"] = {
+            "method": choice.method, "stack": choice.stack,
+            "confidence": choice.confidence, "rationale": choice.rationale,
+        }
         build_id = manifest.build_id
 
         projects_dir = self.settings.projects_dir

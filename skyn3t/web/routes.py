@@ -706,6 +706,32 @@ def build_router(state: AppState) -> Any:
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid slug") from None
 
+    @router.get("/projects/cleanup", dependencies=[auth])
+    async def _cleanup_report() -> dict[str, Any]:
+        from skyn3t.studio.cleanup import scan as cleanup_scan
+        wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
+        active = sorted({getattr(r, "slug", "") for r in state.builds.values()
+                         if getattr(r, "status", "") == "running" and getattr(r, "slug", "")})
+        rep = cleanup_scan(state.settings.projects_dir, wt, active_slugs=active)
+        return {n: [{"path": str(i.path), "reason": i.reason, "size_bytes": i.size_bytes}
+                    for i in getattr(rep, n)]
+                for n in ("failed", "superseded", "orphaned_worktrees",
+                          "orphaned_projects", "stray_previews")}
+
+    @router.post("/projects/cleanup", dependencies=[auth])
+    async def _cleanup_apply(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        from skyn3t.studio.cleanup import apply as cleanup_apply
+        from skyn3t.studio.cleanup import scan as cleanup_scan
+        wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
+        active = sorted({getattr(r, "slug", "") for r in state.builds.values()
+                         if getattr(r, "status", "") == "running" and getattr(r, "slug", "")})
+        rep = cleanup_scan(state.settings.projects_dir, wt, active_slugs=active)
+        trash = state.settings.projects_dir.parent / ".skyn3t_trash"
+        res = cleanup_apply(rep, trash_dir=trash,
+                            dry_run=bool(body.get("dry_run", True)),
+                            categories=body.get("categories"))
+        return {"moved": res.moved, "freed_bytes": res.freed_bytes, "dry_run": res.dry_run}
+
     @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
     async def _project_file(slug: str, path: str) -> Any:
         try:

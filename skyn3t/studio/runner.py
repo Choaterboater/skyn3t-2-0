@@ -838,7 +838,9 @@ class StudioRunner:
             # Final score: blend reviewer score with proof completeness.
             if reviewer_score <= 0.0:
                 reviewer_score = proof.score
-            final_score = round(0.6 * reviewer_score + 0.4 * proof.score, 2)
+            final_score = self._honest_score(
+                round(0.6 * reviewer_score + 0.4 * proof.score, 2), proof.passed
+            )
             manifest.score = final_score
             # Verdict: the (re-scored) reviewer "go" is necessary but NOT
             # sufficient — the objective proof, non-empty delivery, real
@@ -965,6 +967,14 @@ class StudioRunner:
         return result
 
     # ---- helpers ---------------------------------------------------------
+    @staticmethod
+    def _honest_score(blended: float, proof_passed: bool) -> float:
+        """Keep the score honest: an app that FAILS its proof-run (doesn't
+        build/boot/test) is not a high score, however complete it LOOKS. Without
+        this a delivered-but-broken build read 100/no_go — and since the learning
+        loop grades on score, it rewarded broken builds. Halve when proof failed."""
+        return round(blended * (1.0 if proof_passed else 0.5), 2)
+
     @staticmethod
     def _extract_score(output: dict[str, Any]) -> float | None:
         val = output.get("score")

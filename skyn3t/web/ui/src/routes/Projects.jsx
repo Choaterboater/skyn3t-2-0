@@ -251,23 +251,30 @@ export default function Projects() {
                       </td>
                       <td className="px-4 py-2 text-right">
                         {isConfirming ? (
-                          <div className="flex items-center justify-end gap-2">
-                            <span className="font-mono text-[11px] text-ember">
-                              Trash it?
-                            </span>
-                            <button
-                              onClick={() => del.mutate(p.slug)}
-                              disabled={del.isPending}
-                              className="btn-ember disabled:opacity-50"
-                            >
-                              {del.isPending ? "…" : "Yes"}
-                            </button>
-                            <button
-                              onClick={() => setConfirmSlug(null)}
-                              className="btn-ghost"
-                            >
-                              No
-                            </button>
+                          <div className="flex flex-col items-end gap-1">
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="font-mono text-[11px] text-ember">
+                                Trash it?
+                              </span>
+                              <button
+                                onClick={() => del.mutate(p.slug)}
+                                disabled={del.isPending}
+                                className="btn-ember disabled:opacity-50"
+                              >
+                                {del.isPending ? "…" : "Yes"}
+                              </button>
+                              <button
+                                onClick={() => setConfirmSlug(null)}
+                                className="btn-ghost"
+                              >
+                                No
+                              </button>
+                            </div>
+                            {del.isError ? (
+                              <span className="font-mono text-[11px] text-ember">
+                                {String(del.error?.message || del.error)}
+                              </span>
+                            ) : null}
                           </div>
                         ) : (
                           <button

@@ -221,6 +221,11 @@ export default function Studio({ stream }) {
             </span>
           }
         />
+        {approve.isError ? (
+          <p className="px-4 py-3 font-mono text-xs text-ember">
+            {String(approve.error?.message || approve.error)}
+          </p>
+        ) : null}
         {recentBuilds.length === 0 ? (
           <Empty icon="⬡">No builds yet. Submit a brief to fire the forge.</Empty>
         ) : (
@@ -253,38 +258,40 @@ export default function Studio({ stream }) {
                         : "—"}
                     </td>
                     <td className="px-4 py-2 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          onClick={() => {
-                            setPendingBuildId(b.build_id || b.slug);
-                            approve.mutate({
-                              build_id: b.build_id || b.slug,
-                              approved: true,
-                              reason: "",
-                            });
-                          }}
-                          disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
-                          className="btn-ember disabled:opacity-50"
-                          title="Approve this build"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => {
-                            setPendingBuildId(b.build_id || b.slug);
-                            approve.mutate({
-                              build_id: b.build_id || b.slug,
-                              approved: false,
-                              reason: "",
-                            });
-                          }}
-                          disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
-                          className="btn-ghost disabled:opacity-50"
-                          title="Reject this build"
-                        >
-                          Reject
-                        </button>
-                      </div>
+                      {["running", "queued", "pending", "awaiting_approval"].includes(b.status) ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => {
+                              setPendingBuildId(b.build_id || b.slug);
+                              approve.mutate({
+                                build_id: b.build_id || b.slug,
+                                approved: true,
+                                reason: "",
+                              });
+                            }}
+                            disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                            className="btn-ember disabled:opacity-50"
+                            title="Approve this build"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => {
+                              setPendingBuildId(b.build_id || b.slug);
+                              approve.mutate({
+                                build_id: b.build_id || b.slug,
+                                approved: false,
+                                reason: "",
+                              });
+                            }}
+                            disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                            className="btn-ghost disabled:opacity-50"
+                            title="Reject this build"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

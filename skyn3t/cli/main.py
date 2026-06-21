@@ -775,11 +775,19 @@ def project_cleanup(
     s = get_settings()
     worktrees = s.projects_dir.parent / ".skyn3t_worktrees"
     report = cleanup_scan(s.projects_dir, worktrees)
-    cats = [c.strip() for c in categories.split(",") if c.strip()] or None
+    cats = [c.strip() for c in categories.split(",") if c.strip()]
+    if not cats:
+        # Safe default: failed/superseded/stray_previews require a saved manifest
+        # with a terminal status, so an in-flight build (no manifest yet) is never
+        # selected. orphaned_worktrees/orphaned_projects need --categories to opt in.
+        cats = ["failed", "superseded", "stray_previews"]
+        console.print("[dim]orphaned_worktrees/orphaned_projects are excluded by default "
+                      "(they can't be told apart from an in-flight build). Opt in with "
+                      "--categories orphaned_worktrees,orphaned_projects only when no build is running.[/dim]")
     items = report.all_items(cats)
     table = _table("Cleanup candidates", ["category", "path", "reason", "MB"])
     for name in ("failed", "superseded", "orphaned_worktrees", "orphaned_projects", "stray_previews"):
-        if cats and name not in cats:
+        if name not in cats:
             continue
         for it in getattr(report, name):
             table.add_row(name, it.path.name, it.reason, f"{it.size_bytes/1e6:.1f}")

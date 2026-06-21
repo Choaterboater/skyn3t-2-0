@@ -54,3 +54,14 @@ def test_llm_error_falls_back_to_keyword():
 
     c = asyncio.run(select_stack("a react dashboard", llm=BadLLM()))
     assert c.method == "keyword" and c.stack == "react"
+
+
+def test_stub_backend_falls_back_to_keyword():
+    class StubResult:
+        backend = "stub"
+        text = '{"stack": "fastapi", "confidence": 0.9, "rationale": "x"}'
+    class StubLLM:
+        async def complete(self, *a, **k):
+            return StubResult()
+    c = asyncio.run(select_stack("a react dashboard", llm=StubLLM()))
+    assert c.method == "keyword" and c.stack == "react"

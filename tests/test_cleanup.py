@@ -62,6 +62,24 @@ def test_apply_collision_deduplication(tmp_path):
     assert res.moved
 
 
+def test_active_slug_protects_project_and_worktree(tmp_path):
+    projects = tmp_path / "Projects"; worktrees = tmp_path / "wt"
+    projects.mkdir(); worktrees.mkdir()
+    _project(projects, "live", status="failed")     # would normally be 'failed'
+    (worktrees / "live-abcd1234").mkdir()            # the live build's worktree
+    report = scan(projects, worktrees, active_slugs=("live",))
+    assert all(i.path.name != "live" for i in report.failed)
+    assert report.orphaned_worktrees == []
+
+
+def test_known_worktree_excluded(tmp_path):
+    projects = tmp_path / "Projects"; worktrees = tmp_path / "wt"
+    projects.mkdir(); worktrees.mkdir()
+    live = worktrees / "x-deadbeef"; live.mkdir()
+    report = scan(projects, worktrees, known_worktrees=(str(live),))
+    assert report.orphaned_worktrees == []
+
+
 def test_failed_project_preview_not_in_stray_previews(tmp_path):
     projects = tmp_path / "Projects"; projects.mkdir()
     d = _project(projects, "broken", status="failed")

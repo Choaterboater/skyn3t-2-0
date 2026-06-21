@@ -710,7 +710,9 @@ def build_router(state: AppState) -> Any:
     async def _cleanup_report() -> dict[str, Any]:
         from skyn3t.studio.cleanup import scan as cleanup_scan
         wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
-        rep = cleanup_scan(state.settings.projects_dir, wt)
+        active = sorted({getattr(r, "slug", "") for r in state.builds.values()
+                         if getattr(r, "status", "") == "running" and getattr(r, "slug", "")})
+        rep = cleanup_scan(state.settings.projects_dir, wt, active_slugs=active)
         return {n: [{"path": str(i.path), "reason": i.reason, "size_bytes": i.size_bytes}
                     for i in getattr(rep, n)]
                 for n in ("failed", "superseded", "orphaned_worktrees",
@@ -721,7 +723,9 @@ def build_router(state: AppState) -> Any:
         from skyn3t.studio.cleanup import apply as cleanup_apply
         from skyn3t.studio.cleanup import scan as cleanup_scan
         wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
-        rep = cleanup_scan(state.settings.projects_dir, wt)
+        active = sorted({getattr(r, "slug", "") for r in state.builds.values()
+                         if getattr(r, "status", "") == "running" and getattr(r, "slug", "")})
+        rep = cleanup_scan(state.settings.projects_dir, wt, active_slugs=active)
         trash = state.settings.projects_dir.parent / ".skyn3t_trash"
         res = cleanup_apply(rep, trash_dir=trash,
                             dry_run=bool(body.get("dry_run", True)),

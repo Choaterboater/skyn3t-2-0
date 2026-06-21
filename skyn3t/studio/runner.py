@@ -673,11 +673,22 @@ class StudioRunner:
         unattended = not bool(extra.get("attended", False))
         clar = clarify(brief, unattended=unattended, overrides=extra.get("clarify_overrides"))
 
-        # Plan.
+        # Plan. Give the selector a REAL LLM — the runner has no self.llm, so
+        # without this select_stack always fell back to keyword matching and the
+        # "smart" Claude-picks-the-stack path never ran. Best-effort: if the
+        # client can't be built, select_stack degrades to the keyword fallback.
+        sel_llm = getattr(self, "_sel_llm", None)
+        if sel_llm is None:
+            try:
+                from skyn3t.adapters.llm import LLMClient
+                sel_llm = LLMClient(self.settings)
+            except Exception:  # noqa: BLE001 - never break a build over selection
+                sel_llm = None
+            self._sel_llm = sel_llm
         from skyn3t.studio.stack_selector import select_stack
         pin = _resolve_stack_pin(extra)
         choice = await select_stack(
-            brief, pin=pin, llm=getattr(self, "llm", None),
+            brief, pin=pin, llm=sel_llm,
             attended=bool(extra.get("attended", False)),
         )
         plan = self.planner.plan(

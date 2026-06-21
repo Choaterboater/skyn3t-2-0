@@ -74,3 +74,14 @@ def test_website_brief_picks_web_not_python():
     # available) reads the brief — "website" maps to the static web stack.
     c = keyword_choice("a website for kids to print off coloring pages of pandas")
     assert c.stack == "static" and c.stack != "python"
+
+
+def test_typoed_site_brief_picks_web_via_keyword():
+    # The REAL failing brief: misspelled "webiste" (so the old "website" keyword
+    # never matched) but it says "a site for templates". The keyword fallback now
+    # recognizes "site" -> static, so even with the LLM degraded a site brief is
+    # not mis-stacked as a python CLI.
+    c = keyword_choice(
+        "webiste for kids to print off coloring pages - so a site for templates for cloring"
+    )
+    assert c.stack == "static" and c.stack != "python"

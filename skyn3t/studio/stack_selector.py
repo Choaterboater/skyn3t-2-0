@@ -73,9 +73,11 @@ async def _llm_choice(brief: str, llm: Any) -> StackChoice | None:
 
 
 def _extract_json(text: str) -> str:
+    """Pull a JSON object out of an LLM reply (fenced or inline). The brace
+    scan is the workhorse; an optional ``` fence and `json` tag are stripped first."""
     t = (text or "").strip()
     if "```" in t:
-        t = t.split("```")[1].lstrip("json").strip() if "```" in t else t
+        t = t.split("```")[1].removeprefix("json").strip()
     start, end = t.find("{"), t.rfind("}")
     return t[start:end + 1] if start >= 0 and end > start else t
 
@@ -83,6 +85,7 @@ def _extract_json(text: str) -> str:
 async def select_stack(
     brief: str, *, pin: str = "", llm: Any | None = None, attended: bool = False
 ) -> StackChoice:
+    # `attended` is reserved for the deferred clarify-on-low-confidence gate; currently unused.
     norm = _validate_pin(pin)
     if norm:
         return StackChoice(norm, "pin", 1.0, "explicit pin")

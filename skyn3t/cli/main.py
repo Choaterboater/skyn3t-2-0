@@ -346,10 +346,11 @@ def studio_build(
     best_of: int = typer.Option(0, "--best-of", "-n", help="Best-of-N code trajectories."),
     no_critic: bool = typer.Option(False, "--no-critic", help="Disable the adversarial critic gate."),
     slug: str = typer.Option("", "--slug", help="Override the project slug."),
+    stack: str = typer.Option("", "--stack", help="Pin the stack: react|react_native|fastapi|static|python|express."),
 ) -> None:
     """Run a build end to end and print the result + artifact path."""
     console = _console()
-    outcome = asyncio.run(_run_build(brief, best_of=best_of, no_critic=no_critic, slug=slug))
+    outcome = asyncio.run(_run_build(brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack))
     if outcome is None:
         console.print("[red]Build pipeline unavailable (studio package missing).[/red]")
         raise typer.Exit(code=1)
@@ -475,7 +476,7 @@ def _build_observability(settings: Any, llm: Any) -> tuple[Any, Any]:
     return cost_tracker, budget_guard
 
 
-async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) -> dict[str, Any] | None:
+async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, stack: str = "") -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
     except Exception:  # noqa: BLE001
@@ -509,6 +510,8 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str) ->
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:
         extra["best_of_n"] = best_of
+    if stack:
+        extra["stack"] = stack
     outcome = await runner.start(brief, slug=slug or None, extra=extra)
 
     # --- C: one bounded, gated learning tick (no loop, no autonomous builds) ---

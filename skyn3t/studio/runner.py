@@ -647,7 +647,7 @@ class StudioRunner:
         plan = self.planner.plan(
             brief,
             slug,
-            stack_hint=clar.answers.get("stack") or extra.get("stack_hint"),
+            stack_hint=clar.answers.get("stack") or extra.get("stack") or extra.get("stack_hint"),
             test_first=extra.get("test_first"),
             best_of_n=extra.get("best_of_n"),
             gated_stages=tuple(extra.get("gated_stages", ())),

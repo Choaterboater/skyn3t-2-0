@@ -155,24 +155,34 @@ class MemoryStore:
                 for r in rows
             ]
 
-    async def grade_lesson(self, lesson_id: int, helpful: bool) -> None:
-        """Grade a lesson by the outcome of the build that reused it."""
+    async def grade_lesson(
+        self, lesson_id: int, helpful: bool, quality: float | None = None
+    ) -> None:
+        """Grade a lesson by the outcome of the build that reused it.
+
+        ``quality`` (0..1, e.g. the build's score/100) gives a CONTINUOUS reward
+        accumulated into ``score``: a lesson reused by strong builds rises faster
+        than one scraping a low 'go', and a near-miss penalizes less than a full
+        failure. Omitted -> the binary +1/-1 (score stays helpful - hurt).
+        """
         async with self._session() as s:
             # SQL-side atomic increments so the database performs the arithmetic
             # under its own write lock — safe against concurrent grading
             # (no lost-update from a Python read-modify-write).
             help_inc = 1 if helpful else 0
             hurt_inc = 0 if helpful else 1
-            new_helpful = LessonRow.helpful + help_inc
-            new_hurt = LessonRow.hurt + hurt_inc
+            if quality is None:
+                reward = 1.0 if helpful else -1.0
+            else:
+                reward = max(0.0, min(1.0, quality)) * 2.0 - 1.0
             result = await s.execute(
                 update(LessonRow)
                 .where(LessonRow.id == lesson_id)
                 .values(
                     times_used=LessonRow.times_used + 1,
-                    helpful=new_helpful,
-                    hurt=new_hurt,
-                    score=(new_helpful - new_hurt),
+                    helpful=LessonRow.helpful + help_inc,
+                    hurt=LessonRow.hurt + hurt_inc,
+                    score=LessonRow.score + reward,
                 )
             )
             if result.rowcount == 0:

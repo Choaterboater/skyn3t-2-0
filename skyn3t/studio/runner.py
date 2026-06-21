@@ -667,10 +667,16 @@ class StudioRunner:
         clar = clarify(brief, unattended=unattended, overrides=extra.get("clarify_overrides"))
 
         # Plan.
+        from skyn3t.studio.stack_selector import select_stack
+        pin = _resolve_stack_pin(clar.answers, extra)
+        choice = await select_stack(
+            brief, pin=pin, llm=getattr(self, "llm", None),
+            attended=bool(extra.get("attended", False)),
+        )
         plan = self.planner.plan(
             brief,
             slug,
-            stack_hint=_resolve_stack_pin(clar.answers, extra),
+            stack_hint=choice.stack,
             test_first=extra.get("test_first"),
             best_of_n=extra.get("best_of_n"),
             gated_stages=tuple(extra.get("gated_stages", ())),
@@ -683,6 +689,10 @@ class StudioRunner:
             manifest.build_id = str(extra["build_id"])
         manifest.status = "running"
         manifest.extra["clarification"] = clar.to_dict()
+        manifest.extra["stack_selection"] = {
+            "method": choice.method, "stack": choice.stack,
+            "confidence": choice.confidence, "rationale": choice.rationale,
+        }
         build_id = manifest.build_id
 
         projects_dir = self.settings.projects_dir

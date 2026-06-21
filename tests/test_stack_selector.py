@@ -1,0 +1,52 @@
+# tests/test_stack_selector.py
+from __future__ import annotations
+
+import asyncio
+import types
+
+from skyn3t.studio.stack_selector import (
+    REAL_BUILDER_STACKS, StackChoice, keyword_choice, select_stack,
+)
+
+
+def test_pin_wins_over_everything():
+    c = asyncio.run(select_stack("a python script", pin="fastapi", llm=None))
+    assert c.stack == "fastapi" and c.method == "pin"
+
+
+def test_unknown_pin_is_ignored():
+    c = asyncio.run(select_stack("a react dashboard", pin="cobol", llm=None))
+    assert c.method == "keyword" and c.stack == "react"
+
+
+def test_keyword_fallback_when_no_llm():
+    c = keyword_choice("a command line tool to rename files")
+    assert c.stack in REAL_BUILDER_STACKS and c.method == "keyword"
+
+
+def test_nextjs_brief_collapses_to_real_builder():
+    # nextjs has no builder -> must map to a real-builder stack (react).
+    c = keyword_choice("a next.js app")
+    assert c.stack in REAL_BUILDER_STACKS
+
+
+def test_llm_choice_used_when_available():
+    class FakeResult:
+        backend = "claude_cli"
+        text = '{"stack": "fastapi", "confidence": 0.9, "rationale": "needs a server API"}'
+
+    class FakeLLM:
+        async def complete(self, *a, **k):
+            return FakeResult()
+
+    c = asyncio.run(select_stack("an app to manage lessons with storage", llm=FakeLLM()))
+    assert c.stack == "fastapi" and c.method == "llm" and c.confidence == 0.9
+
+
+def test_llm_error_falls_back_to_keyword():
+    class BadLLM:
+        async def complete(self, *a, **k):
+            raise RuntimeError("boom")
+
+    c = asyncio.run(select_stack("a react dashboard", llm=BadLLM()))
+    assert c.method == "keyword" and c.stack == "react"

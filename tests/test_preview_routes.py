@@ -49,3 +49,13 @@ def test_preview_requires_auth_when_token_set(tmp_path):
     assert client.get(
         "/api/preview/demo", headers={"Authorization": "Bearer wrong"}
     ).status_code == 401
+
+
+def test_preview_slug_traversal_rejected(tmp_path):
+    client = _client(tmp_path)
+    # Encoded '..' as the slug must not escape projects_dir into a parent listing.
+    res = client.get("/api/preview/%2e%2e")
+    assert res.status_code in (400, 404)  # never a 200 directory listing
+    res2 = client.get("/api/projects/%2e%2e/skyn3t/config/settings.py")
+    assert res2.status_code in (400, 404)
+    assert "projects_dir" not in res.text

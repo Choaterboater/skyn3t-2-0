@@ -38,3 +38,19 @@ def test_resolve_project_file_missing(tmp_path):
     state = _state(tmp_path)
     with pytest.raises(FileNotFoundError):
         resolve_project_file(state, "demo", "nope.py")
+
+
+def test_preview_root_rejects_escaping_slug(tmp_path):
+    # A slug of '..' must NOT escape projects_dir (would leak parent listing).
+    from skyn3t.web.routes import _preview_root
+
+    state = _state(tmp_path)
+    with pytest.raises(ValueError):
+        _preview_root(state, "..")
+
+
+def test_resolve_project_file_rejects_escaping_slug(tmp_path):
+    # The file route is protected too (resolve_project_file -> _preview_root).
+    state = _state(tmp_path)
+    with pytest.raises(ValueError):
+        resolve_project_file(state, "..", "skyn3t/config/settings.py")

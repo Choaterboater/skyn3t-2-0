@@ -151,6 +151,11 @@ async def test_brainstorm_architect_designer_writer_offline(tmp_path):
                  "worktree_dir": str(tmp_path)}))
     assert wres.success
     assert (tmp_path / "README.md").is_file()
+    # Offline README must be comprehensive, not a one-line stub (design rule #1).
+    readme = (tmp_path / "README.md").read_text()
+    assert len(readme.encode()) >= 400
+    for section in ("## Features", "## Installation", "## Usage", "## Project structure"):
+        assert section in readme, f"writer README missing {section}"
 
 
 async def test_code_improver_addresses_gaps(tmp_path):

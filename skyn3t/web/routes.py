@@ -68,8 +68,15 @@ async def budget_payload(state: AppState) -> dict[str, Any]:
 # ---- live build preview (cockpit, Phase A) --------------------------------
 def _preview_root(state: AppState, slug: str) -> Path:
     """The dir the cockpit serves: the live ``.preview`` snapshot while a build
-    runs, else the delivered project root after delivery."""
-    base = Path(state.settings.projects_dir) / slug
+    runs, else the delivered project root after delivery.
+
+    Guards the SLUG against escaping ``projects_dir`` (e.g. ``slug='..'`` would
+    otherwise resolve to the parent and leak a directory listing / arbitrary
+    file read). Raises ``ValueError`` on escape — callers map it to HTTP 400."""
+    projects_root = Path(state.settings.projects_dir).resolve()
+    base = (projects_root / slug).resolve()
+    if not base.is_relative_to(projects_root):
+        raise ValueError(f"slug escapes projects_dir: {slug!r}")
     preview = base / PREVIEW_SUBDIR
     return preview if preview.is_dir() else base
 
@@ -694,7 +701,10 @@ def build_router(state: AppState) -> Any:
 
     @router.get("/preview/{slug}", dependencies=[auth])
     async def _preview(slug: str) -> dict[str, Any]:
-        return await preview_payload(state, slug)
+        try:
+            return await preview_payload(state, slug)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid slug") from None
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
     async def _project_file(slug: str, path: str) -> Any:

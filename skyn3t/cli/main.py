@@ -815,6 +815,16 @@ def domain_ingest(
         console.print("[red]Knowledge engine unavailable (rag package missing).[/red]")
         raise typer.Exit(code=1)
     console.print(f"Ingested [green]{count}[/green] chunks from [cyan]{source}[/cyan].")
+    # Phase B/B3: a directory of markdown skills also distills advisory skills
+    # (one per .md), so `domain ingest <agent-skills-dir>` grows the library.
+    p = Path(source)
+    if p.is_dir():
+        n = _import_skills_from_dir(p)
+        if n:
+            console.print(
+                f"Distilled [green]{n}[/green] advisory skills (one per .md) "
+                f"from [cyan]{source}[/cyan]."
+            )
 
 
 async def _ingest_source(source: str) -> int:
@@ -859,6 +869,23 @@ async def _ingest_source(source: str) -> int:
     except Exception:  # noqa: BLE001
         return 0
     return 0
+
+
+def _import_skills_from_dir(path: Path) -> int:
+    """Import a directory of markdown skill files into the advisory SkillLibrary.
+
+    Best-effort: ingestion has already succeeded; a skill-import failure must not
+    fail the command. Returns the number of skills imported.
+    """
+    try:
+        from skyn3t.config.settings import get_settings
+        from skyn3t.intelligence.skill_library import SkillLibrary
+
+        settings = get_settings()
+        lib = SkillLibrary(settings.data_dir / "skills")
+        return lib.import_directory(path)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 _HTML_HINT = re.compile(r"(?is)<(!doctype html|html|head|body|div|p|span|a|article|section)\b")

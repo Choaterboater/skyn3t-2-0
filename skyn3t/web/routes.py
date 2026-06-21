@@ -8,6 +8,7 @@ absent (design rule #6).
 
 from __future__ import annotations
 
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -202,7 +203,6 @@ async def list_projects(state: AppState) -> dict[str, Any]:
 
 
 async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
-    import shutil
     projects_root = Path(state.settings.projects_dir).resolve()
     target = (projects_root / slug).resolve()
     if target == projects_root or not target.is_relative_to(projects_root):

@@ -131,9 +131,16 @@ def parse_skill(text: str, *, fallback_slug: str = "skill") -> Skill:
                 k, _, v = line.partition(":")
                 meta[k.strip()] = v.strip()
     tags = [t.strip() for t in meta.get("tags", "").split(",") if t.strip()]
+    # Accept SkyN3t's own front matter (slug/title) AND external skill files
+    # (e.g. addyosmani/agent-skills) that use `name`/`description`, so a repo of
+    # markdown skills imports cleanly. (Phase B/B3)
+    title = meta.get("title") or meta.get("name") or fallback_slug
+    description = meta.get("description", "").strip()
+    if description and description.lower() not in body.lower():
+        body = f"{description}\n\n{body}"
     return Skill(
-        slug=meta.get("slug", fallback_slug),
-        title=meta.get("title", fallback_slug),
+        slug=meta.get("slug") or _slugify(title),
+        title=title,
         body=body.strip(),
         tags=tags,
         stack=meta.get("stack", "generic"),
@@ -206,6 +213,36 @@ class SkillLibrary:
 
     def all(self) -> list[Skill]:
         return list(self._skills.values())
+
+    def import_directory(
+        self, path: Path | str, *, stack: str = "generic", source: str = "imported"
+    ) -> int:
+        """Import every markdown file under ``path`` as ONE advisory skill (one
+        per file) — e.g. a repo/dir of skill ``.md`` files like agent-skills.
+
+        Recurses; for nested ``SKILL.md`` files the parent dir name is the slug
+        basis. Idempotent by slug (re-import overwrites). Best-effort; never
+        raises. Returns the number imported.
+        """
+        base = Path(path)
+        if not base.is_dir():
+            return 0
+        count = 0
+        for f in sorted(base.rglob("*.md")):
+            try:
+                text = f.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            fallback = _slugify(f.parent.name if f.name.lower() == "skill.md" else f.stem)
+            sk = parse_skill(text, fallback_slug=fallback)
+            if not sk.body.strip():
+                continue
+            if sk.source == "manual":
+                sk.source = source
+            self._skills[sk.slug] = sk
+            self._persist(sk)
+            count += 1
+        return count
 
     # ---- injection ----------------------------------------------------
     def relevant(

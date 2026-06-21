@@ -212,7 +212,10 @@ class PromptReflectionLoop(_BaseComponent):
             del buf[: len(buf) - self._max]
 
     async def _maybe_propose(self) -> None:
-        for agent, buf in self._buf.items():
+        # Snapshot with list(): we `await cortex.submit()` mid-loop, and a
+        # concurrent build event can add a new key to self._buf during that await
+        # — iterating the live dict would raise "dictionary changed size".
+        for agent, buf in list(self._buf.items()):
             if agent in self._proposed:
                 continue
             passing = sum(1 for t in buf if t.passed)

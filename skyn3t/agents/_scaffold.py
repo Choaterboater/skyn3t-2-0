@@ -569,8 +569,12 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # A JSON-safe display title (for app.json) and a JS-string-literal title (for
     # the JSX), plus a slug for the Expo config.
-    safe_title = title.replace('"', "'")
-    js_title = title.replace("\\", "\\\\").replace("'", "\\'")
+    # Strip newlines too (a brief from a web-form textarea can contain them) —
+    # otherwise app.json becomes invalid JSON and App.tsx an unterminated string.
+    safe_title = title.replace('"', "'").replace("\n", " ").replace("\r", " ")
+    js_title = (
+        title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    )
     slug = _re.sub(r"[^a-z0-9-]+", "-", app_name.lower()).strip("-") or "app"
     return {
         "package.json": (

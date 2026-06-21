@@ -40,6 +40,7 @@ _INSTALL_HINTS: dict[str, str] = {
         "```bash\npython -m venv .venv && source .venv/bin/activate\npip install -r requirements.txt\n```"
     ),
     "node_express": "```bash\nnpm install\n```\n\nRequires Node.js 18+.",
+    "react_native": "```bash\nnpm install\n```\n\nRequires Node.js 18+ and the Expo CLI (`npx expo`).",
 }
 
 _RUN_HINTS: dict[str, str] = {
@@ -51,6 +52,7 @@ _RUN_HINTS: dict[str, str] = {
         "Then visit `http://127.0.0.1:8000/docs` for the interactive API docs."
     ),
     "node_express": "```bash\nnpm start\n```\n\nThe server listens on `http://localhost:3000`.",
+    "react_native": "```bash\nnpm start\n```\n\nThen press `i` for the iOS simulator, `a` for Android, or scan the QR with Expo Go.",
 }
 
 # Short, filename-based descriptions for the README's project-structure section.
@@ -159,6 +161,7 @@ class WriterAgent(BaseAgent):
         "python_cli": "Python CLI",
         "fastapi": "FastAPI",
         "node_express": "Node.js + Express",
+        "react_native": "Expo + React Native + TypeScript",
     }
 
     def _offline_readme(self, title: str, brief: str, stack: str,

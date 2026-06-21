@@ -52,7 +52,9 @@ from skyn3t.worktree import (
 
 log = structlog.get_logger(__name__)
 
-# Web/site stacks (planner + builder vocab) that should pull frontend/design skills.
+# Web/site stacks that should also pull frontend/design skills. `fastapi` is
+# included deliberately: SkyN3t's fastapi builds are web apps that serve a UI
+# and always have API/interface-design concerns; the design skills are advisory.
 _WEB_STACKS = frozenset({
     "react", "react_vite", "nextjs", "static", "static_html",
     "fastapi", "node_express", "express",

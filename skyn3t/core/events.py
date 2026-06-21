@@ -59,6 +59,12 @@ class EventType(str, Enum):
     STAGE_DEBUG_RESOLVED = "build.stage.debug.resolved"
     STAGE_ARTIFACT_SNAPSHOT = "build.stage.artifact.snapshot"
 
+    # Operator mode: improve an already-built project
+    IMPROVE_STARTED = "improve.started"
+    IMPROVE_STAGE = "improve.stage"
+    IMPROVE_COMPLETED = "improve.completed"
+    IMPROVE_FAILED = "improve.failed"
+
     # Cortex autonomy
     PROPOSAL_CREATED = "proposal.created"
     PROPOSAL_DECIDED = "proposal.decided"

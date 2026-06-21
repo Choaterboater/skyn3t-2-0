@@ -1000,20 +1000,25 @@ class StudioRunner:
         files as the agent writes them (not only at stage end). The poller is
         always cancelled when the stage returns. Streaming never breaks a build."""
         async def poller() -> None:
-            try:
-                while True:
+            # try/except is INSIDE the loop so a single failed tick logs and
+            # retries next interval, instead of silently killing all future
+            # snapshots for the rest of the stage.
+            while True:
+                try:
                     await asyncio.sleep(interval)
-                    files = sync_preview(main_wt.dir, project_dir)
+                    # clean=False: accumulate (no delete window) so HTTP readers
+                    # don't race a transient 404 during the 4s-interval refresh.
+                    files = sync_preview(main_wt.dir, project_dir, clean=False)
                     await self.event_bus.emit(
                         EventType.STAGE_ARTIFACT_SNAPSHOT, "studio",
                         {"build_id": build_id, "stage": spec.name,
                          "files": files[:200], "live": True},
                         correlation_id=correlation_id,
                     )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - streaming must never break a build
-                log.warning("live_snapshot.failed", error=str(exc))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - one bad tick must not kill streaming
+                    log.warning("live_snapshot.failed", error=str(exc))
 
         task = asyncio.create_task(poller())
         try:

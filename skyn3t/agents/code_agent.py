@@ -43,6 +43,28 @@ _SYSTEM = (
     "commentary, no markdown fences."
 )
 
+# Files whose quality is doc/manifest-shaped (not source logic). Routed to the
+# DOCS tier with extra, content-specific instructions so a README is thorough and
+# a dependency manifest is accurate — never a one-line stub.
+_README_NAMES = frozenset({"readme.md", "readme.rst", "readme.txt", "readme"})
+_MANIFEST_NAMES = frozenset(
+    {"requirements.txt", "pyproject.toml", "package.json", "setup.py", "setup.cfg", "pipfile"}
+)
+
+_README_INSTR = (
+    "This is the project's README — make it THOROUGH (no placeholder READMEs). "
+    "Include, as Markdown sections: a title; a paragraph saying what the app does "
+    "(specific to the brief); ## Features (the actual features); ## Installation "
+    "(exact dependency-install commands); ## Usage (exact run commands with example "
+    "invocations or endpoints); and ## Project structure (a bullet per significant "
+    "file/dir). A one-line README is a failure."
+)
+_MANIFEST_INSTR = (
+    "This is the dependency manifest — list the REAL dependencies the app actually "
+    "imports/uses for this stack, one per line (or in the proper block). Include a "
+    "description/name where the format has one. Do not leave it empty or omit deps."
+)
+
 
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
@@ -175,7 +197,19 @@ class CodeAgent(BaseAgent):
             "functions. CRITICAL: provide a WORKING entrypoint at the project ROOT that wires "
             "the whole app together (for Python a top-level main.py whose `python main.py` "
             "actually runs the app; for web a real index/app entry) — do NOT leave a hello/"
-            "greeting placeholder. Include a README. Do not ask questions — just build it."
+            "greeting placeholder.\n"
+            "DOCS (required, not optional): write a THOROUGH README.md — no placeholder "
+            "READMEs. It MUST include, as Markdown sections: a title; a paragraph describing "
+            "what the app does (specific to THIS brief); ## Features (the actual features you "
+            "implemented); ## Installation (exact dependency-install commands); ## Usage (exact "
+            "commands to run it, with example invocations / endpoints); and ## Project structure "
+            "(a bullet per significant file/dir explaining its role). A one-line README is a "
+            "failure.\n"
+            "DEPENDENCY MANIFEST (required): write an ACCURATE manifest for the stack listing "
+            "the REAL dependencies you actually import — requirements.txt (with a line per dep) "
+            "or pyproject.toml for Python, package.json (with a populated dependencies block and "
+            "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
+            "Do not ask questions — just build it."
         )
 
     _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next"})
@@ -200,7 +234,15 @@ class CodeAgent(BaseAgent):
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
                              plan: dict[str, Any], knowledge: str = "") -> str | None:
         ext = Path(rel_path).suffix.lower()
-        tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+        base = Path(rel_path).name.lower()
+        is_readme = base in _README_NAMES
+        is_manifest = base in _MANIFEST_NAMES
+        if is_readme:
+            tier = Tier.DOCS
+        elif ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}:
+            tier = Tier.UI
+        else:
+            tier = Tier.BACKEND
         # Give the model the file's assigned purpose + the full project file
         # list so each independently-generated file is substantial AND coheres
         # (correct imports/wiring across siblings).
@@ -225,6 +267,8 @@ class CodeAgent(BaseAgent):
             "Fully implement every behavior it owns, with real logic and error "
             "handling. Import from the other project files above where appropriate "
             "so the codebase coheres. No placeholders, no TODOs, no stub functions."
+            + (f"\n{_README_INSTR}" if is_readme else "")
+            + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )
         result = await self.llm.complete(
             prompt, tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=8192,

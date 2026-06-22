@@ -217,8 +217,12 @@ class StudioRunner:
             return None
 
     # ---- skills (advisory injection) ------------------------------------
-    def _skill_advice(self, stack: str) -> tuple[str, list[str]]:
-        """Return (advice_text, used_slugs) from the skill library, if wired."""
+    def _skill_advice(self, stack: str, brief: str = "") -> tuple[str, list[str]]:
+        """Return (advice_text, used_slugs) from the skill library, if wired.
+
+        The keyword/tag match (by stack) is augmented with brief-aware SEMANTIC
+        retrieval so a skill whose body matches the brief's vocabulary is pulled
+        even when it carries no matching tag (Spec 2 semantic retrieval)."""
         if self.skills is None:
             return "", []
         try:
@@ -227,10 +231,49 @@ class StudioRunner:
             relevant = self.skills.relevant(stack, tags=tags, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
             advice = self.skills.inject(stack, tags=tags, limit=limit)
-            return advice, slugs
+            return self._augment_semantic_skills(advice, slugs, brief)
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
             return "", []
+
+    def _skill_embedder(self) -> Any:
+        """Cached embedder for semantic skill recall. Uses the deterministic
+        hashing fallback (prefer_st=False) — fast, offline, no model download —
+        which is already brief-aware bag-of-words cosine."""
+        emb = getattr(self, "_skill_embedder_cached", None)
+        if emb is None:
+            try:
+                from skyn3t.rag.embeddings import Embedder
+                emb = Embedder(prefer_st=False)
+            except Exception:  # noqa: BLE001 - degrade to keyword-only recall
+                emb = False
+            self._skill_embedder_cached = emb
+        return emb or None
+
+    def _augment_semantic_skills(self, advice: str, slugs: list[str],
+                                 brief: str) -> tuple[str, list[str]]:
+        """Additively merge brief-relevant skills the keyword/tag path missed.
+        Best-effort — never raises, never drops the keyword result."""
+        if not brief:
+            return advice, slugs
+        try:
+            emb = self._skill_embedder()
+            if emb is None:
+                return advice, slugs
+            from skyn3t.intelligence.semantic_skills import relevant_skills
+            for sl in relevant_skills(self.skills.all(), brief, embedder=emb, k=3):
+                if sl in slugs:
+                    continue
+                sk = self.skills.get(sl)
+                if sk is None:
+                    continue
+                slugs.append(sl)
+                title = getattr(sk, "title", sl)
+                body = getattr(sk, "body", "") or ""
+                advice = f"{advice}\n\n## {title}\n{body[:400]}".strip()
+        except Exception as exc:  # noqa: BLE001 - additive recall is best-effort
+            log.warning("semantic_skills.failed", error=str(exc))
+        return advice, slugs
 
     # ---- RAG recall (past builds + ingested GitHub repos) ----------------
     def _recall(self, brief: str, stack: str) -> list[dict[str, Any]]:
@@ -799,7 +842,7 @@ class StudioRunner:
 
         # Inject advisory skills for this stack (non-binding) and remember which
         # ones we used so we can grade them by the build's outcome.
-        skill_advice, skill_slugs = self._skill_advice(plan.stack)
+        skill_advice, skill_slugs = self._skill_advice(plan.stack, brief)
         recall = self._recall(brief, plan.stack)
         if skill_advice or recall:
             extra = {**extra, "skills_advice": skill_advice, "recall": recall}

@@ -643,13 +643,36 @@ class StudioRunner:
         lessons: list[dict[str, Any]],
         extra: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        # Start with the PLANNER's plan as the base.
+        effective_plan: dict[str, Any] = plan.to_dict()
+
+        # If the architect stage ran and produced a file list, PREFER it over
+        # the PLANNER's generic checklist.  The architect's output lives at
+        # prior["architect"]["plan"]["files"] — a list of {"path", "purpose"}
+        # dicts.  We keep the planner's brief/slug/stack as the authoritative
+        # metadata, but replace the file list so CodeAgent._planned_paths and
+        # ContractVerifier.extract_planned_files both use the richer plan.
+        arch_out = prior.get("architect") if isinstance(prior, dict) else None
+        if isinstance(arch_out, dict):
+            arch_plan = arch_out.get("plan")
+            if isinstance(arch_plan, dict):
+                arch_files = arch_plan.get("files")
+                if arch_files and isinstance(arch_files, list):
+                    effective_plan = {
+                        **effective_plan,
+                        "files": arch_files,
+                        "summary": arch_plan.get("summary", effective_plan.get("summary", "")),
+                        "build_order": arch_plan.get("build_order", effective_plan.get("build_order", [])),
+                        "components": arch_plan.get("components", effective_plan.get("components", [])),
+                    }
+
         payload: dict[str, Any] = {
             "brief": plan.brief,
             "slug": plan.slug,
             "project_dir": project_dir,
             "worktree_dir": worktree_dir,
             "stack": plan.stack,
-            "plan": plan.to_dict(),
+            "plan": effective_plan,
             "prior": prior,
             "lessons": lessons,
             "checklist": list(plan.checklist),

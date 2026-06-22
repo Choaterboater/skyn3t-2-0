@@ -923,7 +923,7 @@ async def _run_visual(project: str, *, goal: str, max_rounds: int):
 
     from skyn3t.studio.app_runner import AppRunner
     from skyn3t.studio.improve import ImproveEngine
-    from skyn3t.studio.visual_check import VisualChecker
+    from skyn3t.studio.visual_check import VisualChecker, make_vision_fn
     from skyn3t.studio.visual_loop import visual_self_improve
 
     spine = await _assemble_spine()
@@ -940,11 +940,12 @@ async def _run_visual(project: str, *, goal: str, max_rounds: int):
         stack = man.stack if man else ""
     except Exception:  # noqa: BLE001
         stack = ""
-    # vision_fn=None: no vision model is wired in this env, so the loop screenshots
-    # (Playwright) but soft-skips the judgement. Wire a vision LLM to activate it.
+    # Auto-wire the vision judge when an OpenRouter key is configured; otherwise
+    # make_vision_fn returns None and the loop soft-skips the judgement step.
+    vision_fn = make_vision_fn(settings)
     return await visual_self_improve(
         pdir, goal, app_runner=AppRunner(), checker=VisualChecker(event_bus=spine["event_bus"]),
-        improve_engine=engine, vision_fn=None, stack=stack, max_rounds=max_rounds)
+        improve_engine=engine, vision_fn=vision_fn, stack=stack, max_rounds=max_rounds)
 
 
 @studio_app.command("visual")

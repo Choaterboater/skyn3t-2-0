@@ -5,6 +5,7 @@ Playwright or no vision_fn, check() returns a `skipped` verdict and never blocks
 Never raises."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -168,7 +169,10 @@ class VisualChecker:
                 verdict = VisualVerdict(skipped=True, reason=f"temp file error: {exc}")
             else:
                 try:
-                    shot = screenshot(url, path)
+                    # The sync Playwright API refuses to run inside a live asyncio
+                    # loop, and check() is always awaited from one — so run the
+                    # capture in a worker thread (no running loop there).
+                    shot = await asyncio.to_thread(screenshot, url, path)
                     if shot is None:
                         verdict = VisualVerdict(skipped=True, reason="screenshot failed")
                     else:

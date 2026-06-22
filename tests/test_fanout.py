@@ -103,3 +103,19 @@ def test_fan_out_referee_can_rescore(tmp_path):
 
     out = asyncio.run(fan_out(cands, build_fn, referee=referee))
     assert out.winner.candidate_id == "x" and out.winner.score == 95.0
+
+
+def test_referee_is_authoritative_over_a_no_go_verdict():
+    # the build verdict said no_go, but the referee re-proofs the delivered tree
+    # and passes — the candidate must count as a passer (referee is authoritative).
+    cands = _cands("p", "q")
+
+    async def build_fn(c):
+        return _outcome(verdict="no_go", score=10, proof_passed=False)
+
+    def referee(candidate, outcome):
+        return {"p": (True, 90.0), "q": (False, 20.0)}[candidate.id]
+
+    out = asyncio.run(fan_out(cands, build_fn, referee=referee))
+    assert out.any_passed is True
+    assert out.winner.candidate_id == "p" and out.winner.passed is True

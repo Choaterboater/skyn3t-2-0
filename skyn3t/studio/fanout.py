@@ -56,7 +56,11 @@ class FanResult:
         score = _as_float(getattr(outcome, "score", None))
         proof_passed = bool(proof.get("passed", False))
         if referee_verdict is not None:
+            # The referee re-proofs the delivered tree — it is AUTHORITATIVE over
+            # the (possibly stale) build verdict, so its pass/fail also drives the
+            # effective verdict that .passed keys on.
             proof_passed, score = bool(referee_verdict[0]), float(referee_verdict[1])
+            verdict = "go" if proof_passed else "no_go"
         return cls(
             candidate_id=cand.id, label=cand.label or cand.id, verdict=verdict,
             score=score, proof_passed=proof_passed,

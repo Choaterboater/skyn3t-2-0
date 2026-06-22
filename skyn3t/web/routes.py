@@ -50,6 +50,19 @@ def _reap_improve_task(task: Any) -> None:
     if exc is not None:  # ImproveEngine catches internally, but log if it ever raises
         log.error("web.improve_task_crashed", error=str(exc))
 
+
+# Strong references to in-flight background fan-out tasks (prevent GC mid-run).
+_FANOUT_TASKS: set = set()
+
+
+def _reap_fanout_task(task: Any) -> None:
+    _FANOUT_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:  # fan_out catches per-candidate, but log infra faults
+        log.error("web.fanout_task_crashed", error=str(exc))
+
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
     from fastapi.responses import FileResponse
@@ -445,8 +458,8 @@ async def fanout_project(state: AppState, brief: str, stacks: list[str]) -> dict
     import asyncio
     task = asyncio.ensure_future(
         fan_out(cands, build_fn, event_bus=state.event_bus, correlation_id=cid))
-    _IMPROVE_TASKS.add(task)
-    task.add_done_callback(_reap_improve_task)
+    _FANOUT_TASKS.add(task)
+    task.add_done_callback(_reap_fanout_task)
     return {"accepted": True, "brief": brief.strip(), "stacks": ids, "correlation_id": cid}
 
 
@@ -1175,7 +1188,7 @@ def build_router(state: AppState) -> Any:
     async def _fanout(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
         stacks = body.get("stacks")
         if isinstance(stacks, str):
-            stacks = [s for s in stacks.split(",")]
+            stacks = [s.strip() for s in stacks.split(",") if s.strip()]
         try:
             return await fanout_project(state, str(body.get("brief", "")), stacks or [])
         except ValueError as exc:

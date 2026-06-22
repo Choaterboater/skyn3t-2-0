@@ -818,6 +818,8 @@ class StudioRunner:
         try:
             for spec in plan.stages:
                 self._obs_call(self.budget_guard, "heartbeat")
+                # Mark the stage boundary so cost is attributed per stage (Spec 2).
+                self._obs_call(self.cost_tracker, "start_stage", build_id, spec.name)
                 await self.event_bus.emit(
                     EventType.BUILD_STAGE_STARTED,
                     "studio",
@@ -1074,7 +1076,14 @@ class StudioRunner:
                 manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps,
                 code_backend=code_backend, project_dir=project_dir,
             )
-            self._obs_call(self.cost_tracker, "end_build", build_id)
+            build_cost = self._obs_call(self.cost_tracker, "end_build", build_id)
+            # Record the per-stage cost breakdown + "wasted" spend (everything a
+            # no_go build cost produced nothing shippable) for cost analysis.
+            if isinstance(build_cost, dict) and build_cost.get("stages"):
+                manifest.extra["stage_costs"] = build_cost["stages"]
+                manifest.extra["build_cost_usd"] = build_cost.get("cost_usd")
+                if verdict != "go":
+                    manifest.extra["wasted_usd"] = build_cost.get("cost_usd")
 
             outcome = await self._finalize(manifest, plan, correlation_id, final_score)
             return outcome
@@ -1269,12 +1278,18 @@ class StudioRunner:
                    {"build_id": build_id, "stage": spec.name, "files": files[:200]})
 
     async def _emit_stage_done(self, build_id: str, record: StageRecord, correlation_id: str) -> None:
+        # Close the per-stage cost slice (Spec 2) — the single chokepoint every
+        # stage passes through. Read-only attribution; never breaks the build.
+        stage_cost = self._obs_call(self.cost_tracker, "end_stage", build_id, record.name)
         # Include capability (so the dashboard's stage axis matches) and gaps (so
         # FeatureSuggester, which keys off payload['gaps'], can actually fire).
         payload: dict[str, Any] = {
             "build_id": build_id, "stage": record.name, "capability": record.capability,
             "status": record.status, "score": record.score,
         }
+        if isinstance(stage_cost, dict):
+            payload["cost_usd"] = stage_cost.get("cost_usd")
+            payload["tokens"] = stage_cost.get("tokens")
         gaps = record.output_summary.get("gaps") if isinstance(record.output_summary, dict) else None
         if gaps:
             payload["gaps"] = list(gaps)

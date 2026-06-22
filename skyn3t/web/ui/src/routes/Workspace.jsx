@@ -139,6 +139,11 @@ function ImprovePane({ slug, stream }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [note, setNote] = useState(null);
+  // Correlation ids of improves dispatched from this pane. ImproveEngine emits
+  // events keyed by the *manifest* slug, which can differ from the directory
+  // slug the workspace uses — so we also match by correlation_id to keep the
+  // timeline intact when those diverge.
+  const [cids, setCids] = useState(() => new Set());
 
   const timeline = useMemo(() => {
     const evts = stream?.events || [];
@@ -146,11 +151,12 @@ function ImprovePane({ slug, stream }) {
       .filter(
         (e) =>
           (e.type?.startsWith("improve.") || e.type?.startsWith("serve.")) &&
-          (e.payload?.slug === slug || !e.payload?.slug),
+          (e.payload?.slug === slug ||
+            (e.correlation_id && cids.has(e.correlation_id))),
       )
       .map((e) => ({ ...e, line: eventLine(e) }))
       .filter((e) => e.line);
-  }, [stream?.events, slug]);
+  }, [stream?.events, slug, cids]);
 
   async function submit() {
     if (!goal.trim() || !slug) return;
@@ -160,6 +166,9 @@ function ImprovePane({ slug, stream }) {
     try {
       const r = await apiPost("/studio/improve", { slug, goal });
       if (r.accepted) {
+        if (r.correlation_id) {
+          setCids((prev) => new Set(prev).add(r.correlation_id));
+        }
         setNote(`dispatched · ${r.correlation_id?.slice(0, 8)}`);
         setGoal("");
       } else {

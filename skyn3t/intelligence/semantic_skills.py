@@ -11,7 +11,7 @@ its vocabulary even when they carry no matching tag.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from skyn3t.rag.embeddings import Embedder
 
@@ -60,3 +60,24 @@ def relevant_skills(skills: list[Any], brief: str, *, embedder: Embedder | None 
     returns [] on an empty brief / skill set."""
     idx = SemanticSkillIndex(embedder).build(list(skills or []))
     return [slug for slug, _ in idx.query(brief, k=k, min_score=min_score)]
+
+
+def rank_texts(items: list[Any], query: str, *, get_text: Callable[[Any], str],
+               embedder: Embedder | None = None, k: int = 5,
+               min_score: float = 0.0) -> list[Any]:
+    """Rank arbitrary items by embedding-cosine of ``get_text(item)`` to
+    ``query``, best first; return the top-K ORIGINAL items. With an empty query
+    (or no items) it preserves the input order, capped at k — so callers can
+    use it as a best-effort re-rank that degrades to the prior ordering. Never
+    raises beyond a caller-supplied get_text."""
+    items = list(items or [])
+    if not items:
+        return []
+    if not (query or "").strip():
+        return items[:k]
+    emb = embedder or Embedder()
+    vecs = emb.embed_batch([str(get_text(it) or "") for it in items])
+    qv = emb.embed(query)
+    scored = [(it, _cosine(qv, vec)) for it, vec in zip(items, vecs)]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [it for it, c in scored if c > min_score][:k]

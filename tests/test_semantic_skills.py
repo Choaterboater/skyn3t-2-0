@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from skyn3t.rag.embeddings import Embedder
 from skyn3t.intelligence.semantic_skills import (
     SemanticSkillIndex,
+    rank_texts,
     relevant_skills,
 )
 
@@ -74,3 +75,37 @@ def test_query_returns_scores_descending():
     hits = idx.query("react form validation", k=4)
     scores = [c for _, c in hits]
     assert scores == sorted(scores, reverse=True)
+
+
+# --------------------------------------------------------------------------
+# rank_texts — generic ranker (used for brief-aware lesson recall)
+# --------------------------------------------------------------------------
+
+def _lessons():
+    return [
+        {"id": 1, "text": "react form validation with controlled inputs and hooks"},
+        {"id": 2, "text": "python argparse command line interface tools"},
+        {"id": 3, "text": "css grid responsive layout flexbox"},
+    ]
+
+
+def test_rank_texts_orders_by_query_relevance():
+    out = rank_texts(_lessons(), "building a react form app",
+                     get_text=lambda x: x["text"], embedder=_emb(), k=3)
+    assert out[0]["id"] == 1  # the react/form lesson ranks first
+
+
+def test_rank_texts_empty_query_preserves_order_capped():
+    items = _lessons()
+    out = rank_texts(items, "   ", get_text=lambda x: x["text"], embedder=_emb(), k=2)
+    assert [x["id"] for x in out] == [1, 2]  # original order, capped at k
+
+
+def test_rank_texts_caps_at_k():
+    items = [{"id": i, "text": f"react form item {i}"} for i in range(10)]
+    out = rank_texts(items, "react form", get_text=lambda x: x["text"], embedder=_emb(), k=3)
+    assert len(out) == 3
+
+
+def test_rank_texts_empty_items_returns_empty():
+    assert rank_texts([], "q", get_text=lambda x: x["text"], embedder=_emb()) == []

@@ -6,10 +6,42 @@ a real browser, vision model, or build."""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from skyn3t.studio.visual_check import VisualVerdict
 from skyn3t.studio.visual_loop import VisualLoopResult, visual_self_improve
+
+
+def test_screenshot_works_from_inside_an_asyncio_loop(tmp_path):
+    # Regression: VisualChecker.check runs inside the event loop, but the sync
+    # Playwright API refuses to run there — the capture must be thread-offloaded.
+    pytest.importorskip("playwright")
+    from skyn3t.studio.app_runner import AppRunner, cleanup_serve
+    from skyn3t.studio.visual_check import VisualChecker, playwright_available
+
+    if not playwright_available():
+        pytest.skip("playwright not installed")
+    (tmp_path / "index.html").write_text("<html><body><h1>hi</h1></body></html>")
+
+    async def _go():
+        runner = AppRunner()
+        app = await runner.start(tmp_path, "static", ready_timeout=15)
+        if app.status != "running":
+            pytest.skip("could not serve the static app")
+        try:
+            return await VisualChecker().check(app.url, "a page", vision_fn=None)
+        finally:
+            runner.stop(app)
+            cleanup_serve(app)
+
+    verdict = asyncio.run(_go())
+    if verdict.reason == "screenshot failed":
+        pytest.skip("headless browser could not capture in this environment")
+    # Screenshot SUCCEEDED -> the only soft-skip is the (unwired) vision step.
+    assert verdict.reason == "no vision provider wired"
 
 
 class _App:

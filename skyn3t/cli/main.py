@@ -918,6 +918,61 @@ def studio_improve(
         raise typer.Exit(code=2)
 
 
+async def _run_visual(project: str, *, goal: str, max_rounds: int):
+    from pathlib import Path as _Path
+
+    from skyn3t.studio.app_runner import AppRunner
+    from skyn3t.studio.improve import ImproveEngine
+    from skyn3t.studio.visual_check import VisualChecker
+    from skyn3t.studio.visual_loop import visual_self_improve
+
+    spine = await _assemble_spine()
+    settings = spine["settings"]
+    _l, _p, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
+    engine = ImproveEngine(spine["event_bus"], spine["orchestrator"],
+                           settings=settings, memory=spine["memory"], skills=skills, rag=rag)
+    cand = _Path(project)
+    pdir = cand if cand.is_absolute() else (settings.projects_dir / project)
+    stack = ""
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+        man = BuildManifest.load(pdir)
+        stack = man.stack if man else ""
+    except Exception:  # noqa: BLE001
+        stack = ""
+    # vision_fn=None: no vision model is wired in this env, so the loop screenshots
+    # (Playwright) but soft-skips the judgement. Wire a vision LLM to activate it.
+    return await visual_self_improve(
+        pdir, goal, app_runner=AppRunner(), checker=VisualChecker(event_bus=spine["event_bus"]),
+        improve_engine=engine, vision_fn=None, stack=stack, max_rounds=max_rounds)
+
+
+@studio_app.command("visual")
+def studio_visual(
+    project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
+    goal: str = typer.Option(..., "--goal", "-g", help="What the app should look/behave like."),
+    rounds: int = typer.Option(2, "--rounds", "-r", help="Max inspect->improve rounds."),
+) -> None:
+    """Visual self-inspection loop: serve -> screenshot -> judge -> improve -> re-check.
+
+    Needs a vision model wired for the judgement step (soft-skips otherwise);
+    Playwright is required for the screenshot."""
+    console = _console()
+    res = asyncio.run(_run_visual(project, goal=goal, max_rounds=rounds))
+    if res.skipped:
+        console.print(f"[yellow]Visual loop skipped[/yellow]: {res.reason}")
+        raise typer.Exit(code=1)
+    tone = "green" if res.passed else "yellow"
+    console.print(f"[{tone}]Visual loop {'passed' if res.passed else 'incomplete'}[/{tone}] "
+                  f"after {len(res.rounds)} round(s){'' if res.passed else ' — ' + res.reason}")
+    for r in res.rounds:
+        mark = "✔" if r.matches else ("↻ improved" if r.improved else "✕")
+        issues = "" if r.matches else f" · {', '.join(r.issues[:3])}"
+        console.print(f"  round {r.index}: {mark}{issues}")
+    if not res.passed:
+        raise typer.Exit(code=2)
+
+
 async def assemble_app_state(event_bus: Any | None = None) -> Any:
     """Build a fully-wired web ``AppState`` (spine + studio + intelligence).
 

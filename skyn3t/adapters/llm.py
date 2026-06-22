@@ -172,8 +172,12 @@ class LLMClient:
         file_hint: str | None = None,
         max_tokens: int = 2048,
         json_mode: bool = False,
+        task_type: str = "",
     ) -> LLMResult:
-        model = self.router.resolve(tier, file_hint)
+        # Pass task_type so the LearnedModelRouter can serve per-task picks. It
+        # was dead-wired (resolve(tier, file_hint) only) -> the learned router
+        # always queried the empty task bucket and could never serve.
+        model = self.router.resolve(tier, file_hint, task_type=task_type)
         backend = self.backend
         if backend == "openrouter":
             result = await self._openrouter(model, prompt, system, max_tokens, json_mode)

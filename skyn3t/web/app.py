@@ -14,6 +14,7 @@ Design constraints honored here:
 
 from __future__ import annotations
 
+import atexit
 from pathlib import Path
 from typing import Any
 
@@ -123,7 +124,13 @@ def create_app(
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:  # pragma: no cover - lifecycle hook
+        state.stop_all_serves()  # don't leave detached preview servers running
         hub.close()
+
+    # Backstop: the ASGI "shutdown" hook only fires on a graceful lifespan stop.
+    # atexit also covers a normal interpreter exit / unhandled-exception exit so
+    # detached previews don't outlive the host. (SIGKILL/OOM remain uncatchable.)
+    atexit.register(state.stop_all_serves)
 
     # ---- SPA / minimal status page --------------------------------------
     index_html = UI_DIST_DIR / "index.html"

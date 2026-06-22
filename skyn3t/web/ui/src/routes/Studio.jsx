@@ -89,6 +89,7 @@ function ForgeStage({ stage, state }) {
 export default function Studio({ stream }) {
   const qc = useQueryClient();
   const [brief, setBrief] = useState("");
+  const [stacks, setStacks] = useState("react,static,fastapi");
   const [pendingBuildId, setPendingBuildId] = React.useState(null);
 
   const { data: builds } = useQuery({
@@ -111,11 +112,34 @@ export default function Studio({ stream }) {
     onSettled: () => setPendingBuildId(null),
   });
 
+  // Spec 4: explore the brief across divergent stacks; results stream as
+  // FANOUT_* events on the shared socket.
+  const fanoutMut = useMutation({
+    mutationFn: () => apiPost("/studio/fanout", { brief: brief.trim(), stacks }),
+  });
+
   const events = stream?.events || [];
   const pipeline = useMemo(
     () => STAGES.map((s) => ({ stage: s, state: stageState(s, events) })),
     [events]
   );
+
+  const fanout = useMemo(() => {
+    const cands = {};
+    let done = null;
+    let active = false;
+    for (const e of events) {
+      if (e.type === "fanout.started") active = true;
+      else if (e.type === "fanout.candidate") {
+        const p = e.payload || {};
+        if (p.candidate_id) cands[p.candidate_id] = p;
+      } else if (e.type === "fanout.completed") {
+        done = e.payload || {};
+        active = false;
+      }
+    }
+    return { cands: Object.values(cands), done, active };
+  }, [events]);
 
   const recentBuilds = Array.isArray(builds) ? builds : builds?.builds || [];
 
@@ -165,7 +189,82 @@ export default function Studio({ stream }) {
             {String(submit.error.message)}
           </p>
         ) : null}
+
+        {/* Spec 4: fan the same brief out across divergent stacks, pick a winner */}
+        <div className="mt-3 flex flex-col gap-2 border-t border-hairline pt-3 sm:flex-row sm:items-center">
+          <span className="font-mono text-[11px] text-ash">Fan out across stacks:</span>
+          <input
+            className="field flex-1 font-mono text-xs"
+            placeholder="react,static,fastapi"
+            value={stacks}
+            onChange={(e) => setStacks(e.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => fanoutMut.mutate()}
+            disabled={
+              fanoutMut.isPending ||
+              !brief.trim() ||
+              stacks.split(",").filter((s) => s.trim()).length < 2
+            }
+            className="btn-ghost disabled:opacity-50"
+            title="Build N divergent stack candidates for this brief and pick the winner"
+          >
+            {fanoutMut.isPending ? "Exploring…" : "Fan out"}
+          </button>
+        </div>
+        {fanoutMut.isError ? (
+          <p className="mt-2 font-mono text-[11px] text-ember">
+            {String(fanoutMut.error.message)}
+          </p>
+        ) : null}
+        {fanoutMut.data && fanoutMut.data.accepted === false ? (
+          <p className="mt-2 font-mono text-[11px] text-ember">
+            {fanoutMut.data.reason || "fan-out unavailable"}
+          </p>
+        ) : null}
       </Panel>
+
+      {fanout.cands.length > 0 || fanout.active ? (
+        <Panel className="mb-6 overflow-hidden">
+          <PanelHead
+            label="Fan-out exploration"
+            right={
+              fanout.done ? (
+                <span className="font-mono text-[11px] text-plasma">
+                  winner <span className="text-bone">{fanout.done.winner || "—"}</span> · Δ +
+                  {fanout.done.delta ?? 0}
+                </span>
+              ) : (
+                <span className="font-mono text-[11px] text-ember">exploring…</span>
+              )
+            }
+          />
+          <div className="divide-y divide-hairline/60">
+            {fanout.cands.map((c) => {
+              const win = fanout.done && fanout.done.winner === c.candidate_id;
+              return (
+                <div
+                  key={c.candidate_id}
+                  className="flex items-center justify-between px-4 py-2"
+                >
+                  <span className="font-mono text-xs text-bone">
+                    {win ? "★ " : ""}
+                    {c.candidate_id}
+                  </span>
+                  <div className="flex items-center gap-3 font-mono text-[11px]">
+                    <Pill tone={verdictTone(c.verdict)}>{c.verdict}</Pill>
+                    <span className="text-ash">score {c.score ?? "—"}</span>
+                    <span className={c.proof_passed ? "text-plasma" : "text-ember"}>
+                      {c.proof_passed ? "proof ✓" : "proof ✕"}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      ) : null}
 
       <Panel className="mb-6 overflow-hidden">
         <PanelHead

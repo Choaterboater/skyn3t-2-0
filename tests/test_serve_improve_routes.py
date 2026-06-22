@@ -270,8 +270,8 @@ def test_fanout_dispatches_distinct_slugs_and_emits(tmp_path):
 
     async def _run():
         out = await fanout_project(state, "a todo app", ["react", "static"])
-        if routes._IMPROVE_TASKS:
-            await asyncio.gather(*list(routes._IMPROVE_TASKS))
+        if routes._FANOUT_TASKS:
+            await asyncio.gather(*list(routes._FANOUT_TASKS))
         return out
 
     out = asyncio.run(_run())

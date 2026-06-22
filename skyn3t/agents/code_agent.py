@@ -24,7 +24,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from skyn3t.adapters.llm import LLMClient
+
+log = structlog.get_logger(__name__)
 from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
 from skyn3t.agents._scaffold import (
     default_pyproject,
@@ -115,11 +119,32 @@ class CodeAgent(BaseAgent):
                 self._agentic_prompt(brief, stack, plan, knowledge), str(worktree)
             )
             self.metadata["agentic"] = res
+            # Surface failures: the agentic path returns {ok, backend, error}.
+            # A failed call (ok=False) or under-delivered output must be flagged
+            # so downstream scoring/verdict can see the degradation instead of
+            # treating a hollow/partial delivery as a successful build.
+            agentic_ok = bool(res.get("ok", True))
+            agentic_error = res.get("error", "")
             disk = self._read_files(worktree)
             code_bytes = sum(
                 len(c) for f, c in disk.items()
                 if f.rsplit(".", 1)[-1] in ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
             )
+            under_delivered = not (disk and code_bytes >= 800)
+            if not agentic_ok or under_delivered:
+                if not agentic_ok:
+                    degraded_reason = f"agentic build failed: {agentic_error}" if agentic_error else "agentic build returned ok=False"
+                else:
+                    degraded_reason = f"agentic build under-delivered: {code_bytes} code bytes in {len(disk)} files (threshold 800)"
+                log.warning(
+                    "code_agent.agentic_degraded",
+                    agentic_ok=agentic_ok,
+                    code_bytes=code_bytes,
+                    files_on_disk=len(disk),
+                    reason=degraded_reason,
+                )
+                self.metadata["degraded"] = True
+                self.metadata["degraded_reason"] = degraded_reason
             if disk and code_bytes >= 800:
                 files = disk  # the agent's real app becomes the delivery
             else:
@@ -145,15 +170,22 @@ class CodeAgent(BaseAgent):
 
         written = self._write_files(worktree, files)
 
+        out: dict[str, Any] = {
+            "files_written": len(written),
+            "worktree_dir": str(worktree),
+            "stack": stack,
+            "files": written,
+            "backend": self.llm.backend,
+        }
+        # Propagate degradation signal from the agentic path so downstream
+        # scoring/verdict can see it. Never set on the stub or completion paths.
+        if self.metadata.get("degraded"):
+            out["degraded"] = True
+            out["degraded_reason"] = self.metadata.get("degraded_reason", "unknown")
+
         return TaskResult(
             task_id=task.task_id, success=True,
-            output={
-                "files_written": len(written),
-                "worktree_dir": str(worktree),
-                "stack": stack,
-                "files": written,
-                "backend": self.llm.backend,
-            },
+            output=out,
         )
 
     # ---- helpers ---------------------------------------------------------

@@ -850,6 +850,19 @@ class StudioRunner:
                     record.output_summary = {"error": result.error}
                     prior[spec.name] = {"error": result.error}
 
+                # Codegen degradation: if the agentic code path failed or under-
+                # delivered, surface that in the manifest so verdict/scoring has
+                # the signal (the build is not crashed — scaffold is still written).
+                if spec.agent_type == "code" and result.success and result.output.get("degraded"):
+                    degraded_reason = result.output.get("degraded_reason", "unknown")
+                    log.warning(
+                        "runner.code_degraded",
+                        build_id=build_id,
+                        reason=degraded_reason,
+                    )
+                    record.output_summary["degraded"] = True
+                    record.output_summary["degraded_reason"] = degraded_reason
+
                 # Reviewer score/gaps captured for the build verdict. This is the
                 # only BRIEF-AWARE signal (heuristic + optional LLM rating of
                 # completeness/correctness vs. the brief), so it must not be

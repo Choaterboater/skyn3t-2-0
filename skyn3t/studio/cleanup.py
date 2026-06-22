@@ -107,6 +107,20 @@ def scan(projects_dir, worktrees_dir, *, known_worktrees=(), active_slugs=()) ->
     return rep
 
 
+def trash_path(path, trash_dir) -> Path:
+    """Move ``path`` into ``trash_dir`` (recoverable), de-duplicating the name on
+    collision. Returns the destination. Never hard-deletes; may raise OSError."""
+    path, trash_dir = Path(path), Path(trash_dir)
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    dest = trash_dir / path.name
+    n = 1
+    while dest.exists():
+        dest = trash_dir / f"{path.name}.{n}"
+        n += 1
+    shutil.move(str(path), str(dest))
+    return dest
+
+
 def apply(report, *, trash_dir, dry_run=True, categories=None) -> CleanupResult:
     trash_dir = Path(trash_dir)
     items = report.all_items(categories)
@@ -114,15 +128,9 @@ def apply(report, *, trash_dir, dry_run=True, categories=None) -> CleanupResult:
     if dry_run:
         res.freed_bytes = sum(i.size_bytes for i in items)
         return res
-    trash_dir.mkdir(parents=True, exist_ok=True)
     for it in items:
         try:
-            dest = trash_dir / it.path.name
-            n = 1
-            while dest.exists():
-                dest = trash_dir / f"{it.path.name}.{n}"
-                n += 1
-            shutil.move(str(it.path), str(dest))
+            trash_path(it.path, trash_dir)
             res.moved.append(str(it.path))
             res.freed_bytes += it.size_bytes
         except OSError:

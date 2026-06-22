@@ -374,7 +374,8 @@ def studio_build(
         console.print(
             f"[cyan]Fan-out[/cyan]: winner [bold]{fo.get('winner')}[/bold] of "
             f"{fo.get('n')} stacks · {fo.get('passed')} passed · "
-            f"exploration delta +{fo.get('delta')}")
+            f"exploration delta +{fo.get('delta')} · "
+            f"trashed {len(fo.get('trashed_losers', []))} loser(s)")
     if outcome.get("status") != "completed":
         raise typer.Exit(code=2)
 
@@ -484,6 +485,25 @@ def _build_observability(settings: Any, llm: Any) -> tuple[Any, Any]:
     return cost_tracker, budget_guard
 
 
+def _trash_fanout_losers(settings: Any, base: str, cands: list, winner_id: str | None) -> list[str]:
+    """Trash the non-winner fan-out candidate projects (recoverable). Returns the
+    candidate ids that were trashed."""
+    from skyn3t.studio.cleanup import trash_path
+    trash_dir = settings.projects_dir.parent / ".skyn3t_trash"
+    trashed: list[str] = []
+    for c in cands:
+        if c.id == winner_id:
+            continue
+        loser = settings.projects_dir / f"{base}-{c.id}"
+        if loser.is_dir():
+            try:
+                trash_path(loser, trash_dir)
+                trashed.append(c.id)
+            except OSError:
+                pass
+    return trashed
+
+
 async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, stack: str = "") -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
@@ -533,11 +553,16 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
             return out
 
         fo = await fan_out(cands, _fan_build, event_bus=spine["event_bus"])
-        if fo.winner is not None and fo.winner.candidate_id in raw:
-            d = raw[fo.winner.candidate_id].to_dict()
-            d["fanout"] = fo.summary
+        winner_id = fo.winner.candidate_id if fo.winner is not None else None
+        # An autonomous build delivers ONE winner; trash the loser candidate
+        # projects (recoverable in .skyn3t_trash) so they don't clutter Projects/.
+        trashed = _trash_fanout_losers(settings, base, cands, winner_id)
+        summary = {**fo.summary, "trashed_losers": trashed}
+        if winner_id is not None and winner_id in raw:
+            d = raw[winner_id].to_dict()
+            d["fanout"] = summary
             return d
-        return {"fanout": fo.summary, "winner": None}
+        return {"fanout": summary, "winner": None}
 
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:

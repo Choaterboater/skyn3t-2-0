@@ -92,6 +92,17 @@ BuildFn = Callable[[FanCandidate], Awaitable[Any]]
 RefereeFn = Callable[[FanCandidate, Any], "tuple[bool, float]"]
 
 
+def autonomous_stacks(settings: Any, *, has_pin: bool) -> list[str]:
+    """The stacks an UNPINNED build should be explored across, or [] when
+    autonomous fan-out is off (empty setting) or a stack was explicitly pinned.
+    Needs >=2 stacks to be a fan-out. Default behavior is a normal single build."""
+    if has_pin:
+        return []
+    raw = str(getattr(settings, "autonomous_fanout_stacks", "") or "")
+    stacks = [s.strip() for s in raw.split(",") if s.strip()]
+    return stacks if len(stacks) >= 2 else []
+
+
 def _as_float(v: Any) -> float | None:
     try:
         return float(v) if v is not None else None

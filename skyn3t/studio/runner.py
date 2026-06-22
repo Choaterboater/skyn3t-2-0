@@ -754,6 +754,11 @@ class StudioRunner:
         reviewer_score = 0.0
         verdict = "no_go"
         reviewer_gaps: list[str] = []
+        # Whether the brief-aware reviewer stage actually produced a verdict.
+        # Distinguishes a brief-aware no_go (must be honoured) from the default
+        # no_go that stands in when the reviewer stage never ran (stale — the
+        # structural rescore is then the legitimate recovery signal).
+        reviewer_ran = False
         used_lessons: list[dict[str, Any]] = []
 
         # Inject advisory skills for this stack (non-binding) and remember which
@@ -845,11 +850,15 @@ class StudioRunner:
                     record.output_summary = {"error": result.error}
                     prior[spec.name] = {"error": result.error}
 
-                # Reviewer score/gaps captured for the build verdict.
+                # Reviewer score/gaps captured for the build verdict. This is the
+                # only BRIEF-AWARE signal (heuristic + optional LLM rating of
+                # completeness/correctness vs. the brief), so it must not be
+                # silently discarded by the later structural rescore.
                 if spec.agent_type == "reviewer" and result.success:
                     reviewer_score = self._extract_score(result.output) or 0.0
                     verdict = str(result.output.get("verdict", "no_go"))
                     reviewer_gaps = list(result.output.get("gaps") or [])
+                    reviewer_ran = True
 
                 manifest.add_stage(record)
                 await self._emit_stage_done(build_id, record, correlation_id)
@@ -902,14 +911,43 @@ class StudioRunner:
                 )
 
             # Re-score the DELIVERED tree. The reviewer/critic/verifier stages ran
-            # on the pre-merge worktree BEFORE the fix loop, so their verdict is
-            # stale — a repaired build was frozen at the broken verdict and could
-            # never recover. Gate on a fresh measurement of what we actually ship.
+            # on the pre-merge worktree BEFORE the fix loop, so a *stale* verdict
+            # (e.g. the reviewer stage never ran, or it passed but the proof later
+            # broke and was repaired) needs a fresh measurement of what we ship.
+            #
+            # BUT this rescore is purely STRUCTURAL (entrypoint name + file count
+            # + a parseable manifest) — it never reads the brief. It must only
+            # RECOVER a stale no_go; it must NOT override the brief-aware reviewer
+            # verdict. Previously `verdict = re_verdict` discarded the only
+            # brief-aware signal, so a hollow build (e.g. a Hello-world CLI for a
+            # "website" brief) ratcheted up to a structural "go".
             re_verdict, re_score, re_gaps = self._rescore_delivered(project_dir)
             manifest.extra["rescore"] = {"verdict": re_verdict, "score": re_score, "gaps": re_gaps}
-            reviewer_score = max(reviewer_score, re_score)
-            review_gaps = reviewer_gaps or re_gaps
-            verdict = re_verdict
+            if reviewer_ran:
+                # Honour the brief-aware verdict. AND-combine: a "go" needs BOTH
+                # the brief-aware reviewer AND the structural gate to agree; a
+                # brief-aware no_go stays no_go regardless of structure (the fix
+                # loop repairs proof/structure, not brief completeness, so "the
+                # structure looks fine now" alone must not promote it).
+                if verdict == "go" and re_verdict == "go":
+                    verdict = "go"
+                    # Score may recover toward the structural reading only once
+                    # the brief-aware signal already passed.
+                    reviewer_score = max(reviewer_score, re_score)
+                else:
+                    verdict = "no_go"
+                    # Do not let a higher structural rescore inflate the final
+                    # score past the brief-aware reviewer score on a no_go (only
+                    # relevant when structure alone would have said "go").
+                    if re_verdict == "go":
+                        reviewer_score = min(reviewer_score, re_score)
+                review_gaps = reviewer_gaps or re_gaps
+            else:
+                # No brief-aware verdict was produced (reviewer stage skipped/absent)
+                # — the structural rescore is the legitimate recovery signal.
+                reviewer_score = max(reviewer_score, re_score)
+                review_gaps = reviewer_gaps or re_gaps
+                verdict = re_verdict
 
             # Final score: blend reviewer score with proof completeness.
             if reviewer_score <= 0.0:

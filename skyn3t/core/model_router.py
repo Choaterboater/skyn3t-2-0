@@ -64,8 +64,11 @@ class ModelRouter:
                 log.warning("router.overrides_unreadable", error=str(exc))
         return {}
 
-    def resolve(self, tier: Tier, file_hint: str | None = None) -> str:
-        """Return the concrete model id for a tier (+ optional file hint)."""
+    def resolve(self, tier: Tier, file_hint: str | None = None, task_type: str = "") -> str:
+        """Return the concrete model id for a tier (+ optional file hint).
+
+        ``task_type`` is accepted (and ignored) here so callers can pass it
+        uniformly; only the LearnedModelRouter subclass uses it."""
         # Per-file specialization: route UI vs backend by extension.
         if file_hint:
             ext = Path(file_hint).suffix.lower()

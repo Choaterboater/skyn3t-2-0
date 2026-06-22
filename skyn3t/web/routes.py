@@ -192,7 +192,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "stack": m.get("stack", ""),
                 "status": m.get("status", ""),
                 "verdict": m.get("verdict", ""),
-                "score": m.get("score", 0.0),
+                "score": m.get("score") or 0.0,
                 "created_at": m.get("created_at", ""),
                 "updated_at": m.get("updated_at", ""),
                 "size_bytes": _dir_size(d),

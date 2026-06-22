@@ -100,7 +100,7 @@ class BuildOutcome:
     slug: str
     status: str
     verdict: str
-    score: float
+    score: float | None
     stack: str
     project_dir: str
     files: list[str] = field(default_factory=list)
@@ -526,7 +526,7 @@ class StudioRunner:
             ]
             srcs = sorted(srcs)[:14]
             body = (
-                f"A real **{plan.stack}** build scored {manifest.score:.0f} (go) with this "
+                f"A real **{plan.stack}** build scored {(manifest.score or 0.0):.0f} (go) with this "
                 f"structure — reuse it as a starting shape:\n\n"
                 f"- Entrypoint(s): {', '.join(entrypoints) or '(none detected)'}\n"
                 f"- Files ({len(srcs)} shown): {', '.join(srcs)}\n\n"

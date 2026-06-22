@@ -8,6 +8,25 @@ synthesiser (:mod:`debate`).
 Scoring uses a lightweight rolling Elo plus raw win counts so the ranking is
 stable with few samples and responsive with many. Persistence is best-effort
 JSON; degrades to memory-only. Zero import side effects (design rule #4).
+
+**Current feeding limitation (swarm #16)**:
+``record_win`` is currently called ONLY by the debate pipeline
+(:func:`skyn3t.intelligence.debate.run_debate`). The debate command is
+rarely invoked in normal operation, so the leaderboard stays sparse and the
+learned router (``Settings.model_evolution=True``) will almost always abstain
+(see :meth:`RoutingRecommender.recommend` — it returns ``None`` with < 1
+play). The router's fallback (keyword → tier → default model) remains safe.
+
+**The seam to close this gap**:
+Add a ``model_id: str | None`` field to :class:`~skyn3t.core.agent.TaskResult`
+so agents can surface which LLM model they used. Then, in
+:class:`~skyn3t.studio.runner.StudioRunner`, after a stage completes
+successfully, call ``tournament.record_win(bucket, result.model_id, losers=[])``
+where ``losers=[]`` records a solo appearance (no direct competitor) and still
+builds up the win/plays counters over real build traffic. Once a few dozen
+stages have run, the router has enough signal to start routing.
+
+Until that wiring lands, the tournament only learns from debate runs.
 """
 
 from __future__ import annotations
@@ -148,8 +167,28 @@ class ModelTournament:
         self.save()
 
     # ---- querying -----------------------------------------------------
+    def has_data(self) -> bool:
+        """Return True if any model has been recorded in any bucket.
+
+        The learned router uses this to decide whether to consult the
+        tournament or fall back to the default heuristic. Currently the
+        tournament is only fed by the debate pipeline (see module docstring
+        for the seam that would close this gap).
+        """
+        return bool(self._boards)
+
     def leaderboard(self, bucket: str, limit: int = 10) -> list[ModelStats]:
         board = self._boards.get(bucket, {})
+        if not board and _log:
+            _log.debug(
+                "tournament.empty_bucket",
+                bucket=bucket,
+                note=(
+                    "Tournament has no data for this bucket. "
+                    "Currently only fed by debate runs — see module docstring "
+                    "(swarm #16) for the seam to wire real build-stage outcomes."
+                ),
+            )
         ranked = sorted(board.values(), key=lambda s: s.rating, reverse=True)
         return ranked[:limit]
 

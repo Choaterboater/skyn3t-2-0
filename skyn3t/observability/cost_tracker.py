@@ -126,7 +126,9 @@ class CostTracker:
         entry = self._builds.get(build_id)
         if entry is None:
             return {"stage": stage, "cost_usd": 0.0, "tokens": 0}
-        base = entry.get("_stage_base", {}).get(stage, entry.get("base_calls", 0))
+        # Consume the base (pop, not get) so each start/end is paired — robust
+        # even if a stage name repeats across iterations.
+        base = entry.get("_stage_base", {}).pop(stage, entry.get("base_calls", 0))
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
         cost = 0.0
         tokens = 0

@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
 import {
@@ -236,18 +237,26 @@ export default function Projects() {
                         {fmtMB(p.size_bytes)}
                       </td>
                       <td className="px-4 py-2">
-                        {p.has_preview ? (
-                          <a
-                            href={`/api/projects/${p.slug}/index.html`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-mono text-[11px] text-plasma hover:text-plasma/70 underline"
+                        <div className="flex items-center gap-3">
+                          {p.has_preview ? (
+                            <a
+                              href={`/api/projects/${p.slug}/index.html`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-mono text-[11px] text-plasma hover:text-plasma/70 underline"
+                            >
+                              preview ↗
+                            </a>
+                          ) : (
+                            <span className="font-mono text-[11px] text-ash/40">—</span>
+                          )}
+                          <Link
+                            to={`/workspace?slug=${encodeURIComponent(p.slug)}`}
+                            className="font-mono text-[11px] text-ember hover:text-ember/70 underline"
                           >
-                            preview ↗
-                          </a>
-                        ) : (
-                          <span className="font-mono text-[11px] text-ash/40">—</span>
-                        )}
+                            workspace ↗
+                          </Link>
+                        </div>
                       </td>
                       <td className="px-4 py-2 text-right">
                         {isConfirming ? (

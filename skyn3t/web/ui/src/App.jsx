@@ -14,6 +14,7 @@ const Skills = lazy(() => import("./routes/Skills.jsx"));
 const Activity = lazy(() => import("./routes/Activity.jsx"));
 const Settings = lazy(() => import("./routes/Settings.jsx"));
 const Projects = lazy(() => import("./routes/Projects.jsx"));
+const Workspace = lazy(() => import("./routes/Workspace.jsx"));
 
 const NAV = [
   { to: "/overview", label: "Overview", glyph: "◇" },
@@ -25,6 +26,7 @@ const NAV = [
   { to: "/activity", label: "Activity", glyph: "≋" },
   { to: "/settings", label: "Settings", glyph: "⚙" },
   { to: "/projects", label: "Projects", glyph: "▤" },
+  { to: "/workspace", label: "Workspace", glyph: "⧉" },
 ];
 
 const WS = {
@@ -101,6 +103,7 @@ export default function App() {
               <Route path="/activity" element={<Activity stream={stream} />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/projects" element={<Projects stream={stream} />} />
+              <Route path="/workspace" element={<Workspace stream={stream} />} />
               <Route path="*" element={<Navigate to="/overview" replace />} />
             </Routes>
           </Suspense>

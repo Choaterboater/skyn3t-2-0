@@ -65,6 +65,9 @@ class EventType(str, Enum):
     IMPROVE_COMPLETED = "improve.completed"
     IMPROVE_FAILED = "improve.failed"
     VISUAL_CHECK = "improve.visual_check"
+    # Live app preview (two-pane cockpit): start/stop a delivered project as a server
+    SERVE_STARTED = "serve.started"
+    SERVE_STOPPED = "serve.stopped"
 
     # Cortex autonomy
     PROPOSAL_CREATED = "proposal.created"

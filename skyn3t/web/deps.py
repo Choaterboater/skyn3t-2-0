@@ -161,8 +161,34 @@ class AppState:
         self.builds: dict[str, BuildRecord] = {}
         self.proposals: dict[str, ProposalRecord] = {}
 
+        # Live preview servers (Spec 3 two-pane workspace): slug -> RunningApp,
+        # plus a shared AppRunner. Populated lazily by the serve endpoints.
+        self.running_apps: dict[str, Any] = {}
+        self.app_runner: Any | None = None
+
         # Mirror cortex proposals into the cache as they are created.
         self._wire_proposal_capture()
+
+    def stop_all_serves(self) -> None:
+        """Stop every live preview server and release its child + logfile.
+
+        Best-effort, never raises — call on dashboard shutdown so detached
+        preview processes don't outlive the host."""
+        runner = self.app_runner
+        if runner is None:
+            return
+        try:
+            from skyn3t.studio.app_runner import cleanup_serve
+        except Exception:  # noqa: BLE001 - studio optional
+            cleanup_serve = None  # type: ignore[assignment]
+        for slug, app in list(self.running_apps.items()):
+            try:
+                runner.stop(app)
+                if cleanup_serve is not None:
+                    cleanup_serve(app)
+            except Exception:  # noqa: BLE001 - shutdown must not crash
+                pass
+            self.running_apps.pop(slug, None)
 
     # ---- event helpers ---------------------------------------------------
     def _wire_proposal_capture(self) -> None:

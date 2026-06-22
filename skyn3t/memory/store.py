@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from skyn3t.config.settings import Settings, get_settings
@@ -206,3 +206,9 @@ class MemoryStore:
             if result.rowcount == 0:
                 return
             await s.commit()
+
+    async def count_lessons(self) -> int:
+        """Return the total number of lesson rows in the store."""
+        async with self._session() as s:
+            result = await s.execute(select(func.count()).select_from(LessonRow))
+            return result.scalar_one()

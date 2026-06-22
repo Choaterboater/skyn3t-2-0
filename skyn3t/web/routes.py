@@ -673,6 +673,8 @@ async def brain_payload(state: AppState) -> dict[str, Any]:
         if state.memory is not None:
             rows = await state.memory.recent_builds(limit=200)
             documents = len(rows)
+            if hasattr(state.memory, "count_lessons"):
+                lessons = await state.memory.count_lessons()
     except Exception:  # noqa: BLE001
         pass
     return {

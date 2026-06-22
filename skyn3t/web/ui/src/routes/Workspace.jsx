@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
@@ -37,16 +37,20 @@ function eventLine(e) {
   }
 }
 
-function ServePane({ slug }) {
+function ServePane({ slug, stream }) {
   const [served, setServed] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [reserved, setReserved] = useState(false);
+  const lastImproveRef = useRef(null);
 
   // Reflect any already-running preview for this slug on mount / slug change.
   useEffect(() => {
     let alive = true;
     setServed(null);
     setErr(null);
+    setReserved(false);
+    lastImproveRef.current = null;
     if (!slug) return;
     apiFetch("/studio/serve")
       .then((r) => {
@@ -60,13 +64,32 @@ function ServePane({ slug }) {
     };
   }, [slug]);
 
+  // Identity of the most recent improve.completed for this slug, or "none".
+  function latestImproveTag() {
+    const evts = stream?.events || [];
+    let latest = null;
+    for (const e of evts) {
+      if (e.type === "improve.completed" &&
+          (e.payload?.slug === slug || !e.payload?.slug)) {
+        latest = e;
+      }
+    }
+    return latest ? latest.id || latest.timestamp || "x" : "none";
+  }
+
   async function start() {
     setBusy(true);
     setErr(null);
     try {
       const r = await apiPost("/studio/serve", { slug });
-      if (r.status === "running") setServed(r);
-      else setErr(r.detail?.reason || r.detail?.log_tail || `not servable (${r.status})`);
+      if (r.status === "running") {
+        setServed(r);
+        // Baseline at serve time so the NEXT improve (even the first one) triggers
+        // a re-serve, but a completion that predates this serve does not.
+        lastImproveRef.current = latestImproveTag();
+      } else {
+        setErr(r.detail?.reason || r.detail?.log_tail || `not servable (${r.status})`);
+      }
     } catch (e) {
       setErr(String(e.message));
     } finally {
@@ -79,6 +102,7 @@ function ServePane({ slug }) {
     try {
       await apiPost("/studio/serve/stop", { slug });
       setServed(null);
+      setReserved(false);
     } catch (e) {
       setErr(String(e.message));
     } finally {
@@ -88,12 +112,34 @@ function ServePane({ slug }) {
 
   const running = served && served.status === "running";
 
+  // Auto re-serve when an improve completes for this slug: python/node servers
+  // hold the old code in memory, so a restart is what surfaces the change (and
+  // the fresh port re-renders the iframe). Closes the stale-preview dead-end.
+  useEffect(() => {
+    if (!running) return;
+    const tag = latestImproveTag();
+    if (tag === "none") return;
+    if (lastImproveRef.current === null) {
+      lastImproveRef.current = tag; // mount-detected running: set baseline once
+      return;
+    }
+    if (lastImproveRef.current === tag) return;
+    lastImproveRef.current = tag;
+    setReserved(true);
+    start(); // restart so the preview reflects the improved code
+  }, [stream?.events, slug, running]);
+
   return (
     <Panel className="flex h-full flex-col overflow-hidden">
       <PanelHead
         label="Live app"
         right={
           <div className="flex items-center gap-2">
+            {reserved && running ? (
+              <span className="font-mono text-[10px] text-plasma/70" title="re-served after an improve">
+                ↻ updated
+              </span>
+            ) : null}
             {running ? (
               <a
                 href={served.url}
@@ -279,7 +325,7 @@ export default function Workspace({ stream }) {
       ) : null}
 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-2">
-        <ServePane slug={slug} />
+        <ServePane slug={slug} stream={stream} />
         <ImprovePane slug={slug} stream={stream} />
       </div>
     </div>

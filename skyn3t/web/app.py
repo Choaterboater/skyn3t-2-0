@@ -123,6 +123,7 @@ def create_app(
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:  # pragma: no cover - lifecycle hook
+        state.stop_all_serves()  # don't leave detached preview servers running
         hub.close()
 
     # ---- SPA / minimal status page --------------------------------------

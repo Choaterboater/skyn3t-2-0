@@ -126,6 +126,22 @@ def test_autonomous_stacks_needs_at_least_two():
     assert autonomous_stacks(s, has_pin=False) == []
 
 
+def test_trash_fanout_losers_keeps_winner(tmp_path):
+    from skyn3t.cli.main import _trash_fanout_losers
+    projects = tmp_path / "Projects"
+    projects.mkdir()
+    for s in ("app-react", "app-static", "app-fastapi"):
+        (projects / s).mkdir()
+        (projects / s / "main.py").write_text("x")
+    settings = SimpleNamespace(projects_dir=projects)
+    cands = [FanCandidate(id="react"), FanCandidate(id="static"), FanCandidate(id="fastapi")]
+    trashed = _trash_fanout_losers(settings, "app", cands, winner_id="react")
+    assert set(trashed) == {"static", "fastapi"}
+    assert (projects / "app-react").is_dir()  # winner kept
+    assert not (projects / "app-static").exists()
+    assert (projects.parent / ".skyn3t_trash" / "app-static").exists()  # recoverable
+
+
 class _Bus:
     def __init__(self):
         self.events = []

@@ -369,6 +369,12 @@ def studio_build(
     table.add_row("cost_usd", str(outcome.get("cost_usd", 0.0)))
     table.add_row("artifact", str(outcome.get("project_dir", "")))
     console.print(table)
+    fo = outcome.get("fanout")
+    if isinstance(fo, dict):
+        console.print(
+            f"[cyan]Fan-out[/cyan]: winner [bold]{fo.get('winner')}[/bold] of "
+            f"{fo.get('n')} stacks · {fo.get('passed')} passed · "
+            f"exploration delta +{fo.get('delta')}")
     if outcome.get("status") != "completed":
         raise typer.Exit(code=2)
 
@@ -509,6 +515,30 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
         budget_guard=budget_guard,
         rag=rag,
     )
+    # Spec 4: autonomous fan-out. An UNPINNED build, when settings configure a
+    # stack list, is explored across those stacks in parallel and the proof
+    # WINNER is delivered. Off by default (empty setting) -> normal single build.
+    from skyn3t.studio.fanout import FanCandidate, autonomous_stacks, fan_out
+    fo_stacks = autonomous_stacks(settings, has_pin=bool(stack))
+    if fo_stacks:
+        from skyn3t.studio.runner import _slugify
+        base = _slugify(slug or brief)
+        cands = [FanCandidate(id=s, label=s, spec={"stack": s}) for s in fo_stacks]
+        raw: dict[str, Any] = {}
+
+        async def _fan_build(c):
+            out = await runner.start(brief, slug=f"{base}-{c.id}",
+                                     extra={"stack": (c.spec or {}).get("stack", "")})
+            raw[c.id] = out
+            return out
+
+        fo = await fan_out(cands, _fan_build, event_bus=spine["event_bus"])
+        if fo.winner is not None and fo.winner.candidate_id in raw:
+            d = raw[fo.winner.candidate_id].to_dict()
+            d["fanout"] = fo.summary
+            return d
+        return {"fanout": fo.summary, "winner": None}
+
     extra: dict[str, Any] = {}
     if best_of and best_of > 1:
         extra["best_of_n"] = best_of

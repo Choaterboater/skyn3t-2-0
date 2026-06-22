@@ -11,6 +11,7 @@ from skyn3t.studio.fanout import (
     FanCandidate,
     FanOutOutcome,
     FanResult,
+    autonomous_stacks,
     fan_out,
 )
 
@@ -103,6 +104,26 @@ def test_fan_out_referee_can_rescore(tmp_path):
 
     out = asyncio.run(fan_out(cands, build_fn, referee=referee))
     assert out.winner.candidate_id == "x" and out.winner.score == 95.0
+
+
+def test_autonomous_stacks_off_by_default():
+    s = SimpleNamespace(autonomous_fanout_stacks="")
+    assert autonomous_stacks(s, has_pin=False) == []
+
+
+def test_autonomous_stacks_returns_configured_when_unpinned():
+    s = SimpleNamespace(autonomous_fanout_stacks="react, static ,fastapi")
+    assert autonomous_stacks(s, has_pin=False) == ["react", "static", "fastapi"]
+
+
+def test_autonomous_stacks_suppressed_by_an_explicit_pin():
+    s = SimpleNamespace(autonomous_fanout_stacks="react,static")
+    assert autonomous_stacks(s, has_pin=True) == []
+
+
+def test_autonomous_stacks_needs_at_least_two():
+    s = SimpleNamespace(autonomous_fanout_stacks="react")
+    assert autonomous_stacks(s, has_pin=False) == []
 
 
 class _Bus:

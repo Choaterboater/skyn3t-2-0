@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     asset_gen: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     critic_enabled: bool = True  # 2.0: adversarial pre-delivery critic
+    # Spec 2: N-ensemble vote for the intent judge (median of N samples, robust
+    # to an outlier). 1 = single call (default); >1 costs N judge calls/build.
+    intent_judge_samples: int = Field(default=1, ge=1, le=7)
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

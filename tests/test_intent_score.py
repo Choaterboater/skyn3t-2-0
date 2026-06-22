@@ -133,3 +133,47 @@ def test_llm_intent_score_swallows_bad_json(tmp_path):
             return SimpleNamespace(text="not json at all")
 
     assert asyncio.run(llm_intent_score("a brief", tmp_path, llm=_LLM())) is None
+
+
+class _SeqLLM:
+    """Fake judge returning a scripted sequence of scores (None => bad JSON)."""
+    backend = "anthropic"
+
+    def __init__(self, scores):
+        self._scores = list(scores)
+        self._i = 0
+
+    async def complete(self, prompt, **kw):
+        v = self._scores[self._i]
+        self._i += 1
+        return SimpleNamespace(text="garbage" if v is None
+                               else json.dumps({"score": v}))
+
+
+def test_ensemble_takes_median_of_samples(tmp_path):
+    _proj(tmp_path, {"main.py": "x = 1"})
+    out = asyncio.run(llm_intent_score("a brief", tmp_path,
+                                       llm=_SeqLLM([60, 100, 80]), samples=3))
+    assert out == 80.0  # median, not mean (which would be 80 too — use an outlier below)
+
+
+def test_ensemble_is_robust_to_an_outlier(tmp_path):
+    _proj(tmp_path, {"main.py": "x = 1"})
+    # mean would be ~58.3; the median ignores the 10 outlier
+    out = asyncio.run(llm_intent_score("a brief", tmp_path,
+                                       llm=_SeqLLM([10, 80, 85]), samples=3))
+    assert out == 80.0
+
+
+def test_ensemble_drops_failed_samples(tmp_path):
+    _proj(tmp_path, {"main.py": "x = 1"})
+    out = asyncio.run(llm_intent_score("a brief", tmp_path,
+                                       llm=_SeqLLM([None, 80, 80]), samples=3))
+    assert out == 80.0  # the bad-JSON sample is dropped; median of [80, 80]
+
+
+def test_ensemble_all_failed_returns_none(tmp_path):
+    _proj(tmp_path, {"main.py": "x = 1"})
+    out = asyncio.run(llm_intent_score("a brief", tmp_path,
+                                       llm=_SeqLLM([None, None]), samples=2))
+    assert out is None

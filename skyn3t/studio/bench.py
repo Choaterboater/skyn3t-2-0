@@ -136,9 +136,10 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
         "mean_score_go": _mean([r.score for r in results if r.verdict == "go"]),
         "mean_intent": _mean([r.intent_score for r in results]),
         # efficiency: spend per SHIPPED build (None when nothing shipped — that's
-        # undefined, not zero).
+        # undefined, not zero). mean_cost is None when there's no cost data at all
+        # (consistent with cost_per_go — "no data" is not "zero spend").
         "total_cost_usd": total_cost,
-        "mean_cost_usd": _mean([r.cost_usd for r in results]),
+        "mean_cost_usd": round(total_cost / len(costs), 6) if costs else None,
         "cost_per_go_usd": round(total_cost / go, 6) if go else None,
     }
 

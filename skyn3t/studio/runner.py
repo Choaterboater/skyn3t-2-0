@@ -1027,7 +1027,8 @@ class StudioRunner:
             if code_backend != "stub":
                 try:
                     llm_intent = await llm_intent_score(
-                        brief, project_dir, llm=self._intent_llm())
+                        brief, project_dir, llm=self._intent_llm(),
+                        samples=int(getattr(self.settings, "intent_judge_samples", 1)))
                 except Exception:  # noqa: BLE001 - judge is best-effort
                     llm_intent = None
             intent = score_intent(brief, project_dir, plan.stack, llm_score=llm_intent)

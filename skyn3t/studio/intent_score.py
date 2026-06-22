@@ -14,6 +14,7 @@ Two signals, both degrade gracefully (design rule: offline-first):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -212,9 +213,29 @@ def intent_gate(code_backend: str, intent: "IntentResult", floor: float) -> bool
     return intent.score >= floor
 
 
-async def llm_intent_score(brief: str, project_dir, *, llm) -> float | None:
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    m = len(s) // 2
+    return s[m] if len(s) % 2 else round((s[m - 1] + s[m]) / 2.0, 2)
+
+
+async def _one_judge(prompt: str, llm) -> float | None:
+    try:
+        from skyn3t.core.model_router import Tier
+        res = await llm.complete(prompt, tier=Tier.STRONG, json_mode=True,
+                                 max_tokens=256)
+        data = json.loads(res.text)
+        return max(0.0, min(100.0, float(data.get("score"))))
+    except Exception:  # noqa: BLE001 - one bad sample must not sink the vote
+        return None
+
+
+async def llm_intent_score(brief: str, project_dir, *, llm,
+                           samples: int = 1) -> float | None:
     """Calibrated separate LLM judge: does the delivered CONTENT satisfy the
-    brief's intent? Returns 0..100, or None (no/stub LLM, or any failure)."""
+    brief's intent? With samples>1 it runs an N-ensemble vote and returns the
+    MEDIAN score (robust to an outlier sample). Returns 0..100, or None (no/stub
+    LLM, or every sample failed)."""
     if llm is None or getattr(llm, "backend", "stub") == "stub":
         return None
     digest = _content_digest(project_dir)
@@ -228,11 +249,7 @@ async def llm_intent_score(brief: str, project_dir, *, llm) -> float | None:
         f"<brief>\n{brief}\n</brief>\n\n"
         f"<delivered_content>\n{digest}\n</delivered_content>\n"
     )
-    try:
-        from skyn3t.core.model_router import Tier
-        res = await llm.complete(prompt, tier=Tier.STRONG, json_mode=True,
-                                 max_tokens=256)
-        data = json.loads(res.text)
-        return max(0.0, min(100.0, float(data.get("score"))))
-    except Exception:  # noqa: BLE001 - judge is best-effort; degrade to heuristic
-        return None
+    n = max(1, int(samples))
+    results = await asyncio.gather(*[_one_judge(prompt, llm) for _ in range(n)])
+    scores = [s for s in results if s is not None]
+    return _median(scores) if scores else None

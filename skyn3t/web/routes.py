@@ -50,6 +50,19 @@ def _reap_improve_task(task: Any) -> None:
     if exc is not None:  # ImproveEngine catches internally, but log if it ever raises
         log.error("web.improve_task_crashed", error=str(exc))
 
+
+# Strong references to in-flight background fan-out tasks (prevent GC mid-run).
+_FANOUT_TASKS: set = set()
+
+
+def _reap_fanout_task(task: Any) -> None:
+    _FANOUT_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:  # fan_out catches per-candidate, but log infra faults
+        log.error("web.fanout_task_crashed", error=str(exc))
+
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
     from fastapi.responses import FileResponse
@@ -417,6 +430,37 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
     _IMPROVE_TASKS.add(task)
     task.add_done_callback(_reap_improve_task)
     return {"accepted": True, "slug": slug, "goal": goal.strip(), "correlation_id": cid}
+
+
+async def fanout_project(state: AppState, brief: str, stacks: list[str]) -> dict[str, Any]:
+    """Dispatch a Spec 4 fan-out — build N divergent stack candidates for one
+    brief in parallel — as a background task streaming FANOUT_* events to the
+    cockpit. Each candidate builds to a distinct slug so they don't collide."""
+    if not brief or not brief.strip():
+        raise ValueError("brief is required")
+    ids = [str(s).strip() for s in (stacks or []) if str(s).strip()]
+    if len(ids) < 2:
+        raise ValueError("at least two stacks are required to fan out")
+    if getattr(state, "studio", None) is None:
+        return {"accepted": False, "brief": brief.strip(), "reason": "studio unavailable"}
+    from skyn3t.studio.fanout import FanCandidate, fan_out
+    from skyn3t.studio.runner import _slugify
+    cands = [FanCandidate(id=s, label=s, spec={"stack": s}) for s in ids]
+    cid = uuid.uuid4().hex
+    base = _slugify(brief)
+
+    async def build_fn(c):
+        stack = (c.spec or {}).get("stack", "")
+        return await state.studio.start(
+            brief.strip(), slug=f"{base}-{c.id}",
+            extra={"stack": stack} if stack else {})
+
+    import asyncio
+    task = asyncio.ensure_future(
+        fan_out(cands, build_fn, event_bus=state.event_bus, correlation_id=cid))
+    _FANOUT_TASKS.add(task)
+    task.add_done_callback(_reap_fanout_task)
+    return {"accepted": True, "brief": brief.strip(), "stacks": ids, "correlation_id": cid}
 
 
 def _resolve_live_gate(state: AppState, build_id: str, approved: bool, reason: str) -> int:
@@ -1139,6 +1183,16 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=422, detail="slug and goal are required") from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="not found") from None
+
+    @router.post("/studio/fanout", dependencies=[auth])
+    async def _fanout(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        stacks = body.get("stacks")
+        if isinstance(stacks, str):
+            stacks = [s.strip() for s in stacks.split(",") if s.strip()]
+        try:
+            return await fanout_project(state, str(body.get("brief", "")), stacks or [])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @router.get("/proposals", dependencies=[auth])
     async def _proposals(status: str = Query(default="")) -> dict[str, Any]:

@@ -80,7 +80,7 @@ class BuildRow(Base):
     brief: Mapped[str] = mapped_column(Text)
     stack: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(32), default="pending")
-    score: Mapped[float] = mapped_column(Float, default=0.0)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     verdict: Mapped[str] = mapped_column(String(16), default="")
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     artifact_dir: Mapped[str | None] = mapped_column(String(512), nullable=True)

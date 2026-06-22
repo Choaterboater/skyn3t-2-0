@@ -201,6 +201,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
         for d in sorted(p for p in pdir.iterdir() if p.is_dir() and not p.name.startswith(".")):
             man = _load_manifest(d)
             m = man or {}
+            extra = m.get("extra") or {}
             out.append({
                 "slug": m.get("slug", d.name),
                 "stack": m.get("stack", ""),
@@ -212,6 +213,9 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "size_bytes": _dir_size(d),
                 "has_preview": (d / "index.html").exists(),
                 "has_manifest": man is not None,
+                # Spec 2 cost attribution (None when a build predates it).
+                "cost_usd": extra.get("build_cost_usd"),
+                "wasted_usd": extra.get("wasted_usd"),
             })
     return {"projects": out}
 

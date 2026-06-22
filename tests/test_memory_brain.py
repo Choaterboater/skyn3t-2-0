@@ -163,27 +163,31 @@ class _FakeAgent:
 
 def test_tuner_applies_safe_knobs_only():
     bus = EventBus()
-    agent = _FakeAgent({"temperature": 0.8, "max_retries": 1, "danger": 1})
+    # temperature is no longer in SAFE_KNOBS (no consumer) — it must be ignored.
+    agent = _FakeAgent({"temperature": 0.8, "max_retries": 1, "best_of_n": 1, "danger": 1})
     tuner = SelfTuningEngine(bus, {"coder": agent})
     tuner.start()
     ev = Event(type=EventType.KNOWLEDGE_UPDATED, source="reflection", payload={
         "suggestions": [{"agent": "coder", "reason": "be safer", "changes": {
-            "temperature": {"op": "scale", "factor": 0.5},
+            "temperature": {"op": "scale", "factor": 0.5},  # ignored: removed from SAFE_KNOBS
             "max_retries": {"op": "add", "delta": 1},
+            "best_of_n": 2,
             "critic_enabled": True,
             "danger": 999,  # not in allow-list -> ignored
         }}],
     })
     _run(bus.publish(ev))
-    assert agent.config["temperature"] == 0.4
+    assert agent.config["temperature"] == 0.8  # untouched: temperature removed from SAFE_KNOBS
     assert agent.config["max_retries"] == 2
+    assert agent.config["best_of_n"] == 2
     assert agent.config["critic_enabled"] is True
     assert agent.config["danger"] == 1  # untouched
 
 
 def test_tuner_clamps_out_of_range():
     bus = EventBus()
-    agent = _FakeAgent({"temperature": 0.5})
+    # Use best_of_n (still in SAFE_KNOBS) to test clamping behaviour.
+    agent = _FakeAgent({"best_of_n": 1})
     tuner = SelfTuningEngine(bus, {"a": agent})
-    tuner._apply_one({"agent": "a", "changes": {"temperature": {"op": "set", "value": 99}}}, "t")
-    assert agent.config["temperature"] == 1.0  # clamped to max
+    tuner._apply_one({"agent": "a", "changes": {"best_of_n": {"op": "set", "value": 99}}}, "t")
+    assert agent.config["best_of_n"] == 4  # clamped to max (4.0)

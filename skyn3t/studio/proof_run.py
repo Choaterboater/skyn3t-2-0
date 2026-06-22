@@ -263,20 +263,21 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
     Never raises. Best-effort only: offline-safe (no network, no installs).
     """
     low = (stack or "").lower()
+    # _MIN_SUBSTANTIVE_BYTES guards the overall empty-scaffold check; the stack
+    # artifact check just needs the file to be non-empty (size > 0).
+    _NONEMPTY = 1
     try:
         # ---- static / HTML-only -----------------------------------------
         if low in ("static", "html"):
             html_files = [
                 f for f in _iter_files(pdir)
                 if f.suffix == ".html"
-                and f.stat().st_size >= _MIN_SUBSTANTIVE_BYTES
+                and f.stat().st_size >= _NONEMPTY
             ]
             if not html_files:
-                return (True, False, "static stack: no substantive index.html found")
+                return (True, False, "static stack: no index.html found")
             # Prefer an index.html at the root or one directory deep.
-            has_index = any(
-                f.name == "index.html" for f in html_files
-            )
+            has_index = any(f.name == "index.html" for f in html_files)
             if not has_index:
                 return (True, False, "static stack: index.html missing")
             return (True, True, "static stack: index.html present")
@@ -286,10 +287,10 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
             py_files = [
                 f for f in _iter_files(pdir)
                 if f.suffix == ".py"
-                and f.stat().st_size >= _MIN_SUBSTANTIVE_BYTES
+                and f.stat().st_size >= _NONEMPTY
             ]
             if not py_files:
-                return (True, False, f"{low} stack: no substantive .py files found")
+                return (True, False, f"{low} stack: no .py files found")
             # Look for a recognised entrypoint name.
             ep_names = {"main.py", "app.py", "__main__.py", "cli.py", "run.py"}
             has_ep = any(f.name in ep_names for f in py_files)
@@ -302,10 +303,10 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
             py_files = [
                 f for f in _iter_files(pdir)
                 if f.suffix == ".py"
-                and f.stat().st_size >= _MIN_SUBSTANTIVE_BYTES
+                and f.stat().st_size >= _NONEMPTY
             ]
             if not py_files:
-                return (True, False, f"{low} stack: no substantive .py files found")
+                return (True, False, f"{low} stack: no .py files found")
             # Require at least one file containing the framework import as a marker.
             marker = low  # "fastapi", "flask", "django"
             for f in py_files:
@@ -329,7 +330,7 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
             entry_present = any(
                 f.name in ("main.tsx", "main.jsx", "main.ts", "App.tsx", "App.jsx", "index.tsx", "index.jsx")
                 for f in _iter_files(pdir)
-                if f.stat().st_size >= _MIN_SUBSTANTIVE_BYTES
+                if f.stat().st_size >= _NONEMPTY
             )
             if not entry_present:
                 return (True, False, f"{low} stack: no React entry file (main.tsx/App.tsx) found")
@@ -346,10 +347,10 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
             js_files = [
                 f for f in _iter_files(pdir)
                 if f.suffix in (".js", ".ts", ".mjs")
-                and f.stat().st_size >= _MIN_SUBSTANTIVE_BYTES
+                and f.stat().st_size >= _NONEMPTY
             ]
             if not js_files:
-                return (True, False, f"{low} stack: no substantive .js/.ts files found")
+                return (True, False, f"{low} stack: no .js/.ts files found")
             marker_words = {"express", "fastify", "koa", "hapi", "http.createServer"}
             for f in js_files:
                 try:

@@ -45,9 +45,11 @@ app = typer.Typer(
 studio_app = typer.Typer(help="Run and steer brief->app builds.", no_args_is_help=True)
 project_app = typer.Typer(help="Inspect delivered projects / builds.", no_args_is_help=True)
 domain_app = typer.Typer(help="Ingest external knowledge (RAG corpus).", no_args_is_help=True)
+bench_app = typer.Typer(help="Benchmark/regression harness (Spec 2).", no_args_is_help=True)
 app.add_typer(studio_app, name="studio")
 app.add_typer(project_app, name="project")
 app.add_typer(domain_app, name="domain")
+app.add_typer(bench_app, name="bench")
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +573,119 @@ async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
     )
     outcome = await engine.improve(project, goal)
     return outcome.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Benchmark / regression harness (Spec 2)
+# ---------------------------------------------------------------------------
+
+async def _bench_run_async(cases, label):
+    """Assemble the spine + a StudioRunner once, then build every case."""
+    import time as _time
+
+    from skyn3t.studio.bench import run_bench
+    from skyn3t.studio.runner import StudioRunner
+
+    spine = await _assemble_spine()
+    settings = spine["settings"]
+    learning, patterns, skills, rag = _build_intelligence(
+        settings, spine["event_bus"], spine["memory"])
+    cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
+    runner = StudioRunner(
+        spine["event_bus"], spine["orchestrator"], settings=settings,
+        memory=spine["memory"], learning=learning, patterns=patterns, skills=skills,
+        cost_tracker=cost_tracker, budget_guard=budget_guard, rag=rag,
+    )
+
+    async def build_fn(case):
+        extra = {"stack": case.stack} if case.stack else {}
+        return await runner.start(case.brief, slug=None, extra=extra)
+
+    run = await run_bench(cases, build_fn, label=label, created_at=_time.time())
+    return run, settings
+
+
+def _load_bench_cases(path: str):
+    import json as _json
+    from pathlib import Path as _Path
+
+    from skyn3t.studio.bench import BenchCase
+    if not path:
+        return None
+    try:
+        raw = _json.loads(_Path(path).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        if isinstance(r, dict) and r.get("brief"):
+            out.append(BenchCase(id=str(r.get("id") or r["brief"][:24]),
+                                 brief=str(r["brief"]), stack=str(r.get("stack", ""))))
+    return out or None
+
+
+def _print_bench_summary(console, run) -> None:
+    s = run.summary
+    table = _table(f"Bench '{run.label}'", ["case", "stack", "verdict", "score", "intent"])
+    for r in run.results:
+        table.add_row(
+            r.case_id, r.stack or "—", r.verdict,
+            "—" if r.score is None else f"{r.score:.1f}",
+            "—" if r.intent_score is None else f"{r.intent_score:.1f}")
+    console.print(table)
+    console.print(
+        f"go-rate [bold]{s.get('go_rate', 0) * 100:.0f}%[/bold] "
+        f"({s.get('go', 0)}/{s.get('n', 0)}) · mean score {s.get('mean_score')} "
+        f"· mean intent {s.get('mean_intent')}")
+
+
+@bench_app.command("run")
+def bench_run(
+    label: str = typer.Option("", "--label", "-l", help="Run label (default: timestamp)."),
+    cases_file: str = typer.Option("", "--cases", help="JSON [{id,brief,stack}] (default: built-in set)."),
+    no_save: bool = typer.Option(False, "--no-save", help="Don't write the ledger."),
+) -> None:
+    """Build the brief-set and record a scored ledger under data/bench/."""
+    import time as _time
+
+    from skyn3t.studio.bench import DEFAULT_CASES, save_run
+    console = _console()
+    cases = _load_bench_cases(cases_file) or DEFAULT_CASES
+    lbl = label or _time.strftime("%Y%m%d-%H%M%S", _time.gmtime())
+    console.print(f"[cyan]Benchmark[/cyan] '{lbl}' — building {len(cases)} case(s); "
+                  "these are REAL builds and can take a while.")
+    run, settings = asyncio.run(_bench_run_async(cases, lbl))
+    _print_bench_summary(console, run)
+    if not no_save:
+        path = save_run(run, settings.data_dir)
+        console.print(f"[green]Saved[/green] ledger to [cyan]{path}[/cyan]")
+
+
+@bench_app.command("compare")
+def bench_compare(
+    before: str = typer.Argument(..., help="Baseline run JSON (data/bench/run-*.json)."),
+    after: str = typer.Argument(..., help="New run JSON."),
+    min_score_delta: float = typer.Option(
+        0.0, "--min-score-delta", help="Required mean-score gain to PASS the gate."),
+) -> None:
+    """Diff two runs and render a promotion-gate verdict (exit 1 if rejected)."""
+    from skyn3t.studio.bench import diff_runs, gate_change, load_run
+    console = _console()
+    d = diff_runs(load_run(before), load_run(after))
+    console.print(f"mean score Δ [bold]{d['mean_score_delta']:+}[/bold] · "
+                  f"intent Δ {d['mean_intent_delta']:+} · go-rate Δ {d['go_rate_delta']:+}")
+    for r in d["improvements"]:
+        console.print(f"  [green]improved[/green] {r['case_id']} "
+                      f"({r['verdict_before']}→{r['verdict_after']})")
+    for r in d["regressions"]:
+        console.print(f"  [red]REGRESSED[/red] {r['case_id']} "
+                      f"({r.get('kind')}: score Δ {r['score_delta']})")
+    ok, reasons = gate_change(d, min_mean_score_delta=min_score_delta)
+    if ok:
+        console.print("[green]GATE PASS[/green] — measured improvement.")
+    else:
+        console.print("[red]GATE FAIL[/red] — " + "; ".join(reasons))
+        raise typer.Exit(code=1)
 
 
 @studio_app.command("serve")

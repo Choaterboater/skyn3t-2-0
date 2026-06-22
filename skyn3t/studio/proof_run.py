@@ -174,6 +174,29 @@ def proof_run(
         passed = False
         detail["boot_error"] = boot_error
 
+    # Stack-aware artifact check (rule #3, stack-agnostic gap): the generic
+    # entrypoint pass above accepts ANY recognised filename regardless of stack.
+    # A "static" brief that ships main.py passes the generic check — but it has
+    # NOT been proven for a static stack.  We run the stack-specific check and
+    # record whether it was a genuine stack-specific pass or a generic fallback,
+    # so callers can distinguish "statically verified for this stack" from
+    # "generic entrypoint present". Never raises; never tightens a generic pass
+    # into a fail when no stack-specific check exists (checked=False).
+    if passed and total > 0:
+        sa_checked, sa_passed, sa_note = _stack_artifact_check(pdir, stack)
+        if sa_checked:
+            detail["stack_check"] = "pass" if sa_passed else "fail"
+            detail["stack_check_note"] = sa_note
+            if not sa_passed:
+                passed = False
+                if "<stack-artifact>" not in missing:
+                    missing = [*missing, "<stack-artifact>"]
+        else:
+            # No stack-specific check available — generic path was used.
+            detail["stack_check"] = "generic"
+            if sa_note:
+                detail["stack_check_note"] = sa_note
+
     # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
     # A real failure fails the proof (and routes into the fix loop). Inability to
     # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
@@ -224,6 +247,129 @@ def proof_run(
 
 # Stacks for which a runnable entrypoint is expected before we call it "proven".
 _CODE_STACKS = ("cli", "python", "fastapi", "flask", "django", "node", "express", "nextjs")
+
+
+def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
+    """Stack-aware artifact presence check.
+
+    Returns ``(checked, passed, note)`` where:
+    - ``checked=False`` means no stack-specific check could be done (fall back to
+      the generic entrypoint/boot path; caller must NOT claim a stack-specific pass).
+    - ``checked=True, passed=True`` means the stack's required artifact is present
+      and non-trivial.
+    - ``checked=True, passed=False`` means the artifact is absent/trivial — the
+      project definitely does NOT satisfy its declared stack.
+
+    Never raises. Best-effort only: offline-safe (no network, no installs).
+    """
+    low = (stack or "").lower()
+    # _MIN_SUBSTANTIVE_BYTES guards the overall empty-scaffold check; the stack
+    # artifact check just needs the file to be non-empty (size > 0).
+    _NONEMPTY = 1
+    try:
+        # ---- static / HTML-only -----------------------------------------
+        if low in ("static", "html"):
+            html_files = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".html"
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not html_files:
+                return (True, False, "static stack: no index.html found")
+            # Prefer an index.html at the root or one directory deep.
+            has_index = any(f.name == "index.html" for f in html_files)
+            if not has_index:
+                return (True, False, "static stack: index.html missing")
+            return (True, True, "static stack: index.html present")
+
+        # ---- pure python / cli ------------------------------------------
+        if low in ("python", "cli"):
+            py_files = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".py"
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not py_files:
+                return (True, False, f"{low} stack: no .py files found")
+            # Look for a recognised entrypoint name.
+            ep_names = {"main.py", "app.py", "__main__.py", "cli.py", "run.py"}
+            has_ep = any(f.name in ep_names for f in py_files)
+            if not has_ep:
+                return (True, False, f"{low} stack: no entrypoint file (main.py / app.py / cli.py) found")
+            return (True, True, f"{low} stack: entrypoint .py file present")
+
+        # ---- fastapi / flask / django ------------------------------------
+        if low in ("fastapi", "flask", "django"):
+            py_files = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".py"
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not py_files:
+                return (True, False, f"{low} stack: no .py files found")
+            # Require at least one file containing the framework import as a marker.
+            marker = low  # "fastapi", "flask", "django"
+            for f in py_files:
+                try:
+                    text = f.read_text(encoding="utf-8", errors="replace")
+                    if marker in text.lower():
+                        return (True, True, f"{low} stack: framework marker found in source")
+                except OSError:
+                    pass
+            return (True, False, f"{low} stack: no file imports/references {low}")
+
+        # ---- react_vite / react -----------------------------------------
+        if low in ("react", "react_vite"):
+            pkg = pdir / "package.json"
+            if not pkg.exists():
+                return (True, False, f"{low} stack: package.json missing")
+            vite_config = any(
+                f.name in ("vite.config.js", "vite.config.ts", "vite.config.mjs")
+                for f in _iter_files(pdir)
+            ) if low == "react_vite" else True
+            entry_present = any(
+                f.name in ("main.tsx", "main.jsx", "main.ts", "App.tsx", "App.jsx", "index.tsx", "index.jsx")
+                for f in _iter_files(pdir)
+                if f.stat().st_size >= _NONEMPTY
+            )
+            if not entry_present:
+                return (True, False, f"{low} stack: no React entry file (main.tsx/App.tsx) found")
+            if low == "react_vite" and not vite_config:
+                return (True, False, "react_vite stack: vite.config.* missing")
+            return (True, True, f"{low} stack: package.json + entry file present")
+
+        # ---- node_express / node / express ------------------------------
+        if low in ("node", "node_express", "express"):
+            pkg = pdir / "package.json"
+            if not pkg.exists():
+                return (True, False, f"{low} stack: package.json missing")
+            # Require a server entry file or framework reference.
+            js_files = [
+                f for f in _iter_files(pdir)
+                if f.suffix in (".js", ".ts", ".mjs")
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not js_files:
+                return (True, False, f"{low} stack: no .js/.ts files found")
+            marker_words = {"express", "fastify", "koa", "hapi", "http.createServer"}
+            for f in js_files:
+                try:
+                    text = f.read_text(encoding="utf-8", errors="replace")
+                    if any(m in text.lower() for m in marker_words):
+                        return (True, True, f"{low} stack: server framework marker found")
+                except OSError:
+                    pass
+            # Fallback: server.js / index.js present is enough.
+            has_server_entry = any(f.name in ("server.js", "server.ts", "index.js", "index.ts") for f in js_files)
+            if not has_server_entry:
+                return (True, False, f"{low} stack: no server entry (server.js/index.js) found")
+            return (True, True, f"{low} stack: server entry file present")
+
+    except Exception:  # noqa: BLE001 — never let a stack check crash proof
+        return (False, False, "stack check failed unexpectedly — fell back to generic")
+
+    # Unknown/unrecognised stack: signal to the caller to use generic path.
+    return (False, False, "")
 
 
 def _entrypoint_check(pdir: Path, stack: str) -> tuple[list[str], str]:

@@ -4,7 +4,22 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from skyn3t.studio.cleanup import apply, scan
+from skyn3t.studio.cleanup import apply, scan, trash_path
+
+
+def test_trash_path_moves_with_dedup(tmp_path):
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / "f.txt").write_text("x")
+    trash = tmp_path / ".trash"
+    dest = trash_path(src, trash)
+    assert dest.exists() and not src.exists() and dest.parent == trash
+    # a second item with the same name is de-duplicated, not clobbered
+    src2 = tmp_path / "proj"
+    src2.mkdir()
+    (src2 / "g.txt").write_text("y")
+    dest2 = trash_path(src2, trash)
+    assert dest2 != dest and dest2.exists() and (dest2 / "g.txt").exists()
 
 
 def _project(root: Path, slug: str, *, status="completed", created="2026-06-20T00:00:00+00:00"):

@@ -198,7 +198,7 @@ def score_intent(brief: str, project_dir, stack: str = "", *,
     return result
 
 
-def intent_gate(code_backend: str, intent: "IntentResult", floor: float) -> bool:
+def intent_gate(code_backend: str, intent: IntentResult, floor: float) -> bool:
     """Whether a delivered project clears intent for a 'go'.
 
     A hard no_go requires a CORROBORATED low signal. Lexical token-overlap (the

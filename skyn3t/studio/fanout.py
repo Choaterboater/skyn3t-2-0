@@ -11,8 +11,9 @@ candidate and (optionally) a referee that re-proofs the delivered tree.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -47,8 +48,8 @@ class FanResult:
         return d
 
     @classmethod
-    def from_outcome(cls, cand: "FanCandidate", outcome: Any,
-                     referee_verdict: tuple[bool, float] | None = None) -> "FanResult":
+    def from_outcome(cls, cand: FanCandidate, outcome: Any,
+                     referee_verdict: tuple[bool, float] | None = None) -> FanResult:
         manifest = getattr(outcome, "manifest", None) or {}
         extra = (manifest.get("extra") if isinstance(manifest, dict) else {}) or {}
         proof = extra.get("proof") or {}

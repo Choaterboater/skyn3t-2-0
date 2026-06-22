@@ -11,7 +11,8 @@ its vocabulary even when they carry no matching tag.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from skyn3t.rag.embeddings import Embedder
 
@@ -38,7 +39,7 @@ class SemanticSkillIndex:
         self.embedder = embedder or Embedder()
         self._index: list[tuple[str, list[float]]] = []
 
-    def build(self, skills: list[Any]) -> "SemanticSkillIndex":
+    def build(self, skills: list[Any]) -> SemanticSkillIndex:
         items = [(str(getattr(s, "slug", "") or ""), _skill_text(s)) for s in skills]
         items = [(slug, text) for slug, text in items if slug]
         vecs = self.embedder.embed_batch([t for _, t in items]) if items else []

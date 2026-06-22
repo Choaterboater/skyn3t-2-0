@@ -10,10 +10,10 @@ heavy agent spine; the CLI supplies a real build_fn that drives StudioRunner.
 from __future__ import annotations
 
 import json
-import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 # A small, stack-diverse default brief-set. Intentionally concrete so intent
 # scoring + stack selection have real signal to measure.
@@ -65,7 +65,7 @@ class BenchResult:
         return d
 
     @classmethod
-    def from_outcome(cls, case: "BenchCase", outcome: Any) -> "BenchResult":
+    def from_outcome(cls, case: BenchCase, outcome: Any) -> BenchResult:
         """Adapt a StudioRunner BuildOutcome (or any object exposing verdict/
         score/status/stack/manifest) into a BenchResult."""
         manifest = getattr(outcome, "manifest", None) or {}

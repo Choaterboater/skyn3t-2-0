@@ -16,6 +16,10 @@ function fmtMB(bytes) {
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
+function fmtCost(usd) {
+  return usd == null ? "—" : `$${Number(usd).toFixed(4)}`;
+}
+
 function CleanupPanel({ qc }) {
   const [scan, setScan] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -209,6 +213,7 @@ export default function Projects() {
                   <th className="px-4 py-2 font-normal">Stack</th>
                   <th className="px-4 py-2 font-normal">Status</th>
                   <th className="px-4 py-2 font-normal">Score</th>
+                  <th className="px-4 py-2 font-normal">Cost</th>
                   <th className="px-4 py-2 font-normal">Size</th>
                   <th className="px-4 py-2 font-normal">Preview</th>
                   <th className="px-4 py-2 font-normal"></th>
@@ -232,6 +237,19 @@ export default function Projects() {
                       </td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">
                         {p.score ?? "—"}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs">
+                        <span className={p.wasted_usd ? "text-ember" : "text-ash"}>
+                          {fmtCost(p.cost_usd)}
+                        </span>
+                        {p.wasted_usd ? (
+                          <span
+                            className="ml-1 text-[10px] text-ember/70"
+                            title="no_go build — this spend produced nothing shippable"
+                          >
+                            wasted
+                          </span>
+                        ) : null}
                       </td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">
                         {fmtMB(p.size_bytes)}

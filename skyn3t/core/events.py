@@ -68,6 +68,10 @@ class EventType(str, Enum):
     # Live app preview (two-pane cockpit): start/stop a delivered project as a server
     SERVE_STARTED = "serve.started"
     SERVE_STOPPED = "serve.stopped"
+    # Fan-out exploration (Spec 4): build N divergent candidates, referee, pick winner
+    FANOUT_STARTED = "fanout.started"
+    FANOUT_CANDIDATE = "fanout.candidate"
+    FANOUT_COMPLETED = "fanout.completed"
 
     # Cortex autonomy
     PROPOSAL_CREATED = "proposal.created"

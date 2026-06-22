@@ -15,7 +15,13 @@ import pytest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.studio.app_runner import RunningApp
 from skyn3t.web import routes
-from skyn3t.web.routes import improve_project, serve_project, serve_status, stop_serve
+from skyn3t.web.routes import (
+    fanout_project,
+    improve_project,
+    serve_project,
+    serve_status,
+    stop_serve,
+)
 
 
 def _state(tmp_path, *, orchestrator=None):
@@ -237,6 +243,55 @@ def _appstate(tmp_path):
         projects_dir=tmp_path / "Projects", data_dir=tmp_path, app_name="x",
         version="0", free_only=True, no_claude=True, autonomous_builds=False,
         approval_gates=True, has_any_llm=False, claude_available=False))
+
+
+class _FanStudio:
+    """Stub StudioRunner.start that returns a canned go outcome per candidate."""
+    def __init__(self):
+        self.started = []
+
+    async def start(self, brief, slug=None, extra=None):
+        self.started.append(slug)
+        stack = (extra or {}).get("stack", "")
+        return SimpleNamespace(verdict="go", score=80.0, status="completed",
+                               stack=stack, slug=slug,
+                               manifest={"extra": {"proof": {"passed": True}}})
+
+
+def _fan_state(tmp_path, studio=None):
+    return SimpleNamespace(
+        studio=studio, event_bus=EventBus(),
+        settings=SimpleNamespace(projects_dir=tmp_path / "Projects"))
+
+
+def test_fanout_dispatches_distinct_slugs_and_emits(tmp_path):
+    studio = _FanStudio()
+    state = _fan_state(tmp_path, studio)
+
+    async def _run():
+        out = await fanout_project(state, "a todo app", ["react", "static"])
+        if routes._IMPROVE_TASKS:
+            await asyncio.gather(*list(routes._IMPROVE_TASKS))
+        return out
+
+    out = asyncio.run(_run())
+    assert out["accepted"] is True and out["correlation_id"]
+    # each candidate built to a DISTINCT slug (no clobbering)
+    assert set(studio.started) == {"a-todo-app-react", "a-todo-app-static"}
+    kinds = [e.type for e in state.event_bus.history()]
+    assert EventType.FANOUT_STARTED in kinds and EventType.FANOUT_COMPLETED in kinds
+
+
+def test_fanout_requires_two_stacks(tmp_path):
+    state = _fan_state(tmp_path, _FanStudio())
+    with pytest.raises(ValueError):
+        asyncio.run(fanout_project(state, "x", ["react"]))
+
+
+def test_fanout_without_studio_is_unavailable(tmp_path):
+    state = _fan_state(tmp_path, studio=None)
+    out = asyncio.run(fanout_project(state, "x", ["react", "static"]))
+    assert out["accepted"] is False
 
 
 def test_create_app_registers_atexit_teardown(tmp_path, monkeypatch):

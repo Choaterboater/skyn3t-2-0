@@ -665,6 +665,71 @@ def _print_bench_summary(console, run) -> None:
         f"· $/go {'—' if cpg is None else f'{cpg:.4f}'}")
 
 
+async def _fanout_async(brief: str, cands):
+    """Assemble the spine + a StudioRunner once, then build every candidate
+    (divergent stacks) in parallel for the same brief."""
+    from skyn3t.studio.fanout import fan_out
+    from skyn3t.studio.runner import StudioRunner, _slugify
+
+    spine = await _assemble_spine()
+    settings = spine["settings"]
+    learning, patterns, skills, rag = _build_intelligence(
+        settings, spine["event_bus"], spine["memory"])
+    cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
+    runner = StudioRunner(
+        spine["event_bus"], spine["orchestrator"], settings=settings,
+        memory=spine["memory"], learning=learning, patterns=patterns, skills=skills,
+        cost_tracker=cost_tracker, budget_guard=budget_guard, rag=rag,
+    )
+    base = _slugify(brief)
+
+    async def build_fn(c):
+        # NOTE: no per-candidate budget reset here. fan-out builds run CONCURRENTLY
+        # (asyncio.gather), so resetting the shared budget mid-flight would race
+        # and let a candidate escape the daily cap. A fan-out is ONE exploration —
+        # spend should accumulate so the cap protects the whole sweep. (The runner
+        # still resets the per-BUILD counter itself via cost_tracker.start_build.)
+        stack = (c.spec or {}).get("stack", "")
+        # distinct slug per candidate so they don't clobber each other's project
+        return await runner.start(brief, slug=f"{base}-{c.id}",
+                                  extra={"stack": stack} if stack else {})
+
+    return await fan_out(cands, build_fn)
+
+
+@app.command("fanout")
+def fanout_cmd(
+    brief: str = typer.Argument(..., help="The brief to explore across stacks."),
+    stacks: str = typer.Option("react,static,fastapi",
+                                "--stacks", "-s", help="Comma-separated candidate stacks."),
+) -> None:
+    """Spec 4: build N divergent stack candidates for one brief, referee by
+    proof, and report the winner + exploration delta."""
+    from skyn3t.studio.fanout import FanCandidate
+    console = _console()
+    ids = [s.strip() for s in stacks.split(",") if s.strip()]
+    if len(ids) < 2:
+        console.print("[yellow]Give at least two --stacks to fan out.[/yellow]")
+        raise typer.Exit(code=1)
+    cands = [FanCandidate(id=s, label=s, spec={"stack": s}) for s in ids]
+    console.print(f"[cyan]Fan-out[/cyan] — building {len(cands)} divergent candidates "
+                  "(real builds, this can take a while).")
+    out = asyncio.run(_fanout_async(brief, cands))
+    table = _table("Fan-out candidates", ["candidate", "verdict", "score", "proof", "status"])
+    for r in out.results:
+        table.add_row(r.candidate_id, r.verdict,
+                      "—" if r.score is None else f"{r.score:.1f}",
+                      "pass" if r.proof_passed else "fail", r.status)
+    console.print(table)
+    if out.winner is not None:
+        tone = "green" if out.any_passed else "yellow"
+        console.print(f"[{tone}]Winner:[/{tone}] [bold]{out.winner.candidate_id}[/bold] "
+                      f"(score {out.winner.score}) · exploration delta +{out.delta} "
+                      f"· {'a candidate passed' if out.any_passed else 'none passed — most complete'}")
+    else:
+        console.print("[red]No candidates produced a result.[/red]")
+
+
 @bench_app.command("run")
 def bench_run(
     label: str = typer.Option("", "--label", "-l", help="Run label (default: timestamp)."),

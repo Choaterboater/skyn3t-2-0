@@ -5,6 +5,7 @@ Playwright or no vision_fn, check() returns a `skipped` verdict and never blocks
 Never raises."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -14,6 +15,10 @@ from typing import Any, Callable
 from skyn3t.core.events import EventType
 
 VisionFn = Callable[[str, str], str]  # (image_path, prompt) -> raw model text
+
+# A small, widely-available, cheap vision-capable model on OpenRouter; override
+# with settings.vision_model.
+_DEFAULT_VISION_MODEL = "openai/gpt-4o-mini"
 
 
 @dataclass(slots=True)
@@ -94,6 +99,47 @@ def inspect(image_path: str, goal: str, *, vision_fn: VisionFn | None = None,
         )
     except Exception as exc:  # noqa: BLE001
         return VisualVerdict(skipped=True, reason=f"vision error: {exc}")
+
+
+def _image_data_url(image_path: str) -> str:
+    with open(image_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def _vision_messages(data_url: str, prompt: str) -> list[dict[str, Any]]:
+    """OpenAI/OpenRouter-style multimodal message: a text part + an image part."""
+    return [{"role": "user", "content": [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]}]
+
+
+def make_vision_fn(settings: Any) -> VisionFn | None:
+    """Build a vision_fn that judges a screenshot via OpenRouter, or None when no
+    key is configured (the loop then soft-skips). This auto-activates the visual
+    loop's judgement step wherever an OpenRouter key + vision model are available
+    — closing the 'text-only LLM' gap without changing the loop."""
+    key = str(getattr(settings, "openrouter_api_key", "") or "")
+    if not key:
+        return None
+    model = str(getattr(settings, "vision_model", "") or "") or _DEFAULT_VISION_MODEL
+
+    def _vision_fn(image_path: str, prompt: str) -> str:
+        import httpx
+        from skyn3t.adapters.llm import OPENROUTER_URL
+        body = {"model": model,
+                "messages": _vision_messages(_image_data_url(image_path), prompt),
+                "max_tokens": 700}
+        headers = {"Authorization": f"Bearer {key}",
+                   "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(OPENROUTER_URL, json=body, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
+    return _vision_fn
 
 
 class VisualChecker:

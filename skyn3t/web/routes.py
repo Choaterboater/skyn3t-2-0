@@ -307,35 +307,62 @@ def _pid_alive(pid: int) -> bool:
 async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     """Start a delivered project as a live localhost server, registering the
     handle so a later stop can find it. Restarting a slug supersedes the prior
-    run (its process is stopped + reaped first)."""
+    run.
+
+    Concurrency-safe without a lock (which would bind to one event loop): a
+    synchronous claim token guards the pop -> ``await start`` -> register window.
+    If a racing serve takes the slot, or a stop pops our claim, while we await
+    start(), we detect the lost claim afterward and tear down our own process
+    instead of leaking it (review findings #1, #2)."""
     pdir = _resolve_project_dir(state, slug)
-    from skyn3t.studio.app_runner import cleanup_serve
+    from skyn3t.studio.app_runner import RunningApp, cleanup_serve
     registry = _serve_registry(state)
     runner = _app_runner(state)
-    prev = registry.pop(slug, None)
-    if prev is not None:
+    # Synchronously (before any await) claim the slot, superseding a *running*
+    # predecessor. A bare object() is our claim identity.
+    prev = registry.get(slug)
+    if isinstance(prev, RunningApp):
         runner.stop(prev)
         cleanup_serve(prev)
+    claim = object()
+    registry[slug] = claim
+
     man = BuildManifest.load(pdir)
     stack = man.stack if man is not None and getattr(man, "stack", "") else ""
     app = await runner.start(pdir, stack)
-    out = {**app.to_dict(), "slug": slug}
+
+    if registry.get(slug) is not claim:
+        # A concurrent serve superseded us, or a stop cancelled us, mid-start:
+        # we no longer own the slot, so tear down our own app rather than leak it.
+        if app.status == "running":
+            runner.stop(app)
+        cleanup_serve(app)
+        return {**app.to_dict(), "slug": slug, "superseded": True}
+
     if app.status == "running":
         registry[slug] = app
         await state.event_bus.emit(
             EventType.SERVE_STARTED, source="web.api",
             payload={"slug": slug, "url": app.url, "port": app.port, "kind": app.kind},
         )
-    return out
+    else:
+        registry.pop(slug, None)  # release the claim
+        cleanup_serve(app)        # unlink a failed start's temp logfile (#7)
+    return {**app.to_dict(), "slug": slug}
 
 
 async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
-    """Stop a live preview server and release its child + temp logfile."""
+    """Stop a live preview server and release its child + temp logfile. Popping
+    an in-flight start *claim* cancels that start — serve_project tears itself
+    down when it finds the slot gone (review finding #2)."""
+    from skyn3t.studio.app_runner import RunningApp, cleanup_serve
     registry = _serve_registry(state)
     app = registry.pop(slug, None)
     if app is None:
         return {"slug": slug, "stopped": False}
-    from skyn3t.studio.app_runner import cleanup_serve
+    if not isinstance(app, RunningApp):
+        # Popped an in-flight claim: the in-progress serve will self-cancel.
+        return {"slug": slug, "stopped": True}
     runner = _app_runner(state)
     runner.stop(app)
     cleanup_serve(app)
@@ -347,10 +374,14 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
 
 
 async def serve_status(state: AppState) -> dict[str, Any]:
-    """List live preview servers, pruning any whose process has died."""
+    """List live preview servers, skipping in-flight claims and pruning any
+    whose process has died."""
+    from skyn3t.studio.app_runner import RunningApp
     registry = _serve_registry(state)
     running: list[dict[str, Any]] = []
     for slug, app in list(registry.items()):
+        if not isinstance(app, RunningApp):
+            continue  # an in-flight start claim, not yet a live app
         if app.pid is not None and not _pid_alive(app.pid):
             registry.pop(slug, None)
             continue

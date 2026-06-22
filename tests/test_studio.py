@@ -254,6 +254,27 @@ class _StubReviewer(BaseAgent):
         return TaskResult(task_id=task.task_id, success=True, output={"score": 88.0, "verdict": "go", "gaps": []})
 
 
+class _BriefBlindReviewer(BaseAgent):
+    """A reviewer that read the BRIEF and judged the delivery a no_go (the
+    delivered tree is structurally complete but does not satisfy what was
+    asked for — e.g. a Hello-world CLI for a "website" brief). The score is
+    low to reflect poor brief-completeness."""
+
+    async def initialize(self) -> None:
+        return None
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        return TaskResult(
+            task_id=task.task_id,
+            success=True,
+            output={"score": 20.0, "verdict": "no_go",
+                    "gaps": ["delivery does not match the brief (wanted a website, got a CLI)"]},
+        )
+
+
 def test_final_build_status_marks_no_go_distinctly():
     from skyn3t.studio.runner import _final_build_status
 
@@ -322,5 +343,79 @@ def test_studio_runner_best_of_n(tmp_path):
         outcome = await runner.start("Build a python tool", slug="bon", extra={"best_of_n": 3})
         assert outcome.status == "completed"
         assert (Path(outcome.project_dir) / "src" / "main.py").exists()
+
+    asyncio.run(run())
+
+
+def test_brief_aware_no_go_survives_structural_rescore(tmp_path):
+    """Regression (fix/swarm-intent-scoring): a hollow build must NOT score go.
+
+    The reviewer STAGE produced a BRIEF-AWARE no_go (the delivery doesn't match
+    what was asked for), while the delivered tree is structurally complete so the
+    blind structural rescore (entrypoint + >=5 source files + manifest + parseable
+    config) would say "go". The final verdict must stay no_go — the structural
+    rescore must not overwrite the brief-aware signal.
+    """
+    async def run():
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        rev = _BriefBlindReviewer("rev", "reviewer", "stub", bus)
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        outcome = await runner.start("Build a marketing website", slug="hollow")
+
+        # The structural rescore WOULD have said go (complete tree); confirm it.
+        assert outcome.manifest["extra"]["rescore"]["verdict"] == "go"
+        # ...but the brief-aware no_go is honoured -> final verdict no_go.
+        assert outcome.verdict == "no_go"
+        assert outcome.status == "completed_no_go"
+        # Score must not have ratcheted up to the structural reading.
+        assert outcome.score < 60.0
+
+    asyncio.run(run())
+
+
+def test_brief_aware_go_with_good_structure_stays_go(tmp_path):
+    """Converse: a reviewer go (brief-aware) + structurally-sound delivery that
+    passes its proof must remain go — the fix must not regress legit builds."""
+    async def run():
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        rev = _StubReviewer("rev", "reviewer", "stub", bus)
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        outcome = await runner.start("Build a python tool", slug="legit")
+
+        assert outcome.manifest["extra"]["rescore"]["verdict"] == "go"
+        assert outcome.verdict == "go"
+        assert outcome.status == "completed"
 
     asyncio.run(run())

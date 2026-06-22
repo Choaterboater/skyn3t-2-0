@@ -649,17 +649,20 @@ def _load_bench_cases(path: str):
 
 def _print_bench_summary(console, run) -> None:
     s = run.summary
-    table = _table(f"Bench '{run.label}'", ["case", "stack", "verdict", "score", "intent"])
+    table = _table(f"Bench '{run.label}'", ["case", "stack", "verdict", "score", "intent", "cost $"])
     for r in run.results:
         table.add_row(
             r.case_id, r.stack or "—", r.verdict,
             "—" if r.score is None else f"{r.score:.1f}",
-            "—" if r.intent_score is None else f"{r.intent_score:.1f}")
+            "—" if r.intent_score is None else f"{r.intent_score:.1f}",
+            "—" if r.cost_usd is None else f"{r.cost_usd:.4f}")
     console.print(table)
+    cpg = s.get("cost_per_go_usd")
     console.print(
         f"go-rate [bold]{s.get('go_rate', 0) * 100:.0f}%[/bold] "
         f"({s.get('go', 0)}/{s.get('n', 0)}) · mean score {s.get('mean_score')} "
-        f"· mean intent {s.get('mean_intent')}")
+        f"· mean intent {s.get('mean_intent')} · total ${s.get('total_cost_usd')} "
+        f"· $/go {'—' if cpg is None else f'{cpg:.4f}'}")
 
 
 @bench_app.command("run")
@@ -690,21 +693,27 @@ def bench_compare(
     after: str = typer.Argument(..., help="New run JSON."),
     min_score_delta: float = typer.Option(
         0.0, "--min-score-delta", help="Required mean-score gain to PASS the gate."),
+    max_cost_per_go: float = typer.Option(
+        -1.0, "--max-cost-per-go", help="Max allowed $/go increase (<0 = ignore cost)."),
 ) -> None:
     """Diff two runs and render a promotion-gate verdict (exit 1 if rejected)."""
     from skyn3t.studio.bench import diff_runs, gate_change, load_run
     console = _console()
     d = diff_runs(load_run(before), load_run(after))
+    cpgd = d.get("cost_per_go_delta")
     console.print(f"go-mean Δ [bold]{d['mean_score_go_delta']:+}[/bold] · "
                   f"mean Δ {d['mean_score_delta']:+} · intent Δ {d['mean_intent_delta']:+} "
-                  f"· go-rate Δ {d['go_rate_delta']:+}")
+                  f"· go-rate Δ {d['go_rate_delta']:+} · "
+                  f"$/go Δ {'—' if cpgd is None else f'{cpgd:+.4f}'}")
     for r in d["improvements"]:
         console.print(f"  [green]improved[/green] {r['case_id']} "
                       f"({r['verdict_before']}→{r['verdict_after']})")
     for r in d["regressions"]:
         console.print(f"  [red]REGRESSED[/red] {r['case_id']} "
                       f"({r.get('kind')}: score Δ {r['score_delta']})")
-    ok, reasons = gate_change(d, min_mean_score_delta=min_score_delta)
+    ok, reasons = gate_change(
+        d, min_mean_score_delta=min_score_delta,
+        max_cost_per_go_increase=None if max_cost_per_go < 0 else max_cost_per_go)
     if ok:
         console.print("[green]GATE PASS[/green] — measured improvement.")
     else:

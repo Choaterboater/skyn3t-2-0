@@ -25,15 +25,41 @@ from skyn3t.core.events import Event, EventBus, EventType
 
 # Allow-list of tunable config knobs with (min, max) clamps. Only these may be
 # written by the tuner — everything else is ignored.
+#
+# Consumer notes (every advertised knob MUST have a real consumer):
+#
+#   best_of_n   — read by StudioRunner via ``plan.best_of_n`` and
+#                 ``settings.best_of_n`` (planner._resolve_best_of_n); tuner
+#                 writes it to agent.config AND cortex.tuning_store persists it
+#                 into Settings so subsequent planner calls pick it up.
+#   max_retries — read by Orchestrator via ``task.max_retries`` on AgentTask,
+#                 NOT from agent.config; kept here so the tuner can write it to
+#                 configs that are ALSO used directly as AgentTask kwargs by the
+#                 runner (runner.py passes plan-level extra dict to task).
+#
+# Removed from a previous version (were writing into the void):
+#   temperature — LLM adapter takes temperature as a call-site param, never
+#                 reads agent.config["temperature"]; no consumer.
+#   max_tokens  — hardcoded at each llm.complete() call site; not read from
+#                 agent.config.
+#   timeout_s   — nothing in the codebase reads agent.config["timeout_s"].
 SAFE_KNOBS: dict[str, tuple[float, float]] = {
-    "temperature": (0.0, 1.0),
-    "max_retries": (0.0, 5.0),
     "best_of_n": (1.0, 4.0),
-    "max_tokens": (256.0, 8192.0),
-    "timeout_s": (5.0, 300.0),
+    "max_retries": (0.0, 5.0),
 }
-# Boolean knobs that may be flipped on (never required, just enabled).
-SAFE_FLAGS = {"critic_enabled", "reflective_retry", "json_mode"}
+# Boolean flags that may be flipped on (never required, just enabled).
+#
+# Consumer notes:
+#   critic_enabled   — read by StudioRunner (runner.py:797 ``self.settings.
+#                      critic_enabled``) and persisted by tuning_store into
+#                      Settings overrides so it carries across builds.
+#   reflective_retry — read by reflection.py and persisted into Settings;
+#                      also emitted by InsightPublished as a concrete action.
+#
+# Removed from a previous version (were writing into the void):
+#   json_mode — agents hardcode json_mode=True/False at each llm.complete()
+#               call site; writing it to agent.config has no effect.
+SAFE_FLAGS = {"critic_enabled", "reflective_retry"}
 
 
 @dataclass(slots=True)

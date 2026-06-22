@@ -23,21 +23,21 @@ from skyn3t.studio.bench import (
 
 
 def _outcome(verdict="go", score=90.0, intent=88.0, proof_passed=True,
-             status="completed", stack="python", slug="demo"):
+             status="completed", stack="python", slug="demo", cost_usd=0.05):
     extra = {}
     if intent is not None:
         extra["intent"] = {"score": intent}
     extra["proof"] = {"passed": proof_passed}
     return SimpleNamespace(
         verdict=verdict, score=score, status=status, stack=stack, slug=slug,
-        project_dir="/x", manifest={"extra": extra},
+        project_dir="/x", cost_usd=cost_usd, manifest={"extra": extra},
     )
 
 
-def _result(case_id="c1", verdict="go", score=90.0, intent=88.0):
+def _result(case_id="c1", verdict="go", score=90.0, intent=88.0, cost_usd=0.05):
     return BenchResult(case_id=case_id, brief="b", slug="s", verdict=verdict,
                        score=score, intent_score=intent, proof_passed=True,
-                       status="completed", stack="python")
+                       status="completed", stack="python", cost_usd=cost_usd)
 
 
 # --------------------------------------------------------------------------
@@ -194,6 +194,39 @@ def test_gate_rejects_empty_run():
     d = diff_runs(before, after)
     ok, reasons = gate_change(d)
     assert ok is False  # a zero-case baseline must not rubber-stamp a pass
+
+
+def test_summarize_reports_cost_efficiency():
+    # two go (0.10 each) + one no_go (0.30). cost-per-go = total/go = 0.50/2.
+    results = [_result(case_id="a", verdict="go", cost_usd=0.10),
+               _result(case_id="b", verdict="go", cost_usd=0.10),
+               _result(case_id="c", verdict="no_go", cost_usd=0.30)]
+    s = summarize(results)
+    assert s["total_cost_usd"] == 0.5
+    assert s["cost_per_go_usd"] == 0.25  # 0.50 spent / 2 shipped
+
+
+def test_cost_per_go_is_none_when_nothing_ships():
+    s = summarize([_result(verdict="no_go", cost_usd=0.4)])
+    assert s["cost_per_go_usd"] is None  # undefined, not zero
+
+
+def test_from_outcome_captures_cost():
+    run = BenchResult.from_outcome(BenchCase(id="x", brief="b"),
+                                   _outcome(cost_usd=0.123))
+    assert run.cost_usd == 0.123
+
+
+def test_gate_rejects_cost_per_go_regression():
+    # same quality, but each go now costs more -> cost-per-go regression
+    before = BenchRun(label="b", results=[_result(case_id="c1", verdict="go", cost_usd=0.10)])
+    after = BenchRun(label="a", results=[_result(case_id="c1", verdict="go", cost_usd=0.40)])
+    d = diff_runs(before, after)
+    ok, reasons = gate_change(d, max_cost_per_go_increase=0.10)
+    assert ok is False and any("cost" in r for r in reasons)
+    # without the cost bar it's accepted (quality flat, no regression)
+    ok2, _ = gate_change(d)
+    assert ok2 is True
 
 
 def test_default_cases_use_valid_pin_keys():

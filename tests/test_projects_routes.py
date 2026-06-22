@@ -43,6 +43,19 @@ def test_list_projects_reads_manifests(tmp_path):
     assert "beta" in rows and rows["beta"]["status"] == "failed"
 
 
+def test_list_projects_surfaces_cost(tmp_path):
+    state = _state(tmp_path)
+    d = state.settings.projects_dir / "costly"
+    d.mkdir(parents=True)
+    (d / "skyn3t_manifest.json").write_text(json.dumps({
+        "slug": "costly", "stack": "python", "status": "completed", "verdict": "no_go",
+        "score": 40, "extra": {"build_cost_usd": 0.42, "wasted_usd": 0.42}}))
+    (d / "main.py").write_text("x = 1\n")
+    out = asyncio.run(list_projects(state))
+    row = {p["slug"]: p for p in out["projects"]}["costly"]
+    assert row["cost_usd"] == 0.42 and row["wasted_usd"] == 0.42
+
+
 def test_delete_project_moves_to_trash(tmp_path):
     state = _state(tmp_path)
     proj = _project(state.settings.projects_dir, "gamma")

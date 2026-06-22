@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     # Spec 2: N-ensemble vote for the intent judge (median of N samples, robust
     # to an outlier). 1 = single call (default); >1 costs N judge calls/build.
     intent_judge_samples: int = Field(default=1, ge=1, le=7)
+    # Spec 4: autonomous fan-out. Comma-separated stacks an UNPINNED build is
+    # explored across (build each, deliver the proof-winner). Empty = OFF
+    # (default; a normal single build). e.g. "react,static,fastapi". Costs N
+    # builds, so it's an explicit opt-in.
+    autonomous_fanout_stacks: str = ""
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

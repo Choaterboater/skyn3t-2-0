@@ -2,7 +2,11 @@
 
 19 confirmed bugs (22 candidates, adversarially verified) from a 6-lens swarm debug of SkyN3t. Class: dead-wired params, silent fallbacks, brief-blind scoring, vocab/route mismatches.
 
-STATUS: #3 (cli->react) FIXED (merge 58cd05d). Rest open.
+STATUS: RESOLVED (2026-06-21). 17 of 19 fixed + merged to main, +84 regression tests (suite 458 -> 542). Merges:
+- cli->python (58cd05d) · learned-router task_type (4fcd95d) · architect file-plan -> CodeAgent/ContractVerifier (7253f83, covers #2 AND #9) · approve_build DB fallback + MemoryStore.get_build (17209ba, covers #7/#13/#14) · brief-aware no_go survives structural rescore (6a9b712, #4/#5) · codegen degradation flag (7133917, #8 / task #14) · score nullable so MetaAgent ignores unscored (f28fa86, #12) · stack-aware proof boot-check (65f5279, #10) · honest tuner knobs (65f5279, #11) · brain real lesson count (9d43a87, #18) · delete_project checks persisted builds (9d43a87, #17) · persist running build (9d43a87, #19).
+- #16 (tournament fed only by debate): DOCUMENTED (67537e4) + has_data() helper — the real fix needs `model_id` threaded onto TaskResult so stage outcomes can feed the Elo board without corrupting it with agent-names. FOLLOW-UP.
+- #15 (visual_check unwired): INTENTIONAL — it's a soft-skip scaffold awaiting the cockpit vision wiring (= task #15), not a defect.
+- NOTE: hypotheses=0 was diagnosed as a downstream symptom of the dishonest scoring (everything scored go) — fixing #4/#5 lets real no_go builds surface so MetaAgent forms hypotheses. PROVEN: the coloring "website" brief now builds stack=static (method=llm) — a real site, not a CLI.
 
 ## [HIGH] Learned model router never receives task_type — per-task-type routing is dead-wired
 - **Where:** skyn3t/adapters/llm.py:176 (call) vs skyn3t/intelligence/routing_recommendations.py:97-114, :49-72

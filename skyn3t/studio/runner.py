@@ -267,7 +267,12 @@ class StudioRunner:
 
     def _intent_llm(self) -> Any:
         """A best-effort LLM for the intent judge, cached. None when none is
-        available — the heuristic intent signal then stands alone (offline)."""
+        available — the heuristic intent signal then stands alone (offline).
+
+        The judge owns a private BudgetTracker; reset its per-build budget on
+        each retrieval so a long-lived runner doesn't accumulate spend across
+        builds and silently trip BudgetExceeded (which would degrade the judge
+        to heuristic-only for the rest of the process's life)."""
         cached = getattr(self, "_intent_llm_cached", "unset")
         if cached == "unset":
             try:
@@ -276,6 +281,13 @@ class StudioRunner:
             except Exception:  # noqa: BLE001 - judge degrades to heuristic-only
                 cached = None
             self._intent_llm_cached = cached
+        if cached is not None:
+            budget = getattr(cached, "budget", None)
+            if budget is not None and hasattr(budget, "reset_build"):
+                try:
+                    budget.reset_build()
+                except Exception:  # noqa: BLE001
+                    pass
         return cached
 
     def _largest_source_bytes(self, project_dir: str) -> int:
@@ -1020,7 +1032,9 @@ class StudioRunner:
                     llm_intent = None
             intent = score_intent(brief, project_dir, plan.stack, llm_score=llm_intent)
             manifest.extra["intent"] = intent.to_dict()
-            intent_ok = intent_gate(code_backend, intent.score, self._intent_floor)
+            # Only a CORROBORATED low signal (LLM judge concurring) flips the
+            # verdict — the offline heuristic is advisory (see intent_gate).
+            intent_ok = intent_gate(code_backend, intent, self._intent_floor)
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
@@ -1037,9 +1051,12 @@ class StudioRunner:
                     f"intent match {intent.score} < {self._intent_floor} floor "
                     f"(missing: {', '.join(intent.missing[:6])}) — content ignored the brief"
                 )
-                # Don't let the learning loop reward a brief-ignoring build.
-                final_score = round(final_score * 0.5, 2)
-                manifest.score = final_score
+                # Don't let the learning loop reward a brief-ignoring build. Only
+                # dampen when proof PASSED — a proof-failed build is already
+                # halved by _honest_score, so this would otherwise double-penalize.
+                if proof.passed:
+                    final_score = round(final_score * 0.5, 2)
+                    manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
 

@@ -73,12 +73,29 @@ def test_llm_score_blends_when_provided(tmp_path):
 
 def test_intent_gate_exempts_stub_backend():
     # a stub build's minimal scaffold must not be intent-gated (offline-first)
-    assert intent_gate("stub", 0.0, 34.0) is True
+    assert intent_gate("stub", IntentResult(score=0.0, method="heuristic"), 34.0) is True
 
 
-def test_intent_gate_fails_low_intent_on_real_backend():
-    assert intent_gate("claude_cli", 10.0, 34.0) is False
-    assert intent_gate("anthropic", 50.0, 34.0) is True
+def test_intent_gate_heuristic_only_is_advisory():
+    # the offline heuristic alone is too noisy (synonyms/compounds/language) to
+    # flip a verdict — it never hard-gates, even at score 0 on a real backend.
+    r = IntentResult(score=0.0, method="heuristic")
+    assert intent_gate("claude_cli", r, 34.0) is True
+
+
+def test_intent_gate_fails_only_when_llm_concurs_low():
+    low = IntentResult(score=10.0, method="llm+heuristic")
+    high = IntentResult(score=70.0, method="llm+heuristic")
+    assert intent_gate("claude_cli", low, 34.0) is False
+    assert intent_gate("anthropic", high, 34.0) is True
+
+
+def test_compound_identifier_terms_match(tmp_path):
+    # camelCase/PascalCase/snake/kebab identifiers split so brief terms inside
+    # compound names still surface (the dominant React/TS/Java convention).
+    _proj(tmp_path, {"app.tsx": "function addTodoItem(){}\nclass TaskManager {}\n"})
+    r = score_intent("a todo list with a task manager", tmp_path)
+    assert "todo" in r.matched and "task" in r.matched and "manager" in r.matched
 
 
 def test_llm_intent_score_stub_returns_none(tmp_path):
@@ -99,7 +116,7 @@ def test_llm_intent_score_parses_real_backend(tmp_path):
         backend = "anthropic"
 
         async def complete(self, prompt, **kw):
-            assert "BRIEF:" in prompt  # the judge sees the brief + content
+            assert "<brief>" in prompt  # the judge sees the brief + content (fenced)
             return SimpleNamespace(text=json.dumps({"score": 72, "missing": ["x"]}))
 
     out = asyncio.run(llm_intent_score("a brief", tmp_path, llm=_LLM()))

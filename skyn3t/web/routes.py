@@ -209,8 +209,23 @@ async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
         raise ValueError(f"invalid slug: {slug!r}")
     if not target.is_dir():
         raise FileNotFoundError(slug)
+    _TERMINAL = frozenset({"failed", "completed", "cancelled", "approved", "rejected"})
     active = {getattr(r, "slug", "") for r in state.builds.values()
-              if getattr(r, "status", "") == "running"}
+              if getattr(r, "status", "") not in _TERMINAL}
+    if target.name not in active and slug not in active:
+        # Also check the persisted store for non-terminal builds not in memory
+        # (e.g. the server restarted mid-build).
+        _store = getattr(state, "memory", None)
+        if _store is not None and hasattr(_store, "recent_builds"):
+            try:
+                rows = await _store.recent_builds(limit=200)
+                for row in rows:
+                    if row.get("slug") in (target.name, slug):
+                        if row.get("status") not in _TERMINAL:
+                            active.add(row["slug"])
+                            break
+            except Exception:  # noqa: BLE001 - guard must never crash the delete path
+                pass
     if target.name in active or slug in active:
         raise ValueError("project belongs to a running build")
     trash = projects_root.parent / ".skyn3t_trash"
@@ -673,6 +688,8 @@ async def brain_payload(state: AppState) -> dict[str, Any]:
         if state.memory is not None:
             rows = await state.memory.recent_builds(limit=200)
             documents = len(rows)
+            if hasattr(state.memory, "count_lessons"):
+                lessons = await state.memory.count_lessons()
     except Exception:  # noqa: BLE001
         pass
     return {

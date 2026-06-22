@@ -736,6 +736,11 @@ class StudioRunner:
         }
         build_id = manifest.build_id
 
+        # Persist the 'running' record immediately so a crash or restart can
+        # rehydrate it. This is best-effort — a persistence failure must never
+        # abort the build.
+        await self._save_build(manifest)
+
         projects_dir = self.settings.projects_dir
         project_dir = str(projects_dir / slug)
 

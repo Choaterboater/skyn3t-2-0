@@ -681,11 +681,14 @@ async def _fanout_async(brief: str, cands):
         memory=spine["memory"], learning=learning, patterns=patterns, skills=skills,
         cost_tracker=cost_tracker, budget_guard=budget_guard, rag=rag,
     )
-    llm = spine.get("llm")
     base = _slugify(brief)
 
     async def build_fn(c):
-        _reset_bench_budget(llm)
+        # NOTE: no per-candidate budget reset here. fan-out builds run CONCURRENTLY
+        # (asyncio.gather), so resetting the shared budget mid-flight would race
+        # and let a candidate escape the daily cap. A fan-out is ONE exploration —
+        # spend should accumulate so the cap protects the whole sweep. (The runner
+        # still resets the per-BUILD counter itself via cost_tracker.start_build.)
         stack = (c.spec or {}).get("stack", "")
         # distinct slug per candidate so they don't clobber each other's project
         return await runner.start(brief, slug=f"{base}-{c.id}",

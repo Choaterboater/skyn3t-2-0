@@ -115,6 +115,24 @@ class MemoryStore:
                 for r in rows
             ]
 
+    async def get_build(self, build_id: str) -> dict[str, Any] | None:
+        """Return a single build row by primary key, or ``None`` if not found."""
+        async with self._session() as s:
+            row = await s.get(BuildRow, build_id)
+            if row is None:
+                return None
+            return {
+                "build_id": row.build_id,
+                "slug": row.slug,
+                "brief": row.brief,
+                "stack": row.stack,
+                "status": row.status,
+                "score": row.score,
+                "verdict": row.verdict,
+                "cost_usd": row.cost_usd,
+                "artifact_dir": row.artifact_dir,
+            }
+
     # ---- lessons (graded learning loop) ----------------------------------
     async def add_lesson(self, stack: str, stage: str, text: str, source_build: str | None = None) -> int:
         async with self._session() as s:

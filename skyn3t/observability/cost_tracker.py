@@ -109,11 +109,41 @@ class CostTracker:
             "cost_usd": 0.0, "tokens": 0,
         }
 
+    # ---- per-stage attribution (Spec 2 "wasted tokens") ------------------
+    # Slices the same call ledger at stage boundaries to show WHERE a build's
+    # tokens go. Read-only — it never claims calls, so build-level attribution
+    # (and overlapping builds) are unaffected. Sequential stages => disjoint
+    # slices that partition the build's spend.
+    def start_stage(self, build_id: str, stage: str) -> None:
+        entry = self._builds.get(build_id)
+        if entry is None:
+            return
+        base = len(getattr(self.budget, "calls", [])) if self.budget else 0
+        entry.setdefault("_stage_base", {})[stage] = base
+
+    def end_stage(self, build_id: str, stage: str) -> dict[str, Any]:
+        self.sync()
+        entry = self._builds.get(build_id)
+        if entry is None:
+            return {"stage": stage, "cost_usd": 0.0, "tokens": 0}
+        # Consume the base (pop, not get) so each start/end is paired — robust
+        # even if a stage name repeats across iterations.
+        base = entry.get("_stage_base", {}).pop(stage, entry.get("base_calls", 0))
+        calls = list(getattr(self.budget, "calls", [])) if self.budget else []
+        cost = 0.0
+        tokens = 0
+        for r in calls[base:]:
+            cost += getattr(r, "cost_usd", 0.0)
+            tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
+        rec = {"stage": stage, "cost_usd": round(max(0.0, cost), 6), "tokens": max(0, tokens)}
+        entry.setdefault("stages", []).append(rec)
+        return rec
+
     def end_build(self, build_id: str) -> dict[str, Any]:
         self.sync()
         entry = self._builds.get(build_id)
         if entry is None:
-            return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0}
+            return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0, "stages": []}
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
         # Attribute only the calls recorded during this build's lifetime that
         # have not already been claimed by an earlier-finishing overlapping
@@ -130,7 +160,8 @@ class CostTracker:
         entry["cost_usd"] = round(max(0.0, cost), 6)
         entry["tokens"] = max(0, tokens)
         entry["duration_s"] = round(time() - entry["started"], 3)
-        return {"build_id": build_id, **{k: entry[k] for k in ("cost_usd", "tokens", "duration_s")}}
+        return {"build_id": build_id, "stages": list(entry.get("stages", [])),
+                **{k: entry[k] for k in ("cost_usd", "tokens", "duration_s")}}
 
     # ---- snapshot --------------------------------------------------------
     def snapshot(self) -> CostSnapshot:

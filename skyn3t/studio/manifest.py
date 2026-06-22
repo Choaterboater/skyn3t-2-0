@@ -52,7 +52,7 @@ class BuildManifest:
     stack: str = ""
     status: str = "pending"  # pending|running|completed|completed_no_go|failed
     verdict: str = ""  # go|no_go
-    score: float = 0.0
+    score: float | None = None
     cost_usd: float = 0.0
     created_at: str = field(default_factory=_utcnow_iso)
     updated_at: str = field(default_factory=_utcnow_iso)

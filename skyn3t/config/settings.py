@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     # (default; a normal single build). e.g. "react,static,fastapi". Costs N
     # builds, so it's an explicit opt-in.
     autonomous_fanout_stacks: str = ""
+    # Spec 3: vision model (OpenRouter id) for the visual loop's judgement step.
+    # Empty -> a built-in default; the loop activates only when openrouter_api_key
+    # is also set, else it soft-skips the screenshot judgement.
+    vision_model: str = ""
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

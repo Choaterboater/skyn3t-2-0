@@ -8,6 +8,7 @@ absent (design rule #6).
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 import uuid
@@ -35,6 +36,19 @@ def _reap_build_task(task: Any) -> None:
     exc = task.exception()
     if exc is not None:  # build task should never raise (runner catches), but log if it does
         log.error("web.build_task_crashed", error=str(exc))
+
+
+# Strong references to in-flight background improve tasks (prevent GC mid-run).
+_IMPROVE_TASKS: set = set()
+
+
+def _reap_improve_task(task: Any) -> None:
+    _IMPROVE_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:  # ImproveEngine catches internally, but log if it ever raises
+        log.error("web.improve_task_crashed", error=str(exc))
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -237,6 +251,168 @@ async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
         n += 1
     shutil.move(str(target), str(dest))
     return {"slug": slug, "trashed_to": str(dest)}
+
+
+# ---------------------------------------------------------------------------
+# Live workspace: serve a delivered project + improve it toward a goal.
+# Wires studio/app_runner.py (Slice 2) + studio/improve.py (Slice 1) into the
+# dashboard so the cockpit can show a running app next to an improve chat.
+# ---------------------------------------------------------------------------
+
+def _resolve_project_dir(state: AppState, slug: str) -> Path:
+    """Resolve a project slug to its directory under projects_dir, refusing
+    escapes. Raises ValueError on escape/root, FileNotFoundError when absent."""
+    projects_root = Path(state.settings.projects_dir).resolve()
+    target = (projects_root / slug).resolve()
+    if target == projects_root or not target.is_relative_to(projects_root):
+        raise ValueError(f"invalid slug: {slug!r}")
+    if not target.is_dir():
+        raise FileNotFoundError(slug)
+    return target
+
+
+def _serve_registry(state: AppState) -> dict[str, Any]:
+    """slug -> RunningApp for live previews. Lazily created so the function works
+    with both AppState and the SimpleNamespace used in tests."""
+    reg = getattr(state, "running_apps", None)
+    if reg is None:
+        reg = {}
+        try:
+            state.running_apps = reg
+        except Exception:  # noqa: BLE001 - a read-only state must not break serving
+            pass
+    return reg
+
+
+def _app_runner(state: AppState) -> Any:
+    runner = getattr(state, "app_runner", None)
+    if runner is None:
+        from skyn3t.studio.app_runner import AppRunner
+        runner = AppRunner()
+        try:
+            state.app_runner = runner
+        except Exception:  # noqa: BLE001
+            pass
+    return runner
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
+    """Start a delivered project as a live localhost server, registering the
+    handle so a later stop can find it. Restarting a slug supersedes the prior
+    run.
+
+    Concurrency-safe without a lock (which would bind to one event loop): a
+    synchronous claim token guards the pop -> ``await start`` -> register window.
+    If a racing serve takes the slot, or a stop pops our claim, while we await
+    start(), we detect the lost claim afterward and tear down our own process
+    instead of leaking it (review findings #1, #2)."""
+    pdir = _resolve_project_dir(state, slug)
+    from skyn3t.studio.app_runner import RunningApp, cleanup_serve
+    registry = _serve_registry(state)
+    runner = _app_runner(state)
+    # Synchronously (before any await) claim the slot, superseding a *running*
+    # predecessor. A bare object() is our claim identity.
+    prev = registry.get(slug)
+    if isinstance(prev, RunningApp):
+        runner.stop(prev)
+        cleanup_serve(prev)
+    claim = object()
+    registry[slug] = claim
+
+    man = BuildManifest.load(pdir)
+    stack = man.stack if man is not None and getattr(man, "stack", "") else ""
+    app = await runner.start(pdir, stack)
+
+    if registry.get(slug) is not claim:
+        # A concurrent serve superseded us, or a stop cancelled us, mid-start:
+        # we no longer own the slot, so tear down our own app rather than leak it.
+        if app.status == "running":
+            runner.stop(app)
+        cleanup_serve(app)
+        return {**app.to_dict(), "slug": slug, "superseded": True}
+
+    if app.status == "running":
+        registry[slug] = app
+        await state.event_bus.emit(
+            EventType.SERVE_STARTED, source="web.api",
+            payload={"slug": slug, "url": app.url, "port": app.port, "kind": app.kind},
+        )
+    else:
+        registry.pop(slug, None)  # release the claim
+        cleanup_serve(app)        # unlink a failed start's temp logfile (#7)
+    return {**app.to_dict(), "slug": slug}
+
+
+async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
+    """Stop a live preview server and release its child + temp logfile. Popping
+    an in-flight start *claim* cancels that start — serve_project tears itself
+    down when it finds the slot gone (review finding #2)."""
+    from skyn3t.studio.app_runner import RunningApp, cleanup_serve
+    registry = _serve_registry(state)
+    app = registry.pop(slug, None)
+    if app is None:
+        return {"slug": slug, "stopped": False}
+    if not isinstance(app, RunningApp):
+        # Popped an in-flight claim: the in-progress serve will self-cancel.
+        return {"slug": slug, "stopped": True}
+    runner = _app_runner(state)
+    runner.stop(app)
+    cleanup_serve(app)
+    await state.event_bus.emit(
+        EventType.SERVE_STOPPED, source="web.api",
+        payload={"slug": slug, "port": app.port},
+    )
+    return {"slug": slug, "stopped": True}
+
+
+async def serve_status(state: AppState) -> dict[str, Any]:
+    """List live preview servers, skipping in-flight claims and pruning any
+    whose process has died."""
+    from skyn3t.studio.app_runner import RunningApp
+    registry = _serve_registry(state)
+    running: list[dict[str, Any]] = []
+    for slug, app in list(registry.items()):
+        if not isinstance(app, RunningApp):
+            continue  # an in-flight start claim, not yet a live app
+        if app.pid is not None and not _pid_alive(app.pid):
+            registry.pop(slug, None)
+            continue
+        running.append({**app.to_dict(), "slug": slug})
+    return {"running": running}
+
+
+async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, Any]:
+    """Dispatch an 'improve this project toward a goal' run as a background task,
+    streaming IMPROVE_* events to the cockpit. Returns immediately with a
+    correlation id; the project is validated up front so a bad slug 404s before
+    any work starts."""
+    if not goal or not goal.strip():
+        raise ValueError("goal is required")
+    _resolve_project_dir(state, slug)  # validate; raises ValueError/FileNotFoundError
+    if getattr(state, "orchestrator", None) is None:
+        return {"accepted": False, "slug": slug, "reason": "orchestrator unavailable"}
+    from skyn3t.studio.improve import ImproveEngine
+    engine = ImproveEngine(
+        state.event_bus, state.orchestrator,
+        settings=state.settings,
+        memory=getattr(state, "memory", None),
+        skills=getattr(state, "skills", None),
+        rag=getattr(state, "rag", None),
+    )
+    cid = uuid.uuid4().hex
+    import asyncio
+    task = asyncio.ensure_future(engine.improve(slug, goal.strip(), correlation_id=cid))
+    _IMPROVE_TASKS.add(task)
+    task.add_done_callback(_reap_improve_task)
+    return {"accepted": True, "slug": slug, "goal": goal.strip(), "correlation_id": cid}
 
 
 def _resolve_live_gate(state: AppState, build_id: str, approved: bool, reason: str) -> int:
@@ -932,6 +1108,33 @@ def build_router(state: AppState) -> Any:
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="build not found")
+
+    @router.post("/studio/serve", dependencies=[auth])
+    async def _serve(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await serve_project(state, str(body.get("slug", "")))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid slug") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
+
+    @router.post("/studio/serve/stop", dependencies=[auth])
+    async def _serve_stop(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await stop_serve(state, str(body.get("slug", "")))
+
+    @router.get("/studio/serve", dependencies=[auth])
+    async def _serve_status() -> dict[str, Any]:
+        return await serve_status(state)
+
+    @router.post("/studio/improve", dependencies=[auth])
+    async def _improve(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        try:
+            return await improve_project(
+                state, str(body.get("slug", "")), str(body.get("goal", "")))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="slug and goal are required") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
 
     @router.get("/proposals", dependencies=[auth])
     async def _proposals(status: str = Query(default="")) -> dict[str, Any]:

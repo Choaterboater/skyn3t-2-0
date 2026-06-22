@@ -200,6 +200,25 @@ class AppRunner:
         _kill_group(proc.pid, wait_s=2.0)
 
 
+def cleanup_serve(app: RunningApp) -> None:
+    """Reap a stopped child and remove its temp logfile. Never raises.
+
+    In a long-lived host process (the dashboard), a killed AppRunner child is the
+    server's direct child, so after `stop()` it lingers as a zombie until reaped,
+    and its tempfile log leaks. Call this right after `AppRunner.stop` to release
+    both. Safe to call when the pid is not our child or the log is already gone."""
+    if app.pid is not None:
+        try:
+            os.waitpid(app.pid, 0)  # reap the zombie left by SIGTERM/SIGKILL
+        except (ChildProcessError, OSError):
+            pass  # not our direct child, or already reaped
+    if app.log_path:
+        try:
+            os.unlink(app.log_path)
+        except OSError:
+            pass
+
+
 def _port_answers(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:

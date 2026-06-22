@@ -36,6 +36,7 @@ from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.clarification import clarify
+from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import proof_run
@@ -258,6 +259,24 @@ class StudioRunner:
     _substance_floor = 1500
     _SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
                     ".go", ".rs", ".java", ".rb", ".php")
+
+    # Minimum brief-intent match (0..100) for a "go" on a REAL backend — below
+    # this the delivered content ignored the brief (a hollow scaffold). Stub
+    # builds are exempt (see studio.intent_score.intent_gate). Spec 2.
+    _intent_floor = 34.0
+
+    def _intent_llm(self) -> Any:
+        """A best-effort LLM for the intent judge, cached. None when none is
+        available — the heuristic intent signal then stands alone (offline)."""
+        cached = getattr(self, "_intent_llm_cached", "unset")
+        if cached == "unset":
+            try:
+                from skyn3t.adapters.llm import LLMClient
+                cached = LLMClient(self.settings)
+            except Exception:  # noqa: BLE001 - judge degrades to heuristic-only
+                cached = None
+            self._intent_llm_cached = cached
+        return cached
 
     def _largest_source_bytes(self, project_dir: str) -> int:
         """Total implementation bytes — the stub-vs-app signal (excludes tests)."""
@@ -988,10 +1007,24 @@ class StudioRunner:
             # that emitted a 559-byte stub genuinely under-delivered -> no_go.
             code_backend = str((prior.get("code") or {}).get("backend", "stub"))
             substantive = code_backend == "stub" or biggest >= self._substance_floor
+            # Intent-honest gate (Spec 2): does the delivered CONTENT match the
+            # brief's intent, not merely compile? A real model that shipped a
+            # hollow scaffold for the brief is no_go, and its score is dampened so
+            # the learning loop never rewards it. Stub builds are exempt.
+            llm_intent = None
+            if code_backend != "stub":
+                try:
+                    llm_intent = await llm_intent_score(
+                        brief, project_dir, llm=self._intent_llm())
+                except Exception:  # noqa: BLE001 - judge is best-effort
+                    llm_intent = None
+            intent = score_intent(brief, project_dir, plan.stack, llm_score=llm_intent)
+            manifest.extra["intent"] = intent.to_dict()
+            intent_ok = intent_gate(code_backend, intent.score, self._intent_floor)
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
-                    and substantive and has_entry)
+                    and substantive and has_entry and intent_ok)
                 else "no_go"
             )
             if not substantive:
@@ -999,6 +1032,14 @@ class StudioRunner:
                     f"largest source {biggest}B < {self._substance_floor}B floor "
                     f"(backend={code_backend}) — looks like a stub, not an app"
                 )
+            if not intent_ok:
+                manifest.extra["intent_gate"] = (
+                    f"intent match {intent.score} < {self._intent_floor} floor "
+                    f"(missing: {', '.join(intent.missing[:6])}) — content ignored the brief"
+                )
+                # Don't let the learning loop reward a brief-ignoring build.
+                final_score = round(final_score * 0.5, 2)
+                manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
 

@@ -105,6 +105,42 @@ def test_fan_out_referee_can_rescore(tmp_path):
     assert out.winner.candidate_id == "x" and out.winner.score == 95.0
 
 
+class _Bus:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, etype, source, payload=None, correlation_id=None):
+        self.events.append((etype, payload or {}, correlation_id))
+
+
+def test_fan_out_emits_progress_events():
+    from skyn3t.core.events import EventType
+    cands = _cands("a", "b")
+
+    async def build_fn(c):
+        return _outcome(verdict="go", score=80)
+
+    bus = _Bus()
+    asyncio.run(fan_out(cands, build_fn, event_bus=bus, correlation_id="cid1"))
+    types = [t for t, _, _ in bus.events]
+    assert types[0] == EventType.FANOUT_STARTED
+    assert types[-1] == EventType.FANOUT_COMPLETED
+    assert types.count(EventType.FANOUT_CANDIDATE) == 2
+    # every event carries the correlation id
+    assert all(c == "cid1" for _, _, c in bus.events)
+    # the completed payload reports the winner + delta
+    done = [p for t, p, _ in bus.events if t == EventType.FANOUT_COMPLETED][0]
+    assert "winner" in done and "delta" in done
+
+
+def test_fan_out_without_event_bus_still_works():
+    async def build_fn(c):
+        return _outcome(verdict="go", score=80)
+
+    out = asyncio.run(fan_out(_cands("a", "b"), build_fn))  # no event_bus
+    assert out.winner is not None
+
+
 def test_referee_is_authoritative_over_a_no_go_verdict():
     # the build verdict said no_go, but the referee re-proofs the delivered tree
     # and passes — the candidate must count as a passer (referee is authoritative).

@@ -112,21 +112,46 @@ async def _safe_build(build_fn: BuildFn, cand: FanCandidate) -> Any:
         return None
 
 
+async def _emit(event_bus: Any, etype: Any, payload: dict[str, Any], cid: str) -> None:
+    if event_bus is None:
+        return
+    try:
+        await event_bus.emit(etype, "fanout", payload, correlation_id=cid)
+    except Exception:  # noqa: BLE001 - events never break the fan-out
+        pass
+
+
+async def _run_candidate(cand: FanCandidate, build_fn: BuildFn, referee: RefereeFn | None,
+                         event_bus: Any, cid: str) -> FanResult:
+    outcome = await _safe_build(build_fn, cand)
+    if outcome is None:
+        res = FanResult(candidate_id=cand.id, label=cand.label or cand.id,
+                        verdict="no_go", score=None, proof_passed=False, status="error")
+    else:
+        rv = referee(cand, outcome) if referee is not None else None
+        res = FanResult.from_outcome(cand, outcome, referee_verdict=rv)
+    # Stream each candidate's result as it resolves so the cockpit can show
+    # progress (FANOUT events fan out via the existing EventType.ALL bridge).
+    from skyn3t.core.events import EventType
+    await _emit(event_bus, EventType.FANOUT_CANDIDATE, res.to_dict(), cid)
+    return res
+
+
 async def fan_out(candidates: list[FanCandidate], build_fn: BuildFn, *,
-                  referee: RefereeFn | None = None) -> FanOutOutcome:
+                  referee: RefereeFn | None = None, event_bus: Any = None,
+                  correlation_id: str = "") -> FanOutOutcome:
     """Build every candidate in parallel, referee, select the winner, record the
     exploration delta (winner score minus the best runner-up). A candidate whose
-    build crashes becomes an error result rather than aborting the fan-out."""
-    outcomes = await asyncio.gather(*[_safe_build(build_fn, c) for c in candidates])
-    results: list[FanResult] = []
-    for cand, outcome in zip(candidates, outcomes):
-        if outcome is None:
-            results.append(FanResult(candidate_id=cand.id, label=cand.label or cand.id,
-                                     verdict="no_go", score=None, proof_passed=False,
-                                     status="error"))
-            continue
-        rv = referee(cand, outcome) if referee is not None else None
-        results.append(FanResult.from_outcome(cand, outcome, referee_verdict=rv))
+    build crashes becomes an error result rather than aborting the fan-out. When
+    an event_bus is supplied, emits FANOUT_STARTED / FANOUT_CANDIDATE (per result)
+    / FANOUT_COMPLETED so the dashboard can watch the exploration live."""
+    from skyn3t.core.events import EventType
+    cid = correlation_id or ""
+    await _emit(event_bus, EventType.FANOUT_STARTED,
+                {"candidates": [c.id for c in candidates],
+                 "n": len(candidates)}, cid)
+    results = await asyncio.gather(
+        *[_run_candidate(c, build_fn, referee, event_bus, cid) for c in candidates])
 
     ranked = sorted(results, key=_rank_key, reverse=True)
     winner = ranked[0] if ranked else None
@@ -142,5 +167,8 @@ async def fan_out(candidates: list[FanCandidate], build_fn: BuildFn, *,
         "winner": winner.candidate_id if winner else None,
         "delta": delta,
     }
+    await _emit(event_bus, EventType.FANOUT_COMPLETED,
+                {"winner": winner.candidate_id if winner else None,
+                 "delta": delta, "any_passed": any_passed, "summary": summary}, cid)
     return FanOutOutcome(results=results, winner=winner, any_passed=any_passed,
                          delta=delta, summary=summary)

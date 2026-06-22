@@ -45,6 +45,12 @@ web = [
 integrations = [
     "prometheus-client>=0.20",
 ]
+# Visual self-inspection loop (Spec 3): screenshot a running app. Needs
+# `playwright install chromium` after install. The vision JUDGEMENT step also
+# needs a vision-capable LLM wired; without one the loop soft-skips.
+visual = [
+    "playwright>=1.40",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

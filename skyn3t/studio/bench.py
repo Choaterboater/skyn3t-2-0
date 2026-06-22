@@ -53,6 +53,7 @@ class BenchResult:
     proof_passed: bool
     status: str
     stack: str
+    cost_usd: float | None = None
 
     @property
     def passed(self) -> bool:
@@ -81,6 +82,7 @@ class BenchResult:
             proof_passed=bool(proof.get("passed", False)),
             status=str(getattr(outcome, "status", "") or ""),
             stack=str(getattr(outcome, "stack", "") or case.stack),
+            cost_usd=_as_float(getattr(outcome, "cost_usd", None)),
         )
 
 
@@ -121,6 +123,8 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
     n = len(results)
     go = sum(1 for r in results if r.verdict == "go")
     n_error = sum(1 for r in results if r.status == "error")
+    costs = [r.cost_usd for r in results if r.cost_usd is not None]
+    total_cost = round(sum(costs), 6) if costs else 0.0
     return {
         "n": n,
         "go": go,
@@ -131,6 +135,11 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
         # score shouldn't let a change pass by "improving" failing builds).
         "mean_score_go": _mean([r.score for r in results if r.verdict == "go"]),
         "mean_intent": _mean([r.intent_score for r in results]),
+        # efficiency: spend per SHIPPED build (None when nothing shipped — that's
+        # undefined, not zero).
+        "total_cost_usd": total_cost,
+        "mean_cost_usd": _mean([r.cost_usd for r in results]),
+        "cost_per_go_usd": round(total_cost / go, 6) if go else None,
     }
 
 
@@ -177,7 +186,8 @@ def load_run(path) -> BenchRun:
             verdict=r.get("verdict", "no_go"), score=_as_float(r.get("score")),
             intent_score=_as_float(r.get("intent_score")),
             proof_passed=bool(r.get("proof_passed", False)),
-            status=r.get("status", ""), stack=r.get("stack", ""))
+            status=r.get("status", ""), stack=r.get("stack", ""),
+            cost_usd=_as_float(r.get("cost_usd")))
         for r in data.get("results", [])
     ]
     return BenchRun(label=data.get("label", ""), results=results,
@@ -234,6 +244,10 @@ def diff_runs(before: BenchRun, after: BenchRun, *,
     def _d(key: str, nd: int = 2) -> float:
         return round(after.summary.get(key, 0.0) - before.summary.get(key, 0.0), nd)
 
+    def _cd(key: str) -> float | None:  # cost delta, tolerant of None ("undefined")
+        av, bv = after.summary.get(key), before.summary.get(key)
+        return round(av - bv, 6) if (av is not None and bv is not None) else None
+
     return {
         "n_before": before.summary.get("n", 0),
         "n_after": after.summary.get("n", 0),
@@ -241,6 +255,8 @@ def diff_runs(before: BenchRun, after: BenchRun, *,
         "mean_score_go_delta": _d("mean_score_go"),
         "mean_intent_delta": _d("mean_intent"),
         "go_rate_delta": _d("go_rate", 4),
+        "total_cost_delta": _d("total_cost_usd", 6),
+        "cost_per_go_delta": _cd("cost_per_go_usd"),
         "regressions": regressions,
         "improvements": improvements,
         "per_case": per_case,
@@ -248,12 +264,14 @@ def diff_runs(before: BenchRun, after: BenchRun, *,
 
 
 def gate_change(delta: dict[str, Any], *, min_mean_score_delta: float = 0.0,
-                allow_verdict_regressions: bool = False) -> tuple[bool, list[str]]:
+                allow_verdict_regressions: bool = False,
+                max_cost_per_go_increase: float | None = None) -> tuple[bool, list[str]]:
     """Whether a change should be ACCEPTED based on the measured delta. Rejects on
     any regression (verdict flip, crash, or dropped case), a drop in go-rate, an
-    empty run on either side, or a go-only mean-score delta below the bar. Keys on
-    the GO-ONLY mean so improving still-failing builds can't rubber-stamp a pass.
-    Returns (accept, reasons-for-rejection)."""
+    empty run on either side, a go-only mean-score delta below the bar, or (when
+    a bar is set) a cost-per-go increase beyond it. Keys on the GO-ONLY mean so
+    improving still-failing builds can't rubber-stamp a pass. Returns (accept,
+    reasons-for-rejection)."""
     reasons: list[str] = []
     if not delta.get("n_before") or not delta.get("n_after"):
         reasons.append("a run has zero cases — nothing to compare")
@@ -266,4 +284,7 @@ def gate_change(delta: dict[str, Any], *, min_mean_score_delta: float = 0.0,
     msd = float(delta.get("mean_score_go_delta", delta.get("mean_score_delta", 0.0)))
     if msd < min_mean_score_delta:
         reasons.append(f"go-mean score delta {msd} < required {min_mean_score_delta}")
+    cpgd = delta.get("cost_per_go_delta")
+    if max_cost_per_go_increase is not None and cpgd is not None and cpgd > max_cost_per_go_increase:
+        reasons.append(f"cost-per-go rose by {cpgd} > allowed {max_cost_per_go_increase}")
     return (not reasons), reasons

@@ -179,11 +179,28 @@ class StudioRunner:
         )
 
     # ---- lessons (learning loop) ----------------------------------------
-    async def _inject_lessons(self, stack: str, stage: str) -> list[dict[str, Any]]:
+    async def _inject_lessons(self, stack: str, stage: str,
+                              brief: str = "") -> list[dict[str, Any]]:
         if self.memory is None:
             return []
         try:
-            return await self.memory.relevant_lessons(stack, stage=stage, limit=5)
+            # Pull a WIDER score-ranked candidate set, then keep the 5 most
+            # relevant to the BRIEF — so a quality lesson that actually matches
+            # this brief beats a higher-scored but off-topic one (Spec 2 semantic
+            # retrieval, symmetric with _skill_advice). Degrades to score order.
+            candidates = await self.memory.relevant_lessons(stack, stage=stage, limit=15)
+            if not brief or len(candidates) <= 5:
+                return candidates[:5]
+            emb = self._skill_embedder()
+            if emb is None:
+                return candidates[:5]
+            from skyn3t.intelligence.semantic_skills import rank_texts
+            ranked = rank_texts(candidates, brief,
+                                get_text=lambda les: les.get("text", ""),
+                                embedder=emb, k=5)
+            # If nothing shares the brief's vocabulary, keep the score-ranked
+            # top-5 rather than injecting fewer lessons than before.
+            return ranked or candidates[:5]
         except Exception as exc:  # noqa: BLE001
             log.warning("lessons.inject_failed", error=str(exc))
             return []
@@ -890,7 +907,7 @@ class StudioRunner:
                     await self._emit_stage_done(build_id, record, correlation_id)
                     continue
 
-                lessons = await self._inject_lessons(plan.stack, spec.name)
+                lessons = await self._inject_lessons(plan.stack, spec.name, brief)
                 if lessons:
                     used_lessons.extend(lessons)
 

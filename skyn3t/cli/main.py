@@ -597,12 +597,35 @@ async def _bench_run_async(cases, label):
         cost_tracker=cost_tracker, budget_guard=budget_guard, rag=rag,
     )
 
+    llm = spine.get("llm")
+
     async def build_fn(case):
+        # Reset the shared LLM's cumulative spend so a long sweep doesn't starve
+        # trailing cases (the daily/token caps would otherwise make the bench
+        # order-dependent). Per-case isolation is the whole point of the harness.
+        _reset_bench_budget(llm)
         extra = {"stack": case.stack} if case.stack else {}
         return await runner.start(case.brief, slug=None, extra=extra)
 
     run = await run_bench(cases, build_fn, label=label, created_at=_time.time())
     return run, settings
+
+
+def _reset_bench_budget(llm) -> None:
+    budget = getattr(llm, "budget", None)
+    if budget is None:
+        return
+    if hasattr(budget, "reset_build"):
+        try:
+            budget.reset_build()
+        except Exception:  # noqa: BLE001
+            pass
+    for attr, zero in (("spent_day", 0.0), ("tokens_day", 0), ("spent_build", 0.0)):
+        if hasattr(budget, attr):
+            try:
+                setattr(budget, attr, zero)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _load_bench_cases(path: str):
@@ -672,8 +695,9 @@ def bench_compare(
     from skyn3t.studio.bench import diff_runs, gate_change, load_run
     console = _console()
     d = diff_runs(load_run(before), load_run(after))
-    console.print(f"mean score Δ [bold]{d['mean_score_delta']:+}[/bold] · "
-                  f"intent Δ {d['mean_intent_delta']:+} · go-rate Δ {d['go_rate_delta']:+}")
+    console.print(f"go-mean Δ [bold]{d['mean_score_go_delta']:+}[/bold] · "
+                  f"mean Δ {d['mean_score_delta']:+} · intent Δ {d['mean_intent_delta']:+} "
+                  f"· go-rate Δ {d['go_rate_delta']:+}")
     for r in d["improvements"]:
         console.print(f"  [green]improved[/green] {r['case_id']} "
                       f"({r['verdict_before']}→{r['verdict_after']})")

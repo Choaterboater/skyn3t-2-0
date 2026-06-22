@@ -52,6 +52,8 @@ def test_summarize_computes_go_rate_and_means():
     assert s["go_rate"] == 0.5
     assert s["mean_score"] == 60.0
     assert s["mean_intent"] == 45.0
+    # go-only mean is the shippable-quality signal (excludes the no_go's 40)
+    assert s["mean_score_go"] == 80.0
 
 
 def test_run_bench_uses_injected_build_fn_and_orders_results():
@@ -153,7 +155,52 @@ def test_gate_rejects_flat_change_when_min_delta_positive():
     assert ok is False
 
 
-def test_default_cases_cover_multiple_stacks():
+def test_diff_flags_dropped_go_case_as_regression():
+    # a passing case removed from the suite is silent coverage loss — flag it
+    before = BenchRun(label="b", results=[_result(case_id="keep", verdict="go", score=80),
+                                          _result(case_id="dropped", verdict="go", score=95)])
+    after = BenchRun(label="a", results=[_result(case_id="keep", verdict="go", score=80)])
+    d = diff_runs(before, after)
+    assert any(r["case_id"] == "dropped" and r.get("kind") == "dropped" for r in d["regressions"])
+
+
+def test_diff_no_phantom_score_regression_on_error():
+    # a go case that crashes (score None, status error) is a VERDICT regression,
+    # not a fabricated -score; per-case score_delta is None, not a big negative.
+    before = BenchRun(label="b", results=[_result(case_id="c1", verdict="go", score=85)])
+    err = BenchResult(case_id="c1", brief="b", slug="", verdict="no_go", score=None,
+                      intent_score=None, proof_passed=False, status="error", stack="python")
+    after = BenchRun(label="a", results=[err])
+    d = diff_runs(before, after)
+    kinds = {r["case_id"]: r.get("kind") for r in d["regressions"]}
+    assert kinds.get("c1") == "verdict"
+    entry = next(e for e in d["per_case"] if e["case_id"] == "c1")
+    assert entry["score_delta"] is None
+
+
+def test_gate_rejects_go_rate_drop():
+    before = BenchRun(label="b", results=[_result(case_id="c1", verdict="go", score=80),
+                                          _result(case_id="c2", verdict="go", score=80)])
+    after = BenchRun(label="a", results=[_result(case_id="c1", verdict="go", score=80),
+                                         _result(case_id="c2", verdict="no_go", score=70)])
+    d = diff_runs(before, after)
+    ok, reasons = gate_change(d)
+    assert ok is False and reasons
+
+
+def test_gate_rejects_empty_run():
+    before = BenchRun(label="b", results=[])
+    after = BenchRun(label="a", results=[_result(case_id="c1", verdict="go", score=90)])
+    d = diff_runs(before, after)
+    ok, reasons = gate_change(d)
+    assert ok is False  # a zero-case baseline must not rubber-stamp a pass
+
+
+def test_default_cases_use_valid_pin_keys():
+    from skyn3t.studio.stack_selector import _validate_pin
     assert len(DEFAULT_CASES) >= 3
     assert all(c.brief for c in DEFAULT_CASES)
     assert len({c.id for c in DEFAULT_CASES}) == len(DEFAULT_CASES)  # unique ids
+    for c in DEFAULT_CASES:
+        if c.stack:  # a pinned stack must be one the selector actually accepts
+            assert _validate_pin(c.stack), f"{c.id}: {c.stack!r} is not a valid pin"

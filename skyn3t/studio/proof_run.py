@@ -568,6 +568,7 @@ def _docker_daemon_ok() -> bool:
     """Best-effort docker daemon ping. Never raises."""
     if not _DOCKER_IMPORTABLE:
         return False
+    client = None
     try:  # pragma: no cover - environment dependent
         import docker  # type: ignore
 
@@ -576,3 +577,9 @@ def _docker_daemon_ok() -> bool:
         return True
     except Exception:  # noqa: BLE001 - any docker error -> degrade
         return False
+    finally:  # pragma: no cover - environment dependent
+        if client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass

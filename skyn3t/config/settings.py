@@ -107,6 +107,13 @@ class Settings(BaseSettings):
     auto_route: bool = False  # opt-in: gates the learned router; enable together with model_evolution
     asset_gen: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
+    # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
+    # tournament_model_pool so the run is a real cross-model contest (genuine
+    # comparative Elo + best output), not the same model N times.
+    best_of_n_across_models: bool = False
+    # Comma-separated model ids the cross-model sampler draws from (filtered by
+    # free_only/no_claude). Empty → sampler degrades to same-model (no-op).
+    tournament_model_pool: str = ""
     critic_enabled: bool = True  # 2.0: adversarial pre-delivery critic
     # Spec 2: N-ensemble vote for the intent judge (median of N samples, robust
     # to an outlier). 1 = single call (default); >1 costs N judge calls/build.

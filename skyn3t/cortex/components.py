@@ -537,3 +537,69 @@ class AutoCleanup(_BaseComponent):
         summary = {"scanned": scanned, "removed": removed, "dir": str(stage_dir)}
         await self.event_bus.emit(EventType.SYSTEM, self.name, {"cleanup": summary})
         return summary
+
+
+class RoutingReadiness(_BaseComponent):
+    """Propose enabling the learned router once tournament evidence is confident.
+
+    The learned router is gated by ``auto_route`` + ``model_evolution`` (both
+    default off, design rule #4). Builds feed the ``ModelTournament`` per stage;
+    once a bucket crosses the recommender's ``min_plays``/``min_win_rate``
+    thresholds, this watcher submits a GATED ``TUNING`` proposal to flip the
+    flags on — actionable, but never auto-flipped (instruction stays with the
+    human/auto-approval triage). Proposes at most once per process; the proposal
+    store's dedup blocks repeats across restarts.
+    """
+
+    name = "routing_readiness"
+
+    def __init__(self, cortex: Any, event_bus: EventBus, settings: Settings | None = None) -> None:
+        super().__init__(cortex, event_bus, settings)
+        self._proposed = False
+
+    async def run(self) -> None:
+        self._running = True
+
+        async def on_build(ev: Event) -> None:
+            with contextlib.suppress(Exception):
+                await self._maybe_propose()
+
+        self._unsubs.append(self.event_bus.subscribe(EventType.BUILD_COMPLETED, on_build))
+
+    async def _maybe_propose(self) -> None:
+        if self._proposed:
+            return
+        # Already on → nothing to do.
+        if getattr(self.settings, "auto_route", False) and getattr(self.settings, "model_evolution", False):
+            return
+        from skyn3t.intelligence.model_tournament import ModelTournament
+        from skyn3t.intelligence.routing_recommendations import RoutingRecommender
+
+        tournament = ModelTournament(self.settings.data_dir / "model_tournament.json")
+        if not tournament.has_data():
+            return
+        recommender = RoutingRecommender(tournament)
+        confident_bucket: str | None = None
+        for bucket in tournament.buckets():
+            tier, _, task_type = bucket.partition(":")
+            if recommender.recommend(tier, task_type):
+                confident_bucket = bucket
+                break
+        if confident_bucket is None:
+            return
+        self._proposed = True
+        await self.cortex.submit(
+            Proposal(
+                type=ProposalType.TUNING,
+                title="enable learned model router (tournament evidence is confident)",
+                source=self.name,
+                rationale=(
+                    f"bucket '{confident_bucket}' now has a confident model "
+                    "recommendation; enabling the learned router lets builds route "
+                    "to proven models instead of the static default."
+                ),
+                payload={"overrides": {"auto_route": True, "model_evolution": True}},
+                confidence=0.7,
+                safe=False,  # flips routing behaviour -> gated, never auto-applied
+            )
+        )

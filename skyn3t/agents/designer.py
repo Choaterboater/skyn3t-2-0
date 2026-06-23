@@ -53,6 +53,7 @@ class DesignerAgent(BaseAgent):
         result = await self.llm.complete(
             f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON.",
             tier=Tier.UI, system=self.system_prompt(_SYSTEM), json_mode=True,
+            task_type=self.agent_type,
         )
         parsed = parse_json(result.text)
         design: dict[str, Any] = dict(_DEFAULT_DESIGN)

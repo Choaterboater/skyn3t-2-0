@@ -155,10 +155,15 @@ class CodeAgent(BaseAgent):
             planned = self._planned_paths(plan, scaffold)
             sem = asyncio.Semaphore(self._gen_concurrency)
 
+            # Cross-model best-of-N pins this trajectory to a specific model.
+            model_override = p.get("model_override")
+
             async def _one(rel_path: str) -> tuple[str, str | None]:
                 async with sem:
                     try:
-                        return rel_path, await self._generate_file(rel_path, brief, stack, plan, knowledge)
+                        return rel_path, await self._generate_file(
+                            rel_path, brief, stack, plan, knowledge,
+                            model_override=model_override)
                     except Exception:  # noqa: BLE001 - keep scaffold fallback for this file
                         return rel_path, None
 
@@ -264,7 +269,8 @@ class CodeAgent(BaseAgent):
         return out
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
-                             plan: dict[str, Any], knowledge: str = "") -> str | None:
+                             plan: dict[str, Any], knowledge: str = "",
+                             model_override: str | None = None) -> str | None:
         ext = Path(rel_path).suffix.lower()
         base = Path(rel_path).name.lower()
         is_readme = base in _README_NAMES
@@ -304,6 +310,7 @@ class CodeAgent(BaseAgent):
         )
         result = await self.llm.complete(
             prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
+            task_type=self.agent_type, model_override=model_override,
         )
         # If the call degraded to the stub backend (CLI failure/timeout, missing
         # key), do NOT write stub prose over the runnable scaffold — keep it.
@@ -317,6 +324,7 @@ class CodeAgent(BaseAgent):
                 prompt + f"\n\nThe previous attempt had an error: {err}\n"
                 "Return the COMPLETE corrected file.",
                 tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
+                task_type=self.agent_type, model_override=model_override,
             )
             if retry.backend != "stub":
                 recode = extract_code(retry.text)

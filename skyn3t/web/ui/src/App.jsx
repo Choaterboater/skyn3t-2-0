@@ -102,7 +102,7 @@ export default function App() {
               <Route path="/skills" element={<Skills />} />
               <Route path="/activity" element={<Activity stream={stream} />} />
               <Route path="/settings" element={<Settings />} />
-              <Route path="/projects" element={<Projects />} />
+              <Route path="/projects" element={<Projects stream={stream} />} />
               <Route path="/workspace" element={<Workspace stream={stream} />} />
               <Route path="*" element={<Navigate to="/overview" replace />} />
             </Routes>

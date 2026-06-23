@@ -1041,7 +1041,11 @@ def build_router(state: AppState) -> Any:
 
     @router.get("/projects", dependencies=[auth])
     async def _projects() -> dict[str, Any]:
-        return await list_projects(state)
+        try:
+            return await list_projects(state)
+        except OSError:
+            # An unreadable projects_dir must not leak a 500 with internals.
+            raise HTTPException(status_code=500, detail="unable to read projects directory")
 
     @router.delete("/projects/{slug}", dependencies=[auth])
     async def _delete_project(slug: str) -> dict[str, Any]:
@@ -1051,6 +1055,10 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=400, detail="invalid or active project")
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="not found")
+        except OSError:
+            # e.g. the trash dir isn't writable — a controlled error, not a 500 leak.
+            # (FileNotFoundError is caught above; this covers the other OSErrors.)
+            raise HTTPException(status_code=500, detail="failed to trash project")
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
     async def _project_file(slug: str, path: str) -> Any:

@@ -176,8 +176,11 @@ def _readme(slug: str, report: StackReport, env: EnvScanResult) -> str:
     out += ["## Installation", ""]
     if report.has_web and "python" not in report.languages:
         out += ["```bash", "npm install", "```", ""]
-    if "python" in report.languages:
+    elif "python" in report.languages:
         out += ["```bash", "pip install -r requirements.txt", "```", ""]
+    else:
+        # No web/Python stack — never leave the section empty (header → header).
+        out += ["See the project files for dependency requirements.", ""]
 
     out += ["## Usage", ""]
     if report.has_web and "python" not in report.languages:

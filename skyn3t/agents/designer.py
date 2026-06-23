@@ -56,13 +56,17 @@ class DesignerAgent(BaseAgent):
         )
         parsed = parse_json(result.text)
         design: dict[str, Any] = dict(_DEFAULT_DESIGN)
+        out: dict[str, Any] = {"design": design, "model": result.model, "backend": result.backend}
         if isinstance(parsed, dict) and parsed.get("stub") is not True and result.backend != "stub":
             for key in ("theme", "palette", "typography", "layout", "components"):
                 if parsed.get(key):
                     design[key] = parsed[key]
-        return TaskResult(task_id=task.task_id, success=True,
-                          output={"design": design, "model": result.model,
-                                  "backend": result.backend})
+        elif result.backend != "stub" and not isinstance(parsed, dict):
+            # A REAL backend returned unparseable JSON — surface the degradation
+            # rather than silently passing _DEFAULT_DESIGN off as a real design.
+            out["degraded"] = True
+            out["degraded_reason"] = "design JSON was unparseable; using defaults"
+        return TaskResult(task_id=task.task_id, success=True, output=out)
 
     async def health_check(self) -> bool:
         return self.llm is not None

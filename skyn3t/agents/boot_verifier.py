@@ -149,7 +149,12 @@ class BootVerifierAgent(BaseAgent):
             scripts = pkg.get("scripts") or {}
             if "start" in scripts or "dev" in scripts or pkg.get("main"):
                 return True, "structural", "package.json declares a start/dev/main entrypoint"
-        return bool(entrypoints), "structural", f"entrypoint(s) present: {entrypoints[:3]}"
+        # No package.json: only a real JS/TS file counts as a node entrypoint. An
+        # HTML file is NOT bootable as node — a stack="node" pin on a web-only
+        # project must FAIL this check, not pass on any entrypoint name.
+        node_files = [e for e in entrypoints
+                      if Path(e).suffix in {".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs"}]
+        return bool(node_files), "structural", f"node entrypoint(s) present: {node_files[:3]}"
 
     def _boot_web(self, root: Path, entrypoints: list[str]):
         html = next((e for e in entrypoints if e.endswith(".html")), None)

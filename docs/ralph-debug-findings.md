@@ -100,4 +100,23 @@ mutates it in place and `_emit_decided` already sees the updated status (verifie
 emits `['approved','applied']`, not `['pending',...]`). The adversarial verifier missed
 the aliasing; empirical confirmation caught it. Left `_triage` untouched.
 
-**RUNNING TOTAL: 30 bugs fixed across 4 iterations + 2 user reports, suite 643 → 680 (+37 tests).**
+## Iteration 5 (2026-06-23) — least-swept modules: 9 candidates, 7 confirmed, all fixed
+
+Method: 6 lenses (security-deep, router-registry, self-healing, memory-internals,
+contract-drift, fanout-bestofn) + adversarial verify (15 agents). Yield 7→13→3→5→7
+(loop still productive). Suite 680 → 689.
+
+| Sev | Bug | Fix | Test |
+| --- | --- | --- | --- |
+| high | `sandbox.py:199` `["--tmpfs","/work/.tmp:rw"] if False else []` — dead code, workdir tmpfs hardening never applied | unconditional `--tmpfs /work/.tmp:rw,size=256m` | `test_iter5_fixes.py` |
+| high | `sandbox.py` `network` param dropped on the subprocess fallback → silent isolation downgrade | pass `network` + LOUD "network cannot be enforced" warning | `test_iter5_fixes.py` |
+| high | `llm.py` missing `usage` on a 200 → $0 cost for PAID models (corrupts budget caps) | estimate tokens from text len when usage absent + warn | `test_iter5_fixes.py` |
+| high | `llm.py:329` `resp.json()` outside the guard → JSONDecodeError crashes the build (violates degrade-don't-crash) | moved into the try (catch ValueError) → degrade to stub | `test_iter5_fixes.py` |
+| high | `channels.py` PROPOSAL_DECIDED emitted `decision` but `web/deps.py` handler reads `approved`/`status` → Telegram/Discord/Slack approvals silently dropped | emit canonical `approved` bool | `test_iter5_fixes.py` |
+| high | `debate.py` `_parse_vote` returned 0 for unparseable/out-of-range votes → every bad LLM vote silently boosted proposals[0] | return None; caller skips | `test_iter5_fixes.py` + updated `test_intelligence.py` |
+| med | `orchestrator.py:173` deterministic backoff → thundering herd on concurrent transient failures | `_backoff_delay` with jitter | `test_iter5_fixes.py` |
+
+Files: `security/sandbox.py`, `adapters/llm.py`, `integrations/channels.py`,
+`intelligence/debate.py`, `core/orchestrator.py`. 2 candidates refuted.
+
+**RUNNING TOTAL: 37 bugs fixed across 5 iterations + 2 user reports, suite 643 → 689 (+44 tests).**

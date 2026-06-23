@@ -74,4 +74,30 @@ as the real bugs get cleared). Suite 670 → 674.
 Files touched: `agents/consistency_reviewer.py`, `persistence/recovery.py`, `web/websockets.py`.
 9 candidates refuted by the adversarial pass.
 
-**RUNNING TOTAL: 23 bugs fixed across 3 iterations, suite 643 → 674 (+31 tests).**
+## User-reported (2026-06-23) — 2 live bugs fixed
+
+| Bug | Fix | Test |
+| --- | --- | --- |
+| Cortex re-surfaced the SAME proposals to approve (~50×). `_is_duplicate` only blocked while a prior same-key proposal was OPEN; once APPLIED, a recurring generator (repo scout / prompt evolver / meta tick) re-created it → reappeared. | APPLIED now also blocks the same dedupe_key (already enacted = noise); REJECTED/FAILED stay retryable | `test_cortex.py` +2 |
+| Workspace live-app iframe clamped to a 420px box → full-page apps clipped | `min-h-[78vh]`, scrolls internally | rebuild + browser-verified |
+
+## Iteration 4 (2026-06-23) — convergence check: 6 candidates, 5 fixed, 1 refuted
+
+Method: 6 fresh-angle lenses (boundary-inputs, integration-seams, numeric-scoring,
+resource-lifecycle, completeness-critic, state-machine) + adversarial verify (12 agents).
+The loop did NOT converge — found 5 more real bugs. Suite 676 → 680.
+
+| Sev | Bug | Fix | Test |
+| --- | --- | --- | --- |
+| high | Docker client never closed in `docker_backend._run_docker` / `docker_available()` + `proof_run._docker_daemon_ok` → FD leak | `client.close()` in finally on all 3 | `test_iter4_fixes.py` |
+| high | `improve.py` merge_back returns [] (worktree only ignored files) → reports delivered=0 & empties project_dir | fall back to `list_files` (matches runner.py) | `test_iter4_fixes.py` |
+| high | `improve.py` a failing `_record_history` after a successful merge_back relabeled the delivery 'failed' (partial-result lie) | guard record-history; delivery stands | `test_iter4_fixes.py` |
+| high | `runner.py` manifest.verdict left "" on the exception paths (only set on rejection/normal) | `verdict or "no_go"` in both handlers | `test_iter4_fixes.py` |
+
+REFUTED by empirical check (not just adversarial reasoning): the "_triage emits stale
+PENDING status" finding — the store holds the SAME Proposal object, so `set_status`
+mutates it in place and `_emit_decided` already sees the updated status (verified:
+emits `['approved','applied']`, not `['pending',...]`). The adversarial verifier missed
+the aliasing; empirical confirmation caught it. Left `_triage` untouched.
+
+**RUNNING TOTAL: 30 bugs fixed across 4 iterations + 2 user reports, suite 643 → 680 (+37 tests).**

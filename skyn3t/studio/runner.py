@@ -1170,6 +1170,7 @@ class StudioRunner:
             if open_stage is not None:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             manifest.status = "failed"
+            manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
             await self._grade_lessons(
                 used_lessons, helpful=False,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
@@ -1189,6 +1190,7 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
+            manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
             await self._grade_lessons(
                 used_lessons, helpful=False,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),

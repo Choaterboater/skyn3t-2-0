@@ -90,7 +90,7 @@ class CodeImproverAgent(BaseAgent):
             )
             try:
                 result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
-                                                 file_hint=rel, max_tokens=4096)
+                                                 file_hint=rel, max_tokens=4096, task_type=self.agent_type)
                 # Degraded-to-stub result must not clobber a working file.
                 if result.backend != "stub":
                     fixed = extract_code(result.text)

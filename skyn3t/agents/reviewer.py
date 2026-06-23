@@ -148,7 +148,7 @@ class ReviewerAgent(BaseAgent):
         )
         try:
             res = await self.llm.complete(
-                prompt, tier=Tier.STRONG, json_mode=True, max_tokens=128
+                prompt, tier=Tier.STRONG, json_mode=True, max_tokens=128, task_type=self.agent_type
             )
             data = json.loads(res.text)
             val = float(data.get("score"))

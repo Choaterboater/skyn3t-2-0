@@ -18,7 +18,7 @@ from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import get_repo_map
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.proof_run import proof_run
-from skyn3t.worktree import cleanup_worktree, create_worktree, merge_back
+from skyn3t.worktree import cleanup_worktree, create_worktree, list_files, merge_back
 
 import structlog
 
@@ -108,7 +108,17 @@ class ImproveEngine:
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
             delivered = merge_back(wt.dir, str(project_dir), overwrite=True, clean=True)
-            self._record_history(manifest, project_dir, goal, delivered, proof, stack, slug)
+            # merge_back returns [] when the worktree held only ignored files (it
+            # already cleaned project_dir) — fall back to what's actually on disk
+            # so a real delivery is never reported as empty (design rule #1).
+            if not delivered:
+                delivered = list_files(str(project_dir))
+            # Delivery already happened. A failure while recording history must NOT
+            # relabel a successful deliver as 'failed' (no partial-result lie).
+            try:
+                self._record_history(manifest, project_dir, goal, delivered, proof, stack, slug)
+            except Exception as rec_exc:  # noqa: BLE001
+                _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
 
             outcome = ImproveOutcome(
                 project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,

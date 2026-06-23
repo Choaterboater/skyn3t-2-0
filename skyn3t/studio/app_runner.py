@@ -111,6 +111,51 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
 
 
 # ---------------------------------------------------------------------------
+# Node dependency installation
+# ---------------------------------------------------------------------------
+# A delivered Vite/React project ships package.json + src/ but NO node_modules,
+# so `npm run dev` can't find the `vite` binary (it lives in node_modules/.bin).
+# Serving must install deps first. Idempotent + thread-offloaded (sync subprocess
+# must never run on the asyncio loop -- same gotcha as the Playwright screenshot).
+
+def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tuple[bool, dict]:
+    """Run an npm install/ci command, capturing output. Never raises."""
+    try:
+        proc = subprocess.run(  # noqa: S603 - npm path resolved via shutil.which
+            cmd, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, {"error": f"npm install timed out after {timeout:.0f}s"}
+    except OSError as exc:
+        return False, {"error": str(exc)}
+    tail = (proc.stdout or "")[-2000:]
+    if proc.returncode != 0:
+        return False, {"error": f"npm exited {proc.returncode}", "log_tail": tail}
+    return True, {"log_tail": tail}
+
+
+def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dict]:
+    """Install node dependencies when missing so `npm run dev` finds its binaries.
+
+    Idempotent: a present node_modules/ short-circuits (no npm call). Prefers
+    `npm ci` when a lockfile exists, else `npm install`. `runner(cmd, cwd) ->
+    (ok, detail)` is injectable for tests. Never raises."""
+    pdir = Path(project_dir)
+    if not (pdir / "package.json").exists():
+        return True, {"skipped": "no package.json"}
+    if (pdir / "node_modules").is_dir():
+        return True, {"skipped": "node_modules present"}
+    npm = shutil.which("npm")
+    if not npm:
+        return False, {"error": "npm not found on PATH"}
+    cmd = [npm, "ci"] if (pdir / "package-lock.json").exists() else [npm, "install"]
+    run = runner or _default_npm_run
+    return run(cmd, str(pdir))
+
+
+# ---------------------------------------------------------------------------
 # Shared teardown helper
 # ---------------------------------------------------------------------------
 
@@ -150,6 +195,14 @@ class AppRunner:
             return RunningApp(url="", port=0, pid=None, kind="none",
                               project_dir=str(pdir), status="no_preview",
                               detail={"reason": "no web entrypoint"})
+        if spec.kind == "node":
+            # Install deps before `npm run dev` so the vite/react binary exists.
+            # Thread-offloaded: a multi-second sync install must not block the loop.
+            ok, info = await asyncio.to_thread(ensure_node_deps, pdir)
+            if not ok:
+                return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
+                                  project_dir=str(pdir), status="failed",
+                                  detail={"install_error": info})
         log_fd, log_path = tempfile.mkstemp(prefix=f"skyn3t-serve-{pdir.name}-", suffix=".log")
         logf = os.fdopen(log_fd, "w")
         try:

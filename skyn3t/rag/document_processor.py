@@ -124,19 +124,23 @@ class DocumentProcessor:
         )
 
     def _pack_lines(
-        self, lines: List[str], source: str, kind: str
+        self, lines: List[str], source: str, kind: str, line_offset: int = 0
     ) -> List[Chunk]:
-        """Greedily pack lines into token-bounded chunks with line overlap."""
+        """Greedily pack lines into token-bounded chunks with line overlap.
+
+        ``line_offset`` is the number of file lines preceding ``lines`` so chunk
+        start/end line numbers stay file-relative when a section/block is packed
+        in isolation (else every section restarts at line 1)."""
         chunks: List[Chunk] = []
         cur: List[str] = []
-        cur_start = 1
+        cur_start = 1 + line_offset
         cur_tokens = 0
         line_no = 0
         idx = 0
         # Pre-split any single line that alone exceeds the budget into
         # word-wrapped sub-lines so no chunk can blow the token cap.
         lines = self._wrap_long_lines(lines)
-        for line_no, line in enumerate(lines, start=1):
+        for line_no, line in enumerate(lines, start=1 + line_offset):
             lt = estimate_tokens(line) + 1
             if cur and cur_tokens + lt > self.max_tokens:
                 chunks.append(self._emit(cur, cur_start, source, kind, idx))
@@ -199,11 +203,13 @@ class DocumentProcessor:
 
         chunks: List[Chunk] = []
         idx = 0
+        offset = 0
         for sec in sections:
-            for c in self._pack_lines(sec, source, "markdown"):
+            for c in self._pack_lines(sec, source, "markdown", line_offset=offset):
                 c.index = idx
                 idx += 1
                 chunks.append(c)
+            offset += len(sec)
         return chunks
 
     def _chunk_code(self, text: str, source: str) -> List[Chunk]:
@@ -225,12 +231,14 @@ class DocumentProcessor:
 
         chunks: List[Chunk] = []
         idx = 0
+        offset = 0
         for blk in blocks:
             # Large blocks still get packed under the token budget.
-            for c in self._pack_lines(blk, source, "code"):
+            for c in self._pack_lines(blk, source, "code", line_offset=offset):
                 c.index = idx
                 idx += 1
                 chunks.append(c)
+            offset += len(blk)
         return chunks
 
 

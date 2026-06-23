@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from skyn3t.atomic_io import atomic_write_text
+
 # Real, benign Settings fields safe to carry across builds. The INSIGHT ->
 # SelfTuning path only ever writes ``critic_enabled`` / ``reflective_retry``
 # today (the SAFE_FLAGS that are also Settings fields); the rest are valid
@@ -64,8 +66,7 @@ def persist_overrides(data_dir: Any, applied: dict[str, Any]) -> dict[str, Any]:
             return current
         current.update(safe)
         p = overrides_path(data_dir)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        atomic_write_text(p, json.dumps(current, indent=2))
         return current
     except Exception:  # noqa: BLE001
         return {}

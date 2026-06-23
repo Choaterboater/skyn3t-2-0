@@ -8,6 +8,7 @@ No bot token -> ``is_available()`` is False and methods no-op (design rule #6).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.parse
 import urllib.request
@@ -96,7 +97,8 @@ class SlackChannel(Channel):
                 return True
             except Exception:  # noqa: BLE001 - fall through to HTTP
                 pass
-        return self._send_http(target, text)
+        # Offload the blocking urllib call so a 10s timeout can't freeze the loop.
+        return await asyncio.to_thread(self._send_http, target, text)
 
     def _send_http(self, target: str, text: str) -> bool:
         try:

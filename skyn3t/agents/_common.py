@@ -188,7 +188,10 @@ def extract_code(text: str) -> str:
     """Pull a single code block out of an LLM response, or return it verbatim."""
     if not text:
         return ""
-    fenced = re.search(r"```[a-zA-Z0-9_+-]*\s*\n(.*?)```", text, re.DOTALL)
+    # The newline after the language marker is OPTIONAL: a fence like
+    # ```json{...}``` (no newline) must still extract its body rather than fall
+    # through and return the raw fence markup. [^\S\n]* eats trailing spaces.
+    fenced = re.search(r"```[a-zA-Z0-9_+-]*[^\S\n]*\n?(.*?)```", text, re.DOTALL)
     if fenced:
         return fenced.group(1).rstrip() + "\n"
     return text

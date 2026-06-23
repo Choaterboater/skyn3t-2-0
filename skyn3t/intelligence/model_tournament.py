@@ -123,7 +123,8 @@ class ModelTournament:
                 },
                 "matches": [asdict(r) for r in self._matches[-500:]],
             }
-            self.path.write_text(json.dumps(payload, indent=2))
+            from skyn3t.atomic_io import atomic_write_text
+            atomic_write_text(self.path, json.dumps(payload, indent=2))
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:

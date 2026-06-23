@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from skyn3t.atomic_io import atomic_write_text
+
 MANIFEST_FILENAME = "skyn3t_manifest.json"
 
 
@@ -97,7 +99,8 @@ class BuildManifest:
         pdir = Path(project_dir)
         pdir.mkdir(parents=True, exist_ok=True)
         path = pdir / MANIFEST_FILENAME
-        path.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=False))
+        # Atomic write: a crash mid-write must not truncate the durable record.
+        atomic_write_text(path, json.dumps(self.to_dict(), indent=2, sort_keys=False))
         return path
 
     @classmethod

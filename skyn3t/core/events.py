@@ -130,7 +130,11 @@ class EventBus:
         async with self._lock:
             self._history.append(event)
             self._published += 1
-            handlers = list(self._subs.get(event.type, ())) + list(self._subs.get(EventType.ALL, ()))
+            # Dedup: a handler subscribed to BOTH the specific type and ALL must
+            # fire once, not twice. dict.fromkeys preserves first-seen order.
+            handlers = list(dict.fromkeys(
+                list(self._subs.get(event.type, ())) + list(self._subs.get(EventType.ALL, ()))
+            ))
 
         if not handlers:
             return
@@ -188,16 +192,24 @@ class EventBus:
         }
 
     def restore(self, snap: dict[str, Any]) -> None:
+        # Validate + reconstruct into a temp list FIRST, then swap. A corrupt
+        # checkpoint (bad EventType, missing 'source') must not crash, and must
+        # not leave history half-cleared mid-loop (design rule #6: degrade).
         self._published = snap.get("published", 0)
-        self._history.clear()
+        restored: list[Event] = []
         for raw in snap.get("history", []):
-            self._history.append(
-                Event(
-                    type=EventType(raw["type"]),
-                    source=raw["source"],
-                    payload=raw.get("payload", {}),
-                    id=raw.get("id", uuid.uuid4().hex),
-                    timestamp=raw.get("timestamp", time()),
-                    correlation_id=raw.get("correlation_id"),
+            try:
+                restored.append(
+                    Event(
+                        type=EventType(raw["type"]),
+                        source=raw["source"],
+                        payload=raw.get("payload", {}),
+                        id=raw.get("id", uuid.uuid4().hex),
+                        timestamp=raw.get("timestamp", time()),
+                        correlation_id=raw.get("correlation_id"),
+                    )
                 )
-            )
+            except (ValueError, KeyError, TypeError) as exc:
+                log.warning("event_restore_skipped_corrupt", error=str(exc))
+        self._history.clear()
+        self._history.extend(restored)

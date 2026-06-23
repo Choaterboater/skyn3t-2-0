@@ -323,7 +323,10 @@ class CodeAgent(BaseAgent):
                 ok2, _ = validate_source(rel_path, recode)
                 if ok2:
                     return recode
-            # fall through: keep the best-effort original (never lose work)
+            # Both attempts produced invalid source. Return None so the caller
+            # keeps the runnable scaffold instead of writing broken code over it
+            # (the original `code` already failed validation — it's not "work").
+            return None
         return code
 
     def _write_files(self, worktree: Path, files: dict[str, str]) -> list[str]:

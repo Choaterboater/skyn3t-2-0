@@ -74,6 +74,47 @@ def enumerate_routes(project_dir: str | Path, stack: str = "") -> list[Route]:
     return list(seen.values())
 
 
+_LINK_ATTR = re.compile(r"""(?:href|src)\s*=\s*['"]([^'"#]+)['"]""", re.I)
+
+
+def _extract_links(html: str) -> set[str]:
+    """Same-origin URL PATHS referenced by href/src in a page. Drops external
+    URLs, anchors, mailto/tel/javascript, and empties."""
+    out: set[str] = set()
+    for raw in _LINK_ATTR.findall(html or ""):
+        v = raw.strip()
+        if not v or v.startswith(("http://", "https://", "//", "mailto:", "tel:", "javascript:", "data:")):
+            continue
+        if not v.startswith("/"):
+            v = "/" + v  # treat relative as root-relative (best-effort)
+        out.add(v.split("?")[0])
+    return out
+
+
+async def crawl_routes(base_url: str) -> list["Route"]:
+    """Load the served root and turn its same-origin links into page Routes. A
+    cheap breadth complement to static parsing — catches dynamically-mounted /
+    client-rendered links present in the delivered HTML. Best-effort, never raises."""
+    base = str(base_url).rstrip("/")
+    try:
+        html = await asyncio.to_thread(_fetch_text, base + "/")
+    except Exception:  # noqa: BLE001
+        return []
+    routes: list[Route] = []
+    for path in sorted(_extract_links(html)):
+        routes.append(Route(path=path, method="GET", kind=_kind(path, "GET")))
+    return routes
+
+
+def merge_routes(*route_lists: list["Route"]) -> list["Route"]:
+    """Union routes from several sources, de-duped by (path, method), order-stable."""
+    seen: dict[tuple[str, str], Route] = {}
+    for routes in route_lists:
+        for r in routes:
+            seen.setdefault((r.path, r.method), r)
+    return list(seen.values())
+
+
 # ---------------------------------------------------------------------------
 # Per-route HTTP liveness
 # ---------------------------------------------------------------------------
@@ -107,6 +148,11 @@ class LivenessReport:
                 for r in self.results
             ],
         }
+
+
+def _fetch_text(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 - localhost only
+        return resp.read().decode("utf-8", "ignore")
 
 
 def _hit(url: str, method: str) -> int:
@@ -192,7 +238,7 @@ async def liveness_self_improve(project_dir, *, app_runner, improve_engine,
     import tempfile
 
     project_dir = Path(project_dir)
-    routes = enumerate_routes(project_dir, stack)
+    static_routes = enumerate_routes(project_dir, stack)
     last: LivenessReport | None = None
     n = max(1, int(max_rounds))
     with tempfile.TemporaryDirectory(prefix="skyn3t-liveness-") as shotdir:
@@ -201,6 +247,9 @@ async def liveness_self_improve(project_dir, *, app_runner, improve_engine,
             try:
                 if getattr(app, "status", "") != "running" or not getattr(app, "url", ""):
                     return LivenessOutcome(skipped=True, reason="no live preview", rounds=i)
+                # Augment the static route set with links crawled from the served
+                # root — catches client-rendered / dynamically-mounted pages.
+                routes = merge_routes(static_routes, await crawl_routes(app.url))
                 last = await check_liveness(app.url, routes, vision_fn=vision_fn,
                                             screenshot_dir=shotdir)
             finally:

@@ -155,6 +155,26 @@ def test_ensure_node_deps_noop_without_package_json(tmp_path):
     assert ok is True and calls == []  # nothing to install
 
 
+def test_run_spec_env_strips_host_secrets(tmp_path, monkeypatch):
+    # A served preview app must NOT inherit host credentials (API keys/tokens).
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")  # non-secret must survive
+    (tmp_path / "index.html").write_text("<h1>hi</h1>")
+    spec = build_run_spec(tmp_path, "static", port=9100)
+    assert "OPENROUTER_API_KEY" not in spec.env
+    assert "ANTHROPIC_API_KEY" not in spec.env
+    assert spec.env.get("PATH") == "/usr/bin:/bin"
+
+
+def test_node_run_spec_env_strips_secrets_keeps_port(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKYN3T_OPENROUTER_API_KEY", "sk-secret")
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    spec = build_run_spec(tmp_path, "react", port=9101)
+    assert "SKYN3T_OPENROUTER_API_KEY" not in spec.env
+    assert spec.env.get("PORT") == "9101"  # required override preserved
+
+
 def test_start_node_installs_before_serve_and_fails_clean(tmp_path, monkeypatch):
     # A node project whose dependency install fails must surface a clean `failed`
     # RunningApp with the install error -- never launch a doomed dev server.

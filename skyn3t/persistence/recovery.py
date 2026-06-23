@@ -86,7 +86,9 @@ class RecoveryManager:
         # spine. Restoring it never replays handlers (snapshot/restore is inert).
         if event_bus is not None and cp.event_bus:
             event_bus.restore(cp.event_bus)
-            events_restored = len(cp.event_bus.get("history", []))
+            # Count what actually landed: restore() skips corrupt events, so the
+            # snapshot length over-reports. Read the restored bus, not the dict.
+            events_restored = len(event_bus.history())
 
         files_state = self._extract(cp, _FILES_KEYS) if mode in (
             RestoreMode.FILES, RestoreMode.FILES_AND_TASK) else {}

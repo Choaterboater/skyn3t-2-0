@@ -168,7 +168,9 @@ function ServePane({ slug, stream }) {
           <iframe
             title={`preview-${slug}`}
             src={served.url}
-            className="h-full min-h-[420px] w-full border-0 bg-white"
+            // Fill the viewport height so a full-page app isn't clipped to a
+            // small fixed box; the iframe scrolls internally for taller content.
+            className="h-full min-h-[78vh] w-full border-0 bg-white"
           />
         ) : (
           <Empty icon="▢">

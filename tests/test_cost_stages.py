@@ -26,6 +26,32 @@ class _Budget:
         self.spent_build = 0.0
 
 
+def test_unpaired_end_stage_does_not_recount_prior_stages():
+    # A stage whose start_stage was skipped (e.g. an exception) must attribute
+    # nothing, not fall back to build-start and re-count earlier stages.
+    budget = _Budget()
+    ct = CostTracker(budget=budget)
+    ct.start_build("b1")
+    ct.start_stage("b1", "plan")
+    budget.calls.append(_Call(0.05, 100, 50))
+    ct.end_stage("b1", "plan")
+    ghost = ct.end_stage("b1", "code")  # never started
+    assert ghost["cost_usd"] == 0.0 and ghost["tokens"] == 0
+
+
+def test_duplicate_end_stage_returns_zero():
+    # Calling end_stage twice for one stage must not re-slice the same calls.
+    budget = _Budget()
+    ct = CostTracker(budget=budget)
+    ct.start_build("b1")
+    ct.start_stage("b1", "plan")
+    budget.calls.append(_Call(0.05, 100, 50))
+    first = ct.end_stage("b1", "plan")
+    assert round(first["cost_usd"], 4) == 0.05
+    second = ct.end_stage("b1", "plan")
+    assert second["cost_usd"] == 0.0
+
+
 def test_per_stage_cost_attribution_slices_the_ledger():
     budget = _Budget()
     ct = CostTracker(budget=budget)

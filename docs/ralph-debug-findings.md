@@ -43,10 +43,13 @@ Suite 652 → 668.
 | 12 | med | Orchestrator `_idempotency` cache unbounded (unlike capped `_results`) | `_idempotency_max` + FIFO eviction | `test_orchestrator_idempotency.py` |
 | 13 | med | EventBus handler subscribed to both a type AND `ALL` fired twice | `dict.fromkeys` dedup in `publish()` | `test_events_robustness.py` |
 
-DEFERRED to iteration 3 (lower impact — runner always pairs start/end so these only
-bite direct CostTracker use):
-- #9 stage `start_stage`/`end_stage` unpaired when a stage raises (missing attribution) — needs a try/finally around the stage block in `runner.py`.
-- #10 `cost_tracker.end_stage` fallback to build-start when `_stage_base` missing → double-count on orphaned `end_stage`.
+Stage-cost pair (#9, #10) — FIXED (follow-up commit, suite 668 → 670):
+- #10 `cost_tracker.end_stage` no longer falls back to build-start when `_stage_base` is
+  missing; an unpaired/duplicate end_stage now attributes zero (no re-count). This also
+  makes end_stage idempotent. (`test_cost_stages.py` +2)
+- #9 `runner.start` tracks the currently-open stage and closes it in both exception
+  handlers, so a mid-stage crash still records that stage's slice (idempotent close is
+  a no-op on the normal path).
 
 Files touched: `core/events.py`, `core/orchestrator.py`, `rag/document_processor.py`,
 `agents/_common.py`, `agents/code_agent.py`, `integrations/{slack,telegram,discord}.py`,

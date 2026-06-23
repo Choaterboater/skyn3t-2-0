@@ -52,6 +52,29 @@ def test_proposal_store_dedup():
     assert p2.decision_reason == "duplicate"
 
 
+def test_applied_proposal_blocks_regeneration():
+    # The "approved 50 times" bug: once a proposal is APPLIED, a recurring
+    # generator that re-submits the SAME dedupe_key must be suppressed — re-
+    # proposing something already enacted is pure approval noise.
+    store = ProposalStore()
+    p1, ok1 = store.add(Proposal(type=ProposalType.TUNING, title="bump n"))
+    assert ok1 is True
+    store.set_status(p1.id, ProposalStatus.APPLIED)
+    p2, ok2 = store.add(Proposal(type=ProposalType.TUNING, title="bump n"))
+    assert ok2 is False  # already applied -> not re-surfaced
+    assert p2.status == ProposalStatus.REJECTED
+
+
+def test_rejected_proposal_does_not_block_re_proposal():
+    # A human REJECT (or a duplicate-reject) must not permanently block the key —
+    # else nothing could ever be re-proposed after a no.
+    store = ProposalStore()
+    p1, _ = store.add(Proposal(type=ProposalType.TUNING, title="bump n"))
+    store.set_status(p1.id, ProposalStatus.REJECTED)
+    _, ok2 = store.add(Proposal(type=ProposalType.TUNING, title="bump n"))
+    assert ok2 is True  # a prior rejection doesn't freeze the topic forever
+
+
 def test_proposal_roundtrip():
     p = Proposal(type=ProposalType.INGEST, title="x", confidence=2.0)
     assert p.confidence == 1.0  # clamped

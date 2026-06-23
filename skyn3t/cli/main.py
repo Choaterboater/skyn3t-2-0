@@ -999,6 +999,60 @@ def studio_visual(
         raise typer.Exit(code=2)
 
 
+async def _run_liveness_cli(project: str, *, max_rounds: int):
+    from pathlib import Path as _Path
+
+    from skyn3t.studio.app_runner import AppRunner
+    from skyn3t.studio.improve import ImproveEngine
+    from skyn3t.studio.liveness import liveness_self_improve
+    from skyn3t.studio.visual_check import make_vision_fn
+
+    spine = await _assemble_spine()
+    settings = spine["settings"]
+    _l, _p, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
+    engine = ImproveEngine(spine["event_bus"], spine["orchestrator"],
+                           settings=settings, memory=spine["memory"], skills=skills, rag=rag)
+    cand = _Path(project)
+    pdir = cand if cand.is_absolute() else (settings.projects_dir / project)
+    stack = ""
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+        man = BuildManifest.load(pdir)
+        stack = man.stack if man else ""
+    except Exception:  # noqa: BLE001
+        stack = ""
+    return await liveness_self_improve(
+        pdir, app_runner=AppRunner(), improve_engine=engine,
+        vision_fn=make_vision_fn(settings), stack=stack, max_rounds=max_rounds)
+
+
+@studio_app.command("liveness")
+def studio_liveness(
+    project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
+    rounds: int = typer.Option(2, "--rounds", "-r", help="Max check->repair rounds."),
+) -> None:
+    """Liveness loop: serve -> hit every route/page -> repair dead ones -> re-check.
+
+    HTTP liveness needs no LLM; the per-page visual judge + auto-repair activate
+    when a vision model / LLM backend (OpenRouter key or claude/kimi CLI) is wired."""
+    console = _console()
+    res = asyncio.run(_run_liveness_cli(project, max_rounds=rounds))
+    if res.skipped or res.report is None:
+        console.print(f"[yellow]Liveness skipped[/yellow]: {res.reason}")
+        raise typer.Exit(code=1)
+    rep = res.report
+    tone = "green" if res.passed else "yellow"
+    console.print(f"[{tone}]Liveness {'passed' if res.passed else 'incomplete'}[/{tone}] "
+                  f"after {res.rounds} round(s) — {rep.ok}/{rep.total} routes OK "
+                  f"(health {rep.health:.0%})")
+    for r in rep.results:
+        mark = "✔" if r.ok else "✕"
+        vis = "" if not r.visual else (" 👁" if r.visual.get("matches") else " 👁✕")
+        console.print(f"  {mark} {r.method} {r.path} → {r.status}{vis}")
+    if not res.passed:
+        raise typer.Exit(code=2)
+
+
 async def assemble_app_state(event_bus: Any | None = None) -> Any:
     """Build a fully-wired web ``AppState`` (spine + studio + intelligence).
 

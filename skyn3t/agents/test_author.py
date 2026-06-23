@@ -196,7 +196,7 @@ class TestAuthorAgent(BaseAgent):
             'criteria. Reply ONLY with JSON {"criteria": [str, ...]}.\n\nBrief: ' + brief
         )
         try:
-            res = await self.llm.complete(prompt, tier=Tier.CHEAP, json_mode=True, max_tokens=512)
+            res = await self.llm.complete(prompt, tier=Tier.CHEAP, json_mode=True, max_tokens=512, task_type=self.agent_type)
             data = json.loads(res.text)
             extra = [str(c) for c in data.get("criteria", []) if isinstance(c, str)]
             merged = list(dict.fromkeys(base + extra))

@@ -9,6 +9,7 @@ focus only on their work.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -133,6 +134,14 @@ class BaseAgent(ABC):
     async def _run_locked(self, task: TaskRequest) -> TaskResult:
         self.status = AgentStatus.BUSY
         started = time()
+        # Scope this run's LLM-route capture: agents share one client, but
+        # ``run`` holds ``_run_lock`` across this whole method, so clearing here
+        # attributes exactly the completions THIS run produces to the tournament
+        # AND bounds the list (no unbounded growth over a long-lived process).
+        llm = getattr(self, "llm", None)
+        if llm is not None and hasattr(llm, "routes"):
+            with contextlib.suppress(Exception):
+                llm.routes.clear()
         await self.event_bus.emit(
             EventType.TASK_STARTED, self.name,
             {"task_id": task.task_id, "type": task.type},
@@ -147,7 +156,6 @@ class BaseAgent(ABC):
             # ``self.llm`` get this for free without plumbing it through every
             # ``TaskResult(...)`` site. Agents without an LLM leave it None.
             if result.model_id is None:
-                llm = getattr(self, "llm", None)
                 if llm is not None:
                     result.model_id = getattr(llm, "last_model", None)
                     route = getattr(llm, "last_route", None)
@@ -155,6 +163,11 @@ class BaseAgent(ABC):
                         # (tier, task_type) the model routed through, so the
                         # runner records into the bucket the router queries.
                         result.metadata["route"] = route
+                    # The full set of (tier, task_type, model) this stage used,
+                    # so every bucket it touched is fed (not just the last file).
+                    routes = list(getattr(llm, "routes", ()))
+                    if routes and "routes" not in result.metadata:
+                        result.metadata["routes"] = routes
             self.status = AgentStatus.READY
             ev = EventType.TASK_COMPLETED if result.success else EventType.TASK_FAILED
             await self.event_bus.emit(

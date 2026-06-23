@@ -85,6 +85,9 @@ class ModelTournament:
         # bucket -> {model -> ModelStats}
         self._boards: dict[str, dict[str, ModelStats]] = {}
         self._matches: list[MatchRecord] = []
+        # Buckets we've already logged as empty, so an abstaining router querying
+        # the same empty bucket on every build doesn't spam the debug log.
+        self._warned_empty: set[str] = set()
         if self.path is not None:
             self._load()
 
@@ -142,8 +145,14 @@ class ModelTournament:
         losers: list[str],
         *,
         task_type: str = "",
+        save: bool = True,
     ) -> None:
-        """Record that ``winner`` beat each model in ``losers`` for ``bucket``."""
+        """Record that ``winner`` beat each model in ``losers`` for ``bucket``.
+
+        ``save=False`` defers the disk write so a caller recording several
+        buckets in one pass (a build stage with multiple routes) can batch them
+        and call :meth:`save` once instead of writing per record.
+        """
         now = time.time()
         w = self._stat(bucket, winner)
         real_losers = [l for l in losers if l != winner]
@@ -169,29 +178,32 @@ class ModelTournament:
         self._matches.append(
             MatchRecord(bucket=bucket, winner=winner, losers=list(losers), task_type=task_type)
         )
-        self.save()
+        if save:
+            self.save()
 
     # ---- querying -----------------------------------------------------
     def has_data(self) -> bool:
         """Return True if any model has been recorded in any bucket.
 
         The learned router uses this to decide whether to consult the
-        tournament or fall back to the default heuristic. Currently the
-        tournament is only fed by the debate pipeline (see module docstring
-        for the seam that would close this gap).
+        tournament or fall back to the default heuristic. Fed per build stage
+        (StudioRunner._feed_tournament) and by the debate pipeline.
         """
         return bool(self._boards)
 
     def leaderboard(self, bucket: str, limit: int = 10) -> list[ModelStats]:
         board = self._boards.get(bucket, {})
-        if not board and _log:
+        if not board and _log and bucket not in self._warned_empty:
+            # Once per bucket per process — the router abstains and re-queries the
+            # same empty bucket on every build, which used to spam this log.
+            self._warned_empty.add(bucket)
             _log.debug(
                 "tournament.empty_bucket",
                 bucket=bucket,
                 note=(
-                    "Tournament has no data for this bucket. "
-                    "Currently only fed by debate runs — see module docstring "
-                    "(swarm #16) for the seam to wire real build-stage outcomes."
+                    "No tournament evidence for this bucket yet; the learned "
+                    "router abstains here until builds feed it (fed per build "
+                    "stage via StudioRunner._feed_tournament, and by debate)."
                 ),
             )
         ranked = sorted(board.values(), key=lambda s: s.rating, reverse=True)

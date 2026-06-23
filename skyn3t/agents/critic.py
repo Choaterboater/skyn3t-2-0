@@ -142,7 +142,7 @@ class CriticAgent(BaseAgent):
             f"\n\nBrief: {brief}\n\n" + "\n\n".join(sample)
         )
         try:
-            res = await self.llm.complete(prompt, tier=Tier.STRONG, json_mode=True, max_tokens=1024)
+            res = await self.llm.complete(prompt, tier=Tier.STRONG, json_mode=True, max_tokens=1024, task_type=self.agent_type)
             data = json.loads(res.text)
             out = []
             for item in data.get("blocking_issues", []) or []:

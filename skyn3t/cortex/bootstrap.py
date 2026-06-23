@@ -280,6 +280,7 @@ def build_cortex(
         PromptReflectionLoop,
         ReflectionLoop,
         ReviewWatcher,
+        RoutingReadiness,
     )
 
     cortex.add_component(GatedTuner(cortex, event_bus, settings))
@@ -294,6 +295,9 @@ def build_cortex(
         cortex.add_component(CuriosityLoop(cortex, event_bus, settings))
     cortex.add_component(ReviewWatcher(cortex, event_bus, settings))
     cortex.add_component(AutoCleanup(cortex, event_bus, settings))
+    # Proposes enabling the learned router once tournament evidence is confident
+    # (gated). Closes the model-learning loop: feed -> confident -> propose -> route.
+    cortex.add_component(RoutingReadiness(cortex, event_bus, settings))
     if orchestrator is not None:
         cortex.add_component(
             AutonomousLoop(

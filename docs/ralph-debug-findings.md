@@ -146,4 +146,19 @@ DEFERRED (need a DECISION, not a unilateral fix):
   GitHub's `per_page` returns up to `limit` on page 1, so `limit ≤ 100` is correct. Only
   `limit > 100` truncates (default is 30). Minor; deferred.
 
-**RUNNING TOTAL: 41 bugs fixed across 6 iterations + 2 user reports, suite 643 → 695 (+50 tests). 3 deferred as design/low-impact.**
+## Iteration 7 (2026-06-23) — web-API depth + cortex + observability + SELF-AUDIT: 5 candidates, 3 confirmed, all fixed
+
+Method: 5 lenses incl. a SELF-AUDIT lens that re-reviewed every iteration 1-6 fix for
+regressions/edge-cases. Adversarial verify (10 agents). Suite 695 → 699.
+**The self-audit found ZERO defects in the prior fixes** — a good soundness signal.
+Yield 7→13→3→5→7→7→3 (tapering).
+
+| Sev | Bug | Fix | Test |
+| --- | --- | --- | --- |
+| high | `GET /projects` leaked a 500 (with internals) when projects_dir is unreadable (`iterdir` PermissionError uncaught) | handler maps OSError → controlled 500 | `test_iter7_fixes.py` |
+| high | `DELETE /projects/{slug}` handler caught only ValueError/FileNotFoundError — an unwritable trash dir (`shutil.move`/`mkdir` OSError) leaked a 500 | added `except OSError` (after FileNotFoundError so 404 still works) | `test_iter7_fixes.py` |
+| low (verifier said high) | `RepoScout._stop` lazily created on first stop()/run() instead of in `__init__` (smell; works in normal order) | `self._stop = False` in `__init__` | `test_iter7_fixes.py` |
+
+Files: `web/routes.py`, `cortex/repo_scout.py`. 2 candidates refuted.
+
+**RUNNING TOTAL: 44 bugs fixed across 7 iterations + 2 user reports, suite 643 → 699 (+54 tests). 3 deferred as design/low-impact.**

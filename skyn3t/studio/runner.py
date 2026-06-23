@@ -169,6 +169,41 @@ class StudioRunner:
             enabled=bool(self.settings.approval_gates),
             auto_approve=bool(self.settings.cortex_auto_approve_safe),
         )
+        # ModelTournament that the learned router reads. Fed per successful stage
+        # so real build traffic — not only the rarely-run debate path — builds the
+        # leaderboard (closes swarm #16). Lazily built; never breaks a build.
+        self._tournament: Any | None = None
+
+    # ---- model tournament feed (closes swarm #16) -----------------------
+    def _feed_tournament(self, spec: StageSpec, result: TaskResult) -> None:
+        """Record a stage's model into the tournament the router reads.
+
+        Best-effort and import-light: any failure is swallowed so feeding the
+        learning loop can never break a build (design rule #6). Records a solo
+        appearance (the model produced a successful stage) into the same
+        ``(tier, task_type)`` bucket the ``LearnedModelRouter`` later queries.
+        """
+        model = getattr(result, "model_id", None)
+        if not model:
+            return
+        try:
+            from skyn3t.intelligence.model_tournament import ModelTournament
+
+            if self._tournament is None:
+                self._tournament = ModelTournament(
+                    self.settings.data_dir / "model_tournament.json"
+                )
+            route = (result.metadata or {}).get("route")
+            if route and len(route) == 2:
+                tier, task_type = str(route[0]), str(route[1])
+            else:
+                # Agents without an LLM (or that didn't report a route) still feed
+                # a sensible per-stage bucket keyed by the stage's agent type.
+                tier, task_type = "", spec.agent_type
+            bucket = ModelTournament.bucket_key(tier, task_type)
+            self._tournament.record_win(bucket, model, losers=[], task_type=task_type)
+        except Exception:  # noqa: BLE001 - learning feed must never break a build
+            pass
 
     # ---- agent availability ---------------------------------------------
     def _has_agent_for(self, spec: StageSpec) -> bool:
@@ -1022,6 +1057,8 @@ class StudioRunner:
                     record.duration_ms = result.duration_ms
                     record.output_summary = self._summarize(result.output)
                     prior[spec.name] = result.output
+                    # Feed the learned router from this real stage outcome.
+                    self._feed_tournament(spec, result)
                 else:
                     record.status = "failed"
                     record.error = result.error

@@ -46,10 +46,12 @@ studio_app = typer.Typer(help="Run and steer brief->app builds.", no_args_is_hel
 project_app = typer.Typer(help="Inspect delivered projects / builds.", no_args_is_help=True)
 domain_app = typer.Typer(help="Ingest external knowledge (RAG corpus).", no_args_is_help=True)
 bench_app = typer.Typer(help="Benchmark/regression harness (Spec 2).", no_args_is_help=True)
+cortex_app = typer.Typer(help="Inspect the autonomy layer (cortex).", no_args_is_help=True)
 app.add_typer(studio_app, name="studio")
 app.add_typer(project_app, name="project")
 app.add_typer(domain_app, name="domain")
 app.add_typer(bench_app, name="bench")
+app.add_typer(cortex_app, name="cortex")
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +427,63 @@ def debate(
         console.print(f"[cyan]winner model[/cyan]: {result.winner.model}")
     console.print("\n[bold]Synthesis[/bold]\n")
     console.print(result.synthesis or "(empty)")
+
+
+@cortex_app.command("status")
+def cortex_status() -> None:
+    """Show what cortex has actually changed: the learned-router leaderboard
+    (fed by real builds), persisted tuning overrides, and prompt overrides.
+
+    All three are read from ``data/`` — proof the self-improvement loops take
+    effect, not just emit proposals. Offline and side-effect-free.
+    """
+    from skyn3t.config.settings import get_settings
+
+    console = _console()
+    settings = get_settings()
+    data_dir = settings.data_dir
+
+    # 1) Learned-router leaderboard (ModelTournament fed per successful stage).
+    try:
+        from skyn3t.intelligence.model_tournament import ModelTournament
+
+        snap = ModelTournament(data_dir / "model_tournament.json").snapshot()
+    except Exception:  # noqa: BLE001
+        snap = {}
+    lb = _table("Learned router — model leaderboard", ["bucket", "model", "rating", "win%", "plays"])
+    rows = 0
+    for bucket, entries in (snap or {}).items():
+        for e in entries:
+            lb.add_row(bucket, str(e["model"]), str(e["rating"]),
+                       f"{e['win_rate'] * 100:.0f}", str(e["plays"]))
+            rows += 1
+    console.print(lb if rows else "[dim]No tournament data yet — run some builds.[/dim]")
+
+    # 2) Persisted tuning overrides (settings that cortex tuned and that carry
+    #    across builds).
+    try:
+        from skyn3t.cortex.tuning_store import load_overrides
+
+        tuning = load_overrides(data_dir)
+    except Exception:  # noqa: BLE001
+        tuning = {}
+    tt = _table("Applied tuning overrides", ["setting", "value"])
+    for k, v in (tuning or {}).items():
+        tt.add_row(str(k), str(v))
+    console.print(tt if tuning else "[dim]No tuning overrides applied.[/dim]")
+
+    # 3) Persisted prompt overrides (evolved agent instructions, by capability).
+    try:
+        from skyn3t.cortex.prompt_store import load_prompt_overrides
+
+        prompts = load_prompt_overrides(data_dir)
+    except Exception:  # noqa: BLE001
+        prompts = {}
+    pt = _table("Evolved agent instructions", ["agent", "instruction"])
+    for agent, instr in (prompts or {}).items():
+        text = instr if len(instr) <= 80 else instr[:77] + "..."
+        pt.add_row(str(agent), text)
+    console.print(pt if prompts else "[dim]No prompt overrides applied.[/dim]")
 
 
 def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any, Any, Any, Any]:

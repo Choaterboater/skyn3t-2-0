@@ -145,8 +145,11 @@ class SelfTuningEngine:
         action = (suggestion.get("action") or "").lower()
         target_agent = suggestion.get("agent")
         changes: dict[str, Any] = {}
-        if "lower_temperature" in action:
-            changes["temperature"] = {"op": "scale", "factor": 0.75}
+        # NOTE: ``temperature`` is intentionally NOT generated here. Nothing reads
+        # ``agent.config['temperature']`` (the LLM adapter takes temperature as a
+        # call-site param), so writing it would be a dead change silently dropped
+        # by ``_apply_knob``. The common "lower_temperature_or_add_critic" insight
+        # is enacted through its consumed, effective half: enabling the critic.
         if "add_critic" in action or "enable_critic" in action:
             changes["critic_enabled"] = True
         if "increase_retries" in action:

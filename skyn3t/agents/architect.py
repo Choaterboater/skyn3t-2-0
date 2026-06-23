@@ -65,7 +65,7 @@ class ArchitectAgent(BaseAgent):
             + "component, model, utility, config, and test needed for a real, "
             + "fully-featured implementation of the brief. Not a minimal stub."
         )
-        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=_SYSTEM, json_mode=True)
+        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=self.system_prompt(_SYSTEM), json_mode=True)
         parsed = parse_json(result.text)
 
         if (not isinstance(parsed, dict) or parsed.get("stub") is True

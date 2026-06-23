@@ -26,12 +26,13 @@ from typing import Any
 
 
 class ProposalType(str, Enum):
-    """The four kinds of change cortex can propose."""
+    """The kinds of change cortex can propose."""
 
     TUNING = "tuning"        # adjust a setting / weight (often safe)
     FEATURE = "feature"      # add or change a capability (gated)
     INGEST = "ingest"        # pull in external code/patterns (gated)
     CODE_PATCH = "code_patch"  # apply a concrete code change (often gated)
+    PROMPT = "prompt"        # evolve a live agent's instruction (gated)
 
 
 class ProposalStatus(str, Enum):
@@ -43,9 +44,10 @@ class ProposalStatus(str, Enum):
     GATED = "gated"            # held for explicit human approval
 
 
-# Types that always require human sign-off when approval gates are on.
+# Types that always require human sign-off when approval gates are on. A PROMPT
+# rewrites a live agent's instruction, so it is gated like FEATURE/INGEST.
 GATED_TYPES: frozenset[ProposalType] = frozenset(
-    {ProposalType.FEATURE, ProposalType.INGEST}
+    {ProposalType.FEATURE, ProposalType.INGEST, ProposalType.PROMPT}
 )
 
 

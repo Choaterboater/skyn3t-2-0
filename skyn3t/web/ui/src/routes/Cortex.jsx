@@ -28,6 +28,24 @@ export default function Cortex() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
   });
 
+  // What cortex has actually changed — proof the self-improvement loops take
+  // effect, not just emit proposals (learned-router leaderboard + applied
+  // tuning + evolved agent instructions).
+  const { data: effects } = useQuery({
+    queryKey: ["cortex-effects"],
+    queryFn: queryFn("/cortex/effects"),
+  });
+  const leaderboard = effects?.leaderboard || {};
+  const tuning = effects?.tuning || {};
+  const prompts = effects?.prompts || {};
+  const leaderRows = Object.entries(leaderboard).flatMap(([bucket, rows]) =>
+    (rows || []).map((r) => ({ bucket, ...r }))
+  );
+  const tuningRows = Object.entries(tuning);
+  const promptRows = Object.entries(prompts);
+  const hasEffects =
+    leaderRows.length || tuningRows.length || promptRows.length;
+
   const proposals = Array.isArray(data) ? data : data?.proposals || [];
 
   return (
@@ -140,6 +158,85 @@ export default function Cortex() {
                 </div>
               );
             })}
+          </div>
+        )}
+      </Panel>
+
+      <Panel className="mt-6">
+        <PanelHead
+          label="What Cortex changed"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              effects · live
+            </span>
+          }
+        />
+        {!hasEffects ? (
+          <Empty icon="◇">
+            No effects yet. Cortex feeds the learned router, tuning, and agent
+            instructions as builds run.
+          </Empty>
+        ) : (
+          <div className="grid grid-cols-1 gap-6 px-4 py-4 md:grid-cols-3">
+            <div>
+              <div className="mb-2 font-mono text-[11px] uppercase text-ash">
+                Learned router
+              </div>
+              {leaderRows.length === 0 ? (
+                <p className="text-sm text-ash">No tournament data yet.</p>
+              ) : (
+                <ul className="space-y-1 text-sm text-bone">
+                  {leaderRows.slice(0, 8).map((r, i) => (
+                    <li key={i} className="flex justify-between gap-2">
+                      <span className="truncate font-mono text-xs">
+                        {r.bucket} · {r.model}
+                      </span>
+                      <span className="shrink-0 text-ash">
+                        {Math.round((r.win_rate ?? 0) * 100)}% · {r.plays}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-2 font-mono text-[11px] uppercase text-ash">
+                Applied tuning
+              </div>
+              {tuningRows.length === 0 ? (
+                <p className="text-sm text-ash">No tuning overrides.</p>
+              ) : (
+                <ul className="space-y-1 text-sm text-bone">
+                  {tuningRows.map(([k, v]) => (
+                    <li key={k} className="flex justify-between gap-2">
+                      <span className="font-mono text-xs">{k}</span>
+                      <span className="text-ash">{String(v)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-2 font-mono text-[11px] uppercase text-ash">
+                Evolved instructions
+              </div>
+              {promptRows.length === 0 ? (
+                <p className="text-sm text-ash">No prompt overrides.</p>
+              ) : (
+                <ul className="space-y-2 text-sm text-bone">
+                  {promptRows.map(([agent, instr]) => (
+                    <li key={agent}>
+                      <Pill tone="ash">{agent}</Pill>
+                      <p className="mt-1 max-w-xs truncate font-sans text-xs text-ash">
+                        {instr}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         )}
       </Panel>

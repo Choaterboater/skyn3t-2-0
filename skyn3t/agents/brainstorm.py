@@ -36,7 +36,7 @@ class BrainstormAgent(BaseAgent):
             f"Brief: {brief}\n\n"
             "Propose 3-6 ideas, a feature list, and a 3-item MVP scope as JSON."
         )
-        result = await self.llm.complete(prompt, tier=Tier.CHEAP, system=_SYSTEM, json_mode=True)
+        result = await self.llm.complete(prompt, tier=Tier.CHEAP, system=self.system_prompt(_SYSTEM), json_mode=True)
         parsed = parse_json(result.text)
         if not isinstance(parsed, dict) or parsed.get("stub") is True or result.backend == "stub":
             # Degraded but non-empty (design rule #1): synthesize from the brief.

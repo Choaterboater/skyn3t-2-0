@@ -49,9 +49,17 @@ class HandlerRegistry:
         settings: Settings | None = None,
         rag: Any | None = None,
         skills: Any | None = None,
+        agents: dict[str, Any] | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         self.overrides: dict[str, Any] = overrides if overrides is not None else {}
         self.stage_dir = Path(stage_dir) if stage_dir else None
+        # Live orchestrator agents (name -> agent), so an approved PROMPT proposal
+        # can write its evolved instruction onto the matching agent's config and
+        # actually take effect. Empty when cortex runs without an orchestrator.
+        self.agents: dict[str, Any] = agents if agents is not None else {}
+        # Where to persist prompt overrides so they survive a process restart.
+        self.data_dir = Path(data_dir) if data_dir else None
         # Optional RAG engine: when present, INGEST proposals actually fetch +
         # ingest the source into the corpus (so recall improves future builds).
         # When None we fall back to staging intent only (unchanged behaviour).
@@ -74,6 +82,7 @@ class HandlerRegistry:
             ProposalType.FEATURE: self._stage_feature,
             ProposalType.INGEST: self._stage_ingest,
             ProposalType.CODE_PATCH: self._stage_code_patch,
+            ProposalType.PROMPT: self._apply_prompt,
         }
 
     def register(self, ptype: ProposalType, handler: Handler) -> None:
@@ -148,6 +157,65 @@ class HandlerRegistry:
         except Exception:  # noqa: BLE001 - bad value is data, not a crash
             return False
         return True
+
+    async def _apply_prompt(self, proposal: Proposal) -> dict[str, Any]:
+        """Apply an evolved instruction to the target agent.
+
+        Payload shape (from PromptReflectionLoop):
+          {"agent": "code", "prompt_candidate": {"candidate_instruction": "..."}}
+
+        The override is persisted (so it survives a restart) AND written onto any
+        matching live agent's ``config`` so the next build's prompts use it. When
+        no live agent matches (cortex running without an orchestrator), it is
+        still persisted and reported with ``live: False`` — durable, not silently
+        dropped.
+        """
+        payload = proposal.payload or {}
+        target = str(payload.get("agent") or "").strip()
+        cand = payload.get("prompt_candidate") or {}
+        instruction = str(
+            cand.get("candidate_instruction") or payload.get("instruction") or ""
+        ).strip()
+        if not target or not instruction:
+            return {"applied": False, "error": "prompt proposal missing agent/instruction"}
+        if self.data_dir is not None:
+            try:
+                from skyn3t.cortex.prompt_store import persist_prompt_override
+
+                persist_prompt_override(self.data_dir, target, instruction)
+            except Exception:  # noqa: BLE001 - persistence is best-effort
+                pass
+        live = self._apply_prompt_to_live(target, instruction)
+        return {"applied": True, "agent": target, "live": live, "instruction": instruction}
+
+    def _apply_prompt_to_live(self, target: str, instruction: str) -> bool:
+        """Write the override onto every live agent matching ``target``.
+
+        ``target`` is a capability/stage name (e.g. "code"), matched against an
+        agent's type, name, or advertised capabilities. Returns True if at least
+        one live agent was updated.
+        """
+        applied = False
+        for agent in (self.agents or {}).values():
+            if not self._agent_matches(agent, target):
+                continue
+            cfg = getattr(agent, "config", None)
+            if isinstance(cfg, dict):
+                cfg["prompt_override"] = instruction
+                applied = True
+        return applied
+
+    @staticmethod
+    def _agent_matches(agent: Any, target: str) -> bool:
+        t = target.lower()
+        if str(getattr(agent, "agent_type", "")).lower() == t:
+            return True
+        if str(getattr(agent, "name", "")).lower() == t:
+            return True
+        try:
+            return t in {str(n).lower() for n in (getattr(agent, "capability_names", None) or ())}
+        except Exception:  # noqa: BLE001
+            return False
 
     async def _stage_feature(self, proposal: Proposal) -> dict[str, Any]:
         return self._stage(proposal, "feature")

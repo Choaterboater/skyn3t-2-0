@@ -9,6 +9,7 @@ at every step so the rest of the system can observe and learn.
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Awaitable, Callable
 from time import time
 from typing import Any
@@ -17,6 +18,14 @@ import structlog
 
 from skyn3t.core.agent import AgentStatus, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus, EventType
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Exponential backoff with jitter, capped. Jitter staggers concurrent
+    retries so a batch of builds that fail at once don't re-hammer the failing
+    service in lockstep (thundering herd)."""
+    base = min(2 ** attempt * 0.1, 5.0)
+    return base + random.uniform(0.0, base * 0.5)
 
 log = structlog.get_logger(__name__)
 
@@ -169,8 +178,8 @@ class Orchestrator:
                     {"task_id": task.task_id, "attempt": attempt, "error": result.error},
                     correlation_id=task.correlation_id,
                 )
-                # Exponential backoff, capped.
-                await asyncio.sleep(min(2 ** attempt * 0.1, 5.0))
+                # Exponential backoff with jitter, capped.
+                await asyncio.sleep(_backoff_delay(attempt))
                 # Re-route in case the original agent is now unhealthy.
                 if self._self_healing is not None:
                     await self._self_healing.on_agent_error(agent, result.error or "")

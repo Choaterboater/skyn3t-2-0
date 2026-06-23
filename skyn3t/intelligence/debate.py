@@ -63,8 +63,12 @@ class DebateResult:
 _VOTE_RE = re.compile(r"\b(?:proposal|debater|#)\s*([0-9]+)", re.IGNORECASE)
 
 
-def _parse_vote(text: str, n: int) -> int:
-    """Best-effort parse of a 1-based proposal index from a vote message."""
+def _parse_vote(text: str, n: int) -> int | None:
+    """Best-effort parse of a 1-based proposal index from a vote message.
+
+    Returns None when no valid in-range index can be extracted — an unparseable
+    or out-of-range vote must NOT default to proposals[0], which silently biased
+    the debate winner toward the first proposal."""
     m = _VOTE_RE.search(text or "")
     if m:
         idx = int(m.group(1)) - 1
@@ -75,7 +79,7 @@ def _parse_vote(text: str, n: int) -> int:
         idx = int(tok) - 1
         if 0 <= idx < n:
             return idx
-    return 0
+    return None
 
 
 class DebateOrchestrator:
@@ -171,7 +175,8 @@ class DebateOrchestrator:
             if isinstance(r, Exception):
                 continue
             idx = _parse_vote(getattr(r, "text", ""), len(proposals))
-            proposals[idx].votes += 1
+            if idx is not None:  # drop unparseable/out-of-range votes (no bias)
+                proposals[idx].votes += 1
 
         winner = max(proposals, key=lambda p: p.votes)
 

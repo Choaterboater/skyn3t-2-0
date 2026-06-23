@@ -171,7 +171,9 @@ async def test_reflection_emits_safe_suggestions():
 def test_parse_vote():
     assert _parse_vote("Proposal 2", 3) == 1
     assert _parse_vote("I vote #1", 3) == 0
-    assert _parse_vote("nonsense", 3) == 0
+    # An unparseable vote returns None (NOT 0) so it can't silently bias the
+    # debate winner toward the first proposal.
+    assert _parse_vote("nonsense", 3) is None
 
 
 class _FakeLLM:

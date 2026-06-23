@@ -31,6 +31,13 @@ from skyn3t.cortex.proposal_store import (
     ProposalStore,
 )
 
+try:
+    import structlog
+
+    _log = structlog.get_logger(__name__)
+except Exception:  # pragma: no cover - logging is best-effort
+    _log = None  # type: ignore[assignment]
+
 # Default confidence a safe proposal must reach to auto-apply.
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.75
 
@@ -51,12 +58,22 @@ class Cortex:
         auto_approve_threshold: float = DEFAULT_AUTO_APPROVE_THRESHOLD,
         rag: Any | None = None,
         skills: Any | None = None,
+        agents: dict[str, Any] | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.settings = settings or get_settings()
         self.store = store or ProposalStore()
         stage_dir = self.settings.data_dir / "cortex" / "staged"
-        self.handlers = handlers or HandlerRegistry(stage_dir=stage_dir, rag=rag, skills=skills)
+        self.handlers = handlers or HandlerRegistry(
+            stage_dir=stage_dir, rag=rag, skills=skills,
+            agents=agents, data_dir=self.settings.data_dir,
+            # Pass OUR settings so applied tuning mutates the same object the
+            # runner/planner read. Without this the handler falls back to the
+            # get_settings() singleton — fine in the CLI (everyone shares it) but
+            # a silent no-op when a runner is built with an explicit settings (web
+            # AppState, tests): "applied" tuning would never be observed.
+            settings=self.settings,
+        )
         self.auto_approve_threshold = auto_approve_threshold
         self._components: list[Any] = []
         self._tasks: list[asyncio.Task[Any]] = []
@@ -156,15 +173,26 @@ class Cortex:
         self.store.set_status(
             proposal_id, new_status, reason=result.get("error", ""), result=result
         )
-        await self.event_bus.emit(
-            EventType.PROPOSAL_DECIDED,
-            "cortex",
-            {
-                "proposal_id": prop.id,
-                "status": new_status.value,
-                "result": result,
-            },
-        )
+        payload: dict[str, Any] = {
+            "proposal_id": prop.id,
+            "status": new_status.value,
+            "result": result,
+        }
+        # Honesty: a tuning proposal can be "applied" yet leave keys that aren't
+        # real settings fields inert. Surface those at the top level (so the UI
+        # can warn) and log them — an applied-but-inert change must not look like
+        # a clean success (the "applies but no effect" failure mode).
+        unobserved = result.get("unobserved")
+        if unobserved:
+            payload["unobserved"] = unobserved
+            if _log is not None:
+                _log.warning(
+                    "cortex.tuning_unobserved",
+                    proposal_id=prop.id,
+                    keys=unobserved,
+                    note="applied but no runtime field consumed these keys",
+                )
+        await self.event_bus.emit(EventType.PROPOSAL_DECIDED, "cortex", payload)
         return prop
 
     async def _emit_decided(self, prop: Proposal) -> None:
@@ -224,7 +252,22 @@ def build_cortex(
     optional deps in any single component never block the others.
     """
     settings = settings or get_settings()
-    cortex = Cortex(event_bus, settings, rag=rag, skills=skills)
+    # Pass the live orchestrator agents so approved PROMPT proposals can write
+    # their evolved instruction onto the matching agent (closes the prompt loop).
+    agents = orchestrator.agents if orchestrator is not None else None
+    cortex = Cortex(event_bus, settings, rag=rag, skills=skills, agents=agents)
+
+    # Re-attach prompt overrides approved in a prior process to the live agents,
+    # so an evolved instruction carries across restarts (durable effect, not just
+    # in-process). Best-effort: a missing/corrupt store just means no overrides.
+    if orchestrator is not None:
+        try:
+            from skyn3t.cortex.prompt_store import load_prompt_overrides
+
+            for target, instruction in load_prompt_overrides(settings.data_dir).items():
+                cortex.handlers._apply_prompt_to_live(target, instruction)
+        except Exception:  # noqa: BLE001 - never block startup on override replay
+            pass
 
     # Import here (not at module top) to keep bootstrap import side-effect free
     # and to isolate any component-level import issues.

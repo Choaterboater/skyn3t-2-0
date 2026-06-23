@@ -228,7 +228,7 @@ class PromptReflectionLoop(_BaseComponent):
             self._proposed.add(agent)
             await self.cortex.submit(
                 Proposal(
-                    type=ProposalType.TUNING,
+                    type=ProposalType.PROMPT,
                     title=f"improve '{agent}' agent instruction from {failing} failures",
                     source=self.name,
                     rationale=cand.rationale,

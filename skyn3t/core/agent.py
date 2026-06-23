@@ -57,6 +57,10 @@ class TaskResult:
     duration_ms: float = 0.0
     attempts: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Which LLM model produced this result, when the agent used one. Stamped
+    # automatically by BaseAgent from its ``llm`` client so StudioRunner can
+    # feed the ModelTournament from real build traffic (closes swarm #16).
+    model_id: str | None = None
 
 
 class BaseAgent(ABC):
@@ -82,6 +86,20 @@ class BaseAgent(ABC):
         # Serialize task execution per agent: one agent is one worker, so two
         # concurrently-routed tasks don't race on status/metadata.
         self._run_lock = asyncio.Lock()
+
+    # ---- prompt evolution ------------------------------------------------
+    def system_prompt(self, base: str) -> str:
+        """Return ``base`` augmented with any cortex prompt override.
+
+        Cortex's prompt-evolution loop (gated, human-approved) writes an evolved
+        instruction onto ``config['prompt_override']``; agents call this when
+        assembling their system prompt so an approved improvement actually takes
+        effect on the next build. No override → ``base`` unchanged.
+        """
+        override = (self.config or {}).get("prompt_override")
+        if not override:
+            return base
+        return f"{base}\n\nAdditional guidance (learned):\n{override}"
 
     # ---- capability registration ----------------------------------------
     def add_capability(self, capability: AgentCapability) -> None:
@@ -124,6 +142,19 @@ class BaseAgent(ABC):
             result = await self.execute(task)
             result.agent_name = self.name
             result.duration_ms = (time() - started) * 1000
+            # Stamp the model the agent's LLM last used, so stage outcomes can
+            # feed the ModelTournament. Single chokepoint: agents that hold a
+            # ``self.llm`` get this for free without plumbing it through every
+            # ``TaskResult(...)`` site. Agents without an LLM leave it None.
+            if result.model_id is None:
+                llm = getattr(self, "llm", None)
+                if llm is not None:
+                    result.model_id = getattr(llm, "last_model", None)
+                    route = getattr(llm, "last_route", None)
+                    if route and "route" not in result.metadata:
+                        # (tier, task_type) the model routed through, so the
+                        # runner records into the bucket the router queries.
+                        result.metadata["route"] = route
             self.status = AgentStatus.READY
             ev = EventType.TASK_COMPLETED if result.success else EventType.TASK_FAILED
             await self.event_bus.emit(

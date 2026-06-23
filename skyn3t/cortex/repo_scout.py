@@ -77,6 +77,7 @@ class RepoScout:
         self.min_stars = min_stars
         self.max_results = max_results
         self._scout_i = 0  # rotates the topic so repeated scouts vary
+        self._stop = False  # explicit init (matches MetaTick/AutonomousLoop)
 
     @property
     def online(self) -> bool:

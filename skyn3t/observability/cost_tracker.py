@@ -127,8 +127,13 @@ class CostTracker:
         if entry is None:
             return {"stage": stage, "cost_usd": 0.0, "tokens": 0}
         # Consume the base (pop, not get) so each start/end is paired — robust
-        # even if a stage name repeats across iterations.
-        base = entry.get("_stage_base", {}).pop(stage, entry.get("base_calls", 0))
+        # even if a stage name repeats across iterations. An unpaired/duplicate
+        # end_stage (no recorded start boundary) must attribute NOTHING rather
+        # than fall back to build-start, which would re-count every prior stage.
+        stage_base = entry.get("_stage_base", {})
+        if stage not in stage_base:
+            return {"stage": stage, "cost_usd": 0.0, "tokens": 0}
+        base = stage_base.pop(stage)
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
         cost = 0.0
         tokens = 0

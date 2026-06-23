@@ -85,13 +85,20 @@ def check_js(root: Path) -> list[dict]:
         for m in _JS_REL.finditer(text):
             spec = m.group(1)
             target = (p.parent / spec).resolve()
-            if _js_resolves(target, exts):
+            if _js_resolves(target, exts, root):
                 continue
             broken.append({"file": rel, "import": spec, "reason": "relative module not found"})
     return broken
 
 
-def _js_resolves(target: Path, exts: list[str]) -> bool:
+def _js_resolves(target: Path, exts: list[str], root: Path) -> bool:
+    # A relative import must resolve INSIDE the project. Without this, an import
+    # like "../../../etc/passwd" would be marked valid because the host file
+    # exists — a real escape the reviewer must instead flag as broken.
+    try:
+        target.relative_to(root.resolve())
+    except ValueError:
+        return False
     if target.exists() and target.is_file():
         return True
     for ext in exts:

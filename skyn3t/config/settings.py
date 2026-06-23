@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     # Empty -> a built-in default; the loop activates only when openrouter_api_key
     # is also set, else it soft-skips the screenshot judgement.
     vision_model: str = ""
+    # End-of-build liveness loop (web stacks): enumerate the delivered app's
+    # routes/pages, hit each, repair failures, and dampen the score by how many
+    # respond. liveness_gates_verdict opts into a hard no_go when a route stays
+    # dead after repair (default: dampen the score but don't flip the verdict).
+    liveness_check_enabled: bool = True
+    liveness_gates_verdict: bool = False
+    liveness_max_rounds: int = 2
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

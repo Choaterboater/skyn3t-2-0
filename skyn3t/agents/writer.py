@@ -126,7 +126,7 @@ class WriterAgent(BaseAgent):
             )
             try:
                 result = await self.llm.complete(prompt, tier=Tier.DOCS, system=self.system_prompt(_SYSTEM),
-                                                 max_tokens=2048)
+                                                 max_tokens=2048, task_type=self.agent_type)
                 if result.backend == "stub":  # degraded — compose a real README offline
                     readme = self._offline_readme(title, brief, stack, file_list)
                     model, backend = "offline", "stub"

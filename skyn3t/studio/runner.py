@@ -184,7 +184,11 @@ class StudioRunner:
         ``(tier, task_type)`` bucket the ``LearnedModelRouter`` later queries.
         """
         model = getattr(result, "model_id", None)
-        if not model:
+        meta = result.metadata or {}
+        # Best-of-N records its own multi-model match upstream; don't double-count.
+        if meta.get("best_of_n_recorded"):
+            return
+        if not model and not meta.get("routes"):
             return
         try:
             from skyn3t.intelligence.model_tournament import ModelTournament
@@ -193,17 +197,136 @@ class StudioRunner:
                 self._tournament = ModelTournament(
                     self.settings.data_dir / "model_tournament.json"
                 )
-            route = (result.metadata or {}).get("route")
-            if route and len(route) == 2:
-                tier, task_type = str(route[0]), str(route[1])
+            # Prefer the full set of routes this stage used (one record per
+            # distinct tier×task_type bucket) so per-file tiers like 'backend'
+            # actually populate — not just the last file's bucket. Fall back to
+            # the single route / agent-type bucket for agents that report neither.
+            routes = meta.get("routes")
+            seen: set[str] = set()
+            if routes:
+                for r in routes:
+                    if not (isinstance(r, (list, tuple)) and len(r) == 3):
+                        continue
+                    tier, task_type, rmodel = str(r[0]), str(r[1]), str(r[2])
+                    if not rmodel:
+                        continue
+                    bucket = ModelTournament.bucket_key(tier, task_type)
+                    if bucket in seen:
+                        continue
+                    # Record before marking seen: if record_win raised, the bucket
+                    # must not be counted as persisted (keeps the batched save
+                    # consistent with what actually got recorded).
+                    self._tournament.record_win(
+                        bucket, rmodel, losers=[], task_type=task_type, save=False)
+                    seen.add(bucket)
             else:
-                # Agents without an LLM (or that didn't report a route) still feed
-                # a sensible per-stage bucket keyed by the stage's agent type.
-                tier, task_type = "", spec.agent_type
-            bucket = ModelTournament.bucket_key(tier, task_type)
-            self._tournament.record_win(bucket, model, losers=[], task_type=task_type)
+                route = meta.get("route")
+                if route and len(route) == 2:
+                    tier, task_type = str(route[0]), str(route[1])
+                else:
+                    tier, task_type = "", spec.agent_type
+                self._tournament.record_win(
+                    ModelTournament.bucket_key(tier, task_type), model,
+                    losers=[], task_type=task_type, save=False)
+                seen.add("_")
+            if seen:
+                self._tournament.save()  # one batched write per stage
         except Exception:  # noqa: BLE001 - learning feed must never break a build
             pass
+
+    # ---- best-of-N cross-model sampling (Phase 2) -----------------------
+    def _bon_model_pool(self, n: int) -> list[str]:
+        """Candidate models for cross-model best-of-N, honouring policy.
+
+        Drawn from ``settings.tournament_model_pool`` (comma-separated) and
+        filtered by ``free_only`` / ``no_claude``. Returns up to ``n`` models, or
+        ``[]`` when the pool is unconfigured (the sampler then degrades to
+        today's same-model behaviour). The on/off flag is checked by the caller.
+        """
+        raw = str(getattr(self.settings, "tournament_model_pool", "") or "")
+        pool = [m.strip() for m in raw.split(",") if m.strip()]
+        free_only = bool(getattr(self.settings, "free_only", False))
+        no_claude = bool(getattr(self.settings, "no_claude", False))
+        out: list[str] = []
+        for m in pool:
+            ml = m.lower()
+            if no_claude and ("claude" in ml or "anthropic" in ml):
+                continue
+            if free_only and not (ml.endswith(":free") or "free" in ml):
+                continue
+            out.append(m)
+        return out[: max(0, n)]
+
+    def _bon_across_models(self, pool: list[str]) -> bool:
+        """Cross-model sampling is on only when explicitly opted in AND there are
+        >=2 distinct models to contest (else it degrades to same-model)."""
+        return bool(getattr(self.settings, "best_of_n_across_models", False)) and len(pool) >= 2
+
+    @staticmethod
+    def _candidate_buckets(candidate: Any, spec: StageSpec) -> set[str]:
+        """The (tier:task_type) buckets a candidate trajectory actually used.
+
+        Returns ``{None-sentinel}`` semantics via an empty set meaning "unknown"
+        is handled by the caller; here a candidate with no route metadata yields
+        the task-level fallback bucket so the common single-model case still
+        records a match.
+        """
+        from skyn3t.intelligence.model_tournament import ModelTournament
+
+        meta = getattr(getattr(candidate, "result", None), "metadata", None) or {}
+        routes = meta.get("routes")
+        buckets: set[str] = set()
+        if routes:
+            for r in routes:
+                if isinstance(r, (list, tuple)) and len(r) == 3:
+                    buckets.add(ModelTournament.bucket_key(str(r[0]), str(r[1])))
+        if not buckets:
+            buckets.add(ModelTournament.bucket_key("", spec.agent_type))
+        return buckets
+
+    def _record_best_of_n_match(self, spec: StageSpec, selection: Any) -> bool:
+        """Record a best-of-N run as a real winner-vs-losers tournament match.
+
+        Reads the candidates' models in-memory from ``selection`` (safe after the
+        loser worktrees are cleaned up). For each ``(tier, task_type)`` bucket the
+        WINNER used, records it beating only the losers that ALSO competed in that
+        bucket — so a model isn't charged a loss in a bucket it never ran. Returns
+        True iff the match was recorded and persisted (so the caller can fall back
+        to the per-stage feed on failure). Best-effort; never breaks a build.
+        """
+        try:
+            winner = getattr(selection, "winner", None)
+            cands = list(getattr(selection, "candidates", []) or [])
+            if winner is None or not cands:
+                return False
+            wmodel = getattr(getattr(winner, "result", None), "model_id", None)
+            if not wmodel:
+                return False
+            from skyn3t.intelligence.model_tournament import ModelTournament
+
+            if self._tournament is None:
+                self._tournament = ModelTournament(
+                    self.settings.data_dir / "model_tournament.json"
+                )
+            winner_buckets = self._candidate_buckets(winner, spec)
+            # Per-bucket loser models: a loser counts only in buckets it used.
+            losers_by_bucket: dict[str, list[str]] = {b: [] for b in winner_buckets}
+            for c in cands:
+                if c is winner:
+                    continue
+                lm = getattr(getattr(c, "result", None), "model_id", None)
+                if not lm or lm == wmodel:
+                    continue
+                for b in self._candidate_buckets(c, spec) & winner_buckets:
+                    if lm not in losers_by_bucket[b]:
+                        losers_by_bucket[b].append(lm)
+            for bucket, losers in losers_by_bucket.items():
+                _, _, task_type = bucket.partition(":")
+                self._tournament.record_win(
+                    bucket, wmodel, losers=losers, task_type=task_type, save=False)
+            return bool(self._tournament.save())
+        except Exception:  # noqa: BLE001 - learning feed must never break a build
+            return False
 
     # ---- agent availability ---------------------------------------------
     def _has_agent_for(self, spec: StageSpec) -> bool:
@@ -1348,11 +1471,22 @@ class StudioRunner:
         main_wt: Worktree,
         worktrees: list[Worktree],
     ) -> TaskResult:
+        # Opt-in (best_of_n_across_models): pin trajectories to different models
+        # from the pool so best-of-N is a real cross-model contest (genuine
+        # comparative Elo + best output). Off / <2 models → every trajectory uses
+        # the router's pick (today's behaviour). When best_of_n exceeds the pool,
+        # models cycle (index % len) — diversity where possible, not guaranteed
+        # unique.
+        pool = self._bon_model_pool(plan.best_of_n)
+        across_models = self._bon_across_models(pool)
+
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
             worktrees.append(wt)
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
             payload.update(spec.extra)
             payload["trajectory_index"] = index
+            if across_models:
+                payload["model_override"] = pool[index % len(pool)]
             return await self._submit_stage(spec, payload, correlation_id)
 
         selection = await bon.sample(
@@ -1378,6 +1512,11 @@ class StudioRunner:
         )
         result.metadata = dict(result.metadata)
         result.metadata["best_of_n"] = selection.to_dict()
+        # Record the multi-way match (winner vs the losing candidates' models).
+        # Only flag the result as recorded when it actually persisted, so a failed
+        # match-record falls back to the per-stage solo feed instead of silently
+        # losing this stage's evidence.
+        result.metadata["best_of_n_recorded"] = self._record_best_of_n_match(spec, selection)
         return result
 
     # ---- helpers ---------------------------------------------------------

@@ -142,6 +142,12 @@ class LLMClient:
         # The (tier, task_type) the most recent completion routed through, so the
         # tournament records into the SAME bucket the LearnedModelRouter queries.
         self.last_route: tuple[str, str] | None = None
+        # Every (tier, task_type, model) this client has routed, in order. A
+        # build stage that makes several completions (e.g. code_agent per file,
+        # across backend/ui tiers) leaves them all here; BaseAgent snapshots the
+        # slice a single stage produced so the tournament is fed per-route, not
+        # just for the last file's bucket.
+        self.routes: list[tuple[str, str, str]] = []
 
     _cli_cache: dict[str, bool] = {}
 
@@ -181,11 +187,14 @@ class LLMClient:
         max_tokens: int = 2048,
         json_mode: bool = False,
         task_type: str = "",
+        model_override: str | None = None,
     ) -> LLMResult:
         # Pass task_type so the LearnedModelRouter can serve per-task picks. It
         # was dead-wired (resolve(tier, file_hint) only) -> the learned router
         # always queried the empty task bucket and could never serve.
-        model = self.router.resolve(tier, file_hint, task_type=task_type)
+        # ``model_override`` pins a specific model (best-of-N cross-model sampling)
+        # and bypasses the router; the (tier, task_type) bucket is unchanged.
+        model = model_override or self.router.resolve(tier, file_hint, task_type=task_type)
         backend = self.backend
         if backend == "openrouter":
             result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
@@ -194,7 +203,9 @@ class LLMClient:
         else:
             result = self._stub(model, prompt, system, json_mode)
         self.last_model = result.model
-        self.last_route = (getattr(tier, "value", str(tier)), task_type)
+        tier_s = getattr(tier, "value", str(tier))
+        self.last_route = (tier_s, task_type)
+        self.routes.append((tier_s, task_type, result.model))
         self.budget.record(result)
         self.budget.check()
         return result

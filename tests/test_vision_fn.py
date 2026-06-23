@@ -14,8 +14,13 @@ from skyn3t.studio.visual_check import (
 )
 
 
-def test_make_vision_fn_is_none_without_a_key():
-    s = SimpleNamespace(openrouter_api_key="", vision_model="")
+def test_make_vision_fn_is_none_without_a_key(monkeypatch):
+    # None only when there's NO vision backend at all: no OpenRouter key AND no
+    # vision-capable CLI on PATH. (With a CLI present, make_vision_fn returns a
+    # CLI judge — see test_vision_backend.py.)
+    import skyn3t.studio.visual_check as _vc
+    monkeypatch.setattr(_vc.shutil, "which", lambda p: None)
+    s = SimpleNamespace(openrouter_api_key="", vision_model="", cli_llm_provider="claude")
     assert make_vision_fn(s) is None
 
 

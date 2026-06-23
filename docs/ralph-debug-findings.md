@@ -57,3 +57,21 @@ Files touched: `core/events.py`, `core/orchestrator.py`, `rag/document_processor
 `intelligence/{model_tournament,semantic_skills}.py`, new `skyn3t/atomic_io.py`.
 
 4 candidates refuted by the adversarial pass.
+
+## Iteration 3 (2026-06-23) — 3 confirmed, all fixed
+
+Method: 8 long-tail/concurrency lenses (stage-internals, verifier-agents, websockets,
+specialized-agents, planner-scaffold, memory-deeper, concurrency-races, github-recovery)
++ adversarial verify (20 agents). 12 candidates → 3 confirmed (yield converging: 7→13→3
+as the real bugs get cleared). Suite 670 → 674.
+
+| # | Sev | Bug | Fix | Test |
+| --- | --- | --- | --- | --- |
+| 1 | high | `consistency_reviewer._js_resolves` marked a JS import valid if the resolved host file existed even OUTSIDE the project (`../../../etc/passwd`) | pass `root`, reject targets that don't `relative_to(root)` | `test_iter3_fixes.py` |
+| 2 | high | `recovery.py:89` counted `events_restored` from the checkpoint snapshot, not the restored bus — over-reports now that iter-2's `EventBus.restore` skips corrupt events (a direct follow-on from that fix) | count `event_bus.history()` | `test_iter3_fixes.py` |
+| 3 | med | `websockets._on_event` broadcast sequentially → one slow client head-of-line blocked the rest (inside the bus's gather) | `asyncio.gather` the sends, collect dead by exception | `test_iter3_fixes.py` |
+
+Files touched: `agents/consistency_reviewer.py`, `persistence/recovery.py`, `web/websockets.py`.
+9 candidates refuted by the adversarial pass.
+
+**RUNNING TOTAL: 23 bugs fixed across 3 iterations, suite 643 → 674 (+31 tests).**

@@ -75,12 +75,16 @@ class ConnectionHub:
                     continue
                 if _channel_match(channel, event):
                     targets.extend((channel, ws) for ws in conns)
-        dead: list[tuple[str, Any]] = []
-        for channel, ws in targets:
-            try:
-                await ws.send_text(message)
-            except Exception:  # noqa: BLE001
-                dead.append((channel, ws))
+        # Fan out concurrently: a single slow/laggy client must not head-of-line
+        # block delivery to the others (this handler runs inside the bus's gather).
+        results = await asyncio.gather(
+            *(ws.send_text(message) for _, ws in targets), return_exceptions=True
+        )
+        dead: list[tuple[str, Any]] = [
+            (channel, ws)
+            for (channel, ws), r in zip(targets, results)
+            if isinstance(r, Exception)
+        ]
         if dead:
             async with self._lock:
                 for channel, ws in dead:

@@ -10,6 +10,7 @@ no-op (design rule #6).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import urllib.request
 from typing import Any, Optional
@@ -81,7 +82,8 @@ class DiscordChannel(Channel):
     async def send(self, target: str, text: str) -> bool:
         # Prefer the webhook (simplest, no gateway needed).
         if self.webhook_url:
-            return self._send_webhook(text)
+            # Offload the blocking urllib call so it can't freeze the loop.
+            return await asyncio.to_thread(self._send_webhook, text)
         return False
 
     def _send_webhook(self, text: str) -> bool:

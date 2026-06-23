@@ -19,6 +19,10 @@ from skyn3t.rag.embeddings import Embedder
 
 def _cosine(a: list[float], b: list[float]) -> float:
     # Embedder vectors are L2-normalized, so the dot product IS the cosine.
+    # Different lengths mean different backends (hashing 256 vs ST 384) — zip
+    # would silently truncate to a garbage partial dot, so refuse: not comparable.
+    if len(a) != len(b):
+        return 0.0
     return sum(x * y for x, y in zip(a, b))
 
 

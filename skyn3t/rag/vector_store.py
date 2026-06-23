@@ -196,5 +196,27 @@ class VectorStore:
                 pass
             self._collection = None
 
+    # -- lifecycle ---------------------------------------------------------
+    def close(self) -> None:
+        """Release the chroma client. A PersistentClient holds an open SQLite
+        handle to persist_path; without closing it those file descriptors leak
+        as VectorStore instances accumulate. Idempotent and never raises."""
+        client = self._client
+        if client is not None:
+            closer = getattr(client, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
+        self._client = None
+        self._collection = None
+
+    def __enter__(self) -> "VectorStore":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
 
 __all__ = ["VectorStore", "SearchHit", "StoredDoc"]

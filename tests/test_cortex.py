@@ -77,6 +77,55 @@ async def test_safe_tuning_auto_applies():
     assert cortex.handlers.overrides["best_of_n"] == 3
 
 
+async def test_apply_is_idempotent_no_double_apply():
+    # Re-approving an already-APPLIED proposal must not re-run its handler
+    # (the handler could duplicate a tuning change or emit conflicting events).
+    bus = EventBus()
+    cortex = Cortex(bus, settings=_settings())
+    calls = {"n": 0}
+
+    async def counting_handler(prop):
+        calls["n"] += 1
+        return {"applied": True}
+
+    cortex.handlers.register(ProposalType.TUNING, counting_handler)
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.TUNING,
+            title="x",
+            payload={"setting": "a", "value": 1},
+            confidence=0.9,
+            safe=True,
+        )
+    )
+    assert prop.status == ProposalStatus.APPLIED
+    assert calls["n"] == 1
+    again = await cortex.approve(prop.id)
+    assert again.status == ProposalStatus.APPLIED
+    assert calls["n"] == 1  # NOT re-applied
+
+
+def test_prompt_text_hash_is_stable_across_processes():
+    import os
+    import subprocess
+    import sys
+
+    from skyn3t.cortex.prompt_evolver import _text_hash
+
+    h1 = _text_hash("evolve the planner prompt")
+    # A fresh interpreter with a different hash seed must produce the same key —
+    # builtin hash() would differ (PYTHONHASHSEED randomization).
+    env = {**os.environ, "PYTHONHASHSEED": "98765"}
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "from skyn3t.cortex.prompt_evolver import _text_hash;"
+         "print(_text_hash('evolve the planner prompt'))"],
+        capture_output=True, text=True, env=env,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == h1
+
+
 async def test_feature_is_gated():
     bus = EventBus()
     cortex = Cortex(bus, settings=_settings())

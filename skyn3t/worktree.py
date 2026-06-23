@@ -89,6 +89,11 @@ def create_worktree(
     root.mkdir(parents=True, exist_ok=True)
     wt_path = root / f"{slug}-{token}"
 
+    # Security: a slug must never escape the worktrees root via path traversal
+    # ("../../evil") or an absolute path. Reject before any mkdir/git touches disk.
+    if not wt_path.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"unsafe worktree slug (path traversal): {slug!r}")
+
     if _is_git_repo(base):
         branch = f"skyn3t/{slug}-{token}"
         try:

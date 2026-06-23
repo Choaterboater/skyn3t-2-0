@@ -572,7 +572,11 @@ class StudioRunner:
                     log.warning("fix.improve_failed", error=str(exc))
 
             manifest.files = list_files(project_dir)
-            proof = proof_run(
+            # Offload the synchronous proof_run (it shells out to pytest/npm) so
+            # it never blocks the event loop — the dashboard serves + improves on
+            # the same loop while builds run.
+            proof = await asyncio.to_thread(
+                proof_run,
                 project_dir, checklist=plan.checklist,
                 execution_backend=self.settings.execution_backend, stack=plan.stack,
                 run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
@@ -780,7 +784,11 @@ class StudioRunner:
         extra: dict[str, Any] | None = None,
     ) -> BuildOutcome:
         extra = extra or {}
-        slug = slug or _slugify(brief)
+        # Always slugify: a caller-supplied slug (e.g. the web API) must not pass
+        # through verbatim, or a value like "../../evil" would traverse out of
+        # projects_dir into create_worktree's mkdir. _slugify is idempotent for
+        # already-valid slugs, so legitimate callers are unaffected.
+        slug = _slugify(slug) if slug else _slugify(brief)
         correlation_id = uuid.uuid4().hex
 
         # Clarify ambiguous briefs (unattended by default).
@@ -1000,8 +1008,10 @@ class StudioRunner:
             manifest.artifact_dir = project_dir
 
             # Objective proof against the delivered project (boots it AND runs
-            # its own test suite when enabled).
-            proof = proof_run(
+            # its own test suite when enabled). Offloaded so the synchronous
+            # subprocess work never blocks the event loop.
+            proof = await asyncio.to_thread(
+                proof_run,
                 project_dir,
                 checklist=plan.checklist,
                 execution_backend=self.settings.execution_backend,
@@ -1061,7 +1071,10 @@ class StudioRunner:
                 verdict = re_verdict
 
             # Final score: blend reviewer score with proof completeness.
-            if reviewer_score <= 0.0:
+            # Only treat a 0.0 as "unset" when the reviewer never ran — a reviewer
+            # that ran and legitimately scored 0.0 (hollow build) must NOT be
+            # inflated up to proof.score.
+            if not reviewer_ran and reviewer_score <= 0.0:
                 reviewer_score = proof.score
             final_score = self._honest_score(
                 round(0.6 * reviewer_score + 0.4 * proof.score, 2), proof.passed

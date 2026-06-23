@@ -118,6 +118,14 @@ class Cortex:
 
     # ---- human / manual decisions ---------------------------------------
     async def approve(self, proposal_id: str, reason: str = "human approved") -> Proposal | None:
+        # Idempotent: an already-enacted proposal must not be reset to APPROVED
+        # and re-applied (re-running the handler + double-emitting events).
+        existing = self.store.get(proposal_id)
+        if existing is not None and existing.status in (
+            ProposalStatus.APPLIED,
+            ProposalStatus.FAILED,
+        ):
+            return existing
         prop = self.store.set_status(proposal_id, ProposalStatus.APPROVED, reason=reason)
         if prop is None:
             return None
@@ -140,6 +148,9 @@ class Cortex:
         prop = self.store.get(proposal_id)
         if prop is None:
             return None
+        # Defense-in-depth: never re-run a handler on a terminal proposal.
+        if prop.status in (ProposalStatus.APPLIED, ProposalStatus.FAILED):
+            return prop
         result = await self.handlers.apply(prop)
         new_status = ProposalStatus.APPLIED if result.get("applied") else ProposalStatus.FAILED
         self.store.set_status(

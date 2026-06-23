@@ -22,6 +22,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from skyn3t.security.secrets import filter_env
+
 _PY_ENTRYPOINTS = ("main.py", "app.py", "server.py")
 _WEB_HINTS = ("fastapi", "flask", "uvicorn", "django", "starlette", "aiohttp")
 
@@ -94,18 +96,20 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
         script = "dev" if "dev" in scripts else ("start" if "start" in scripts else None)
         if script:
             npm = shutil.which("npm") or "npm"
-            env = {**os.environ, "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
+            # filter_env: a served preview app must not inherit host secrets
+            # (API keys / bearer tokens) — same trust boundary as sandboxed agents.
+            env = {**filter_env(os.environ), "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
             return RunSpec([npm, "run", script, "--", "--port", str(port), "--host", "127.0.0.1"],
                            str(pdir), env, "node", port)
 
     entry = next((f for f in _PY_ENTRYPOINTS if (pdir / f).exists()), None)
     if entry and _is_python_web(pdir):
-        env = {**os.environ, "PORT": str(port), "HOST": "127.0.0.1"}
+        env = {**filter_env(os.environ), "PORT": str(port), "HOST": "127.0.0.1"}
         return RunSpec([_python_bin(pdir), entry], str(pdir), env, "python_web", port)
 
     if (pdir / "index.html").exists():
         return RunSpec([_python_bin(pdir), "-m", "http.server", str(port), "--bind", "127.0.0.1"],
-                       str(pdir), {**os.environ}, "static", port)
+                       str(pdir), filter_env(os.environ), "static", port)
 
     return None
 

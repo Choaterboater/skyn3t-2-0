@@ -20,12 +20,20 @@ Import is side-effect free.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
+
+
+def _text_hash(text: str) -> str:
+    """Stable content hash for dedupe keys. The builtin hash() is randomized per
+    process (PYTHONHASHSEED), so a persisted dedupe_key would not match the same
+    text after a restart — breaking duplicate detection. sha256 is deterministic."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 # An evaluator scores a prompt in [0,1] given a list of task dicts.
 Evaluator = Callable[[str, list[dict[str, Any]]], Awaitable[float]]
@@ -204,7 +212,7 @@ class PromptEvolver:
             confidence=min(0.5 + (cand.score - base_score), 0.95),
             # Prompt changes alter behavior broadly -> never auto-apply.
             safe=False,
-            dedupe_key=f"prompt:{prompt_key}:{hash(cand.text)}",
+            dedupe_key=f"prompt:{prompt_key}:{_text_hash(cand.text)}",
         )
         if self.cortex is not None:
             await self.cortex.submit(prop)

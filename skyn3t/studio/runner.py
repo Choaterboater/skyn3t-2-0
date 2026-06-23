@@ -1085,10 +1085,12 @@ class StudioRunner:
                 verdict = re_verdict
 
             # Final score: blend reviewer score with proof completeness.
-            # Only treat a 0.0 as "unset" when the reviewer never ran — a reviewer
-            # that ran and legitimately scored 0.0 (hollow build) must NOT be
-            # inflated up to proof.score.
-            if not reviewer_ran and reviewer_score <= 0.0:
+            # When NO brief-aware reviewer ran, the score must be proof-based only:
+            # the structural rescore (re_score) drives the VERDICT recovery but is
+            # NOT a brief-aware opinion, so blending it into the score double-counts
+            # structure. Use proof.score regardless of re_score. A reviewer that DID
+            # run keeps its score, even a legitimate 0.0 (hollow build, not inflated).
+            if not reviewer_ran:
                 reviewer_score = proof.score
             final_score = self._honest_score(
                 round(0.6 * reviewer_score + 0.4 * proof.score, 2), proof.passed

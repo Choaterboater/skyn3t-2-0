@@ -182,6 +182,11 @@ class Channel(ABC):
                 f"channel.{self.name}",
                 {
                     "proposal_id": proposal_id,
+                    # Emit the canonical `approved` bool the AppState handler reads
+                    # (web/deps.py). A bare `decision` string matched no handler
+                    # shape, so channel approvals (Telegram/Discord/Slack) were
+                    # silently dropped.
+                    "approved": str(decision).strip().lower() in ("approve", "approved", "yes"),
                     "decision": decision,
                     "by": msg.sender,
                     "channel": self.name,

@@ -163,7 +163,7 @@ class SandboxRunner:
                 stack=stack, env=clean_env, network=network,
             )
         return await self._run_subprocess(
-            command, cwd=cwd, timeout=timeout, env=clean_env,
+            command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
         )
 
     # ---- docker backend --------------------------------------------------
@@ -195,20 +195,28 @@ class SandboxRunner:
             host = str(Path(cwd).resolve())
             docker_cmd += ["-v", f"{host}:/work:rw", "-w", "/work"]
             if self.settings.sandbox_hardening:
-                # Allow writes only under the mounted workdir.
-                docker_cmd += ["--tmpfs", "/work/.tmp:rw"] if False else []
+                # Allow writes only to an isolated tmpfs under the mounted workdir
+                # (rootfs is --read-only). Was dead code (`if False else []`).
+                docker_cmd += ["--tmpfs", "/work/.tmp:rw,size=256m"]
         for k, v in (env or {}).items():
             docker_cmd += ["-e", f"{k}={v}"]
         docker_cmd += [img, *argv]
         return await self._exec(docker_cmd, cwd=None, timeout=timeout, backend="docker")
 
     # ---- subprocess (hardened local) ------------------------------------
-    async def _run_subprocess(self, command, *, cwd, timeout, env) -> SandboxResult:
+    async def _run_subprocess(self, command, *, cwd, timeout, env, network: bool = False) -> SandboxResult:
         warning = (
             "SANDBOX FALLBACK: Docker unavailable; running command in a HARDENED "
             "LOCAL SUBPROCESS on the host. This is NOT fully isolated. Install "
             "Docker or set SKYN3T_EXECUTION_BACKEND=docker for true isolation."
         )
+        if not network:
+            # The subprocess backend cannot enforce network isolation; say so
+            # explicitly rather than silently honoring the network=False request.
+            warning += (
+                " NETWORK ISOLATION CANNOT BE ENFORCED here — the command has "
+                "host network access despite network=False."
+            )
         # LOUD warning — never a silent host exec (spec requirement).
         warnings.warn(warning, RuntimeWarning, stacklevel=2)
         log.warning("sandbox.fallback.subprocess", message=warning)

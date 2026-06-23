@@ -50,6 +50,7 @@ class Orchestrator:
         self._sem = asyncio.Semaphore(max_concurrency)
         self._persist = persist
         self._idempotency: dict[str, TaskResult] = {}
+        self._idempotency_max = 1000  # bound memory like _results (web processes)
         self._inflight: dict[str, asyncio.Future[TaskResult]] = {}
         self._self_healing: SelfHealingManager | None = None
         self._results: dict[str, TaskResult] = {}
@@ -188,6 +189,10 @@ class Orchestrator:
         # failure doesn't poison the key forever (a retry can still succeed).
         if task.idempotency_key and result.success:
             self._idempotency[task.idempotency_key] = result
+            # Bound memory like _results: evict oldest keys past the cap (FIFO).
+            if len(self._idempotency) > self._idempotency_max:
+                for old in list(self._idempotency)[: len(self._idempotency) - self._idempotency_max]:
+                    self._idempotency.pop(old, None)
         if self._persist is not None:
             try:
                 await self._persist(task, result)

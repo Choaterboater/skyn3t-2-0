@@ -175,7 +175,8 @@ def save_run(run: BenchRun, data_dir) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in (run.label or "run"))
     path = out_dir / f"run-{safe}.json"
-    path.write_text(json.dumps(run.to_dict(), indent=2), encoding="utf-8")
+    from skyn3t.atomic_io import atomic_write_text
+    atomic_write_text(path, json.dumps(run.to_dict(), indent=2))
     return path
 
 

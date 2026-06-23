@@ -365,6 +365,15 @@ class StudioRunner:
         return total
 
     @staticmethod
+    def _critic_ok(prior: dict[str, Any]) -> bool:
+        """False when the critic stage returned a blocking verdict. The critic
+        flags security anti-patterns (e.g. eval of user input) and is meant to
+        BLOCK shipping — but the verdict gate never consulted it, so blocked
+        code could still go 'go'. No critic stage / no block ⇒ ok."""
+        critic = prior.get("critic") or {}
+        return str(critic.get("verdict", "pass")) != "block"
+
+    @staticmethod
     def _has_entrypoint_on_disk(project_dir: str) -> bool:
         """True if the delivered tree has a recognizable runnable entrypoint."""
         from pathlib import Path
@@ -1116,10 +1125,17 @@ class StudioRunner:
             # Only a CORROBORATED low signal (LLM judge concurring) flips the
             # verdict — the offline heuristic is advisory (see intent_gate).
             intent_ok = intent_gate(code_backend, intent, self._intent_floor)
+            critic_ok = self._critic_ok(prior)
+            if not critic_ok:
+                blockers = (prior.get("critic") or {}).get("blocking_issues") or []
+                manifest.extra["critic_gate"] = (
+                    f"{len(blockers)} blocking issue(s): "
+                    + ", ".join(str(b.get("message", b))[:60] for b in blockers[:3])
+                )
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
-                    and substantive and has_entry and intent_ok)
+                    and substantive and has_entry and intent_ok and critic_ok)
                 else "no_go"
             )
             if not substantive:

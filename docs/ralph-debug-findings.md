@@ -119,4 +119,31 @@ contract-drift, fanout-bestofn) + adversarial verify (15 agents). Yield 7→13�
 Files: `security/sandbox.py`, `adapters/llm.py`, `integrations/channels.py`,
 `intelligence/debate.py`, `core/orchestrator.py`. 2 candidates refuted.
 
-**RUNNING TOTAL: 37 bugs fixed across 5 iterations + 2 user reports, suite 643 → 689 (+44 tests).**
+## Iteration 6 (2026-06-23) — agents + pipeline internals: 8 candidates, 7 confirmed; 4 fixed, 3 deferred
+
+Method: 6 lenses (writer/design agents, planning agents, planner-stages, value-corruption,
+github-ingest, visual-proof) + adversarial verify (14 agents). Suite 689 → 695.
+
+FIXED (4):
+| Sev | Bug | Fix | Test |
+| --- | --- | --- | --- |
+| **CRITICAL** | The critic's `verdict="block"` (security anti-patterns like eval-of-input) was stored in `prior["critic"]` but the runner verdict gate NEVER consulted it — blocked code could ship `go` if other gates passed | `_critic_ok(prior)` ANDed into the verdict; records `critic_gate` | `test_iter6_fixes.py` |
+| high | `designer` returned `_DEFAULT_DESIGN` with `success=True` and no error when a REAL backend returned unparseable JSON (silent degrade) | flag `degraded` on real-backend parse failure (brainstorm/architect pattern) | `test_iter6_fixes.py` |
+| high | `packaging._readme` emitted a `## Installation` header with NO content for non-web/non-Python projects (Go/Rust/static) | `elif`+`else` fallback line so the section is never empty | `test_iter6_fixes.py` |
+| high | `boot_verifier._boot_node` returned True for ANY entrypoint incl. `index.html` when `stack="node"` + no package.json (web file passed as node-bootable) | filter to real `.js/.ts/...` files | `test_iter6_fixes.py` |
+
+DEFERRED (need a DECISION, not a unilateral fix):
+- #2 + #5 (CRITICAL/high) **mandatory-stage-skip / gated-skip bypass**: a stage with no
+  registered agent is silently skipped regardless of `spec.optional`, and a gated such
+  stage skips without ever requesting approval. BUT this directly conflicts with the
+  runner's DOCUMENTED offline-tolerance design ("a missing agent records a *skipped*
+  stage and the build continues (never crashes)"). The delivery gates
+  (delivered_nonempty/substantive/has_entry/proof) already catch empty/hollow outcomes.
+  Making mandatory stages hard-fail is a behavior change with broad blast radius (breaks
+  the offline test + real offline builds) — a PRODUCT decision for the user. The clean
+  middle path if wanted: consult `spec.optional` and fail (or gate) only mandatory+gated.
+- #6 (high→LOW) github `fetch_recent_commits` "pagination": the verifier OVERSTATED it —
+  GitHub's `per_page` returns up to `limit` on page 1, so `limit ≤ 100` is correct. Only
+  `limit > 100` truncates (default is 30). Minor; deferred.
+
+**RUNNING TOTAL: 41 bugs fixed across 6 iterations + 2 user reports, suite 643 → 695 (+50 tests). 3 deferred as design/low-impact.**

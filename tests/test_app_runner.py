@@ -105,3 +105,69 @@ def test_start_no_preview_for_bare_dir(tmp_path):
     runner = AppRunner()
     app = asyncio.run(runner.start(tmp_path, "python"))
     assert app.status == "no_preview" and app.pid is None
+
+
+# ---------------------------------------------------------------------------
+# Node dependency installation (the `vite: command not found` bug)
+# A delivered Vite/React project has package.json but no node_modules; `npm run
+# dev` can't find the vite binary. Serving must install deps first.
+# ---------------------------------------------------------------------------
+from skyn3t.studio import app_runner as _app_runner
+from skyn3t.studio.app_runner import ensure_node_deps
+
+
+def test_ensure_node_deps_skips_when_node_modules_present(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    (tmp_path / "node_modules").mkdir()
+    calls = []
+    ok, info = ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))
+    assert ok is True
+    assert calls == []  # already installed -> never shells out to npm
+
+
+def test_ensure_node_deps_installs_when_node_modules_missing(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    calls = []
+
+    def fake(cmd, cwd):
+        calls.append((cmd, cwd))
+        return True, {"ran": True}
+
+    ok, info = ensure_node_deps(tmp_path, runner=fake)
+    assert ok is True
+    assert len(calls) == 1
+    cmd, cwd = calls[0]
+    assert cmd[-1] in ("install", "ci")  # npm install (or ci with a lockfile)
+    assert cwd == str(tmp_path)
+
+
+def test_ensure_node_deps_prefers_ci_with_lockfile(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    (tmp_path / "package-lock.json").write_text("{}")
+    calls = []
+    ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))
+    assert calls and calls[0][-1] == "ci"
+
+
+def test_ensure_node_deps_noop_without_package_json(tmp_path):
+    calls = []
+    ok, info = ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))
+    assert ok is True and calls == []  # nothing to install
+
+
+def test_start_node_installs_before_serve_and_fails_clean(tmp_path, monkeypatch):
+    # A node project whose dependency install fails must surface a clean `failed`
+    # RunningApp with the install error -- never launch a doomed dev server.
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    seen = {}
+
+    def fake_ensure(pdir, **kw):
+        seen["called"] = str(pdir)
+        return False, {"error": "npm install boom"}
+
+    monkeypatch.setattr(_app_runner, "ensure_node_deps", fake_ensure)
+    app = asyncio.run(AppRunner().start(tmp_path, "react", ready_timeout=1))
+    assert seen.get("called") == str(tmp_path)
+    assert app.status == "failed"
+    assert app.pid is None
+    assert "install" in str(app.detail).lower()

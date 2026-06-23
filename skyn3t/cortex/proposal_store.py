@@ -128,9 +128,21 @@ class ProposalStore:
         return proposal, True
 
     def _is_duplicate(self, proposal: Proposal) -> bool:
-        open_states = {ProposalStatus.PENDING, ProposalStatus.GATED, ProposalStatus.APPROVED}
+        # Block while a same-key proposal is still open (PENDING/GATED/APPROVED)
+        # AND once it has been APPLIED: re-proposing an already-enacted change is
+        # pure approval noise — the cause of "I approved this 50 times and it
+        # keeps coming back" (a recurring generator re-submits the same key every
+        # tick; before this, an APPLIED prior no longer suppressed it).
+        # REJECTED/FAILED are intentionally NOT blocked: a rejection must not
+        # freeze a topic forever, and a failed apply should be retryable.
+        blocking = {
+            ProposalStatus.PENDING,
+            ProposalStatus.GATED,
+            ProposalStatus.APPROVED,
+            ProposalStatus.APPLIED,
+        }
         for existing in self._items.values():
-            if existing.dedupe_key == proposal.dedupe_key and existing.status in open_states:
+            if existing.dedupe_key == proposal.dedupe_key and existing.status in blocking:
                 return True
         return False
 

@@ -326,15 +326,24 @@ class LLMClient:
             # HTTP errors (429/5xx) propagate so the orchestrator's transient
             # retry classification can retry them.
             resp.raise_for_status()
-            data = resp.json()
-        # A 200 with a malformed/empty body must degrade, not crash the build.
+        # A 200 with a malformed/empty body must degrade, not crash the build —
+        # this includes a body that isn't valid JSON (truncation, gateway HTML),
+        # so resp.json() is inside the guard too (it raises ValueError/JSONDecodeError).
         try:
+            data = resp.json()
             text = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
             log.warning("llm.openrouter_malformed", error=str(exc)[:160])
             return self._stub(model, prompt, system, json_mode)
         usage = data.get("usage", {}) if isinstance(data, dict) else {}
         pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        # OpenRouter sometimes omits `usage` on a 200. Defaulting to 0 made PAID
+        # models report $0 — corrupting cost tracking + budget caps. Estimate
+        # tokens from text length (~4 chars/token) so a paid call is never free.
+        if not model.endswith(":free") and pt == 0 and ct == 0:
+            pt = max(1, (len(system) + len(prompt)) // 4)
+            ct = max(1, len(text) // 4)
+            log.warning("llm.openrouter_usage_missing", model=model, est_tokens=pt + ct)
         # :free models cost $0; otherwise rough estimate.
         cost = 0.0 if model.endswith(":free") else (pt + ct) / 1_000_000 * 0.5
         return LLMResult(text=text, model=model, backend="openrouter",

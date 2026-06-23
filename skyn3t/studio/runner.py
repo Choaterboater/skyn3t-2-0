@@ -37,6 +37,7 @@ from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
+from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import proof_run
@@ -372,6 +373,45 @@ class StudioRunner:
         code could still go 'go'. No critic stage / no block ⇒ ok."""
         critic = prior.get("critic") or {}
         return str(critic.get("verdict", "pass")) != "block"
+
+    async def _run_liveness(self, manifest, project_dir, plan, proof,
+                            final_score: float, verdict: str):
+        """Serve the delivered web app, check every route/page, repair failures,
+        and dampen the score by route health (opt-in: gate the verdict). Returns
+        the possibly-adjusted (final_score, verdict). Never raises."""
+        try:
+            from skyn3t.studio.app_runner import AppRunner
+            from skyn3t.studio.improve import ImproveEngine
+            from skyn3t.studio.visual_check import make_vision_fn
+            outcome = await liveness_self_improve(
+                project_dir,
+                app_runner=AppRunner(),
+                improve_engine=ImproveEngine(self.event_bus, self.orchestrator,
+                                             settings=self.settings),
+                vision_fn=make_vision_fn(self.settings),
+                stack=plan.stack,
+                max_rounds=int(getattr(self.settings, "liveness_max_rounds", 2)),
+            )
+        except Exception as exc:  # noqa: BLE001 - never crash the build over liveness
+            log.warning("liveness.failed", error=str(exc))
+            return final_score, verdict
+        if outcome.skipped or outcome.report is None:
+            manifest.extra["liveness"] = {"skipped": True, "reason": outcome.reason}
+            return final_score, verdict
+        report = outcome.report
+        manifest.extra["liveness"] = report.to_dict()
+        manifest.extra["liveness_health"] = round(report.health, 3)
+        # Dampen by route health, but only when proof PASSED — a proof-failed build
+        # is already halved by _honest_score, so this would otherwise double-count.
+        if proof.passed and report.total:
+            final_score = round(final_score * (0.5 + 0.5 * report.health), 2)
+            manifest.score = final_score
+        # Opt-in hard gate: any route still dead after repair -> no_go.
+        if getattr(self.settings, "liveness_gates_verdict", False) and report.dead > 0:
+            verdict = "no_go"
+            manifest.extra["liveness_gate"] = (
+                f"{report.dead} route(s) dead: {', '.join(report.dead_routes[:5])}")
+        return final_score, verdict
 
     @staticmethod
     def _has_entrypoint_on_disk(project_dir: str) -> bool:
@@ -1175,6 +1215,12 @@ class StudioRunner:
                 if proof.passed:
                     final_score = round(final_score * 0.5, 2)
                     manifest.score = final_score
+            # End-of-build liveness (web stacks): serve the delivered app, hit
+            # every route/page, repair failures, and dampen the score by how many
+            # respond — optionally gating the verdict. Never crashes the build.
+            if plan.stack in _WEB_STACKS and getattr(self.settings, "liveness_check_enabled", True):
+                final_score, verdict = await self._run_liveness(
+                    manifest, project_dir, plan, proof, final_score, verdict)
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
 

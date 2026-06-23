@@ -161,4 +161,35 @@ Yield 7→13→3→5→7→7→3 (tapering).
 
 Files: `web/routes.py`, `cortex/repo_scout.py`. 2 candidates refuted.
 
-**RUNNING TOTAL: 44 bugs fixed across 7 iterations + 2 user reports, suite 643 → 699 (+54 tests). 3 deferred as design/low-impact.**
+## Iteration 8 (2026-06-23) — wide high-bar convergence sweep (critical/high only): 2 candidates, 2 confirmed, all fixed
+
+Method: 4 WIDE whole-codebase lenses (data-loss, security, crash, correctness), reporting
+ONLY critical/high with concrete repro. Adversarial verify (6 agents). Suite 699 → 702.
+Even the high-bar sweep found 2 real bugs — convergence is close but not absolute.
+
+| Sev | Bug | Fix | Test |
+| --- | --- | --- | --- |
+| **CRITICAL** | `worktree.merge_back(clean=True)` wiped the destination BEFORE reading the source — if the source read then failed, the delivered project was left wiped-but-empty (data loss). Real path: runner/improve delivery | preflight `list(_iter_files(src))` BEFORE the clean; a read failure aborts without touching dst | `test_iter8_fixes.py` |
+| high | `runner` final-score double-counted the structural rescore when NO reviewer ran: the `not reviewer_ran and reviewer_score<=0.0` guard (from iter 1) left re_score in the 60/40 blend when re_score>0 — contaminating a score meant to be brief-aware+proof. (Refinement of MY OWN iter-1 fix; the iter-7 self-audit missed it, the wide-correctness lens caught it.) | reset to proof.score whenever `not reviewer_ran` | `test_iter8_fixes.py` |
+
+Files: `worktree.py`, `studio/runner.py`. 0 candidates refuted (both confirmed).
+
+---
+
+# CAMPAIGN SUMMARY (stopped after iteration 8 at the user's request)
+
+**46 bugs fixed across 8 iterations + 2 user reports. Suite 643 → 702 (+57 tests). All TDD'd, adversarially verified, and merged to `main` via --no-ff. 3 items deferred.**
+
+Per-iteration confirmed yield: 7, 13, 3, 5, 7, 7, 3, 2 (clear taper). 2 CRITICALs found
+(path-traversal slug in iter1; critic-gate bypass in iter6) plus another CRITICAL data-loss
+in iter8. The iter7 self-audit found zero regressions in iters 1-6; the iter8 wide sweep
+still surfaced 2 — so the codebase is *near* but not *at* full convergence for this method.
+
+DEFERRED — need a USER DECISION, not auto-fixed:
+1. **mandatory-stage-skip / gated-skip bypass** (iter6): a build stage with no registered
+   agent is silently skipped regardless of `spec.optional`, and a gated such stage skips
+   without approval. Conflicts with the runner's DOCUMENTED offline-tolerance design;
+   delivery gates already catch hollow outputs. Options: keep as-is / hard-fail mandatory /
+   fail-only-mandatory+gated.
+2. **github `fetch_recent_commits` pagination** (iter6): only matters for `limit > 100`
+   (default 30); the verifier overstated it. Minor.

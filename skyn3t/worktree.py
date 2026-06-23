@@ -143,6 +143,14 @@ def merge_back(
     dst = Path(project_dir)
     if not src.exists():
         return []
+    # Preflight: materialize the source file list BEFORE deleting the destination.
+    # With clean=True we wipe dst first; if reading src then failed, the delivered
+    # project would be left wiped-but-empty (data loss). Reading first means a
+    # source-read failure aborts WITHOUT having touched the destination.
+    try:
+        sources = list(_iter_files(src))
+    except OSError:
+        return []
     if clean and dst.exists():
         for child in dst.iterdir():
             if child.name == ".git":
@@ -153,7 +161,7 @@ def merge_back(
                 pass
     dst.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
-    for f in _iter_files(src):
+    for f in sources:
         rel = f.relative_to(src)
         target = dst / rel
         if target.exists() and not overwrite:

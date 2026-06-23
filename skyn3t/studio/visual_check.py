@@ -9,6 +9,8 @@ import asyncio
 import base64
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
@@ -122,25 +124,42 @@ def make_vision_fn(settings: Any) -> VisionFn | None:
     loop's judgement step wherever an OpenRouter key + vision model are available
     — closing the 'text-only LLM' gap without changing the loop."""
     key = str(getattr(settings, "openrouter_api_key", "") or "")
-    if not key:
-        return None
-    model = str(getattr(settings, "vision_model", "") or "") or _DEFAULT_VISION_MODEL
+    if key:
+        model = str(getattr(settings, "vision_model", "") or "") or _DEFAULT_VISION_MODEL
 
-    def _vision_fn(image_path: str, prompt: str) -> str:
-        import httpx
-        from skyn3t.adapters.llm import OPENROUTER_URL
-        body = {"model": model,
-                "messages": _vision_messages(_image_data_url(image_path), prompt),
-                "max_tokens": 700}
-        headers = {"Authorization": f"Bearer {key}",
-                   "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(OPENROUTER_URL, json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        def _vision_fn(image_path: str, prompt: str) -> str:
+            import httpx
+            from skyn3t.adapters.llm import OPENROUTER_URL
+            body = {"model": model,
+                    "messages": _vision_messages(_image_data_url(image_path), prompt),
+                    "max_tokens": 700}
+            headers = {"Authorization": f"Bearer {key}",
+                       "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
+            with httpx.Client(timeout=60) as client:
+                resp = client.post(OPENROUTER_URL, json=body, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+            return data["choices"][0]["message"]["content"]
 
-    return _vision_fn
+        return _vision_fn
+
+    # No OpenRouter key: fall back to a vision-capable CLI on PATH (claude/kimi).
+    # The CLI reads the image FILE (not base64 over HTTP), so it judges the
+    # screenshot natively — no OpenRouter dependency anywhere.
+    provider = str(getattr(settings, "cli_llm_provider", "") or "claude").lower()
+    for prov in (provider, "claude", "kimi"):
+        if shutil.which(prov):
+            def _cli_vision_fn(image_path: str, prompt: str, _prov: str = prov) -> str:
+                full = (f"View the image file at {image_path}. {prompt} "
+                        "Respond with ONLY the JSON object, no prose.")
+                try:
+                    out = subprocess.run([_prov, "-p", full], capture_output=True,
+                                         text=True, timeout=120)
+                    return out.stdout or ""
+                except Exception:  # noqa: BLE001 - CLI missing/slow -> empty -> soft-skip
+                    return ""
+            return _cli_vision_fn
+    return None
 
 
 class VisualChecker:

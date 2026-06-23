@@ -89,7 +89,7 @@ class CodeImproverAgent(BaseAgent):
                 f"Current contents:\n{original}\n\nRewrite the file."
             )
             try:
-                result = await self.llm.complete(prompt, tier=tier, system=_SYSTEM,
+                result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
                                                  file_hint=rel, max_tokens=4096)
                 # Degraded-to-stub result must not clobber a working file.
                 if result.backend != "stub":

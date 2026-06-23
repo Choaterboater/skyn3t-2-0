@@ -52,7 +52,7 @@ class DesignerAgent(BaseAgent):
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
         result = await self.llm.complete(
             f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON.",
-            tier=Tier.UI, system=_SYSTEM, json_mode=True,
+            tier=Tier.UI, system=self.system_prompt(_SYSTEM), json_mode=True,
         )
         parsed = parse_json(result.text)
         design: dict[str, Any] = dict(_DEFAULT_DESIGN)

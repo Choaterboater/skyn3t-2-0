@@ -134,6 +134,14 @@ class LLMClient:
             daily_cap=self.settings.daily_usd_cap,
             token_cap=self.settings.daily_token_cap,
         )
+        # The model id of the most recent completion (real model for openrouter,
+        # ``<provider>-cli`` for CLI backends, resolved model for stub). Agents
+        # read this to stamp ``TaskResult.model_id`` so the ModelTournament is
+        # fed by real build traffic. None until the first ``complete`` call.
+        self.last_model: str | None = None
+        # The (tier, task_type) the most recent completion routed through, so the
+        # tournament records into the SAME bucket the LearnedModelRouter queries.
+        self.last_route: tuple[str, str] | None = None
 
     _cli_cache: dict[str, bool] = {}
 
@@ -185,6 +193,8 @@ class LLMClient:
             result = await self._cli(backend[:-4], prompt, system, json_mode)
         else:
             result = self._stub(model, prompt, system, json_mode)
+        self.last_model = result.model
+        self.last_route = (getattr(tier, "value", str(tier)), task_type)
         self.budget.record(result)
         self.budget.check()
         return result

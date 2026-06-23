@@ -532,6 +532,39 @@ async def list_proposals(state: AppState, status: str = "") -> dict[str, Any]:
     return {"proposals": [p.to_dict() for p in items]}
 
 
+async def cortex_effects_payload(state: AppState) -> dict[str, Any]:
+    """What cortex has actually changed — the visible proof the loops took effect.
+
+    Reads three durable sources under ``data/``: the learned-router leaderboard
+    (fed per successful build stage), persisted tuning overrides, and evolved
+    agent instructions. Each source degrades to ``{}`` independently so a missing
+    or corrupt file never breaks the dashboard.
+    """
+    data_dir = state.settings.data_dir
+    leaderboard: dict[str, Any] = {}
+    try:
+        from skyn3t.intelligence.model_tournament import ModelTournament
+
+        leaderboard = ModelTournament(data_dir / "model_tournament.json").snapshot()
+    except Exception:  # noqa: BLE001
+        leaderboard = {}
+    tuning: dict[str, Any] = {}
+    try:
+        from skyn3t.cortex.tuning_store import load_overrides
+
+        tuning = load_overrides(data_dir)
+    except Exception:  # noqa: BLE001
+        tuning = {}
+    prompts: dict[str, Any] = {}
+    try:
+        from skyn3t.cortex.prompt_store import load_prompt_overrides
+
+        prompts = load_prompt_overrides(data_dir)
+    except Exception:  # noqa: BLE001
+        prompts = {}
+    return {"leaderboard": leaderboard, "tuning": tuning, "prompts": prompts}
+
+
 async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:
     rec = state.proposals.get(proposal_id)
     if rec is None:
@@ -1073,6 +1106,10 @@ def build_router(state: AppState) -> Any:
     @router.get("/cortex/proposals", dependencies=[auth])
     async def _cortex_proposals(status: str = Query(default="")) -> dict[str, Any]:
         return await list_proposals(state, status=status)
+
+    @router.get("/cortex/effects", dependencies=[auth])
+    async def _cortex_effects() -> dict[str, Any]:
+        return await cortex_effects_payload(state)
 
     @router.post("/cortex/proposals/{proposal_id}/decide", dependencies=[auth])
     async def _cortex_decide(

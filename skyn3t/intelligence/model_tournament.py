@@ -9,24 +9,21 @@ Scoring uses a lightweight rolling Elo plus raw win counts so the ranking is
 stable with few samples and responsive with many. Persistence is best-effort
 JSON; degrades to memory-only. Zero import side effects (design rule #4).
 
-**Current feeding limitation (swarm #16)**:
-``record_win`` is currently called ONLY by the debate pipeline
-(:func:`skyn3t.intelligence.debate.run_debate`). The debate command is
-rarely invoked in normal operation, so the leaderboard stays sparse and the
-learned router (``Settings.model_evolution=True``) will almost always abstain
-(see :meth:`RoutingRecommender.recommend` — it returns ``None`` with < 1
-play). The router's fallback (keyword → tier → default model) remains safe.
+**Feeding (swarm #16 — now closed)**:
+``record_win`` is fed from two places:
+  * the debate pipeline (:func:`skyn3t.intelligence.debate.run_debate`), and
+  * **every successful build stage** — :class:`~skyn3t.core.agent.TaskResult`
+    carries a ``model_id`` (stamped automatically by :class:`BaseAgent` from its
+    ``llm`` client), and :meth:`~skyn3t.studio.runner.StudioRunner._feed_tournament`
+    records a solo appearance into the same ``(tier, task_type)`` bucket the
+    :class:`LearnedModelRouter` queries.
 
-**The seam to close this gap**:
-Add a ``model_id: str | None`` field to :class:`~skyn3t.core.agent.TaskResult`
-so agents can surface which LLM model they used. Then, in
-:class:`~skyn3t.studio.runner.StudioRunner`, after a stage completes
-successfully, call ``tournament.record_win(bucket, result.model_id, losers=[])``
-where ``losers=[]`` records a solo appearance (no direct competitor) and still
-builds up the win/plays counters over real build traffic. Once a few dozen
-stages have run, the router has enough signal to start routing.
-
-Until that wiring lands, the tournament only learns from debate runs.
+A *solo appearance* (``losers=[]``) is the normal single-model build case: it
+counts as one unopposed play+win (see :meth:`record_win`), so the win/plays
+counters accrue over real traffic. After a few dozen stages a model can clear
+:class:`RoutingRecommender`'s ``min_plays``/``min_win_rate`` thresholds and the
+learned router (``Settings.model_evolution`` + ``auto_route``) starts routing to
+it; until then it abstains and the deterministic base router is used (safe).
 """
 
 from __future__ import annotations
@@ -149,9 +146,8 @@ class ModelTournament:
         """Record that ``winner`` beat each model in ``losers`` for ``bucket``."""
         now = time.time()
         w = self._stat(bucket, winner)
-        for loser in losers:
-            if loser == winner:
-                continue
+        real_losers = [l for l in losers if l != winner]
+        for loser in real_losers:
             l = self._stat(bucket, loser)
             exp_w = _expected(w.rating, l.rating)
             exp_l = _expected(l.rating, w.rating)
@@ -162,6 +158,14 @@ class ModelTournament:
             w.plays += 1
             l.plays += 1
             w.last_seen = l.last_seen = now
+        if not real_losers:
+            # Solo appearance — the normal single-model build case. Count it as
+            # one unopposed play+win (no opponent → no Elo exchange) so evidence
+            # accrues over real traffic; otherwise the learned router could never
+            # reach ``min_plays`` from ordinary builds (closes swarm #16).
+            w.wins += 1
+            w.plays += 1
+            w.last_seen = now
         self._matches.append(
             MatchRecord(bucket=bucket, winner=winner, losers=list(losers), task_type=task_type)
         )

@@ -303,7 +303,7 @@ class CodeAgent(BaseAgent):
             + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )
         result = await self.llm.complete(
-            prompt, tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=8192,
+            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
         )
         # If the call degraded to the stub backend (CLI failure/timeout, missing
         # key), do NOT write stub prose over the runnable scaffold — keep it.
@@ -316,7 +316,7 @@ class CodeAgent(BaseAgent):
             retry = await self.llm.complete(
                 prompt + f"\n\nThe previous attempt had an error: {err}\n"
                 "Return the COMPLETE corrected file.",
-                tier=tier, system=_SYSTEM, file_hint=rel_path, max_tokens=8192,
+                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
             )
             if retry.backend != "stub":
                 recode = extract_code(retry.text)

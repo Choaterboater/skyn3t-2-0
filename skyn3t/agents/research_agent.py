@@ -72,7 +72,7 @@ class ResearchAgent(BaseAgent):
             f"Prior lessons (may be empty): {lessons}\n\n"
             "Do pre-coding research and respond as JSON."
         )
-        result = await self.llm.complete(prompt, tier=Tier.CHEAP, system=_SYSTEM, json_mode=True)
+        result = await self.llm.complete(prompt, tier=Tier.CHEAP, system=self.system_prompt(_SYSTEM), json_mode=True)
         parsed = parse_json(result.text)
 
         # The offline stub backend returns a sentinel ({"stub": true, ...}); treat

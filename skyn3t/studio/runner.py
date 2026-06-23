@@ -883,11 +883,16 @@ class StudioRunner:
         self._obs_call(self.cost_tracker, "start_build", build_id)
         self._obs_call(self.budget_guard, "reset")
 
+        # Track the stage whose cost slice is currently open so a mid-stage
+        # exception can still close it (else its base leaks). end_stage is
+        # idempotent, so closing an already-finished stage is a harmless no-op.
+        open_stage: str | None = None
         try:
             for spec in plan.stages:
                 self._obs_call(self.budget_guard, "heartbeat")
                 # Mark the stage boundary so cost is attributed per stage (Spec 2).
                 self._obs_call(self.cost_tracker, "start_stage", build_id, spec.name)
+                open_stage = spec.name
                 await self.event_bus.emit(
                     EventType.BUILD_STAGE_STARTED,
                     "studio",
@@ -1162,6 +1167,8 @@ class StudioRunner:
             return outcome
 
         except _BuildRejected as exc:
+            if open_stage is not None:
+                self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             manifest.status = "failed"
             await self._grade_lessons(
                 used_lessons, helpful=False,
@@ -1178,6 +1185,8 @@ class StudioRunner:
             manifest.save(project_dir)
             return self._outcome(manifest)
         except Exception as exc:  # noqa: BLE001 - never crash the factory
+            if open_stage is not None:
+                self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
             await self._grade_lessons(

@@ -185,11 +185,13 @@ Per-iteration confirmed yield: 7, 13, 3, 5, 7, 7, 3, 2 (clear taper). 2 CRITICAL
 in iter8. The iter7 self-audit found zero regressions in iters 1-6; the iter8 wide sweep
 still surfaced 2 — so the codebase is *near* but not *at* full convergence for this method.
 
-DEFERRED — need a USER DECISION, not auto-fixed:
-1. **mandatory-stage-skip / gated-skip bypass** (iter6): a build stage with no registered
-   agent is silently skipped regardless of `spec.optional`, and a gated such stage skips
-   without approval. Conflicts with the runner's DOCUMENTED offline-tolerance design;
-   delivery gates already catch hollow outputs. Options: keep as-is / hard-fail mandatory /
-   fail-only-mandatory+gated.
-2. **github `fetch_recent_commits` pagination** (iter6): only matters for `limit > 100`
-   (default 30); the verifier overstated it. Minor.
+RESOLVED (post-campaign, user picked the sharpened middle path; merge after iter8):
+1. **mandatory-stage-skip / gated-skip bypass** (iter6) — FIXED the real hole only: a GATED
+   stage with no agent now honours its approval gate (request→reject→`_BuildRejected` no_go)
+   instead of silently bypassing an explicit human-in-the-loop request; a MANDATORY skip is
+   flagged in `manifest.extra["skipped_mandatory_stages"]` for operator visibility. Offline-
+   tolerance KEPT for ungated mandatory stages (the end gates already catch hollow outputs;
+   hard-failing would break offline-first resilience). `test_stage_gating.py`.
+2. **github `fetch_recent_commits` pagination** (iter6) — made the CONTRACT honest instead
+   of adding pagination machinery: documented the single-page cap, clamp `per_page`, and
+   `return data[:limit]` so the limit is honoured exactly. `test_stage_gating.py`.

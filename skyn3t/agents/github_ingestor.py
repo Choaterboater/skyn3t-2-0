@@ -172,7 +172,11 @@ def provenance_match(snippet: str, corpus_blobs: dict[str, str],
 
 
 async def fetch_recent_commits(repo: str, limit: int = 30) -> list[dict[str, Any]] | None:
-    """Fetch recent commits from the GitHub API. None on failure.
+    """Fetch the most-recent commits from the GitHub API. None on failure.
+
+    Returns up to ``limit`` commits but NEVER more than a single API page (100):
+    there is no cross-page pagination, so ``limit > 100`` is silently capped at
+    100. Adequate for the churn/recency signal this feeds; not a full history.
 
     The list-commits endpoint does NOT return a per-commit ``files`` array, so
     callers that need churn/top-path signal should additionally call
@@ -182,14 +186,17 @@ async def fetch_recent_commits(repo: str, limit: int = 30) -> list[dict[str, Any
         return None
     slug = _normalize_repo(repo)
     url = f"{_API_ROOT}/repos/{slug}/commits"
+    per_page = min(limit, 100)  # one page only; a larger limit cannot be honoured
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:  # type: ignore
             resp = await client.get(url, headers=_auth_headers(),
-                                    params={"per_page": min(limit, 100)})
+                                    params={"per_page": per_page})
             if resp.status_code != 200:
                 return None
             data = resp.json()
-            return data if isinstance(data, list) else None
+            if not isinstance(data, list):
+                return None
+            return data[:limit]  # honour the requested limit exactly
     except Exception:  # noqa: BLE001
         return None
 

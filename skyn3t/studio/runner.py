@@ -921,12 +921,31 @@ class StudioRunner:
                     await self._emit_stage_done(build_id, record, correlation_id)
                     continue
 
-                # No agent -> record skipped and continue (offline tolerance).
+                # No agent -> record skipped and continue (offline tolerance). But:
+                # (1) a MANDATORY stage skipping is a degraded build — flag it loudly
+                #     so an operator can see the build ran without it; and
+                # (2) a GATED stage must still honour its approval gate even when
+                #     skipped — an explicit human-in-the-loop request must not be
+                #     silently bypassed just because the agent is missing.
                 if not self._has_agent_for(spec):
                     record.status = "skipped"
                     record.output_summary = {"reason": "no_agent"}
+                    if not spec.optional:
+                        record.output_summary["mandatory_skip"] = True
+                        manifest.extra.setdefault("skipped_mandatory_stages", []).append(spec.name)
                     manifest.add_stage(record)
                     await self._emit_stage_done(build_id, record, correlation_id)
+                    if spec.gated:
+                        approval = self.approval_gate.request(
+                            build_id, spec.name, {"reason": "no_agent", "score": 0}
+                        )
+                        decision = await self.approval_gate.wait(
+                            approval.approval_id, timeout=self.stage_timeout)
+                        if decision is GateDecision.REJECTED:
+                            manifest.status = "failed"
+                            manifest.verdict = "no_go"
+                            raise _BuildRejected(
+                                f"gated stage {spec.name} (no agent) rejected at approval gate")
                     continue
 
                 lessons = await self._inject_lessons(plan.stack, spec.name, brief)

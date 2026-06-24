@@ -47,6 +47,59 @@ async def test_cli_failure_degrades_to_stub(monkeypatch):
     assert result.backend == "stub"  # degraded, never raised
 
 
+def _install_fake_cli(monkeypatch, captured):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(llm_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return (b'{"ok": true}', b"")
+
+    async def _fake_exec(*argv, **kw):
+        captured["argv"] = argv
+        return _Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+
+async def test_cli_references_image_file_path(monkeypatch):
+    # build-from-image on the CLI backend: the saved image PATH is referenced in
+    # the prompt so `claude -p` reads the file (the proven make_vision_fn pattern).
+    import os
+    import tempfile
+
+    captured: dict = {}
+    _install_fake_cli(monkeypatch, captured)
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.write(fd, b"\x89PNG\r\n")
+    os.close(fd)
+    res = await _client("claude_cli").complete("design it", tier=Tier.UI, images=[path])
+    assert res.backend == "claude_cli"
+    full = captured["argv"][-1]
+    assert path in full and "image file" in full.lower()
+
+
+async def test_cli_writes_data_url_to_temp_file(monkeypatch):
+    # A data: URL can't be passed to the CLI inline — it's written to a temp file
+    # and that path is referenced instead.
+    import base64
+
+    captured: dict = {}
+    _install_fake_cli(monkeypatch, captured)
+    data_url = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n").decode()
+    await _client("claude_cli").complete("design", tier=Tier.UI, images=[data_url])
+    full = captured["argv"][-1]
+    assert "data:" not in full
+    assert ".png" in full and "image file" in full.lower()
+
+
+def test_supports_image_input():
+    assert _client("openrouter", openrouter_api_key="sk").supports_image_input is True
+    assert _client("stub").supports_image_input is False
+
+
 def test_strip_code_fences():
     assert _strip_code_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
     assert _strip_code_fences('{"a": 1}') == '{"a": 1}'

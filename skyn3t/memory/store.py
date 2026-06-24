@@ -182,6 +182,20 @@ class MemoryStore:
                 "artifact_dir": row.artifact_dir,
             }
 
+    async def reconcile_orphaned_builds(self) -> int:
+        """Mark builds left ``running`` by a previous (now-dead) server process as
+        ``interrupted``. A build can't survive a server restart, so any persisted
+        ``running`` row is stale on startup — otherwise it lingers as a phantom
+        forever (its slug looks perpetually busy). Call once at startup, before
+        any new build dispatches. Returns the number reconciled."""
+        async with self._session() as s:
+            result = await s.execute(
+                update(BuildRow).where(BuildRow.status == "running")
+                .values(status="interrupted")
+            )
+            await s.commit()
+            return int(result.rowcount or 0)
+
     # ---- lessons (graded learning loop) ----------------------------------
     async def add_lesson(self, stack: str, stage: str, text: str, source_build: str | None = None) -> int:
         async with self._session() as s:

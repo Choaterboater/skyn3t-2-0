@@ -65,16 +65,14 @@ class ArchitectAgent(BaseAgent):
             + "component, model, utility, config, and test needed for a real, "
             + "fully-featured implementation of the brief. Not a minimal stub."
         )
-        # Optional reference image ("build from a picture"): when present, attach
-        # it so the plan's structure/layout reflects it. Degrades on a non-vision
-        # backend (the LLM client ignores images for stub/CLI).
+        # Reference image ("build from a picture") is intentionally NOT attached
+        # here: forcing a vision model would downgrade this Tier.STRONG planning
+        # call to a weaker generic vision model. The DesignerAgent consumes the
+        # image (visual matching is its job); the architect keeps full strength.
         ref = p.get("reference_image")
-        images = None
         if ref:
-            prompt += ("\n\nA reference image is attached — match its layout/"
-                       "structure and the screens/components it implies.")
-            images = [ref]
-        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=self.system_prompt(_SYSTEM), json_mode=True, task_type=self.agent_type, images=images)
+            prompt += "\n\nNote: the user provided a reference image that informs the visual design."
+        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=self.system_prompt(_SYSTEM), json_mode=True, task_type=self.agent_type)
         parsed = parse_json(result.text)
 
         if (not isinstance(parsed, dict) or parsed.get("stub") is True

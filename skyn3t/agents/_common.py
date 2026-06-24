@@ -67,9 +67,11 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
     # their own real builder now (not the plain Vite scaffold).
     if any(k in text for k in ("next.js", "nextjs", "next js")):
         return "nextjs"
-    if "astro" in text:
+    # Whole-word only: "astrology"/"astronomy"/"gastro" must not route to astro,
+    # nor "remixing" to remix.
+    if re.search(r"\bastro\b", text):
         return "astro"
-    if "remix" in text:
+    if re.search(r"\bremix\b", text):
         return "remix"
     if any(k in text for k in ("react", "vite", "spa", "frontend", "front-end", "single page")):
         return "react_vite"

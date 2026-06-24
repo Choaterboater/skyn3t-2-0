@@ -149,6 +149,33 @@ def test_ensure_node_deps_prefers_ci_with_lockfile(tmp_path):
     assert calls and calls[0][-1] == "ci"
 
 
+def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path):
+    # A generated/edited project's lockfile is often out of sync with
+    # package.json, which `npm ci` rejects outright. Fall back to `npm install`
+    # (which reconciles the lockfile) so a buildable project is still previewable.
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    (tmp_path / "package-lock.json").write_text("{}")
+    calls = []
+
+    def fake(cmd, cwd):
+        calls.append(cmd[-1])
+        if cmd[-1] == "ci":
+            return False, {"error": "npm ci requires package.json and lock in sync"}
+        return True, {"ran": True}
+
+    ok, info = ensure_node_deps(tmp_path, runner=fake)
+    assert ok is True
+    assert calls == ["ci", "install"]  # tried ci, fell back to install
+
+
+def test_ensure_node_deps_ci_success_does_not_fall_back(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    (tmp_path / "package-lock.json").write_text("{}")
+    calls = []
+    ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd[-1]) or (True, {}))
+    assert calls == ["ci"]  # ci worked -> no fallback
+
+
 def test_ensure_node_deps_noop_without_package_json(tmp_path):
     calls = []
     ok, info = ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))

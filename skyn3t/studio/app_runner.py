@@ -154,9 +154,17 @@ def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dic
     npm = shutil.which("npm")
     if not npm:
         return False, {"error": "npm not found on PATH"}
-    cmd = [npm, "ci"] if (pdir / "package-lock.json").exists() else [npm, "install"]
     run = runner or _default_npm_run
-    return run(cmd, str(pdir))
+    if (pdir / "package-lock.json").exists():
+        ok, detail = run([npm, "ci"], str(pdir))
+        if ok:
+            return ok, detail
+        # A generated/edited project often has a lockfile out of sync with
+        # package.json, which `npm ci` rejects outright. Fall back to `npm install`
+        # (which reconciles the lockfile) so a buildable project is still
+        # previewable — matching the build verifier, which uses `npm install`.
+        return run([npm, "install"], str(pdir))
+    return run([npm, "install"], str(pdir))
 
 
 # ---------------------------------------------------------------------------

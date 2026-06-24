@@ -577,6 +577,22 @@ async def list_proposals(state: AppState, status: str = "") -> dict[str, Any]:
     return {"proposals": [p.to_dict() for p in items]}
 
 
+async def stacks_payload(state: AppState) -> dict[str, Any]:
+    """The real-builder stacks the build console can fan out across.
+
+    Source of truth is ``REAL_BUILDER_STACKS`` (id -> one-line "best for" hint).
+    Imported lazily so this module stays import-light; any import failure degrades
+    to an empty list rather than breaking the dashboard. Dict order is preserved
+    so the picker lists stacks in the curated order.
+    """
+    try:
+        from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS
+
+        return {"stacks": [{"id": k, "description": v} for k, v in REAL_BUILDER_STACKS.items()]}
+    except Exception:  # noqa: BLE001
+        return {"stacks": []}
+
+
 async def cortex_effects_payload(state: AppState) -> dict[str, Any]:
     """What cortex has actually changed — the visible proof the loops took effect.
 
@@ -1156,6 +1172,10 @@ def build_router(state: AppState) -> Any:
     @router.get("/cortex/effects", dependencies=[auth])
     async def _cortex_effects() -> dict[str, Any]:
         return await cortex_effects_payload(state)
+
+    @router.get("/stacks", dependencies=[auth])
+    async def _stacks() -> dict[str, Any]:
+        return await stacks_payload(state)
 
     @router.post("/cortex/proposals/{proposal_id}/decide", dependencies=[auth])
     async def _cortex_decide(

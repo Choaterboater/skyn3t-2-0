@@ -108,6 +108,9 @@ class EventBus:
         self._lock = asyncio.Lock()
         self._published = 0
         self._handler_errors = 0
+        # Live per-type publish counter — UNBOUNDED (unlike the history ring), so
+        # /metrics never undercounts a type once history wraps past history_size.
+        self._type_counts: dict[str, int] = defaultdict(int)
 
     def subscribe(self, event_type: EventType, handler: EventHandler) -> Callable[[], None]:
         """Register an async handler. Returns an unsubscribe callable."""
@@ -130,6 +133,7 @@ class EventBus:
         async with self._lock:
             self._history.append(event)
             self._published += 1
+            self._type_counts[event.type.value] += 1
             # Dedup: a handler subscribed to BOTH the specific type and ALL must
             # fire once, not twice. dict.fromkeys preserves first-seen order.
             handlers = list(dict.fromkeys(
@@ -180,6 +184,11 @@ class EventBus:
         return self._published
 
     @property
+    def type_counts(self) -> dict[str, int]:
+        """Monotonic per-type publish counts (unbounded; survive a ring wrap)."""
+        return dict(self._type_counts)
+
+    @property
     def handler_errors(self) -> int:
         """Count of subscriber exceptions swallowed (isolated) during publish."""
         return self._handler_errors
@@ -213,3 +222,8 @@ class EventBus:
                 log.warning("event_restore_skipped_corrupt", error=str(exc))
         self._history.clear()
         self._history.extend(restored)
+        # Reseed per-type counts from the restored (bounded) history — best-effort,
+        # consistent with _published being restored from the snapshot.
+        self._type_counts.clear()
+        for ev in restored:
+            self._type_counts[ev.type.value] += 1

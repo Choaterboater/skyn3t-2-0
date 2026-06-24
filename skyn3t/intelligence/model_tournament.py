@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -102,14 +102,32 @@ class ModelTournament:
             return
         try:
             raw = json.loads(self.path.read_text())
-            for bucket, models in raw.get("boards", {}).items():
-                self._boards[bucket] = {
-                    m: ModelStats(**d) for m, d in models.items()
-                }
-            self._matches = [MatchRecord(**r) for r in raw.get("matches", [])][-500:]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - unreadable/corrupt file
             if _log:
                 _log.warning("tournament.load_failed", error=str(exc))
+            return
+        # Construct per-record and DROP unknown keys, so one drifted / legacy /
+        # forward-compatible field can't wipe the WHOLE leaderboard (slots
+        # dataclasses raise TypeError on an unexpected kwarg). A single corrupt
+        # record is skipped, not all of them.
+        stat_fields = {f.name for f in fields(ModelStats)}
+        match_fields = {f.name for f in fields(MatchRecord)}
+        for bucket, models in raw.get("boards", {}).items():
+            board: dict[str, ModelStats] = {}
+            for m, d in models.items():
+                try:
+                    board[m] = ModelStats(**{k: v for k, v in d.items() if k in stat_fields})
+                except Exception:  # noqa: BLE001 - skip one corrupt record
+                    continue
+            if board:
+                self._boards[bucket] = board
+        matches: list[MatchRecord] = []
+        for r in raw.get("matches", []):
+            try:
+                matches.append(MatchRecord(**{k: v for k, v in r.items() if k in match_fields}))
+            except Exception:  # noqa: BLE001
+                continue
+        self._matches = matches[-500:]
 
     def save(self) -> bool:
         if self.path is None:

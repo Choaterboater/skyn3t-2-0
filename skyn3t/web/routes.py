@@ -732,21 +732,17 @@ def _event_counts(state: AppState) -> dict[str, int]:
     current history so counts reconcile with ``events_published_total``.
     """
     bus = state.event_bus
-    counts: dict[str, int] | None = getattr(bus, "_skyn3t_event_counts", None)
-    if counts is None:
-        counts = {}
-        for ev in bus.history():
-            counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
-        try:
-            bus._skyn3t_event_counts = counts  # type: ignore[attr-defined]
-
-            async def _tick(ev: Event) -> None:  # pragma: no cover - async wiring
-                counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
-
-            bus.subscribe(EventType.ALL, _tick)
-        except Exception:  # noqa: BLE001 - degrade to per-call scan if subscribe unavailable
-            return counts
-    return dict(counts)
+    # The bus keeps an unbounded per-type counter, incremented on every publish —
+    # so this never undercounts once the bounded history ring wraps (the old
+    # lazy seed-from-history did). Fall back to a history scan only for a bus
+    # build that predates the counter.
+    type_counts = getattr(bus, "type_counts", None)
+    if type_counts is not None:
+        return type_counts
+    counts: dict[str, int] = {}
+    for ev in bus.history():
+        counts[ev.type.value] = counts.get(ev.type.value, 0) + 1
+    return counts
 
 
 async def metrics_payload(state: AppState) -> dict[str, Any]:
@@ -765,14 +761,20 @@ async def metrics_payload(state: AppState) -> dict[str, Any]:
 def render_prometheus(metrics: dict[str, Any]) -> str:
     """Render the metrics dict in Prometheus text exposition format."""
     lines: list[str] = []
+    seen: set[str] = set()
 
     def _metric(name: str, value: Any, help_text: str, labels: str = "") -> None:
         try:
             num = float(value)
         except (TypeError, ValueError):
             return
-        lines.append(f"# HELP skyn3t_{name} {help_text}")
-        lines.append(f"# TYPE skyn3t_{name} gauge")
+        # HELP/TYPE must appear at most once per metric family — the event_count
+        # loop reuses one name across many label sets, and a second TYPE line for
+        # the same metric makes a strict Prometheus parser reject the whole scrape.
+        if name not in seen:
+            lines.append(f"# HELP skyn3t_{name} {help_text}")
+            lines.append(f"# TYPE skyn3t_{name} gauge")
+            seen.add(name)
         lines.append(f"skyn3t_{name}{labels} {num}")
 
     _metric("events_published_total", metrics.get("events_published", 0), "Total events published")

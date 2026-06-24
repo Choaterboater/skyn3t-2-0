@@ -235,12 +235,15 @@ class SkillLibrary:
             return 0
         count = 0
         for f in sorted(base.rglob("*.md")):
+            # Best-effort per the docstring: a single unreadable file OR one with
+            # malformed front matter (parse_skill -> ValueError on a bad numeric
+            # field) must skip that file, not abort the whole import.
             try:
                 text = f.read_text(encoding="utf-8")
-            except OSError:
+                fallback = _slugify(f.parent.name if f.name.lower() == "skill.md" else f.stem)
+                sk = parse_skill(text, fallback_slug=fallback)
+            except (OSError, ValueError):
                 continue
-            fallback = _slugify(f.parent.name if f.name.lower() == "skill.md" else f.stem)
-            sk = parse_skill(text, fallback_slug=fallback)
             if not sk.body.strip():
                 continue
             if sk.source == "manual":

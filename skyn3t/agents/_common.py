@@ -189,7 +189,7 @@ def knowledge_block(payload: Any) -> str:
     lessons = payload.get("lessons") or []
     if lessons:
         lines = [
-            f"- {(l.get('text') if isinstance(l, dict) else l)}"
+            f"- {(l.get('text') if isinstance(l, dict) else l)}"[:280]
             for l in lessons[:5]
             if (l.get("text") if isinstance(l, dict) else l)
         ]

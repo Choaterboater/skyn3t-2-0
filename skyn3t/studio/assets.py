@@ -14,6 +14,7 @@ fails a build (design rule #6).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -125,15 +126,20 @@ async def generate_assets(
         log.warning("assets.mkdir_failed", error=str(exc)[:160])
         return {"generated": 0, "skipped": True, "reason": "mkdir_failed", "assets": []}
 
-    for subject in subjects:
+    # Generate all subjects CONCURRENTLY (each is an independent prediction) so a
+    # multi-subject set isn't serialized at ~90s/subject on the build hot path.
+    async def _gen(subject: str) -> tuple[str, bytes | None]:
         try:
             images = await cli.generate_images(coloring_prompt(subject), n=1)
+            return subject, (images[0] if images else None)
         except Exception as exc:  # noqa: BLE001 - never break the build over a subject
             log.warning("assets.subject_failed", subject=subject, error=str(exc)[:160])
-            images = []
-        if not images:
+            return subject, None
+
+    results = await asyncio.gather(*(_gen(s) for s in subjects))
+    for subject, data in results:
+        if not data:
             continue
-        data = images[0]
         fname = f"{re.sub(r'[^a-z0-9]+', '-', subject.lower()).strip('-') or 'asset'}.{_ext_for(data)}"
         try:
             (assets_dir / fname).write_bytes(data)

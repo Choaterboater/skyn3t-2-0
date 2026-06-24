@@ -136,6 +136,30 @@ async def test_openrouter_image_keeps_vision_model_under_free_only(monkeypatch):
     assert cap.body["model"] == "openai/gpt-4o-mini"
 
 
+async def test_free_only_no_vision_model_drops_image(monkeypatch):
+    # free_only (default) + NO vision_model configured: don't silently bill a paid
+    # vision model — keep the free resolved model and send TEXT ONLY.
+    cap = _Capture()
+    cap.install(monkeypatch)
+    c = _client("openrouter", openrouter_api_key="sk-or-test", free_only=True)
+    await c.complete("describe", tier=Tier.UI, images=[_DATA_URL])
+    content = cap.body["messages"][-1]["content"]
+    assert isinstance(content, str) or all(p.get("type") != "image_url" for p in content)
+    assert not cap.body["model"].startswith("openai/gpt-4o-mini")
+
+
+async def test_free_only_off_uses_default_vision_model(monkeypatch):
+    # Opted out of free_only + no vision_model: the paid default vision model is
+    # used and the image IS sent.
+    cap = _Capture()
+    cap.install(monkeypatch)
+    c = _client("openrouter", openrouter_api_key="sk-or-test", free_only=False)
+    await c.complete("describe", tier=Tier.UI, images=[_DATA_URL])
+    assert cap.body["model"] == "openai/gpt-4o-mini"
+    content = cap.body["messages"][-1]["content"]
+    assert any(p.get("type") == "image_url" for p in content)
+
+
 async def test_openrouter_no_images_stays_text_only(monkeypatch):
     cap = _Capture()
     cap.install(monkeypatch)
@@ -202,23 +226,52 @@ class _FakeLLM:
         )
 
 
-@pytest.mark.parametrize("agent_cls,task_type", [
-    (DesignerAgent, "design"),
-    (ArchitectAgent, "architecture"),
-])
-async def test_agent_forwards_reference_image(agent_cls, task_type):
+async def test_designer_forwards_reference_image():
+    # The DESIGNER is the visual consumer — it forwards the image (on a vision
+    # backend). The architect deliberately does NOT (see below).
     bus = EventBus()
     fake = _FakeLLM()
-    agent = agent_cls(event_bus=bus, llm=fake)
+    agent = DesignerAgent(event_bus=bus, llm=fake)
     await agent.start()
     result = await agent.run(TaskRequest(
-        type=task_type,
-        payload={"brief": "a dashboard", "slug": "dash",
-                 "reference_image": _DATA_URL},
+        type="design",
+        payload={"brief": "a dashboard", "slug": "dash", "reference_image": _DATA_URL},
     ))
     assert result.success
-    assert fake.calls, "agent never called complete"
     assert fake.calls[0].get("images") == [_DATA_URL]
+
+
+async def test_architect_does_not_attach_image():
+    # Attaching an image would force the Tier.STRONG plan call onto a weaker
+    # generic vision model — the architect keeps full strength, no images.
+    bus = EventBus()
+    fake = _FakeLLM()
+    agent = ArchitectAgent(event_bus=bus, llm=fake)
+    await agent.start()
+    result = await agent.run(TaskRequest(
+        type="architecture",
+        payload={"brief": "a dashboard", "slug": "dash", "reference_image": _DATA_URL},
+    ))
+    assert result.success
+    assert not fake.calls[0].get("images")
+
+
+async def test_designer_omits_image_on_non_vision_backend():
+    # A stub/CLI backend can't see images — the designer must not attach one nor
+    # tell the model "an image is attached" (which it couldn't act on).
+    class _StubFake(_FakeLLM):
+        backend = "stub"
+
+    bus = EventBus()
+    fake = _StubFake()
+    agent = DesignerAgent(event_bus=bus, llm=fake)
+    await agent.start()
+    await agent.run(TaskRequest(
+        type="design",
+        payload={"brief": "a dashboard", "slug": "dash", "reference_image": _DATA_URL},
+    ))
+    assert not fake.calls[0].get("images")
+    assert "reference image is attached" not in fake.calls[0]["prompt"]
 
 
 @pytest.mark.parametrize("agent_cls,task_type", [
@@ -320,6 +373,19 @@ async def test_submit_build_decodes_and_passes_reference_image():
     else:
         with open(ref, "rb") as f:
             assert f.read() == _PNG_BYTES
+
+
+async def test_submit_build_rejects_non_data_reference_image():
+    # SECURITY: a bare filesystem path / remote URL in the API body must NOT be
+    # threaded into the build — otherwise the server would read an arbitrary local
+    # file (it gets base64-encoded and sent to the model) or fetch an SSRF target.
+    import asyncio
+    for bad in ("/etc/passwd", "file:///etc/passwd", "http://169.254.169.254/latest/"):
+        studio = _FakeStudio()
+        state = _FakeState(studio)
+        await routes.submit_build(state, brief="a dashboard", reference_image=bad)
+        await asyncio.sleep(0)
+        assert not (studio.extra or {}).get("reference_image"), f"{bad!r} was threaded"
 
 
 async def test_submit_build_without_image_unchanged():

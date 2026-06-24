@@ -14,6 +14,9 @@ from skyn3t.studio.planner import detect_stack as _planner_detect
 REAL_BUILDER_STACKS: dict[str, str] = {
     "react": "a browser web app / SPA / dashboard UI (Vite + React)",
     "react_native": "a mobile app for iOS/Android (Expo)",
+    "nextjs": "a full-stack React web app with routing/SSR (Next.js App Router)",
+    "astro": "a fast content-focused site / blog / docs (Astro)",
+    "remix": "a full-stack web app with nested routes + data loading (Remix)",
     "fastapi": "a Python web app or HTTP/REST API with a server + storage",
     "static": "a static website / landing page (HTML/CSS/JS, no backend)",
     "python": "a Python CLI tool, script, or library (no web UI)",
@@ -22,8 +25,8 @@ REAL_BUILDER_STACKS: dict[str, str] = {
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.
 # "cli" MUST map to python (not the react default below) — a command-line brief
-# is a python_cli, never a React app.
-_COLLAPSE = {"nextjs": "react", "flask": "fastapi", "django": "fastapi", "cli": "python"}
+# is a python_cli, never a React app. (nextjs/astro/remix are real builders now.)
+_COLLAPSE = {"flask": "fastapi", "django": "fastapi", "cli": "python"}
 
 
 @dataclass(slots=True)

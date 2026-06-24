@@ -23,15 +23,16 @@ def test_keyword_fallback_when_no_llm():
     assert c.stack in REAL_BUILDER_STACKS and c.method == "keyword"
 
 
-def test_nextjs_brief_collapses_to_real_builder():
-    # nextjs has no builder -> must collapse to react specifically.
+def test_nextjs_brief_picks_nextjs_builder():
+    # nextjs is now a REAL builder stack — a next.js brief resolves to nextjs,
+    # no longer collapsing to the plain react/Vite scaffold.
     c = keyword_choice("a next.js app")
-    assert c.stack == "react"
+    assert c.stack == "nextjs"
 
 
-def test_collapsed_pin_is_accepted():
+def test_nextjs_pin_is_accepted_as_real_builder():
     c = asyncio.run(select_stack("anything", pin="nextjs", llm=None))
-    assert c.method == "pin" and c.stack == "react"
+    assert c.method == "pin" and c.stack == "nextjs"
 
 
 def test_llm_choice_used_when_available():

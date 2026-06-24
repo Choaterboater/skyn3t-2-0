@@ -27,7 +27,7 @@ except ImportError:
 
 # Files that don't count as "substantive" deliverables on their own.
 _TRIVIAL_FILES = frozenset({"README.md", ".gitignore", "LICENSE", "skyn3t_manifest.json"})
-_SOURCE_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs", ".java")
+_SOURCE_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs", ".java", ".astro")
 _MIN_SUBSTANTIVE_BYTES = 16
 
 
@@ -365,6 +365,31 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 return (True, False, f"{low} stack: no server entry (server.js/index.js) found")
             return (True, True, f"{low} stack: server entry file present")
 
+        # ---- nextjs / astro / remix (npm meta-frameworks) ----------------
+        # Each needs a package.json declaring its framework dep AND a recognised
+        # entry/config artifact, mirroring the react/node checks above.
+        if low in ("nextjs", "astro", "remix"):
+            pkg = pdir / "package.json"
+            if not pkg.exists():
+                return (True, False, f"{low} stack: package.json missing")
+            try:
+                pkg_text = pkg.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                pkg_text = ""
+            framework_dep = {"nextjs": "next", "astro": "astro", "remix": "@remix-run"}[low]
+            if framework_dep not in pkg_text:
+                return (True, False, f"{low} stack: package.json does not depend on {framework_dep}")
+            names = {f.name for f in _iter_files(pdir) if f.stat().st_size >= _NONEMPTY}
+            # An entry/config artifact unique to the framework.
+            markers = {
+                "nextjs": ("page.jsx", "page.tsx", "next.config.js", "next.config.mjs"),
+                "astro": ("astro.config.mjs", "astro.config.ts", "index.astro"),
+                "remix": ("root.tsx", "root.jsx", "_index.tsx", "vite.config.ts"),
+            }[low]
+            if not any(m in names for m in markers):
+                return (True, False, f"{low} stack: no entry/config artifact ({', '.join(markers)}) found")
+            return (True, True, f"{low} stack: package.json + framework entry present")
+
     except Exception:  # noqa: BLE001 — never let a stack check crash proof
         return (False, False, "stack check failed unexpectedly — fell back to generic")
 
@@ -503,7 +528,10 @@ def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bo
 # react_native is a node stack for proof purposes: its package.json ships a
 # `typecheck` script (tsc --noEmit), so _run_node_build proves it with a type
 # check rather than a long-running Expo dev server.
-_NODE_STACKS = ("react", "react_vite", "react_native", "node", "node_express", "express", "nextjs", "static")
+_NODE_STACKS = (
+    "react", "react_vite", "react_native", "node", "node_express", "express",
+    "nextjs", "astro", "remix", "static",
+)
 
 
 def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:

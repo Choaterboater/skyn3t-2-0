@@ -29,6 +29,12 @@ ENTRYPOINT_NAMES = {
     "index.js", "index.ts", "index.tsx", "main.js", "main.ts", "main.tsx",
     "server.js", "server.ts", "index.html", "App.tsx", "App.jsx",
     "cli.py", "run.py",
+    # Next.js (App Router): the route page/layout and the config are entry
+    # markers. Astro: pages/*.astro. Remix: the root document + index route.
+    "page.jsx", "page.tsx", "layout.jsx", "layout.tsx",
+    "next.config.js", "next.config.mjs",
+    "index.astro",
+    "root.tsx", "root.jsx", "_index.tsx", "_index.jsx",
 }
 
 MANIFEST_NAMES = {
@@ -41,7 +47,7 @@ MANIFEST_NAMES = {
 SOURCE_SUFFIXES = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".rb", ".java",
     ".php", ".c", ".cc", ".cpp", ".h", ".hpp", ".html", ".css", ".vue",
-    ".svelte",
+    ".svelte", ".astro",
 }
 
 

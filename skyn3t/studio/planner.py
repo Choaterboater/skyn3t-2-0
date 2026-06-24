@@ -24,6 +24,11 @@ from skyn3t.studio.stages import StageSpec, default_pipeline, test_author_spec
 # Ordered: first matching signature wins. Each entry: (stack, keywords).
 _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("nextjs", ("next.js", "nextjs", "next ")),
+    # Astro / Remix are React-family / web frameworks with their own real builder;
+    # match them before the generic `react` and `static` signatures so their
+    # briefs don't collapse to the Vite or plain-HTML scaffold.
+    ("astro", ("astro",)),
+    ("remix", ("remix",)),
     # react_native must precede `react`/`nextjs`: "react native expo app" and
     # "ios app" should resolve to the mobile stack, not the web React scaffold.
     ("react_native", (
@@ -51,7 +56,13 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     "flask": ("README.md", "requirements.txt", "app.py", "tests/test_app.py"),
     "django": ("README.md", "requirements.txt", "manage.py", "project/settings.py"),
     "react": ("README.md", "package.json", "src/App.jsx", "src/main.jsx", "index.html"),
-    "nextjs": ("README.md", "package.json", "app/page.tsx", "app/layout.tsx"),
+    # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
+    # toolchain), so the runnable root page/layout are .jsx, plus the config.
+    "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),
+    # Astro: the manifest, an entry page, and the astro config.
+    "astro": ("README.md", "package.json", "src/pages/index.astro", "astro.config.mjs"),
+    # Remix (Vite): the manifest, the root document, and the index route.
+    "remix": ("README.md", "package.json", "app/root.tsx", "app/routes/_index.tsx"),
     # Expo mobile app: the manifest (package.json), the Expo config (app.json),
     # the root screen (App.tsx) and a test. No index.html — mobile has no DOM
     # root and cannot be iframe-previewed like the web stacks.

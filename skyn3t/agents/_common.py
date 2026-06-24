@@ -16,6 +16,9 @@ from typing import Any
 KNOWN_STACKS = (
     "react_vite",
     "react_native",
+    "nextjs",
+    "astro",
+    "remix",
     "static_html",
     "python_cli",
     "fastapi",
@@ -59,6 +62,15 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "ios app", "android app", "mobile application",
     )):
         return "react_native"
+    # Next.js / Astro / Remix must precede the generic ``react`` check — they are
+    # React-family frameworks whose briefs often also say "react", but they have
+    # their own real builder now (not the plain Vite scaffold).
+    if any(k in text for k in ("next.js", "nextjs", "next js")):
+        return "nextjs"
+    if "astro" in text:
+        return "astro"
+    if "remix" in text:
+        return "remix"
     if any(k in text for k in ("react", "vite", "spa", "frontend", "front-end", "single page")):
         return "react_vite"
     if any(k in text for k in ("static site", "landing page", "plain html", "static html")):
@@ -80,6 +92,14 @@ def _normalize_stack(value: str) -> str:
         "reactnative": "react_native",
         "ios": "react_native",
         "android": "react_native",
+        # Next.js / Astro / Remix — real builder stacks (no longer aliased to react).
+        # ``next.js`` keeps its dot (only spaces/hyphens are normalized to _).
+        "next": "nextjs",
+        "next.js": "nextjs",
+        "nextjs": "nextjs",
+        "next_js": "nextjs",
+        "astro": "astro",
+        "remix": "remix",
         "html": "static_html",
         "static": "static_html",
         "static_html": "static_html",

@@ -108,6 +108,20 @@ export default function Settings() {
     }
   }
 
+  async function saveAssetGen(enabled) {
+    try {
+      await apiPost("/settings/asset_gen", { enabled });
+      setRepMsg(
+        enabled
+          ? "asset generation ON → new builds generate real images (Replicate billing applies)"
+          : "asset generation off"
+      );
+      secrets.refetch();
+    } catch (e) {
+      setRepMsg(String(e.message));
+    }
+  }
+
   async function pickBackend(b) {
     try {
       const r = await apiPost("/llm/backend", { backend: b });
@@ -327,6 +341,25 @@ export default function Settings() {
                 Save token
               </button>
             </div>
+            <label className="mt-4 flex items-center gap-2 text-sm text-bone">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-ember"
+                checked={!!secrets.data?.asset_gen}
+                onChange={(e) => saveAssetGen(e.target.checked)}
+              />
+              <span>
+                Generate real images <span className="font-mono text-ash">(asset_gen)</span>
+                {secrets.data?.asset_gen ? (
+                  <span className="text-plasma"> — ON</span>
+                ) : (
+                  <span className="text-ash"> — off</span>
+                )}
+                {!secrets.data?.replicate ? (
+                  <span className="text-ember"> · needs a token above to take effect</span>
+                ) : null}
+              </span>
+            </label>
             {repMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{repMsg}</p>
             ) : null}

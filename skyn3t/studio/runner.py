@@ -541,19 +541,72 @@ class StudioRunner:
                     pass
         return cached
 
+    # Generated/installed trees that are NOT the app's own implementation — they
+    # otherwise dwarf the real source (node_modules alone is ~MBs of .js) and make
+    # the stub-vs-app substance signal meaningless.
+    _NON_SOURCE_DIRS = frozenset({
+        "node_modules", "dist", "build", ".next", ".vite", ".git", ".venv",
+        "__pycache__", "out", "coverage", ".turbo", ".cache", "vendor",
+    })
+
     def _largest_source_bytes(self, project_dir: str) -> int:
-        """Total implementation bytes — the stub-vs-app signal (excludes tests)."""
+        """Total implementation bytes — the stub-vs-app signal (excludes tests AND
+        generated/installed dirs like node_modules/dist, which would otherwise
+        let any dep-installed build clear the floor)."""
         from pathlib import Path
 
+        root = Path(project_dir)
         total = 0
         try:
-            for p in Path(project_dir).rglob("*"):
-                if (p.is_file() and p.suffix.lower() in self._SOURCE_EXTS
-                        and "test" not in p.name.lower()):
-                    total += p.stat().st_size
+            for p in root.rglob("*"):
+                if not p.is_file() or p.suffix.lower() not in self._SOURCE_EXTS:
+                    continue
+                if "test" in p.name.lower():
+                    continue
+                if self._NON_SOURCE_DIRS.intersection(p.relative_to(root).parts):
+                    continue
+                total += p.stat().st_size
         except OSError:
             pass
         return total
+
+    def _delivered_scaffold_stub(self, project_dir: str) -> bool:
+        """True when a delivered entry is the UNMODIFIED offline scaffold — it
+        carries the marker AND the scaffold's placeholder counter (`count is N` /
+        setCount). That combination means codegen wrote nothing over the scaffold
+        and shipped the placeholder as the app.
+
+        The counter (not the marker alone) is the discriminator: a real app that
+        merely kept the marker subtitle, or a wired app, has REPLACED the
+        interactive placeholder — so it has no `count is`/setCount and is NOT
+        flagged. Caller gates on a non-stub backend (the stub backend's scaffold
+        IS its legitimate output)."""
+        from pathlib import Path
+
+        marker = "generated offline by SkyN3t"
+        entry_names = {
+            "app.jsx", "app.tsx", "main.jsx", "main.tsx", "index.jsx", "index.tsx",
+            "page.tsx", "page.jsx",
+        }
+        root = Path(project_dir)
+        try:
+            for p in root.rglob("*"):
+                if p.suffix.lower() not in (".jsx", ".tsx", ".js", ".ts"):
+                    continue
+                if p.name.lower() not in entry_names or not p.is_file():
+                    continue
+                if self._NON_SOURCE_DIRS.intersection(p.relative_to(root).parts):
+                    continue
+                try:
+                    txt = p.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                low = txt.lower()
+                if marker in txt and ("count is" in low or "setcount" in low):
+                    return True
+        except OSError:
+            pass
+        return False
 
     @staticmethod
     def _critic_ok(prior: dict[str, Any]) -> bool:
@@ -1399,10 +1452,22 @@ class StudioRunner:
                     f"{len(blockers)} blocking issue(s): "
                     + ", ".join(str(b.get("message", b))[:60] for b in blockers[:3])
                 )
+            # A real-backend build that still ships the OFFLINE scaffold stub (the
+            # placeholder counter, marker intact, no real component) means codegen
+            # produced nothing over the scaffold — never "go".
+            scaffold_stub = (
+                code_backend != "stub" and self._delivered_scaffold_stub(project_dir)
+            )
+            if scaffold_stub:
+                manifest.extra["scaffold_stub_gate"] = (
+                    "delivered the offline scaffold stub (placeholder counter) — "
+                    "codegen produced no real app over it"
+                )
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
-                    and substantive and has_entry and intent_ok and critic_ok)
+                    and substantive and has_entry and intent_ok and critic_ok
+                    and not scaffold_stub)
                 else "no_go"
             )
             if not substantive:

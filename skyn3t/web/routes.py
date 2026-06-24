@@ -447,13 +447,14 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
 async def serve_status(state: AppState) -> dict[str, Any]:
     """List live preview servers, skipping in-flight claims and pruning any
     whose process has died."""
-    from skyn3t.studio.app_runner import RunningApp
+    from skyn3t.studio.app_runner import RunningApp, cleanup_serve
     registry = _serve_registry(state)
     running: list[dict[str, Any]] = []
     for slug, app in list(registry.items()):
         if not isinstance(app, RunningApp):
             continue  # an in-flight start claim, not yet a live app
         if app.pid is not None and not _pid_alive(app.pid):
+            cleanup_serve(app)  # reap the zombie + unlink the temp logfile (no leak)
             registry.pop(slug, None)
             continue
         running.append({**app.to_dict(), "slug": slug})

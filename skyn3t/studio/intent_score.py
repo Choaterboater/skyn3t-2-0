@@ -215,6 +215,8 @@ def intent_gate(code_backend: str, intent: IntentResult, floor: float) -> bool:
 
 def _median(values: list[float]) -> float:
     s = sorted(values)
+    if not s:
+        return 0.0  # empty input -> no crash (a median of nothing is undefined)
     m = len(s) // 2
     return s[m] if len(s) % 2 else round((s[m - 1] + s[m]) / 2.0, 2)
 

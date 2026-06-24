@@ -444,6 +444,31 @@ class CodeAgent(BaseAgent):
             return None
         return code
 
+    # import './x.css'  OR  import styles from '../x.scss'  (LOCAL paths only)
+    _CSS_IMPORT_RE = re.compile(
+        r"""import\s+(?:[\w*{},\s]+\s+from\s+)?['"](\.[^'"]*\.(?:css|scss|sass|less))['"]"""
+    )
+
+    @classmethod
+    def _stub_missing_css_imports(cls, files: dict[str, str]) -> dict[str, str]:
+        """Create an empty stub for any LOCAL stylesheet that is imported but not
+        delivered. A dangling ``import './index.css'`` (frequent when codegen is
+        cut short) otherwise fails the whole app on an unresolved import; an empty
+        stylesheet resolves it harmlessly. Only touches relative ('.'-prefixed)
+        paths, so package imports (e.g. 'normalize.css') are left alone."""
+        import posixpath
+        additions: dict[str, str] = {}
+        for path, content in list(files.items()):
+            if path.rsplit(".", 1)[-1] not in ("tsx", "jsx", "ts", "js", "mjs", "cjs", "vue", "svelte"):
+                continue
+            base = posixpath.dirname(path)
+            for m in cls._CSS_IMPORT_RE.finditer(content or ""):
+                target = posixpath.normpath(posixpath.join(base, m.group(1)))
+                if target not in files and target not in additions:
+                    additions[target] = "/* stub stylesheet — import target was missing */\n"
+        files.update(additions)
+        return files
+
     @staticmethod
     def _clear_worktree(worktree: Path) -> None:
         """Remove the agent's writes (everything but the git pointer) so a
@@ -492,6 +517,11 @@ class CodeAgent(BaseAgent):
         stacks we synthesize a wired ``main.py`` and a real ``pyproject.toml`` so
         a package-only delivery is genuinely runnable (not a dangling import).
         """
+        # A LOCAL stylesheet that is imported but never written (common when
+        # codegen is cut short — e.g. main.tsx imports ./index.css) makes the
+        # whole app an unresolved-import failure. Stub it so a near-complete app
+        # isn't no_go'd over an empty file.
+        files = self._stub_missing_css_imports(files)
         if stack in ("python_cli", "python"):
             entry = synthesize_python_entrypoint(files)
             if entry:

@@ -981,6 +981,13 @@ class StudioRunner:
         }
         if extra:
             payload["extra"] = extra
+            # "Build from a picture": surface an optional reference image at the
+            # top level so the designer/architect agents can read it directly
+            # (they pass it to complete(images=...)). A path or data URL; absent
+            # extra -> unchanged behavior.
+            ref = extra.get("reference_image")
+            if ref:
+                payload["reference_image"] = ref
         return payload
 
     # ---- main entrypoint -------------------------------------------------

@@ -126,6 +126,17 @@ class CodeAgent(BaseAgent):
             agentic_ok = bool(res.get("ok", True))
             agentic_error = res.get("error", "")
             disk = self._read_files(worktree)
+            # The CLI writes files directly (bypassing extract/validate). Guard
+            # against it writing chat prose instead of code: reject prose source
+            # files (reverting to the scaffold baseline) so they don't count as
+            # "delivered" and never ship.
+            disk, prose_files = self._clean_agentic_files(disk, scaffold)
+            if prose_files:
+                log.warning("code_agent.agentic_prose_rejected", files=prose_files)
+                self.metadata["degraded"] = True
+                self.metadata["degraded_reason"] = (
+                    f"agent wrote prose (not code) into {prose_files}; reverted to scaffold"
+                )
             code_bytes = sum(
                 len(c) for f, c in disk.items()
                 if f.rsplit(".", 1)[-1] in ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
@@ -267,6 +278,31 @@ class CodeAgent(BaseAgent):
             except OSError:
                 continue
         return out
+
+    @staticmethod
+    def _clean_agentic_files(
+        disk: dict[str, str], scaffold: dict[str, str]
+    ) -> tuple[dict[str, str], list[str]]:
+        """Drop source files the agent wrote that are prose, not code.
+
+        Returns ``(clean_files, rejected_paths)``. A rejected file is reverted to
+        its scaffold version when one exists (a runnable baseline), else dropped
+        entirely — so chat prose never ships as source. Non-code files are kept
+        untouched.
+        """
+        from skyn3t.agents.validate import validate_source
+
+        clean: dict[str, str] = {}
+        rejected: list[str] = []
+        for path, content in disk.items():
+            ok, _ = validate_source(path, content)
+            if ok:
+                clean[path] = content
+            else:
+                rejected.append(path)
+                if path in scaffold:
+                    clean[path] = scaffold[path]
+        return clean, rejected
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
                              plan: dict[str, Any], knowledge: str = "",

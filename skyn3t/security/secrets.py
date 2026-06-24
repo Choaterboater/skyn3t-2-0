@@ -114,7 +114,7 @@ def filter_env(
         if up in keep_upper:
             clean[name] = value
             continue
-        if _looks_secret(name):
+        if _looks_secret(name) or _value_has_credential(value):
             continue
         clean[name] = value
     return clean
@@ -128,6 +128,25 @@ _TOKEN_PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"AIza[0-9A-Za-z_\-]{30,}"),
 )
+
+# scheme://user:pass@host — a credential embedded in a URL value (DATABASE_URL,
+# GIT_REMOTE, REDIS_URL, npm registry _authToken urls, ...).
+_URL_CRED = re.compile(r"://[^/\s:@]+:[^/\s@]+@")
+
+
+def _value_has_credential(value: str) -> bool:
+    """True when a value embeds a credential even though its NAME looks innocuous.
+
+    filter_env() only inspected variable NAMES, so GIT_REMOTE / DATABASE_URL with
+    an embedded token or user:pass@ URL crossed into the sandbox unredacted. These
+    patterns are high-precision token formats + URL userinfo, so a plain PATH/HOME
+    won't false-positive; the ``keep`` allowlist overrides if a value is needed.
+    """
+    if not value:
+        return False
+    if _URL_CRED.search(value):
+        return True
+    return any(p.search(value) for p in _TOKEN_PATTERNS)
 
 
 def scrub_text(text: str, store: SecretsStore | None = None) -> str:

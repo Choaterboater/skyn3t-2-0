@@ -176,7 +176,6 @@ class PromptReflectionLoop(_BaseComponent):
         self._reflector = Reflector(event_bus=event_bus)
         self._Transcript = Transcript
         self._buf: dict[str, list[Any]] = {}  # agent -> recent Transcripts
-        self._proposed: set[str] = set()  # agents already proposed for (dedupe)
         self._max = max_per_agent
         self._min_each = min_each
         self._pass = pass_score
@@ -224,8 +223,6 @@ class PromptReflectionLoop(_BaseComponent):
         # concurrent build event can add a new key to self._buf during that await
         # — iterating the live dict would raise "dictionary changed size".
         for agent, buf in list(self._buf.items()):
-            if agent in self._proposed:
-                continue
             passing = sum(1 for t in buf if t.passed)
             failing = sum(1 for t in buf if not t.passed)
             if passing < self._min_each or failing < self._min_each:
@@ -233,7 +230,13 @@ class PromptReflectionLoop(_BaseComponent):
             cand = self._reflector.propose_prompt_improvement(agent, buf)
             if cand is None:
                 continue
-            self._proposed.add(agent)
+            # Require FRESH evidence before the next proposal for this agent
+            # rather than freezing it forever after one (the old _proposed set was
+            # add-only, so a REJECTED proposal suppressed the agent for the life of
+            # the process). Clearing the buffer means min_each new passing + failing
+            # transcripts must re-accumulate, so a rejected idea is retried once
+            # behavior warrants it.
+            buf.clear()
             await self.cortex.submit(
                 Proposal(
                     type=ProposalType.PROMPT,

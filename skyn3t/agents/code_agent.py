@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -189,6 +190,12 @@ class CodeAgent(BaseAgent):
             if disk and code_bytes >= threshold:
                 files = disk  # the agent's real app becomes the delivery
             else:
+                # Under-delivered -> deliver a CLEAN scaffold. The agent wrote
+                # stray files (rejected prose, a partial app, scratch notes) into
+                # the worktree; _write_files only overwrites the scaffold keys and
+                # would leave the strays alongside it, so wipe the agent's output
+                # first.
+                self._clear_worktree(worktree)
                 self._write_files(worktree, files)  # under-delivered -> scaffold floor
         else:
             # Completion backend (OpenRouter): per-file, generated CONCURRENTLY
@@ -436,6 +443,25 @@ class CodeAgent(BaseAgent):
             # (the original `code` already failed validation — it's not "work").
             return None
         return code
+
+    @staticmethod
+    def _clear_worktree(worktree: Path) -> None:
+        """Remove the agent's writes (everything but the git pointer) so a
+        scaffold fallback ships clean. Best-effort; never raises."""
+        try:
+            children = list(worktree.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if child.name == ".git":
+                continue
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink()
+            except OSError:
+                pass
 
     def _write_files(self, worktree: Path, files: dict[str, str]) -> list[str]:
         written: list[str] = []

@@ -24,6 +24,32 @@ const STAGES = [
   "package",
 ];
 
+// Curated one-liner starters spanning the supported stacks. Clicking one fills
+// the brief box so a new user has a good, varied jumping-off point.
+const EXAMPLE_BRIEFS = [
+  "A kids coloring app: gallery of animal line-art SVGs you can click to fill with color",
+  "A FastAPI todo REST API with SQLite persistence and a /health endpoint",
+  "A React dashboard that charts a CSV you upload",
+  "A static landing page for a coffee shop with hours, menu, and a map",
+  "A Python CLI that renames photos by EXIF date",
+  "A markdown note-taking SPA with local-storage autosave",
+  "A Node/Express URL shortener with an in-memory store",
+  "An Expo mobile app: a habit tracker with daily streaks",
+];
+
+// Fallback stack ids if GET /stacks is empty/unavailable — the six real builders.
+const FALLBACK_STACKS = [
+  { id: "react", description: "a browser web app / SPA / dashboard UI (Vite + React)" },
+  { id: "react_native", description: "a mobile app for iOS/Android (Expo)" },
+  { id: "fastapi", description: "a Python web app or HTTP/REST API with a server + storage" },
+  { id: "static", description: "a static website / landing page (HTML/CSS/JS, no backend)" },
+  { id: "python", description: "a Python CLI tool, script, or library (no web UI)" },
+  { id: "express", description: "a Node.js web server / API" },
+];
+
+// Today's default fan-out selection — keeps behavior unchanged if left untouched.
+const DEFAULT_STACK_SELECTION = ["react", "static", "fastapi"];
+
 function stageState(stage, events) {
   // Derive a stage's state from BUILD_STAGE_* events in the stream.
   let state = "pending";
@@ -89,8 +115,12 @@ function ForgeStage({ stage, state }) {
 export default function Studio({ stream }) {
   const qc = useQueryClient();
   const [brief, setBrief] = useState("");
-  const [stacks, setStacks] = useState("react,static,fastapi");
+  // Fan-out stack selection as a set of stack ids (toggleable chips below).
+  const [selectedStacks, setSelectedStacks] = useState(
+    () => new Set(DEFAULT_STACK_SELECTION)
+  );
   const [pendingBuildId, setPendingBuildId] = React.useState(null);
+  const briefRef = useRef(null);
   // "Build from a picture": an optional reference image (data URL) attached to
   // the build. No attachment -> the field is omitted from the POST (unchanged).
   const [refImage, setRefImage] = useState(null); // { url, name }
@@ -112,6 +142,34 @@ export default function Studio({ stream }) {
     queryFn: queryFn("/builds"),
   });
 
+  // Supported real-builder stacks for the fan-out picker. Falls back to the six
+  // known ids if the endpoint is empty/unavailable.
+  const { data: stacksData } = useQuery({
+    queryKey: ["stacks"],
+    queryFn: queryFn("/stacks"),
+  });
+  const stackOptions = useMemo(() => {
+    const opts = stacksData?.stacks;
+    return Array.isArray(opts) && opts.length > 0 ? opts : FALLBACK_STACKS;
+  }, [stacksData]);
+
+  const toggleStack = (id) =>
+    setSelectedStacks((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  const useExample = (text) => {
+    setBrief(text);
+    // Focus + scroll the brief box so the user can edit then build.
+    const el = briefRef.current;
+    if (el) {
+      el.focus();
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  };
+
   const submit = useMutation({
     mutationFn: (payload) => apiPost("/builds", payload),
     onSuccess: () => {
@@ -129,9 +187,14 @@ export default function Studio({ stream }) {
   });
 
   // Spec 4: explore the brief across divergent stacks; results stream as
-  // FANOUT_* events on the shared socket.
+  // FANOUT_* events on the shared socket. The selected stack ids are sent as a
+  // comma-joined string (the /studio/fanout contract).
   const fanoutMut = useMutation({
-    mutationFn: () => apiPost("/studio/fanout", { brief: brief.trim(), stacks }),
+    mutationFn: () =>
+      apiPost("/studio/fanout", {
+        brief: brief.trim(),
+        stacks: [...selectedStacks].join(","),
+      }),
   });
 
   const events = stream?.events || [];
@@ -190,6 +253,7 @@ export default function Studio({ stream }) {
           }}
         >
           <input
+            ref={briefRef}
             className="field flex-1"
             placeholder="Describe the app to build…"
             value={brief}
@@ -247,28 +311,67 @@ export default function Studio({ stream }) {
           </p>
         ) : null}
 
+        {/* Example briefs: clickable starters that fill the brief box. */}
+        <div className="mt-3">
+          <span className="eyebrow text-[9px] text-ash/70">Need a starting point? Try:</span>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {EXAMPLE_BRIEFS.map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                onClick={() => useExample(ex)}
+                title="Fill the brief with this example — then edit and forge"
+                className="rounded-full border border-hairline px-3 py-1 text-left text-[11px] text-ash transition-colors hover:border-ember/40 hover:text-bone"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Spec 4: fan the same brief out across divergent stacks, pick a winner */}
-        <div className="mt-3 flex flex-col gap-2 border-t border-hairline pt-3 sm:flex-row sm:items-center">
-          <span className="font-mono text-[11px] text-ash">Fan out across stacks:</span>
-          <input
-            className="field flex-1 font-mono text-xs"
-            placeholder="react,static,fastapi"
-            value={stacks}
-            onChange={(e) => setStacks(e.target.value)}
-          />
-          <button
-            type="button"
-            onClick={() => fanoutMut.mutate()}
-            disabled={
-              fanoutMut.isPending ||
-              !brief.trim() ||
-              stacks.split(",").filter((s) => s.trim()).length < 2
-            }
-            className="btn-ghost disabled:opacity-50"
-            title="Build N divergent stack candidates for this brief and pick the winner"
-          >
-            {fanoutMut.isPending ? "Exploring…" : "Fan out"}
-          </button>
+        <div className="mt-3 border-t border-hairline pt-3">
+          <div className="flex flex-col gap-1">
+            <span className="font-mono text-[11px] text-ash">Fan out across stacks:</span>
+            <span className="text-[11px] text-ash/70">
+              Optional — skyn3t auto-picks a stack from your brief. Use fan-out to
+              build across several and compare.
+            </span>
+          </div>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex flex-wrap gap-2">
+              {stackOptions.map((s) => {
+                const on = selectedStacks.has(s.id);
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => toggleStack(s.id)}
+                    title={s.description}
+                    aria-pressed={on}
+                    className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
+                      on
+                        ? "border-ember/50 bg-ember/10 text-ember"
+                        : "border-hairline text-ash hover:border-ember/30 hover:text-bone"
+                    }`}
+                  >
+                    {s.id}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => fanoutMut.mutate()}
+              disabled={
+                fanoutMut.isPending || !brief.trim() || selectedStacks.size < 2
+              }
+              className="btn-ghost flex-shrink-0 disabled:opacity-50"
+              title="Build N divergent stack candidates for this brief and pick the winner"
+            >
+              {fanoutMut.isPending ? "Exploring…" : "Fan out"}
+            </button>
+          </div>
         </div>
         {fanoutMut.isError ? (
           <p className="mt-2 font-mono text-[11px] text-ember">

@@ -515,18 +515,26 @@ class CodeAgent(BaseAgent):
                 files["src/main.jsx"] = main
             # index.html must reference the real entry module.
             html = files.get("index.html")
-            if html is not None and "/src/main.jsx" not in html and "main.tsx" not in html:
-                html = re.sub(
-                    r'<script type="module"[^>]*></script>',
-                    '<script type="module" src="/src/main.jsx"></script>',
-                    html,
-                )
-                if "/src/main.jsx" not in html:
-                    html = html.replace(
-                        "</body>",
-                        '  <script type="module" src="/src/main.jsx"></script>\n  </body>',
+            if html is not None:
+                # Already wired to a REAL entry — main.tsx, or any module script
+                # whose src points to a generated file (e.g. a custom
+                # /src/index.jsx)? Then leave it: the old repair clobbered a valid
+                # src with /src/main.jsx (which may not exist), breaking the page.
+                srcs = re.findall(r'<script\s+type="module"[^>]*\bsrc="([^"]+)"', html)
+                already_wired = "main.tsx" in html or any(s.lstrip("/") in files for s in srcs)
+                if not already_wired:
+                    # Fill in an EMPTY (src-less) module script, else append one.
+                    html, n = re.subn(
+                        r'<script\s+type="module"\s*></script>',
+                        '<script type="module" src="/src/main.jsx"></script>',
+                        html,
                     )
-                files["index.html"] = html
+                    if n == 0 and "/src/main.jsx" not in html:
+                        html = html.replace(
+                            "</body>",
+                            '  <script type="module" src="/src/main.jsx"></script>\n  </body>',
+                        )
+                    files["index.html"] = html
         elif stack == "node_express":
             server = files.get("server.js")
             if server is not None and "module.exports" not in server:

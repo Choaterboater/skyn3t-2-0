@@ -120,6 +120,11 @@ class LessonHygiene:
         # How many extra "unhelpful" grades to push so a stale lesson's score
         # drops decisively below its peers in relevant_lessons ranking.
         self.retire_grades = max(1, int(retire_grades))
+        # Terminal state: ids already retired by this instance. The ascending
+        # (worst-first) scan always re-surfaces a retired lesson, so without this
+        # every sweep re-grades it — driving its score and hurt count down without
+        # bound and re-counting it as "retired" forever.
+        self._retired: set[int] = set()
 
     async def sweep(self, stack: str, stage: str = "", scan_limit: int = 200) -> HygieneReport:
         """Scan lessons for a stack/stage and retire the stale ones.
@@ -149,6 +154,9 @@ class LessonHygiene:
             if lid is None:
                 report.kept += 1
                 continue
+            if int(lid) in self._retired:
+                report.kept += 1  # already retired — terminal, never re-grade
+                continue
             if is_stale(
                 lesson,
                 min_effective_score=self.min_effective_score,
@@ -163,6 +171,7 @@ class LessonHygiene:
                         break
                 if graded:
                     report.retired += 1
+                    self._retired.add(int(lid))
                     report.details.append(
                         {"id": lid, "action": "retired", "grades_applied": graded}
                     )

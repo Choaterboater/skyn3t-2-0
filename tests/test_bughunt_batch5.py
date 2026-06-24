@@ -69,3 +69,73 @@ async def test_good_build_is_ingested():
     ing._ingest = AsyncMock()
     await _emit(ing, {"score": 85, "verdict": "go", "slug": "x", "stack": "react"})
     ing._ingest.assert_called_once()
+
+
+# --- #16 LLM route capture is task-local (no race across shared client) -------
+
+async def test_llm_route_capture_is_task_isolated(tmp_path):
+    import asyncio
+    from skyn3t.adapters.llm import LLMClient
+    from skyn3t.config.settings import Settings
+
+    llm = LLMClient(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+
+    async def run(model):
+        llm.begin_run_capture()          # what BaseAgent does at run start
+        await asyncio.sleep(0)           # force interleave with the other run
+        for _ in range(3):
+            llm._record_completion("ui", "code", model)  # what complete() does
+            await asyncio.sleep(0)
+        return llm.last_model, [r[2] for r in llm.routes]
+
+    a, b = await asyncio.gather(run("A"), run("B"))
+    assert a == ("A", ["A", "A", "A"]), a  # no B leaked into A's capture
+    assert b == ("B", ["B", "B", "B"]), b
+
+
+# --- #4 hygiene: a retired lesson is terminal, never re-retired ---------------
+
+class _FakeStore:
+    def __init__(self, lessons):
+        self._lessons = lessons
+        self.grades: list = []
+
+    async def relevant_lessons(self, stack, stage="", limit=200, ascending=False):
+        return self._lessons
+
+    async def grade_lesson(self, lesson_id, helpful):
+        self.grades.append((lesson_id, helpful))
+
+
+async def test_hygiene_does_not_re_retire():
+    from skyn3t.memory.hygiene import LessonHygiene
+    lesson = {"id": 1, "score": -1.0, "times_used": 5, "helpful": 0, "hurt": 5}
+    store = _FakeStore([lesson])  # the worst-scored lesson resurfaces every sweep
+    h = LessonHygiene(store)
+    r1 = await h.sweep("react")
+    assert r1.retired == 1
+    r2 = await h.sweep("react")
+    assert r2.retired == 0, "an already-retired lesson must not be re-retired"
+
+
+# --- #19 react_vite entry repair must not clobber a valid custom src ----------
+
+def test_repair_keeps_existing_valid_entry_src():
+    files = {
+        "index.html": '<html><body><script type="module" src="/src/index.jsx"></script></body></html>',
+        "src/index.jsx": "import App from './App.jsx'\n",
+        "src/App.jsx": "export default function App(){return null}\n",
+    }
+    out = CodeAgent.__new__(CodeAgent)._repair_entrypoints("react_vite", files)
+    assert 'src="/src/index.jsx"' in out["index.html"]   # the valid entry is untouched
+    assert "/src/main.jsx" not in out["index.html"]      # no phantom entry injected
+
+
+def test_repair_fills_empty_module_script():
+    files = {
+        "index.html": '<html><body><script type="module"></script></body></html>',
+        "src/main.jsx": "import App from './App.jsx'\n",
+        "src/App.jsx": "export default function App(){return null}\n",
+    }
+    out = CodeAgent.__new__(CodeAgent)._repair_entrypoints("react_vite", files)
+    assert 'src="/src/main.jsx"' in out["index.html"]  # empty script gets the real entry

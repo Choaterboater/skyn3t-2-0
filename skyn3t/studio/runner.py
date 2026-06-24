@@ -1075,6 +1075,22 @@ class StudioRunner:
                 payload["reference_image"] = ref
         return payload
 
+    def _reserve_unique_slug(self, slug: str) -> str:
+        """Atomically reserve a NEW project folder for this build, so a redo (or a
+        concurrent build of the same brief) never inherits or mixes with a prior
+        run's files. ``mkdir(exist_ok=False)`` makes the pick race-safe: the first
+        build to claim ``slug`` wins, the next gets ``slug-2``, ``slug-3``, ..."""
+        projects_dir = self.settings.projects_dir
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(1, 1000):
+            candidate = slug if i == 1 else f"{slug}-{i}"
+            try:
+                (projects_dir / candidate).mkdir(exist_ok=False)
+                return candidate
+            except FileExistsError:
+                continue
+        return f"{slug}-{uuid.uuid4().hex[:8]}"  # effectively unreachable fallback
+
     # ---- main entrypoint -------------------------------------------------
     async def start(
         self,
@@ -1088,6 +1104,9 @@ class StudioRunner:
         # projects_dir into create_worktree's mkdir. _slugify is idempotent for
         # already-valid slugs, so legitimate callers are unaffected.
         slug = _slugify(slug) if slug else _slugify(brief)
+        # New name, new folder: give this build its OWN delivery directory so a
+        # redo / concurrent same-brief build can't mix old + new files in one dir.
+        slug = self._reserve_unique_slug(slug)
         correlation_id = uuid.uuid4().hex
 
         # Clarify ambiguous briefs (unattended by default).

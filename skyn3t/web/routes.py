@@ -1460,6 +1460,10 @@ def build_router(state: AppState) -> Any:
                 et = EventType(type)
             except ValueError:
                 raise HTTPException(status_code=422, detail=f"unknown event type: {type}")
+            # ALL ('*') is a subscription-only wildcard — no real event has that
+            # type, so filtering on it returns nothing. Treat it as "no filter".
+            if et == EventType.ALL:
+                et = None
         events = state.trajectory(
             limit=limit,
             event_type=et,

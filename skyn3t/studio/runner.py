@@ -466,6 +466,35 @@ class StudioRunner:
             log.warning("recall.failed", error=str(exc))
             return []
 
+    # ---- asset generation (Replicate, opt-in) ---------------------------
+    async def _generate_assets(
+        self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Generate real image assets into the worktree (when enabled) and thread
+        the manifest into the stage ``extra`` so the code prompt references them.
+
+        Best-effort: a missing token, asset_gen off, a non-image brief, or any
+        failure leaves the build unchanged. Records what was generated on the
+        build manifest for observability. Never raises.
+        """
+        try:
+            from skyn3t.studio.assets import asset_gen_enabled, generate_assets
+
+            if not asset_gen_enabled(self.settings):
+                return extra
+            result = await generate_assets(
+                worktree_dir, brief, settings=self.settings
+            )
+        except Exception as exc:  # noqa: BLE001 - asset-gen must never break a build
+            log.warning("assets.step_failed", error=str(exc)[:160])
+            return extra
+        manifest.extra["assets"] = result
+        assets = result.get("assets") or []
+        if assets:
+            log.info("assets.step", count=len(assets))
+            return {**extra, "assets": assets}
+        return extra
+
     # ---- bounded fix loop (driven by objective verifier failures) --------
     def _has_capability(self, capability: str) -> bool:
         return any(
@@ -1092,6 +1121,13 @@ class StudioRunner:
             for h in (recall or [])
         ]
         manifest.extra["skills_used"] = list(skill_slugs)
+
+        # Real image assets (Replicate): for an image-implying brief, generate a
+        # small capped set of line-art/coloring images INTO the worktree before
+        # codegen, then tell the code/agentic prompt they exist so the app uses
+        # real art. Gated behind a token + asset_gen; a no-op otherwise. Never
+        # blocks/crashes the build (design rule #6) — assets are best-effort.
+        extra = await self._generate_assets(main_wt.dir, brief, manifest, extra)
 
         # Observability + budget guard for this build (all best-effort).
         self._obs_call(self.cost_tracker, "start_build", build_id)

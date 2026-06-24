@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # sandboxing concern. True = isolated builds; flip to False only to give the
     # build agent your MCP tools on purpose.
     cli_disable_mcp: bool = True
+    # Extra agentic codegen attempts when the first `claude -p` under-delivers
+    # (produced only a placeholder/stub). Each retry re-runs with corrective
+    # feedback. Fires ONLY on under-delivery, so a good first pass adds no time.
+    agentic_retries: int = 1
 
     # GitHub token (env SKYN3T_GITHUB_TOKEN) for RepoScout search + repo ingest.
     # Authenticated search lifts the rate limit so scouting returns real, varied

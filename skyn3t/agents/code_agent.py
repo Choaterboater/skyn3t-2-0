@@ -115,48 +115,70 @@ class CodeAgent(BaseAgent):
             # into a CLEAN worktree. (Pre-laying the scaffold left a stub main.py
             # masquerading as the entrypoint while the real code sat in a package.)
             # The scaffold is a fallback only if the agent under-delivers.
-            res = await self.llm.agentic_build(
-                self._agentic_prompt(brief, stack, plan, knowledge), str(worktree)
-            )
-            self.metadata["agentic"] = res
-            # Surface failures: the agentic path returns {ok, backend, error}.
-            # A failed call (ok=False) or under-delivered output must be flagged
-            # so downstream scoring/verdict can see the degradation instead of
-            # treating a hollow/partial delivery as a successful build.
-            agentic_ok = bool(res.get("ok", True))
-            agentic_error = res.get("error", "")
-            disk = self._read_files(worktree)
-            # The CLI writes files directly (bypassing extract/validate). Guard
-            # against it writing chat prose instead of code: reject prose source
-            # files (reverting to the scaffold baseline) so they don't count as
-            # "delivered" and never ship.
-            disk, prose_files = self._clean_agentic_files(disk, scaffold)
+            from skyn3t.config.settings import get_settings
+
+            # "Did the agent add a real app beyond the scaffold?" A delivery barely
+            # above the scaffold's own code size is the placeholder leaking through,
+            # so require a real margin over it (not a flat 800-byte floor).
+            threshold = max(800, self._code_bytes(scaffold) * 2)
+            max_retries = max(0, int(getattr(get_settings(), "agentic_retries", 1)))
+
+            disk: dict[str, str] = {}
+            code_bytes = 0
+            agentic_ok = True
+            agentic_error = ""
+            prose_files: list[str] = []
+            attempt = 0
+            while True:
+                prompt = (
+                    self._agentic_prompt(brief, stack, plan, knowledge)
+                    if attempt == 0
+                    else self._agentic_retry_prompt(
+                        brief, stack, plan, knowledge, code_bytes)
+                )
+                res = await self.llm.agentic_build(prompt, str(worktree))
+                self.metadata["agentic"] = res
+                agentic_ok = bool(res.get("ok", True))
+                agentic_error = res.get("error", "")
+                disk = self._read_files(worktree)
+                # The CLI writes files directly (bypassing extract/validate). Guard
+                # against it writing chat prose instead of code: reject prose source
+                # files so they don't count as "delivered" and never ship.
+                disk, prose_files = self._clean_agentic_files(disk, scaffold)
+                code_bytes = self._code_bytes(disk)
+                under_delivered = not (disk and code_bytes >= threshold)
+                if (agentic_ok and not under_delivered) or attempt >= max_retries:
+                    break
+                # Retry with corrective feedback: the agent no-op'd or left a stub.
+                log.warning("code_agent.agentic_retry", attempt=attempt + 1,
+                            code_bytes=code_bytes, threshold=threshold, ok=agentic_ok)
+                attempt += 1
+
             if prose_files:
                 log.warning("code_agent.agentic_prose_rejected", files=prose_files)
                 self.metadata["degraded"] = True
                 self.metadata["degraded_reason"] = (
                     f"agent wrote prose (not code) into {prose_files}; reverted to scaffold"
                 )
-            code_bytes = sum(
-                len(c) for f, c in disk.items()
-                if f.rsplit(".", 1)[-1] in ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
-            )
-            under_delivered = not (disk and code_bytes >= 800)
+            under_delivered = not (disk and code_bytes >= threshold)
             if not agentic_ok or under_delivered:
                 if not agentic_ok:
-                    degraded_reason = f"agentic build failed: {agentic_error}" if agentic_error else "agentic build returned ok=False"
+                    degraded_reason = (
+                        f"agentic build failed: {agentic_error}" if agentic_error
+                        else "agentic build returned ok=False")
                 else:
-                    degraded_reason = f"agentic build under-delivered: {code_bytes} code bytes in {len(disk)} files (threshold 800)"
+                    degraded_reason = (
+                        f"agentic build under-delivered after {attempt} retr"
+                        f"{'y' if attempt == 1 else 'ies'}: {code_bytes} code bytes in "
+                        f"{len(disk)} files (threshold {threshold})")
                 log.warning(
                     "code_agent.agentic_degraded",
-                    agentic_ok=agentic_ok,
-                    code_bytes=code_bytes,
-                    files_on_disk=len(disk),
-                    reason=degraded_reason,
+                    agentic_ok=agentic_ok, code_bytes=code_bytes,
+                    files_on_disk=len(disk), retries=attempt, reason=degraded_reason,
                 )
                 self.metadata["degraded"] = True
                 self.metadata["degraded_reason"] = degraded_reason
-            if disk and code_bytes >= 800:
+            if disk and code_bytes >= threshold:
                 files = disk  # the agent's real app becomes the delivery
             else:
                 self._write_files(worktree, files)  # under-delivered -> scaffold floor
@@ -258,6 +280,33 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             "Do not ask questions — just build it."
+        )
+
+    _CODE_EXTS = ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
+
+    @classmethod
+    def _code_bytes(cls, files: dict[str, str]) -> int:
+        """Total bytes across real code files (excludes config/docs/markup)."""
+        return sum(
+            len(c) for f, c in files.items()
+            if f.rsplit(".", 1)[-1] in cls._CODE_EXTS
+        )
+
+    def _agentic_retry_prompt(
+        self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
+        code_bytes: int,
+    ) -> str:
+        """Corrective prompt for a retry after the agent under-delivered."""
+        return (
+            f"Your previous attempt under-delivered — it wrote only {code_bytes} "
+            "bytes of code, essentially just the starter template / a placeholder "
+            "(e.g. a `count is N` demo counter). That is NOT acceptable.\n\n"
+            "Now build the COMPLETE, real, multi-file application for the brief — "
+            "every feature implemented with real logic, multiple pages/components "
+            "wired together into the entrypoint, real state and data. NO placeholder "
+            "counter, NO 'starter' text, NO TODOs or stubs. Get as close to a "
+            "fully-working app as possible.\n\n"
+            + self._agentic_prompt(brief, stack, plan, knowledge)
         )
 
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps

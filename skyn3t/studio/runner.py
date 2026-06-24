@@ -1463,13 +1463,30 @@ class StudioRunner:
                     "delivered the offline scaffold stub (placeholder counter) — "
                     "codegen produced no real app over it"
                 )
+            # The code agent's own under-delivery flag (it produced only the
+            # scaffold / a stub even after its retries). Defense-in-depth beyond
+            # scaffold_stub; never "go".
+            code_degraded = (
+                code_backend != "stub"
+                and bool((prior.get("code") or {}).get("degraded"))
+            )
+            if code_degraded:
+                manifest.extra["degraded_gate"] = str(
+                    (prior.get("code") or {}).get("degraded_reason", "agentic under-delivery")
+                )
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
                     and substantive and has_entry and intent_ok and critic_ok
-                    and not scaffold_stub)
+                    and not scaffold_stub and not code_degraded)
                 else "no_go"
             )
+            # Don't let the learning loop reward an under-delivered build (only
+            # dampen when proof PASSED — a proof-failed build is already halved by
+            # _honest_score, so this would otherwise double-penalize).
+            if code_degraded and proof.passed:
+                final_score = round(final_score * 0.5, 2)
+                manifest.score = final_score
             if not substantive:
                 manifest.extra["substance_gate"] = (
                     f"largest source {biggest}B < {self._substance_floor}B floor "

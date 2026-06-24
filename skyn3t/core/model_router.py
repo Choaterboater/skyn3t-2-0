@@ -88,9 +88,12 @@ class ModelRouter:
 
     def _apply_policy(self, model: str, tier: Tier) -> str:
         low = model.lower()
-        # no-claude: rewrite Claude picks to a non-Claude tier default.
+        # no-claude: rewrite Claude picks to a non-Claude tier default — staying
+        # in the user's PAID catalog when they're paid (free_only=False). Forcing
+        # them onto :free would be a silent downgrade; no_claude means "avoid
+        # Claude", not "drop to free".
         if self.settings.no_claude and any(m in low for m in _CLAUDE_MARKERS):
-            model = _FREE_DEFAULTS[tier]
+            model = _FREE_DEFAULTS[tier] if self.settings.free_only else _PAID_DEFAULTS[tier]
             log.info("router.rewrote_claude", tier=tier.value, to=model)
         # free-only: force a :free model.
         if self.settings.free_only and not model.endswith(":free"):

@@ -124,6 +124,20 @@ def compose_readme(
     return "\n".join(lines)
 
 
+# ---- Three.js template detection --------------------------------------------
+# Three.js is NOT a stack — it's a TEMPLATE variant of the react/static web
+# scaffolds. When the brief implies 3D/WebGL we swap the starter component/page
+# for a rotating-cube Three.js scene and add ``three`` as a dependency. The guard
+# is keyword-based so ordinary react/static builds are completely unchanged.
+_THREEJS_KEYWORDS = ("three.js", "threejs", "three js", "webgl", "3d", "3-d")
+
+
+def _implies_3d(brief: str) -> bool:
+    """True when the brief asks for a 3D / Three.js / WebGL experience."""
+    low = (brief or "").lower()
+    return any(k in low for k in _THREEJS_KEYWORDS)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     return {
@@ -747,9 +761,474 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _nextjs(app_name: str, brief: str) -> dict[str, str]:
+    """A genuinely runnable minimal Next.js (App Router) app in plain JSX.
+
+    Plain JSX (no TypeScript) keeps the offline scaffold buildable with
+    ``next build`` without dragging in a TS toolchain / @types. Ships a real
+    default-exported page reflecting the brief, a root layout, the config, and a
+    README.
+    """
+    title = brief.strip() or app_name
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "scripts": {\n'
+            '    "dev": "next dev",\n'
+            '    "build": "next build",\n'
+            '    "start": "next start"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "next": "^14.2.0",\n'
+            '    "react": "^18.2.0",\n'
+            '    "react-dom": "^18.2.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "next.config.js": (
+            "/** @type {import('next').NextConfig} */\n"
+            "const nextConfig = {\n"
+            "  reactStrictMode: true,\n"
+            "};\n\n"
+            "module.exports = nextConfig;\n"
+        ),
+        "jsconfig.json": (
+            "{\n"
+            '  "compilerOptions": {\n'
+            '    "baseUrl": "."\n'
+            "  }\n"
+            "}\n"
+        ),
+        "app/layout.jsx": (
+            "import './globals.css';\n\n"
+            "export const metadata = {\n"
+            f"  title: '{js_title}',\n"
+            "  description: 'Generated offline by SkyN3t.',\n"
+            "};\n\n"
+            "export default function RootLayout({ children }) {\n"
+            "  return (\n"
+            '    <html lang="en">\n'
+            "      <body>{children}</body>\n"
+            "    </html>\n"
+            "  );\n"
+            "}\n"
+        ),
+        "app/page.jsx": (
+            "'use client';\n\n"
+            "import { useState } from 'react';\n\n"
+            "export default function Home() {\n"
+            "  const [count, setCount] = useState(0);\n"
+            "  return (\n"
+            '    <main className="app">\n'
+            f"      <h1>{'{'}'{js_title}'{'}'}</h1>\n"
+            "      <p>A runnable Next.js (App Router) starter generated offline by SkyN3t.</p>\n"
+            "      <button onClick={() => setCount((c) => c + 1)}>count is {count}</button>\n"
+            "    </main>\n"
+            "  );\n"
+            "}\n"
+        ),
+        "app/globals.css": (
+            ":root { font-family: system-ui, sans-serif; }\n"
+            "body { margin: 0; display: grid; place-items: center; min-height: 100vh; }\n"
+            ".app { text-align: center; padding: 2rem; }\n"
+            "button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }\n"
+        ),
+        ".gitignore": "node_modules\n.next\nout\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Next.js (App Router)",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18.18+.",
+            usage=(
+                "Start the dev server with hot-reload:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Then open `http://localhost:3000`. Build for production and serve it:\n\n"
+                "```bash\nnpm run build\nnpm start\n```"
+            ),
+            structure=[
+                ("app/page.jsx", "Home page — default-exported route component"),
+                ("app/layout.jsx", "Root layout wrapping every page (<html>/<body>)"),
+                ("app/globals.css", "Global styles imported by the layout"),
+                ("next.config.js", "Next.js configuration"),
+                ("package.json", "Dependencies and npm scripts (dev/build/start)"),
+            ],
+            features=[
+                "Next.js App Router with a default-exported page + root layout",
+                "React 18 client component with local state",
+                "Production build + start scripts (next build / next start)",
+            ],
+        ),
+    }
+
+
+def _astro(app_name: str, brief: str) -> dict[str, str]:
+    """A genuinely runnable minimal Astro site — buildable with ``astro build``.
+
+    Ships a real index page (with Astro frontmatter), a reusable layout, the
+    config, and a README. Astro renders to static HTML by default, so the page
+    content reflects the brief.
+    """
+    title = brief.strip() or app_name
+    # Astro frontmatter is JS; single-quote-escape the title for the template.
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    # The HTML body interpolates {title}; angle brackets in the brief would break
+    # markup, so neutralise them for the visible heading.
+    html_title = js_title.replace("<", "&lt;").replace(">", "&gt;")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "type": "module",\n'
+            '  "scripts": {\n'
+            '    "dev": "astro dev",\n'
+            '    "build": "astro build",\n'
+            '    "preview": "astro preview"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "astro": "^4.10.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "astro.config.mjs": (
+            "import { defineConfig } from 'astro/config';\n\n"
+            "// https://astro.build/config\n"
+            "export default defineConfig({});\n"
+        ),
+        "src/layouts/Layout.astro": (
+            "---\n"
+            "const { title } = Astro.props;\n"
+            "---\n"
+            "<!doctype html>\n"
+            '<html lang="en">\n'
+            "  <head>\n"
+            '    <meta charset="utf-8" />\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1" />\n'
+            "    <title>{title}</title>\n"
+            "  </head>\n"
+            "  <body>\n"
+            "    <slot />\n"
+            "  </body>\n"
+            "</html>\n"
+        ),
+        "src/pages/index.astro": (
+            "---\n"
+            "import Layout from '../layouts/Layout.astro';\n"
+            f"const title = '{js_title}';\n"
+            "---\n"
+            "<Layout title={title}>\n"
+            "  <main>\n"
+            f"    <h1>{html_title}</h1>\n"
+            "    <p>A runnable Astro site generated offline by SkyN3t.</p>\n"
+            "  </main>\n"
+            "</Layout>\n\n"
+            "<style>\n"
+            "  main { font-family: system-ui, sans-serif; text-align: center; padding: 2rem; }\n"
+            "</style>\n"
+        ),
+        ".gitignore": "node_modules\ndist\n.astro\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Astro",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18.14+.",
+            usage=(
+                "Start the dev server with hot-reload:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Then open `http://localhost:4321`. Build the static site and preview it:\n\n"
+                "```bash\nnpm run build\nnpm run preview\n```"
+            ),
+            structure=[
+                ("src/pages/index.astro", "Home page — Astro routes from src/pages/"),
+                ("src/layouts/Layout.astro", "Shared HTML document layout"),
+                ("astro.config.mjs", "Astro configuration"),
+                ("package.json", "Dependencies and npm scripts (dev/build/preview)"),
+            ],
+            features=[
+                "Astro file-based routing (pages live in src/pages/)",
+                "Reusable .astro layout with a typed prop",
+                "Static build output via `astro build`",
+            ],
+        ),
+    }
+
+
+def _remix(app_name: str, brief: str) -> dict[str, str]:
+    """A genuinely runnable minimal Remix (Vite) app — buildable with the Remix
+    Vite build (``remix vite:build``).
+
+    Ships the root document (``app/root.tsx``), the index route, the Vite config
+    wiring the Remix plugin, a tsconfig, and a README. TypeScript here mirrors the
+    real Remix template (which is TS-first); the build type-checks via Remix's
+    bundler, not a standalone ``tsc``.
+    """
+    title = brief.strip() or app_name
+    js_title = title.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("\n", " ").replace("\r", " ")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "type": "module",\n'
+            '  "sideEffects": false,\n'
+            '  "scripts": {\n'
+            '    "dev": "remix vite:dev",\n'
+            '    "build": "remix vite:build",\n'
+            '    "start": "remix-serve ./build/server/index.js"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "@remix-run/node": "^2.10.0",\n'
+            '    "@remix-run/react": "^2.10.0",\n'
+            '    "@remix-run/serve": "^2.10.0",\n'
+            '    "isbot": "^4.1.0",\n'
+            '    "react": "^18.2.0",\n'
+            '    "react-dom": "^18.2.0"\n'
+            "  },\n"
+            '  "devDependencies": {\n'
+            '    "@remix-run/dev": "^2.10.0",\n'
+            '    "@types/react": "^18.2.0",\n'
+            '    "@types/react-dom": "^18.2.0",\n'
+            '    "typescript": "^5.4.0",\n'
+            '    "vite": "^5.2.0",\n'
+            '    "vite-tsconfig-paths": "^4.3.0"\n'
+            "  },\n"
+            '  "engines": { "node": ">=18.0.0" }\n'
+            "}\n"
+        ),
+        "vite.config.ts": (
+            "import { vitePlugin as remix } from '@remix-run/dev';\n"
+            "import { defineConfig } from 'vite';\n"
+            "import tsconfigPaths from 'vite-tsconfig-paths';\n\n"
+            "export default defineConfig({\n"
+            "  plugins: [remix(), tsconfigPaths()],\n"
+            "});\n"
+        ),
+        "tsconfig.json": (
+            "{\n"
+            '  "include": ["**/*.ts", "**/*.tsx"],\n'
+            '  "compilerOptions": {\n'
+            '    "lib": ["DOM", "DOM.Iterable", "ES2022"],\n'
+            '    "types": ["@remix-run/node", "vite/client"],\n'
+            '    "isolatedModules": true,\n'
+            '    "esModuleInterop": true,\n'
+            '    "jsx": "react-jsx",\n'
+            '    "module": "ESNext",\n'
+            '    "moduleResolution": "Bundler",\n'
+            '    "resolveJsonModule": true,\n'
+            '    "target": "ES2022",\n'
+            '    "strict": true,\n'
+            '    "skipLibCheck": true,\n'
+            '    "baseUrl": ".",\n'
+            '    "noEmit": true\n'
+            "  }\n"
+            "}\n"
+        ),
+        "app/root.tsx": (
+            "import {\n"
+            "  Links,\n"
+            "  Meta,\n"
+            "  Outlet,\n"
+            "  Scripts,\n"
+            "  ScrollRestoration,\n"
+            "} from '@remix-run/react';\n\n"
+            "export default function App() {\n"
+            "  return (\n"
+            '    <html lang="en">\n'
+            "      <head>\n"
+            '        <meta charSet="utf-8" />\n'
+            '        <meta name="viewport" content="width=device-width, initial-scale=1" />\n'
+            "        <Meta />\n"
+            "        <Links />\n"
+            "      </head>\n"
+            "      <body>\n"
+            "        <Outlet />\n"
+            "        <ScrollRestoration />\n"
+            "        <Scripts />\n"
+            "      </body>\n"
+            "    </html>\n"
+            "  );\n"
+            "}\n"
+        ),
+        "app/routes/_index.tsx": (
+            "import type { MetaFunction } from '@remix-run/node';\n\n"
+            "export const meta: MetaFunction = () => {\n"
+            f"  return [{{ title: `{js_title}` }}];\n"
+            "};\n\n"
+            "export default function Index() {\n"
+            "  return (\n"
+            "    <main style={{ fontFamily: 'system-ui, sans-serif', textAlign: 'center', padding: '2rem' }}>\n"
+            f"      <h1>{'{'}`{js_title}`{'}'}</h1>\n"
+            "      <p>A runnable Remix app generated offline by SkyN3t.</p>\n"
+            "    </main>\n"
+            "  );\n"
+            "}\n"
+        ),
+        ".gitignore": "node_modules\n/build\n/.cache\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Remix (Vite)",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18+.",
+            usage=(
+                "Start the dev server:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Then open `http://localhost:3000`. Build for production and serve it:\n\n"
+                "```bash\nnpm run build\nnpm start\n```"
+            ),
+            structure=[
+                ("app/root.tsx", "Root document — the <html> shell and <Outlet />"),
+                ("app/routes/_index.tsx", "Index route ('/') — default-exported component"),
+                ("vite.config.ts", "Vite config wiring the Remix plugin"),
+                ("tsconfig.json", "TypeScript configuration"),
+                ("package.json", "Dependencies and npm scripts (dev/build/start)"),
+            ],
+            features=[
+                "Remix file-based routing with a typed meta() export",
+                "Root document + nested route via <Outlet />",
+                "Vite-powered dev server and production build",
+            ],
+        ),
+    }
+
+
+def _react_vite_threejs(app_name: str, brief: str) -> dict[str, str]:
+    """The react_vite scaffold with a Three.js rotating-cube scene.
+
+    Reuses the base Vite + React scaffold (config, index.html, README) and swaps
+    the starter ``App.jsx`` for a real Three.js scene plus the ``three`` dep. Only
+    invoked when the brief implies 3D (see :func:`_implies_3d`).
+    """
+    title = brief.strip() or app_name
+    files = _react_vite(app_name, brief)
+    # Add `three` to the dependencies block of the existing package.json.
+    files["package.json"] = files["package.json"].replace(
+        '    "react-dom": "^18.2.0"\n',
+        '    "react-dom": "^18.2.0",\n    "three": "^0.165.0"\n',
+    )
+    files["src/App.jsx"] = (
+        "import { useEffect, useRef } from 'react'\n"
+        "import * as THREE from 'three'\n\n"
+        "export default function App() {\n"
+        "  const mountRef = useRef(null)\n\n"
+        "  useEffect(() => {\n"
+        "    const mount = mountRef.current\n"
+        "    if (!mount) return\n"
+        "    const width = mount.clientWidth || window.innerWidth\n"
+        "    const height = mount.clientHeight || window.innerHeight\n\n"
+        "    const scene = new THREE.Scene()\n"
+        "    const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100)\n"
+        "    camera.position.z = 3\n\n"
+        "    const renderer = new THREE.WebGLRenderer({ antialias: true })\n"
+        "    renderer.setSize(width, height)\n"
+        "    mount.appendChild(renderer.domElement)\n\n"
+        "    const geometry = new THREE.BoxGeometry()\n"
+        "    const material = new THREE.MeshNormalMaterial()\n"
+        "    const cube = new THREE.Mesh(geometry, material)\n"
+        "    scene.add(cube)\n\n"
+        "    let frame\n"
+        "    const animate = () => {\n"
+        "      cube.rotation.x += 0.01\n"
+        "      cube.rotation.y += 0.01\n"
+        "      renderer.render(scene, camera)\n"
+        "      frame = requestAnimationFrame(animate)\n"
+        "    }\n"
+        "    animate()\n\n"
+        "    return () => {\n"
+        "      cancelAnimationFrame(frame)\n"
+        "      renderer.dispose()\n"
+        "      mount.removeChild(renderer.domElement)\n"
+        "    }\n"
+        "  }, [])\n\n"
+        "  return (\n"
+        '    <main className="app">\n'
+        f"      <h1>{title}</h1>\n"
+        "      <p>A rotating cube rendered with Three.js — generated offline by SkyN3t.</p>\n"
+        '      <div ref={mountRef} className="canvas-host" />\n'
+        "    </main>\n"
+        "  )\n"
+        "}\n"
+    )
+    files["src/styles.css"] = (
+        ":root { font-family: system-ui, sans-serif; }\n"
+        "body { margin: 0; }\n"
+        ".app { text-align: center; padding: 1rem; }\n"
+        ".canvas-host { width: 100%; height: 70vh; }\n"
+    )
+    return files
+
+
+def _static_threejs(app_name: str, brief: str) -> dict[str, str]:
+    """The static_html scaffold with a Three.js rotating-cube scene.
+
+    Reuses the base static scaffold (package.json, README) and swaps the page +
+    script for a real Three.js scene loaded from a CDN module. Only invoked when
+    the brief implies 3D (see :func:`_implies_3d`).
+    """
+    title = brief.strip() or app_name
+    files = _static_html(app_name, brief)
+    files["index.html"] = (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "  <head>\n"
+        '    <meta charset="UTF-8" />\n'
+        '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
+        f"    <title>{title}</title>\n"
+        '    <link rel="stylesheet" href="styles.css" />\n'
+        "  </head>\n"
+        "  <body>\n"
+        f"    <main><h1>{title}</h1>\n"
+        "    <p>A rotating cube rendered with Three.js — generated offline by SkyN3t.</p></main>\n"
+        '    <canvas id="scene"></canvas>\n'
+        '    <script type="importmap">\n'
+        '    { "imports": { "three": "https://unpkg.com/three@0.165.0/build/three.module.js" } }\n'
+        "    </script>\n"
+        '    <script type="module" src="main.js"></script>\n'
+        "  </body>\n"
+        "</html>\n"
+    )
+    files["styles.css"] = (
+        "body { font-family: system-ui, sans-serif; margin: 0; }\n"
+        "main { text-align: center; padding: 1rem; }\n"
+        "#scene { display: block; width: 100%; height: 70vh; }\n"
+    )
+    files["main.js"] = (
+        "import * as THREE from 'three';\n\n"
+        "const canvas = document.getElementById('scene');\n"
+        "const width = canvas.clientWidth || window.innerWidth;\n"
+        "const height = canvas.clientHeight || window.innerHeight;\n\n"
+        "const scene = new THREE.Scene();\n"
+        "const camera = new THREE.PerspectiveCamera(70, width / height, 0.1, 100);\n"
+        "camera.position.z = 3;\n\n"
+        "const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });\n"
+        "renderer.setSize(width, height, false);\n\n"
+        "const cube = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshNormalMaterial());\n"
+        "scene.add(cube);\n\n"
+        "function animate() {\n"
+        "  cube.rotation.x += 0.01;\n"
+        "  cube.rotation.y += 0.01;\n"
+        "  renderer.render(scene, camera);\n"
+        "  requestAnimationFrame(animate);\n"
+        "}\n"
+        "animate();\n"
+    )
+    return files
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "react_native": _react_native_expo,
+    "nextjs": _nextjs,
+    "astro": _astro,
+    "remix": _remix,
     "static_html": _static_html,
     "python_cli": _python_cli,
     "fastapi": _fastapi,
@@ -760,10 +1239,18 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
 def scaffold_for(stack: str, app_name: str, brief: str = "") -> dict[str, str]:
     """Return a ``{path: contents}`` mapping for a runnable project of ``stack``.
 
-    Unknown stacks fall back to ``react_vite``.
+    Unknown stacks fall back to ``react_vite``. When the brief implies 3D/WebGL,
+    the react/static web scaffolds ship a Three.js rotating-cube starter (a
+    template variant, not a separate stack).
     """
-    builder = _BUILDERS.get(stack, _react_vite)
     safe_name = (app_name or "app").strip() or "app"
+    # Three.js template variant: keyword-guarded so normal builds are unchanged.
+    if _implies_3d(brief):
+        if stack == "react_vite":
+            return _react_vite_threejs(safe_name, brief)
+        if stack == "static_html":
+            return _static_threejs(safe_name, brief)
+    builder = _BUILDERS.get(stack, _react_vite)
     return builder(safe_name, brief)
 
 

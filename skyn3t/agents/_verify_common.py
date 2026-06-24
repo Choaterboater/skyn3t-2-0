@@ -150,9 +150,21 @@ def non_empty_source_count(root: Path | None) -> int:
     count = 0
     for p in iter_files(root):
         if p.suffix in SOURCE_SUFFIXES and file_size(p) > 0:
-            # require more than a comment line or two
+            # require more than a comment line or two — but only strip prefixes
+            # that are ACTUALLY comments for this file type. '#' is a comment in
+            # py/sh/yaml but a CSS id selector / HTML fragment; '//' is a JS/C
+            # comment. Treating '#' as a comment dropped real CSS files to zero.
+            prefixes: tuple[str, ...] = ()
+            if p.suffix in (".py", ".rb", ".sh", ".bash", ".yaml", ".yml", ".toml"):
+                prefixes = ("#",)
+            elif p.suffix in (".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java",
+                              ".c", ".cpp", ".cc", ".h", ".php", ".swift", ".kt"):
+                prefixes = ("//",)
             text = safe_read(p, max_bytes=4096)
-            meaningful = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith(("#", "//"))]
+            meaningful = [
+                ln for ln in text.splitlines()
+                if ln.strip() and not (prefixes and ln.strip().startswith(prefixes))
+            ]
             if len(meaningful) >= 1:
                 count += 1
     return count

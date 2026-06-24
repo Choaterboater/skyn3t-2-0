@@ -91,14 +91,23 @@ class SandboxRunner:
             return self._docker_ok
         ok = False
         if _HAS_DOCKER_SDK:
+            client = None
             try:
                 # Bound the probe so a hung daemon can't stall indefinitely.
                 client = _docker.from_env(timeout=5)  # type: ignore[union-attr]
                 client.ping()
-                self._client = client
                 ok = True
             except Exception:  # noqa: BLE001 - daemon down / no socket
                 ok = False
+            finally:
+                # Probe-only: the client is never reused for execution, so close
+                # its connection pool (incl. a partially-opened one on error)
+                # rather than leaking a socket/fd per runner.
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:  # noqa: BLE001
+                        pass
         if not ok and shutil.which("docker"):
             # SDK missing but CLI present — verify the daemon responds.
             try:

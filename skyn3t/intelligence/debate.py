@@ -179,13 +179,23 @@ class DebateOrchestrator:
                 proposals[idx].votes += 1
 
         winner = max(proposals, key=lambda p: p.votes)
+        total_votes = sum(p.votes for p in proposals)
 
         # 4) Synthesise the winning ideas.
-        synth_prompt = (
-            f"Question: {question}\n\nDebated proposals:\n{joined}\n\n"
-            f"The debaters favored proposal by '{winner.debater}'. Synthesise the "
-            f"best final answer, incorporating valid points from the others."
-        )
+        if total_votes:
+            synth_prompt = (
+                f"Question: {question}\n\nDebated proposals:\n{joined}\n\n"
+                f"The debaters favored proposal by '{winner.debater}'. Synthesise the "
+                f"best final answer, incorporating valid points from the others."
+            )
+        else:
+            # No parseable votes — max() returns proposals[0], but no one actually
+            # favored it. Don't pretend a winner emerged.
+            synth_prompt = (
+                f"Question: {question}\n\nDebated proposals:\n{joined}\n\n"
+                "The debaters did not reach a clear consensus. Synthesise the best "
+                "final answer, weighing all proposals equally."
+            )
         try:
             synth = await self._complete(synth_prompt)
             synthesis = synth.text
@@ -200,8 +210,11 @@ class DebateOrchestrator:
             rounds=3,
         )
 
-        # 5) Record to the tournament (feeds model evolution).
-        if self.tournament is not None:
+        # 5) Record to the tournament (feeds model evolution) — ONLY when voters
+        # expressed a real preference. With zero parseable votes, winner is an
+        # arbitrary proposals[0]; recording it would bias model evolution toward
+        # the first proposal — the very bias _parse_vote removes at the vote level.
+        if self.tournament is not None and total_votes > 0:
             try:
                 bucket = self.tournament.bucket_key(self.tier, task_type)
                 losers = [p.model for p in proposals if p is not winner]

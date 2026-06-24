@@ -371,8 +371,12 @@ class LLMClient:
         # visual reference ALONGSIDE the full text context — the same pattern the
         # vision judge (studio/visual_check) uses. A data: URL is written to a
         # temp file first; the image is prepended so it frames the context below.
+        temp_images: list[str] = []
         if images:
             paths = [p for p in (self._ensure_image_path(i) for i in images) if p]
+            # Only the data:-URL temp files WE created (skyn3t_ref_*) get cleaned
+            # up below — never a user-supplied local image path.
+            temp_images = [p for p in paths if os.path.basename(p).startswith("skyn3t_ref_")]
             if paths:
                 refs = "; ".join(f"the image file at {p}" for p in paths)
                 full = (f"View {refs} as a visual reference for the request below, "
@@ -403,6 +407,13 @@ class LLMClient:
             log.warning("llm.cli_failed", provider=provider, error=str(exc)[:160])
             await self._terminate(proc)
             return self._stub(f"{provider}-cli", prompt, system, json_mode)
+        finally:
+            # Don't leak the decoded data:-URL reference images into the temp dir.
+            for tp in temp_images:
+                try:
+                    os.unlink(tp)
+                except OSError:
+                    pass
 
         text = (out or b"").decode("utf-8", "replace").strip()
         if proc.returncode != 0 and not text:

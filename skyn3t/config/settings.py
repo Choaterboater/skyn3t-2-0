@@ -77,6 +77,17 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     kimi_api_key: str = ""
 
+    # ---- Image generation (Replicate) -----------------------------------
+    # Token (env SKYN3T_REPLICATE_API_TOKEN) for real image generation. When set,
+    # an image-implying brief (e.g. a kids coloring app) can generate real line-art
+    # assets instead of "crappy drawings". Empty -> image-gen is skipped entirely;
+    # it never blocks or fails a build. The asset-generation STEP is additionally
+    # gated behind `asset_gen` (default off) so the capability stays opt-in + cost-
+    # aware. ``replicate_model`` overrides the default (black-forest-labs/flux-schnell
+    # — fast, cheap, line-art-capable); use an "owner/name" official model id.
+    replicate_api_token: str = ""
+    replicate_model: str = ""
+
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
     # auto picks: openrouter (if key) -> a detected CLI -> stub.
     llm_backend: str = "auto"  # auto|stub|openrouter|claude_cli|kimi_cli|copilot_cli|openai_cli
@@ -178,6 +189,12 @@ class Settings(BaseSettings):
     @property
     def claude_available(self) -> bool:
         return bool(self.anthropic_api_key) and not self.no_claude
+
+    @property
+    def replicate_available(self) -> bool:
+        """True when a Replicate token is configured — the build then KNOWS it can
+        generate real images. The asset-gen step additionally requires asset_gen."""
+        return bool(self.replicate_api_token)
 
     @property
     def has_any_llm(self) -> bool:

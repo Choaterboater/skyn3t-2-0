@@ -302,6 +302,10 @@ class AppState:
                 "approval_gates": s.approval_gates,
                 "has_any_llm": s.has_any_llm,
                 "claude_available": s.claude_available,
+                # The build KNOWS it can generate real images when a Replicate
+                # token is set; the asset-gen step additionally needs asset_gen.
+                "replicate_available": getattr(s, "replicate_available", False),
+                "asset_gen": s.asset_gen,
             },
         }
 

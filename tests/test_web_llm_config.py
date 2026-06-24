@@ -16,6 +16,7 @@ from skyn3t.web.routes import (  # noqa: E402
     llm_secrets_payload,
     set_llm_backend,
     set_llm_key,
+    set_replicate_token,
 )
 
 
@@ -51,6 +52,42 @@ async def test_switch_backend():
 async def test_unknown_provider_rejected():
     with pytest.raises(ValueError):
         await set_llm_key(_state(), "bogus", "x", persist=False)
+
+
+async def test_secrets_payload_reports_replicate_presence():
+    off = await llm_secrets_payload(_state(llm_backend="stub"))
+    assert off["replicate"] is False
+    on = await llm_secrets_payload(_state(llm_backend="stub", replicate_api_token="r8_x"))
+    assert on["replicate"] is True
+    # The token VALUE is never exposed — only presence + the (non-secret) model.
+    assert "r8_x" not in str(on)
+
+
+async def test_set_replicate_token_persist_false(monkeypatch):
+    monkeypatch.delenv("SKYN3T_REPLICATE_API_TOKEN", raising=False)
+    st = _state(llm_backend="stub")
+    r = await set_replicate_token(st, "r8_secret", model="owner/model", persist=False)
+    assert r["configured"] is True
+    assert r["model"] == "owner/model"
+    assert st.settings.replicate_api_token == "r8_secret"
+    assert st.settings.replicate_model == "owner/model"
+
+
+async def test_clear_replicate_token(monkeypatch):
+    monkeypatch.setenv("SKYN3T_REPLICATE_API_TOKEN", "r8_x")
+    st = _state(llm_backend="stub", replicate_api_token="r8_x")
+    r = await set_replicate_token(st, "", persist=False)
+    assert r["configured"] is False
+    assert st.settings.replicate_api_token == ""
+    import os
+    assert "SKYN3T_REPLICATE_API_TOKEN" not in os.environ
+
+
+async def test_set_replicate_empty_model_keeps_existing(monkeypatch):
+    monkeypatch.delenv("SKYN3T_REPLICATE_API_TOKEN", raising=False)
+    st = _state(llm_backend="stub", replicate_model="owner/keep")
+    await set_replicate_token(st, "r8_x", model="", persist=False)
+    assert st.settings.replicate_model == "owner/keep"
 
 
 async def test_integration_credential_config(monkeypatch):

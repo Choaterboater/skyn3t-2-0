@@ -827,6 +827,13 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         "backend_pref": getattr(s, "llm_backend", "auto"),
         "cli_provider": getattr(s, "cli_llm_provider", "claude"),
         "github": github,
+        # Image generation (Replicate): report presence only (never the token).
+        # ``model`` is shown so the operator can see/override the active model.
+        "replicate": bool(getattr(s, "replicate_api_token", "")),
+        "replicate_model": getattr(s, "replicate_model", "") or "",
+        # The asset-gen STEP additionally needs asset_gen on — surface it so the
+        # UI can tell the user real assets won't be generated until it's enabled.
+        "asset_gen": bool(getattr(s, "asset_gen", False)),
     }
 
 
@@ -850,6 +857,46 @@ async def set_github_token(state: AppState, key: str, persist: bool = True) -> d
     if persist:
         _persist_env_var("SKYN3T_GITHUB_TOKEN", key)
     return {"configured": bool(key)}
+
+
+async def set_replicate_token(
+    state: AppState, token: str, model: str = "", persist: bool = True
+) -> dict[str, Any]:
+    """Set the Replicate token (+ optional model) used for image generation.
+
+    Updates the live Settings object AND os.environ (so a running cortex picks it
+    up on its next build) and persists to .env. ``model`` is only updated when a
+    non-empty value is supplied — passing "" leaves the configured model intact.
+    Mirrors :func:`set_github_token`. Returns presence + the active model (never
+    the token itself).
+    """
+    import os
+
+    token = (token or "").strip()
+    try:
+        setattr(state.settings, "replicate_api_token", token)
+    except Exception:  # noqa: BLE001
+        pass
+    if token:
+        os.environ["SKYN3T_REPLICATE_API_TOKEN"] = token
+    else:
+        os.environ.pop("SKYN3T_REPLICATE_API_TOKEN", None)
+    if persist:
+        _persist_env_var("SKYN3T_REPLICATE_API_TOKEN", token)
+
+    model = (model or "").strip()
+    if model:
+        try:
+            setattr(state.settings, "replicate_model", model)
+        except Exception:  # noqa: BLE001
+            pass
+        os.environ["SKYN3T_REPLICATE_MODEL"] = model
+        if persist:
+            _persist_env_var("SKYN3T_REPLICATE_MODEL", model)
+    return {
+        "configured": bool(token),
+        "model": getattr(state.settings, "replicate_model", "") or "",
+    }
 
 
 async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str, Any]:
@@ -1206,6 +1253,14 @@ def build_router(state: AppState) -> Any:
     @router.post("/settings/github", dependencies=[auth])
     async def _set_github(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
         return await set_github_token(state, str(body.get("token", body.get("key", ""))))
+
+    @router.post("/settings/replicate", dependencies=[auth])
+    async def _set_replicate(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await set_replicate_token(
+            state,
+            str(body.get("token", body.get("key", ""))),
+            model=str(body.get("model", "")),
+        )
 
     @router.post("/proposals/clear", dependencies=[auth])
     async def _clear_proposals(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:

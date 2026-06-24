@@ -26,6 +26,7 @@ class MemoryStore:
         async with self._engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(self._drop_orphan_fts_triggers)
+            await conn.run_sync(self._relax_builds_score_nullable)
 
     @staticmethod
     def _drop_orphan_fts_triggers(conn: Any) -> None:
@@ -49,6 +50,54 @@ class MemoryStore:
             ]
             for name in names:
                 conn.exec_driver_sql(f'DROP TRIGGER IF EXISTS "{name}"')
+        except Exception:  # noqa: BLE001 - self-heal must never break startup
+            pass
+
+    @staticmethod
+    def _relax_builds_score_nullable(conn: Any) -> None:
+        """Drop a stale ``NOT NULL`` constraint on ``builds.score``.
+
+        The model (``BuildRow``) declares ``score`` nullable so a build can be
+        saved the moment it starts running (before it has a score). A database
+        created by older code instead has ``score FLOAT NOT NULL``; SQLAlchemy's
+        ``create_all`` never alters an existing table, so the drift survives and
+        EVERY initial ``running`` insert (``score=None``) fails with
+        ``IntegrityError: NOT NULL constraint failed: builds.score`` — the build
+        only persists once it finishes with a real score. Rebuild the table to
+        match the model. SQLite-only; best-effort, never raises into startup;
+        the original table is restored if any step fails.
+        """
+        try:
+            if conn.dialect.name != "sqlite":
+                return
+            cols = conn.exec_driver_sql("PRAGMA table_info('builds')").fetchall()
+            if not cols:
+                return  # table doesn't exist yet (fresh DB created from the model)
+            # PRAGMA table_info rows: (cid, name, type, notnull, dflt_value, pk)
+            score = next((c for c in cols if c[1] == "score"), None)
+            if score is None or not score[3]:
+                return  # already nullable — nothing to do (idempotent)
+            shared = [c[1] for c in cols if c[1] in BuildRow.__table__.columns]
+            collist = ", ".join(f'"{n}"' for n in shared)
+            conn.exec_driver_sql("ALTER TABLE builds RENAME TO builds__pre_score_fix")
+            try:
+                # The renamed table keeps its index names; free them so the
+                # model's CREATE INDEX doesn't collide.
+                conn.exec_driver_sql("DROP INDEX IF EXISTS ix_builds_slug")
+                BuildRow.__table__.create(conn)  # table + indexes, matching the model
+                conn.exec_driver_sql(
+                    f"INSERT INTO builds ({collist}) "
+                    f"SELECT {collist} FROM builds__pre_score_fix"
+                )
+                conn.exec_driver_sql("DROP TABLE builds__pre_score_fix")
+            except Exception:
+                # Restore the original table so we never leave the DB without a
+                # `builds` table, then re-raise into the outer best-effort guard.
+                conn.exec_driver_sql("DROP TABLE IF EXISTS builds")
+                conn.exec_driver_sql(
+                    "ALTER TABLE builds__pre_score_fix RENAME TO builds"
+                )
+                raise
         except Exception:  # noqa: BLE001 - self-heal must never break startup
             pass
 

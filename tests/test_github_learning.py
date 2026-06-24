@@ -131,13 +131,14 @@ def test_fetch_non_github_returns_none():
 
 
 def test_repo_scout_rotates_topics():
-    from skyn3t.cortex.repo_scout import RepoScout
+    from skyn3t.cortex.repo_scout import RepoScout, _SCOUT_TOPICS
 
     s = RepoScout()
-    topics = [s._next_topic() for _ in range(5)]
+    n = len(_SCOUT_TOPICS)
+    topics = [s._next_topic() for _ in range(n + 1)]
     assert topics[0] != topics[1]  # consecutive scouts use different topics
-    assert len(set(topics[:4])) == 4  # all four distinct before wrap
-    assert topics[4] == topics[0]  # wraps around
+    assert len(set(topics[:n])) == n  # all distinct within one cycle
+    assert topics[n] == topics[0]  # wraps around after a full cycle
 
 
 def test_build_cortex_threads_rag():

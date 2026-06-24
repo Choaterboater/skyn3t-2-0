@@ -13,6 +13,7 @@ Import has zero side effects (no subprocess, no network).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,153 @@ except ImportError:
 _TRIVIAL_FILES = frozenset({"README.md", ".gitignore", "LICENSE", "skyn3t_manifest.json"})
 _SOURCE_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs", ".java", ".astro")
 _MIN_SUBSTANTIVE_BYTES = 16
+
+# --- static boot-readiness: relative-import resolution -----------------------
+# A `./x` / `../x` import that resolves to no file is a guaranteed bundler boot
+# failure (Vite/webpack 500: "Failed to resolve import"). Bare ("react") and
+# aliased ("@/x") specifiers are NOT checked — only relative paths, which must
+# exist on disk. This is the offline, deterministic gate that catches the
+# missing-stylesheet / unwired-module class of "looks done but won't boot".
+_JS_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+_RESOLVE_EXTS = (
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json",
+    ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+)
+# Captures the relative specifier in: `import x from './a'`, `import './a.css'`,
+# `export {x} from '../b'`, `import('./c')`, `require('./d')`.
+_REL_IMPORT_RE = re.compile(r"""\b(?:from|import|require)\b\s*\(?\s*['"](\.\.?/[^'"]+)['"]""")
+
+
+def _import_candidates(importer: Path, spec: str) -> list[Path]:
+    """Candidate on-disk paths a relative ``spec`` could resolve to.
+
+    Tries the path as-is, with each known extension, and as a directory index.
+    Strips Vite ``?url`` / ``?raw`` query and ``#`` fragment suffixes.
+    """
+    spec = spec.split("?", 1)[0].split("#", 1)[0]
+    if not spec:
+        return []
+    target = importer.parent / spec
+    candidates = [target]
+    for ext in _RESOLVE_EXTS:
+        candidates.append(target.with_name(target.name + ext))
+        candidates.append(target / f"index{ext}")
+    return candidates
+
+
+def _import_resolves(importer: Path, spec: str, root: Path) -> bool:
+    """True if a relative ``spec`` imported from ``importer`` exists on disk.
+
+    On any filesystem error it returns True (indeterminate, never a false alarm).
+    """
+    for c in _import_candidates(importer, spec):
+        try:
+            if c.exists():
+                return True
+        except OSError:
+            return True
+    return not _import_candidates(importer, spec)  # empty spec -> nothing to flag
+
+
+def _resolve_import_file(importer: Path, spec: str) -> Path | None:
+    """Resolve a relative ``spec`` to the first existing FILE (for graph walks)."""
+    for c in _import_candidates(importer, spec):
+        try:
+            if c.is_file():
+                return c.resolve()
+        except OSError:
+            return None
+    return None
+
+
+def _unresolved_local_imports(root: Path) -> list[str]:
+    """Relative imports in JS/TS files that resolve to no file. Pure & offline."""
+    out: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in _JS_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for spec in _REL_IMPORT_RE.findall(text):
+            if not _import_resolves(f, spec, root):
+                out.append(f"{f.relative_to(root)} -> {spec}")
+    return out
+
+
+# --- static boot-readiness: unwired components -------------------------------
+# A half-built app delivers real generated components but an entry that never
+# reaches them (e.g. the scaffold counter stub), so the page renders the stub,
+# not the app. The signal is REACHABILITY — not the scaffold marker, which can
+# legitimately coexist with a wired entry. We only flag when the entry graph
+# reaches NONE of the generated components (the unambiguous stub-entry case), and
+# we skip projects with path aliases (we can't trace aliased imports reliably).
+_ENTRY_NAMES = frozenset({
+    "App.jsx", "App.tsx", "main.jsx", "main.tsx", "index.jsx", "index.tsx",
+})
+
+
+def _has_path_aliases(root: Path) -> bool:
+    """True if the project configures import path aliases (untraceable here)."""
+    for name in ("vite.config.js", "vite.config.ts", "tsconfig.json", "jsconfig.json"):
+        p = root / name
+        try:
+            if p.is_file():
+                text = p.read_text(encoding="utf-8", errors="replace")
+                if '"paths"' in text or "resolve.alias" in text or "alias:" in text:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _reachable_files(root: Path) -> set[Path]:
+    """Resolved file paths reachable from the entry files via relative imports."""
+    entries = [
+        f.resolve() for f in _iter_files(root)
+        if f.name in _ENTRY_NAMES and f.suffix in _JS_SUFFIXES
+    ]
+    seen: set[Path] = set()
+    stack = list(entries)
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        try:
+            text = cur.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for spec in _REL_IMPORT_RE.findall(text):
+            tgt = _resolve_import_file(cur, spec)
+            if tgt is not None and tgt not in seen:
+                stack.append(tgt)
+    return seen
+
+
+def _unwired_components(root: Path) -> str | None:
+    """Note if generated components exist but the entry graph reaches NONE of
+    them (stub/unwired entry); else None. Pure & offline, conservative."""
+    if _has_path_aliases(root):
+        return None
+    components = []
+    for f in _iter_files(root):
+        if f.suffix not in _JS_SUFFIXES or "components" not in f.relative_to(root).parts:
+            continue
+        try:
+            if len(f.read_text(encoding="utf-8", errors="replace").strip()) >= _MIN_SUBSTANTIVE_BYTES:
+                components.append(f.resolve())
+        except OSError:
+            continue
+    if not components:
+        return None
+    reachable = _reachable_files(root)
+    orphaned = [c for c in components if c not in reachable]
+    if orphaned and len(orphaned) == len(components):
+        return (f"entry reaches none of the {len(components)} generated "
+                f"component(s) — the app renders an unwired/stub entry")
+    return None
 
 
 @dataclass(slots=True)
@@ -196,6 +344,31 @@ def proof_run(
             detail["stack_check"] = "generic"
             if sa_note:
                 detail["stack_check_note"] = sa_note
+
+    # Behaviour, not vibes (rule #3): a JS/TS file importing a RELATIVE path that
+    # resolves to no file is a guaranteed bundler boot failure (Vite 500). This
+    # offline, deterministic gate catches the missing-stylesheet / unwired-module
+    # class the npm build (which soft-skips offline) otherwise lets through.
+    if passed and total > 0:
+        broken_imports = _unresolved_local_imports(pdir)
+        if broken_imports:
+            passed = False
+            detail["unresolved_imports"] = broken_imports[:10]
+            detail.setdefault("reason", f"{len(broken_imports)} unresolved local import(s)")
+            if "<imports>" not in missing:
+                missing = [*missing, "<imports>"]
+
+    # Behaviour, not vibes (rule #3): a delivered app that ships real components
+    # but an entry which reaches NONE of them renders an unwired/stub entry, not
+    # the app — it has NOT been proven.
+    if passed and total > 0:
+        stub_note = _unwired_components(pdir)
+        if stub_note:
+            passed = False
+            detail["unwired_components"] = stub_note
+            detail.setdefault("reason", stub_note)
+            if "<wired-entry>" not in missing:
+                missing = [*missing, "<wired-entry>"]
 
     # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
     # A real failure fails the proof (and routes into the fix loop). Inability to

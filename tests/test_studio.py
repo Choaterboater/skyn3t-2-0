@@ -419,3 +419,60 @@ def test_brief_aware_go_with_good_structure_stays_go(tmp_path):
         assert outcome.status == "completed"
 
     asyncio.run(run())
+
+
+class _DegradedCodeAgent(BaseAgent):
+    """A real (claude_cli) backend that delivers a SUBSTANTIAL, building project
+    but flags itself ``degraded`` (it under-delivered / fell back to scaffold).
+    The build must NOT score 'go' despite the substantial delivery + go reviewer."""
+
+    async def initialize(self) -> None:
+        return None
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        wt = Path(task.payload["worktree_dir"])
+        (wt / "src").mkdir(parents=True, exist_ok=True)
+        (wt / "tests").mkdir(parents=True, exist_ok=True)
+        big = "def main():\n    return 42\n\n\n" + "\n\n".join(
+            f"def feature_{i}(x):\n    \"\"\"feature {i}.\"\"\"\n    return x * {i} + {i}\n"
+            for i in range(40))
+        (wt / "src" / "main.py").write_text(big)
+        (wt / "src" / "__init__.py").write_text("")
+        (wt / "tests" / "test_basic.py").write_text(
+            "from src.main import main\n\ndef test_main():\n    assert main() == 42\n")
+        (wt / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.1.0'\n")
+        (wt / "README.md").write_text("# generated\n\nA demo python tool.\n")
+        return TaskResult(task_id=task.task_id, success=True, output={
+            "files_written": 5, "worktree_dir": str(wt), "backend": "claude_cli",
+            "degraded": True,
+            "degraded_reason": "agentic build under-delivered after 1 retry"})
+
+
+def test_degraded_code_stage_forces_no_go(tmp_path):
+    """A substantial, building delivery from a REAL backend that flagged itself
+    degraded must be no_go (the learning loop must not reward under-delivery)."""
+    async def run():
+        settings = Settings(
+            projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs", critic_enabled=False, approval_gates=False,
+            best_of_n=1)
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _DegradedCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        rev = _StubReviewer("rev", "reviewer", "stub", bus)  # says go/88
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        outcome = await runner.start("Build a python tool", slug="degraded")
+
+        assert outcome.verdict == "no_go", "degraded delivery must not score go"
+        assert outcome.status == "completed_no_go"
+        assert "degraded_gate" in outcome.manifest["extra"]
+
+    asyncio.run(run())

@@ -140,6 +140,11 @@ def _implies_3d(brief: str) -> bool:
 
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
+    # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
+    # uncompilable App.jsx; escape for the JS-string and HTML contexts like the
+    # nextjs/astro builders do.
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return {
         "package.json": (
             "{\n"
@@ -176,7 +181,7 @@ def _react_vite(app_name: str, brief: str) -> dict[str, str]:
             "  <head>\n"
             '    <meta charset="UTF-8" />\n'
             '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
-            f"    <title>{title}</title>\n"
+            f"    <title>{html_title}</title>\n"
             "  </head>\n"
             "  <body>\n"
             '    <div id="root"></div>\n'
@@ -201,7 +206,7 @@ def _react_vite(app_name: str, brief: str) -> dict[str, str]:
             "  const [count, setCount] = useState(0)\n"
             "  return (\n"
             '    <main className="app">\n'
-            f"      <h1>{title}</h1>\n"
+            f"      <h1>{'{'}'{js_title}'{'}'}</h1>\n"
             "      <p>A runnable Vite + React starter generated offline by SkyN3t.</p>\n"
             '      <button onClick={() => setCount((c) => c + 1)}>\n'
             "        count is {count}\n"
@@ -247,6 +252,8 @@ def _react_vite(app_name: str, brief: str) -> dict[str, str]:
 
 def _static_html(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
+    # Escape for HTML so a brief with <, >, & doesn't emit stray/unclosed tags.
+    html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return {
         "index.html": (
             "<!doctype html>\n"
@@ -254,11 +261,11 @@ def _static_html(app_name: str, brief: str) -> dict[str, str]:
             "  <head>\n"
             '    <meta charset="UTF-8" />\n'
             '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
-            f"    <title>{title}</title>\n"
+            f"    <title>{html_title}</title>\n"
             '    <link rel="stylesheet" href="styles.css" />\n'
             "  </head>\n"
             "  <body>\n"
-            f"    <main><h1>{title}</h1>\n"
+            f"    <main><h1>{html_title}</h1>\n"
             "    <p>A runnable static site generated offline by SkyN3t.</p>\n"
             '    <button id="cta">Click me</button></main>\n'
             '    <script src="main.js"></script>\n'

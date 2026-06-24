@@ -20,6 +20,14 @@ All imports are side-effect free; nothing runs until ``run()`` is awaited.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+
+
+def _stable_hash(text: str) -> str:
+    """Deterministic content hash for persisted dedupe keys. The builtin hash()
+    is randomized per process (PYTHONHASHSEED), so an ID-less CI/PR signal would
+    hash differently after a restart and re-surface as a duplicate proposal."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 import contextlib
 from time import time
 from typing import Any
@@ -386,7 +394,7 @@ class ReviewWatcher(_BaseComponent):
         """Turn a CI failure into a repair proposal + optional repair task."""
         run_id = str(signal.get("run_id") or signal.get("id") or "")
         log_excerpt = str(signal.get("log") or signal.get("summary") or "")[:2000]
-        dedupe = f"ci:{run_id}" if run_id else f"ci:{hash(log_excerpt)}"
+        dedupe = f"ci:{run_id}" if run_id else f"ci:{_stable_hash(log_excerpt)}"
         if dedupe in self._seen:
             return None
         self._seen.add(dedupe)
@@ -421,7 +429,7 @@ class ReviewWatcher(_BaseComponent):
         body = str(signal.get("body") or "")[:2000]
         if not body.strip():
             return None
-        dedupe = f"pr:{comment_id}" if comment_id else f"pr:{hash(body)}"
+        dedupe = f"pr:{comment_id}" if comment_id else f"pr:{_stable_hash(body)}"
         if dedupe in self._seen:
             return None
         self._seen.add(dedupe)

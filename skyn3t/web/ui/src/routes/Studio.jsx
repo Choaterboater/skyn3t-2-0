@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiPost } from "../api.js";
 import {
@@ -91,6 +91,21 @@ export default function Studio({ stream }) {
   const [brief, setBrief] = useState("");
   const [stacks, setStacks] = useState("react,static,fastapi");
   const [pendingBuildId, setPendingBuildId] = React.useState(null);
+  // "Build from a picture": an optional reference image (data URL) attached to
+  // the build. No attachment -> the field is omitted from the POST (unchanged).
+  const [refImage, setRefImage] = useState(null); // { url, name }
+  const fileInputRef = useRef(null);
+
+  const onPickImage = (file) => {
+    if (!file || !file.type?.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => setRefImage({ url: String(reader.result), name: file.name });
+    reader.readAsDataURL(file);
+  };
+  const clearImage = () => {
+    setRefImage(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
   const { data: builds } = useQuery({
     queryKey: ["builds"],
@@ -101,6 +116,7 @@ export default function Studio({ stream }) {
     mutationFn: (payload) => apiPost("/builds", payload),
     onSuccess: () => {
       setBrief("");
+      clearImage();
       qc.invalidateQueries({ queryKey: ["builds"] });
     },
   });
@@ -167,7 +183,10 @@ export default function Studio({ stream }) {
           className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
           onSubmit={(e) => {
             e.preventDefault();
-            if (brief.trim()) submit.mutate({ brief: brief.trim() });
+            if (!brief.trim()) return;
+            const payload = { brief: brief.trim() };
+            if (refImage?.url) payload.reference_image = refImage.url;
+            submit.mutate(payload);
           }}
         >
           <input
@@ -176,6 +195,44 @@ export default function Studio({ stream }) {
             value={brief}
             onChange={(e) => setBrief(e.target.value)}
           />
+          {/* "Build from a picture": attach one reference image (screenshot,
+              drawing, or diagram) that the design/architecture agents match. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => onPickImage(e.target.files?.[0])}
+          />
+          {refImage ? (
+            <div className="flex items-center gap-2 rounded border border-hairline px-2 py-1">
+              <img
+                src={refImage.url}
+                alt="reference"
+                className="h-9 w-9 rounded object-cover"
+              />
+              <span className="max-w-[8rem] truncate font-mono text-[11px] text-ash">
+                {refImage.name}
+              </span>
+              <button
+                type="button"
+                onClick={clearImage}
+                title="Remove reference image"
+                className="text-ash hover:text-ember"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="btn-ghost disabled:opacity-50"
+              title="Attach a reference image — a screenshot, drawing, or diagram to match"
+            >
+              + Image
+            </button>
+          )}
           <button
             type="submit"
             disabled={submit.isPending || !brief.trim()}

@@ -136,8 +136,45 @@ def resolve_project_file(state: AppState, slug: str, rel_path: str) -> Path:
     return candidate
 
 
-async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "") -> dict[str, Any]:
-    """Queue a build. Uses the studio if wired, else records + emits an event."""
+def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
+    """Decode a base64 ``data:`` image URL and save it under data_dir so the
+    build's agents can read it as a file path. Returns the saved PATH, or the
+    original data URL unchanged when it isn't a decodable data URL or saving
+    fails (degrade, don't crash — the LLM client also accepts a data URL).
+    """
+    s = (data_url or "").strip()
+    if not s.startswith("data:"):
+        return s  # already a path / http url; pass through
+    try:
+        header, _, b64 = s.partition(",")
+        if not b64:
+            return s
+        import base64
+
+        raw = base64.b64decode(b64, validate=False)
+        ext = "png"
+        if "image/jpeg" in header or "image/jpg" in header:
+            ext = "jpg"
+        elif "image/webp" in header:
+            ext = "webp"
+        out_dir = Path(state.settings.data_dir) / "reference_images"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{build_id}.{ext}"
+        out_path.write_bytes(raw)
+        return str(out_path)
+    except Exception as exc:  # noqa: BLE001 - never let an image break a build
+        log.warning("build.reference_image_save_failed", error=str(exc)[:160])
+        return s  # fall back to the data URL (the LLM client accepts it directly)
+
+
+async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
+                       reference_image: str = "") -> dict[str, Any]:
+    """Queue a build. Uses the studio if wired, else records + emits an event.
+
+    ``reference_image`` is an optional base64 ``data:`` URL (or path); when
+    present it is saved and threaded into the build so the design/architecture
+    agents can match it ("build from a picture"). Absent -> unchanged behavior.
+    """
     if not brief or not brief.strip():
         raise ValueError("brief is required")
     build_id = state.new_build_id()
@@ -154,12 +191,20 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     # Prefer a wired StudioRunner (async start(brief, slug=None, extra=None)),
     # falling back to a legacy submit(...) if present. The build runs as a
     # background task so the endpoint returns immediately with the build_id.
+    # Optional reference image: decode + save (degrades to data-URL pass-through).
+    ref_path = ""
+    if reference_image and reference_image.strip():
+        ref_path = _save_reference_image(state, build_id, reference_image.strip())
+
     studio = state.studio
     dispatched = False
     runner = None
     if studio is not None:
         if hasattr(studio, "start"):
-            runner = lambda: studio.start(brief, slug=slug or None, extra={"stack": stack, "build_id": build_id})
+            _extra = {"stack": stack, "build_id": build_id}
+            if ref_path:
+                _extra["reference_image"] = ref_path
+            runner = lambda: studio.start(brief, slug=slug or None, extra=_extra)
         elif hasattr(studio, "submit"):  # pragma: no cover - legacy shape
             runner = lambda: studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
     if runner is not None:
@@ -1035,6 +1080,7 @@ def build_router(state: AppState) -> Any:
                 brief=str(body.get("brief", "")),
                 stack=str(body.get("stack", "")),
                 slug=str(body.get("slug", "")),
+                reference_image=str(body.get("reference_image", "")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
@@ -1182,6 +1228,7 @@ def build_router(state: AppState) -> Any:
                 brief=str(body.get("brief", "")),
                 stack=str(body.get("stack", "")),
                 slug=str(body.get("slug", "")),
+                reference_image=str(body.get("reference_image", "")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))

@@ -50,10 +50,20 @@ class DesignerAgent(BaseAgent):
         p = task.payload
         brief = p.get("brief", "") or p.get("slug", "app")
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
+        # Optional reference image ("build from a picture"): when present, pass it
+        # through as a multimodal prompt so the design reflects it. Degrades on a
+        # non-vision backend (the LLM client ignores images for stub/CLI).
+        ref = p.get("reference_image")
+        prompt = f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON."
+        images = None
+        if ref:
+            prompt += ("\n\nA reference image is attached — match its layout, "
+                       "palette, and visual style where it makes sense.")
+            images = [ref]
         result = await self.llm.complete(
-            f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON.",
+            prompt,
             tier=Tier.UI, system=self.system_prompt(_SYSTEM), json_mode=True,
-            task_type=self.agent_type,
+            task_type=self.agent_type, images=images,
         )
         parsed = parse_json(result.text)
         design: dict[str, Any] = dict(_DEFAULT_DESIGN)

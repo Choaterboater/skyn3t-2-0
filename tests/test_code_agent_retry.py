@@ -76,6 +76,38 @@ async def test_timeout_with_substantial_code_is_kept(tmp_path):
     assert any("App.jsx" in f for f in result.output["files"])
 
 
+async def test_prose_file_in_substantial_app_is_not_degraded(tmp_path):
+    # The agent writes a substantial app PLUS one prose (non-code) util file. The
+    # prose file is reverted, but the app is complete — it must NOT be flagged
+    # degraded (which would no_go a working app over one auto-cleaned file).
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus)
+    await agent.start()
+
+    async def fake(prompt, workdir, timeout=None):
+        pathlib.Path(workdir, "App.jsx").write_text(_REAL_APP)  # substantial real code
+        pathlib.Path(workdir, "notes.js").write_text(
+            "Here is where the picture gets sent to the home so children can enjoy "
+            "it and share it later with their friends and their whole family.")  # prose, zero code signal
+        return {"ok": True, "backend": "claude_cli"}
+
+    agent.llm._backend = "claude_cli"  # type: ignore[attr-defined]
+    with patch.object(type(agent.llm), "backend", new_callable=lambda: property(
+        lambda self: getattr(self, "_backend", "stub")
+    )):
+        agent.llm.agentic_build = fake  # type: ignore[method-assign]
+        task = TaskRequest(
+            type="codegen",
+            payload={"brief": "a react counter app", "slug": "c",
+                     "worktree_dir": str(tmp_path)},
+            capabilities_required=("codegen",),
+        )
+        result = await agent.run(task)
+    assert "degraded" not in result.output, "prose-revert in a substantial app must not degrade it"
+    assert any("App.jsx" in f for f in result.output["files"])      # substantial app delivered
+    assert not any("notes.js" in f for f in result.output["files"])  # prose file cleaned out
+
+
 async def test_exhausts_retry_then_degraded(tmp_path):
     # Every attempt under-delivers -> retried once, then flagged degraded + scaffold floor.
     result, n = await _run_with_attempts(tmp_path, [(True, None)])

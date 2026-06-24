@@ -158,21 +158,27 @@ class CodeAgent(BaseAgent):
                 attempt += 1
 
             if prose_files:
+                # Some files were prose (not code) and were reverted to the
+                # scaffold. This DEGRADES the build only if it left the app
+                # under-delivered (checked next) — a substantial, building app with
+                # one auto-reverted util still works and must NOT be no_go'd over it
+                # (proof/build/liveness already verify the app actually runs).
                 log.warning("code_agent.agentic_prose_rejected", files=prose_files)
-                self.metadata["degraded"] = True
-                self.metadata["degraded_reason"] = (
-                    f"agent wrote prose (not code) into {prose_files}; reverted to scaffold"
-                )
+                self.metadata["prose_rejected"] = list(prose_files)
             under_delivered = not (disk and code_bytes >= threshold)
             if under_delivered:
-                # Genuine under-delivery (no-op'd / left a stub). An ok=False call
-                # matters here only because it ALSO produced too little code.
-                degraded_reason = (
-                    (f"agentic build failed: {agentic_error}" if agentic_error
-                     else "agentic build returned ok=False") if not agentic_ok
-                    else f"agentic build under-delivered after {attempt} retr"
-                         f"{'y' if attempt == 1 else 'ies'}: {code_bytes} code bytes "
-                         f"in {len(disk)} files (threshold {threshold})")
+                # Genuine under-delivery: no-op'd / left a stub, or a prose-revert
+                # dropped the real code below threshold.
+                if not agentic_ok:
+                    degraded_reason = (f"agentic build failed: {agentic_error}"
+                                       if agentic_error else "agentic build returned ok=False")
+                elif prose_files:
+                    degraded_reason = (f"prose (not code) in {prose_files} left only "
+                                       f"{code_bytes} code bytes (threshold {threshold})")
+                else:
+                    degraded_reason = (f"agentic build under-delivered after {attempt} retr"
+                                       f"{'y' if attempt == 1 else 'ies'}: {code_bytes} code "
+                                       f"bytes in {len(disk)} files (threshold {threshold})")
                 log.warning(
                     "code_agent.agentic_degraded", agentic_ok=agentic_ok,
                     code_bytes=code_bytes, files_on_disk=len(disk),

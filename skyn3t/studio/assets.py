@@ -22,7 +22,12 @@ from typing import Any
 
 import structlog
 
-from skyn3t.adapters.replicate import ReplicateClient, coloring_prompt
+from skyn3t.adapters.replicate import (
+    ReplicateClient,
+    asset_model,
+    asset_prompt,
+    select_asset_style,
+)
 from skyn3t.config.settings import Settings
 
 log = structlog.get_logger(__name__)
@@ -37,6 +42,10 @@ _IMAGE_SIGNALS = (
     "drawings", "picture", "pictures", "image", "images", "illustration",
     "illustrated", "art", "artwork", "icon", "icons", "sticker", "stickers",
     "gallery", "sprite", "sprites", "cartoon", "clip art", "clipart",
+    # photo + brand signals so photo/logo apps trigger asset-gen and route to
+    # their proper model (flux-1.1-pro / recraft SVG) instead of being skipped.
+    "photo", "photos", "photograph", "photography", "logo", "logos", "brand",
+    "branding", "avatar", "avatars", "banner", "thumbnail",
 )
 
 # A pragmatic subject vocabulary. We pull subjects the brief actually names; this
@@ -82,6 +91,9 @@ def _ext_for(data: bytes) -> str:
         return "jpg"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
+    head = data[:256].lstrip().lower()
+    if head.startswith(b"<svg") or head.startswith(b"<?xml"):
+        return "svg"  # recraft vector model returns SVG markup
     return "png"
 
 
@@ -118,6 +130,10 @@ async def generate_assets(
 
     cap = max(1, min(int(max_assets), MAX_ASSETS))
     subjects = _extract_subjects(brief, cap)
+    # Route to the model + prompt that fits THIS app (coloring->flux-schnell,
+    # logo->recraft SVG, photo->flux-1.1-pro, etc.) instead of line-art for all.
+    style = select_asset_style(brief)
+    model = asset_model(style)
     assets_dir = Path(project_dir) / "assets"
     written: list[dict[str, str]] = []
     try:
@@ -130,7 +146,8 @@ async def generate_assets(
     # multi-subject set isn't serialized at ~90s/subject on the build hot path.
     async def _gen(subject: str) -> tuple[str, bytes | None]:
         try:
-            images = await cli.generate_images(coloring_prompt(subject), n=1)
+            images = await cli.generate_images(
+                asset_prompt(style, subject), n=1, model=model)
             return subject, (images[0] if images else None)
         except Exception as exc:  # noqa: BLE001 - never break the build over a subject
             log.warning("assets.subject_failed", subject=subject, error=str(exc)[:160])
@@ -152,6 +169,8 @@ async def generate_assets(
         "generated": len(written),
         "skipped": len(written) == 0,
         "reason": "" if written else "no_images",
+        "style": style,
+        "model": model,
         "assets": written,
     }
     if written:

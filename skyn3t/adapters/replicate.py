@@ -54,6 +54,70 @@ def coloring_prompt(subject: str) -> str:
     return _COLORING_TEMPLATE.format(subject=(subject or "animal").strip())
 
 
+# --- asset-style routing: different apps need different image models ---------
+# Verified Replicate model ids (researched against replicate.com, 2026-06). The
+# generic prompt-only input (_input_for) works across all of these, so the asset
+# step just picks the right model + prompt template per app type.
+_STYLE_MODELS = {
+    "coloring":     DEFAULT_MODEL,                       # b&w line-art pages; fast + cheap
+    "logo":         "recraft-ai/recraft-v4-svg",         # true scalable SVG vectors
+    "sticker":      "fofr/sticker-maker",                # transparent-background stickers
+    "photo":        "black-forest-labs/flux-1.1-pro",    # photorealism
+    "illustration": "black-forest-labs/flux-dev",        # general colour art (default)
+}
+
+_STYLE_PROMPTS = {
+    "coloring":     _COLORING_TEMPLATE,
+    "logo":         ("minimal modern flat logo icon representing a {subject}, simple "
+                     "geometric shapes, bold solid colors, clean vector, centered, plain "
+                     "white background, no text, no lettering"),
+    "sticker":      ("die-cut sticker of a cute {subject}, bold clean outline, vibrant "
+                     "flat colors, glossy cartoon style, white border, transparent background"),
+    "photo":        ("professional high-resolution photograph of a {subject}, natural soft "
+                     "lighting, realistic, sharp focus, shallow depth of field, no text, "
+                     "no watermark"),
+    "illustration": ("colorful friendly flat vector illustration of a {subject}, clean "
+                     "simple shapes, soft shadows, plain background, modern app asset, no text"),
+}
+
+# Brief signals -> style, in priority order (earlier wins on a tie). A generic
+# image brief with none of these defaults to 'illustration'.
+_STYLE_SIGNALS = (
+    ("coloring", ("coloring", "colouring", "color-in", "color in", "line-art", "line art")),
+    ("logo",     ("logo", "favicon", "app icon", "brand", "branding", "icon set",
+                  "icons", "icon")),
+    ("sticker",  ("sticker", "stickers", "emoji", "decal")),
+    ("photo",    ("photo", "photograph", "photorealistic", "realistic", "product shot",
+                  "product photo", "real-life", "recipe", "food", "menu", "restaurant",
+                  "travel", "real estate", "portrait", "headshot")),
+)
+
+
+def select_asset_style(brief: str) -> str:
+    """Pick the asset style (-> model + prompt) that best fits ``brief``.
+
+    Defaults to 'illustration' for a generic image app. Keyword-based so it stays
+    offline + deterministic; the matched style chooses BOTH the model and the
+    prompt template, so a logo app gets a vector logo model, a photo app a
+    photoreal model, etc. — not coloring-page line-art for everything."""
+    low = (brief or "").lower()
+    for style, sigs in _STYLE_SIGNALS:
+        if any(s in low for s in sigs):
+            return style
+    return "illustration"
+
+
+def asset_model(style: str) -> str:
+    """Replicate model id for an asset ``style`` (falls back to the default)."""
+    return _STYLE_MODELS.get(style, DEFAULT_MODEL)
+
+
+def asset_prompt(style: str, subject: str) -> str:
+    """Build the image prompt for ``subject`` in the given ``style``."""
+    tmpl = _STYLE_PROMPTS.get(style, _STYLE_PROMPTS["illustration"])
+    return tmpl.format(subject=(subject or "object").strip())
+
+
 class ReplicateClient:
     """Minimal async Replicate client built from settings. Degrades to no-op."""
 

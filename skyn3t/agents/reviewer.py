@@ -147,8 +147,12 @@ class ReviewerAgent(BaseAgent):
             f"Brief: {brief}\nEntrypoints: {entry}\n"
         )
         try:
+            # A 0-100 completeness rating capped at 128 tokens and blended at only
+            # 0.3 weight does NOT need a heavy reasoning model — that was the bulk
+            # of the review stage's wall-clock. A fast/cheap tier gives the same
+            # signal in a fraction of the time.
             res = await self.llm.complete(
-                prompt, tier=Tier.STRONG, json_mode=True, max_tokens=128, task_type=self.agent_type
+                prompt, tier=Tier.CHEAP, json_mode=True, max_tokens=128, task_type=self.agent_type
             )
             data = json.loads(res.text)
             val = float(data.get("score"))

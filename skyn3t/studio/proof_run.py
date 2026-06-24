@@ -13,6 +13,7 @@ Import has zero side effects (no subprocess, no network).
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +104,83 @@ def _unresolved_local_imports(root: Path) -> list[str]:
             if not _import_resolves(f, spec, root):
                 out.append(f"{f.relative_to(root)} -> {spec}")
     return out
+
+
+def _module_resolves(base: Path, dotted: str) -> bool:
+    """True if dotted module ``a.b.c`` resolves to a file/package under ``base``.
+
+    Accepts a regular module (``a/b/c.py``), a package (``a/b/c/__init__.py``) or a
+    namespace-package dir (``a/b/c/``). Indeterminate filesystem errors return True
+    (never a false alarm)."""
+    parts = [p for p in dotted.split(".") if p]
+    if not parts:
+        return True
+    target = base.joinpath(*parts)
+    try:
+        return (target.with_suffix(".py").is_file()
+                or (target / "__init__.py").is_file()
+                or target.is_dir())
+    except OSError:
+        return True
+
+
+def _local_top_level(root: Path) -> set[str]:
+    """Top-level importable names defined by the project (root dirs + .py stems)."""
+    names: set[str] = set()
+    try:
+        for child in root.iterdir():
+            if child.name.startswith(".") or child.name in {"node_modules", "__pycache__"}:
+                continue
+            if child.is_dir():
+                names.add(child.name)
+            elif child.is_file() and child.suffix == ".py":
+                names.add(child.stem)
+    except OSError:
+        pass
+    return names
+
+
+def _unresolved_python_imports(root: Path) -> list[str]:
+    """LOCAL Python imports that resolve to no module on disk — the cross-module
+    (cross-slice) break the syntax pass + entrypoint smoke can miss (e.g. a backend
+    slice importing ``api.routes.users`` that the routes slice never wrote).
+
+    Conservative to avoid false alarms: an ABSOLUTE import is only checked when its
+    first segment is a LOCAL top-level package/module (third-party + stdlib skipped,
+    exactly like bare JS specifiers); RELATIVE imports are resolved against the
+    file's own package. Pure & offline."""
+    py_files = [f for f in _iter_files(root) if f.suffix == ".py"]
+    if not py_files:
+        return []
+    local_top = _local_top_level(root)
+    if not local_top:
+        return []
+    out: list[str] = []
+    for f in py_files:
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"), str(f))
+        except (SyntaxError, ValueError, OSError):
+            continue  # syntax errors are reported by the dedicated syntax pass
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    mod = alias.name
+                    if mod.split(".")[0] in local_top and not _module_resolves(root, mod):
+                        out.append(f"{f.relative_to(root)} -> import {mod}")
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:  # relative — resolve against the file's package dir
+                    base = f.parent
+                    for _ in range(node.level - 1):
+                        base = base.parent
+                    if not (base == root or root in base.parents):
+                        continue  # escaped the project root — don't guess
+                    if node.module and not _module_resolves(base, node.module):
+                        out.append(f"{f.relative_to(root)} -> from {'.' * node.level}{node.module}")
+                elif node.module and node.module.split(".")[0] in local_top:
+                    if not _module_resolves(root, node.module):
+                        out.append(f"{f.relative_to(root)} -> from {node.module}")
+    seen: set[str] = set()
+    return [x for x in out if not (x in seen or seen.add(x))][:10]
 
 
 # --- static boot-readiness: unwired components -------------------------------
@@ -207,6 +285,51 @@ class ProofResult:
             "score": self.score,
             "detail": dict(self.detail),
         }
+
+    def error_gaps(self) -> list[str]:
+        """Real, targeted repair hints distilled from the captured failure output.
+
+        The actual compiler/test/boot/import/syntax errors are ALREADY captured in
+        ``detail`` + ``syntax_errors`` — this surfaces them as clean, per-failure
+        gap strings the code-improver can act on, instead of one stringified
+        ``detail`` blob. Every string carries the offending filename(s), so the
+        improver's gap→file targeting rewrites exactly what broke. Returns ``[]``
+        when the proof carries no actionable error text (e.g. a pure
+        missing-files failure), letting the caller keep its generic fallback.
+        """
+        return extract_error_gaps(self.detail, self.syntax_errors)
+
+
+def extract_error_gaps(
+    detail: dict[str, Any] | None, syntax_errors: list[str] | None = None
+) -> list[str]:
+    """Distil captured proof failure output into clean per-failure gap strings.
+
+    Pure helper shared by :meth:`ProofResult.error_gaps` (live) and the learning
+    loop (which reads a persisted proof ``detail`` dict). Returns ``[]`` when no
+    actionable error text is present.
+    """
+    gaps: list[str] = []
+    d = detail or {}
+    # Real npm/tsc/vite build output (700-char tail from _run_node_build).
+    if d.get("build") == "failed" and d.get("build_summary"):
+        gaps.append(f"BUILD FAILED — fix the cause of this compiler output:\n{d['build_summary']}")
+    # Real pytest failures (500-char tail from _run_generated_tests).
+    if d.get("tests") == "failed" and d.get("test_summary"):
+        gaps.append(f"TESTS FAILED — make the code satisfy these failing tests:\n{d['test_summary']}")
+    # Real entrypoint import traceback (400-char tail from _entrypoint_check).
+    if d.get("boot_error"):
+        gaps.append(f"BOOT/IMPORT ERROR — fix the entrypoint so it imports cleanly:\n{d['boot_error']}")
+    # Unresolved relative imports — each entry is "<importer> -> <spec>".
+    for imp in (d.get("unresolved_imports") or []):
+        gaps.append(f"UNRESOLVED IMPORT — create the missing target or fix the path: {imp}")
+    # Generated components exist but the entry reaches none of them.
+    if d.get("unwired_components"):
+        gaps.append(f"UNWIRED ENTRY — wire the entry to render the real app: {d['unwired_components']}")
+    # Python syntax errors — each entry is "<file>: <SyntaxError>".
+    for se in (syntax_errors or []):
+        gaps.append(f"SYNTAX ERROR — fix: {se}")
+    return gaps
 
 
 def _iter_files(root: Path):
@@ -350,7 +473,11 @@ def proof_run(
     # offline, deterministic gate catches the missing-stylesheet / unwired-module
     # class the npm build (which soft-skips offline) otherwise lets through.
     if passed and total > 0:
-        broken_imports = _unresolved_local_imports(pdir)
+        # JS/TS relative imports AND local Python cross-module imports — both are
+        # guaranteed runtime/boot failures the syntax pass + entrypoint smoke miss,
+        # and both are exactly the cross-slice wiring breaks parallel slicing can
+        # leave (a slice importing a sibling another slice failed to write).
+        broken_imports = _unresolved_local_imports(pdir) + _unresolved_python_imports(pdir)
         if broken_imports:
             passed = False
             detail["unresolved_imports"] = broken_imports[:10]

@@ -15,6 +15,11 @@ from collections.abc import Callable
 from typing import Any
 
 from skyn3t.rag.embeddings import Embedder
+# Reuse the offline BM25 + tokenizer from the hybrid retriever so lesson/skill
+# brief-ranking fuses a LEXICAL (keyword) signal with the embedding-cosine signal
+# via reciprocal-rank fusion — better recall than vector-only (gbrain-style), with
+# no extra dependency (pure-Python BM25 fallback).
+from skyn3t.rag.retrieval import _PureBM25, _tokenize
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -24,6 +29,27 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if len(a) != len(b):
         return 0.0
     return sum(x * y for x, y in zip(a, b))
+
+
+def _bm25_scores(texts: list[str], query: str) -> list[float]:
+    """BM25 relevance of each text to ``query`` (0.0 when no lexical overlap)."""
+    corpus = [_tokenize(t) for t in texts]
+    if not any(corpus):
+        return [0.0] * len(texts)
+    return _PureBM25(corpus).get_scores(_tokenize(query))
+
+
+def _rrf(orders: list[list], *, rrf_k: int = 60) -> list:
+    """Reciprocal-rank fusion of several ranked key-lists into one fused order.
+
+    Each list contributes 1/(rrf_k + rank) to its keys; keys absent from a list
+    simply don't get that list's contribution. Scale-free, so the vector cosine
+    and BM25 signals combine without normalising their incomparable magnitudes."""
+    combined: dict = {}
+    for order in orders:
+        for rank, key in enumerate(order):
+            combined[key] = combined.get(key, 0.0) + 1.0 / (rrf_k + rank + 1)
+    return [key for key, _ in sorted(combined.items(), key=lambda x: x[1], reverse=True)]
 
 
 def _skill_text(skill: Any) -> str:
@@ -61,28 +87,52 @@ class SemanticSkillIndex:
 
 def relevant_skills(skills: list[Any], brief: str, *, embedder: Embedder | None = None,
                     k: int = 5, min_score: float = 0.03) -> list[str]:
-    """Top-K skill slugs most semantically relevant to ``brief``. Never raises;
-    returns [] on an empty brief / skill set."""
-    idx = SemanticSkillIndex(embedder).build(list(skills or []))
-    return [slug for slug, _ in idx.query(brief, k=k, min_score=min_score)]
+    """Top-K skill slugs most relevant to ``brief``, by HYBRID retrieval: the
+    embedding-cosine ranking fused (RRF) with a BM25 keyword ranking over the
+    skill text. The lexical pass rescues skills whose brief-vocabulary overlap the
+    vector missed. Never raises; returns [] on an empty brief / skill set."""
+    skills = list(skills or [])
+    if not skills or not (brief or "").strip():
+        return []
+    emb = embedder or Embedder()
+    idx = SemanticSkillIndex(emb).build(skills)
+    pool = max(k * 4, k)
+    sem_order = [slug for slug, _ in idx.query(brief, k=pool, min_score=min_score)]
+    keyed = [(str(getattr(s, "slug", "") or ""), _skill_text(s)) for s in skills]
+    keyed = [(slug, t) for slug, t in keyed if slug]
+    bm = _bm25_scores([t for _, t in keyed], brief)
+    lex_order = [keyed[i][0] for i in sorted(range(len(keyed)), key=lambda j: bm[j], reverse=True)
+                 if bm[i] > 0.0]
+    return _rrf([sem_order, lex_order])[:k]
 
 
 def rank_texts(items: list[Any], query: str, *, get_text: Callable[[Any], str],
                embedder: Embedder | None = None, k: int = 5,
                min_score: float = 0.0) -> list[Any]:
-    """Rank arbitrary items by embedding-cosine of ``get_text(item)`` to
-    ``query``, best first; return the top-K ORIGINAL items. With an empty query
-    (or no items) it preserves the input order, capped at k — so callers can
-    use it as a best-effort re-rank that degrades to the prior ordering. Never
-    raises beyond a caller-supplied get_text."""
+    """Rank items by HYBRID relevance of ``get_text(item)`` to ``query`` — the
+    embedding-cosine ranking fused (RRF) with a BM25 keyword ranking — best first;
+    return the top-K ORIGINAL items. With an empty query (or no items) it preserves
+    the input order, capped at k, so callers can use it as a best-effort re-rank
+    that degrades to the prior ordering. The BM25 pass adds lexical recall (a
+    keyword match the vector missed) over the old vector-only rank. Never raises
+    beyond a caller-supplied get_text."""
     items = list(items or [])
     if not items:
         return []
     if not (query or "").strip():
         return items[:k]
+    texts = [str(get_text(it) or "") for it in items]
     emb = embedder or Embedder()
-    vecs = emb.embed_batch([str(get_text(it) or "") for it in items])
+    vecs = emb.embed_batch(texts)
     qv = emb.embed(query)
-    scored = [(it, _cosine(qv, vec)) for it, vec in zip(items, vecs)]
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [it for it, c in scored if c > min_score][:k]
+    cos = [_cosine(qv, v) for v in vecs]
+    # Semantic order (above the relevance floor) fused with the BM25 lexical order.
+    sem_order = [i for i in sorted(range(len(items)), key=lambda j: cos[j], reverse=True)
+                 if cos[i] > min_score]
+    bm = _bm25_scores(texts, query)
+    lex_order = [i for i in sorted(range(len(items)), key=lambda j: bm[j], reverse=True)
+                 if bm[i] > 0.0]
+    fused = _rrf([sem_order, lex_order])
+    if not fused:  # nothing above the floor and no lexical hit — degrade to cosine order
+        fused = sorted(range(len(items)), key=lambda j: cos[j], reverse=True)
+    return [items[i] for i in fused][:k]

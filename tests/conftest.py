@@ -33,6 +33,14 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     from skyn3t.config import settings as settings_mod
 
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
+    # Don't read the developer's real repo .env during tests. Settings hard-codes
+    # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github
+    # token, …) otherwise bleeds in and breaks tests that assert on the DEFAULT
+    # ("not configured"). Tests get config from explicit kwargs + os.environ only.
+    monkeypatch.setitem(settings_mod.Settings.model_config, "env_file", None)
+    for _var in ("SKYN3T_REPLICATE_API_TOKEN", "SKYN3T_REPLICATE_MODEL",
+                 "SKYN3T_GITHUB_TOKEN"):
+        monkeypatch.delenv(_var, raising=False)
     settings_mod.get_settings.cache_clear()
     yield
     settings_mod.get_settings.cache_clear()

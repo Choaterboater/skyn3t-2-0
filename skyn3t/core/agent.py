@@ -139,9 +139,16 @@ class BaseAgent(ABC):
         # attributes exactly the completions THIS run produces to the tournament
         # AND bounds the list (no unbounded growth over a long-lived process).
         llm = getattr(self, "llm", None)
-        if llm is not None and hasattr(llm, "routes"):
-            with contextlib.suppress(Exception):
-                llm.routes.clear()
+        if llm is not None:
+            # Start an ISOLATED, task-local route capture for this run: the client
+            # is shared across agents, so a bare shared-list clear() would race
+            # concurrent runs. Fall back to routes.clear() for test doubles.
+            if hasattr(llm, "begin_run_capture"):
+                with contextlib.suppress(Exception):
+                    llm.begin_run_capture()
+            elif hasattr(llm, "routes"):
+                with contextlib.suppress(Exception):
+                    llm.routes.clear()
         await self.event_bus.emit(
             EventType.TASK_STARTED, self.name,
             {"task_id": task.task_id, "type": task.type},

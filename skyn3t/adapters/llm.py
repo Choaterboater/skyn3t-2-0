@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import json
 import os
 import shutil
@@ -33,6 +34,15 @@ import structlog
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.model_router import ModelRouter, Tier
+
+# Per-asyncio-task LLM route capture. The LLMClient is SHARED across agents, but
+# each agent's run() is its own task; task-local vars isolate "the completions
+# THIS run produced" without a global lock (a per-AGENT lock can't — the client
+# is shared, so two agents would race on shared instance attrs). The only reader
+# (core/agent.py._run_locked) runs in the SAME task as the completions it reads.
+_LAST_MODEL: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_model", default=None)
+_LAST_ROUTE: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_route", default=None)
+_ROUTES: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_routes", default=None)
 
 log = structlog.get_logger(__name__)
 
@@ -186,20 +196,73 @@ class LLMClient:
             daily_cap=self.settings.daily_usd_cap,
             token_cap=self.settings.daily_token_cap,
         )
-        # The model id of the most recent completion (real model for openrouter,
-        # ``<provider>-cli`` for CLI backends, resolved model for stub). Agents
-        # read this to stamp ``TaskResult.model_id`` so the ModelTournament is
-        # fed by real build traffic. None until the first ``complete`` call.
-        self.last_model: str | None = None
-        # The (tier, task_type) the most recent completion routed through, so the
-        # tournament records into the SAME bucket the LearnedModelRouter queries.
-        self.last_route: tuple[str, str] | None = None
-        # Every (tier, task_type, model) this client has routed, in order. A
-        # build stage that makes several completions (e.g. code_agent per file,
-        # across backend/ui tiers) leaves them all here; BaseAgent snapshots the
-        # slice a single stage produced so the tournament is fed per-route, not
-        # just for the last file's bucket.
-        self.routes: list[tuple[str, str, str]] = []
+        # Route capture is HYBRID: a task-local contextvar (so concurrent agent
+        # runs sharing this client don't clobber each other) plus a global
+        # last-write (so a SYNC / cross-context reader — e.g. `asyncio.run(
+        # complete())` then read last_model — still sees the result). In-task
+        # reads prefer the contextvar; out-of-task reads fall back to the globals.
+        self._g_last_model: str | None = None
+        self._g_last_route: tuple[str, str] | None = None
+        self._g_routes: list[tuple[str, str, str]] = []
+
+    # ---- per-run route capture (task-local + global fallback) ---------------
+    def begin_run_capture(self) -> None:
+        """Start an isolated, task-local route capture for THIS run so concurrent
+        agent runs that share this client don't clobber each other. Agents call
+        this at run start (replacing a bare ``routes.clear()``)."""
+        _LAST_MODEL.set(None)
+        _LAST_ROUTE.set(None)
+        _ROUTES.set([])
+
+    def _record_completion(self, tier: str, task_type: str, model: str) -> None:
+        """Record one completion's route into both the task-local capture (if a
+        run is active) and the bounded global last-write."""
+        self._g_last_model = model
+        self._g_last_route = (tier, task_type)
+        self._g_routes.append((tier, task_type, model))
+        if len(self._g_routes) > 256:  # bound the global; agents read the task-local slice
+            del self._g_routes[: len(self._g_routes) - 256]
+        _LAST_MODEL.set(model)
+        _LAST_ROUTE.set((tier, task_type))
+        tl = _ROUTES.get()
+        if tl is not None:
+            tl.append((tier, task_type, model))
+
+    @property
+    def last_model(self) -> str | None:
+        """Model id of the most recent completion (real model for openrouter,
+        ``<provider>-cli`` for CLI, resolved model for stub). In-task: this run's;
+        out-of-task: the global last-write. Agents stamp ``TaskResult.model_id``."""
+        v = _LAST_MODEL.get()
+        return v if v is not None else self._g_last_model
+
+    @last_model.setter
+    def last_model(self, value: str | None) -> None:
+        _LAST_MODEL.set(value)
+        self._g_last_model = value
+
+    @property
+    def last_route(self) -> tuple[str, str] | None:
+        """(tier, task_type) the most recent completion routed through."""
+        v = _LAST_ROUTE.get()
+        return v if v is not None else self._g_last_route
+
+    @last_route.setter
+    def last_route(self, value: tuple[str, str] | None) -> None:
+        _LAST_ROUTE.set(value)
+        self._g_last_route = value
+
+    @property
+    def routes(self) -> list[tuple[str, str, str]]:
+        """Every (tier, task_type, model) routed, in order. In-task: this run's
+        isolated slice (see begin_run_capture); out-of-task: the global list."""
+        v = _ROUTES.get()
+        return v if v is not None else self._g_routes
+
+    @routes.setter
+    def routes(self, value: list[tuple[str, str, str]]) -> None:
+        _ROUTES.set(list(value))
+        self._g_routes = list(value)
 
     _cli_cache: dict[str, bool] = {}
 
@@ -266,10 +329,8 @@ class LLMClient:
             result = await self._cli(backend[:-4], prompt, system, json_mode, images)
         else:
             result = self._stub(model, prompt, system, json_mode)
-        self.last_model = result.model
         tier_s = getattr(tier, "value", str(tier))
-        self.last_route = (tier_s, task_type)
-        self.routes.append((tier_s, task_type, result.model))
+        self._record_completion(tier_s, task_type, result.model)
         self.budget.record(result)
         self.budget.check()
         return result

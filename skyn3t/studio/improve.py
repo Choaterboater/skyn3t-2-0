@@ -6,6 +6,8 @@ isolated worktree, verifies with proof_run, and delivers the change back —
 never leaving a partial result. Emits IMPROVE_* events for the cockpit."""
 from __future__ import annotations
 
+import shutil
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -107,7 +109,27 @@ class ImproveEngine:
                 run_build=bool(getattr(self.settings, "run_generated_build", False)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
+            # clean=True WIPES project_dir before copying, and merge_back swallows
+            # per-file copy errors — a mid-merge failure would leave the original
+            # project half-destroyed. Back it up first and restore if the merge
+            # lands fewer files than the worktree holds, so improve() never leaves
+            # a working project broken (design rule #1).
+            source_files = list_files(wt.dir)
+            backup = Path(tempfile.mkdtemp(prefix=f"improve-bak-{slug}-"))
+            backed_up = False
+            try:
+                merge_back(str(project_dir), str(backup), overwrite=True, clean=False)
+                backed_up = True
+            except Exception:  # noqa: BLE001 - backup is best-effort
+                pass
             delivered = merge_back(wt.dir, str(project_dir), overwrite=True, clean=True)
+            if backed_up and len(list_files(str(project_dir))) < len(source_files):
+                _log.warning("improve.partial_merge_restored", slug=slug,
+                             delivered=len(list_files(str(project_dir))),
+                             expected=len(source_files))
+                merge_back(str(backup), str(project_dir), overwrite=True, clean=True)
+                delivered = list_files(str(project_dir))
+            shutil.rmtree(backup, ignore_errors=True)
             # merge_back returns [] when the worktree held only ignored files (it
             # already cleaned project_dir) — fall back to what's actually on disk
             # so a real delivery is never reported as empty (design rule #1).

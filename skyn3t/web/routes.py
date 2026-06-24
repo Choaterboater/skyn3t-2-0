@@ -804,8 +804,14 @@ def _persist_env_var(name: str, value: str) -> None:
         out: list[str] = []
         found = False
         for ln in lines:
-            stripped = ln.strip().lstrip("#").strip()
-            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            stripped = ln.strip()
+            # Only a real (non-comment) ``KEY=value`` assignment can match — a
+            # commented line (``# KEY=...``) must be preserved verbatim, never
+            # uncommented/overwritten.
+            if stripped.startswith("#") or "=" not in stripped:
+                out.append(ln)
+                continue
+            key = stripped.split("=", 1)[0].strip()
             if key == name:
                 out.append(f"{name}={value}")
                 found = True

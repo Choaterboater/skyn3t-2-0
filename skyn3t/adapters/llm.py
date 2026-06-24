@@ -526,7 +526,10 @@ class LLMClient:
         # so resp.json() is inside the guard too (it raises ValueError/JSONDecodeError).
         try:
             data = resp.json()
-            text = data["choices"][0]["message"]["content"]
+            # content can be JSON null (tool-only/empty completions) — coalesce to
+            # "" so the contract "text is always a str" holds (matches the CLI path)
+            # and downstream len()/json parsing never hits None.
+            text = data["choices"][0]["message"]["content"] or ""
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             log.warning("llm.openrouter_malformed", error=str(exc)[:160])
             return self._stub(model, prompt, system, json_mode)
@@ -536,8 +539,8 @@ class LLMClient:
         # models report $0 — corrupting cost tracking + budget caps. Estimate
         # tokens from text length (~4 chars/token) so a paid call is never free.
         if not model.endswith(":free") and pt == 0 and ct == 0:
-            pt = max(1, (len(system) + len(prompt)) // 4)
-            ct = max(1, len(text) // 4)
+            pt = max(1, (len(system or "") + len(prompt or "")) // 4)
+            ct = max(1, len(text or "") // 4)
             log.warning("llm.openrouter_usage_missing", model=model, est_tokens=pt + ct)
         # :free models cost $0; otherwise rough estimate.
         cost = 0.0 if model.endswith(":free") else (pt + ct) / 1_000_000 * 0.5

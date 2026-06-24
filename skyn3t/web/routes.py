@@ -714,7 +714,9 @@ async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str
         try:  # pragma: no cover
             lessons = await state.memory.relevant_lessons(stack="", stage="", limit=limit)
             ql = q.lower()
-            results = [l for l in lessons if ql in str(l.get("text", "")).lower()] or lessons
+            # No `or lessons` fallback: a query that matches nothing must return
+            # an empty result set, not every recent lesson (false positives).
+            results = [l for l in lessons if ql in str(l.get("text", "")).lower()]
         except Exception:  # noqa: BLE001
             results = []
     return {"query": q, "results": results[:limit], "degraded": True}

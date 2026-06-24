@@ -18,10 +18,14 @@ import atexit
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.web.deps import AppState
 from skyn3t.web.routes import build_router
 from skyn3t.web.websockets import ConnectionHub, build_ws_router
+
+log = structlog.get_logger(__name__)
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import FastAPI, HTTPException
@@ -121,6 +125,18 @@ def create_app(
 
     app.include_router(build_router(state))
     app.include_router(build_ws_router(state, hub))
+
+    @app.on_event("startup")
+    async def _reconcile_orphans() -> None:  # pragma: no cover - lifecycle hook
+        # A build can't survive a server restart; mark any left "running" by a
+        # dead instance as interrupted so they don't linger as phantoms forever.
+        if state.memory is not None:
+            try:
+                n = await state.memory.reconcile_orphaned_builds()
+                if n:
+                    log.info("startup.reconciled_orphaned_builds", count=n)
+            except Exception as exc:  # noqa: BLE001 - never block startup
+                log.warning("startup.reconcile_failed", error=str(exc))
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:  # pragma: no cover - lifecycle hook

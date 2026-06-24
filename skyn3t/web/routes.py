@@ -906,6 +906,30 @@ async def set_replicate_token(
     }
 
 
+async def set_asset_gen(state: AppState, enabled: bool, persist: bool = True) -> dict[str, Any]:
+    """Toggle Replicate asset generation on/off.
+
+    Updates the live Settings flag AND os.environ (so a running cortex picks it
+    up on its next build) and persists to .env. Mirrors :func:`set_replicate_token`.
+    The asset-gen STEP additionally requires a Replicate token to actually run;
+    this switch only controls the opt-in flag. Returns the new state.
+    """
+    import os
+
+    enabled = bool(enabled)
+    try:
+        setattr(state.settings, "asset_gen", enabled)
+    except Exception:  # noqa: BLE001
+        pass
+    os.environ["SKYN3T_ASSET_GEN"] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var("SKYN3T_ASSET_GEN", "true" if enabled else "false")
+    return {
+        "asset_gen": enabled,
+        "replicate": bool(getattr(state.settings, "replicate_api_token", "")),
+    }
+
+
 async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str, Any]:
     """Drop cached proposals. ``scope='resolved'`` keeps genuinely-pending ones;
     ``scope='all'`` clears everything. In-memory only — never raises."""
@@ -1268,6 +1292,10 @@ def build_router(state: AppState) -> Any:
             str(body.get("token", body.get("key", ""))),
             model=str(body.get("model", "")),
         )
+
+    @router.post("/settings/asset_gen", dependencies=[auth])
+    async def _set_asset_gen(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        return await set_asset_gen(state, bool(body.get("enabled", body.get("on", False))))
 
     @router.post("/proposals/clear", dependencies=[auth])
     async def _clear_proposals(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:

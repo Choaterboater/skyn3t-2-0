@@ -14,6 +14,7 @@ pytest.importorskip("skyn3t.web.deps")
 from skyn3t.web.deps import AppState  # noqa: E402
 from skyn3t.web.routes import (  # noqa: E402
     llm_secrets_payload,
+    set_asset_gen,
     set_llm_backend,
     set_llm_key,
     set_replicate_token,
@@ -52,6 +53,24 @@ async def test_switch_backend():
 async def test_unknown_provider_rejected():
     with pytest.raises(ValueError):
         await set_llm_key(_state(), "bogus", "x", persist=False)
+
+
+async def test_set_asset_gen_toggles_flag():
+    st = _state(llm_backend="stub", replicate_api_token="r8_x")
+    assert st.settings.asset_gen is False  # default off
+    on = await set_asset_gen(st, True, persist=False)
+    assert on["asset_gen"] is True
+    assert st.settings.asset_gen is True
+    off = await set_asset_gen(st, False, persist=False)
+    assert off["asset_gen"] is False
+    assert st.settings.asset_gen is False
+
+
+async def test_asset_gen_surfaced_in_secrets_payload():
+    st = _state(llm_backend="stub", replicate_api_token="r8_x")
+    await set_asset_gen(st, True, persist=False)
+    p = await llm_secrets_payload(st)
+    assert p["asset_gen"] is True
 
 
 async def test_secrets_payload_reports_replicate_presence():

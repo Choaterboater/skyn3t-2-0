@@ -211,6 +211,7 @@ class _FakeLLM:
     the agents take their real (non-stub) path."""
 
     backend = "openrouter"
+    supports_image_input = True
 
     def __init__(self):
         self.calls: list[dict] = []
@@ -261,6 +262,7 @@ async def test_designer_omits_image_on_non_vision_backend():
     # tell the model "an image is attached" (which it couldn't act on).
     class _StubFake(_FakeLLM):
         backend = "stub"
+        supports_image_input = False
 
     bus = EventBus()
     fake = _StubFake()

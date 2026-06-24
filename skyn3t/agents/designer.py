@@ -50,14 +50,14 @@ class DesignerAgent(BaseAgent):
         p = task.payload
         brief = p.get("brief", "") or p.get("slug", "app")
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
-        # Optional reference image ("build from a picture"): only attach it — and
-        # only mention it — on the openrouter backend (the only one that can SEE
-        # images). On stub/CLI we say nothing (no "image attached" note the model
-        # can't act on) and behave exactly as today.
+        # Optional reference image ("build from a picture"): attach it — and
+        # mention it — only on a backend that can actually SEE images (OpenRouter
+        # vision OR the claude/kimi CLI, which reads the image file). On the stub
+        # backend we say nothing and behave exactly as today.
         ref = p.get("reference_image")
         prompt = f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON."
         images = None
-        if ref and getattr(self.llm, "backend", "") == "openrouter":
+        if ref and getattr(self.llm, "supports_image_input", False):
             prompt += ("\n\nA reference image is attached — match its layout, "
                        "palette, and visual style where it makes sense.")
             images = [ref]

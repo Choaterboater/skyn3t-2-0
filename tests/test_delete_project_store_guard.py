@@ -20,7 +20,7 @@ import pytest
 
 from skyn3t.web.routes import delete_project
 
-_TERMINAL = ("failed", "completed", "cancelled", "approved", "rejected")
+_TERMINAL = ("failed", "completed", "completed_no_go", "cancelled", "approved", "rejected")
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,19 @@ def test_store_terminal_build_allows_delete(tmp_path):
         # Should not raise — terminal status allows deletion
         out = asyncio.run(delete_project(state, "myapp"))
         assert out["slug"] == "myapp"
+
+
+def test_completed_no_go_in_memory_allows_delete(tmp_path):
+    """A finished no-go build is terminal — its project must be deletable, not
+    treated as a running build (completed_no_go was missing from _TERMINAL)."""
+    state = _state(
+        tmp_path,
+        builds={"b1": SimpleNamespace(slug="nogo", status="completed_no_go")},
+        memory=_FakeMemory([]),
+    )
+    _project(state.settings.projects_dir, "nogo")
+    out = asyncio.run(delete_project(state, "nogo"))
+    assert out["slug"] == "nogo"
 
 
 def test_in_memory_running_still_blocked(tmp_path):

@@ -292,7 +292,9 @@ async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
         raise ValueError(f"invalid slug: {slug!r}")
     if not target.is_dir():
         raise FileNotFoundError(slug)
-    _TERMINAL = frozenset({"failed", "completed", "cancelled", "approved", "rejected"})
+    _TERMINAL = frozenset(
+        {"failed", "completed", "completed_no_go", "cancelled", "approved", "rejected"}
+    )
     active = {getattr(r, "slug", "") for r in state.builds.values()
               if getattr(r, "status", "") not in _TERMINAL}
     if target.name not in active and slug not in active:

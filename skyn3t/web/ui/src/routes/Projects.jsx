@@ -20,6 +20,54 @@ function fmtCost(usd) {
   return usd == null ? "—" : `$${Number(usd).toFixed(4)}`;
 }
 
+// created_at/updated_at may be epoch seconds, epoch ms, a numeric string, or an
+// ISO string — normalize to a comparable ms timestamp (0 when absent/unparseable).
+function toTime(v) {
+  if (v == null || v === "") return 0;
+  if (typeof v === "number") return v < 1e12 ? v * 1000 : v;
+  const n = Number(v);
+  if (!Number.isNaN(n) && String(v).trim() !== "") return n < 1e12 ? n * 1000 : n;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function fmtDate(v) {
+  const t = toTime(v);
+  if (!t) return "—";
+  return new Date(t).toLocaleString(undefined, {
+    year: "2-digit", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+const _NUMERIC_KEYS = ["score", "cost_usd", "size_bytes"];
+const _DATE_KEYS = ["created_at", "updated_at"];
+
+// A clickable column header that drives table sort. Text columns default to
+// ascending; numeric/date columns default to descending (newest/highest first).
+function SortHeader({ label, sortKey: key, sort, setSort, align }) {
+  const active = sort.key === key;
+  const arrow = !active ? "↕" : sort.dir === "asc" ? "↑" : "↓";
+  const defaultDir = _NUMERIC_KEYS.includes(key) || _DATE_KEYS.includes(key) ? "desc" : "asc";
+  return (
+    <th
+      onClick={() =>
+        setSort((s) =>
+          s.key === key
+            ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+            : { key, dir: defaultDir },
+        )
+      }
+      className={`cursor-pointer select-none px-4 py-2 font-normal hover:text-bone ${
+        align === "right" ? "text-right" : ""
+      }`}
+      title="Click to sort"
+    >
+      {label}
+      <span className={`ml-1 ${active ? "text-ember" : "text-ash/40"}`}>{arrow}</span>
+    </th>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Live serve-status. Seed from GET /api/studio/serve, then replay the shared
 // serve.started/serve.stopped event stream on top so the table reflects starts
@@ -328,6 +376,7 @@ export default function Projects({ stream }) {
   const [improveSlug, setImproveSlug] = useState(null);
   const [busy, setBusy] = useState({}); // slug -> "serving" | "stopping"
   const [serveErr, setServeErr] = useState({}); // slug -> message
+  const [sort, setSort] = useState({ key: "updated_at", dir: "desc" });
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["projects"],
@@ -385,6 +434,26 @@ export default function Projects({ stream }) {
   const projects = Array.isArray(data) ? data : data?.projects || [];
   const liveCount = Object.keys(served).length;
 
+  const sorted = useMemo(() => {
+    const arr = [...projects];
+    const dir = sort.dir === "asc" ? 1 : -1;
+    arr.sort((a, b) => {
+      let av, bv;
+      if (_NUMERIC_KEYS.includes(sort.key)) {
+        av = Number(a[sort.key]) || 0;
+        bv = Number(b[sort.key]) || 0;
+      } else if (_DATE_KEYS.includes(sort.key)) {
+        av = toTime(a[sort.key]);
+        bv = toTime(b[sort.key]);
+      } else {
+        av = String(a[sort.key] ?? "").toLowerCase();
+        bv = String(b[sort.key] ?? "").toLowerCase();
+      }
+      return av < bv ? -dir : av > bv ? dir : 0;
+    });
+    return arr;
+  }, [projects, sort]);
+
   return (
     <div>
       <PageHeader
@@ -431,19 +500,20 @@ export default function Projects({ stream }) {
             <table className="w-full text-left">
               <thead>
                 <tr className="eyebrow border-b border-hairline text-ash">
-                  <th className="px-4 py-2 font-normal">Slug</th>
-                  <th className="px-4 py-2 font-normal">Stack</th>
-                  <th className="px-4 py-2 font-normal">Status</th>
-                  <th className="px-4 py-2 font-normal">Score</th>
-                  <th className="px-4 py-2 font-normal">Cost</th>
-                  <th className="px-4 py-2 font-normal">Size</th>
+                  <SortHeader label="Slug" sortKey="slug" sort={sort} setSort={setSort} />
+                  <SortHeader label="Stack" sortKey="stack" sort={sort} setSort={setSort} />
+                  <SortHeader label="Status" sortKey="status" sort={sort} setSort={setSort} />
+                  <SortHeader label="Score" sortKey="score" sort={sort} setSort={setSort} />
+                  <SortHeader label="Cost" sortKey="cost_usd" sort={sort} setSort={setSort} />
+                  <SortHeader label="Size" sortKey="size_bytes" sort={sort} setSort={setSort} />
+                  <SortHeader label="Updated" sortKey="updated_at" sort={sort} setSort={setSort} />
                   <th className="px-4 py-2 font-normal">Serve</th>
                   <th className="px-4 py-2 font-normal">Preview</th>
                   <th className="px-4 py-2 font-normal"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-hairline/60">
-                {projects.map((p) => {
+                {sorted.map((p) => {
                   const isConfirming = confirmSlug === p.slug;
                   const isImproving = improveSlug === p.slug;
                   return (
@@ -478,6 +548,12 @@ export default function Projects({ stream }) {
                         </td>
                         <td className="px-4 py-2 font-mono text-xs text-ash">
                           {fmtMB(p.size_bytes)}
+                        </td>
+                        <td
+                          className="whitespace-nowrap px-4 py-2 font-mono text-xs text-ash"
+                          title={p.updated_at ? String(p.updated_at) : ""}
+                        >
+                          {fmtDate(p.updated_at || p.created_at)}
                         </td>
                         <td className="px-4 py-2">
                           <ServeCell
@@ -564,7 +640,7 @@ export default function Projects({ stream }) {
                       </tr>
                       {isImproving ? (
                         <tr>
-                          <td colSpan={9} className="p-0">
+                          <td colSpan={10} className="p-0">
                             <ImproveInline slug={p.slug} stream={stream} />
                           </td>
                         </tr>

@@ -731,6 +731,39 @@ class StudioRunner:
             pass
         return out
 
+    @staticmethod
+    def _stub_dangling_stylesheets(project_dir: str, proof) -> int:
+        """Create an empty stub for each unresolved LOCAL stylesheet import the proof
+        flagged (e.g. ``src/main.jsx -> ./styles/app.css`` that no slice wrote). An
+        empty stylesheet resolves the import without a bundler boot failure — the
+        same safety net CodeAgent applies on the monolithic path, wired here so the
+        slice/fix-loop path gets it too. Only touches relative ('.'-prefixed)
+        stylesheet specifiers. Returns the count stubbed. Never raises."""
+        import posixpath
+        from pathlib import Path
+
+        detail = getattr(proof, "detail", None) or {}
+        css_exts = (".css", ".scss", ".sass", ".less")
+        stubbed = 0
+        for entry in detail.get("unresolved_imports", []) or []:
+            if not isinstance(entry, str) or " -> " not in entry:
+                continue
+            importer, _, spec = entry.partition(" -> ")
+            spec = spec.strip().split("?", 1)[0].split("#", 1)[0]
+            if not (spec.startswith(".") and spec.endswith(css_exts)):
+                continue  # only dangling LOCAL stylesheets
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(importer.strip()), spec))
+            p = Path(project_dir) / target
+            try:
+                if not p.exists():
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text("/* stub stylesheet — import target was missing */\n",
+                                 encoding="utf-8")
+                    stubbed += 1
+            except OSError:
+                continue
+        return stubbed
+
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
         """Deterministically create missing checklist files.
 
@@ -841,6 +874,11 @@ class StudioRunner:
                 correlation_id=correlation_id,
             )
             filled = self._fill_missing(project_dir, plan, manifest.brief, list(proof.missing or []))
+            # A slice can import a local stylesheet no slice actually wrote (e.g.
+            # main.jsx -> ./styles/app.css). The improver only REWRITES existing
+            # files, so stub the dangling stylesheet here (empty CSS resolves the
+            # import harmlessly) — the same safety net the monolithic path has.
+            stubbed = self._stub_dangling_stylesheets(project_dir, proof)
 
             # LLM content repair on the flagged gaps, when an improver is present.
             if self._has_capability("code_improve"):
@@ -885,7 +923,8 @@ class StudioRunner:
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
             manifest.extra["proof"] = proof.to_dict()
-            manifest.extra[f"fix_attempt_{attempt}"] = {"filled": filled, "passed": proof.passed}
+            manifest.extra[f"fix_attempt_{attempt}"] = {
+                "filled": filled, "stubbed": stubbed, "passed": proof.passed}
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
                 {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "passed": proof.passed},

@@ -9,6 +9,8 @@ budget, heartbeat stall abort).
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +38,10 @@ def _settings(**over) -> Settings:
         autonomous_learning=True,
         autonomous_daily_build_cap=2,
         daily_usd_cap=5.0,
+        # Isolate each Cortex's persisted proposal store (cortex now mirrors
+        # proposals to data_dir/cortex/proposals.jsonl) so tests don't share
+        # dedup state or write into the real ./data.
+        data_dir=Path(tempfile.mkdtemp(prefix="skyn3t_cortex_test_")),
     )
     base.update(over)
     return Settings(**base)

@@ -62,7 +62,19 @@ class Cortex:
     ) -> None:
         self.event_bus = event_bus
         self.settings = settings or get_settings()
-        self.store = store or ProposalStore()
+        if store is not None:
+            self.store = store
+        else:
+            # Persist proposals to disk and reload them on boot so dedup survives
+            # restarts: an already-APPLIED proposal's dedupe_key keeps a recurring
+            # generator (RepoScout / PromptEvolver re-propose the same keys every
+            # tick) from re-surfacing it in the approval inbox after each restart
+            # ("I approved those 5 twenty times"). Without this the in-memory store
+            # forgot every prior decision the moment the process exited.
+            self.store = ProposalStore(
+                persist_path=self.settings.data_dir / "cortex" / "proposals.jsonl"
+            )
+            self.store.load_from_disk()
         stage_dir = self.settings.data_dir / "cortex" / "staged"
         self.handlers = handlers or HandlerRegistry(
             stage_dir=stage_dir, rag=rag, skills=skills,

@@ -260,7 +260,12 @@ class CodeAgent(BaseAgent):
             "Do not ask questions — just build it."
         )
 
-    _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next"})
+    # `assets` holds pre-generated binary images (Replicate). Skipping it keeps
+    # those bytes off the text round-trip below — reading a PNG with errors=
+    # "ignore" then re-writing it via _write_files would corrupt it.
+    _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next", "assets"})
+    _BINARY_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
+                              ".bmp", ".svg", ".pdf", ".woff", ".woff2", ".ttf"})
 
     def _read_files(self, worktree: Path) -> dict[str, str]:
         """Read every text file the agent wrote into the worktree."""
@@ -271,6 +276,8 @@ class CodeAgent(BaseAgent):
                 continue
             if any(part in self._SKIP_PARTS for part in p.relative_to(root).parts):
                 continue
+            if p.suffix.lower() in self._BINARY_EXTS:
+                continue  # never round-trip binary assets through text
             try:
                 if p.stat().st_size > 500_000:
                     continue  # skip oversized/binary artifacts

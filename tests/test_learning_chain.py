@@ -37,6 +37,15 @@ def test_knowledge_block_empty_when_nothing_injected():
     assert knowledge_block(None) == ""
 
 
+def test_knowledge_block_surfaces_generated_assets():
+    # Generated image assets in extra -> the prompt tells the app to use them.
+    kb = knowledge_block({
+        "extra": {"assets": [{"subject": "elephant", "file": "assets/elephant.png"}]},
+    })
+    assert "assets/elephant.png" in kb
+    assert "assets/" in kb and "instead of" in kb
+
+
 def test_studio_injects_skills_and_recall_into_payload():
     # A runner with a fake skills library + fake rag should surface both into
     # the stage payload's extra, where knowledge_block reads them.

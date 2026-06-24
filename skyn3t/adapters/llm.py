@@ -79,6 +79,10 @@ _CLI_NO_MCP_ARGS: dict[str, list[str]] = {
     "copilot": ["--disable-builtin-mcps"],
 }
 
+# StreamReader line-buffer for the agentic stream-json reader. One event line can
+# be a big tool result or the full final output, far past asyncio's 64KB default.
+_AGENTIC_STREAM_LIMIT = 64 * 1024 * 1024  # 64 MB (grows on demand)
+
 
 def _no_mcp_args(settings, provider: str) -> list[str]:
     """MCP-disabling argv for ``provider`` when ``cli_disable_mcp`` is on (default)."""
@@ -494,13 +498,16 @@ class LLMClient:
         """CLI backends are full coding agents that can write a whole project."""
         return self.backend.endswith("_cli")
 
-    async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None) -> dict:
+    async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None,
+                            model: str | None = None) -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
         This is the RIGHT way to use claude/kimi/copilot for codegen: one
         agentic session that authors a coherent multi-file app, instead of N
         slow per-file completion calls that spin up an agent each and time out.
-        Returns {ok, backend, error}. Only meaningful for *_cli backends.
+        ``model`` optionally pins the CLI to a specific model (used by parallel
+        code-slicing to route cheap/strong tiers per slice). Returns
+        {ok, backend, error}. Only meaningful for *_cli backends.
         """
         backend = self.backend
         if not backend.endswith("_cli"):
@@ -509,9 +516,19 @@ class LLMClient:
         # acceptEdits lets the headless agent write files without prompting.
         # _no_mcp_args keeps the agent from loading the host's ambient MCP fleet.
         nm = _no_mcp_args(self.settings, provider)
+        # Stream the agent's NDJSON event log (claude/kimi) so we can detect the
+        # terminal `result` event (an accurate success signal — claude -p can
+        # exit 0 on a reported error) and watch for a stalled session via an idle
+        # guard instead of always burning the full ceiling. copilot has no such
+        # mode, so it keeps the blocking path.
+        stream = provider in ("claude", "kimi")
+        stream_args = ["--output-format", "stream-json", "--verbose"] if stream else []
+        # Optional per-call model pin (claude/kimi accept --model); ignored when
+        # no model is given so the CLI's default applies (today's behaviour).
+        model_args = ["--model", model] if (model and provider in ("claude", "kimi")) else []
         argv = {
-            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits", *nm],
-            "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits", *nm],
+            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits", *model_args, *stream_args, *nm],
+            "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits", *model_args, *stream_args, *nm],
             "copilot": ["copilot", "-p", prompt, *nm],
         }.get(provider, [provider, "-p", prompt])
         proc = None
@@ -520,6 +537,13 @@ class LLMClient:
                 *argv, cwd=workdir,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group -> killable as a tree
+                # A single stream-json event line (a big tool result, or the final
+                # `result` event carrying the whole output) routinely exceeds the
+                # 64KB asyncio StreamReader default, which makes readline() raise
+                # "Separator is found, but chunk is longer than limit" and degrades
+                # the whole build. Give it real headroom (grows on demand, not
+                # preallocated).
+                limit=_AGENTIC_STREAM_LIMIT,
             )
             # A full multi-file app needs real time — the old cli_llm_timeout*3
             # (15 min) killed claude -p mid-build, shipping a partial/stub. Use a
@@ -529,9 +553,20 @@ class LLMClient:
                 or int(getattr(self.settings, "agentic_build_timeout", 0))
                 or (self.settings.cli_llm_timeout * 3)
             )
-            out, err = await asyncio.wait_for(
-                proc.communicate(), timeout=agentic_timeout,
-            )
+            if stream:
+                idle_timeout = int(getattr(self.settings, "agentic_idle_timeout", 0))
+                ok = await asyncio.wait_for(
+                    self._consume_agentic_stream(proc, provider, idle_timeout),
+                    timeout=agentic_timeout,
+                )
+            else:
+                out, err = await asyncio.wait_for(
+                    proc.communicate(), timeout=agentic_timeout,
+                )
+                ok = proc.returncode == 0
+                if not ok:
+                    log.warning("llm.agentic_nonzero", provider=provider,
+                                err=(err or b"").decode("utf-8", "replace")[:160])
         except asyncio.CancelledError:
             # Outer stage timeout / build cancellation: kill the whole agent tree
             # before unwinding so it can't keep building orphaned for an hour.
@@ -541,11 +576,85 @@ class LLMClient:
             await self._terminate(proc)
             log.warning("llm.agentic_failed", provider=provider, error=str(exc)[:160])
             return {"ok": False, "backend": backend, "error": str(exc)[:160]}
-        ok = proc.returncode == 0
+        return {"ok": ok, "backend": backend}
+
+    async def _consume_agentic_stream(self, proc, provider: str, idle_timeout: int) -> bool:
+        """Drive a stream-json agentic CLI to completion and report success.
+
+        Reads the NDJSON event stream to EOF (the agent closes stdout when it
+        exits), capturing the terminal ``result`` event's error flag for an
+        accurate success signal. When ``idle_timeout`` > 0, a gap of that many
+        seconds with NO stream activity means the agent has stalled — we kill the
+        whole tree and report failure rather than waiting out the hard ceiling.
+        stderr is drained concurrently so a chatty agent can't deadlock on a full
+        pipe. Returns ``ok``. The outer ``agentic_build`` still wraps this in the
+        hard-timeout / CancelledError tree-kill guard.
+        """
+        saw_result = False
+        result_is_error = False
+        events = 0
+
+        # Drain stderr concurrently (a full stderr pipe would block the agent);
+        # keep only a short tail for diagnostics.
+        err_tail: list[str] = []
+
+        async def _drain_err() -> None:
+            try:
+                while True:
+                    line = await proc.stderr.readline()
+                    if not line:
+                        return
+                    err_tail.append(line.decode("utf-8", "replace"))
+                    if len(err_tail) > 20:
+                        del err_tail[:-20]
+            except Exception:  # noqa: BLE001 - draining is best-effort
+                return
+
+        err_task = asyncio.create_task(_drain_err())
+        try:
+            while True:
+                try:
+                    if idle_timeout > 0:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(), timeout=idle_timeout
+                        )
+                    else:
+                        line = await proc.stdout.readline()
+                except TimeoutError:
+                    log.warning("llm.agentic_stalled", provider=provider, idle_s=idle_timeout)
+                    await self._terminate(proc)
+                    return False
+                except ValueError:
+                    # Defence in depth: a single line past even the 64MB buffer
+                    # makes readline() raise. Don't fail the build over telemetry —
+                    # stop streaming and fall back to the returncode below.
+                    log.warning("llm.agentic_stream_overrun", provider=provider)
+                    break
+                if not line:
+                    break  # EOF — the agent exited
+                events += 1
+                try:
+                    evt = json.loads(line)
+                except (ValueError, TypeError):
+                    continue  # stray non-JSON log line — ignore
+                if isinstance(evt, dict) and evt.get("type") == "result":
+                    saw_result = True
+                    result_is_error = bool(evt.get("is_error"))
+        finally:
+            err_task.cancel()
+
+        # stdout EOF means the agent is exiting; reap it (bounded) so returncode
+        # is set for the fallback success check.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=10)
+        except Exception:  # noqa: BLE001 - never hang on reap
+            pass
+
+        ok = (not result_is_error) if saw_result else (proc.returncode == 0)
         if not ok:
             log.warning("llm.agentic_nonzero", provider=provider,
-                        err=(err or b"").decode("utf-8", "replace")[:160])
-        return {"ok": ok, "backend": backend}
+                        events=events, err="".join(err_tail)[-160:])
+        return ok
 
     @staticmethod
     async def _terminate(proc) -> None:

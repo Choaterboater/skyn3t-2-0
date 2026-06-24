@@ -70,6 +70,22 @@ _MANIFEST_INSTR = (
     "description/name where the format has one. Do not leave it empty or omit deps."
 )
 
+# Design bar for user-facing UI — keeps codegen from shipping the generic
+# unstyled-React / emoji-as-icon look that reads as a template.
+_DESIGN_DIRECTIVE = (
+    "DESIGN BAR (this is a user-facing UI — make it look intentional and distinctive, "
+    "not a default template): establish a real visual hierarchy with a deliberate type "
+    "scale, spacing, alignment and a cohesive color palette; add depth and interaction "
+    "states (hover / focus / active / empty states); style EVERYTHING with CSS. Do NOT "
+    "use emoji as icons or primary UI elements — use inline SVG or CSS shapes for icons. "
+    "Avoid the unstyled create-react-app look."
+)
+# Stacks for which the design bar applies.
+_WEB_STACKS = frozenset({
+    "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
+    "static", "html", "node", "node_express", "express", "vue", "svelte",
+})
+
 
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
@@ -100,6 +116,15 @@ class CodeAgent(BaseAgent):
         app_name = slugify(p.get("slug") or brief, "app")
 
         worktree = self._resolve_worktree(p)
+
+        # Hermes orchestrator-worker: a parallel SLICE writes ONLY its own files
+        # (no whole-app scaffold floor / under-delivery revert — a slice is small
+        # by design, and the merged tree's wiring is repaired by the post-merge
+        # proof/fix-loop). Dispatched before the monolithic path below.
+        slice_scope = p.get("slice_scope") if isinstance(p.get("slice_scope"), dict) else None
+        if slice_scope:
+            return await self._execute_slice(
+                task, p, brief, stack, plan, app_name, worktree, slice_scope)
 
         # Decide what files to write. Prefer the architect's plan; otherwise the
         # canonical scaffold. The scaffold guarantees a runnable baseline.
@@ -300,8 +325,137 @@ class CodeAgent(BaseAgent):
             "the REAL dependencies you actually import — requirements.txt (with a line per dep) "
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
-            "Do not ask questions — just build it."
+            + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
+            + "Do not ask questions — just build it."
         )
+
+    # ---- parallel code slicing (Hermes orchestrator-worker) --------------
+    async def _execute_slice(
+        self, task: TaskRequest, p: dict[str, Any], brief: str, stack: str,
+        plan: dict[str, Any], app_name: str, worktree: Path,
+        slice_scope: dict[str, Any],
+    ) -> TaskResult:
+        """Generate ONLY this slice's files. The full file manifest is supplied as
+        read-only context so cross-slice imports line up; no scaffold floor."""
+        name = str(slice_scope.get("name") or "slice")
+        slice_files = [str(x) for x in (slice_scope.get("files") or [])]
+        manifest = str(slice_scope.get("manifest") or "")
+        model_override = p.get("model_override")
+        knowledge = knowledge_block(p)
+        files: dict[str, str] = {}
+
+        if self.llm.backend == "stub":
+            # Offline: emit a minimal non-empty stub per slice file so the
+            # orchestration is testable and the merge produces real files.
+            files = self._slice_stub(stack, app_name, brief, slice_files)
+        elif getattr(self.llm, "supports_agentic", False):
+            prior = p.get("prior") if isinstance(p.get("prior"), dict) else {}
+            design = prior.get("design") if isinstance(prior.get("design"), dict) else None
+            prompt = self._agentic_slice_prompt(
+                brief, stack, name, slice_files, manifest, knowledge, design=design)
+            res = await self.llm.agentic_build(prompt, str(worktree), model=model_override)
+            self.metadata["agentic"] = res
+            disk = self._read_files(worktree)
+            # Reject chat-prose source files (no scaffold to revert to -> dropped).
+            disk, prose = self._clean_agentic_files(disk, {})
+            if prose:
+                self.metadata["prose_rejected"] = list(prose)
+            files = disk
+        else:
+            # Completion backend: generate just this slice's files concurrently,
+            # each pinned to the slice's tier model when provided.
+            sem = asyncio.Semaphore(self._gen_concurrency)
+
+            async def _one(rel: str) -> tuple[str, str | None]:
+                async with sem:
+                    try:
+                        return rel, await self._generate_file(
+                            rel, brief, stack, plan, knowledge, model_override=model_override)
+                    except Exception:  # noqa: BLE001 - isolate per file
+                        return rel, None
+
+            for rel, content in await asyncio.gather(*(_one(r) for r in slice_files)):
+                if content and content.strip():
+                    files[rel] = content
+
+        written = self._write_files(worktree, files)
+        return TaskResult(
+            task_id=task.task_id, success=True,
+            output={
+                "files_written": len(written), "worktree_dir": str(worktree),
+                "stack": stack, "files": written, "backend": self.llm.backend,
+                "slice": name,
+            },
+        )
+
+    def _agentic_slice_prompt(
+        self, brief: str, stack: str, slice_name: str, slice_files: list[str],
+        manifest: str, knowledge: str, design: dict[str, Any] | None = None,
+    ) -> str:
+        want = "\n".join(f"  {f}" for f in slice_files) or "  (none listed)"
+        # The frontend slice owns the look — give it the design bar + the chosen
+        # design tokens so it doesn't ship the generic emoji-template UI. Other
+        # slices (config/tests/backend) stay lean.
+        design_block = ""
+        if slice_name == "frontend":
+            design_block = f"\n\n{_DESIGN_DIRECTIVE}"
+            summary = self._design_summary(design)
+            if summary:
+                design_block += f"\nFollow this design direction: {summary}"
+        return (
+            f"{knowledge}"
+            f"You are building the **{slice_name}** part of a larger {stack} application, "
+            f"in parallel with other agents building the rest. Brief:\n{brief}\n\n"
+            f"Write ONLY these files (create subfolders as needed) — fully implemented, "
+            f"production-quality, no placeholders or TODOs:\n{want}\n\n"
+            f"The REST of the app is being written by other agents at these exact paths — "
+            f"do NOT create them, but import from them by these exact paths so the code "
+            f"coheres:\n{manifest}\n\n"
+            "Implement real logic and error handling for your files only. Match the import "
+            "paths above exactly. Do not ask questions — just write your files."
+            f"{design_block}"
+        )
+
+    @staticmethod
+    def _design_summary(design: dict[str, Any] | None) -> str:
+        """Condense the design stage's tokens (theme/palette/typography/layout) into
+        a one-line direction for the codegen prompt. '' when none."""
+        if not isinstance(design, dict):
+            return ""
+        bits: list[str] = []
+        if design.get("theme"):
+            bits.append(f"theme={design['theme']}")
+        pal = design.get("palette")
+        if isinstance(pal, dict) and pal:
+            bits.append("palette(" + ", ".join(f"{k}:{v}" for k, v in pal.items()) + ")")
+        for key in ("typography", "layout"):
+            val = design.get(key)
+            if val:
+                bits.append(f"{key}={val}")
+        return "; ".join(bits)[:400]
+
+    # Stub content per extension for the offline slice path (non-empty + valid).
+    @staticmethod
+    def _minimal_stub(rel: str) -> str:
+        ext = rel.rsplit(".", 1)[-1].lower() if "." in rel else ""
+        if ext == "py":
+            return f"# {rel} (slice stub)\n"
+        if ext in ("js", "jsx", "ts", "tsx", "mjs", "cjs"):
+            return f"// {rel} (slice stub)\nexport {{}};\n"
+        if ext in ("css", "scss", "sass", "less"):
+            return f"/* {rel} (slice stub) */\n"
+        if ext == "html":
+            return f"<!-- {rel} -->\n<!doctype html><div id=\"root\"></div>\n"
+        if ext == "json":
+            return "{}\n"
+        return f"{rel} (slice stub)\n"
+
+    def _slice_stub(self, stack: str, app_name: str, brief: str,
+                    slice_files: list[str]) -> dict[str, str]:
+        """Offline slice content: reuse the stack scaffold for known paths, a
+        minimal stub for the rest."""
+        full = scaffold_for(stack, app_name, brief)
+        return {rel: full.get(rel) or self._minimal_stub(rel) for rel in slice_files}
 
     _CODE_EXTS = ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
 

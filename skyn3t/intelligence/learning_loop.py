@@ -138,7 +138,13 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
     if "no_go" in verdict or "fail" in verdict:
         for g in gaps[:3]:
             lessons.append(f"{stack}: avoid the gap '{str(g)[:120]}'.")
-        if not gaps:
+        # Real compiler/test/boot/import failures distilled into avoid-rules:
+        # flatten whitespace and truncate so the lesson keeps the error category
+        # AND the actual message/filename on one line, not a 700-char build dump.
+        for e in (build.get("proof_errors") or [])[:3]:
+            flat = " ".join(str(e).split())[:160]
+            lessons.append(f"{stack}: avoid — {flat}")
+        if not gaps and not build.get("proof_errors"):
             lessons.append(f"{stack}: build failed verification — re-check the plan.")
     elif "go" in verdict or "complete" in verdict or "success" in str(verdict):
         notes = build.get("notes") or build.get("brief")

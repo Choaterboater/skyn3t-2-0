@@ -107,6 +107,26 @@ class Settings(BaseSettings):
     # A full multi-file app routinely needs >15 min; the old cli_llm_timeout*3
     # killed it mid-build and shipped a stub. 0 falls back to cli_llm_timeout*3.
     agentic_build_timeout: int = 1800
+    # Stall guard (seconds) for a streaming agentic session: if the agent emits
+    # NO stream events for this long it has hung, so we kill it early instead of
+    # burning the full build budget. A working `claude -p` emits message/tool
+    # events far more often than this, so it never trips on real progress. 0
+    # disables the guard (only the hard ``agentic_build_timeout`` ceiling applies).
+    agentic_idle_timeout: int = 600
+    # Hermes-style orchestrator-worker codegen: decompose a non-trivial build into
+    # parallel scoped sub-agents (frontend / backend / tests / config), each in its
+    # own worktree, then merge + let the (error-aware) proof/fix-loop wire them.
+    # OFF by default — it only helps apps with enough independent files; tiny apps
+    # keep the monolithic path. ``_min_files`` is the architect-file floor below
+    # which slicing is skipped (cold-start + merge overhead would dominate).
+    parallel_code_slices: bool = False
+    parallel_code_slices_min_files: int = 8
+    # Optional per-slice-tier model pins for the single-model agentic CLI
+    # ({"strong": "...", "ui": "...", "cheap": "..."}) — the "mixed by slice"
+    # routing. Empty -> every slice uses the default model (still fully parallel).
+    # On the OpenRouter backend per-file tier routing already mixes models, so
+    # this only affects the agentic path.
+    slice_tier_models: dict[str, str] = {}
 
     # GitHub token (env SKYN3T_GITHUB_TOKEN) for RepoScout search + repo ingest.
     # Authenticated search lifts the rate limit so scouting returns real, varied

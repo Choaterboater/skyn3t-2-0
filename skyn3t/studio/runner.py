@@ -40,7 +40,8 @@ from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_inte
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
-from skyn3t.studio.proof_run import proof_run
+from skyn3t.studio.proof_run import extract_error_gaps, proof_run
+from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
 from skyn3t.worktree import (
@@ -843,11 +844,18 @@ class StudioRunner:
 
             # LLM content repair on the flagged gaps, when an improver is present.
             if self._has_capability("code_improve"):
+                # Feed the REAL compiler/test/boot/import errors back (already
+                # captured in the proof) so the improver fixes the actual cause,
+                # not a generic "proof failed" blob. Falls back to the old generic
+                # gap only when no actionable error text was captured.
+                error_gaps = proof.error_gaps()
                 payload = {
                     "brief": manifest.brief, "slug": manifest.slug,
                     "worktree_dir": project_dir, "project_dir": project_dir,
                     "stack": plan.stack, "plan": plan.to_dict(),
-                    "gaps": list(proof.missing or []) + [f"proof failed: {proof.detail}"],
+                    "gaps": list(proof.missing or []) + (
+                        error_gaps or [f"proof failed: {proof.detail}"]
+                    ),
                 }
                 if extra:
                     payload["extra"] = extra
@@ -956,6 +964,13 @@ class StudioRunner:
             # instead of the generic "build failed — re-check the plan".
             "gaps": list(gaps or []),
             "brief": manifest.brief,
+            # Real compiler/test/boot/import failures (Phase 1A) become durable
+            # avoid-rules — the system LEARNS from why builds broke, not just that
+            # they did. Derived from the persisted proof so capture stays decoupled.
+            "proof_errors": extract_error_gaps(
+                ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("detail"),
+                ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("syntax_errors"),
+            ),
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:
@@ -1272,6 +1287,12 @@ class StudioRunner:
                 if spec.agent_type == "code" and plan.best_of_n > 1:
                     result = await self._run_code_best_of_n(
                         plan, spec, project_dir, prior, lessons, extra, correlation_id, main_wt, worktrees
+                    )
+                # ---- Hermes orchestrator-worker: parallel code slices ----
+                elif spec.agent_type == "code" and (slices := self._maybe_slices(plan, prior)):
+                    result = await self._run_code_parallel_slices(
+                        plan, spec, project_dir, prior, lessons, extra,
+                        correlation_id, main_wt, worktrees, slices,
                     )
                 else:
                     payload = self._base_payload(
@@ -1664,6 +1685,131 @@ class StudioRunner:
         # match-record falls back to the per-stage solo feed instead of silently
         # losing this stage's evidence.
         result.metadata["best_of_n_recorded"] = self._record_best_of_n_match(spec, selection)
+        return result
+
+    # ---- Hermes orchestrator-worker: parallel code slicing --------------
+    @staticmethod
+    def _architect_files(prior: dict[str, Any]) -> list[Any]:
+        """The architect's planned files (``[{path,purpose}, ...]``), or []."""
+        arch = prior.get("architect") if isinstance(prior, dict) else None
+        if isinstance(arch, dict):
+            ap = arch.get("plan")
+            if isinstance(ap, dict) and isinstance(ap.get("files"), list):
+                return ap["files"]
+        return []
+
+    def _maybe_slices(self, plan: BuildPlan, prior: dict[str, Any]):
+        """Slice plan when parallel code-slicing should run, else None.
+
+        Gated by the flag, single-trajectory only (not combined with best-of-N),
+        and only when the architect manifest decomposes into >=2 slices above the
+        file-count floor (tiny apps keep the monolithic path)."""
+        if not bool(getattr(self.settings, "parallel_code_slices", False)):
+            return None
+        if plan.best_of_n > 1:
+            return None
+        files = self._architect_files(prior) or list(plan.checklist or [])
+        min_files = int(getattr(self.settings, "parallel_code_slices_min_files", 8))
+        slices = slice_plan(files, plan.stack, min_files=min_files)
+        return slices or None
+
+    def _slice_model(self, tier_name: str) -> str | None:
+        """Resolve a slice's tier to a concrete model for the single-model agentic
+        CLI (opt-in via ``settings.slice_tier_models`` {tier: model}). Returns None
+        when unmapped — the slice uses the default model. On the OpenRouter backend
+        per-file tier routing already mixes UI/backend models, so this is only
+        consulted for the agentic path."""
+        mapping = getattr(self.settings, "slice_tier_models", None) or {}
+        if isinstance(mapping, dict) and mapping.get(tier_name):
+            return str(mapping[tier_name])
+        return None
+
+    async def _run_code_parallel_slices(
+        self,
+        plan: BuildPlan,
+        spec: StageSpec,
+        project_dir: str,
+        prior: dict[str, Any],
+        lessons: list[dict[str, Any]],
+        extra: dict[str, Any],
+        correlation_id: str,
+        main_wt: Worktree,
+        worktrees: list[Worktree],
+        slices: dict[str, list[dict[str, Any]]],
+    ) -> TaskResult:
+        """Generate the code stage as parallel scoped sub-agents (one per slice),
+        each in its own worktree, then merge all slices into the main worktree.
+
+        Cross-slice wiring (broken imports between slices) is repaired by the
+        existing post-merge proof/fix-loop, which Phase 1A made error-aware — so
+        no separate consistency pass is needed here."""
+        from time import monotonic
+        started = monotonic()
+        # The full manifest is the read-only cross-slice contract every sub-agent
+        # sees so its imports target the right paths.
+        all_files = self._architect_files(prior) or [
+            {"path": p} for p in (plan.checklist or [])
+        ]
+        manifest = "\n".join(
+            (f"  {f['path']} — {f.get('purpose', '')}" if isinstance(f, dict) and f.get("path")
+             else f"  {f}")
+            for f in all_files
+            if (isinstance(f, dict) and f.get("path")) or isinstance(f, str)
+        )
+
+        # Create every slice worktree up front so we control merge order.
+        slice_wts: dict[str, Worktree] = {}
+        for name in slices:
+            wt = create_worktree(str(self.settings.projects_dir), f"{plan.slug}-slice-{name}")
+            worktrees.append(wt)
+            slice_wts[name] = wt
+
+        async def _run_slice(name: str, files: list[dict[str, Any]]):
+            wt = slice_wts[name]
+            payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
+            payload.update(spec.extra)
+            # Scope codegen to THIS slice's files; pass the full contract for wiring.
+            payload["plan"] = {**payload["plan"], "files": files}
+            payload["slice_scope"] = {
+                "name": name,
+                "files": [f["path"] for f in files if isinstance(f, dict) and f.get("path")],
+                "manifest": manifest,
+            }
+            model = self._slice_model(slice_tier(name))
+            if model:
+                payload["model_override"] = model
+            return name, await self._submit_stage(spec, payload, correlation_id)
+
+        gathered = await asyncio.gather(*(_run_slice(n, f) for n, f in slices.items()))
+        results = dict(gathered)
+
+        # Merge slices into the main worktree in slices order (config-last by
+        # construction) so authoritative files win on a path conflict. clean=False
+        # so each slice accumulates instead of wiping the previous one.
+        total_written = 0
+        summaries: dict[str, Any] = {}
+        for name in slices:
+            merged = merge_back(slice_wts[name].dir, main_wt.dir, overwrite=True, clean=False)
+            r = results.get(name)
+            total_written += len(merged)
+            summaries[name] = {"files": len(merged), "ok": bool(r and r.success)}
+
+        result = TaskResult(
+            task_id=uuid.uuid4().hex,
+            success=total_written > 0,
+            output={
+                "files_written": total_written,
+                "worktree_dir": main_wt.dir,
+                "slices": summaries,
+                "backend": getattr(getattr(self, "settings", None), "llm_backend", ""),
+            },
+        )
+        result.metadata = {"parallel_slices": {"count": len(slices), "slices": summaries}}
+        # Record the real fan-out wall-clock so the manifest/GatedTuner don't read
+        # the code stage as instant (a fresh TaskResult defaults duration_ms to 0).
+        result.duration_ms = (monotonic() - started) * 1000
+        log.info("runner.parallel_slices", count=len(slices),
+                 files=total_written, slices=list(slices))
         return result
 
     # ---- helpers ---------------------------------------------------------

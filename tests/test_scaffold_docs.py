@@ -29,6 +29,9 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "fastapi": ("requirements.txt",),
     "node_express": ("package.json",),
     "react_native": ("package.json",),
+    "nextjs": ("package.json",),
+    "astro": ("package.json",),
+    "remix": ("package.json",),
 }
 
 

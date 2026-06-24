@@ -42,7 +42,13 @@ PROMOTE_MIN_RATE = 0.66
 # tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
 _STACK_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"python", "python_cli", "cli", "script"}),
-    frozenset({"react", "react_vite", "vite", "nextjs", "frontend"}),
+    frozenset({"react", "react_vite", "vite", "frontend"}),
+    # Next.js / Astro / Remix are real builder stacks now — each gets its own
+    # group so framework-specific skills don't bleed across (a Next.js build
+    # should not be handed Astro/Remix advice, and vice versa).
+    frozenset({"nextjs", "next", "next.js"}),
+    frozenset({"astro"}),
+    frozenset({"remix"}),
     frozenset({"react_native", "mobile", "expo"}),
     frozenset({"node", "node_express", "express"}),
     frozenset({"fastapi", "flask", "django", "python_api"}),

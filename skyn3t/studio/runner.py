@@ -124,7 +124,10 @@ class BuildOutcome:
 
 
 def _slugify(text: str) -> str:
-    base = "".join(c if c.isalnum() else "-" for c in text.lower()).strip("-")
+    # ASCII alnum only — `c.isalnum()` alone is True for unicode letters, which
+    # leaks non-ASCII into the slug/dir/URL and diverges from the sibling
+    # slugifiers (_common.slugify, _scaffold) that force [a-z0-9-].
+    base = "".join(c if (c.isascii() and c.isalnum()) else "-" for c in text.lower()).strip("-")
     base = "-".join(filter(None, base.split("-")))[:48]
     return base or "app"
 

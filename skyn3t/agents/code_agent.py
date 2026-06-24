@@ -147,9 +147,11 @@ class CodeAgent(BaseAgent):
                 disk, prose_files = self._clean_agentic_files(disk, scaffold)
                 code_bytes = self._code_bytes(disk)
                 under_delivered = not (disk and code_bytes >= threshold)
-                if (agentic_ok and not under_delivered) or attempt >= max_retries:
+                # Stop as soon as a real app is on disk — even if the call did NOT
+                # exit cleanly (a TIMEOUT mid-build still produced real code; do not
+                # throw it away to retry). Retry ONLY on genuine under-delivery.
+                if not under_delivered or attempt >= max_retries:
                     break
-                # Retry with corrective feedback: the agent no-op'd or left a stub.
                 log.warning("code_agent.agentic_retry", attempt=attempt + 1,
                             code_bytes=code_bytes, threshold=threshold, ok=agentic_ok)
                 attempt += 1
@@ -161,23 +163,29 @@ class CodeAgent(BaseAgent):
                     f"agent wrote prose (not code) into {prose_files}; reverted to scaffold"
                 )
             under_delivered = not (disk and code_bytes >= threshold)
-            if not agentic_ok or under_delivered:
-                if not agentic_ok:
-                    degraded_reason = (
-                        f"agentic build failed: {agentic_error}" if agentic_error
-                        else "agentic build returned ok=False")
-                else:
-                    degraded_reason = (
-                        f"agentic build under-delivered after {attempt} retr"
-                        f"{'y' if attempt == 1 else 'ies'}: {code_bytes} code bytes in "
-                        f"{len(disk)} files (threshold {threshold})")
+            if under_delivered:
+                # Genuine under-delivery (no-op'd / left a stub). An ok=False call
+                # matters here only because it ALSO produced too little code.
+                degraded_reason = (
+                    (f"agentic build failed: {agentic_error}" if agentic_error
+                     else "agentic build returned ok=False") if not agentic_ok
+                    else f"agentic build under-delivered after {attempt} retr"
+                         f"{'y' if attempt == 1 else 'ies'}: {code_bytes} code bytes "
+                         f"in {len(disk)} files (threshold {threshold})")
                 log.warning(
-                    "code_agent.agentic_degraded",
-                    agentic_ok=agentic_ok, code_bytes=code_bytes,
-                    files_on_disk=len(disk), retries=attempt, reason=degraded_reason,
+                    "code_agent.agentic_degraded", agentic_ok=agentic_ok,
+                    code_bytes=code_bytes, files_on_disk=len(disk),
+                    retries=attempt, reason=degraded_reason,
                 )
                 self.metadata["degraded"] = True
                 self.metadata["degraded_reason"] = degraded_reason
+            elif not agentic_ok:
+                # A SUBSTANTIAL app was delivered but the call didn't exit cleanly
+                # — almost always a timeout mid-build. KEEP it (the verifier gates
+                # judge whether the possibly-truncated app actually works); a real
+                # app is far better than reverting to the scaffold stub.
+                log.warning("code_agent.agentic_timeout_kept", code_bytes=code_bytes,
+                            files_on_disk=len(disk), error=agentic_error or "(timeout)")
             if disk and code_bytes >= threshold:
                 files = disk  # the agent's real app becomes the delivery
             else:

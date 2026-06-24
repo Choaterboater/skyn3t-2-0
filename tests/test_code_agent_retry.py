@@ -66,6 +66,16 @@ async def test_no_retry_when_first_pass_delivers(tmp_path):
     assert "degraded" not in result.output
 
 
+async def test_timeout_with_substantial_code_is_kept(tmp_path):
+    # First (only) call writes a REAL app but returns ok=False (a mid-build
+    # TIMEOUT). It must be KEPT — not retried, not flagged degraded. Discarding a
+    # 28KB timed-out app to re-run was the regression bug.
+    result, n = await _run_with_attempts(tmp_path, [(False, _REAL_APP)])
+    assert n == 1, "a substantial delivery must NOT be retried, even on ok=False"
+    assert "degraded" not in result.output, "a real app on timeout is kept, not degraded"
+    assert any("App.jsx" in f for f in result.output["files"])
+
+
 async def test_exhausts_retry_then_degraded(tmp_path):
     # Every attempt under-delivers -> retried once, then flagged degraded + scaffold floor.
     result, n = await _run_with_attempts(tmp_path, [(True, None)])

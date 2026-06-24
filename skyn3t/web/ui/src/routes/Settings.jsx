@@ -50,6 +50,10 @@ export default function Settings() {
   const [ghToken, setGhToken] = useState("");
   const [ghMsg, setGhMsg] = useState("");
 
+  const [repToken, setRepToken] = useState("");
+  const [repModel, setRepModel] = useState("");
+  const [repMsg, setRepMsg] = useState("");
+
   const [channel, setChannel] = useState("telegram");
   const [chToken, setChToken] = useState("");
   const [chTarget, setChTarget] = useState("");
@@ -83,6 +87,24 @@ export default function Settings() {
       secrets.refetch();
     } catch (e) {
       setGhMsg(String(e.message));
+    }
+  }
+
+  async function saveReplicate() {
+    try {
+      const r = await apiPost("/settings/replicate", {
+        token: repToken,
+        model: repModel,
+      });
+      setRepToken("");
+      setRepMsg(
+        r.configured
+          ? `saved → image generation available (model ${r.model || "default"})`
+          : "cleared"
+      );
+      secrets.refetch();
+    } catch (e) {
+      setRepMsg(String(e.message));
     }
   }
 
@@ -257,6 +279,56 @@ export default function Settings() {
             </div>
             {ghMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{ghMsg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            label="Replicate (image generation)"
+            right={
+              <Pill tone={secrets.data?.replicate ? "plasma" : "ash"}>
+                {secrets.data?.replicate ? "configured ✓" : "not set"}
+              </Pill>
+            }
+          />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              Stored in the server&apos;s <code className="font-mono text-bone">.env</code> as{" "}
+              <span className="font-mono text-bone">SKYN3T_REPLICATE_API_TOKEN</span>. Lets a
+              build generate <em>real</em> images (e.g. a kids coloring app&apos;s animal
+              line-art) instead of crappy placeholder art. Asset generation also requires{" "}
+              <span className="font-mono text-bone">asset_gen</span> on
+              {secrets.data?.replicate && !secrets.data?.asset_gen ? (
+                <span className="text-ember"> — currently OFF, so assets won&apos;t generate yet</span>
+              ) : null}
+              . Default model{" "}
+              <span className="font-mono text-bone">
+                {secrets.data?.replicate_model || "black-forest-labs/flux-schnell"}
+              </span>{" "}
+              (overridable below). No token → image-gen is skipped; it never blocks a build.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <input
+                type="password"
+                className="field min-w-[12rem] flex-1"
+                placeholder="Replicate token (r8_…)"
+                value={repToken}
+                onChange={(e) => setRepToken(e.target.value)}
+              />
+              <input
+                type="text"
+                className="field min-w-[12rem] flex-1"
+                placeholder="model (owner/name) — optional"
+                value={repModel}
+                onChange={(e) => setRepModel(e.target.value)}
+              />
+              <button onClick={saveReplicate} className="btn-ember">
+                Save token
+              </button>
+            </div>
+            {repMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{repMsg}</p>
             ) : null}
           </div>
         </Panel>

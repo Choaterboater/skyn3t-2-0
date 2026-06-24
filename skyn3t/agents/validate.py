@@ -4,6 +4,38 @@
 from __future__ import annotations
 
 import json
+import re
+
+# Source-code extensions a generated file is expected to be CODE for. A model
+# that replies with chat prose instead of code must not ship as one of these.
+_CODE_EXTS = (
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".rb",
+    ".java", ".c", ".h", ".cpp", ".cc", ".php", ".vue", ".svelte", ".swift", ".kt",
+)
+
+# Any one of these is strong evidence the content is actually code, not prose:
+# block/statement punctuation, JSX/generics angle brackets, an arrow function, or
+# a common code keyword. Deliberately excludes bare ``()``/``:`` which appear in
+# prose too.
+_CODE_SIGNAL = re.compile(
+    r"[{};=<>]|=>|\b(function|const|let|var|class|import|export|from|require|"
+    r"return|module|exports|async|await|def|print|console|new|public|private|"
+    r"void|interface|type|enum|struct|fn|package|func|println|echo|namespace)\b"
+)
+
+
+def _looks_like_prose(content: str) -> bool:
+    """True when ``content`` is substantial natural-language prose, not code.
+
+    Heuristic, high-precision: short snippets are never judged (avoids
+    false-rejecting tiny valid files), and any code signal at all clears it. Only
+    a long body with ZERO code structure is treated as prose — exactly the
+    "the model chatted instead of emitting code" failure mode.
+    """
+    stripped = content.strip()
+    if len(stripped) < 60:
+        return False
+    return _CODE_SIGNAL.search(content) is None
 
 
 def validate_source(path: str, content: str) -> tuple[bool, str]:
@@ -13,24 +45,29 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
         if p.endswith(".py"):
             try:
                 compile(content, path, "exec")
-                return True, ""
             except SyntaxError as exc:
                 return False, f"SyntaxError line {exc.lineno}: {exc.msg}"
-        if p.endswith(".json"):
+        elif p.endswith(".json"):
             try:
                 json.loads(content)
                 return True, ""
             except json.JSONDecodeError as exc:
                 return False, f"JSON error line {exc.lineno}: {exc.msg}"
-        if p.endswith(".toml"):
+        elif p.endswith(".toml"):
             try:
                 import tomllib
                 tomllib.loads(content)
                 return True, ""
             except Exception as exc:  # noqa: BLE001
                 return False, f"TOML error: {exc}"
-        if p.endswith((".js", ".jsx", ".ts", ".tsx")):
-            return _balanced(content)
+        elif p.endswith((".js", ".jsx", ".ts", ".tsx")):
+            ok, err = _balanced(content)
+            if not ok:
+                return ok, err
+        # Generic prose guard for any source-code file: chat prose that happens to
+        # pass (or skip) the type-specific check must not ship as source.
+        if p.endswith(_CODE_EXTS) and _looks_like_prose(content):
+            return False, "content looks like prose, not code"
     except Exception:  # noqa: BLE001 - validation must never raise
         return True, ""
     return True, ""

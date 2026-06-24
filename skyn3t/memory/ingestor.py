@@ -28,7 +28,7 @@ class ExperienceIngestor:
         *,
         rag_engine: Any | None = None,
         buffer_size: int = 512,
-        min_score_to_ingest: float = 0.0,
+        min_score_to_ingest: float = 50.0,  # build score is 0..100; 0.0 ingested every failed build
     ) -> None:
         self.event_bus = event_bus
         self._rag = rag_engine  # may be injected (tests) or lazily resolved
@@ -82,6 +82,10 @@ class ExperienceIngestor:
 
     async def _on_build_completed(self, event: Event) -> None:
         payload = event.payload or {}
+        # Never learn from a failed build, regardless of its numeric score — a
+        # no_go is a negative example, not a pattern to recall into future builds.
+        if str(payload.get("verdict", "")).lower() == "no_go":
+            return
         score = float(payload.get("score", 0.0) or 0.0)
         if score < self.min_score_to_ingest:
             return

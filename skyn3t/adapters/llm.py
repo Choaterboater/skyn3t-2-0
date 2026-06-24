@@ -58,6 +58,24 @@ _CLI_COMMANDS: dict[str, list[str]] = {
 }
 _KNOWN_CLI_PROVIDERS = ("claude", "kimi", "copilot")
 
+# Flags that make each headless CLI ignore the host's ambient MCP servers, so a
+# skyn3t build never boots the user's whole ~/.claude / ~/.copilot MCP fleet
+# (Aruba, context7, playwright, ...) on every codegen call. claude + kimi (a
+# claude-compatible fork): with --strict-mcp-config and no --mcp-config, zero MCP
+# servers load. copilot: --disable-builtin-mcps drops its built-in github MCP.
+_CLI_NO_MCP_ARGS: dict[str, list[str]] = {
+    "claude": ["--strict-mcp-config"],
+    "kimi": ["--strict-mcp-config"],
+    "copilot": ["--disable-builtin-mcps"],
+}
+
+
+def _no_mcp_args(settings, provider: str) -> list[str]:
+    """MCP-disabling argv for ``provider`` when ``cli_disable_mcp`` is on (default)."""
+    if not getattr(settings, "cli_disable_mcp", True):
+        return []
+    return list(_CLI_NO_MCP_ARGS.get(provider, []))
+
 
 def _to_data_url(item: str) -> str:
     """Normalize an image reference to an OpenAI/OpenRouter-style data URL.
@@ -346,7 +364,8 @@ class LLMClient:
         Degrades to the stub backend (never raises) if the CLI fails or times
         out, so a build keeps moving (design rule #6).
         """
-        argv = _CLI_COMMANDS.get(provider, [provider, "-p"])
+        argv = [*_CLI_COMMANDS.get(provider, [provider, "-p"]),
+                *_no_mcp_args(self.settings, provider)]
         full = prompt if not system else f"{system}\n\n{prompt}"
         # build-from-image: reference the image FILE(S) so the CLI reads them as a
         # visual reference ALONGSIDE the full text context — the same pattern the
@@ -416,10 +435,12 @@ class LLMClient:
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         provider = backend[:-4]
         # acceptEdits lets the headless agent write files without prompting.
+        # _no_mcp_args keeps the agent from loading the host's ambient MCP fleet.
+        nm = _no_mcp_args(self.settings, provider)
         argv = {
-            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits"],
-            "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits"],
-            "copilot": ["copilot", "-p", prompt],
+            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits", *nm],
+            "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits", *nm],
+            "copilot": ["copilot", "-p", prompt, *nm],
         }.get(provider, [provider, "-p", prompt])
         proc = None
         try:

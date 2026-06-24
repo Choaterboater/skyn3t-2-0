@@ -93,6 +93,12 @@ class Settings(BaseSettings):
     llm_backend: str = "auto"  # auto|stub|openrouter|claude_cli|kimi_cli|copilot_cli|openai_cli
     cli_llm_provider: str = "claude"  # which CLI when auto selects one
     cli_llm_timeout: int = 300  # generating a substantial file via claude -p needs room
+    # Run the headless build CLIs (claude/kimi -p) WITHOUT the host's ambient MCP
+    # servers. Otherwise every codegen call boots the user's whole ~/.claude MCP
+    # fleet (Aruba, context7, playwright, ...) — pure per-build startup tax and a
+    # sandboxing concern. True = isolated builds; flip to False only to give the
+    # build agent your MCP tools on purpose.
+    cli_disable_mcp: bool = True
 
     # GitHub token (env SKYN3T_GITHUB_TOKEN) for RepoScout search + repo ingest.
     # Authenticated search lifts the rate limit so scouting returns real, varied

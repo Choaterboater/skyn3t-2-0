@@ -57,6 +57,30 @@ _OFFLINE_SEEDS: list[dict[str, Any]] = [
 ]
 
 
+# Rotating scout topics. A tiny pool exhausts in one pass (every later scout
+# re-finds the same top repos, which dedupe then rejects -> "scout finds nothing
+# anymore"). This broader, varied pool — paired with per-topic pagination — keeps
+# discovery surfacing new repos. Aligned with the kinds of apps SkyN3t builds.
+_SCOUT_TOPICS: tuple[str, ...] = (
+    "react dashboard",
+    "fastapi service",
+    "python cli tool",
+    "automation agent",
+    "nextjs saas starter",
+    "react component library",
+    "tailwind ui kit",
+    "vite react app",
+    "data visualization d3",
+    "javascript canvas game",
+    "express rest api",
+    "svelte web app",
+    "discord bot python",
+    "langchain agent",
+    "web scraper python",
+    "kids educational web app",
+)
+
+
 class RepoScout:
     """Scouts GitHub for patterns and turns hits into ingest proposals."""
 
@@ -77,7 +101,18 @@ class RepoScout:
         self.min_stars = min_stars
         self.max_results = max_results
         self._scout_i = 0  # rotates the topic so repeated scouts vary
+        self._topic_pages: dict[str, int] = {}  # per-topic result page cursor
         self._stop = False  # explicit init (matches MetaTick/AutonomousLoop)
+
+    def _next_page(self, topic: str) -> int:
+        """Next GitHub result page for ``topic``, advancing the cursor.
+
+        Repeated scouts of one topic walk forward through pages so they surface
+        fresh repos instead of re-finding the same top-N (which dedupe rejects).
+        """
+        page = self._topic_pages.get(topic, 1)
+        self._topic_pages[topic] = page + 1
+        return page
 
     @property
     def online(self) -> bool:
@@ -85,11 +120,16 @@ class RepoScout:
 
     # ---- search ----------------------------------------------------------
     async def search(self, topic: str) -> list[dict[str, Any]]:
-        """Return candidate repos for a topic. Falls back to offline seeds."""
+        """Return candidate repos for a topic. Falls back to offline seeds.
+
+        Walks forward a page each call so repeated scouts of the same topic
+        surface new repos rather than the same top-N every time.
+        """
         if not _HAS_HTTPX:
             return self._offline(topic)
+        page = self._next_page(topic)
         try:
-            return await self._search_github(topic)
+            return await self._search_github(topic, page)
         except Exception:  # noqa: BLE001 - any network/parse error -> degrade
             return self._offline(topic)
 
@@ -103,10 +143,11 @@ class RepoScout:
         )
         return scored[: self.max_results]
 
-    async def _search_github(self, topic: str) -> list[dict[str, Any]]:  # pragma: no cover - network
+    async def _search_github(self, topic: str, page: int = 1) -> list[dict[str, Any]]:  # pragma: no cover - network
         url = (
             "https://api.github.com/search/repositories"
-            f"?q={quote(topic)}+stars:>={self.min_stars}&sort=stars&per_page={self.max_results}"
+            f"?q={quote(topic)}+stars:>={self.min_stars}"
+            f"&sort=stars&per_page={self.max_results}&page={page}"
         )
         headers = {"Accept": "application/vnd.github+json"}
         if self.github_token:
@@ -160,14 +201,12 @@ class RepoScout:
         return proposals
 
     # ---- cortex component lifecycle --------------------------------------
-    _SCOUT_TOPICS = ("react dashboard", "fastapi service", "python cli tool", "automation agent")
-
     def stop(self) -> None:
         self._stop = True
 
     def _next_topic(self) -> str:
         """Return the next topic in the rotation (advances the cursor)."""
-        topic = self._SCOUT_TOPICS[self._scout_i % len(self._SCOUT_TOPICS)]
+        topic = _SCOUT_TOPICS[self._scout_i % len(_SCOUT_TOPICS)]
         self._scout_i += 1
         return topic
 

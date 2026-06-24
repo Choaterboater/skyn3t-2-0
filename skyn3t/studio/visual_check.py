@@ -146,6 +146,8 @@ def make_vision_fn(settings: Any) -> VisionFn | None:
     # No OpenRouter key: fall back to a vision-capable CLI on PATH (claude/kimi).
     # The CLI reads the image FILE (not base64 over HTTP), so it judges the
     # screenshot natively — no OpenRouter dependency anywhere.
+    from skyn3t.adapters.llm import _no_mcp_args  # local import avoids any cycle
+
     provider = str(getattr(settings, "cli_llm_provider", "") or "claude").lower()
     for prov in (provider, "claude", "kimi"):
         if shutil.which(prov):
@@ -153,8 +155,8 @@ def make_vision_fn(settings: Any) -> VisionFn | None:
                 full = (f"View the image file at {image_path}. {prompt} "
                         "Respond with ONLY the JSON object, no prose.")
                 try:
-                    out = subprocess.run([_prov, "-p", full], capture_output=True,
-                                         text=True, timeout=120)
+                    out = subprocess.run([_prov, "-p", full, *_no_mcp_args(settings, _prov)],
+                                         capture_output=True, text=True, timeout=120)
                     return out.stdout or ""
                 except Exception:  # noqa: BLE001 - CLI missing/slow -> empty -> soft-skip
                     return ""

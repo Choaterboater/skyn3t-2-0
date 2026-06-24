@@ -80,13 +80,27 @@ async def _llm_choice(brief: str, llm: Any) -> StackChoice | None:
 
 
 def _extract_json(text: str) -> str:
-    """Pull a JSON object out of an LLM reply (fenced or inline). The brace
-    scan is the workhorse; an optional ``` fence and `json` tag are stripped first."""
+    """Pull a JSON object out of an LLM reply (fenced or inline).
+
+    Scans for the FIRST balanced ``{...}`` object from the first ``{``, so bare
+    JSON followed by a trailing fence/prose/code (a common LLM shape) is parsed
+    correctly — the old fence-first split discarded the leading JSON. A leading
+    fence wrapping the whole reply is still unwrapped first."""
     t = (text or "").strip()
-    if "```" in t:
-        t = t.split("```")[1].removeprefix("json").strip()
-    start, end = t.find("{"), t.rfind("}")
-    return t[start:end + 1] if start >= 0 and end > start else t
+    if t.startswith("```") and t.count("```") >= 2:
+        t = t.split("```", 2)[1].removeprefix("json").strip()
+    start = t.find("{")
+    if start < 0:
+        return t
+    depth = 0
+    for i in range(start, len(t)):
+        if t[i] == "{":
+            depth += 1
+        elif t[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return t[start:i + 1]
+    return t[start:]  # unbalanced — let json.loads surface the error
 
 
 async def select_stack(

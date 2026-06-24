@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from collections.abc import Awaitable, Callable
 from time import time
 from typing import Any
@@ -32,10 +33,13 @@ log = structlog.get_logger(__name__)
 # A persistence sink: anything with async ``save_task(task, result)``.
 PersistFn = Callable[[TaskRequest, TaskResult], Awaitable[None]]
 
-# Errors whose message contains these substrings are treated as transient.
-_TRANSIENT_MARKERS = (
-    "timeout", "timed out", "rate limit", "429", "503", "502", "500",
-    "connection", "temporarily", "overloaded", "reset by peer",
+# Errors matching these markers (as whole words) are treated as transient. Word
+# boundaries matter: a bare substring scan classified "expected 1500 got 2" and
+# "amount must be < 5000" as transient (they contain "500"), wasting the full
+# retry budget on deterministically-failing tasks.
+_TRANSIENT_RE = re.compile(
+    r"\b(?:timeout|timed out|rate limit|429|503|502|500|connection|"
+    r"temporarily|overloaded|reset by peer)\b"
 )
 
 
@@ -43,8 +47,7 @@ def classify_error(error: str | None) -> str:
     """Return 'transient' (retry) or 'permanent' (don't)."""
     if not error:
         return "permanent"
-    low = error.lower()
-    return "transient" if any(m in low for m in _TRANSIENT_MARKERS) else "permanent"
+    return "transient" if _TRANSIENT_RE.search(error.lower()) else "permanent"
 
 
 class Orchestrator:

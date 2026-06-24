@@ -160,6 +160,12 @@ def slugify(text: str, fallback: str = "app") -> str:
     return s or fallback
 
 
+# Max chars of injected skill advice in a generative prompt. Skill bodies can be
+# tens of KB each; the full set otherwise dwarfs the build instruction and slows
+# the codegen agent into its timeout.
+_MAX_SKILL_ADVICE = 6000
+
+
 def knowledge_block(payload: Any) -> str:
     """Assemble injected prior knowledge into an advisory prompt preamble.
 
@@ -175,7 +181,10 @@ def knowledge_block(payload: Any) -> str:
 
     advice = extra.get("skills_advice") or payload.get("skills_advice")
     if advice:
-        parts.append(str(advice).strip())
+        # Cap injected skill advice: full skill-doc bodies (up to tens of KB) bloat
+        # the codegen prompt, slowing claude -p enough to blow the agentic timeout
+        # and ship a stub. Keep an advisory excerpt — like recall/lessons below.
+        parts.append(str(advice).strip()[:_MAX_SKILL_ADVICE])
 
     lessons = payload.get("lessons") or []
     if lessons:

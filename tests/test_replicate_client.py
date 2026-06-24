@@ -93,6 +93,18 @@ async def test_generate_images_success(monkeypatch):
     assert imgs == [_PNG]
 
 
+async def test_generate_images_n_gt_1_returns_n(monkeypatch):
+    # n>1 must work: predictions run concurrently (not serialized past the outer
+    # wait_for budget), so two images come back.
+    create = _Resp(json_data={
+        "id": "pred", "status": "succeeded",
+        "output": ["https://replicate.delivery/out.png"],
+    })
+    _install_client(monkeypatch, create_resp=create)
+    imgs = await _client(replicate_api_token="r8_x").generate_images("a cat", n=2)
+    assert imgs == [_PNG, _PNG]
+
+
 async def test_generate_images_polls_until_succeeded(monkeypatch):
     create = _Resp(json_data={"id": "pred2", "status": "processing"})
     done = _Resp(json_data={

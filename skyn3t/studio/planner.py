@@ -15,6 +15,7 @@ Import has zero side effects.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,9 +89,21 @@ def detect_stack(brief: str, hint: str | None = None) -> str:
                 return stack
     low = (brief or "").lower()
     for stack, keywords in _STACK_SIGNATURES:
-        if any(k in low for k in keywords):
+        if any(_kw_match(k, low) for k in keywords):
             return stack
     return _DEFAULT_STACK
+
+
+# Bare framework names that are substrings of common English words: match them
+# only as whole words so "astrology"/"astronomy"/"gastro" don't route to astro
+# and "remixing" doesn't route to remix.
+_WORD_BOUNDED_KEYWORDS = frozenset({"astro", "remix"})
+
+
+def _kw_match(keyword: str, text: str) -> bool:
+    if keyword in _WORD_BOUNDED_KEYWORDS:
+        return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+    return keyword in text
 
 
 def file_checklist(stack: str) -> list[str]:

@@ -50,13 +50,14 @@ class DesignerAgent(BaseAgent):
         p = task.payload
         brief = p.get("brief", "") or p.get("slug", "app")
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
-        # Optional reference image ("build from a picture"): when present, pass it
-        # through as a multimodal prompt so the design reflects it. Degrades on a
-        # non-vision backend (the LLM client ignores images for stub/CLI).
+        # Optional reference image ("build from a picture"): only attach it — and
+        # only mention it — on the openrouter backend (the only one that can SEE
+        # images). On stub/CLI we say nothing (no "image attached" note the model
+        # can't act on) and behave exactly as today.
         ref = p.get("reference_image")
         prompt = f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON."
         images = None
-        if ref:
+        if ref and getattr(self.llm, "backend", "") == "openrouter":
             prompt += ("\n\nA reference image is attached — match its layout, "
                        "palette, and visual style where it makes sense.")
             images = [ref]

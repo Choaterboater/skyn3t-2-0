@@ -138,13 +138,20 @@ def resolve_project_file(state: AppState, slug: str, rel_path: str) -> Path:
 
 def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
     """Decode a base64 ``data:`` image URL and save it under data_dir so the
-    build's agents can read it as a file path. Returns the saved PATH, or the
-    original data URL unchanged when it isn't a decodable data URL or saving
-    fails (degrade, don't crash — the LLM client also accepts a data URL).
+    build's agents can read it as a file path. Returns the saved PATH, or ``""``.
+
+    SECURITY: only ``data:`` URLs are accepted from the (untrusted) API body. A
+    bare filesystem path or http(s) URL is rejected — otherwise a request could
+    set ``reference_image`` to e.g. ``/etc/passwd`` and have the server read an
+    arbitrary local file (it later gets base64-encoded and sent to the model), or
+    point at an attacker-chosen URL (SSRF).
     """
     s = (data_url or "").strip()
     if not s.startswith("data:"):
-        return s  # already a path / http url; pass through
+        if s:
+            log.warning("build.reference_image_rejected",
+                        note="non-data: reference_image ignored (path/url not allowed)")
+        return ""  # reject paths / remote URLs from untrusted input
     try:
         header, _, b64 = s.partition(",")
         if not b64:
@@ -164,7 +171,7 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
         return str(out_path)
     except Exception as exc:  # noqa: BLE001 - never let an image break a build
         log.warning("build.reference_image_save_failed", error=str(exc)[:160])
-        return s  # fall back to the data URL (the LLM client accepts it directly)
+        return s  # a data: URL is safe inline data; the LLM client accepts it
 
 
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",

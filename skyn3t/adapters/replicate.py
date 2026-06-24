@@ -109,22 +109,26 @@ class ReplicateClient:
             return []
 
     async def _run(self, model: str, prompt: str, n: int) -> list[bytes]:
-        urls: list[str] = []
         async with httpx.AsyncClient(timeout=self._default_timeout) as client:
-            # One prediction per image — keeps the input generic across models
-            # (num_outputs isn't universal) and lets us cap cost cleanly.
-            for _ in range(n):
-                got = await self._one_prediction(client, model, prompt)
-                urls.extend(got)
-                if len(urls) >= n:
-                    break
+            # One prediction per image (num_outputs isn't universal), but run them
+            # CONCURRENTLY so total wall-clock is ~one prediction, not n sequential
+            # ones — otherwise n>1 blows the outer wait_for budget and the build
+            # stalls. Each _one_prediction/_fetch_image already never raises;
+            # return_exceptions guards the rare propagation.
+            preds = await asyncio.gather(
+                *(self._one_prediction(client, model, prompt) for _ in range(n)),
+                return_exceptions=True,
+            )
+            urls: list[str] = []
+            for got in preds:
+                if isinstance(got, list):
+                    urls.extend(got)
             urls = urls[:n]
-            out: list[bytes] = []
-            for u in urls:
-                data = await self._fetch_image(client, u)
-                if data:
-                    out.append(data)
-            return out
+            fetched = await asyncio.gather(
+                *(self._fetch_image(client, u) for u in urls),
+                return_exceptions=True,
+            )
+            return [d for d in fetched if isinstance(d, (bytes, bytearray)) and d]
 
     async def _one_prediction(
         self, client: "httpx.AsyncClient", model: str, prompt: str

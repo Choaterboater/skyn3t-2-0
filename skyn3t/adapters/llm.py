@@ -234,8 +234,13 @@ class LLMClient:
         # that speaks the multimodal message shape). stub/CLI ignore it and behave
         # exactly as today — degrade, don't crash (design rule #6).
         if backend == "openrouter" and images:
-            model = self._vision_model_for(model, model_override)
-            result = await self._openrouter(model, prompt, system, max_tokens, json_mode, images)
+            model, send_images = self._resolve_vision(model, model_override)
+            if send_images:
+                result = await self._openrouter(model, prompt, system, max_tokens, json_mode, images)
+            else:
+                # free_only with no usable free vision model: stay text-only rather
+                # than silently billing a paid model (design rule #5 cheap-by-default).
+                result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
         elif backend == "openrouter":
             result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
         elif backend.endswith("_cli"):
@@ -250,31 +255,47 @@ class LLMClient:
         self.budget.check()
         return result
 
-    def _vision_model_for(self, resolved: str, model_override: str | None) -> str:
-        """Pick a vision-capable model for an image-bearing call.
+    def _resolve_vision(self, resolved: str, model_override: str | None) -> tuple[str, bool]:
+        """Choose the model for an image-bearing call AND whether to send images.
 
-        Keeps the resolved model if it's already vision-capable (or the caller
-        explicitly pinned one via ``model_override``); otherwise swaps in
-        ``settings.vision_model`` (or the built-in default). The chosen model is
-        run through the router's free-only / no-claude policy so an image call
-        still respects the budget posture. Falls back to the resolved model if
-        policy would reject the vision model with no acceptable replacement."""
+        Returns ``(model, send_images)``. Honors cheap-by-default (design rule #5):
+        under ``free_only`` we only spend on a paid vision model when the operator
+        EXPLICITLY configured ``settings.vision_model`` — otherwise we keep the free
+        resolved model and DON'T send the image (text-only), rather than silently
+        billing the paid default. Honors ``no_claude``. A model already vision-capable
+        (or an explicit vision ``model_override``) is used as-is."""
         if model_override and _is_vision_model(model_override):
-            return model_override
+            return model_override, True
         if _is_vision_model(resolved):
-            return resolved
-        vision = str(getattr(self.settings, "vision_model", "") or "") or _DEFAULT_VISION_MODEL
-        # Honor free_only / no_claude. A non-free or claude vision model under a
-        # restrictive policy is dropped — but a degraded text-only fallback can't
-        # see the image, so we keep the vision model and just log it. The router's
-        # policy is advisory here: a vision call needs a vision model to work.
-        if getattr(self.settings, "no_claude", False) and _is_vision_model(vision) \
-                and any(m in vision.lower() for m in ("claude", "anthropic")):
-            # Prefer a non-claude vision model when the policy forbids claude.
-            if not _is_vision_model(_DEFAULT_VISION_MODEL) or "claude" in _DEFAULT_VISION_MODEL:
-                return resolved
-            vision = _DEFAULT_VISION_MODEL
-        return vision
+            return resolved, True
+
+        def _is_claude(m: str) -> bool:
+            ml = m.lower()
+            return "claude" in ml or "anthropic" in ml
+
+        def _is_free(m: str) -> bool:
+            ml = m.lower()
+            return ml.endswith(":free") or "free" in ml
+
+        configured = str(getattr(self.settings, "vision_model", "") or "").strip()
+        no_claude = bool(getattr(self.settings, "no_claude", False))
+        free_only = bool(getattr(self.settings, "free_only", False))
+
+        if configured:  # operator opted into a specific vision model — honor it
+            if no_claude and _is_claude(configured):
+                return resolved, False  # forbidden by policy -> drop the image
+            if free_only and not _is_free(configured):
+                log.warning("llm.vision_paid_under_free_only", model=configured)
+            return configured, True
+        # No vision model configured.
+        if free_only:
+            # Don't silently bill the paid default; keep the free model, drop image.
+            log.info("llm.vision_skipped_free_only",
+                     note="no free vision model configured; reference image not sent")
+            return resolved, False
+        if no_claude and _is_claude(_DEFAULT_VISION_MODEL):
+            return resolved, False
+        return _DEFAULT_VISION_MODEL, True
 
     async def _cli(self, provider, prompt, system, json_mode) -> LLMResult:
         """Run a locally-installed coding-agent CLI in headless print mode.

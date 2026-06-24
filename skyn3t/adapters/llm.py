@@ -449,8 +449,16 @@ class LLMClient:
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group -> killable as a tree
             )
+            # A full multi-file app needs real time — the old cli_llm_timeout*3
+            # (15 min) killed claude -p mid-build, shipping a partial/stub. Use a
+            # dedicated, larger agentic budget (default 30 min, configurable).
+            agentic_timeout = (
+                timeout
+                or int(getattr(self.settings, "agentic_build_timeout", 0))
+                or (self.settings.cli_llm_timeout * 3)
+            )
             out, err = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout or (self.settings.cli_llm_timeout * 3),
+                proc.communicate(), timeout=agentic_timeout,
             )
         except asyncio.CancelledError:
             # Outer stage timeout / build cancellation: kill the whole agent tree

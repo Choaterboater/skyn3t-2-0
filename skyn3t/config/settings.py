@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     # (produced only a placeholder/stub). Each retry re-runs with corrective
     # feedback. Fires ONLY on under-delivery, so a good first pass adds no time.
     agentic_retries: int = 1
+    # Wall-clock budget (seconds) for ONE agentic `claude -p` codegen session.
+    # A full multi-file app routinely needs >15 min; the old cli_llm_timeout*3
+    # killed it mid-build and shipped a stub. 0 falls back to cli_llm_timeout*3.
+    agentic_build_timeout: int = 1800
 
     # GitHub token (env SKYN3T_GITHUB_TOKEN) for RepoScout search + repo ingest.
     # Authenticated search lifts the rate limit so scouting returns real, varied

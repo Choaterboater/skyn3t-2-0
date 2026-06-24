@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import signal
+import tempfile
 from dataclasses import dataclass, field
 
 import httpx
@@ -244,7 +245,7 @@ class LLMClient:
         elif backend == "openrouter":
             result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
         elif backend.endswith("_cli"):
-            result = await self._cli(backend[:-4], prompt, system, json_mode)
+            result = await self._cli(backend[:-4], prompt, system, json_mode, images)
         else:
             result = self._stub(model, prompt, system, json_mode)
         self.last_model = result.model
@@ -297,7 +298,49 @@ class LLMClient:
             return resolved, False
         return _DEFAULT_VISION_MODEL, True
 
-    async def _cli(self, provider, prompt, system, json_mode) -> LLMResult:
+    @property
+    def supports_image_input(self) -> bool:
+        """Whether the active backend can accept an INPUT reference image
+        ("build from a picture"). OpenRouter speaks the multimodal HTTP shape;
+        the CLI agents (claude/kimi) read an image FILE referenced in the prompt.
+        The stub backend cannot — agents check this before attaching an image."""
+        b = self.backend
+        return b == "openrouter" or b.endswith("_cli")
+
+    @staticmethod
+    def _ensure_image_path(image: str) -> str | None:
+        """Return a local FILE PATH for an image reference a CLI agent can read.
+
+        A ``data:`` URL is decoded to a temp file (the CLI can't read inline data);
+        an existing local path is used as-is; a remote URL is skipped (the CLI
+        can't fetch it, and we won't make the host fetch an arbitrary URL).
+        Returns ``None`` when there is nothing usable. Never raises.
+        """
+        s = (image or "").strip()
+        if not s:
+            return None
+        if s.startswith("data:"):
+            try:
+                header, _, b64 = s.partition(",")
+                if not b64:
+                    return None
+                raw = base64.b64decode(b64, validate=False)
+                ext = "png"
+                if "image/jpeg" in header or "image/jpg" in header:
+                    ext = "jpg"
+                elif "image/webp" in header:
+                    ext = "webp"
+                fd, path = tempfile.mkstemp(suffix=f".{ext}", prefix="skyn3t_ref_")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(raw)
+                return path
+            except Exception:  # noqa: BLE001 - an image must never break a build
+                return None
+        if s.startswith(("http://", "https://")):
+            return None  # CLI can't fetch remote; don't make the host fetch arbitrary URLs
+        return s if os.path.exists(s) else None
+
+    async def _cli(self, provider, prompt, system, json_mode, images=None) -> LLMResult:
         """Run a locally-installed coding-agent CLI in headless print mode.
 
         Degrades to the stub backend (never raises) if the CLI fails or times
@@ -305,6 +348,16 @@ class LLMClient:
         """
         argv = _CLI_COMMANDS.get(provider, [provider, "-p"])
         full = prompt if not system else f"{system}\n\n{prompt}"
+        # build-from-image: reference the image FILE(S) so the CLI reads them as a
+        # visual reference ALONGSIDE the full text context — the same pattern the
+        # vision judge (studio/visual_check) uses. A data: URL is written to a
+        # temp file first; the image is prepended so it frames the context below.
+        if images:
+            paths = [p for p in (self._ensure_image_path(i) for i in images) if p]
+            if paths:
+                refs = "; ".join(f"the image file at {p}" for p in paths)
+                full = (f"View {refs} as a visual reference for the request below, "
+                        f"then:\n\n{full}")
         if json_mode:
             full += "\n\nRespond with ONLY valid JSON — no prose, no code fences."
         proc = None

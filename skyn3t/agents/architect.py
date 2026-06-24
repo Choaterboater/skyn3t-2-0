@@ -65,7 +65,16 @@ class ArchitectAgent(BaseAgent):
             + "component, model, utility, config, and test needed for a real, "
             + "fully-featured implementation of the brief. Not a minimal stub."
         )
-        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=self.system_prompt(_SYSTEM), json_mode=True, task_type=self.agent_type)
+        # Optional reference image ("build from a picture"): when present, attach
+        # it so the plan's structure/layout reflects it. Degrades on a non-vision
+        # backend (the LLM client ignores images for stub/CLI).
+        ref = p.get("reference_image")
+        images = None
+        if ref:
+            prompt += ("\n\nA reference image is attached — match its layout/"
+                       "structure and the screens/components it implies.")
+            images = [ref]
+        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=self.system_prompt(_SYSTEM), json_mode=True, task_type=self.agent_type, images=images)
         parsed = parse_json(result.text)
 
         if (not isinstance(parsed, dict) or parsed.get("stub") is True

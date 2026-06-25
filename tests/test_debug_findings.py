@@ -17,9 +17,12 @@ from skyn3t.agents.stack_detector import StackDetector
 from skyn3t.studio.planner import _STACK_FILE_CHECKLIST
 
 
-def test_react_native_tsconfig_excludes_tests():
-    cfg = json.loads(scaffold_for("react_native", "demo", "a fitness app")["tsconfig.json"])
-    assert "__tests__" in cfg.get("exclude", [])
+def test_react_native_ships_no_unrunnable_test():
+    # The scaffold ships no jest runner, so it must NOT ship a jest test (it
+    # could never run, and scoring it was theater) nor claim a `test` script.
+    files = scaffold_for("react_native", "demo", "a fitness app")
+    assert not any("__tests__" in f or f.endswith(".test.tsx") for f in files)
+    assert "test" not in json.loads(files["package.json"]).get("scripts", {})
 
 
 def test_react_native_classified_as_mobile_not_fullstack(tmp_path):

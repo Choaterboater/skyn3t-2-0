@@ -84,8 +84,11 @@ def test_scaffold_react_native_is_runnable_shape():
     assert "export default" in app
     assert "react-native" in app
 
-    # ships a test file (delivered != empty also means verifiable).
-    assert any(("test" in path.lower()) for path in files), "no test file in scaffold"
+    # Does NOT ship an unrunnable jest test (no jest dep) that only inflates the
+    # score — and package.json must not advertise a `test` script it can't run.
+    assert not any("__tests__" in p or p.endswith(".test.tsx") for p in files), \
+        "scaffold ships an unrunnable jest test (theater)"
+    assert "test" not in pkg.get("scripts", {}), "package.json claims a jest test command but ships no jest"
 
 
 def test_scaffold_react_native_has_no_python_or_web_entrypoint_confusion():

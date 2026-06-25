@@ -136,10 +136,20 @@ class ConsistencyReviewerAgent(BaseAgent):
                               output={"ok": False, "verdict": "fail",
                                       "broken_imports": [], "details": "no project directory"})
         stack = vc.detect_stack(root, payload)
+        low = (stack or "").lower()
+        # Match stack FAMILIES (planner emits react/nextjs/fastapi/... not bare
+        # node/web/python) and fall back to file presence, so the import checks
+        # actually run for real stacks instead of silently no-op'ing.
+        _PY = {"python", "python_cli", "fastapi", "flask", "django"}
+        _JS = {"node", "web", "react", "react_vite", "vite", "nextjs", "next",
+               "static", "static_html", "astro", "remix", "node_express",
+               "express", "svelte", "vue"}
+        has_pkg = (root / "package.json").is_file()
+        has_py = (root / "requirements.txt").is_file() or (root / "pyproject.toml").is_file()
         broken: list[dict] = []
-        if stack in ("python", "unknown"):
+        if low in _PY or low == "unknown" or (has_py and not has_pkg):
             broken += check_python(root)
-        if stack in ("node", "web", "unknown"):
+        if low in _JS or low == "unknown" or has_pkg:
             broken += check_js(root)
         ok = not broken
         return TaskResult(

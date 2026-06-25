@@ -183,18 +183,55 @@ class MemoryStore:
             }
 
     async def reconcile_orphaned_builds(self) -> int:
-        """Mark builds left ``running`` by a previous (now-dead) server process as
-        ``interrupted``. A build can't survive a server restart, so any persisted
-        ``running`` row is stale on startup — otherwise it lingers as a phantom
-        forever (its slug looks perpetually busy). Call once at startup, before
-        any new build dispatches. Returns the number reconciled."""
+        """Mark builds whose owning process is DEAD as ``interrupted``.
+
+        Each ``running`` row is stamped (in its manifest) with the owning pid +
+        host. We interrupt a row only when its owner is gone — a crashed prior
+        server, or a legacy/unstamped row — and LEAVE rows owned by a live
+        process (the current server, or a concurrent same-host build). This
+        replaces a blanket ``UPDATE … running→interrupted`` that clobbered live
+        concurrent builds. Different-host rows are left (can't check liveness).
+        Returns the number reconciled."""
+        import os
+        import socket
+
+        cur_host = socket.gethostname()
+
+        def _alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                return True  # exists, just not signalable by us
+            except (OSError, OverflowError, TypeError, ValueError):
+                return False
+            return True
+
+        n = 0
         async with self._session() as s:
-            result = await s.execute(
-                update(BuildRow).where(BuildRow.status == "running")
-                .values(status="interrupted")
-            )
+            rows = (await s.execute(
+                select(BuildRow).where(BuildRow.status == "running")
+            )).scalars().all()
+            for row in rows:
+                manifest = row.manifest if isinstance(row.manifest, dict) else {}
+                extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
+                owner_pid = extra.get("owner_pid")
+                owner_host = extra.get("owner_host")
+                if owner_pid is None:
+                    stale = True  # legacy/unstamped -> from before this feature
+                elif owner_host and owner_host != cur_host:
+                    stale = False  # another host; cannot verify -> leave it
+                else:
+                    try:
+                        stale = not _alive(int(owner_pid))
+                    except (TypeError, ValueError):
+                        stale = True
+                if stale:
+                    row.status = "interrupted"
+                    n += 1
             await s.commit()
-            return int(getattr(result, "rowcount", 0) or 0)
+            return n
 
     # ---- lessons (graded learning loop) ----------------------------------
     async def add_lesson(self, stack: str, stage: str, text: str, source_build: str | None = None) -> int:

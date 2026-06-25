@@ -26,3 +26,23 @@ async def test_reconcile_noop_when_nothing_running(tmp_path):
     await store.init_db()
     await store.save_build(build_id="done", slug="y", status="completed_no_go")
     assert await store.reconcile_orphaned_builds() == 0
+
+
+async def test_reconcile_leaves_live_owner_interrupts_dead(tmp_path):
+    """A running row owned by a LIVE process (current server or concurrent
+    same-host build) is left; only a dead/unknown owner is interrupted (#25)."""
+    import os
+    import socket
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    host = socket.gethostname()
+    await store.save_build(build_id="live", slug="x", status="running",
+                           manifest={"extra": {"owner_pid": os.getpid(), "owner_host": host}})
+    await store.save_build(build_id="dead", slug="y", status="running",
+                           manifest={"extra": {"owner_pid": 2_147_483_646, "owner_host": host}})
+
+    n = await store.reconcile_orphaned_builds()
+
+    assert n == 1  # only the dead-owner row
+    assert (await store.get_build("live"))["status"] == "running"     # live owner preserved
+    assert (await store.get_build("dead"))["status"] == "interrupted"

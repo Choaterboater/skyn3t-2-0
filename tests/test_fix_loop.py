@@ -278,3 +278,28 @@ def test_liveness_gate_dead_root_fails_ui_stack():
     # broad opt-in gate fails on any dead route
     v, why = g("go", "nextjs", 2, ["/about", "/contact"], True)
     assert v == "no_go" and why
+
+
+# ---- verdict consumes verifier verdicts (findings #4, #21) ------------------
+def test_verifiers_gate_consumes_real_failures():
+    from skyn3t.studio.runner import StudioRunner
+    g = StudioRunner._verifiers_gate
+    # real build failed -> block
+    ok, why = g({"verify_build": {"verdict": "fail", "ran_real_build": True, "details": "ETARGET"}})
+    assert ok is False and why
+    # reward-hacking suspected -> block
+    ok, why = g({"verify_build": {"verdict": "fail", "ran_real_build": False,
+                                  "reward_hacking": {"suspicious": True, "flags": ["empty project"]}}})
+    assert ok is False and why
+    # offline/dry fail with no real build + not gamed -> does NOT block
+    ok, why = g({"verify_build": {"verdict": "fail", "ran_real_build": False, "mode": "dry",
+                                  "reward_hacking": {"suspicious": False}}})
+    assert ok is True and why is None
+    # a passing verifier -> not blocked
+    ok, why = g({"verify_build": {"verdict": "pass", "ran_real_build": True}})
+    assert ok is True
+    # real python boot failure -> block; structural web boot fail -> not
+    assert g({"verify_boot": {"verdict": "fail", "mode": "import"}})[0] is False
+    assert g({"verify_boot": {"verdict": "fail", "mode": "web"}})[0] is True
+    # nothing present -> not blocked
+    assert g({})[0] is True

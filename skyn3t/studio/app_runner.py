@@ -18,14 +18,45 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    tomllib = None
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from skyn3t.security.secrets import filter_env
+from skyn3t.agents.config_detector import detect_from_code
+from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name
 
 _PY_ENTRYPOINTS = ("main.py", "app.py", "server.py")
 _WEB_HINTS = ("fastapi", "flask", "uvicorn", "django", "starlette", "aiohttp")
+
+# SDKs that read their credential from the environment IMPLICITLY: the app may do
+# `new Anthropic()` / `AsyncOpenAI()` and never name the env var, so a pure
+# env-reference scan misses the need. Map each SDK's exact DECLARED DEPENDENCY NAME
+# (matched against parsed deps, never as a loose substring) -> the env var it reads.
+# JS keys keep their @scope (lowercased); Python keys are PEP503-normalized. Exact
+# matching is what keeps look-alikes like `openai-tokenizer` / `my-cohere-helper`
+# from declaring (and thus leaking) a key the app never uses.
+_SDK_DEP_ENV: dict[str, str] = {
+    "@anthropic-ai/sdk": "ANTHROPIC_API_KEY",   # JS
+    "anthropic": "ANTHROPIC_API_KEY",           # Python
+    "openai": "OPENAI_API_KEY",                 # JS + Python
+    "@google/generative-ai": "GEMINI_API_KEY",  # JS
+    "google-generativeai": "GEMINI_API_KEY",    # Python
+    "google-genai": "GEMINI_API_KEY",           # Python (current SDK)
+    "@mistralai/mistralai": "MISTRAL_API_KEY",  # JS
+    "mistralai": "MISTRAL_API_KEY",             # Python
+    "cohere-ai": "COHERE_API_KEY",              # JS
+    "cohere": "COHERE_API_KEY",                 # Python
+    "groq-sdk": "GROQ_API_KEY",                 # JS
+    "groq": "GROQ_API_KEY",                     # Python
+    "replicate": "REPLICATE_API_TOKEN",         # JS + Python
+}
+# First identifier on a requirement line: "anthropic[vertex]>=0.30" -> "anthropic".
+_REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 
 _log = None
 
@@ -39,6 +70,10 @@ class RunSpec:
     env: dict[str, str]
     kind: str  # static | python_web | node
     port: int
+    # Narrow secret passthrough: which needed secrets we resolved into ``env``,
+    # and which the app needs but we couldn't find a value for (host env / store).
+    injected: tuple[str, ...] = ()
+    missing_secrets: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -82,10 +117,153 @@ def _is_python_web(pdir: Path) -> bool:
     return any(h in blob for h in _WEB_HINTS)
 
 
+def _norm_py(name: str) -> str:
+    """PEP503-style normalize a Python distribution name (collapse -_. , lowercase)."""
+    return re.sub(r"[-_.]+", "-", name.strip().lower())
+
+
+def _declared_dep_names(pdir: Path) -> set[str]:
+    """Parsed dependency NAMES from the project's manifests (JS + Python).
+
+    Structural, not substring: package.json dep objects, requirements.txt names,
+    and pyproject (PEP 621 + poetry) names. JS names keep their @scope lowercased;
+    Python names are PEP503-normalized. Best-effort — a malformed manifest yields
+    fewer names, never an exception."""
+    names: set[str] = set()
+
+    pkg = pdir / "package.json"
+    if pkg.exists():
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8", errors="ignore"))
+            for sect in ("dependencies", "devDependencies",
+                         "peerDependencies", "optionalDependencies"):
+                deps = data.get(sect) if isinstance(data, dict) else None
+                if isinstance(deps, dict):
+                    names.update(k.strip().lower() for k in deps if isinstance(k, str))
+        except Exception:  # noqa: BLE001 - malformed manifest never blocks serve
+            pass
+
+    req = pdir / "requirements.txt"
+    if req.exists():
+        try:
+            for line in req.read_text(encoding="utf-8", errors="ignore").splitlines():
+                s = line.strip()
+                if not s or s[0] in "#-":  # skip comments and -r/--hash option lines
+                    continue
+                m = _REQ_NAME.match(s)
+                if m:
+                    names.add(_norm_py(m.group(1)))
+        except OSError:
+            pass
+
+    pyproject = pdir / "pyproject.toml"
+    if pyproject.exists() and tomllib is not None:
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="ignore"))
+            proj = data.get("project", {}) if isinstance(data, dict) else {}
+            reqs = list(proj.get("dependencies", []) or [])
+            for grp in (proj.get("optional-dependencies", {}) or {}).values():
+                reqs.extend(grp or [])
+            for dep in reqs:
+                if isinstance(dep, str):
+                    m = _REQ_NAME.match(dep)
+                    if m:
+                        names.add(_norm_py(m.group(1)))
+            poetry = (data.get("tool", {}) or {}).get("poetry", {})
+            for k in (poetry.get("dependencies", {}) or {}):
+                names.add(_norm_py(k))
+            for grp in (poetry.get("group", {}) or {}).values():
+                for k in (grp.get("dependencies", {}) or {}):
+                    names.add(_norm_py(k))
+        except Exception:  # noqa: BLE001 - malformed/odd pyproject never blocks serve
+            pass
+
+    return names
+
+
+def _sdk_implicit_keys(pdir: Path) -> set[str]:
+    """Env vars needed by SDKs that read their key implicitly (no env ref in code).
+
+    Matches each SDK's exact DECLARED DEPENDENCY NAME (parsed from the manifests),
+    so `@anthropic-ai/sdk` / `anthropic` reveal ANTHROPIC_API_KEY while look-alikes
+    (`openai-tokenizer`, `my-cohere-helper`) and incidental prose do NOT — the
+    difference between "needs a key" and "leaks a host key it never uses"."""
+    deps = _declared_dep_names(pdir)
+    return {_SDK_DEP_ENV[d] for d in deps if d in _SDK_DEP_ENV}
+
+
+def needed_secret_names(project_dir: str | Path, stack: str = "") -> set[str]:
+    """Names of env vars the app declares it needs — explicit refs + SDK deps.
+
+    Union of the config-surfacing code scan (explicit ``process.env.X`` /
+    ``os.environ['X']`` reads) and SDK-dependency detection (implicit reads). Pure
+    + offline; never raises (a scan failure just yields fewer names)."""
+    pdir = Path(project_dir)
+    names: set[str] = set()
+    try:
+        names |= set(detect_from_code(pdir).key_names())
+    except Exception:  # noqa: BLE001 - detection is best-effort, never blocks serve
+        pass
+    try:
+        names |= _sdk_implicit_keys(pdir)
+    except Exception:  # noqa: BLE001
+        pass
+    return names
+
+
+def resolve_serve_secrets(
+    names, *, env: dict[str, str] | None = None, store: SecretsStore | None = None,
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve the secret-looking ``names`` to values, splitting found vs missing.
+
+    A value is sourced from the host environment first, then the SkyN3t secrets
+    store (which re-keys ``SKYN3T_ANTHROPIC_API_KEY`` -> ``ANTHROPIC_API_KEY``,
+    bridging SkyN3t's config to the app's expected name). Non-secret names are
+    ignored — ``filter_env`` never scrubs them, so they can't go missing. Returns
+    ``(resolved, missing)``; never raises."""
+    src = os.environ if env is None else env
+    resolved: dict[str, str] = {}
+    missing: list[str] = []
+    _store = store
+    for name in sorted(n for n in names if isinstance(n, str) and n and is_secret_name(n)):
+        val = src.get(name)
+        if not val:
+            if _store is None:
+                try:
+                    _store = SecretsStore()
+                except Exception:  # noqa: BLE001 - store seeding never blocks serve
+                    _store = None
+            val = _store.get(name) if _store is not None else None
+        if val:
+            resolved[name] = val
+        else:
+            missing.append(name)
+    return resolved, missing
+
+
 def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None = None) -> RunSpec | None:
     """Map a project to a run command by inspecting its contents. None = no web preview."""
     pdir = Path(project_dir)
     port = port if port is not None else free_port()
+
+    # Narrow secret passthrough: resolve ONLY the secrets the app declared it
+    # needs (explicit env refs + SDK deps) from the host env / SkyN3t store. Every
+    # other host secret stays scrubbed by filter_env. `keep` whitelists the
+    # needed names already present in the host env; `resolved` carries values that
+    # came from the store (and so aren't in the host env).
+    needed = needed_secret_names(pdir, stack)
+    resolved, missing = resolve_serve_secrets(needed)
+    keep = set(resolved) | set(missing)  # the secret-looking subset of needs
+    injected = tuple(sorted(resolved))
+    missing_t = tuple(sorted(missing))
+
+    def _serve_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+        e = filter_env(os.environ, keep=keep)
+        for k, v in resolved.items():
+            e.setdefault(k, v)  # store-sourced values not present in host env
+        if extra:
+            e.update(extra)
+        return e
 
     pkg = pdir / "package.json"
     if pkg.exists():
@@ -96,20 +274,23 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
         script = "dev" if "dev" in scripts else ("start" if "start" in scripts else None)
         if script:
             npm = shutil.which("npm") or "npm"
-            # filter_env: a served preview app must not inherit host secrets
-            # (API keys / bearer tokens) — same trust boundary as sandboxed agents.
-            env = {**filter_env(os.environ), "PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"}
+            # _serve_env: scrub host secrets (same trust boundary as sandboxed
+            # agents) EXCEPT the ones this app declared it needs (narrow passthrough).
+            env = _serve_env({"PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"})
             return RunSpec([npm, "run", script, "--", "--port", str(port), "--host", "127.0.0.1"],
-                           str(pdir), env, "node", port)
+                           str(pdir), env, "node", port,
+                           injected=injected, missing_secrets=missing_t)
 
     entry = next((f for f in _PY_ENTRYPOINTS if (pdir / f).exists()), None)
     if entry and _is_python_web(pdir):
-        env = {**filter_env(os.environ), "PORT": str(port), "HOST": "127.0.0.1"}
-        return RunSpec([_python_bin(pdir), entry], str(pdir), env, "python_web", port)
+        env = _serve_env({"PORT": str(port), "HOST": "127.0.0.1"})
+        return RunSpec([_python_bin(pdir), entry], str(pdir), env, "python_web", port,
+                       injected=injected, missing_secrets=missing_t)
 
     if (pdir / "index.html").exists():
         return RunSpec([_python_bin(pdir), "-m", "http.server", str(port), "--bind", "127.0.0.1"],
-                       str(pdir), filter_env(os.environ), "static", port)
+                       str(pdir), _serve_env(), "static", port,
+                       injected=injected, missing_secrets=missing_t)
 
     return None
 
@@ -215,8 +396,16 @@ class AppRunner:
                 return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
                                   project_dir=str(pdir), status="failed",
                                   detail={"install_error": info})
-        log_fd, log_path = tempfile.mkstemp(prefix=f"skyn3t-serve-{pdir.name}-", suffix=".log")
-        logf = os.fdopen(log_fd, "w")
+        try:
+            # mkstemp/fdopen raise OSError on an unwritable/full/bad TMPDIR — guard
+            # them too so start() honors its "never raises" contract (callers in
+            # liveness/visual_loop/web treat a failed RunningApp as a soft failure).
+            log_fd, log_path = tempfile.mkstemp(prefix=f"skyn3t-serve-{pdir.name}-", suffix=".log")
+            logf = os.fdopen(log_fd, "w")
+        except OSError as exc:
+            return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
+                              project_dir=str(pdir), status="failed",
+                              detail={"error": f"serve logfile setup failed: {exc}"})
         try:
             proc = subprocess.Popen(
                 spec.cmd, cwd=spec.cwd, env=spec.env,
@@ -234,12 +423,25 @@ class AppRunner:
         if url is None:
             self._terminate(proc)
             tail = _read_tail(log_path)
+            detail: dict[str, Any] = {"log_tail": tail,
+                                      "injected_secrets": list(spec.injected),
+                                      "missing_secrets": list(spec.missing_secrets)}
+            # An app that exited while missing a required key almost certainly
+            # died on that key — turn the opaque SDK error into an actionable hint.
+            if spec.missing_secrets:
+                detail["hint"] = (
+                    "app needs config it doesn't have: "
+                    + ", ".join(spec.missing_secrets)
+                    + " — set them in your environment or SkyN3t settings "
+                    "(e.g. SKYN3T_ANTHROPIC_API_KEY) and re-serve")
             return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
                               project_dir=str(pdir), log_path=log_path, status="failed",
-                              detail={"log_tail": tail})
+                              detail=detail)
         return RunningApp(url=url, port=real_port, pid=proc.pid, kind=spec.kind,
                           project_dir=str(pdir), log_path=log_path, status="running",
-                          detail={"cmd": spec.cmd})
+                          detail={"cmd": spec.cmd,
+                                  "injected_secrets": list(spec.injected),
+                                  "missing_secrets": list(spec.missing_secrets)})
 
     async def _await_ready(self, proc, log_path, want_port, timeout) -> tuple[str | None, int]:
         deadline = time.monotonic() + timeout

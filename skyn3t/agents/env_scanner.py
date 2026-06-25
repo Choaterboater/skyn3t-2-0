@@ -14,6 +14,7 @@ Pure, offline, no side effects.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,11 @@ _SKIP_DIRS = {
 # Vite only exposes vars prefixed VITE_ to the client; flag others as build-meta.
 _CLIENT_PREFIXES = ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_")
 _MAX_FILE_BYTES = 1_000_000
+# Bound the walk so a scan over a pathological/huge tree (e.g. an accidental serve
+# of a giant dir) degrades to fewer detected names instead of hanging. Normal
+# projects are far under both caps.
+_MAX_WALK = 50_000   # filesystem entries visited
+_MAX_FILES = 4_000   # source files actually parsed
 
 
 @dataclass(slots=True)
@@ -76,6 +82,8 @@ class EnvScanner:
 
         found: set[str] = set()
         for path in cls._iter_source_files(root):
+            if result.files_scanned >= _MAX_FILES:
+                break
             try:
                 if path.stat().st_size > _MAX_FILE_BYTES:
                     continue
@@ -102,13 +110,19 @@ class EnvScanner:
 
     @classmethod
     def _iter_source_files(cls, root: Path):
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
-                continue
-            if path.suffix.lower() in _SCAN_EXTS:
-                yield path
+        # os.walk + in-place dirname pruning so we never descend into _SKIP_DIRS
+        # (node_modules/.git/dist/...) — both correct and bounded. A global entry
+        # budget guarantees termination on a pathological tree.
+        walked = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+            for name in filenames:
+                walked += 1
+                if walked > _MAX_WALK:
+                    return
+                p = Path(dirpath) / name
+                if p.suffix.lower() in _SCAN_EXTS:
+                    yield p
 
 
 class EnvScannerAgent(BaseAgent):

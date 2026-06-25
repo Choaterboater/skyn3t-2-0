@@ -41,6 +41,15 @@ def _looks_secret(name: str) -> bool:
     return any(m in low for m in _SECRET_MARKERS)
 
 
+def is_secret_name(name: str) -> bool:
+    """Public: True when an env-var NAME looks secret-bearing (see ``filter_env``).
+
+    Callers that decide whether a name needs resolving/redacting (e.g. serve-time
+    passthrough) use this rather than reaching for the private ``_looks_secret``.
+    """
+    return _looks_secret(name)
+
+
 @dataclass
 class SecretsStore:
     """In-memory secret vault. No disk persistence (rule #4: safe by default).
@@ -55,7 +64,7 @@ class SecretsStore:
     def __post_init__(self) -> None:
         for attr in (
             "openrouter_api_key", "anthropic_api_key", "openai_api_key",
-            "kimi_api_key", "auth_token",
+            "kimi_api_key", "auth_token", "replicate_api_token", "github_token",
         ):
             val = getattr(self.settings, attr, "") or ""
             if val:

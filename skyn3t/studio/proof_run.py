@@ -451,6 +451,13 @@ _KNOWN_NPM_VERSIONS = {
     "@testing-library/react": "^14.1.2", "@testing-library/jest-dom": "^6.1.5",
     "@testing-library/user-event": "^14.5.1", "framer-motion": "^10.16.16",
     "react": "^18.2.0", "react-dom": "^18.2.0", "zod": "^3.22.4",
+    # Common standalone packages (no tricky peer deps) — pinned so they don't
+    # fall to nondeterministic "latest". Anything wrong is still caught by the
+    # real npm install gate; the three.js ecosystem is deliberately omitted
+    # (its inter-package peer ranges conflict if mis-pinned).
+    "react-icons": "^5.0.1", "react-hook-form": "^7.49.0", "dayjs": "^1.11.10",
+    "swr": "^2.2.4", "nanoid": "^5.0.4", "recharts": "^2.10.3",
+    "tailwind-merge": "^2.2.0", "immer": "^10.0.3", "@heroicons/react": "^2.1.1",
 }
 
 
@@ -733,6 +740,15 @@ def proof_run(
                 passed = False
                 if "<build>" not in missing:
                     missing = [*missing, "<build>"]
+            else:
+                # Advisory JS/TS test run: node_modules is now installed, so run
+                # the project's test script if a real runner is declared. This is
+                # NOT a hard gate — a subtly-wrong generated test must not no_go a
+                # building app; the result is recorded for score dampening only.
+                t_ran, t_ok, t_sum = _run_node_tests(pdir, test_timeout)
+                if t_ran:
+                    detail["node_tests"] = "passed" if t_ok else "failed"
+                    detail["node_tests_summary"] = t_sum
         else:
             detail.setdefault("build", "skipped")
             if summary:
@@ -1039,6 +1055,49 @@ _NODE_STACKS = (
     "react", "react_vite", "react_native", "node", "node_express", "express",
     "nextjs", "astro", "remix", "static",
 )
+
+
+_NODE_TEST_RUNNERS = ("vitest", "jest", "mocha", "@testing-library/react",
+                      "@testing-library/vue", "ava")
+
+
+def _run_node_tests(pdir: Path, timeout: int) -> tuple[bool, bool, str]:
+    """Advisory: run the project's JS/TS test script when a REAL runner is
+    declared and node_modules is present. Returns ``(ran, passed, summary)``.
+
+    ``ran=False`` (no runner / no script / launch failure / timeout) means
+    'could not assess' — callers must treat this as advisory and never hard-fail
+    a build on it (node runners lack pytest's clean 'no tests' exit code, so a
+    flaky/jsdom test would otherwise false-fail a valid app). Runs under CI=1 so
+    vitest/jest execute once instead of entering watch mode. Never raises."""
+    import json as _json
+    import os
+    import shutil
+    import subprocess
+
+    npm = shutil.which("npm")
+    pkg_path = pdir / "package.json"
+    if npm is None or not pkg_path.exists() or not (pdir / "node_modules").is_dir():
+        return (False, False, "")
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return (False, False, "")
+    if not isinstance(pkg, dict) or "test" not in (pkg.get("scripts") or {}):
+        return (False, False, "no test script")
+    all_deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
+    if not any(r in all_deps for r in _NODE_TEST_RUNNERS):
+        return (False, False, "no recognized test runner")
+    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    try:
+        res = subprocess.run(
+            [npm, "test", "--silent"], cwd=str(pdir), stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return (False, False, "node tests timed out / failed to launch")
+    out = ((res.stdout or "") + (res.stderr or "")).strip()
+    return (True, res.returncode == 0, out[-500:])
 
 
 def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:

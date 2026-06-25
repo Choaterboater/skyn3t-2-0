@@ -140,6 +140,23 @@ def test_generate_react_settings_ui_valid(tmp_path: Path):
     assert "VITE_API_KEY" in (tmp_path / "src/config.js").read_text()
 
 
+def test_apply_config_emits_env_example(tmp_path: Path):
+    """apply_config writes a .env.example listing detected keys, so an app that
+    reads env vars directly is configurable without the accessor (finding #13)."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.jsx").write_text("export default function App(){return null}\n")
+    summary = apply_config(tmp_path, "a weather dashboard needing a weather API key", "react")
+    assert ".env.example" in summary["files_written"]
+    body = (tmp_path / ".env.example").read_text()
+    spec = ConfigSpec.from_dict(summary["config_spec"])
+    assert spec.keys, "expected at least one detected key"
+    for k in spec.keys:
+        assert k.name in body
+    # idempotent: a second run does not overwrite / re-list it
+    again = apply_config(tmp_path, "a weather dashboard needing a weather API key", "react")
+    assert ".env.example" not in again["files_written"]
+
+
 def test_nextjs_settings_is_a_real_route(tmp_path: Path):
     """Next.js is file-routed: the settings UI must be an app/ route, not an
     orphaned src/Settings.jsx nothing can reach (finding #14)."""

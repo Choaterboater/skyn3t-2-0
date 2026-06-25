@@ -303,3 +303,29 @@ def test_verifiers_gate_consumes_real_failures():
     assert g({"verify_boot": {"verdict": "fail", "mode": "web"}})[0] is True
     # nothing present -> not blocked
     assert g({})[0] is True
+
+
+# ---- LLM-backed config detection bridge (findings #29/#35) ------------------
+def test_config_llm_fn_none_on_stub_backend():
+    """With the stub backend (tests/offline) the config llm_fn is None, so
+    detection cleanly uses the keyword heuristic — no behavior change."""
+    runner = _runner()  # Settings(llm_backend="stub")
+    assert runner._config_llm_fn() is None
+
+
+def test_config_llm_fn_bridges_async_when_real(monkeypatch):
+    """When a real (non-stub) LLM is present, the sync bridge returns its text."""
+    runner = _runner()
+
+    class _Res:
+        text = '{"keys": [{"name": "ACME_API_KEY", "scope": "client"}], "apis": ["Acme"]}'
+
+    class _LLM:
+        backend = "openrouter"
+        async def complete(self, prompt, **kw):
+            return _Res()
+
+    monkeypatch.setattr(runner, "_intent_llm", lambda: _LLM())
+    fn = runner._config_llm_fn()
+    assert fn is not None
+    assert "ACME_API_KEY" in fn("detect config for: an Acme-powered app")

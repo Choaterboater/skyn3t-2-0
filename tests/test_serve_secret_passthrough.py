@@ -37,26 +37,42 @@ def _node_pkg(tmp_path: Path, deps: dict[str, str] | None = None) -> None:
 
 # ---- needed-key detection ------------------------------------------------
 
-def test_needed_keys_from_explicit_env_ref(tmp_path: Path):
+def test_explicit_native_key_folds_to_openrouter(tmp_path: Path):
+    # An app that reads a native provider key is served via OpenRouter — the native
+    # ANTHROPIC_API_KEY is NEVER required (the user routes everything through OpenRouter).
     _node_pkg(tmp_path)
     (tmp_path / "main.js").write_text(
         "const k = process.env.ANTHROPIC_API_KEY;\n")
-    assert "ANTHROPIC_API_KEY" in needed_secret_names(tmp_path, "react")
+    needed = needed_secret_names(tmp_path, "react")
+    assert "OPENROUTER_API_KEY" in needed
+    assert "ANTHROPIC_API_KEY" not in needed
 
 
-def test_needed_keys_from_sdk_dependency_implicit_read(tmp_path: Path):
-    # `new Anthropic()` reads ANTHROPIC_API_KEY internally — the app code never
-    # names the var, so only the dependency reveals the need.
+def test_anthropic_sdk_dependency_folds_to_openrouter(tmp_path: Path):
+    # `new Anthropic()` implies an LLM need; that need is satisfied by OpenRouter,
+    # never the native Anthropic key.
     _node_pkg(tmp_path, deps={"@anthropic-ai/sdk": "^0.30.0"})
     (tmp_path / "main.js").write_text(
         "import Anthropic from '@anthropic-ai/sdk';\nconst c = new Anthropic();\n")
-    assert "ANTHROPIC_API_KEY" in needed_secret_names(tmp_path, "react")
+    assert needed_secret_names(tmp_path, "react") == {"OPENROUTER_API_KEY"}
 
 
-def test_needed_keys_from_python_requirements(tmp_path: Path):
+def test_anthropic_python_requirement_folds_to_openrouter(tmp_path: Path):
     (tmp_path / "requirements.txt").write_text("fastapi\nanthropic>=0.30\nuvicorn\n")
     (tmp_path / "app.py").write_text("from anthropic import AsyncAnthropic\n")
-    assert "ANTHROPIC_API_KEY" in needed_secret_names(tmp_path, "fastapi")
+    needed = needed_secret_names(tmp_path, "fastapi")
+    assert "OPENROUTER_API_KEY" in needed
+    assert "ANTHROPIC_API_KEY" not in needed
+
+
+def test_native_llm_key_is_never_required(tmp_path: Path):
+    # Belt-and-suspenders: neither explicit refs nor SDK deps surface a native key.
+    _node_pkg(tmp_path, deps={"@anthropic-ai/sdk": "^0.30.0", "openai": "^4.0.0"})
+    (tmp_path / "main.js").write_text(
+        "const a = process.env.ANTHROPIC_API_KEY;\n"
+        "const b = process.env.OPENAI_API_KEY;\n")
+    needed = needed_secret_names(tmp_path, "react")
+    assert needed == {"OPENROUTER_API_KEY"}
 
 
 def test_no_needs_for_plain_app(tmp_path: Path):
@@ -65,11 +81,14 @@ def test_no_needs_for_plain_app(tmp_path: Path):
     assert needed_secret_names(tmp_path, "react") == set()
 
 
-def test_needed_keys_from_pyproject_pep621(tmp_path: Path):
+def test_pyproject_dep_parsed_and_folds_to_openrouter(tmp_path: Path):
+    # Exercises the PEP621 parser AND the fold: an anthropic dep -> OpenRouter.
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "svc"\ndependencies = ["fastapi", "anthropic>=0.30", "uvicorn"]\n')
     (tmp_path / "app.py").write_text("from anthropic import AsyncAnthropic\n")
-    assert "ANTHROPIC_API_KEY" in needed_secret_names(tmp_path, "fastapi")
+    needed = needed_secret_names(tmp_path, "fastapi")
+    assert "OPENROUTER_API_KEY" in needed
+    assert "ANTHROPIC_API_KEY" not in needed
 
 
 # ---- leak guard: look-alike deps / prose must NOT declare a need -----------
@@ -191,32 +210,38 @@ def test_store_seeds_replicate_and_github(monkeypatch):
 
 # ---- end-to-end through build_run_spec -----------------------------------
 
-def test_serve_passes_needed_key_and_scrubs_the_rest(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-unrelated")  # not referenced
+def test_serve_passes_openrouter_key_and_scrubs_the_rest(tmp_path: Path, monkeypatch):
+    # A Claude-SDK app is served with the user's OpenRouter key (folded need); a
+    # native ANTHROPIC_API_KEY on the host is NEVER passed through, and an unrelated
+    # secret stays scrubbed.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
+    monkeypatch.setenv("STRIPE_API_KEY", "sk-stripe-unrelated")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     _node_pkg(tmp_path, deps={"@anthropic-ai/sdk": "^0.30.0"})
     (tmp_path / "main.js").write_text("import Anthropic from '@anthropic-ai/sdk';\n")
 
     spec = build_run_spec(tmp_path, "react", port=9123)
-    # the needed key passes through...
-    assert spec.env.get("ANTHROPIC_API_KEY") == "sk-ant-secret"
-    # ...but an unrelated host secret stays scrubbed (NARROW)
-    assert "OPENROUTER_API_KEY" not in spec.env
+    assert spec.env.get("OPENROUTER_API_KEY") == "sk-or-real"
+    assert "ANTHROPIC_API_KEY" not in spec.env   # native key never required/passed
+    assert "STRIPE_API_KEY" not in spec.env      # unrelated host secret scrubbed
     assert spec.env.get("PATH") == "/usr/bin:/bin"
-    assert "ANTHROPIC_API_KEY" in spec.injected
+    assert spec.injected == ("OPENROUTER_API_KEY",)
     assert spec.missing_secrets == ()
 
 
-def test_serve_reports_missing_secret_when_unconfigured(tmp_path: Path, monkeypatch):
+def test_serve_missing_key_is_openrouter_not_anthropic(tmp_path: Path, monkeypatch):
+    # With no OpenRouter key configured, a Claude-SDK app reports OPENROUTER_API_KEY
+    # missing — NEVER ANTHROPIC_API_KEY (the user is never asked for a native key).
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("SKYN3T_ANTHROPIC_API_KEY", raising=False)
     _node_pkg(tmp_path, deps={"@anthropic-ai/sdk": "^0.30.0"})
     (tmp_path / "main.js").write_text("import Anthropic from '@anthropic-ai/sdk';\n")
 
     spec = build_run_spec(tmp_path, "react", port=9124)
+    assert "ANTHROPIC_API_KEY" not in spec.missing_secrets
     assert "ANTHROPIC_API_KEY" not in spec.env
-    assert "ANTHROPIC_API_KEY" in spec.missing_secrets
 
 
 def test_serve_plain_app_still_strips_all_secrets(tmp_path: Path, monkeypatch):

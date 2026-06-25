@@ -58,6 +58,16 @@ _SDK_DEP_ENV: dict[str, str] = {
 # First identifier on a requirement line: "anthropic[vertex]>=0.30" -> "anthropic".
 _REQ_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 
+# Native per-provider LLM keys. SkyN3t standardizes on OpenRouter (one key, which
+# the user actually keeps), so NONE of these is ever required: needed_secret_names
+# folds any of them — from an SDK dep OR an explicit env ref — into
+# OPENROUTER_API_KEY. An app still hardcoding a native SDK is non-compliant; we
+# never demand its provider key.
+_NATIVE_LLM_KEYS = frozenset({
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "MISTRAL_API_KEY", "COHERE_API_KEY", "GROQ_API_KEY",
+})
+
 _log = None
 
 _URL_RE = re.compile(r"https?://(?:127\.0\.0\.1|localhost):(\d+)")
@@ -209,12 +219,15 @@ def needed_secret_names(project_dir: str | Path, stack: str = "") -> set[str]:
         implicit = _sdk_implicit_keys(pdir)
     except Exception:  # noqa: BLE001
         pass
-    # OpenRouter is OpenAI-API-compatible: an app that reads OPENROUTER_API_KEY is
-    # routing its openai/anthropic SDK through OpenRouter, so it does NOT also need
-    # the native provider key — drop the implied one to avoid a false "missing".
-    if "OPENROUTER_API_KEY" in explicit:
-        implicit -= {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}
-    return explicit | implicit
+    names = explicit | implicit
+    # SkyN3t routes every LLM call through OpenRouter, so a native provider key is
+    # NEVER required: fold any native LLM key (ANTHROPIC_API_KEY/OPENAI_API_KEY/...)
+    # into OPENROUTER_API_KEY — the only LLM credential the user keeps. This also
+    # means a non-compliant app that still names a native key is never reported as
+    # "missing ANTHROPIC_API_KEY"; we only ever ask for the OpenRouter key.
+    if names & _NATIVE_LLM_KEYS:
+        names = (names - _NATIVE_LLM_KEYS) | {"OPENROUTER_API_KEY"}
+    return names
 
 
 def resolve_serve_secrets(
@@ -442,7 +455,7 @@ class AppRunner:
                     "app needs config it doesn't have: "
                     + ", ".join(spec.missing_secrets)
                     + " — set them in your environment or SkyN3t settings "
-                    "(e.g. SKYN3T_ANTHROPIC_API_KEY) and re-serve")
+                    "(e.g. SKYN3T_OPENROUTER_API_KEY) and re-serve")
             return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
                               project_dir=str(pdir), log_path=log_path, status="failed",
                               detail=detail)

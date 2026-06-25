@@ -65,6 +65,9 @@ class EventType(StrEnum):
     IMPROVE_COMPLETED = "improve.completed"
     IMPROVE_FAILED = "improve.failed"
     VISUAL_CHECK = "improve.visual_check"
+    # Config surfacing: an app's required API keys/settings were detected, a
+    # settings UI generated, and its wiring verified (build + improve).
+    CONFIG_CHECK = "improve.config_check"
     # Live app preview (two-pane cockpit): start/stop a delivered project as a server
     SERVE_STARTED = "serve.started"
     SERVE_STOPPED = "serve.stopped"

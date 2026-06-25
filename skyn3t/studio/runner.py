@@ -662,6 +662,32 @@ class StudioRunner:
                 f"{report.dead} route(s) dead: {', '.join(report.dead_routes[:5])}")
         return final_score, verdict
 
+    async def _surface_config(self, manifest, project_dir: str, plan: BuildPlan,
+                              correlation_id: str) -> None:
+        """Detect required app config, generate a settings UI + accessor for the
+        client-supplied keys, verify wiring, and record it. Best-effort: any
+        failure is logged and swallowed so it never breaks a delivery."""
+        try:
+            from skyn3t.agents.config_ui_agent import apply_config
+
+            summary = apply_config(project_dir, plan.brief, plan.stack)
+        except Exception as exc:  # noqa: BLE001 - config surfacing never breaks a build
+            log.warning("config.surface_failed", error=str(exc))
+            return
+        manifest.extra["config_spec"] = summary["config_spec"]
+        manifest.extra["config_wiring"] = summary["wiring"]
+        if summary["files_written"]:
+            # New settings UI / accessor files joined the delivered tree.
+            manifest.files = list_files(project_dir)
+            log.info("config.ui_generated", files=summary["files_written"])
+        try:
+            await self.event_bus.emit(
+                EventType.CONFIG_CHECK, "studio",
+                {"slug": manifest.slug, "stack": plan.stack, **summary},
+                correlation_id=correlation_id)
+        except Exception:  # noqa: BLE001 - events never break a run
+            pass
+
     @staticmethod
     def _has_entrypoint_on_disk(project_dir: str) -> bool:
         """True if the delivered tree has a recognizable runnable entrypoint."""
@@ -1630,6 +1656,13 @@ class StudioRunner:
                 if proof.passed:
                     final_score = round(final_score * 0.5, 2)
                     manifest.score = final_score
+            # Config surfacing: detect the API keys/settings the delivered app
+            # needs (from the brief + a code scan), generate a settings UI +
+            # accessor for the client-supplied ones, and verify the wiring. Runs
+            # BEFORE liveness so a generated settings page is part of the served
+            # app. Never crashes the build (best-effort, advisory).
+            await self._surface_config(manifest, project_dir, plan, correlation_id)
+
             # End-of-build liveness (web stacks): serve the delivered app, hit
             # every route/page, repair failures, and dampen the score by how many
             # respond — optionally gating the verdict. Never crashes the build.

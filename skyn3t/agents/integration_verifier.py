@@ -32,6 +32,10 @@ _BE_ROUTE = re.compile(
 _FRONTEND_EXT = {".tsx", ".jsx", ".vue", ".svelte", ".html"}
 _BACKEND_HINT = {"server", "api", "app", "main", "backend", "routes", "views", "urls"}
 
+# Hardcoded third-party endpoints that should be configuration, not literals.
+_HARDCODED_URL = re.compile(r"""['"](https?://[^'"\s]+)['"]""")
+_URL_IGNORE = ("localhost", "127.0.0.1", "0.0.0.0", "w3.org", "schema.org", "example.com")
+
 
 def _classify(root: Path):
     frontend: list[Path] = []
@@ -44,6 +48,27 @@ def _classify(root: Path):
         elif p.suffix == ".py":
             backend.append(p)  # python files default to backend candidates
     return frontend, backend
+
+
+def find_hardcoded_urls(root: Path) -> list[str]:
+    """Third-party http(s) URLs hardcoded in source — candidates for config.
+
+    Skips the settings/config files themselves (a generated accessor legitimately
+    holds defaults) and local/known-meta hosts. Best-effort, never raises."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for p in vc.iter_files(root):
+        if p.suffix not in (_FRONTEND_EXT | {".js", ".ts", ".mjs", ".py", ".astro"}):
+            continue
+        if p.stem.lower() in ("config", "settings"):
+            continue
+        for m in _HARDCODED_URL.finditer(vc.safe_read(p)):
+            url = m.group(1)
+            if any(s in url for s in _URL_IGNORE) or url in seen:
+                continue
+            seen.add(url)
+            found.append(url)
+    return found[:10]
 
 
 def analyze(root: Path) -> dict:
@@ -67,6 +92,7 @@ def analyze(root: Path) -> dict:
         "frontend_makes_calls": fe_calls,
         "frontend_urls": sorted(fe_urls)[:10],
         "backend_declares_routes": be_routes,
+        "hardcoded_urls": find_hardcoded_urls(root),
     }
 
 
@@ -112,8 +138,14 @@ class IntegrationVerifierAgent(BaseAgent):
             ok = True
             note = "single-tier project; no cross-tier wiring required"
 
+        # Advisory only (never flips the verdict): hardcoded third-party URLs that
+        # should be configuration. The config surfacer turns these into settings.
+        config_advice = [f"hardcoded URL should be configurable: {u}"
+                         for u in wiring.get("hardcoded_urls", [])]
+
         return TaskResult(
             task_id=task.task_id, success=True,
             output={"ok": ok, "verdict": "pass" if ok else "fail",
-                    "gaps": gaps, "wiring": wiring, "note": note},
+                    "gaps": gaps, "wiring": wiring, "note": note,
+                    "config_advice": config_advice},
         )

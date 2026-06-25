@@ -283,7 +283,10 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
             # _serve_env: scrub host secrets (same trust boundary as sandboxed
             # agents) EXCEPT the ones this app declared it needs (narrow passthrough).
             env = _serve_env({"PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"})
-            return RunSpec([npm, "run", script, "--", "--port", str(port), "--host", "127.0.0.1"],
+            # Next.js' CLI rejects the unknown `--host` flag (it uses `--hostname`)
+            # and exits, which would kill the preview — use the right flag per server.
+            host_flag = "--hostname" if "next" in (scripts.get(script) or "") else "--host"
+            return RunSpec([npm, "run", script, "--", "--port", str(port), host_flag, "127.0.0.1"],
                            str(pdir), env, "node", port,
                            injected=injected, missing_secrets=missing_t)
 

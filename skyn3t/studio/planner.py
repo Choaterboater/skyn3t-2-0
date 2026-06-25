@@ -80,6 +80,21 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
 }
 
 
+# Briefs implying an LLM call must NOT resolve to a server-less web stack: 'react'
+# (Vite SPA) and 'static' (npx serve .) have no backend to hold OPENROUTER_API_KEY,
+# so the call would run in the browser and leak the key. Such briefs are bumped to
+# nextjs, whose single `npm run dev` co-hosts app/api/* route handlers in one
+# process. Matched as WHOLE WORDS (so "task completion", "claudette", "email",
+# "retail" don't false-bump) — word boundaries make bare "ai" safe ("with AI"
+# matches; "em-ai-l" does not).
+_SERVERLESS_WEB_STACKS = frozenset({"react", "static"})
+_LLM_KEYWORDS: tuple[str, ...] = (
+    "ai", "llm", "language model", "gpt", "chatgpt", "openai", "anthropic",
+    "claude", "gemini", "openrouter", "chatbot", "chat bot",
+)
+_LLM_RE = re.compile(r"\b(?:" + "|".join(re.escape(k) for k in _LLM_KEYWORDS) + r")\b")
+
+
 def detect_stack(brief: str, hint: str | None = None) -> str:
     """Detect a target stack from the brief (deterministic, offline)."""
     if hint:
@@ -88,10 +103,16 @@ def detect_stack(brief: str, hint: str | None = None) -> str:
             if h == stack:
                 return stack
     low = (brief or "").lower()
-    for stack, keywords in _STACK_SIGNATURES:
+    stack = _DEFAULT_STACK
+    for s, keywords in _STACK_SIGNATURES:
         if any(_kw_match(k, low) for k in keywords):
-            return stack
-    return _DEFAULT_STACK
+            stack = s
+            break
+    # LLM brief on a server-less web stack -> bump to nextjs so a server route can
+    # hold the OpenRouter key (single `npm run dev` previews UI + app/api routes).
+    if stack in _SERVERLESS_WEB_STACKS and _LLM_RE.search(low):
+        return "nextjs"
+    return stack
 
 
 # Bare framework names that are substrings of common English words: match them

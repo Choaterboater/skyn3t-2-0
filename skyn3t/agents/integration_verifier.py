@@ -36,6 +36,56 @@ _BACKEND_HINT = {"server", "api", "app", "main", "backend", "routes", "views", "
 _HARDCODED_URL = re.compile(r"""['"](https?://[^'"\s]+)['"]""")
 _URL_IGNORE = ("localhost", "127.0.0.1", "0.0.0.0", "w3.org", "schema.org", "example.com")
 
+# Defense-in-depth: an LLM credential reachable from the BROWSER bundle. Two
+# anchored signals (no loose substring): (A) a client-prefixed env name that is an
+# LLM key, (B) a literal provider API endpoint in frontend source. Advisory only;
+# server-side process.env.OPENROUTER_API_KEY (no client prefix) is the CORRECT
+# pattern and is intentionally NOT matched.
+_CLIENT_LLM_KEY = re.compile(
+    r"\b(?:VITE_|NEXT_PUBLIC_|REACT_APP_|PUBLIC_)[A-Z0-9_]*"
+    r"(?:OPENROUTER|OPENAI|ANTHROPIC|LLM|GROQ|MISTRAL|TOGETHER|GEMINI|PERPLEXITY|"
+    r"DEEPSEEK)[A-Z0-9_]*(?:KEY|TOKEN|SECRET|API)[A-Z0-9_]*\b"
+)
+_LLM_ENDPOINT = re.compile(
+    r"https?://(?:openrouter\.ai/api/|(?:api\.openai\.com|api\.anthropic\.com)/(?:api/|v1))"
+)
+_CLIENT_JS_EXT = {".js", ".mjs"}
+
+
+def find_browser_exposed_llm_key(root: Path) -> list[str]:
+    """Advisory: LLM/OpenRouter credentials reachable from the browser bundle.
+
+    Scans only frontend-scoped source (JSX/TSX/Vue/Svelte/HTML + client .js/.mjs)
+    for a client-prefixed LLM key name or a literal provider API endpoint.
+    High-precision (anchored regexes, not substring); best-effort, never raises."""
+    findings: list[str] = []
+    seen: set = set()
+    for p in vc.iter_files(root):
+        if p.suffix not in (_FRONTEND_EXT | _CLIENT_JS_EXT):
+            continue
+        text = vc.safe_read(p)
+        rel = str(p.relative_to(root))
+        for m in _CLIENT_LLM_KEY.finditer(text):
+            sig = (rel, m.group(0))
+            if sig not in seen:
+                seen.add(sig)
+                findings.append(
+                    f"client-exposed LLM key '{m.group(0)}' in {rel}: a "
+                    f"browser-visible (client-prefixed) name leaks the credential; "
+                    f"call a server route (e.g. POST /api/llm) holding "
+                    f"OPENROUTER_API_KEY instead")
+        for m in _LLM_ENDPOINT.finditer(text):
+            sig = (rel, m.group(0))
+            if sig not in seen:
+                seen.add(sig)
+                findings.append(
+                    f"frontend source {rel} calls LLM provider endpoint "
+                    f"'{m.group(0)}' directly; the API key would ship in the bundle "
+                    f"— proxy via a server route holding OPENROUTER_API_KEY")
+        if len(findings) >= 10:
+            break
+    return findings[:10]
+
 
 def _classify(root: Path):
     frontend: list[Path] = []
@@ -142,6 +192,11 @@ class IntegrationVerifierAgent(BaseAgent):
         # should be configuration. The config surfacer turns these into settings.
         config_advice = [f"hardcoded URL should be configurable: {u}"
                          for u in wiring.get("hardcoded_urls", [])]
+        # Defense-in-depth: an LLM key reachable from the browser bundle. Advisory
+        # only — never flips the verdict; surfaced for the cockpit / config layer.
+        llm_exposure = find_browser_exposed_llm_key(root)
+        config_advice.extend(llm_exposure)
+        wiring["browser_exposed_llm_key"] = llm_exposure
 
         return TaskResult(
             task_id=task.task_id, success=True,

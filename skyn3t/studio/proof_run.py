@@ -475,7 +475,13 @@ def _invalid_npm_package_names(pkg: dict[str, Any]) -> list[str]:
         for name in deps:
             if not isinstance(name, str) or not name:
                 invalid.append(str(name))
-            elif name.startswith("@/") or name.startswith("/") or "\\" in name:
+            elif (
+                name.startswith("@/") or name.startswith("/") or "\\" in name
+                # npm rejects any whitespace in a package name with
+                # EINVALIDPACKAGENAME ("name can only contain URL-friendly
+                # characters") — e.g. a generated `" slick-carousel"`.
+                or re.search(r"\s", name)
+            ):
                 invalid.append(name)
     return sorted(set(invalid))
 

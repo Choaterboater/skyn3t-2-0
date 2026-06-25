@@ -79,8 +79,11 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     if any(w in low for w in ("animal", "zoo", "kid", "child", "toddler",
                               "coloring", "colouring")):
         return list(_ANIMALS[:limit])
-    # Generic image brief: a small mixed default so something is generated.
-    return list((*_ANIMALS[:2], *_NATURE[:2]))[:limit]
+    # Nothing nameable. Do NOT invent coloring-book defaults — a brief that
+    # merely *mentions* images (e.g. a tool that takes an image as INPUT) is not
+    # an app that ships decorative pictures. Generating cat/dog/tree/flower here
+    # only litters unrelated builds. No subject -> generate nothing.
+    return []
 
 
 def _ext_for(data: bytes) -> str:
@@ -130,6 +133,10 @@ async def generate_assets(
 
     cap = max(1, min(int(max_assets), MAX_ASSETS))
     subjects = _extract_subjects(brief, cap)
+    if not subjects:
+        # Image-ish brief but nothing concrete to draw — skip before spending any
+        # predictions or creating an assets/ dir. Clean degrade, never a crash.
+        return {"generated": 0, "skipped": True, "reason": "no_subjects", "assets": []}
     # Route to the model + prompt that fits THIS app (coloring->flux-schnell,
     # logo->recraft SVG, photo->flux-1.1-pro, etc.) instead of line-art for all.
     style = select_asset_style(brief)

@@ -61,7 +61,9 @@ def test_generate_assets_uses_routed_model(tmp_path):
     from skyn3t.config.settings import Settings
     s = Settings(replicate_api_token="r8_x", asset_gen=True)
     cli = _CaptureClient()
-    brief = "A recipe app with realistic food photos"
+    # Names concrete subjects (fox, owl) so generation actually runs — verifying
+    # the routed *model*, not the buggy invented-defaults path.
+    brief = "A wildlife photo gallery app with photos of foxes and owls"
     out = asyncio.run(assets_mod.generate_assets(
         str(tmp_path), brief, settings=s, client=cli, max_assets=2))
     assert out["style"] == "photo"

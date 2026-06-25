@@ -161,12 +161,12 @@ def slugify(text: str, fallback: str = "app") -> str:
 
 
 # Max chars of injected skill advice in a generative prompt. Skill bodies can be
-# tens of KB each; the full set otherwise dwarfs the build instruction. Kept low
-# historically because a bloated prompt slowed claude -p into its timeout and
-# shipped a stub — the Phase 1B streaming stall-guard now catches that, so design/
-# engineering skills get real room instead of a ~1.5KB excerpt (4 skills used to
-# share 6000 chars).
-_MAX_SKILL_ADVICE = 12000
+# tens of KB each; the full set otherwise dwarfs the build instruction AND slows
+# the codegen agent (a larger prompt degrades wall-clock — the idle stall-guard
+# resets on every stream event, so only the hard ceiling bounds it, not this). Keep
+# it conservative: design guidance is carried by the explicit DESIGN directive in
+# the codegen prompt (code_agent._DESIGN_DIRECTIVE), not by un-truncated skill bodies.
+_MAX_SKILL_ADVICE = 6000
 
 
 def knowledge_block(payload: Any) -> str:

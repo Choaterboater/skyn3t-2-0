@@ -739,11 +739,13 @@ class StudioRunner:
         same safety net CodeAgent applies on the monolithic path, wired here so the
         slice/fix-loop path gets it too. Only touches relative ('.'-prefixed)
         stylesheet specifiers. Returns the count stubbed. Never raises."""
+        import os
         import posixpath
         from pathlib import Path
 
         detail = getattr(proof, "detail", None) or {}
         css_exts = (".css", ".scss", ".sass", ".less")
+        root = Path(project_dir).resolve()
         stubbed = 0
         for entry in detail.get("unresolved_imports", []) or []:
             if not isinstance(entry, str) or " -> " not in entry:
@@ -753,7 +755,16 @@ class StudioRunner:
             if not (spec.startswith(".") and spec.endswith(css_exts)):
                 continue  # only dangling LOCAL stylesheets
             target = posixpath.normpath(posixpath.join(posixpath.dirname(importer.strip()), spec))
-            p = Path(project_dir) / target
+            # Confine to the project tree: a '../'-escaping stylesheet must NOT be
+            # written out-of-tree (it would pollute sibling builds AND falsely
+            # satisfy the un-clamped re-proof while never shipping via merge_back).
+            # Leave it flagged so the build correctly stays no_go.
+            p = (root / target).resolve()
+            try:
+                if os.path.commonpath([str(root), str(p)]) != str(root):
+                    continue
+            except ValueError:
+                continue
             try:
                 if not p.exists():
                     p.parent.mkdir(parents=True, exist_ok=True)
@@ -1803,6 +1814,12 @@ class StudioRunner:
             worktrees.append(wt)
             slice_wts[name] = wt
 
+        base_agent = self._registered_codegen_agent()
+        # Only pin a slice's tier model on the single-model agentic CLI; on the
+        # OpenRouter completion backend, _generate_file's per-file tier routing
+        # must stand (else every file in the slice collapses to one tier model).
+        agentic_backend = bool(getattr(getattr(base_agent, "llm", None), "supports_agentic", False))
+
         async def _run_slice(name: str, files: list[dict[str, Any]]):
             wt = slice_wts[name]
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
@@ -1815,9 +1832,14 @@ class StudioRunner:
                 "manifest": manifest,
             }
             model = self._slice_model(slice_tier(name))
-            if model:
+            if model and agentic_backend:
                 payload["model_override"] = model
-            return name, await self._submit_stage(spec, payload, correlation_id)
+            # Run each slice in its OWN fresh CodeAgent.execute() — the orchestrator
+            # routes every codegen task to the ONE registered CodeAgent whose run()
+            # holds a per-instance _run_lock, which would serialize the fan-out into
+            # the monolithic path + overhead. Slices use isolated worktrees and the
+            # fresh agent has its own metadata, so there's no shared state to guard.
+            return name, await self._run_slice_agent(base_agent, spec, payload, correlation_id, name)
 
         gathered = await asyncio.gather(*(_run_slice(n, f) for n, f in slices.items()))
         results = dict(gathered)
@@ -1827,21 +1849,36 @@ class StudioRunner:
         # so each slice accumulates instead of wiping the previous one.
         total_written = 0
         summaries: dict[str, Any] = {}
+        degraded_reasons: list[str] = []
+        # A vanished SUBSTANTIVE slice (frontend/backend) means the app is missing
+        # whole features — surface it so the existing degradation gate fires.
+        # tests/config emptiness is tolerable (tests optional; the checklist /
+        # _fill_missing / css-stub backfill config).
+        substantive = {"frontend", "backend"}
         for name in slices:
             merged = merge_back(slice_wts[name].dir, main_wt.dir, overwrite=True, clean=False)
             r = results.get(name)
             total_written += len(merged)
-            summaries[name] = {"files": len(merged), "ok": bool(r and r.success)}
+            sl_out = (getattr(r, "output", None) or {}) if r else {}
+            ok = bool(r and r.success) and len(merged) > 0
+            summaries[name] = {"files": len(merged), "ok": ok}
+            if name in substantive and (sl_out.get("degraded") or not ok):
+                degraded_reasons.append(
+                    f"{name}: {sl_out.get('degraded_reason') or 'slice produced no files'}")
 
+        out: dict[str, Any] = {
+            "files_written": total_written,
+            "worktree_dir": main_wt.dir,
+            "slices": summaries,
+            "backend": getattr(getattr(self, "settings", None), "llm_backend", ""),
+        }
+        if degraded_reasons:
+            out["degraded"] = True
+            out["degraded_reason"] = "; ".join(degraded_reasons)
         result = TaskResult(
             task_id=uuid.uuid4().hex,
             success=total_written > 0,
-            output={
-                "files_written": total_written,
-                "worktree_dir": main_wt.dir,
-                "slices": summaries,
-                "backend": getattr(getattr(self, "settings", None), "llm_backend", ""),
-            },
+            output=out,
         )
         result.metadata = {"parallel_slices": {"count": len(slices), "slices": summaries}}
         # Record the real fan-out wall-clock so the manifest/GatedTuner don't read
@@ -1850,6 +1887,45 @@ class StudioRunner:
         log.info("runner.parallel_slices", count=len(slices),
                  files=total_written, slices=list(slices))
         return result
+
+    def _registered_codegen_agent(self):
+        """The registered codegen agent, to clone its LLM for per-slice agents."""
+        for a in self.orchestrator.agents.values():
+            try:
+                if a.has_capabilities(("codegen",)):
+                    return a
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    async def _run_slice_agent(self, base_agent, spec: StageSpec, payload: dict[str, Any],
+                               correlation_id: str, name: str) -> TaskResult:
+        """Run one slice in a FRESH CodeAgent.execute(), bypassing the shared
+        BaseAgent.run() / per-instance _run_lock so concurrent slices don't
+        serialize. Falls back to the orchestrator path if no agent is available."""
+        if base_agent is None:
+            return await self._submit_stage(spec, payload, correlation_id)
+        from skyn3t.agents.code_agent import CodeAgent
+        task = TaskRequest(
+            type=spec.agent_type, payload=payload,
+            capabilities_required=(spec.capability,),
+            correlation_id=correlation_id, metadata={"stage": spec.name, "slice": name},
+        )
+        try:
+            agent = CodeAgent(event_bus=self.event_bus,
+                              llm=getattr(base_agent, "llm", None),
+                              config=getattr(base_agent, "config", None))
+            await agent.initialize()
+        except Exception as exc:  # noqa: BLE001 - degrade to the serialized path
+            log.warning("runner.slice_agent_init_failed", slice=name, error=str(exc)[:160])
+            return await self._submit_stage(spec, payload, correlation_id)
+        try:
+            return await asyncio.wait_for(agent.execute(task), timeout=self.stage_exec_timeout)
+        except TimeoutError:
+            return TaskResult(task_id=task.task_id, success=False,
+                              error=f"slice {name} timed out after {self.stage_exec_timeout}s")
+        except Exception as exc:  # noqa: BLE001 - isolate a slice failure
+            return TaskResult(task_id=task.task_id, success=False, error=str(exc)[:200])
 
     # ---- helpers ---------------------------------------------------------
     @staticmethod

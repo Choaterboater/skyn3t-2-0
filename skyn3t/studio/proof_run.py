@@ -15,9 +15,15 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
+# NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
+# look "unresolved" — those resolve via sys.path, not the project tree.
+_STDLIB_NAMES: frozenset[str] = frozenset(getattr(sys, "stdlib_module_names", ()))
 
 # Optional sandbox backend — guarded so import never fails.
 try:  # pragma: no cover - presence depends on sibling package
@@ -155,17 +161,28 @@ def _unresolved_python_imports(root: Path) -> list[str]:
     local_top = _local_top_level(root)
     if not local_top:
         return []
+
+    def _is_local(seg: str) -> bool:
+        # Local AND not a stdlib name (a stdlib-shadowing local dir must not make
+        # `os.path`/`email.mime.text` look unresolved).
+        return seg in local_top and seg not in _STDLIB_NAMES
+
     out: list[str] = []
     for f in py_files:
         try:
             tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"), str(f))
         except (SyntaxError, ValueError, OSError):
             continue  # syntax errors are reported by the dedicated syntax pass
+        # Imports guarded by `try: ... except ImportError` are intentionally
+        # optional (the common optional-dependency pattern) — never flag them.
+        guarded = _guarded_import_nodes(tree)
         for node in ast.walk(tree):
+            if id(node) in guarded:
+                continue
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     mod = alias.name
-                    if mod.split(".")[0] in local_top and not _module_resolves(root, mod):
+                    if _is_local(mod.split(".")[0]) and not _module_resolves(root, mod):
                         out.append(f"{f.relative_to(root)} -> import {mod}")
             elif isinstance(node, ast.ImportFrom):
                 if node.level:  # relative — resolve against the file's package dir
@@ -176,11 +193,33 @@ def _unresolved_python_imports(root: Path) -> list[str]:
                         continue  # escaped the project root — don't guess
                     if node.module and not _module_resolves(base, node.module):
                         out.append(f"{f.relative_to(root)} -> from {'.' * node.level}{node.module}")
-                elif node.module and node.module.split(".")[0] in local_top:
+                elif node.module and _is_local(node.module.split(".")[0]):
                     if not _module_resolves(root, node.module):
                         out.append(f"{f.relative_to(root)} -> from {node.module}")
     seen: set[str] = set()
     return [x for x in out if not (x in seen or seen.add(x))][:10]
+
+
+def _guarded_import_nodes(tree: ast.AST) -> set[int]:
+    """ids of Import/ImportFrom nodes inside a ``try`` whose ``except`` catches
+    ImportError/ModuleNotFoundError (or is bare/Exception) — intentionally-optional
+    imports that must not be flagged as missing."""
+    def _catches_import(handler: ast.ExceptHandler) -> bool:
+        t = handler.type
+        if t is None:  # bare except
+            return True
+        names = t.elts if isinstance(t, ast.Tuple) else [t]
+        return any(isinstance(n, ast.Name) and n.id in (
+            "ImportError", "ModuleNotFoundError", "Exception") for n in names)
+
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and any(_catches_import(h) for h in node.handlers):
+            for stmt in node.body:
+                for sub in ast.walk(stmt):
+                    if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                        guarded.add(id(sub))
+    return guarded
 
 
 # --- static boot-readiness: unwired components -------------------------------

@@ -425,6 +425,87 @@ def _checklist_status(project_dir: Path, checklist: list[str]) -> tuple[int, lis
     return present, missing
 
 
+# A bare (npm) specifier: `from "pkg"`, `import "pkg"`, `require("pkg")` — NOT
+# relative ('.'/'..') and NOT absolute ('/'). Scoped (@x/y) allowed.
+_BARE_IMPORT_RE = re.compile(r"""\b(?:from|import|require)\b\s*\(?\s*['"]([^./][^'"]*)['"]""")
+_NODE_BUILTINS = frozenset({
+    "fs", "path", "os", "http", "https", "crypto", "url", "util", "stream",
+    "events", "child_process", "assert", "buffer", "process", "zlib", "net", "tls",
+})
+# Friendly pinned versions for common packages; anything else gets "latest".
+_KNOWN_NPM_VERSIONS = {
+    "prop-types": "^15.8.1", "react-router-dom": "^6.21.0", "axios": "^1.6.2",
+    "zustand": "^4.4.7", "clsx": "^2.1.0", "classnames": "^2.5.1",
+    "date-fns": "^3.0.0", "uuid": "^9.0.1", "lodash": "^4.17.21",
+    "@testing-library/react": "^14.1.2", "@testing-library/jest-dom": "^6.1.5",
+    "@testing-library/user-event": "^14.5.1", "framer-motion": "^10.16.16",
+    "react": "^18.2.0", "react-dom": "^18.2.0", "zod": "^3.22.4",
+}
+
+
+def _pkg_name(spec: str) -> str:
+    """Bare specifier -> npm package name ('react-dom/client'->'react-dom',
+    '@scope/pkg/sub'->'@scope/pkg')."""
+    if spec.startswith("@"):
+        parts = spec.split("/")
+        return "/".join(parts[:2]) if len(parts) >= 2 else spec
+    return spec.split("/")[0]
+
+
+def reconcile_npm_deps(root: str | Path) -> list[str]:
+    """Add every imported-but-undeclared npm package to package.json.dependencies.
+
+    Generated code routinely imports a package (prop-types, @testing-library/react,
+    axios, ...) without declaring it, so `npm install` skips it and Vite/rollup 500s
+    at runtime/build — an unrunnable app that the offline gate misses. This scans
+    the source, diffs against declared deps, and appends the missing ones (pinned
+    version when known, else "latest"). Returns the package names added. Pure on
+    a non-node project (no package.json -> []). Never raises."""
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    import json as _json
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        d = pkg.get(key)
+        if isinstance(d, dict):
+            declared |= set(d)
+    used: set[str] = set()
+    for f in _iter_files(root):
+        if f.suffix not in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for spec in _BARE_IMPORT_RE.findall(text):
+            if spec.startswith("node:"):
+                continue
+            name = _pkg_name(spec)
+            if name and name not in _NODE_BUILTINS:
+                used.add(name)
+    missing = sorted(u for u in used if u not in declared)
+    if not missing:
+        return []
+    deps = pkg.setdefault("dependencies", {})
+    if not isinstance(deps, dict):
+        return []
+    for m in missing:
+        deps[m] = _KNOWN_NPM_VERSIONS.get(m, "latest")
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return missing
+
+
 def proof_run(
     project_dir: str | Path,
     *,

@@ -40,7 +40,7 @@ from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_inte
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
-from skyn3t.studio.proof_run import extract_error_gaps, proof_run
+from skyn3t.studio.proof_run import extract_error_gaps, proof_run, reconcile_npm_deps
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
@@ -1428,6 +1428,14 @@ class StudioRunner:
             manifest.files = copied or list_files(project_dir)
             manifest.worktree_dir = main_wt.dir
             manifest.artifact_dir = project_dir
+
+            # Declare any imported-but-undeclared npm package in package.json so the
+            # build/dev server can resolve it (codegen often imports prop-types,
+            # @testing-library/react, axios, ... without adding the dep -> Vite 500).
+            added_deps = reconcile_npm_deps(project_dir)
+            if added_deps:
+                manifest.extra["npm_deps_added"] = added_deps
+                log.info("runner.npm_deps_reconciled", added=added_deps)
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous

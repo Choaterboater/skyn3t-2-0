@@ -336,13 +336,17 @@ class CodeAgent(BaseAgent):
         slice_scope: dict[str, Any],
     ) -> TaskResult:
         """Generate ONLY this slice's files. The full file manifest is supplied as
-        read-only context so cross-slice imports line up; no scaffold floor."""
+        read-only context so cross-slice imports line up. On under-delivery the
+        slice falls back to its own scaffold subset (a runnable floor) and flags
+        degraded — mirroring the monolithic path so a vanished slice can't ship a
+        silent hole."""
         name = str(slice_scope.get("name") or "slice")
         slice_files = [str(x) for x in (slice_scope.get("files") or [])]
         manifest = str(slice_scope.get("manifest") or "")
         model_override = p.get("model_override")
         knowledge = knowledge_block(p)
         files: dict[str, str] = {}
+        degraded_reason = ""
 
         if self.llm.backend == "stub":
             # Offline: emit a minimal non-empty stub per slice file so the
@@ -360,33 +364,46 @@ class CodeAgent(BaseAgent):
             disk, prose = self._clean_agentic_files(disk, {})
             if prose:
                 self.metadata["prose_rejected"] = list(prose)
-            files = disk
+            if not disk:
+                # The slice failed / timed out before writing / was all prose —
+                # deliver its scaffold subset as a runnable floor and flag degraded.
+                self._clear_worktree(worktree)
+                files = self._slice_stub(stack, app_name, brief, slice_files)
+                degraded_reason = f"agentic slice '{name}' delivered no files; fell back to scaffold"
+            else:
+                files = disk
         else:
             # Completion backend: generate just this slice's files concurrently,
-            # each pinned to the slice's tier model when provided.
+            # each pinned to the slice's tier model when provided. Pass the full
+            # cross-slice manifest so each file imports the right sibling paths.
             sem = asyncio.Semaphore(self._gen_concurrency)
 
             async def _one(rel: str) -> tuple[str, str | None]:
                 async with sem:
                     try:
                         return rel, await self._generate_file(
-                            rel, brief, stack, plan, knowledge, model_override=model_override)
+                            rel, brief, stack, plan, knowledge,
+                            model_override=model_override, manifest=manifest)
                     except Exception:  # noqa: BLE001 - isolate per file
                         return rel, None
 
             for rel, content in await asyncio.gather(*(_one(r) for r in slice_files)):
                 if content and content.strip():
                     files[rel] = content
+            if not files:
+                files = self._slice_stub(stack, app_name, brief, slice_files)
+                degraded_reason = f"completion slice '{name}' produced no files; fell back to scaffold"
 
         written = self._write_files(worktree, files)
-        return TaskResult(
-            task_id=task.task_id, success=True,
-            output={
-                "files_written": len(written), "worktree_dir": str(worktree),
-                "stack": stack, "files": written, "backend": self.llm.backend,
-                "slice": name,
-            },
-        )
+        out: dict[str, Any] = {
+            "files_written": len(written), "worktree_dir": str(worktree),
+            "stack": stack, "files": written, "backend": self.llm.backend,
+            "slice": name,
+        }
+        if degraded_reason:
+            out["degraded"] = True
+            out["degraded_reason"] = degraded_reason
+        return TaskResult(task_id=task.task_id, success=True, output=out)
 
     def _agentic_slice_prompt(
         self, brief: str, stack: str, slice_name: str, slice_files: list[str],
@@ -537,7 +554,8 @@ class CodeAgent(BaseAgent):
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
                              plan: dict[str, Any], knowledge: str = "",
-                             model_override: str | None = None) -> str | None:
+                             model_override: str | None = None,
+                             manifest: str = "") -> str | None:
         ext = Path(rel_path).suffix.lower()
         base = Path(rel_path).name.lower()
         is_readme = base in _README_NAMES
@@ -559,7 +577,9 @@ class CodeAgent(BaseAgent):
                 manifest_lines.append(f"  {f['path']} — {f.get('purpose', '')}")
                 if f["path"] == rel_path:
                     purpose = str(f.get("purpose", ""))
-        file_list = "\n".join(manifest_lines) or "(see scaffold)"
+        # Prefer the full cross-slice manifest (so a sliced file knows the sibling
+        # paths it must import from); fall back to the (slice-local) plan files.
+        file_list = manifest.strip() or "\n".join(manifest_lines) or "(see scaffold)"
         prompt = (
             f"{knowledge}"
             f"Project brief: {brief}\n"

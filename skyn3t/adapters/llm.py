@@ -626,9 +626,11 @@ class LLMClient:
                     return False
                 except ValueError:
                     # Defence in depth: a single line past even the 64MB buffer
-                    # makes readline() raise. Don't fail the build over telemetry —
-                    # stop streaming and fall back to the returncode below.
+                    # makes readline() raise. Kill the tree (else the agent can
+                    # block on a full stdout pipe we've stopped draining) and fall
+                    # back to the returncode below.
                     log.warning("llm.agentic_stream_overrun", provider=provider)
+                    await self._terminate(proc)
                     break
                 if not line:
                     break  # EOF — the agent exited

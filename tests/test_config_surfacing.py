@@ -140,6 +140,38 @@ def test_generate_react_settings_ui_valid(tmp_path: Path):
     assert "VITE_API_KEY" in (tmp_path / "src/config.js").read_text()
 
 
+def test_nextjs_settings_is_a_real_route(tmp_path: Path):
+    """Next.js is file-routed: the settings UI must be an app/ route, not an
+    orphaned src/Settings.jsx nothing can reach (finding #14)."""
+    files = generate_config_ui(tmp_path, "nextjs", _client_spec())
+    assert "app/settings/page.jsx" in files
+    assert "src/Settings.jsx" not in files
+    assert "app/config.js" in files
+    page = (tmp_path / "app/settings/page.jsx").read_text()
+    assert page.startswith("'use client'")          # uses useState -> client component
+    assert "export default" in page
+    assert "from '../config.js'" in page              # accessor import resolves
+    ok, err = validate_source("app/settings/page.jsx", page)
+    assert ok, err
+    # wiring detection recognizes the routed settings page
+    wiring = check_config_wiring(tmp_path, _client_spec())
+    assert wiring["settings_ui_present"] and wiring["accessor_present"]
+
+
+def test_wiring_reports_accessor_imported_advisory(tmp_path: Path):
+    """check_config_wiring surfaces whether real app code imports the accessor
+    (finding #24) — advisory only, never a gap that fails a build."""
+    generate_config_ui(tmp_path, "react", _client_spec())  # config.js + Settings.jsx only
+    w1 = check_config_wiring(tmp_path, _client_spec())
+    assert w1["accessor_imported"] is False  # only Settings imports it
+    assert w1["accessor_imported"] not in (g for g in w1["gaps"])  # not a gap
+    # now real app code imports it
+    (tmp_path / "src" / "App.jsx").write_text(
+        "import { getConfig } from './config.js'\nexport default function App(){return null}\n")
+    w2 = check_config_wiring(tmp_path, _client_spec())
+    assert w2["accessor_imported"] is True
+
+
 def test_generate_static_settings_ui(tmp_path: Path):
     files = generate_config_ui(tmp_path, "static", _client_spec())
     assert set(files) == {"config.js", "settings.html"}

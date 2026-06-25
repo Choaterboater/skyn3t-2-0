@@ -174,6 +174,30 @@ def test_build_verifier_runs_real_build_for_nextjs(tmp_path, monkeypatch):
     assert res.output["verdict"] == "fail"  # install failed -> honest fail, feeds fix-loop
 
 
+def test_boot_verifier_routes_fastapi_to_python(tmp_path, monkeypatch):
+    """fastapi (a Python web framework) must boot via the Python import-smoke,
+    not fall through to the structural web check (finding #20)."""
+    root = tmp_path / "api"
+    root.mkdir()
+    (root / "main.py").write_text("app = object()\n")
+    (root / "requirements.txt").write_text("fastapi\n")
+    bus = EventBus()
+    agent = BootVerifierAgent(event_bus=bus)
+    called = {}
+
+    async def fake_py(r, e): called["py"] = True; return True, "python", "ok"
+    def fake_node(r, e): called["node"] = True; return True, "node", "ok"
+    def fake_web(r, e): called["web"] = True; return True, "web", "ok"
+    monkeypatch.setattr(agent, "_boot_python", fake_py)
+    monkeypatch.setattr(agent, "_boot_node", fake_node)
+    monkeypatch.setattr(agent, "_boot_web", fake_web)
+
+    res = _run(agent.run(TaskRequest(type="verify_boot",
+                                     payload={"project_dir": str(root), "stack": "fastapi"})))
+    assert res.success
+    assert called.get("py") and not called.get("web"), called
+
+
 def test_boot_verifier_python(tmp_path):
     root = tmp_path / "py"
     root.mkdir()

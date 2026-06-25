@@ -54,9 +54,22 @@ class BootVerifierAgent(BaseAgent):
         if not entrypoints:
             return self._result(task, False, "no_entry", "no entrypoint to smoke-test")
 
-        if stack == "python":
+        # Match stack FAMILIES, not just the bare "python"/"node" labels — the
+        # planner emits fastapi/flask/django/python_cli (all Python) and
+        # node_express/express (Node server), which previously fell through to
+        # _boot_web and skipped the real import/boot smoke. Fall back to file
+        # presence so a mislabeled Python project still boots as Python.
+        low = (stack or "").lower()
+        _PY = {"python", "python_cli", "fastapi", "flask", "django"}
+        _NODE_SERVER = {"node", "node_express", "express"}
+        has_pkg = (root / "package.json").is_file()
+        is_python = low in _PY or (
+            not has_pkg and ((root / "requirements.txt").is_file()
+                             or (root / "pyproject.toml").is_file())
+        )
+        if is_python:
             ok, mode, details = await self._boot_python(root, entrypoints)
-        elif stack == "node":
+        elif low in _NODE_SERVER:
             ok, mode, details = self._boot_node(root, entrypoints)
         else:
             ok, mode, details = self._boot_web(root, entrypoints)

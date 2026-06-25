@@ -150,6 +150,11 @@ class CodeAgent(BaseAgent):
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         p = task.payload
+        # Per-run reset: this agent is a long-lived singleton, so a `degraded`
+        # flag set by a PRIOR build must not leak into this one (it would emit a
+        # false no_go + halved score on a clean build). Clear before any work.
+        self.metadata.pop("degraded", None)
+        self.metadata.pop("degraded_reason", None)
         brief = p.get("brief", "") or p.get("slug", "app")
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
@@ -735,6 +740,47 @@ class CodeAgent(BaseAgent):
         names = {f.replace("\\", "/").rsplit("/", 1)[-1] for f in files}
         return bool(names & {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"})
 
+    @staticmethod
+    def _next_route_key(path: str) -> str | None:
+        """The pathname a Next.js page-route file serves, or None if it is not a
+        page route. app/page.* -> '/', app/foo/page.* -> '/foo', pages/index.* ->
+        '/', pages/foo.* -> '/foo'. pages/api/* and pages/_app|_document are not
+        page routes (they never collide on a UI pathname)."""
+        if path.startswith("app/") and re.search(r"(^|/)page\.(jsx|tsx|js|ts)$", path):
+            inner = re.sub(r"/?page\.(jsx|tsx|js|ts)$", "", path[len("app/"):])
+            return "/" + inner
+        if path.startswith("pages/"):
+            name = path[len("pages/"):]
+            if name.startswith("api/") or name.startswith("_"):
+                return None
+            m = re.match(r"(.+)\.(jsx|tsx|js|ts)$", name)
+            if not m:
+                return None
+            base = m.group(1)
+            return "/" if base == "index" else "/" + base
+        return None
+
+    def _normalize_nextjs_router(self, files: dict[str, str]) -> dict[str, str]:
+        """Guarantee ONE Next.js router per route. The scaffold always seeds the
+        App Router (app/page.jsx); if codegen also emitted a Pages Router file on
+        the SAME pathname, `next build` fails with 'Conflicting app and page
+        file'. Resolve each colliding pathname by KEEPING THE LARGER file (real
+        content beats a scaffold stub) and dropping the other. Non-colliding
+        routes across the two routers are valid Next.js and left untouched."""
+        routes: dict[str, list[tuple[str, int]]] = {}
+        for p, content in files.items():
+            key = self._next_route_key(p)
+            if key is None:
+                continue
+            routes.setdefault(key, []).append((p, len(content or "")))
+        for entries in routes.values():
+            if len(entries) < 2:
+                continue
+            entries.sort(key=lambda e: e[1], reverse=True)  # largest first
+            for path, _ in entries[1:]:
+                files.pop(path, None)
+        return files
+
     def _repair_entrypoints(
         self, stack: str, files: dict[str, str], app_name: str = "app"
     ) -> dict[str, str]:
@@ -750,6 +796,8 @@ class CodeAgent(BaseAgent):
         # whole app an unresolved-import failure. Stub it so a near-complete app
         # isn't no_go'd over an empty file.
         files = self._stub_missing_css_imports(files)
+        if stack in ("nextjs", "next"):
+            files = self._normalize_nextjs_router(files)
         if stack in ("python_cli", "python"):
             entry = synthesize_python_entrypoint(files)
             if entry:

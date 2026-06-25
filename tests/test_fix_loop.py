@@ -217,3 +217,64 @@ def test_proof_does_not_run_build_by_default(tmp_path):
     res = proof_run(str(proj), stack="react")  # no run_build
     assert res.passed is True
     assert "build" not in res.detail
+
+
+# ---- fix-loop can target + repair package.json (findings #3, #11) -----------
+def test_targets_package_json_on_npm_error(tmp_path):
+    """A build failure carrying an npm error must route the fix-loop to
+    package.json (its regex previously omitted .json, so deps were never
+    repaired and the loop churned on App.jsx)."""
+    from skyn3t.agents.code_improver import CodeImproverAgent
+    agent = CodeImproverAgent(event_bus=EventBus())
+    (tmp_path / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+    gaps = ["BUILD FAILED: npm error code ETARGET No matching version found for "
+            "@react-three/fiber@8.15.21"]
+    assert "package.json" in agent._targets_from_gaps(gaps, tmp_path)
+
+
+def test_deterministic_sanitizes_package_json(tmp_path):
+    """Offline deterministic fix repairs malformed dep keys: trim a fixable
+    leading space, drop unfixable names, keep valid ones."""
+    from skyn3t.agents.code_improver import CodeImproverAgent
+    agent = CodeImproverAgent(event_bus=EventBus())
+    bad = _json.dumps({"name": "x", "dependencies": {
+        " slick-carousel": "^1.8.1",   # leading space -> trim to valid
+        "react": "^18.2.0",            # valid -> keep
+        "has space": "1.0.0",          # internal space -> drop
+        "": "1.0.0",                   # empty -> drop
+    }})
+    fixed = agent._deterministic_fix("package.json", bad, "nextjs")
+    deps = _json.loads(fixed)["dependencies"]
+    assert "slick-carousel" in deps and " slick-carousel" not in deps
+    assert deps["react"] == "^18.2.0"
+    assert "has space" not in deps and "" not in deps
+
+
+# ---- score clamp on no_go (finding #17) ------------------------------------
+def test_score_clamped_to_verdict():
+    from skyn3t.studio.runner import StudioRunner
+    # a failed delivery can never read like a success
+    assert StudioRunner._clamp_score_to_verdict(100.0, "no_go") <= 49.0
+    assert StudioRunner._clamp_score_to_verdict(92.5, "no_go") <= 49.0
+    # a passing build keeps its score
+    assert StudioRunner._clamp_score_to_verdict(87.0, "go") == 87.0
+    # already-low no_go is untouched
+    assert StudioRunner._clamp_score_to_verdict(12.0, "no_go") == 12.0
+
+
+# ---- runtime liveness gate (findings #2, #19) ------------------------------
+def test_liveness_gate_dead_root_fails_ui_stack():
+    from skyn3t.studio.runner import StudioRunner
+    g = StudioRunner._liveness_gate
+    # UI app whose '/' is dead -> no_go, even with broad gate off
+    v, why = g("go", "nextjs", 1, ["/"], False)
+    assert v == "no_go" and why
+    # a non-root dead route (e.g. 405 on /api) does NOT fail when broad gate off
+    v, why = g("go", "nextjs", 1, ["/api/x"], False)
+    assert v == "go" and why is None
+    # API-only stack with dead '/' is NOT gated (its '/' may legitimately 404)
+    v, why = g("go", "fastapi", 1, ["/"], False)
+    assert v == "go" and why is None
+    # broad opt-in gate fails on any dead route
+    v, why = g("go", "nextjs", 2, ["/about", "/contact"], True)
+    assert v == "no_go" and why

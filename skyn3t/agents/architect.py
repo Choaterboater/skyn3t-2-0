@@ -35,6 +35,11 @@ _SYSTEM = (
 # counter stub instead of the real (TS) app.
 _JSX_STACKS = frozenset({"react", "react_vite", "vite"})
 
+# Next.js scaffold floor is plain-.jsx App Router (app/page.jsx, jsconfig.json) —
+# the architect must plan .jsx (no tsconfig) AND a SINGLE router (App Router),
+# never a pages/ tree, else it collides with the scaffold's app/page on '/'.
+_NEXT_STACKS = frozenset({"nextjs", "next"})
+
 
 def _jsx_only(files: list[Any]) -> list[Any]:
     """Rewrite .tsx->.jsx / .ts->.js and drop tsconfig for a plain-JS React plan."""
@@ -94,6 +99,13 @@ class ArchitectAgent(BaseAgent):
         if stack in _JSX_STACKS:
             prompt += ("\n\nIMPORTANT: this is a plain JavaScript Vite + React project — "
                        "use ONLY .jsx/.js files, NEVER .tsx/.ts, and do NOT include a tsconfig.")
+        if stack in _NEXT_STACKS:
+            prompt += ("\n\nIMPORTANT: this is a Next.js App Router project — put ALL routes "
+                       "under app/ (app/page.jsx, app/layout.jsx, app/<route>/page.jsx, "
+                       "app/api/<route>/route.js). NEVER create a pages/ directory or any "
+                       "Pages Router files (no pages/index, pages/_app, pages/_document, "
+                       "pages/api) — mixing the two routers breaks `next build`. Use ONLY "
+                       ".jsx/.js, NEVER .tsx/.ts, and do NOT include a tsconfig.")
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."
@@ -109,8 +121,9 @@ class ArchitectAgent(BaseAgent):
         parsed["stack"] = parsed.get("stack") or stack
         files = parsed.get("files") or []
         # Keep the plan .jsx-consistent with the scaffold floor (D8): a .tsx plan
-        # leaves the .jsx scaffold entry rendering the counter stub.
-        if parsed["stack"] in _JSX_STACKS:
+        # leaves the .jsx scaffold entry rendering the counter stub. Next.js shares
+        # the .jsx floor, so normalize it the same way.
+        if parsed["stack"] in _JSX_STACKS or parsed["stack"] in _NEXT_STACKS:
             files = _jsx_only(files)
         plan = {
             "stack": parsed["stack"],

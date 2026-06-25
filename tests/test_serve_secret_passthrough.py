@@ -97,6 +97,36 @@ def test_sdk_token_in_metadata_fields_does_not_false_positive(tmp_path: Path):
     assert needed_secret_names(tmp_path, "react") == set()
 
 
+_OPENROUTER_JS = (
+    "import OpenAI from 'openai';\n"
+    "const c = new OpenAI({ baseURL: 'https://openrouter.ai/api/v1', "
+    "apiKey: process.env.OPENROUTER_API_KEY });\n"
+)
+
+
+def test_openrouter_routed_app_does_not_also_need_native_openai_key(tmp_path: Path):
+    # A generated app following the LLM directive: openai SDK pointed at OpenRouter,
+    # reading OPENROUTER_API_KEY. It must NOT be told it also needs OPENAI_API_KEY.
+    _node_pkg(tmp_path, deps={"openai": "^4.0.0"})
+    (tmp_path / "main.js").write_text(_OPENROUTER_JS)
+    needed = needed_secret_names(tmp_path, "react")
+    assert "OPENROUTER_API_KEY" in needed
+    assert "OPENAI_API_KEY" not in needed
+
+
+def test_serve_passes_openrouter_key_to_routed_app_no_setup(tmp_path: Path, monkeypatch):
+    # The loop closes: a generated OpenRouter app previews using the user's
+    # configured OpenRouter key, with nothing reported missing.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _node_pkg(tmp_path, deps={"openai": "^4.0.0"})
+    (tmp_path / "main.js").write_text(_OPENROUTER_JS)
+    spec = build_run_spec(tmp_path, "react", port=9140)
+    assert spec.env.get("OPENROUTER_API_KEY") == "sk-or-real"
+    assert "OPENAI_API_KEY" not in spec.env
+    assert spec.missing_secrets == ()
+
+
 def test_serve_does_not_leak_unrelated_secret_from_lookalike_dep(tmp_path: Path, monkeypatch):
     # Host has a real OPENAI key; the app merely has a look-alike dep name. The
     # key must NOT be passed through (this is the high-severity leak, closed).

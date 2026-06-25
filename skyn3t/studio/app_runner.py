@@ -199,16 +199,22 @@ def needed_secret_names(project_dir: str | Path, stack: str = "") -> set[str]:
     ``os.environ['X']`` reads) and SDK-dependency detection (implicit reads). Pure
     + offline; never raises (a scan failure just yields fewer names)."""
     pdir = Path(project_dir)
-    names: set[str] = set()
+    explicit: set[str] = set()
     try:
-        names |= set(detect_from_code(pdir).key_names())
+        explicit = set(detect_from_code(pdir).key_names())
     except Exception:  # noqa: BLE001 - detection is best-effort, never blocks serve
         pass
+    implicit: set[str] = set()
     try:
-        names |= _sdk_implicit_keys(pdir)
+        implicit = _sdk_implicit_keys(pdir)
     except Exception:  # noqa: BLE001
         pass
-    return names
+    # OpenRouter is OpenAI-API-compatible: an app that reads OPENROUTER_API_KEY is
+    # routing its openai/anthropic SDK through OpenRouter, so it does NOT also need
+    # the native provider key — drop the implied one to avoid a false "missing".
+    if "OPENROUTER_API_KEY" in explicit:
+        implicit -= {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}
+    return explicit | implicit
 
 
 def resolve_serve_secrets(

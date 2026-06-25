@@ -90,6 +90,26 @@ _CONFIG_DIRECTIVE = (
     "web UI that needs user-supplied values (e.g. an API key), expose them via a "
     "config module and a Settings screen the user can fill in, not literals in code."
 )
+# Cheap, broadly-available default for generated apps. Overridable per-app via the
+# OPENROUTER_MODEL env var; intentionally NOT a Claude model (cost) or a :free id
+# (those get retired and 404 — see the OpenRouter cascade debugging).
+_OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o-mini"
+# LLM routing — a generated app that calls a language model must use the user's
+# OpenRouter key (OpenAI-API-compatible) with a CHEAP model, never a direct
+# provider SDK/key: the host keeps no standalone Anthropic/OpenAI key and Claude is
+# expensive. OPENROUTER_API_KEY is then auto-passed into the preview by the serve
+# layer, so the app runs with no extra setup.
+_LLM_DIRECTIVE = (
+    "LLM CALLS: if the app uses a language model, route through OpenRouter, which is "
+    "OpenAI-API-compatible. Use the OpenAI SDK (Python/JS `openai`) pointed at base "
+    "URL `https://openrouter.ai/api/v1`, read the key from `OPENROUTER_API_KEY`, and "
+    f"pick the model from `OPENROUTER_MODEL` with a cheap default of "
+    f"`{_OPENROUTER_DEFAULT_MODEL}`. Any model (incl. Claude) is reachable via its "
+    "OpenRouter id (e.g. `anthropic/claude-3.5-haiku`). Do NOT use the Anthropic SDK, "
+    "the native OpenAI API, or ANTHROPIC_API_KEY/OPENAI_API_KEY — only OpenRouter "
+    "(the user has no direct provider key and Claude is costly). Prefer calling the "
+    "model from server-side code; keep the key and model configurable, not hardcoded."
+)
 # Stacks for which the design bar applies.
 _WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
@@ -336,6 +356,7 @@ class CodeAgent(BaseAgent):
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
             + f"{_CONFIG_DIRECTIVE}\n"
+            + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
         )
 

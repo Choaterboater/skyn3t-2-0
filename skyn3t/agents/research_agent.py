@@ -50,12 +50,10 @@ class ResearchAgent(BaseAgent):
             name="research",
             description="Pre-coding technical research: stack, libraries, risks, lessons",
             tags=("generative", "research", "planning")))
-        self.llm = llm
+        self.llm = llm or LLMClient()
         self.memory = memory
 
     async def initialize(self) -> None:
-        if self.llm is None:
-            self.llm = LLMClient()
         self.metadata["backend"] = self.llm.backend
 
     async def execute(self, task: TaskRequest) -> TaskResult:

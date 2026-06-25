@@ -6,12 +6,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from skyn3t.rag.embeddings import Embedder
 from skyn3t.intelligence.semantic_skills import (
     SemanticSkillIndex,
     rank_texts,
     relevant_skills,
 )
+from skyn3t.rag.embeddings import Embedder
 
 
 def _skill(slug, title, body, tags=()):

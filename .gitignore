@@ -7,6 +7,8 @@ __pycache__/
 .mypy_cache/
 .coverage
 data/*.db
+data/*.db-wal
+data/*.db-shm
 data/vector_db/
 data/build_patterns.json
 data/skills/

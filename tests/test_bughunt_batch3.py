@@ -5,7 +5,6 @@ from __future__ import annotations
 from skyn3t.agents._verify_common import non_empty_source_count
 from skyn3t.core.events import EventType
 
-
 # --- #15 non_empty_source_count: '#' is a CSS id selector, not a comment ------
 
 def test_css_with_id_selectors_counts_as_source(tmp_path):

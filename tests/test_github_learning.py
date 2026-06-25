@@ -131,7 +131,7 @@ def test_fetch_non_github_returns_none():
 
 
 def test_repo_scout_rotates_topics():
-    from skyn3t.cortex.repo_scout import RepoScout, _SCOUT_TOPICS
+    from skyn3t.cortex.repo_scout import _SCOUT_TOPICS, RepoScout
 
     s = RepoScout()
     n = len(_SCOUT_TOPICS)

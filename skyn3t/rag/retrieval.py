@@ -12,8 +12,9 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Any
 
 from skyn3t.rag.embeddings import Embedder
 from skyn3t.rag.vector_store import SearchHit, VectorStore
@@ -30,31 +31,31 @@ except Exception:
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text or "")]
 
 
 class _PureBM25:
     """Minimal BM25 Okapi fallback (no numpy)."""
 
-    def __init__(self, corpus: List[List[str]], k1: float = 1.5, b: float = 0.75):
+    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
         self.corpus = corpus
         self.n = len(corpus)
         self.doc_len = [len(d) for d in corpus]
         self.avgdl = (sum(self.doc_len) / self.n) if self.n else 0.0
-        self.doc_freqs: List[Counter] = [Counter(d) for d in corpus]
+        self.doc_freqs: list[Counter] = [Counter(d) for d in corpus]
         df: Counter = Counter()
         for d in corpus:
             for term in set(d):
                 df[term] += 1
-        self.idf: Dict[str, float] = {}
+        self.idf: dict[str, float] = {}
         for term, freq in df.items():
             # BM25 idf with +1 to keep non-negative.
             self.idf[term] = math.log(1 + (self.n - freq + 0.5) / (freq + 0.5))
 
-    def get_scores(self, query: List[str]) -> List[float]:
+    def get_scores(self, query: list[str]) -> list[float]:
         scores = [0.0] * self.n
         for i in range(self.n):
             freqs = self.doc_freqs[i]
@@ -73,8 +74,8 @@ class _PureBM25:
 class Document:
     id: str
     text: str
-    embedding: List[float] = field(default_factory=list)
-    metadata: Dict[str, object] = field(default_factory=dict)
+    embedding: list[float] = field(default_factory=list)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class HybridRetriever:
@@ -86,8 +87,8 @@ class HybridRetriever:
 
     def __init__(
         self,
-        embedder: Optional[Embedder] = None,
-        vector_store: Optional[VectorStore] = None,
+        embedder: Embedder | None = None,
+        vector_store: VectorStore | None = None,
         alpha: float = 0.5,
         rrf_k: int = 60,
     ) -> None:
@@ -95,10 +96,10 @@ class HybridRetriever:
         self.store = vector_store or VectorStore(prefer_chroma=True)
         self.alpha = max(0.0, min(1.0, alpha))
         self.rrf_k = max(1, int(rrf_k))
-        self._docs: Dict[str, Document] = {}
-        self._tokens: Dict[str, List[str]] = {}
-        self._bm25 = None
-        self._bm25_ids: List[str] = []
+        self._docs: dict[str, Document] = {}
+        self._tokens: dict[str, list[str]] = {}
+        self._bm25: Any | None = None
+        self._bm25_ids: list[str] = []
         self._dirty = True
         self.bm25_backend = "rank_bm25" if _BM25_AVAILABLE else "pure_python"
 
@@ -107,7 +108,7 @@ class HybridRetriever:
         self,
         ids: Sequence[str],
         texts: Sequence[str],
-        metadatas: Optional[Sequence[Dict[str, object]]] = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
     ) -> int:
         ids = list(ids)
         texts = list(texts)
@@ -142,20 +143,20 @@ class HybridRetriever:
         self._dirty = False
 
     # -- search ------------------------------------------------------------
-    def _semantic(self, query: str, top_k: int) -> List[SearchHit]:
+    def _semantic(self, query: str, top_k: int) -> list[SearchHit]:
         qv = self.embedder.embed(query)
         return self.store.query(qv, top_k=top_k)
 
-    def _lexical(self, query: str, top_k: int) -> List[SearchHit]:
+    def _lexical(self, query: str, top_k: int) -> list[SearchHit]:
         if self._dirty:
             self._rebuild_bm25()
         if self._bm25 is None or not self._bm25_ids:
             return []
         scores = self._bm25.get_scores(_tokenize(query))
         ranked = sorted(
-            zip(self._bm25_ids, scores), key=lambda x: x[1], reverse=True
+            zip(self._bm25_ids, scores, strict=False), key=lambda x: x[1], reverse=True
         )
-        hits: List[SearchHit] = []
+        hits: list[SearchHit] = []
         for _id, sc in ranked[:top_k]:
             if sc <= 0:
                 continue
@@ -167,7 +168,7 @@ class HybridRetriever:
             )
         return hits
 
-    def search(self, query: str, top_k: int = 5) -> List[SearchHit]:
+    def search(self, query: str, top_k: int = 5) -> list[SearchHit]:
         if not query or not query.strip():
             return []
         pool = max(top_k * 4, top_k)
@@ -180,11 +181,11 @@ class HybridRetriever:
         return self._fuse(sem, lex, top_k)
 
     def _fuse(
-        self, sem: List[SearchHit], lex: List[SearchHit], top_k: int
-    ) -> List[SearchHit]:
+        self, sem: list[SearchHit], lex: list[SearchHit], top_k: int
+    ) -> list[SearchHit]:
         """Reciprocal rank fusion weighted by alpha."""
-        combined: Dict[str, float] = {}
-        meta: Dict[str, SearchHit] = {}
+        combined: dict[str, float] = {}
+        meta: dict[str, SearchHit] = {}
         for rank, hit in enumerate(sem):
             combined[hit.id] = combined.get(hit.id, 0.0) + self.alpha / (
                 self.rrf_k + rank + 1
@@ -196,7 +197,7 @@ class HybridRetriever:
             )
             meta.setdefault(hit.id, hit)
         order = sorted(combined.items(), key=lambda x: x[1], reverse=True)
-        out: List[SearchHit] = []
+        out: list[SearchHit] = []
         for _id, score in order[:top_k]:
             h = meta[_id]
             out.append(

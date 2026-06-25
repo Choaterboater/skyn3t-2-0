@@ -7,8 +7,6 @@ bus and returns a *persisted* result, retry classification, and idempotency.
 
 from __future__ import annotations
 
-import pytest
-
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents.echo_agent import EchoAgent
 from skyn3t.config.settings import get_settings

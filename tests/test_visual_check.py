@@ -5,7 +5,9 @@ import asyncio
 
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.studio.visual_check import (
-    VisualChecker, VisualVerdict, inspect, playwright_available,
+    VisualChecker,
+    inspect,
+    playwright_available,
 )
 
 

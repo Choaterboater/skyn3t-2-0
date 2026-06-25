@@ -19,13 +19,13 @@ import json
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from time import time
 from typing import Any
 
 
-class ProposalType(str, Enum):
+class ProposalType(StrEnum):
     """The kinds of change cortex can propose."""
 
     TUNING = "tuning"        # adjust a setting / weight (often safe)
@@ -35,7 +35,7 @@ class ProposalType(str, Enum):
     PROMPT = "prompt"        # evolve a live agent's instruction (gated)
 
 
-class ProposalStatus(str, Enum):
+class ProposalStatus(StrEnum):
     PENDING = "pending"        # awaiting a decision
     APPROVED = "approved"      # decided yes (not yet applied)
     REJECTED = "rejected"      # decided no (e.g. duplicate)
@@ -90,7 +90,7 @@ class Proposal:
         return d
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "Proposal":
+    def from_dict(cls, raw: dict[str, Any]) -> Proposal:
         data = dict(raw)
         data["type"] = ProposalType(data["type"])
         data["status"] = ProposalStatus(data.get("status", "pending"))

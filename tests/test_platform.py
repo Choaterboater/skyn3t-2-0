@@ -110,11 +110,16 @@ def test_cost_tracker_with_fake_budget():
     from skyn3t.observability.cost_tracker import CostTracker
 
     class FakeCall:
-        backend = "stub"; model = "x"; prompt_tokens = 10
-        completion_tokens = 5; cost_usd = 0.001
+        backend = "stub"
+        model = "x"
+        prompt_tokens = 10
+        completion_tokens = 5
+        cost_usd = 0.001
 
     class FakeBudget:
-        spent_build = 0.001; spent_day = 0.001; tokens_day = 15
+        spent_build = 0.001
+        spent_day = 0.001
+        tokens_day = 15
         calls = [FakeCall()]
 
     ct = CostTracker(budget=FakeBudget())

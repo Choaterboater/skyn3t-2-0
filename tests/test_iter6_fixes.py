@@ -5,11 +5,9 @@ emit an empty Installation section; boot_verifier must not pass web files as nod
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from types import SimpleNamespace
 
 from skyn3t.core.events import EventBus
-
 
 # --- #1 critic 'block' must drive no_go --------------------------------------
 
@@ -59,16 +57,16 @@ def test_designer_stub_backend_not_flagged():
 # --- #4 packaging must not leave an empty Installation section ----------------
 
 def test_packaging_readme_no_empty_installation_for_plain_project():
+    from skyn3t.agents.env_scanner import EnvScanResult
     from skyn3t.agents.packaging_agent import _readme
     from skyn3t.agents.stack_detector import StackReport
-    from skyn3t.agents.env_scanner import EnvScanResult
 
     report = StackReport(family="unknown", languages=[], has_web=False, has_server=False)
     md = _readme("demo", report, EnvScanResult())
     lines = md.splitlines()
     i = lines.index("## Installation")
     # the next non-empty line must NOT be the next section header (empty section)
-    after = [l for l in lines[i + 1:] if l.strip()]
+    after = [line for line in lines[i + 1:] if line.strip()]
     assert after and not after[0].startswith("## "), "Installation section is empty"
 
 

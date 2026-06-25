@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import time
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -47,7 +47,7 @@ class Checkpoint:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Checkpoint":
+    def from_dict(cls, d: dict[str, Any]) -> Checkpoint:
         return cls(
             version=d.get("version", CHECKPOINT_VERSION),
             created=d.get("created", 0.0),
@@ -60,7 +60,7 @@ class Checkpoint:
 @dataclass
 class CheckpointManager:
     settings: Settings = field(default_factory=get_settings)
-    _dir: Optional[Path] = field(default=None, repr=False)
+    _dir: Path | None = field(default=None, repr=False)
 
     @property
     def dir(self) -> Path:
@@ -109,7 +109,7 @@ class CheckpointManager:
                     pass
 
     # ---- load ------------------------------------------------------------
-    def load(self, label: str = "latest") -> Optional[Checkpoint]:
+    def load(self, label: str = "latest") -> Checkpoint | None:
         path = self.dir / f"{label}.json"
         if not path.exists():
             return None

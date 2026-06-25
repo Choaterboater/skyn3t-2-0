@@ -23,7 +23,6 @@ from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.intelligence.model_tournament import ModelTournament
 from skyn3t.studio.runner import StudioRunner
 
-
 # ---------------------------------------------------------------------------
 # Mechanism: model_id on TaskResult, last_model on LLMClient, base-agent stamp
 # ---------------------------------------------------------------------------

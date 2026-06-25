@@ -173,18 +173,18 @@ class ModelTournament:
         """
         now = time.time()
         w = self._stat(bucket, winner)
-        real_losers = [l for l in losers if l != winner]
+        real_losers = [loser for loser in losers if loser != winner]
         for loser in real_losers:
-            l = self._stat(bucket, loser)
-            exp_w = _expected(w.rating, l.rating)
-            exp_l = _expected(l.rating, w.rating)
+            loser_stats = self._stat(bucket, loser)
+            exp_w = _expected(w.rating, loser_stats.rating)
+            exp_l = _expected(loser_stats.rating, w.rating)
             w.rating += _K * (1.0 - exp_w)
-            l.rating += _K * (0.0 - exp_l)
+            loser_stats.rating += _K * (0.0 - exp_l)
             w.wins += 1
-            l.losses += 1
+            loser_stats.losses += 1
             w.plays += 1
-            l.plays += 1
-            w.last_seen = l.last_seen = now
+            loser_stats.plays += 1
+            w.last_seen = loser_stats.last_seen = now
         if not real_losers:
             # Solo appearance — the normal single-model build case. Count it as
             # one unopposed play+win (no opponent → no Elo exchange) so evidence

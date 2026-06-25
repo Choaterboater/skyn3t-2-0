@@ -17,8 +17,8 @@ Restoration mutates the provided EventBus in place and returns a structured
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Optional
+from enum import StrEnum
+from typing import Any
 
 import structlog
 
@@ -28,7 +28,7 @@ from skyn3t.persistence.checkpoint import Checkpoint, CheckpointManager
 log = structlog.get_logger(__name__)
 
 
-class RestoreMode(str, Enum):
+class RestoreMode(StrEnum):
     FILES = "files"
     TASK = "task"
     FILES_AND_TASK = "files+task"
@@ -37,8 +37,8 @@ class RestoreMode(str, Enum):
 @dataclass
 class RecoveryResult:
     restored: bool
-    mode: Optional[str] = None
-    label: Optional[str] = None
+    mode: str | None = None
+    label: str | None = None
     events_restored: int = 0
     files_state: dict[str, Any] = field(default_factory=dict)
     task_state: dict[str, Any] = field(default_factory=dict)

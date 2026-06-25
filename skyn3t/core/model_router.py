@@ -11,7 +11,7 @@ router (2.0 backlog P2) plugs in by overriding :meth:`resolve`.
 from __future__ import annotations
 
 import json
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import structlog
@@ -21,7 +21,7 @@ from skyn3t.config.settings import Settings, get_settings
 log = structlog.get_logger(__name__)
 
 
-class Tier(str, Enum):
+class Tier(StrEnum):
     CHEAP = "cheap"      # brainstorm, research fan-out, boilerplate
     UI = "ui"            # frontend files
     BACKEND = "backend"  # server/API files
@@ -62,18 +62,19 @@ _FREE_TIER_PREFS: dict[Tier, tuple[str, ...]] = {
 }
 
 # Live ":free" catalog cache (id list), refreshed at most every _LIVE_TTL seconds.
-_LIVE_FREE: dict[str, object] = {"ids": None, "at": 0.0}
+_LIVE_FREE_IDS: list[str] | None = None
+_LIVE_FREE_AT = 0.0
 _LIVE_TTL = 3600.0
 
 
 def live_free_model_ids(timeout: float = 8.0) -> list[str]:
     """Current OpenRouter ``:free`` model ids (cached). [] when unreachable so the
     caller keeps the hardcoded fallback. Public endpoint — no API key needed."""
+    global _LIVE_FREE_AT, _LIVE_FREE_IDS
     import time as _t
     now = _t.time()
-    ids = _LIVE_FREE.get("ids")
-    if ids is not None and (now - float(_LIVE_FREE.get("at", 0.0))) < _LIVE_TTL:
-        return ids  # type: ignore[return-value]
+    if _LIVE_FREE_IDS is not None and (now - _LIVE_FREE_AT) < _LIVE_TTL:
+        return _LIVE_FREE_IDS
     fresh: list[str] = []
     try:
         import json as _j
@@ -85,8 +86,8 @@ def live_free_model_ids(timeout: float = 8.0) -> list[str]:
                  if isinstance(m.get("id"), str) and m["id"].endswith(":free")]
     except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
         log.warning("router.live_models_unavailable", error=str(exc)[:120])
-    _LIVE_FREE["ids"] = fresh
-    _LIVE_FREE["at"] = now
+    _LIVE_FREE_IDS = fresh
+    _LIVE_FREE_AT = now
     return fresh
 
 _CLAUDE_MARKERS = ("claude", "anthropic")

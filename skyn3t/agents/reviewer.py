@@ -14,11 +14,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
-
-from skyn3t.agents import _verify_common as vc
 
 # Pass threshold — projects scoring at/above this get a "go".
 GO_THRESHOLD = 60.0

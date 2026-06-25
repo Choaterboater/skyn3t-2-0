@@ -18,10 +18,9 @@ import json
 import shutil
 from pathlib import Path
 
+from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-
-from skyn3t.agents import _verify_common as vc
 
 
 class BootVerifierAgent(BaseAgent):
@@ -108,14 +107,14 @@ class BootVerifierAgent(BaseAgent):
             )
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 # Reap the killed child and drain its pipes so we don't leak the
                 # transport / leave a zombie until GC (bounded so a stuck process
                 # can't re-hang us here).
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
-                except (asyncio.TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
+                except (TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
                     pass
                 # A hung import is INDETERMINATE, not a pass: we cannot tell a
                 # serve loop from a module-level deadlock/infinite loop/blocking

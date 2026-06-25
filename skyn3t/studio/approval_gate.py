@@ -14,12 +14,12 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 
-class GateDecision(str, Enum):
+class GateDecision(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -34,7 +34,7 @@ class PendingApproval:
     decision: GateDecision = GateDecision.PENDING
     reason: str = ""
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     # Internal event used to wake the waiter. Not serialised.
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
@@ -125,7 +125,7 @@ class ApprovalGate:
                 await asyncio.wait_for(approval._event.wait(), timeout=eff_timeout)
             else:
                 await approval._event.wait()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             fallback = GateDecision.APPROVED if self.auto_approve else GateDecision.REJECTED
             self._resolve(approval, fallback, "timeout")
         return approval.decision

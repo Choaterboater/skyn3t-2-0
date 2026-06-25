@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from time import time
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 
@@ -37,7 +37,7 @@ class GuardTripped(RuntimeError):
         self.kind = kind
 
 
-class GuardState(str, Enum):
+class GuardState(StrEnum):
     OK = "ok"
     WARN = "warn"
     TRIPPED = "tripped"
@@ -48,8 +48,8 @@ class BudgetGuard:
     """Hard-stop guard with loop + heartbeat-stall detection."""
 
     settings: Settings = field(default_factory=get_settings)
-    budget: Optional[Any] = None          # LLMClient.budget (BudgetTracker)
-    event_bus: Optional[EventBus] = None
+    budget: Any | None = None          # LLMClient.budget (BudgetTracker)
+    event_bus: EventBus | None = None
     max_loops: int = 60                   # max stage/retry events per build
     stall_timeout: float = 180.0          # seconds without heartbeat => stall
     warn_fraction: float = 0.8            # warn when spend crosses this fraction

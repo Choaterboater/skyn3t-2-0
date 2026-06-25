@@ -20,7 +20,14 @@ All imports are side-effect free; nothing runs until ``run()`` is awaited.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+from time import time
+from typing import Any
+
+from skyn3t.config.settings import Settings, get_settings
+from skyn3t.core.events import Event, EventBus, EventType
+from skyn3t.cortex.proposal_store import Proposal, ProposalStatus, ProposalType
 
 
 def _stable_hash(text: str) -> str:
@@ -28,13 +35,6 @@ def _stable_hash(text: str) -> str:
     is randomized per process (PYTHONHASHSEED), so an ID-less CI/PR signal would
     hash differently after a restart and re-surface as a duplicate proposal."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-import contextlib
-from time import time
-from typing import Any
-
-from skyn3t.config.settings import Settings, get_settings
-from skyn3t.core.events import Event, EventBus, EventType
-from skyn3t.cortex.proposal_store import Proposal, ProposalStatus, ProposalType
 
 
 class _BaseComponent:

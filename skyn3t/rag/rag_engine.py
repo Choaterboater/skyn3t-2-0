@@ -10,9 +10,9 @@ Import has zero side effects.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
 
 from skyn3t.rag.document_processor import DocumentProcessor
 from skyn3t.rag.embeddings import Embedder
@@ -25,11 +25,11 @@ from skyn3t.rag.vector_store import SearchHit, VectorStore
 class RagAnswer:
     query: str
     answer: str
-    sources: List[SearchHit] = field(default_factory=list)
+    sources: list[SearchHit] = field(default_factory=list)
     backend: str = "extractive"  # "llm" | "extractive"
     model: str = ""
 
-    def to_dict(self) -> Dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "query": self.query,
             "answer": self.answer,
@@ -58,12 +58,12 @@ class RagEngine:
 
     def __init__(
         self,
-        persist_path: Optional[Path] = None,
+        persist_path: Path | None = None,
         collection: str = "skyn3t_rag",
         max_tokens_per_chunk: int = 400,
         alpha: float = 0.5,
-        embedder: Optional[Embedder] = None,
-        llm_client: Optional[object] = None,
+        embedder: Embedder | None = None,
+        llm_client: object | None = None,
         prefer_chroma: bool = True,
     ) -> None:
         self.processor = DocumentProcessor(max_tokens=max_tokens_per_chunk)
@@ -82,8 +82,8 @@ class RagEngine:
         self,
         text: str,
         source: str = "",
-        kind: Optional[str] = None,
-        metadata: Optional[Dict[str, object]] = None,
+        kind: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> int:
         chunks = self.processor.process(text, source=source, kind=kind)
         if not chunks:
@@ -119,7 +119,7 @@ class RagEngine:
     def ingest_directory(
         self,
         directory: str,
-        extensions: Optional[Sequence[str]] = None,
+        extensions: Sequence[str] | None = None,
         max_files: int = 1000,
     ) -> int:
         root = Path(directory)
@@ -142,7 +142,7 @@ class RagEngine:
         return total
 
     # -- retrieval ---------------------------------------------------------
-    def query(self, question: str, top_k: int = 5) -> List[SearchHit]:
+    def query(self, question: str, top_k: int = 5) -> list[SearchHit]:
         return self.retriever.search(question, top_k=top_k)
 
     # -- answering ---------------------------------------------------------
@@ -189,16 +189,17 @@ class RagEngine:
 
     async def _llm_answer(
         self, question: str, context: str, max_tokens: int
-    ) -> Optional[RagAnswer]:
+    ) -> RagAnswer | None:
         prompt = (
             "Answer the question using ONLY the context below. If the context "
             "is insufficient, say so explicitly.\n\n"
             f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
         )
+        client = self.llm_client
+        if client is None:
+            return None
         try:
-            result = await self.llm_client.complete(  # type: ignore[attr-defined]
-                prompt, max_tokens=max_tokens
-            )
+            result = await client.complete(prompt, max_tokens=max_tokens)  # type: ignore[attr-defined]
         except Exception:
             return None
         text = getattr(result, "text", None)
@@ -225,7 +226,7 @@ class RagEngine:
     def document_count(self) -> int:
         return self.retriever.count()
 
-    def info(self) -> Dict[str, object]:
+    def info(self) -> dict[str, object]:
         return {
             "embedder_backend": self.embedder.backend,
             "vector_backend": self.store.backend,

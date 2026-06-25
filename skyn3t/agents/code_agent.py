@@ -28,8 +28,6 @@ from typing import Any
 import structlog
 
 from skyn3t.adapters.llm import LLMClient
-
-log = structlog.get_logger(__name__)
 from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
 from skyn3t.agents._scaffold import (
     default_pyproject,
@@ -39,6 +37,8 @@ from skyn3t.agents._scaffold import (
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+
+log = structlog.get_logger(__name__)
 
 _SYSTEM = (
     "You are an expert software engineer. Generate the COMPLETE, production-quality "
@@ -98,19 +98,18 @@ class CodeAgent(BaseAgent):
         self.add_capability(AgentCapability(
             name="codegen", description="Write runnable source files into the worktree",
             tags=("generative", "code")))
-        self.llm = llm
+        self.llm = llm or LLMClient()
 
     async def initialize(self) -> None:
-        if self.llm is None:
-            self.llm = LLMClient()
         self.metadata["backend"] = self.llm.backend
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         p = task.payload
         brief = p.get("brief", "") or p.get("slug", "app")
-        plan = p.get("plan") if isinstance(p.get("plan"), dict) else {}
+        raw_plan = p.get("plan")
+        plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         stack = detect_stack(
-            brief=brief, plan=plan or p.get("plan"),
+            brief=brief, plan=plan,
             explicit=p.get("stack", "") or (plan.get("stack", "") if plan else ""),
         )
         app_name = slugify(p.get("slug") or brief, "app")
@@ -353,8 +352,10 @@ class CodeAgent(BaseAgent):
             # orchestration is testable and the merge produces real files.
             files = self._slice_stub(stack, app_name, brief, slice_files)
         elif getattr(self.llm, "supports_agentic", False):
-            prior = p.get("prior") if isinstance(p.get("prior"), dict) else {}
-            design = prior.get("design") if isinstance(prior.get("design"), dict) else None
+            raw_prior = p.get("prior")
+            prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
+            raw_design = prior.get("design")
+            design = raw_design if isinstance(raw_design, dict) else None
             prompt = self._agentic_slice_prompt(
                 brief, stack, name, slice_files, manifest, knowledge, design=design)
             res = await self.llm.agentic_build(prompt, str(worktree), model=model_override)

@@ -17,8 +17,7 @@ from typing import Any
 
 import structlog
 
-from skyn3t.core.agent import TaskRequest
-from skyn3t.core.events import Event, EventType
+from skyn3t.core.events import EventType
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
 from skyn3t.worktree import PREVIEW_SUBDIR, list_files
@@ -211,9 +210,11 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
             _extra = {"stack": stack, "build_id": build_id}
             if ref_path:
                 _extra["reference_image"] = ref_path
-            runner = lambda: studio.start(brief, slug=slug or None, extra=_extra)
+            def runner() -> Any:
+                return studio.start(brief, slug=slug or None, extra=_extra)
         elif hasattr(studio, "submit"):  # pragma: no cover - legacy shape
-            runner = lambda: studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
+            def runner() -> Any:
+                return studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
     if runner is not None:
         try:
             res = runner()
@@ -399,7 +400,7 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     registry[slug] = claim
 
     man = BuildManifest.load(pdir)
-    stack = man.stack if man is not None and getattr(man, "stack", "") else ""
+    stack = man.stack if man is not None else ""
     app = await runner.start(pdir, stack)
 
     if registry.get(slug) is not claim:
@@ -716,7 +717,7 @@ async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str
             ql = q.lower()
             # No `or lessons` fallback: a query that matches nothing must return
             # an empty result set, not every recent lesson (false positives).
-            results = [l for l in lessons if ql in str(l.get("text", "")).lower()]
+            results = [lesson for lesson in lessons if ql in str(lesson.get("text", "")).lower()]
         except Exception:  # noqa: BLE001
             results = []
     return {"query": q, "results": results[:limit], "degraded": True}
@@ -867,7 +868,7 @@ async def set_github_token(state: AppState, key: str, persist: bool = True) -> d
 
     key = (key or "").strip()
     try:
-        setattr(state.settings, "github_token", key)
+        state.settings.github_token = key
     except Exception:  # noqa: BLE001
         pass
     if key:
@@ -894,7 +895,7 @@ async def set_replicate_token(
 
     token = (token or "").strip()
     try:
-        setattr(state.settings, "replicate_api_token", token)
+        state.settings.replicate_api_token = token
     except Exception:  # noqa: BLE001
         pass
     if token:
@@ -907,7 +908,7 @@ async def set_replicate_token(
     model = (model or "").strip()
     if model:
         try:
-            setattr(state.settings, "replicate_model", model)
+            state.settings.replicate_model = model
         except Exception:  # noqa: BLE001
             pass
         os.environ["SKYN3T_REPLICATE_MODEL"] = model
@@ -931,7 +932,7 @@ async def set_asset_gen(state: AppState, enabled: bool, persist: bool = True) ->
 
     enabled = bool(enabled)
     try:
-        setattr(state.settings, "asset_gen", enabled)
+        state.settings.asset_gen = enabled
     except Exception:  # noqa: BLE001
         pass
     os.environ["SKYN3T_ASSET_GEN"] = "true" if enabled else "false"
@@ -1145,6 +1146,7 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=401, detail="unauthorized")
 
     auth = Depends(require_auth)
+    empty_body: Any = Body(default_factory=dict)
 
     @router.get("/status", dependencies=[auth])
     async def _status() -> dict[str, Any]:
@@ -1180,7 +1182,7 @@ def build_router(state: AppState) -> Any:
         return await list_builds(state, limit=limit)
 
     @router.post("/builds", dependencies=[auth])
-    async def _build_alias(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _build_alias(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await submit_build(
                 state,
@@ -1190,7 +1192,7 @@ def build_router(state: AppState) -> Any:
                 reference_image=str(body.get("reference_image", "")),
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/preview/{slug}", dependencies=[auth])
     async def _preview(slug: str) -> dict[str, Any]:
@@ -1212,7 +1214,7 @@ def build_router(state: AppState) -> Any:
                           "orphaned_projects", "stray_previews")}
 
     @router.post("/projects/cleanup", dependencies=[auth])
-    async def _cleanup_apply(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _cleanup_apply(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         from skyn3t.studio.cleanup import apply as cleanup_apply
         from skyn3t.studio.cleanup import scan as cleanup_scan
         wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
@@ -1229,22 +1231,22 @@ def build_router(state: AppState) -> Any:
     async def _projects() -> dict[str, Any]:
         try:
             return await list_projects(state)
-        except OSError:
+        except OSError as exc:
             # An unreadable projects_dir must not leak a 500 with internals.
-            raise HTTPException(status_code=500, detail="unable to read projects directory")
+            raise HTTPException(status_code=500, detail="unable to read projects directory") from exc
 
     @router.delete("/projects/{slug}", dependencies=[auth])
     async def _delete_project(slug: str) -> dict[str, Any]:
         try:
             return await delete_project(state, slug)
         except ValueError:
-            raise HTTPException(status_code=400, detail="invalid or active project")
+            raise HTTPException(status_code=400, detail="invalid or active project") from None
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="not found")
-        except OSError:
+            raise HTTPException(status_code=404, detail="not found") from None
+        except OSError as exc:
             # e.g. the trash dir isn't writable — a controlled error, not a 500 leak.
             # (FileNotFoundError is caught above; this covers the other OSErrors.)
-            raise HTTPException(status_code=500, detail="failed to trash project")
+            raise HTTPException(status_code=500, detail="failed to trash project") from exc
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
     async def _project_file(slug: str, path: str) -> Any:
@@ -1270,7 +1272,7 @@ def build_router(state: AppState) -> Any:
 
     @router.post("/cortex/proposals/{proposal_id}/decide", dependencies=[auth])
     async def _cortex_decide(
-        proposal_id: str, body: dict[str, Any] = Body(default_factory=dict)
+        proposal_id: str, body: dict[str, Any] = empty_body
     ) -> dict[str, Any]:
         decision = str(body.get("decision", body.get("approved", ""))).lower()
         approved = decision in ("approve", "approved", "accept", "true", "yes", "1")
@@ -1284,22 +1286,22 @@ def build_router(state: AppState) -> Any:
         return await llm_secrets_payload(state)
 
     @router.post("/llm/key", dependencies=[auth])
-    async def _set_llm_key(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _set_llm_key(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await set_llm_key(state, str(body.get("provider", "")), str(body.get("key", "")))
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/llm/backend", dependencies=[auth])
-    async def _set_llm_backend(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _set_llm_backend(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_llm_backend(state, str(body.get("backend", "auto")))
 
     @router.post("/settings/github", dependencies=[auth])
-    async def _set_github(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _set_github(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_github_token(state, str(body.get("token", body.get("key", ""))))
 
     @router.post("/settings/replicate", dependencies=[auth])
-    async def _set_replicate(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _set_replicate(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_replicate_token(
             state,
             str(body.get("token", body.get("key", ""))),
@@ -1307,19 +1309,19 @@ def build_router(state: AppState) -> Any:
         )
 
     @router.post("/settings/asset_gen", dependencies=[auth])
-    async def _set_asset_gen(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _set_asset_gen(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_asset_gen(state, bool(body.get("enabled", body.get("on", False))))
 
     @router.post("/proposals/clear", dependencies=[auth])
-    async def _clear_proposals(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _clear_proposals(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await clear_proposals(state, scope=str(body.get("scope", "resolved")))
 
     @router.post("/cortex/proposals/clear", dependencies=[auth])
-    async def _clear_proposals_alias(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _clear_proposals_alias(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await clear_proposals(state, scope=str(body.get("scope", "resolved")))
 
     @router.post("/cortex/scout", dependencies=[auth])
-    async def _scout_now(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _scout_now(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await scout_now(state, topic=str(body.get("topic", "")))
 
     @router.get("/integrations", dependencies=[auth])
@@ -1327,24 +1329,24 @@ def build_router(state: AppState) -> Any:
         return await integrations_payload(state)
 
     @router.post("/integrations/credential", dependencies=[auth])
-    async def _set_integration(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _set_integration(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await set_integration_credential(
                 state, str(body.get("channel", "")),
                 token=str(body.get("token", "")), target=str(body.get("target", "")),
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/integrations/listener", dependencies=[auth])
-    async def _messaging_control(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _messaging_control(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await messaging_control(state, str(body.get("action", "")))
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/studio/build", dependencies=[auth])
-    async def _build(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _build(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await submit_build(
                 state,
@@ -1354,14 +1356,14 @@ def build_router(state: AppState) -> Any:
                 reference_image=str(body.get("reference_image", "")),
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/studio/builds", dependencies=[auth])
     async def _builds(limit: int = Query(default=25, ge=1, le=200)) -> dict[str, Any]:
         return await list_builds(state, limit=limit)
 
     @router.post("/studio/approve", dependencies=[auth])
-    async def _approve(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _approve(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await approve_build(
                 state,
@@ -1370,10 +1372,10 @@ def build_router(state: AppState) -> Any:
                 reason=str(body.get("reason", "")),
             )
         except KeyError:
-            raise HTTPException(status_code=404, detail="build not found")
+            raise HTTPException(status_code=404, detail="build not found") from None
 
     @router.post("/studio/serve", dependencies=[auth])
-    async def _serve(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _serve(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await serve_project(state, str(body.get("slug", "")))
         except ValueError:
@@ -1382,7 +1384,7 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=404, detail="not found") from None
 
     @router.post("/studio/serve/stop", dependencies=[auth])
-    async def _serve_stop(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _serve_stop(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await stop_serve(state, str(body.get("slug", "")))
 
     @router.get("/studio/serve", dependencies=[auth])
@@ -1390,7 +1392,7 @@ def build_router(state: AppState) -> Any:
         return await serve_status(state)
 
     @router.post("/studio/improve", dependencies=[auth])
-    async def _improve(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _improve(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await improve_project(
                 state, str(body.get("slug", "")), str(body.get("goal", "")))
@@ -1400,7 +1402,7 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=404, detail="not found") from None
 
     @router.post("/studio/fanout", dependencies=[auth])
-    async def _fanout(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _fanout(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         stacks = body.get("stacks")
         if isinstance(stacks, str):
             stacks = [s.strip() for s in stacks.split(",") if s.strip()]
@@ -1414,7 +1416,7 @@ def build_router(state: AppState) -> Any:
         return await list_proposals(state, status=status)
 
     @router.post("/proposals/decide", dependencies=[auth])
-    async def _decide(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    async def _decide(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         pid = str(body.get("proposal_id", ""))
         if not pid:
             raise HTTPException(status_code=422, detail="proposal_id is required")
@@ -1461,7 +1463,7 @@ def build_router(state: AppState) -> Any:
             try:
                 et = EventType(type)
             except ValueError:
-                raise HTTPException(status_code=422, detail=f"unknown event type: {type}")
+                raise HTTPException(status_code=422, detail=f"unknown event type: {type}") from None
             # ALL ('*') is a subscription-only wildcard — no real event has that
             # type, so filtering on it returns nothing. Treat it as "no filter".
             if et == EventType.ALL:

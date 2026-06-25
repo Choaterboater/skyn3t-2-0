@@ -17,11 +17,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
-
-from skyn3t.agents import _verify_common as vc
 
 # Deterministic red flags. Each entry: (compiled regex, severity, message).
 # Severity "block" => hard stop; "warn" => advisory (non-blocking).

@@ -1,17 +1,21 @@
 # tests/test_app_runner.py
 from __future__ import annotations
 
+import asyncio
 import json
-from pathlib import Path
+import socket
+import urllib.request
 
-from skyn3t.studio.app_runner import RunSpec, build_run_spec, free_port
+from skyn3t.studio import app_runner as _app_runner
+from skyn3t.studio.app_runner import AppRunner, build_run_spec, ensure_node_deps, free_port
 
 
 def test_free_port_returns_bindable_int():
-    import socket
     p = free_port()
     assert isinstance(p, int) and 1024 < p < 65536
-    s = socket.socket(); s.bind(("127.0.0.1", p)); s.close()  # actually free
+    s = socket.socket()
+    s.bind(("127.0.0.1", p))
+    s.close()  # actually free
 
 
 def test_static_site_uses_http_server(tmp_path):
@@ -71,15 +75,6 @@ def test_node_without_dev_or_start_falls_through_to_python_web(tmp_path):
     assert spec is not None and spec.kind == "python_web"
 
 
-# ---------------------------------------------------------------------------
-# AppRunner lifecycle tests (Task 2)
-# ---------------------------------------------------------------------------
-import asyncio
-import urllib.request
-
-from skyn3t.studio.app_runner import AppRunner, RunningApp
-
-
 def test_start_serves_static_then_stop(tmp_path):
     (tmp_path / "index.html").write_text("<title>served</title>")
     runner = AppRunner()
@@ -91,8 +86,8 @@ def test_start_serves_static_then_stop(tmp_path):
     finally:
         runner.stop(app)
     # after stop, the port no longer answers
-    import socket
-    s = socket.socket(); s.settimeout(1)
+    s = socket.socket()
+    s.settimeout(1)
     try:
         refused = s.connect_ex(("127.0.0.1", app.port)) != 0
     finally:
@@ -105,15 +100,6 @@ def test_start_no_preview_for_bare_dir(tmp_path):
     runner = AppRunner()
     app = asyncio.run(runner.start(tmp_path, "python"))
     assert app.status == "no_preview" and app.pid is None
-
-
-# ---------------------------------------------------------------------------
-# Node dependency installation (the `vite: command not found` bug)
-# A delivered Vite/React project has package.json but no node_modules; `npm run
-# dev` can't find the vite binary. Serving must install deps first.
-# ---------------------------------------------------------------------------
-from skyn3t.studio import app_runner as _app_runner
-from skyn3t.studio.app_runner import ensure_node_deps
 
 
 def test_ensure_node_deps_skips_when_node_modules_present(tmp_path):

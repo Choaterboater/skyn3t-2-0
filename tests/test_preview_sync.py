@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from skyn3t.worktree import PREVIEW_SUBDIR, sync_preview
 

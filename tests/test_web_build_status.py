@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from skyn3t.core.events import EventType
 from skyn3t.config.settings import Settings
+from skyn3t.core.events import EventType
 
 pytest.importorskip("skyn3t.web.deps")
 from skyn3t.web.deps import AppState  # noqa: E402

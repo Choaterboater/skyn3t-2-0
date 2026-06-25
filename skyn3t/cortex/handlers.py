@@ -249,8 +249,11 @@ class HandlerRegistry:
             staged["ingested"] = 0
             staged["degraded"] = True
             return staged
+        rag = self.rag
+        if rag is None:
+            return self._stage(proposal, "ingest")
         try:
-            n = self.rag.ingest_text(text, source=url, kind="github")
+            n = rag.ingest_text(text, source=url, kind="github")
         except Exception as exc:  # noqa: BLE001 - transient RAG error -> degraded, retryable
             staged = self._stage(proposal, "ingest")
             staged["ingested"] = 0

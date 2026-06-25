@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
@@ -43,7 +43,7 @@ def verify_signature(secret: str, body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature.strip())
 
 
-def event_to_task(event_name: str, payload: dict[str, Any]) -> Optional[TaskRequest]:
+def event_to_task(event_name: str, payload: dict[str, Any]) -> TaskRequest | None:
     """Map a GitHub event into a TaskRequest, or None if not actionable."""
     repo = (payload.get("repository") or {}).get("full_name", "")
     action = payload.get("action", "")
@@ -86,9 +86,9 @@ class GitHubWebhookHandler:
 
     def __init__(
         self,
-        event_bus: Optional[EventBus] = None,
-        submit_fn: Optional[SubmitFn] = None,
-        secret: Optional[str] = None,
+        event_bus: EventBus | None = None,
+        submit_fn: SubmitFn | None = None,
+        secret: str | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.submit_fn = submit_fn
@@ -150,7 +150,7 @@ def build_router(handler: GitHubWebhookHandler):  # type: ignore[no-untyped-def]
 
     @router.post("/webhooks/github")
     async def github_hook(  # noqa: ANN202 - FastAPI route
-        request: "Request",
+        request: Request,
         x_github_event: str = Header(default="", alias="X-GitHub-Event"),
         x_hub_signature_256: str = Header(default="", alias="X-Hub-Signature-256"),
     ):

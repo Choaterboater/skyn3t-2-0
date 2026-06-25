@@ -18,6 +18,7 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -170,7 +171,7 @@ class BuildPatternBoard:
         return best[0].shape if best else None
 
     def scoreboard(self, stack: str | None = None) -> list[dict[str, Any]]:
-        recs = self._records.values()
+        recs: Iterable[PatternRecord] = self._records.values()
         if stack:
             recs = [r for r in recs if r.stack == stack]
         out = sorted(recs, key=lambda r: r.mean_score, reverse=True)

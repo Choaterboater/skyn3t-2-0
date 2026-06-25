@@ -11,7 +11,6 @@ import json
 import re
 from typing import Any
 
-
 # Canonical stacks the CodeAgent can scaffold offline.
 KNOWN_STACKS = (
     "react_vite",
@@ -179,7 +178,8 @@ def knowledge_block(payload: Any) -> str:
     """
     if not isinstance(payload, dict):
         return ""
-    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    raw_extra = payload.get("extra")
+    extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
     parts: list[str] = []
 
     advice = extra.get("skills_advice") or payload.get("skills_advice")
@@ -192,9 +192,9 @@ def knowledge_block(payload: Any) -> str:
     lessons = payload.get("lessons") or []
     if lessons:
         lines = [
-            f"- {(l.get('text') if isinstance(l, dict) else l)}"[:280]
-            for l in lessons[:5]
-            if (l.get("text") if isinstance(l, dict) else l)
+            f"- {(lesson.get('text') if isinstance(lesson, dict) else lesson)}"[:280]
+            for lesson in lessons[:5]
+            if (lesson.get("text") if isinstance(lesson, dict) else lesson)
         ]
         if lines:
             parts.append("Lessons from past builds (apply where they fit):\n" + "\n".join(lines))

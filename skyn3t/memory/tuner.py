@@ -22,7 +22,6 @@ from typing import Any
 
 from skyn3t.core.events import Event, EventBus, EventType
 
-
 # Allow-list of tunable config knobs with (min, max) clamps. Only these may be
 # written by the tuner — everything else is ignored.
 #

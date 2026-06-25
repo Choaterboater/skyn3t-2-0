@@ -71,7 +71,7 @@ class StageSpec:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "StageSpec":
+    def from_dict(cls, d: dict[str, Any]) -> StageSpec:
         return cls(
             name=d["name"],
             agent_type=d["agent_type"],

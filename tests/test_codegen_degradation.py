@@ -17,12 +17,9 @@ from __future__ import annotations
 import pathlib
 from unittest.mock import patch
 
-import pytest
-
 from skyn3t.agents.code_agent import CodeAgent
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
-
 
 # ---------------------------------------------------------------------------
 # Helper

@@ -13,11 +13,12 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from time import time
-from typing import Any, Iterator, Optional
+from typing import Any
 
 import structlog
 
@@ -32,9 +33,9 @@ class Span:
     name: str
     trace_id: str
     span_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     start: float = field(default_factory=time)
-    end: Optional[float] = None
+    end: float | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
     status: str = "ok"
 

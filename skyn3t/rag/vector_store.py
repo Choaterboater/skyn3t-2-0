@@ -8,9 +8,9 @@ disk is touched until a method is called.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
 
 from skyn3t.rag.embeddings import cosine_similarity
 
@@ -27,8 +27,8 @@ except Exception:  # pragma: no cover - exercised only when dep present
 class StoredDoc:
     id: str
     text: str
-    embedding: List[float]
-    metadata: Dict[str, object] = field(default_factory=dict)
+    embedding: list[float]
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -36,7 +36,7 @@ class SearchHit:
     id: str
     text: str
     score: float
-    metadata: Dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class VectorStore:
@@ -56,7 +56,7 @@ class VectorStore:
     def __init__(
         self,
         collection: str = "skyn3t_rag",
-        persist_path: Optional[Path] = None,
+        persist_path: Path | None = None,
         prefer_chroma: bool = True,
     ) -> None:
         self.collection_name = collection
@@ -66,7 +66,7 @@ class VectorStore:
         self._client = None
         self._collection = None
         # in-memory fallback storage
-        self._docs: Dict[str, StoredDoc] = {}
+        self._docs: dict[str, StoredDoc] = {}
 
     # -- chroma lazy init --------------------------------------------------
     def _ensure_chroma(self) -> bool:
@@ -101,7 +101,7 @@ class VectorStore:
         ids: Sequence[str],
         texts: Sequence[str],
         embeddings: Sequence[Sequence[float]],
-        metadatas: Optional[Sequence[Dict[str, object]]] = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
     ) -> int:
         ids = list(ids)
         texts = list(texts)
@@ -127,7 +127,7 @@ class VectorStore:
             self._docs[_id] = StoredDoc(
                 id=_id,
                 text=texts[i],
-                embedding=embeddings[i],
+                embedding=list(embeddings[i]),
                 metadata=metas[i] or {},
             )
         return len(ids)
@@ -137,7 +137,7 @@ class VectorStore:
         self,
         embedding: Sequence[float],
         top_k: int = 5,
-    ) -> List[SearchHit]:
+    ) -> list[SearchHit]:
         embedding = list(map(float, embedding))
         if self._ensure_chroma():
             try:
@@ -145,7 +145,7 @@ class VectorStore:
                     query_embeddings=[embedding],
                     n_results=max(1, top_k),
                 )
-                hits: List[SearchHit] = []
+                hits: list[SearchHit] = []
                 ids = (res.get("ids") or [[]])[0]
                 docs = (res.get("documents") or [[]])[0]
                 metas = (res.get("metadatas") or [[]])[0]
@@ -212,7 +212,7 @@ class VectorStore:
         self._client = None
         self._collection = None
 
-    def __enter__(self) -> "VectorStore":
+    def __enter__(self) -> VectorStore:
         return self
 
     def __exit__(self, *exc_info: object) -> None:

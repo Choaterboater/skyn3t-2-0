@@ -127,8 +127,8 @@ def test_match_skipped_when_all_same_model(tmp_path):
     """No diversity (all candidates same model) → no spurious self-match."""
     r = _runner(tmp_path)
     w = _cand(0, "same/m:free", 90.0)
-    l = _cand(1, "same/m:free", 50.0)
-    selection = types.SimpleNamespace(winner=w, candidates=[w, l])
+    loser = _cand(1, "same/m:free", 50.0)
+    selection = types.SimpleNamespace(winner=w, candidates=[w, loser])
     spec = types.SimpleNamespace(agent_type="codegen", name="code")
     r._record_best_of_n_match(spec, selection)
     t = ModelTournament(r.settings.data_dir / "model_tournament.json")

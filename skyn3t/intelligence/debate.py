@@ -133,7 +133,7 @@ class DebateOrchestrator:
         )
         proposals: list[Proposal] = []
         for i, r in enumerate(prop_results):
-            if isinstance(r, Exception):
+            if isinstance(r, BaseException):
                 continue
             proposals.append(Proposal(f"debater-{i + 1}", r.model, r.text))
         if not proposals:
@@ -153,7 +153,7 @@ class DebateOrchestrator:
             *(self._complete(p) for p in critique_prompts), return_exceptions=True
         )
         for i, r in enumerate(crit_results):
-            if not isinstance(r, Exception) and i < len(proposals):
+            if not isinstance(r, BaseException) and i < len(proposals):
                 proposals[i].critiques.append(r.text)
 
         # 3) Vote: each debater votes for the strongest proposal (not its own).

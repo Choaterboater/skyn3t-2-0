@@ -262,7 +262,7 @@ def start(
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Web server unavailable:[/red] {exc}")
             console.print("Install with: [cyan]pip install -e \".[web]\"[/cyan]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from exc
         return
 
     spine = asyncio.run(_assemble_spine())
@@ -1288,7 +1288,7 @@ def _decide_build(build_id: str, *, approve: bool) -> None:
         ok, err = asyncio.run(_post())
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Could not record decision:[/red] {exc}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     if not ok:
         console.print(f"[red]Could not record decision:[/red] {err}")
         raise typer.Exit(code=1)
@@ -1400,7 +1400,7 @@ def snapshot(
         target.write_text(json.dumps(snap, indent=2, default=str), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Failed to write snapshot:[/red] {exc}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
     n_events = snap.get("published", snap.get("published_count", len(snap.get("history", []))))
     console.print(f"Snapshot written to [cyan]{target}[/cyan] ({n_events} events).")
 

@@ -49,8 +49,8 @@ def test_delete_project_notfound_still_404(tmp_path, monkeypatch):
 
 
 def test_repo_scout_stop_initialized():
-    from skyn3t.cortex.repo_scout import RepoScout
     from skyn3t.core.events import EventBus
+    from skyn3t.cortex.repo_scout import RepoScout
 
     scout = RepoScout(event_bus=EventBus())
     assert scout._stop is False  # explicit init, not lazy

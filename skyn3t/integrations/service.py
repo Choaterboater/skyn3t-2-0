@@ -65,6 +65,8 @@ class MessagingService:
                 continue
 
     async def _safe_build(self, brief: str) -> None:
+        if self.studio is None:
+            return
         try:
             await self.studio.start(brief, extra={"source": "messaging"})
         except Exception as exc:  # noqa: BLE001

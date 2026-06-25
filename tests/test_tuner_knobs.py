@@ -10,14 +10,11 @@ All tests are offline / import-only.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from skyn3t.memory.tuner import SAFE_KNOBS, SAFE_FLAGS, SelfTuningEngine, TuningChange
-from skyn3t.core.events import EventBus, EventType
+from skyn3t.core.events import EventBus
 from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING
-
+from skyn3t.memory.tuner import SAFE_FLAGS, SAFE_KNOBS, SelfTuningEngine
 
 # ---------------------------------------------------------------------------
 # Knob allow-list consistency

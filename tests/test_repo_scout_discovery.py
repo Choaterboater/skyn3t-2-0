@@ -8,7 +8,7 @@ the page per topic each scout) plus a broader topic pool.
 
 from __future__ import annotations
 
-from skyn3t.cortex.repo_scout import RepoScout, _SCOUT_TOPICS
+from skyn3t.cortex.repo_scout import _SCOUT_TOPICS, RepoScout
 
 
 def test_page_advances_per_topic():

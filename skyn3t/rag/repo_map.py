@@ -17,9 +17,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 
 try:  # optional heavy deps — prefer the 3.13-compatible language pack
     try:
@@ -79,8 +79,8 @@ class FileMap:
     path: str
     language: str
     sha256: str
-    symbols: List[Symbol] = field(default_factory=list)
-    imports: List[str] = field(default_factory=list)
+    symbols: list[Symbol] = field(default_factory=list)
+    imports: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [f"# {self.path}"]
@@ -99,15 +99,15 @@ class FileMap:
 @dataclass
 class RepoMap:
     root: str
-    files: List[FileMap] = field(default_factory=list)
+    files: list[FileMap] = field(default_factory=list)
     backend: str = "regex"
 
     @property
     def merkle_root(self) -> str:
         return _merkle_root({f.path: f.sha256 for f in self.files})
 
-    def all_symbols(self) -> List[Symbol]:
-        out: List[Symbol] = []
+    def all_symbols(self) -> list[Symbol]:
+        out: list[Symbol] = []
         for f in self.files:
             out.extend(f.symbols)
         return out
@@ -115,7 +115,7 @@ class RepoMap:
     def to_context(self, max_tokens: int = 2000) -> str:
         """Render a token-bounded textual map, densest files first."""
         header = f"Repo map ({self.backend}) rooted at {self.root}"
-        parts: List[str] = [header]
+        parts: list[str] = [header]
         budget = max(64, int(max_tokens)) - _estimate_tokens(header)
         # Order files by symbol richness so the most informative come first.
         ordered = sorted(
@@ -157,16 +157,16 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _merkle_root(file_hashes: Dict[str, str]) -> str:
+def _merkle_root(file_hashes: dict[str, str]) -> str:
     """Deterministic Merkle root over (path, hash) pairs."""
     if not file_hashes:
         return hashlib.sha256(b"").hexdigest()
     leaves = [
-        hashlib.sha256(f"{p}:{h}".encode("utf-8")).digest()
+        hashlib.sha256(f"{p}:{h}".encode()).digest()
         for p, h in sorted(file_hashes.items())
     ]
     while len(leaves) > 1:
-        nxt: List[bytes] = []
+        nxt: list[bytes] = []
         for i in range(0, len(leaves), 2):
             a = leaves[i]
             b = leaves[i + 1] if i + 1 < len(leaves) else a
@@ -182,7 +182,7 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
     return text[:max_chars].rsplit("\n", 1)[0]
 
 
-def detect_language(path: str) -> Optional[str]:
+def detect_language(path: str) -> str | None:
     return _LANG_BY_EXT.get(Path(path).suffix.lower())
 
 
@@ -214,7 +214,7 @@ class _RegexExtractor:
         r"^\s*(?:pub\s+)?(?:class|struct|interface|type|impl)\s+([A-Za-z_]\w*)"
     )
 
-    def extract(self, path: str, text: str, language: Optional[str]) -> FileMap:
+    def extract(self, path: str, text: str, language: str | None) -> FileMap:
         sha = hash_text(text)
         fm = FileMap(path=path, language=language or "text", sha256=sha)
         lines = text.splitlines()
@@ -226,8 +226,8 @@ class _RegexExtractor:
             self._extract_generic(path, lines, fm)
         return fm
 
-    def _extract_python(self, path: str, lines: List[str], fm: FileMap) -> None:
-        class_stack: List[Tuple[int, str]] = []  # (indent, name)
+    def _extract_python(self, path: str, lines: list[str], fm: FileMap) -> None:
+        class_stack: list[tuple[int, str]] = []  # (indent, name)
         for ln, line in enumerate(lines, start=1):
             mi = self._PY_IMPORT.match(line)
             if mi:
@@ -269,7 +269,7 @@ class _RegexExtractor:
                     )
                 )
 
-    def _extract_js(self, path: str, lines: List[str], fm: FileMap) -> None:
+    def _extract_js(self, path: str, lines: list[str], fm: FileMap) -> None:
         for ln, line in enumerate(lines, start=1):
             mi = self._JS_IMPORT.match(line)
             if mi:
@@ -291,7 +291,7 @@ class _RegexExtractor:
             if ma:
                 fm.symbols.append(Symbol(ma.group(1), "function", path, ln, ma.group(1)))
 
-    def _extract_generic(self, path: str, lines: List[str], fm: FileMap) -> None:
+    def _extract_generic(self, path: str, lines: list[str], fm: FileMap) -> None:
         for ln, line in enumerate(lines, start=1):
             mf = self._GENERIC_FUNC.match(line)
             if mf:
@@ -305,7 +305,7 @@ class _RegexExtractor:
 class _TreeSitterExtractor:
     """Precise extractor backed by tree-sitter (when available)."""
 
-    _PARSERS: Dict[str, object] = {}
+    _PARSERS: dict[str, object] = {}
 
     def _parser(self, language: str):
         if language in self._PARSERS:
@@ -317,7 +317,7 @@ class _TreeSitterExtractor:
         self._PARSERS[language] = parser
         return parser
 
-    def available_for(self, language: Optional[str]) -> bool:
+    def available_for(self, language: str | None) -> bool:
         if not language or not _TS_AVAILABLE:
             return False
         return self._parser(language) is not None
@@ -395,9 +395,9 @@ class _TreeSitterExtractor:
 # --------------------------------------------------------------------------
 def _iter_code_files(
     root: Path, ignore: Sequence[str], max_files: int
-) -> List[Path]:
+) -> list[Path]:
     ignore_set = set(ignore)
-    out: List[Path] = []
+    out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [
             d for d in dirnames
@@ -413,7 +413,7 @@ def _iter_code_files(
 
 def _build_file_map(
     path: Path, root: Path, ts: _TreeSitterExtractor, rx: _RegexExtractor
-) -> Optional[FileMap]:
+) -> FileMap | None:
     rel = str(path.relative_to(root)) if _is_relative(path, root) else str(path)
     language = detect_language(str(path))
     try:
@@ -438,7 +438,7 @@ def _is_relative(path: Path, root: Path) -> bool:
 
 def build_repo_map(
     directory: str,
-    ignore: Optional[Sequence[str]] = None,
+    ignore: Sequence[str] | None = None,
     max_files: int = 2000,
 ) -> RepoMap:
     """Scan ``directory`` and build a full :class:`RepoMap`."""
@@ -448,7 +448,8 @@ def build_repo_map(
         return rmap
     ts = _TreeSitterExtractor()
     rx = _RegexExtractor()
-    files = _iter_code_files(root, ignore or _DEFAULT_IGNORE, max_files)
+    ignore_patterns: Sequence[str] = tuple(ignore or _DEFAULT_IGNORE)
+    files = _iter_code_files(root, ignore_patterns, max_files)
     used_ts = False
     for p in files:
         fm = _build_file_map(p, root, ts, rx)
@@ -478,14 +479,14 @@ class RepoMapIndex:
     def __init__(
         self,
         directory: str,
-        ignore: Optional[Sequence[str]] = None,
+        ignore: Sequence[str] | None = None,
         max_files: int = 2000,
     ) -> None:
         self.root = Path(directory).resolve()
         self.ignore = list(ignore or _DEFAULT_IGNORE)
         self.max_files = max_files
-        self._maps: Dict[str, FileMap] = {}
-        self._hashes: Dict[str, str] = {}
+        self._maps: dict[str, FileMap] = {}
+        self._hashes: dict[str, str] = {}
         self._ts = _TreeSitterExtractor()
         self._rx = _RegexExtractor()
         self.last_merkle_root = ""
@@ -494,10 +495,10 @@ class RepoMapIndex:
     def backend(self) -> str:
         return "tree_sitter" if _TS_AVAILABLE else "regex"
 
-    def scan(self) -> Dict[str, List[str]]:
+    def scan(self) -> dict[str, list[str]]:
         """Re-scan the tree. Returns {'changed':[], 'removed':[], 'unchanged':[]}."""
-        changed: List[str] = []
-        unchanged: List[str] = []
+        changed: list[str] = []
+        unchanged: list[str] = []
         seen: set = set()
         if not self.root.exists():
             return {"changed": [], "removed": list(self._maps.keys()), "unchanged": []}

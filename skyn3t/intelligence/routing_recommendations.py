@@ -125,6 +125,6 @@ class LearnedModelRouter(ModelRouter):
 
     def describe(self) -> dict[str, Any]:  # type: ignore[override]
         base = super().describe() if hasattr(super(), "describe") else {}
-        out = dict(base) if isinstance(base, dict) else {"base": base}
+        out: dict[str, Any] = dict(base) if isinstance(base, dict) else {"base": base}
         out["learned"] = True
         return out

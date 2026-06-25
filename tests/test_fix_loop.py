@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import json as _json
+import shutil
+
+import pytest
 
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
@@ -166,13 +169,6 @@ def test_proof_does_not_run_tests_by_default(tmp_path):
     res = proof_run(str(proj), stack="python")  # no run_tests
     assert res.passed is True
     assert "tests" not in res.detail
-
-
-# ---- proof gating: real node/react compile (npm install + npm run build) ----
-import json as _json
-import shutil
-
-import pytest
 
 
 def _node_proj(tmp_path, build_script: str | None):

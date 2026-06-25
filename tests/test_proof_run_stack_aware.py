@@ -13,10 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from skyn3t.studio.proof_run import proof_run, _stack_artifact_check
-
+from skyn3t.studio.proof_run import _stack_artifact_check, proof_run
 
 # ---------------------------------------------------------------------------
 # _stack_artifact_check unit tests (direct)

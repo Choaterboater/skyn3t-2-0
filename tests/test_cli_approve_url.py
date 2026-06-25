@@ -22,7 +22,7 @@ def test_decide_build_posts_to_api_prefixed_route(monkeypatch):
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        async def __aenter__(self) -> "_FakeClient":
+        async def __aenter__(self) -> _FakeClient:
             return self
 
         async def __aexit__(self, *args) -> bool:

@@ -26,12 +26,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any
 
-try:  # event emission is optional — consciousness works fully without a bus
-    from skyn3t.core.events import EventBus, EventType
-except Exception:  # pragma: no cover - core is a pinned dep, defensive only
-    EventBus = None  # type: ignore[assignment]
-    EventType = None  # type: ignore[assignment]
-
+from skyn3t.core.events import EventBus, EventType
 
 _DEFAULT_TTL = 1800.0  # 30 minutes
 _DEFAULT_MAX_ENTRIES = 1024
@@ -98,7 +93,7 @@ class CollectiveConsciousness:
 
     def __init__(
         self,
-        event_bus: "EventBus | None" = None,
+        event_bus: EventBus | None = None,
         *,
         default_ttl: float = _DEFAULT_TTL,
         max_entries: int = _DEFAULT_MAX_ENTRIES,

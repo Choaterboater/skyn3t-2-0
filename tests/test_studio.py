@@ -11,20 +11,18 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from skyn3t.config.settings import Settings
-from skyn3t.core.agent import BaseAgent, AgentCapability, TaskRequest, TaskResult
+from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
-from skyn3t.studio.clarification import clarify, analyze
+from skyn3t.studio.clarification import analyze, clarify
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import Planner, detect_stack, file_checklist
 from skyn3t.studio.proof_run import proof_run
 from skyn3t.studio.runner import StudioRunner
-from skyn3t.worktree import create_worktree, merge_back, list_files
+from skyn3t.worktree import create_worktree, list_files, merge_back
 
 
 # ---- planner -------------------------------------------------------------
@@ -193,11 +191,11 @@ def test_best_of_n_select_prefers_passing():
 
 
 def test_best_of_n_fallback_most_complete():
-    from skyn3t.studio.best_of_n import Candidate
-    from skyn3t.worktree import create_worktree
-
     # No proof set -> not passing; selector falls back to most files_written.
     import tempfile
+
+    from skyn3t.studio.best_of_n import Candidate
+    from skyn3t.worktree import create_worktree
 
     with tempfile.TemporaryDirectory() as d:
         a = Candidate(index=0, worktree=create_worktree(d, "a"))

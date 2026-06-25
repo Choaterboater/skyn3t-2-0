@@ -114,7 +114,7 @@ def _as_float(v: Any) -> float | None:
         return None
 
 
-def _mean(values: list[float]) -> float:
+def _mean(values: list[float | None]) -> float:
     vals = [v for v in values if v is not None]
     return round(sum(vals) / len(vals), 2) if vals else 0.0
 

@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from skyn3t.core.agent import TaskRequest
-from skyn3t.core.events import Event, EventBus, EventType
+from skyn3t.core.events import EventBus, EventType
 
 # A submit callable mirrors Orchestrator.submit (async (TaskRequest) -> TaskResult)
 SubmitFn = Callable[[TaskRequest], Awaitable[Any]]
@@ -83,9 +84,9 @@ class Channel(ABC):
 
     def __init__(
         self,
-        event_bus: Optional[EventBus] = None,
-        submit_fn: Optional[SubmitFn] = None,
-        config: Optional[dict[str, Any]] = None,
+        event_bus: EventBus | None = None,
+        submit_fn: SubmitFn | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.submit_fn = submit_fn
@@ -220,7 +221,7 @@ class ChannelRegistry:
     def unregister(self, name: str) -> None:
         self._channels.pop(name, None)
 
-    def get(self, name: str) -> Optional[Channel]:
+    def get(self, name: str) -> Channel | None:
         return self._channels.get(name)
 
     def all(self) -> list[Channel]:
@@ -243,9 +244,9 @@ class ChannelRegistry:
 
 
 def build_default_registry(
-    event_bus: Optional[EventBus] = None,
-    submit_fn: Optional[SubmitFn] = None,
-    config: Optional[dict[str, Any]] = None,
+    event_bus: EventBus | None = None,
+    submit_fn: SubmitFn | None = None,
+    config: dict[str, Any] | None = None,
 ) -> ChannelRegistry:
     """Construct a registry with every known channel.
 

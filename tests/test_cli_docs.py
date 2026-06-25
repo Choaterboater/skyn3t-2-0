@@ -34,7 +34,6 @@ def test_ok_marker_reflects_flag() -> None:
 
 
 def test_text_table_shim_renders_without_rich() -> None:
-    table = cli._table.__wrapped__ if hasattr(cli._table, "__wrapped__") else None
     # _table prefers rich; just assert it returns something with add_row.
     t = cli._table("title", ["a", "b"])
     t.add_row("1", "2")

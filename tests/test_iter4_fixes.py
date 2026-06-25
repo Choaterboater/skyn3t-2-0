@@ -10,8 +10,7 @@ from types import SimpleNamespace
 
 from skyn3t.core.events import EventBus
 from skyn3t.studio import improve as improve_mod
-from skyn3t.studio.improve import ImproveEngine, ImproveOutcome
-
+from skyn3t.studio.improve import ImproveEngine
 
 # --- docker client close (FD leak) -----------------------------------------
 

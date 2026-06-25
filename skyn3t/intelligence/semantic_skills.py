@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 
 from skyn3t.rag.embeddings import Embedder
+
 # Reuse the offline BM25 + tokenizer from the hybrid retriever so lesson/skill
 # brief-ranking fuses a LEXICAL (keyword) signal with the embedding-cosine signal
 # via reciprocal-rank fusion — better recall than vector-only (gbrain-style), with
@@ -28,7 +29,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     # would silently truncate to a garbage partial dot, so refuse: not comparable.
     if len(a) != len(b):
         return 0.0
-    return sum(x * y for x, y in zip(a, b))
+    return sum(x * y for x, y in zip(a, b, strict=False))
 
 
 def _bm25_scores(texts: list[str], query: str) -> list[float]:
@@ -73,7 +74,7 @@ class SemanticSkillIndex:
         items = [(str(getattr(s, "slug", "") or ""), _skill_text(s)) for s in skills]
         items = [(slug, text) for slug, text in items if slug]
         vecs = self.embedder.embed_batch([t for _, t in items]) if items else []
-        self._index = [(slug, v) for (slug, _), v in zip(items, vecs)]
+        self._index = [(slug, v) for (slug, _), v in zip(items, vecs, strict=False)]
         return self
 
     def query(self, text: str, *, k: int = 5, min_score: float = 0.0) -> list[tuple[str, float]]:

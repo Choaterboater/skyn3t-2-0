@@ -19,10 +19,10 @@ import os
 import shutil
 import subprocess
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import time
-from typing import Optional, Sequence
 
 import structlog
 
@@ -68,7 +68,7 @@ class SandboxResult:
     backend: str            # "docker" | "subprocess"
     duration_ms: float
     timed_out: bool = False
-    warning: Optional[str] = None
+    warning: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -80,8 +80,8 @@ class SandboxRunner:
     """Runs commands under the safest available backend."""
 
     settings: Settings = field(default_factory=get_settings)
-    secrets: Optional[SecretsStore] = None
-    _docker_ok: Optional[bool] = field(default=None, repr=False)
+    secrets: SecretsStore | None = None
+    _docker_ok: bool | None = field(default=None, repr=False)
     _client: object = field(default=None, repr=False)
 
     # ---- docker detection ------------------------------------------------
@@ -156,11 +156,11 @@ class SandboxRunner:
         self,
         command: Sequence[str] | str,
         *,
-        cwd: Optional[Path] = None,
+        cwd: Path | None = None,
         timeout: float = 120.0,
-        image: Optional[str] = None,
-        stack: Optional[str] = None,
-        env: Optional[dict] = None,
+        image: str | None = None,
+        stack: str | None = None,
+        env: dict | None = None,
         network: bool = False,
     ) -> SandboxResult:
         """Execute ``command`` in the safest backend available."""
@@ -176,7 +176,7 @@ class SandboxRunner:
         )
 
     # ---- docker backend --------------------------------------------------
-    def _resolve_image(self, image: Optional[str], stack: Optional[str]) -> str:
+    def _resolve_image(self, image: str | None, stack: str | None) -> str:
         if image:
             return image
         tmpl = STACK_TEMPLATES.get((stack or "").lower())
@@ -261,7 +261,7 @@ class SandboxRunner:
         timed_out = False
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             timed_out = True
             try:
                 proc.kill()
@@ -280,7 +280,7 @@ class SandboxRunner:
         )
 
     # ---- P1: env warm-start ---------------------------------------------
-    def warm_start_image(self, stack: str, *, rebuild: bool = False) -> Optional[str]:
+    def warm_start_image(self, stack: str, *, rebuild: bool = False) -> str | None:
         """Build or reuse a pre-provisioned Docker image for ``stack``.
 
         Returns the image tag if available, else ``None`` (graceful no-op when

@@ -11,7 +11,6 @@ from skyn3t.adapters.replicate import (
 )
 from skyn3t.studio import assets as assets_mod
 
-
 # --- style classification ----------------------------------------------------
 
 def test_coloring_app_routes_to_flux_schnell():

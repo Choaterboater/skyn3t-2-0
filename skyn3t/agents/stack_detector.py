@@ -91,7 +91,7 @@ class StackDetector:
         if pkg:
             report.manifests.append("package.json")
             report.languages.append("javascript")
-            deps = {}
+            deps: dict[str, Any] = {}
             for key in ("dependencies", "devDependencies", "peerDependencies"):
                 deps.update(pkg.get(key, {}) or {})
             dep_names = {d.lower() for d in deps}
@@ -176,7 +176,13 @@ class StackDetector:
 
         # de-dupe frameworks preserving order
         seen: set[str] = set()
-        report.frameworks = [f for f in report.frameworks if not (f in seen or seen.add(f))]
+        frameworks: list[str] = []
+        for framework in report.frameworks:
+            if framework in seen:
+                continue
+            seen.add(framework)
+            frameworks.append(framework)
+        report.frameworks = frameworks
         return report
 
     @classmethod

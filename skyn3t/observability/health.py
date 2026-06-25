@@ -13,14 +13,15 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Awaitable, Callable
+from enum import StrEnum
+from typing import Any
 
 from skyn3t.config.settings import Settings, get_settings
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     OK = "ok"
     DEGRADED = "degraded"
     FAIL = "fail"

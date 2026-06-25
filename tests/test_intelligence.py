@@ -12,7 +12,7 @@ import sys
 import pytest  # noqa: F401
 
 from skyn3t.intelligence.build_patterns import BuildPatternBoard, fingerprint
-from skyn3t.intelligence.debate import DebateOrchestrator, _parse_vote, run_debate
+from skyn3t.intelligence.debate import _parse_vote, run_debate
 from skyn3t.intelligence.docker_backend import (
     ExecutionBackend,
     detect_backend,

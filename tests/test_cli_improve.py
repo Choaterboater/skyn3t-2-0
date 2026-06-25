@@ -9,8 +9,10 @@ from skyn3t.cli import main as cli
 
 
 def test_run_improve_returns_outcome(tmp_path, monkeypatch):
-    projects = tmp_path / "Projects"; projects.mkdir()
-    proj = projects / "demo"; proj.mkdir()
+    projects = tmp_path / "Projects"
+    projects.mkdir()
+    proj = projects / "demo"
+    proj.mkdir()
     (proj / "main.py").write_text("print('x')\n")
     (proj / "skyn3t_manifest.json").write_text(json.dumps(
         {"slug": "demo", "brief": "d", "stack": "python", "status": "completed"}))

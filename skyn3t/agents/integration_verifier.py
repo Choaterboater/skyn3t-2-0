@@ -15,10 +15,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-
-from skyn3t.agents import _verify_common as vc
 
 # Frontend signals that it talks to a backend.
 _FE_CALL = re.compile(r"""(fetch\s*\(|axios\.|XMLHttpRequest|\$\.ajax|useSWR|useQuery)""")

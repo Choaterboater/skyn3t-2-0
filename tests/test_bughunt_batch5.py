@@ -9,7 +9,6 @@ from skyn3t.core.events import Event, EventBus, EventType
 from skyn3t.memory.ingestor import ExperienceIngestor
 from skyn3t.security.secrets import filter_env
 
-
 # --- #13 filter_env: strip credentials embedded in VALUES, not just names ----
 
 def test_filter_env_drops_value_embedded_credentials():
@@ -75,6 +74,7 @@ async def test_good_build_is_ingested():
 
 async def test_llm_route_capture_is_task_isolated(tmp_path):
     import asyncio
+
     from skyn3t.adapters.llm import LLMClient
     from skyn3t.config.settings import Settings
 

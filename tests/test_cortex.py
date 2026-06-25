@@ -20,13 +20,13 @@ from skyn3t.cortex.autonomous_loop import AutonomousLoop, BuildHeartbeat, Guardr
 from skyn3t.cortex.bootstrap import Cortex
 from skyn3t.cortex.components import ReviewWatcher
 from skyn3t.cortex.handlers import HandlerRegistry
+from skyn3t.cortex.prompt_evolver import PromptEvolver
 from skyn3t.cortex.proposal_store import (
     Proposal,
     ProposalStatus,
     ProposalStore,
     ProposalType,
 )
-from skyn3t.cortex.prompt_evolver import PromptEvolver
 from skyn3t.cortex.repo_scout import RepoScout
 
 

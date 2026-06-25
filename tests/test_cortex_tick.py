@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from skyn3t.config.settings import get_settings
-from skyn3t.cortex.bootstrap import build_cortex
 from skyn3t.core.events import EventBus
+from skyn3t.cortex.bootstrap import build_cortex
 from skyn3t.cortex.meta_tick import MetaTick
 
 

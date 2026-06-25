@@ -13,14 +13,18 @@ import contextlib
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from time import time
 from typing import Any
 
+import structlog
+
 from skyn3t.core.events import EventBus, EventType
 
+log = structlog.get_logger(__name__)
 
-class AgentStatus(str, Enum):
+
+class AgentStatus(StrEnum):
     CREATED = "created"
     READY = "ready"
     BUSY = "busy"
@@ -72,12 +76,15 @@ class BaseAgent(ABC):
         name: str,
         agent_type: str,
         provider: str,
-        event_bus: EventBus,
+        event_bus: EventBus | None,
         config: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.agent_type = agent_type
         self.provider = provider
+        if event_bus is None:
+            log.warning("agent.detached_event_bus", agent=name, agent_type=agent_type)
+            event_bus = EventBus()
         self.event_bus = event_bus
         self.config: dict[str, Any] = config or {}
         self.capabilities: list[AgentCapability] = []

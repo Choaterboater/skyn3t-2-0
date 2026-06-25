@@ -91,7 +91,7 @@ def _extract_links(html: str) -> set[str]:
     return out
 
 
-async def crawl_routes(base_url: str) -> list["Route"]:
+async def crawl_routes(base_url: str) -> list[Route]:
     """Load the served root and turn its same-origin links into page Routes. A
     cheap breadth complement to static parsing — catches dynamically-mounted /
     client-rendered links present in the delivered HTML. Best-effort, never raises."""
@@ -106,7 +106,7 @@ async def crawl_routes(base_url: str) -> list["Route"]:
     return routes
 
 
-def merge_routes(*route_lists: list["Route"]) -> list["Route"]:
+def merge_routes(*route_lists: list[Route]) -> list[Route]:
     """Union routes from several sources, de-duped by (path, method), order-stable."""
     seen: dict[tuple[str, str], Route] = {}
     for routes in route_lists:

@@ -12,8 +12,9 @@ Design rules honoured here:
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 # Files/dirs we never want to count as "real project content".
 _IGNORE_DIRS = {

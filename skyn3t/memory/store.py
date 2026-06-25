@@ -84,7 +84,7 @@ class MemoryStore:
                 # The renamed table keeps its index names; free them so the
                 # model's CREATE INDEX doesn't collide.
                 conn.exec_driver_sql("DROP INDEX IF EXISTS ix_builds_slug")
-                BuildRow.__table__.create(conn)  # table + indexes, matching the model
+                Base.metadata.create_all(conn, tables=[Base.metadata.tables["builds"]], checkfirst=False)
                 conn.exec_driver_sql(
                     f"INSERT INTO builds ({collist}) "
                     f"SELECT {collist} FROM builds__pre_score_fix"
@@ -194,7 +194,7 @@ class MemoryStore:
                 .values(status="interrupted")
             )
             await s.commit()
-            return int(result.rowcount or 0)
+            return int(getattr(result, "rowcount", 0) or 0)
 
     # ---- lessons (graded learning loop) ----------------------------------
     async def add_lesson(self, stack: str, stage: str, text: str, source_build: str | None = None) -> int:
@@ -266,7 +266,7 @@ class MemoryStore:
                     score=LessonRow.score + reward,
                 )
             )
-            if result.rowcount == 0:
+            if getattr(result, "rowcount", 0) == 0:
                 return
             await s.commit()
 

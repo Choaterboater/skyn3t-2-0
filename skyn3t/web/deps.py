@@ -443,7 +443,9 @@ def check_auth(
     token = settings.auth_token.strip()
     if token:
         presented = extract_bearer(authorization)
-        return bool(presented) and _consteq(presented, token)
+        if presented is None:
+            return False
+        return _consteq(presented, token)
     return is_loopback(client_host)
 
 
@@ -451,6 +453,6 @@ def _consteq(a: str, b: str) -> bool:
     if len(a) != len(b):
         return False
     result = 0
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=False):
         result |= ord(x) ^ ord(y)
     return result == 0

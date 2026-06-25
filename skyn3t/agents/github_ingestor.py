@@ -64,7 +64,7 @@ _KV_SECRET_PATTERN = re.compile(
 _REDACTION = "[REDACTED]"
 
 
-def _redact_kv(match: "re.Match[str]") -> str:
+def _redact_kv(match: re.Match[str]) -> str:
     key, op = match.group(1), match.group(2)
     return f'{key}{op}"{_REDACTION}"'
 
@@ -148,7 +148,7 @@ def provenance_match(snippet: str, corpus_blobs: dict[str, str],
     """
     norm_snip = _norm_for_match(snippet)
     digest = hashlib.sha256(norm_snip.encode("utf-8")).hexdigest()[:16]
-    result = {"matched": False, "matches": [], "hash": digest}
+    result: dict[str, Any] = {"matched": False, "matches": [], "hash": digest}
     if len(norm_snip) < min_chars:
         result["reason"] = f"snippet too short (<{min_chars} normalized chars)"
         return result
@@ -242,7 +242,7 @@ async def enrich_commits_with_files(repo: str, commits: list[dict[str, Any]],
                   for sha in shas],
                 return_exceptions=True,
             )
-        for commit, files in zip(targets, results):
+        for commit, files in zip(targets, results, strict=False):
             if isinstance(files, list):
                 commit["files"] = files
     except Exception:  # noqa: BLE001

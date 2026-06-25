@@ -199,9 +199,9 @@ async def test_empty_images_list_is_text_only(monkeypatch):
 
 
 # ---- designer / architect forward reference_image as images= ----------------
+from skyn3t.adapters.llm import LLMResult  # noqa: E402
 from skyn3t.agents.architect import ArchitectAgent  # noqa: E402
 from skyn3t.agents.designer import DesignerAgent  # noqa: E402
-from skyn3t.adapters.llm import LLMResult  # noqa: E402
 from skyn3t.core.agent import TaskRequest  # noqa: E402
 from skyn3t.core.events import EventBus  # noqa: E402
 

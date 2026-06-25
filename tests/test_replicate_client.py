@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 import skyn3t.adapters.replicate as rep_mod
 from skyn3t.adapters.replicate import DEFAULT_MODEL, ReplicateClient, coloring_prompt
 from skyn3t.config.settings import Settings

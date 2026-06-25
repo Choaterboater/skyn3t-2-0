@@ -13,14 +13,14 @@ wire in a real prompt; the default is deny (fail-closed).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Awaitable, Callable
+from enum import StrEnum
 
 from skyn3t.config.settings import Settings, get_settings
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     NEEDS_APPROVAL = "needs_approval"

@@ -30,7 +30,7 @@ from skyn3t.intelligence.skill_library import _stack_aliases
 from skyn3t.studio.planner import detect_stack as plan_detect_stack
 from skyn3t.studio.planner import file_checklist
 from skyn3t.studio.proof_run import _NODE_STACKS, proof_run
-from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS, _COLLAPSE
+from skyn3t.studio.stack_selector import _COLLAPSE, REAL_BUILDER_STACKS
 
 
 # ---- 1. planner vocabulary -----------------------------------------------

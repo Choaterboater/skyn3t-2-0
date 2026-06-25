@@ -12,7 +12,6 @@ from skyn3t.persistence.checkpoint import CheckpointManager
 from skyn3t.persistence.recovery import RecoveryManager
 from skyn3t.web.websockets import ConnectionHub
 
-
 # --- bug 1: JS import path traversal ---------------------------------------
 
 def test_js_import_escaping_root_is_flagged_broken(tmp_path):
@@ -39,6 +38,7 @@ def test_js_import_inside_root_still_resolves(tmp_path):
 
 def test_events_restored_counts_only_valid_events(tmp_path):
     import json as _json
+
     from skyn3t.core.events import EventType
 
     mgr = CheckpointManager(_dir=tmp_path)

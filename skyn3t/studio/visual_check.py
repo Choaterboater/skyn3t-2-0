@@ -12,8 +12,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from skyn3t.core.events import EventType
 
@@ -129,6 +130,7 @@ def make_vision_fn(settings: Any) -> VisionFn | None:
 
         def _vision_fn(image_path: str, prompt: str) -> str:
             import httpx
+
             from skyn3t.adapters.llm import OPENROUTER_URL
             body = {"model": model,
                     "messages": _vision_messages(_image_data_url(image_path), prompt),

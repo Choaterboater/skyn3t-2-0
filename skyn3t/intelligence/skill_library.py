@@ -377,7 +377,7 @@ _SEED_SKILLS = [
 ]
 
 
-def seed_default_skills(library: "SkillLibrary") -> int:
+def seed_default_skills(library: SkillLibrary) -> int:
     """Add the built-in starter skills the library doesn't already have."""
     added = 0
     for title, stack, body, tags in _SEED_SKILLS:

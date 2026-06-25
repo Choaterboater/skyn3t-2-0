@@ -126,7 +126,7 @@ class Cortex:
         if decision == "apply":
             self.store.set_status(prop.id, ProposalStatus.APPROVED, reason="auto-approved (safe)")
             await self._emit_decided(prop)
-            return await self.apply(prop.id)
+            return await self.apply(prop.id) or prop
         # "hold" — leave pending for a later/manual decision.
         return prop
 

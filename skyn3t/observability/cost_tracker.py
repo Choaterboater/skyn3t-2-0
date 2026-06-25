@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Optional
+from typing import Any
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.observability.metrics import MetricsRegistry, get_metrics
@@ -55,7 +55,7 @@ class CostTracker:
     """Attribution layer over the LLM ``BudgetTracker``."""
 
     settings: Settings = field(default_factory=get_settings)
-    budget: Optional[Any] = None  # an LLMClient.budget (BudgetTracker)
+    budget: Any | None = None  # an LLMClient.budget (BudgetTracker)
     metrics: MetricsRegistry = field(default_factory=get_metrics)
     # build_id -> {"cost_usd": float, "tokens": int, "started": float}
     _builds: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -65,7 +65,7 @@ class CostTracker:
     _claimed_call_ids: set[int] = field(default_factory=set)
 
     @classmethod
-    def from_llm(cls, llm: Any, settings: Settings | None = None) -> "CostTracker":
+    def from_llm(cls, llm: Any, settings: Settings | None = None) -> CostTracker:
         return cls(settings=settings or get_settings(), budget=getattr(llm, "budget", None))
 
     def attach(self, llm: Any) -> None:

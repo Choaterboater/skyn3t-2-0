@@ -5,7 +5,6 @@ from __future__ import annotations
 from skyn3t.core.orchestrator import classify_error
 from skyn3t.studio.stack_selector import _extract_json
 
-
 # --- #3 classify_error word-boundary (no more '500' inside '1500') ----------
 
 def test_numeric_substring_is_not_transient():

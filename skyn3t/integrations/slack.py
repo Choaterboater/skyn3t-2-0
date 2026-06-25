@@ -12,15 +12,15 @@ import asyncio
 import json
 import urllib.parse
 import urllib.request
-from typing import Any, Optional
+from typing import Any
 
+from skyn3t.core.events import EventBus
 from skyn3t.integrations.channels import (
     Channel,
     InboundMessage,
     SubmitFn,
     env_token,
 )
-from skyn3t.core.events import EventBus
 
 try:  # optional heavy dep
     from slack_sdk.web.async_client import AsyncWebClient as _SlackClient  # type: ignore
@@ -36,9 +36,9 @@ class SlackChannel(Channel):
 
     def __init__(
         self,
-        event_bus: Optional[EventBus] = None,
-        submit_fn: Optional[SubmitFn] = None,
-        config: Optional[dict[str, Any]] = None,
+        event_bus: EventBus | None = None,
+        submit_fn: SubmitFn | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(event_bus=event_bus, submit_fn=submit_fn, config=config)
         self.bot_token = self.config.get("token") or env_token(
@@ -60,7 +60,7 @@ class SlackChannel(Channel):
         return await self.route_inbound(msg)
 
     @staticmethod
-    def parse_event(payload: dict[str, Any]) -> Optional[InboundMessage]:
+    def parse_event(payload: dict[str, Any]) -> InboundMessage | None:
         """Convert a Slack Events API or slash-command payload to InboundMessage."""
         if not payload:
             return None

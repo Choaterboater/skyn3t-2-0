@@ -6,14 +6,10 @@ from __future__ import annotations
 import asyncio
 import json
 import warnings
-from types import SimpleNamespace
-
-import pytest
 
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.intelligence.debate import _parse_vote
-
 
 # --- debate: invalid votes must not silently become a vote for proposals[0] --
 
@@ -38,7 +34,7 @@ def _docker_settings(**over):
 
 
 def test_sandbox_hardening_adds_workdir_tmpfs(tmp_path):
-    from skyn3t.security.sandbox import SandboxRunner, SandboxResult
+    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
 
     runner = SandboxRunner(settings=_docker_settings())
     captured = {}

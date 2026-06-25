@@ -16,10 +16,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-
-from skyn3t.agents import _verify_common as vc
 
 
 def extract_planned_files(payload: dict[str, Any]) -> list[str]:

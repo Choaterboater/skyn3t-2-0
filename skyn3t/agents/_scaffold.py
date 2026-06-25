@@ -11,7 +11,7 @@ No I/O happens here — these are pure functions returning dicts of strings.
 from __future__ import annotations
 
 import re as _re
-from typing import Callable
+from collections.abc import Callable
 
 # ---- README composition ------------------------------------------------------
 # A single composer drives every stack's README so each delivered app ships a

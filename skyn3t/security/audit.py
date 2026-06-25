@@ -48,16 +48,23 @@ class AuditLog:
             self.path = get_settings().logs_dir / "audit.jsonl"
         self.path = Path(self.path)
 
+    @property
+    def _path(self) -> Path:
+        if self.path is None:
+            self.path = get_settings().logs_dir / "audit.jsonl"
+        return Path(self.path)
+
     # ---- internals -------------------------------------------------------
     def _tail_hash(self) -> str:
         if self._last_hash is not None:
             return self._last_hash
-        if not self.path.exists():
+        path = self._path
+        if not path.exists():
             self._last_hash = _GENESIS
             return self._last_hash
         last = _GENESIS
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
+            with path.open("r", encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -98,17 +105,19 @@ class AuditLog:
             prev = self._tail_hash()
             digest = _hash_record(prev, body)
             record = {**body, "prev": prev, "hash": digest}
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as fh:
+            path = self._path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, default=str) + "\n")
             self._last_hash = digest
         return record
 
     def read(self, limit: int | None = None) -> list[dict[str, Any]]:
-        if not self.path.exists():
+        path = self._path
+        if not path.exists():
             return []
         out: list[dict[str, Any]] = []
-        with self.path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:

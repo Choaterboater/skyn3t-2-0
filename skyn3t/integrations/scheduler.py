@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from skyn3t.core.events import EventBus, EventType
 
@@ -42,7 +43,7 @@ _DOW = {
 }
 
 
-def _parse_time(text: str) -> Optional[tuple[int, int]]:
+def _parse_time(text: str) -> tuple[int, int] | None:
     """Extract (hour, minute) from a phrase like '9am', '6:30pm', '14:00'."""
     m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
     if not m:
@@ -59,7 +60,7 @@ def _parse_time(text: str) -> Optional[tuple[int, int]]:
     return None
 
 
-def parse_nl_schedule(text: str) -> Optional[str]:
+def parse_nl_schedule(text: str) -> str | None:
     """Translate a natural-language schedule into a 5-field cron expression.
 
     Returns the cron string, or None if it could not be parsed. If ``text``
@@ -193,7 +194,7 @@ class ScheduledJob:
     cron: str
     fn: JobFn
     nl: str = ""
-    last_run_minute: Optional[str] = None  # "YYYY-MM-DDTHH:MM" guard vs double-fire
+    last_run_minute: str | None = None  # "YYYY-MM-DDTHH:MM" guard vs double-fire
     enabled: bool = True
     runs: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -202,11 +203,11 @@ class ScheduledJob:
 class CronScheduler:
     """Async NL-cron scheduler with a pure-Python tick fallback."""
 
-    def __init__(self, event_bus: Optional[EventBus] = None, tick_seconds: float = 30.0) -> None:
+    def __init__(self, event_bus: EventBus | None = None, tick_seconds: float = 30.0) -> None:
         self.event_bus = event_bus
         self.tick_seconds = max(1.0, float(tick_seconds))
         self._jobs: dict[str, ScheduledJob] = {}
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._running = False
 
     # ---- registration ----------------------------------------------------
@@ -227,14 +228,14 @@ class CronScheduler:
     def remove(self, job_id: str) -> bool:
         return self._jobs.pop(job_id, None) is not None
 
-    def get(self, job_id: str) -> Optional[ScheduledJob]:
+    def get(self, job_id: str) -> ScheduledJob | None:
         return self._jobs.get(job_id)
 
     def jobs(self) -> list[ScheduledJob]:
         return list(self._jobs.values())
 
     # ---- next-run helper -------------------------------------------------
-    def next_run(self, job_id: str, after: Optional[datetime] = None) -> Optional[datetime]:
+    def next_run(self, job_id: str, after: datetime | None = None) -> datetime | None:
         job = self._jobs.get(job_id)
         if job is None:
             return None
@@ -253,7 +254,7 @@ class CronScheduler:
         return None
 
     # ---- lifecycle -------------------------------------------------------
-    async def tick(self, now: Optional[datetime] = None) -> list[str]:
+    async def tick(self, now: datetime | None = None) -> list[str]:
         """Evaluate all jobs once; fire any whose cron matches ``now``.
 
         Returns the list of fired job ids. Each minute fires a job at most once.

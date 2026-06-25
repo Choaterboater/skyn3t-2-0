@@ -39,11 +39,9 @@ class DesignerAgent(BaseAgent):
         self.add_capability(AgentCapability(
             name="design", description="Produce a lightweight UI design spec",
             tags=("generative", "design", "ui")))
-        self.llm = llm
+        self.llm = llm or LLMClient()
 
     async def initialize(self) -> None:
-        if self.llm is None:
-            self.llm = LLMClient()
         self.metadata["backend"] = self.llm.backend
 
     async def execute(self, task: TaskRequest) -> TaskResult:

@@ -5,7 +5,6 @@ async service functions are exercised directly with a SimpleNamespace state."""
 from __future__ import annotations
 
 import asyncio
-import json
 import socket
 from pathlib import Path
 from types import SimpleNamespace

@@ -24,11 +24,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from skyn3t.agents import _verify_common as vc
+from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-from skyn3t.config.settings import get_settings
-
-from skyn3t.agents import _verify_common as vc
 
 # --- reward-hacking heuristics ------------------------------------------------
 
@@ -171,8 +170,10 @@ class BuildVerifierAgent(BaseAgent):
         stack = vc.detect_stack(root, payload)
 
         # Reward-hardening gate runs FIRST: never green a gamed project.
-        prior = payload.get("prior") if isinstance(payload.get("prior"), dict) else {}
-        code_out = prior.get("code") if isinstance(prior.get("code"), dict) else {}
+        raw_prior = payload.get("prior")
+        prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
+        raw_code_out = prior.get("code")
+        code_out: dict[str, Any] = raw_code_out if isinstance(raw_code_out, dict) else {}
         claimed = {**code_out}
         claimed.update({k: payload.get(k) for k in ("success", "score", "tests_passed", "log", "details") if k in payload})
         # The real code stage emits {files_written, worktree_dir, stack, files,
@@ -256,11 +257,16 @@ class BuildVerifierAgent(BaseAgent):
     def _dry_check(self, root: Path, stack: str) -> bool:
         if vc.non_empty_source_count(root) == 0:
             return False
-        if stack == "node":
+        if (root / "package.json").is_file():
             try:
-                json.loads(vc.safe_read(root / "package.json") or "")
+                pkg = json.loads(vc.safe_read(root / "package.json") or "")
             except (json.JSONDecodeError, ValueError):
                 return False
+            if isinstance(pkg, dict):
+                from skyn3t.studio.proof_run import _invalid_npm_package_names
+
+                if _invalid_npm_package_names(pkg):
+                    return False
         return True
 
     async def _compile_python(self, root: Path) -> tuple[bool, str]:
@@ -286,13 +292,13 @@ class BuildVerifierAgent(BaseAgent):
             )
             try:
                 out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 # Reap the killed child / drain pipes so repeated timeouts (npm
                 # install/build at 300s) don't accumulate zombies + open FDs.
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
-                except (asyncio.TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
+                except (TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
                     pass
                 return False, f"command timed out after {timeout}s: {' '.join(cmd)}"
             text = (out or b"").decode("utf-8", errors="replace")

@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 
 from skyn3t.studio.stack_selector import (
-    REAL_BUILDER_STACKS, StackChoice, keyword_choice, select_stack,
+    REAL_BUILDER_STACKS,
+    keyword_choice,
+    select_stack,
 )
 
 

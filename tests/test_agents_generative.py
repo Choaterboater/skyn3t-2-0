@@ -6,10 +6,6 @@ CodeAgent emits a genuinely runnable scaffold (design rule #1).
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from skyn3t.agents._common import KNOWN_STACKS, detect_stack, parse_json, slugify
 from skyn3t.agents._scaffold import scaffold_for
 from skyn3t.agents.architect import ArchitectAgent

@@ -18,9 +18,10 @@ import asyncio
 import shlex
 import shutil
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 try:
     import structlog
@@ -278,7 +279,7 @@ class ExecutionBackend:
 
         try:
             out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 proc.kill()
             except Exception:  # noqa: BLE001
@@ -288,7 +289,7 @@ class ExecutionBackend:
             # bounds the drain in case communicate() hangs.
             try:
                 await asyncio.wait_for(proc.communicate(), timeout=5)
-            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            except (TimeoutError, Exception):  # noqa: BLE001
                 try:
                     await proc.wait()
                 except Exception:  # noqa: BLE001

@@ -459,7 +459,7 @@ class LLMClient:
             out, err = await asyncio.wait_for(
                 proc.communicate(), timeout=self.settings.cli_llm_timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("llm.cli_timeout", provider=provider, timeout=self.settings.cli_llm_timeout)
             await self._terminate(proc)  # don't orphan the CLI subprocess
             return self._stub(f"{provider}-cli", prompt, system, json_mode)
@@ -675,7 +675,7 @@ class LLMClient:
             except (ProcessLookupError, PermissionError, OSError):
                 proc.kill()  # fall back to single-process kill
             await asyncio.wait_for(proc.wait(), timeout=5)
-        except (asyncio.TimeoutError, ProcessLookupError):
+        except (TimeoutError, ProcessLookupError):
             pass
         except Exception:  # noqa: BLE001
             pass

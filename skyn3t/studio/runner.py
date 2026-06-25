@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -188,11 +189,12 @@ class StudioRunner:
         ``(tier, task_type)`` bucket the ``LearnedModelRouter`` later queries.
         """
         model = getattr(result, "model_id", None)
+        model_id = str(model) if model else ""
         meta = result.metadata or {}
         # Best-of-N records its own multi-model match upstream; don't double-count.
         if meta.get("best_of_n_recorded"):
             return
-        if not model and not meta.get("routes"):
+        if not model_id and not meta.get("routes"):
             return
         try:
             from skyn3t.intelligence.model_tournament import ModelTournament
@@ -230,7 +232,7 @@ class StudioRunner:
                 else:
                     tier, task_type = "", spec.agent_type
                 self._tournament.record_win(
-                    ModelTournament.bucket_key(tier, task_type), model,
+                    ModelTournament.bucket_key(tier, task_type), model_id,
                     losers=[], task_type=task_type, save=False)
                 seen.add("_")
             if seen:
@@ -436,15 +438,18 @@ class StudioRunner:
         Best-effort — never raises, never drops the keyword result."""
         if not brief:
             return advice, slugs
+        skills = self.skills
+        if skills is None:
+            return advice, slugs
         try:
             emb = self._skill_embedder()
             if emb is None:
                 return advice, slugs
             from skyn3t.intelligence.semantic_skills import relevant_skills
-            for sl in relevant_skills(self.skills.all(), brief, embedder=emb, k=3):
+            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=3):
                 if sl in slugs:
                     continue
-                sk = self.skills.get(sl)
+                sk = skills.get(sl)
                 if sk is None:
                     continue
                 slugs.append(sl)
@@ -714,7 +719,7 @@ class StudioRunner:
         return None
 
     @staticmethod
-    def _read_python_files(root: "Path") -> dict[str, str]:
+    def _read_python_files(root: Path) -> dict[str, str]:
         """Read the delivered python files so a real entrypoint can be wired."""
         out: dict[str, str] = {}
         try:
@@ -945,7 +950,7 @@ class StudioRunner:
         return proof
 
     # ---- self-improvement: capture lessons, record pattern, promote skill
-    def _distill_win_skill(self, manifest: "BuildManifest", plan: BuildPlan, project_dir: str) -> None:
+    def _distill_win_skill(self, manifest: BuildManifest, plan: BuildPlan, project_dir: str) -> None:
         """Author a new Skill from a genuine win — the factory GROWS its own.
 
         Idempotent per stack (slug-guarded) so repeated wins don't spam the
@@ -991,7 +996,7 @@ class StudioRunner:
 
     async def _record_learning(
         self,
-        manifest: "BuildManifest",
+        manifest: BuildManifest,
         plan: BuildPlan,
         skill_slugs: list[str],
         *,
@@ -1080,7 +1085,7 @@ class StudioRunner:
             return await asyncio.wait_for(
                 self.orchestrator.submit(task), timeout=self.stage_exec_timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return TaskResult(
                 task_id=task.task_id, success=False,
                 error=f"stage {spec.name} timed out after {self.stage_exec_timeout}s",

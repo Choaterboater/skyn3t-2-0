@@ -14,14 +14,12 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
+from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
-
-from skyn3t.agents import _verify_common as vc
 
 # Sentence-ish splitter for turning a brief into discrete acceptance criteria.
 _SPLIT = re.compile(r"[.\n;]|(?:\band\b)|(?:\bthen\b)")

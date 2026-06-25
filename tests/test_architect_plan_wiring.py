@@ -21,14 +21,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from skyn3t.agents.code_agent import CodeAgent
 from skyn3t.agents.contract_verifier import extract_planned_files
 from skyn3t.core.events import EventBus
-from skyn3t.studio.planner import BuildPlan, StageSpec
+from skyn3t.studio.planner import BuildPlan
 from skyn3t.studio.runner import StudioRunner
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -36,7 +33,6 @@ from skyn3t.studio.runner import StudioRunner
 
 def _make_plan(checklist: list[str] | None = None) -> BuildPlan:
     """Minimal planner BuildPlan with no stages and a basic checklist."""
-    from dataclasses import dataclass  # noqa: PLC0415
 
     plan = BuildPlan.__new__(BuildPlan)
     object.__setattr__(plan, "slug", "test-slug")

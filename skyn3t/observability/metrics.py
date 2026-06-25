@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover
 class _NoopMetric:
     """Accepts any metric call and does nothing."""
 
-    def labels(self, *args: Any, **kwargs: Any) -> "_NoopMetric":
+    def labels(self, *args: Any, **kwargs: Any) -> _NoopMetric:
         return self
 
     def inc(self, amount: float = 1.0) -> None:
@@ -61,10 +61,7 @@ class MetricsRegistry:
     def __init__(self, namespace: str = "skyn3t") -> None:
         self.enabled = _HAS_PROM
         self._ns = namespace
-        if _HAS_PROM:
-            self.registry = CollectorRegistry()
-        else:
-            self.registry = None
+        self.registry: Any = CollectorRegistry() if _HAS_PROM else None
         self._metrics: dict[str, Any] = {}
         self._build_standard()
 

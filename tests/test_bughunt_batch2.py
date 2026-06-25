@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import hashlib
 
-from skyn3t.cortex.components import _stable_hash
 from skyn3t.agents._scaffold import scaffold_for
-
+from skyn3t.cortex.components import _stable_hash
 
 # --- #1 ReviewWatcher dedupe uses a STABLE (sha256) hash, not builtin hash() --
 

@@ -195,7 +195,7 @@ class ReplicateClient:
             return [d for d in fetched if isinstance(d, (bytes, bytearray)) and d]
 
     async def _one_prediction(
-        self, client: "httpx.AsyncClient", model: str, prompt: str
+        self, client: httpx.AsyncClient, model: str, prompt: str
     ) -> list[str]:
         """Create one prediction and poll it to a terminal state. Returns the
         list of output image URLs (possibly empty). Never raises."""
@@ -251,7 +251,7 @@ class ReplicateClient:
             return urls
         return []
 
-    async def _fetch_image(self, client: "httpx.AsyncClient", url: str) -> bytes | None:
+    async def _fetch_image(self, client: httpx.AsyncClient, url: str) -> bytes | None:
         """Download one output image. Authorized (Replicate file URLs may need the
         token). Returns None on any failure — never raises."""
         try:

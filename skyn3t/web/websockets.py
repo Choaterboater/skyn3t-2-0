@@ -82,7 +82,7 @@ class ConnectionHub:
         )
         dead: list[tuple[str, Any]] = [
             (channel, ws)
-            for (channel, ws), r in zip(targets, results)
+            for (channel, ws), r in zip(targets, results, strict=False)
             if isinstance(r, Exception)
         ]
         if dead:
@@ -120,8 +120,9 @@ _WS_AUTH_SUBPROTOCOL = "skyn3t-bearer"
 
 def _ws_headers(ws: Any) -> dict[str, str]:
     raw = getattr(ws, "headers", None)
-    if hasattr(raw, "raw"):
-        return {k.decode().lower(): v.decode() for k, v in raw.raw}
+    raw_pairs = getattr(raw, "raw", None)
+    if raw_pairs is not None:
+        return {k.decode().lower(): v.decode() for k, v in raw_pairs}
     return {str(k).lower(): str(v) for k, v in dict(raw or {}).items()}
 
 
@@ -168,7 +169,7 @@ def build_ws_router(state: AppState, hub: ConnectionHub) -> Any:
 
     router = APIRouter()
 
-    async def _serve(ws: "WebSocket", channel: str) -> None:
+    async def _serve(ws: WebSocket, channel: str) -> None:
         if not _ws_authorized(state, ws):
             await ws.close(code=4401)
             return
@@ -197,15 +198,15 @@ def build_ws_router(state: AppState, hub: ConnectionHub) -> Any:
             await hub.remove(channel, ws)
 
     @router.websocket("/ws")
-    async def _ws_all(ws: "WebSocket") -> None:
+    async def _ws_all(ws: WebSocket) -> None:
         await _serve(ws, "all")
 
     @router.websocket("/ws/swarm")
-    async def _ws_swarm(ws: "WebSocket") -> None:
+    async def _ws_swarm(ws: WebSocket) -> None:
         await _serve(ws, "swarm")
 
     @router.websocket("/ws/proposals")
-    async def _ws_proposals(ws: "WebSocket") -> None:
+    async def _ws_proposals(ws: WebSocket) -> None:
         await _serve(ws, "proposals")
 
     return router

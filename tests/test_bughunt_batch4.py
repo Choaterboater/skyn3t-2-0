@@ -11,7 +11,6 @@ from skyn3t.intelligence.model_tournament import ModelStats, ModelTournament
 from skyn3t.intelligence.skill_library import SkillLibrary
 from skyn3t.web.routes import render_prometheus
 
-
 # --- #14 Prometheus: HELP/TYPE at most once per metric family ----------------
 
 def test_event_count_emits_one_type_line():

@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from skyn3t.agents.stack_detector import StackDetector
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
@@ -21,8 +23,6 @@ from skyn3t.rag.repo_map import get_repo_map
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.proof_run import proof_run
 from skyn3t.worktree import cleanup_worktree, create_worktree, list_files, merge_back
-
-import structlog
 
 _log = structlog.get_logger(__name__)
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +23,7 @@ MANIFEST_FILENAME = "skyn3t_manifest.json"
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass(slots=True)
@@ -86,7 +86,7 @@ class BuildManifest:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "BuildManifest":
+    def from_dict(cls, d: dict[str, Any]) -> BuildManifest:
         stages = [StageRecord(**s) for s in d.get("stages", [])]
         kwargs = {k: v for k, v in d.items() if k != "stages"}
         kwargs["stages"] = stages
@@ -104,7 +104,7 @@ class BuildManifest:
         return path
 
     @classmethod
-    def load(cls, project_dir: str | Path) -> "BuildManifest | None":
+    def load(cls, project_dir: str | Path) -> BuildManifest | None:
         path = Path(project_dir) / MANIFEST_FILENAME
         if not path.exists():
             return None

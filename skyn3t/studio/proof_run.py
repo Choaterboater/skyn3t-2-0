@@ -203,7 +203,13 @@ def _unresolved_python_imports(root: Path) -> list[str]:
                     if not _module_resolves(root, node.module):
                         out.append(f"{f.relative_to(root)} -> from {node.module}")
     seen: set[str] = set()
-    return [x for x in out if not (x in seen or seen.add(x))][:10]
+    unique: list[str] = []
+    for item in out:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique[:10]
 
 
 def _guarded_import_nodes(tree: ast.AST) -> set[int]:
@@ -446,10 +452,47 @@ _KNOWN_NPM_VERSIONS = {
 def _pkg_name(spec: str) -> str:
     """Bare specifier -> npm package name ('react-dom/client'->'react-dom',
     '@scope/pkg/sub'->'@scope/pkg')."""
+    if spec.startswith("@/"):
+        return ""
     if spec.startswith("@"):
         parts = spec.split("/")
         return "/".join(parts[:2]) if len(parts) >= 2 else spec
     return spec.split("/")[0]
+
+
+def _invalid_npm_package_names(pkg: dict[str, Any]) -> list[str]:
+    """Declared dependency keys that npm will reject before install starts.
+
+    Path aliases such as ``@/components`` are valid import specifiers in a
+    configured app, but they are not npm package names and must never be written
+    into package.json dependencies.
+    """
+    invalid: list[str] = []
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        deps = pkg.get(key)
+        if not isinstance(deps, dict):
+            continue
+        for name in deps:
+            if not isinstance(name, str) or not name:
+                invalid.append(str(name))
+            elif name.startswith("@/") or name.startswith("/") or "\\" in name:
+                invalid.append(name)
+    return sorted(set(invalid))
+
+
+def _project_invalid_npm_package_names(root: Path) -> list[str]:
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    import json as _json
+
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return ["<package.json>"]
+    return _invalid_npm_package_names(pkg)
 
 
 def reconcile_npm_deps(root: str | Path) -> list[str]:
@@ -570,6 +613,14 @@ def proof_run(
     elif boot_error:
         passed = False
         detail["boot_error"] = boot_error
+
+    invalid_packages = _project_invalid_npm_package_names(pdir)
+    if invalid_packages:
+        passed = False
+        detail["invalid_package_names"] = invalid_packages
+        detail.setdefault("reason", "package.json declares invalid npm package names")
+        if "<package.json>" not in missing:
+            missing = [*missing, "<package.json>"]
 
     # Stack-aware artifact check (rule #3, stack-agnostic gap): the generic
     # entrypoint pass above accepts ANY recognised filename regardless of stack.
@@ -980,9 +1031,15 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     if npm is None or not pkg_path.exists():
         return (False, False, "npm or package.json missing — build skipped")
     try:
-        scripts = (_json.loads(pkg_path.read_text(encoding="utf-8")) or {}).get("scripts") or {}
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
     except (OSError, ValueError):
         return (False, False, "")
+    if not isinstance(pkg, dict):
+        return (True, False, "package.json is not an object")
+    invalid_names = _invalid_npm_package_names(pkg)
+    if invalid_names:
+        return (True, False, "invalid npm package names: " + ", ".join(invalid_names[:8]))
+    scripts = pkg.get("scripts") or {}
     build_cmd = "build" if "build" in scripts else ("typecheck" if "typecheck" in scripts else None)
     if build_cmd is None:
         return (False, False, "no build/typecheck script — skipped")
@@ -1000,6 +1057,9 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     except (subprocess.TimeoutExpired, OSError, ValueError):
         return (False, False, "npm install timed out/failed (offline?) — build skipped")
     if inst.returncode != 0:
+        out = ((inst.stdout or "") + (inst.stderr or "")).strip()
+        if "EINVALIDPACKAGENAME" in out or "Invalid package name" in out:
+            return (True, False, out[-700:])
         return (False, False, "npm install failed (offline?) — build skipped")
 
     try:

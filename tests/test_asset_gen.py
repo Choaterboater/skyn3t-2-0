@@ -6,9 +6,6 @@ is mocked (no network); the step itself is exercised end-to-end on disk.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
 
 from skyn3t.config.settings import Settings
 from skyn3t.studio.assets import (

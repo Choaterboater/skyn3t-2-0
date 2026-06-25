@@ -104,11 +104,9 @@ class WriterAgent(BaseAgent):
         self.add_capability(AgentCapability(
             name="documentation", description="Write project documentation / README",
             tags=("generative", "docs")))
-        self.llm = llm
+        self.llm = llm or LLMClient()
 
     async def initialize(self) -> None:
-        if self.llm is None:
-            self.llm = LLMClient()
         self.metadata["backend"] = self.llm.backend
 
     async def execute(self, task: TaskRequest) -> TaskResult:

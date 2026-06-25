@@ -15,8 +15,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from skyn3t.config.settings import Settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus

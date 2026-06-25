@@ -63,11 +63,9 @@ class ArchitectAgent(BaseAgent):
         self.add_capability(AgentCapability(
             name="architecture", description="Design the build plan and file list",
             tags=("generative", "planning")))
-        self.llm = llm
+        self.llm = llm or LLMClient()
 
     async def initialize(self) -> None:
-        if self.llm is None:
-            self.llm = LLMClient()
         self.metadata["backend"] = self.llm.backend
 
     async def execute(self, task: TaskRequest) -> TaskResult:

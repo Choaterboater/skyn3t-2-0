@@ -6,23 +6,20 @@ reward-hardening guard against a real temp project on disk.
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 from pathlib import Path
 
-import pytest
-
-from skyn3t.core.events import EventBus
-from skyn3t.core.agent import TaskRequest
-
-from skyn3t.agents.reviewer import ReviewerAgent, heuristic_score
-from skyn3t.agents.critic import CriticAgent, static_scan
-from skyn3t.agents.contract_verifier import ContractVerifierAgent, extract_planned_files
-from skyn3t.agents.build_verifier import BuildVerifierAgent, detect_reward_hacking
 from skyn3t.agents.boot_verifier import BootVerifierAgent
+from skyn3t.agents.build_verifier import BuildVerifierAgent, detect_reward_hacking
 from skyn3t.agents.consistency_reviewer import ConsistencyReviewerAgent
+from skyn3t.agents.contract_verifier import ContractVerifierAgent, extract_planned_files
+from skyn3t.agents.critic import CriticAgent, static_scan
 from skyn3t.agents.integration_verifier import IntegrationVerifierAgent
+from skyn3t.agents.reviewer import ReviewerAgent, heuristic_score
 from skyn3t.agents.test_author import TestAuthorAgent, derive_acceptance, render_test_file
+from skyn3t.core.agent import TaskRequest
+from skyn3t.core.events import EventBus
 
 
 def _good_project(tmp_path: Path) -> Path:
@@ -206,7 +203,7 @@ def test_test_author_derives_and_writes(tmp_path):
 
 def test_modules_import_without_side_effects():
     # importing the package modules must not require any heavy dep or network
-    import skyn3t.agents.reviewer  # noqa: F401
-    import skyn3t.agents.critic  # noqa: F401
     import skyn3t.agents.build_verifier  # noqa: F401
+    import skyn3t.agents.critic  # noqa: F401
+    import skyn3t.agents.reviewer  # noqa: F401
     assert True

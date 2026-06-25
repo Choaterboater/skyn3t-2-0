@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from skyn3t.studio.fanout import (
     FanCandidate,
     FanOutOutcome,
-    FanResult,
     autonomous_stacks,
     fan_out,
 )

@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from typing import Iterable, List, Sequence
+from collections.abc import Sequence
 
 try:  # optional heavy dependency
     from sentence_transformers import SentenceTransformer  # type: ignore
@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - exercised only when dep present
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text or "")]
 
 
@@ -78,10 +78,10 @@ class Embedder:
         return self.fallback_dim
 
     # -- encoding ----------------------------------------------------------
-    def embed(self, text: str) -> List[float]:
+    def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
 
-    def embed_batch(self, texts: Sequence[str]) -> List[List[float]]:
+    def embed_batch(self, texts: Sequence[str]) -> list[list[float]]:
         texts = list(texts)
         if not texts:
             return []
@@ -99,7 +99,7 @@ class Embedder:
         return [self._hash_embed(t) for t in texts]
 
     # -- deterministic fallback -------------------------------------------
-    def _hash_embed(self, text: str) -> List[float]:
+    def _hash_embed(self, text: str) -> list[float]:
         """Hashing-trick bag-of-words embedding, L2-normalized.
 
         Deterministic, offline, and good enough for cosine similarity over

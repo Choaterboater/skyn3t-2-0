@@ -6,7 +6,7 @@ and slow claude -p into its timeout, shipping a stub.
 
 from __future__ import annotations
 
-from skyn3t.agents._common import knowledge_block, _MAX_SKILL_ADVICE
+from skyn3t.agents._common import _MAX_SKILL_ADVICE, knowledge_block
 
 
 def test_huge_skill_advice_is_capped():

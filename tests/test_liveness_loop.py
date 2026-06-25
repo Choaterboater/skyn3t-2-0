@@ -3,8 +3,7 @@ import asyncio
 from types import SimpleNamespace
 
 import skyn3t.studio.liveness as lv
-from skyn3t.studio.liveness import (LivenessReport, RouteResult,
-                                    liveness_self_improve)
+from skyn3t.studio.liveness import LivenessReport, RouteResult, liveness_self_improve
 
 
 class _App:

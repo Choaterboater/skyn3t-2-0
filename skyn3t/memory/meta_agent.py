@@ -66,8 +66,12 @@ class MetaAgent:
     # ---- analysis --------------------------------------------------------
     async def analyze(self, task_limit: int = 100, build_limit: int = 50) -> list[Hypothesis]:
         """Inspect recent history and return improvement hypotheses (no emit)."""
-        tasks = await self._safe(lambda: self.store.recent_tasks(limit=task_limit)) or []
-        builds = await self._safe(lambda: self.store.recent_builds(limit=build_limit)) or []
+        if self.store is None:
+            tasks: list[Any] = []
+            builds: list[Any] = []
+        else:
+            tasks = await self._safe(lambda: self.store.recent_tasks(limit=task_limit)) or []
+            builds = await self._safe(lambda: self.store.recent_builds(limit=build_limit)) or []
 
         hyps: list[Hypothesis] = []
         hyps.extend(self._task_failure_hypotheses(tasks))

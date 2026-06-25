@@ -15,9 +15,7 @@ Three scenarios (all offline, no real DB):
 
 from __future__ import annotations
 
-import asyncio
 import pytest
-from types import SimpleNamespace
 
 from skyn3t.web.deps import AppState, BuildRecord
 from skyn3t.web.routes import approve_build

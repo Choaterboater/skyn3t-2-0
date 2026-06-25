@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from skyn3t.core.events import Event, EventBus, EventType
 from skyn3t.memory.consciousness import CollectiveConsciousness
 from skyn3t.memory.hygiene import LessonHygiene, effective_score, is_stale
@@ -69,7 +67,7 @@ def test_effective_score_and_staleness():
 
 class _FakeStore:
     def __init__(self, lessons):
-        self._lessons = {l["id"]: dict(l) for l in lessons}
+        self._lessons = {lesson["id"]: dict(lesson) for lesson in lessons}
         self.grades: list[tuple[int, bool]] = []
 
     async def relevant_lessons(self, stack, stage="", limit=5):

@@ -13,15 +13,15 @@ from __future__ import annotations
 import asyncio
 import json
 import urllib.request
-from typing import Any, Optional
+from typing import Any
 
+from skyn3t.core.events import EventBus
 from skyn3t.integrations.channels import (
     Channel,
     InboundMessage,
     SubmitFn,
     env_token,
 )
-from skyn3t.core.events import EventBus
 
 try:  # optional heavy dep
     import discord as _discord  # type: ignore
@@ -37,9 +37,9 @@ class DiscordChannel(Channel):
 
     def __init__(
         self,
-        event_bus: Optional[EventBus] = None,
-        submit_fn: Optional[SubmitFn] = None,
-        config: Optional[dict[str, Any]] = None,
+        event_bus: EventBus | None = None,
+        submit_fn: SubmitFn | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(event_bus=event_bus, submit_fn=submit_fn, config=config)
         self.bot_token = self.config.get("token") or env_token("DISCORD_BOT_TOKEN")
@@ -57,7 +57,7 @@ class DiscordChannel(Channel):
         return await self.route_inbound(msg)
 
     @staticmethod
-    def parse_interaction(payload: dict[str, Any]) -> Optional[InboundMessage]:
+    def parse_interaction(payload: dict[str, Any]) -> InboundMessage | None:
         """Convert a Discord interaction payload into an InboundMessage."""
         if not payload:
             return None

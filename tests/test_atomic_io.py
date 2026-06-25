@@ -3,8 +3,6 @@
 crash, no leftover temp files. BuildManifest.save must use it."""
 from __future__ import annotations
 
-import json
-
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.studio.manifest import BuildManifest
 

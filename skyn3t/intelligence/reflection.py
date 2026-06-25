@@ -143,7 +143,7 @@ class Reflector:
         return ref
 
     @staticmethod
-    def _suggestions(ref: "Reflection") -> list[dict[str, Any]]:
+    def _suggestions(ref: Reflection) -> list[dict[str, Any]]:
         """Conservative, safe tuning nudges the SelfTuningEngine can apply.
 
         Free-text findings are NOT mapped to specific numeric knobs (that would

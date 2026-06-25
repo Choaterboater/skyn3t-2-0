@@ -23,11 +23,9 @@ class BrainstormAgent(BaseAgent):
         self.add_capability(AgentCapability(
             name="brainstorm", description="Generate product ideas and MVP scope from a brief",
             tags=("generative", "planning")))
-        self.llm = llm
+        self.llm = llm or LLMClient()
 
     async def initialize(self) -> None:
-        if self.llm is None:
-            self.llm = LLMClient()
         self.metadata["backend"] = self.llm.backend
 
     async def execute(self, task: TaskRequest) -> TaskResult:

@@ -13,7 +13,7 @@ dashboard and replay can see what was sent where.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.integrations.channels import Channel, ChannelRegistry
@@ -25,7 +25,7 @@ class DeliveryResult:
     channel: str
     target: str
     ok: bool
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -59,8 +59,8 @@ class DeliveryGateway:
     def __init__(
         self,
         registry: ChannelRegistry,
-        event_bus: Optional[EventBus] = None,
-        secrets: Optional[SecretsStore] = None,
+        event_bus: EventBus | None = None,
+        secrets: SecretsStore | None = None,
     ) -> None:
         self.registry = registry
         self.event_bus = event_bus
@@ -95,7 +95,7 @@ class DeliveryGateway:
         await self._emit(res, text)
         return res
 
-    async def broadcast(self, text: str, targets: Optional[dict[str, str]] = None) -> DeliveryReport:
+    async def broadcast(self, text: str, targets: dict[str, str] | None = None) -> DeliveryReport:
         """Send ``text`` to every available channel. Best-effort, never raises.
 
         ``targets`` maps channel name -> reply target; falls back to

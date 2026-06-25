@@ -7,8 +7,6 @@ studio threads skills_advice + recall into the stage payload.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from skyn3t.agents._common import knowledge_block
 from skyn3t.intelligence.skill_library import SkillLibrary, seed_default_skills
 

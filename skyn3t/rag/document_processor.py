@@ -12,7 +12,6 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
 
 
 # Rough token estimate: ~4 chars/token. Cheap and deterministic.
@@ -30,7 +29,7 @@ _CODE_EXT = {
 _MD_EXT = {".md", ".markdown", ".rst"}
 
 
-def detect_kind(path: Optional[str], explicit: Optional[str] = None) -> str:
+def detect_kind(path: str | None, explicit: str | None = None) -> str:
     if explicit in {"text", "markdown", "code"}:
         return explicit  # type: ignore[return-value]
     if not path:
@@ -51,12 +50,12 @@ class Chunk:
     kind: str = "text"
     start_line: int = 0
     end_line: int = 0
-    metadata: Dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
         h = hashlib.blake2b(
-            f"{self.source}::{self.index}::{self.text}".encode("utf-8"),
+            f"{self.source}::{self.index}::{self.text}".encode(),
             digest_size=12,
         ).hexdigest()
         return h
@@ -85,8 +84,8 @@ class DocumentProcessor:
         self,
         text: str,
         source: str = "",
-        kind: Optional[str] = None,
-    ) -> List[Chunk]:
+        kind: str | None = None,
+    ) -> list[Chunk]:
         kind = detect_kind(source, kind)
         if not text or not text.strip():
             return []
@@ -96,7 +95,7 @@ class DocumentProcessor:
             return self._chunk_markdown(text, source)
         return self._chunk_text(text, source, kind="text")
 
-    def process_file(self, path: str) -> List[Chunk]:
+    def process_file(self, path: str) -> list[Chunk]:
         p = Path(path)
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -107,7 +106,7 @@ class DocumentProcessor:
     # -- internals ---------------------------------------------------------
     def _emit(
         self,
-        lines: List[str],
+        lines: list[str],
         start_line: int,
         source: str,
         kind: str,
@@ -124,15 +123,15 @@ class DocumentProcessor:
         )
 
     def _pack_lines(
-        self, lines: List[str], source: str, kind: str, line_offset: int = 0
-    ) -> List[Chunk]:
+        self, lines: list[str], source: str, kind: str, line_offset: int = 0
+    ) -> list[Chunk]:
         """Greedily pack lines into token-bounded chunks with line overlap.
 
         ``line_offset`` is the number of file lines preceding ``lines`` so chunk
         start/end line numbers stay file-relative when a section/block is packed
         in isolation (else every section restarts at line 1)."""
-        chunks: List[Chunk] = []
-        cur: List[str] = []
+        chunks: list[Chunk] = []
+        cur: list[str] = []
         cur_start = 1 + line_offset
         cur_tokens = 0
         line_no = 0
@@ -146,13 +145,13 @@ class DocumentProcessor:
                 chunks.append(self._emit(cur, cur_start, source, kind, idx))
                 idx += 1
                 # overlap: keep trailing lines worth ~overlap_tokens
-                keep: List[str] = []
+                keep: list[str] = []
                 kt = 0
-                for l in reversed(cur):
-                    lt2 = estimate_tokens(l) + 1
+                for kept_line in reversed(cur):
+                    lt2 = estimate_tokens(kept_line) + 1
                     if kt + lt2 > self.overlap_tokens:
                         break
-                    keep.insert(0, l)
+                    keep.insert(0, kept_line)
                     kt += lt2
                 cur = keep[:]
                 cur_start = line_no - len(keep)
@@ -163,14 +162,14 @@ class DocumentProcessor:
             chunks.append(self._emit(cur, cur_start, source, kind, idx))
         return chunks
 
-    def _wrap_long_lines(self, lines: List[str]) -> List[str]:
-        out: List[str] = []
+    def _wrap_long_lines(self, lines: list[str]) -> list[str]:
+        out: list[str] = []
         for line in lines:
             if estimate_tokens(line) + 1 <= self.max_tokens:
                 out.append(line)
                 continue
             words = line.split(" ")
-            cur: List[str] = []
+            cur: list[str] = []
             cur_tok = 0
             for w in words:
                 wt = estimate_tokens(w) + 1
@@ -184,14 +183,14 @@ class DocumentProcessor:
                 out.append(" ".join(cur))
         return out
 
-    def _chunk_text(self, text: str, source: str, kind: str) -> List[Chunk]:
+    def _chunk_text(self, text: str, source: str, kind: str) -> list[Chunk]:
         return self._pack_lines(text.splitlines(), source, kind)
 
-    def _chunk_markdown(self, text: str, source: str) -> List[Chunk]:
+    def _chunk_markdown(self, text: str, source: str) -> list[Chunk]:
         # Split on headings into sections, then pack each section.
         lines = text.splitlines()
-        sections: List[List[str]] = []
-        current: List[str] = []
+        sections: list[list[str]] = []
+        current: list[str] = []
         for line in lines:
             if _HEADING_RE.match(line) and current:
                 sections.append(current)
@@ -201,7 +200,7 @@ class DocumentProcessor:
         if current:
             sections.append(current)
 
-        chunks: List[Chunk] = []
+        chunks: list[Chunk] = []
         idx = 0
         offset = 0
         for sec in sections:
@@ -212,11 +211,11 @@ class DocumentProcessor:
             offset += len(sec)
         return chunks
 
-    def _chunk_code(self, text: str, source: str) -> List[Chunk]:
+    def _chunk_code(self, text: str, source: str) -> list[Chunk]:
         # Split on top-level symbol boundaries (def/class/function/...).
         lines = text.splitlines()
-        blocks: List[List[str]] = []
-        current: List[str] = []
+        blocks: list[list[str]] = []
+        current: list[str] = []
         for line in lines:
             is_boundary = bool(_CODE_BOUNDARY_RE.match(line)) and not line.startswith(
                 (" ", "\t")
@@ -229,7 +228,7 @@ class DocumentProcessor:
         if current:
             blocks.append(current)
 
-        chunks: List[Chunk] = []
+        chunks: list[Chunk] = []
         idx = 0
         offset = 0
         for blk in blocks:

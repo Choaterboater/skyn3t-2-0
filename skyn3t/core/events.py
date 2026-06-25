@@ -15,7 +15,7 @@ import uuid
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from enum import Enum
+from enum import StrEnum
 from time import time
 from typing import Any
 
@@ -26,7 +26,7 @@ log = structlog.get_logger(__name__)
 EventHandler = Callable[["Event"], Awaitable[None]]
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     # Task lifecycle
     TASK_SUBMITTED = "task.submitted"
     TASK_ROUTED = "task.routed"
@@ -145,7 +145,7 @@ class EventBus:
         results = await asyncio.gather(
             *(h(event) for h in handlers), return_exceptions=True
         )
-        for h, r in zip(handlers, results):
+        for h, r in zip(handlers, results, strict=False):
             if isinstance(r, Exception):
                 # A subscriber failing must not break the bus (design rule #6),
                 # but it must not fail invisibly either — log it so a

@@ -1,5 +1,5 @@
 # tests/test_liveness_enumerate.py
-from skyn3t.studio.liveness import enumerate_routes, Route
+from skyn3t.studio.liveness import Route, enumerate_routes
 
 
 def test_fastapi_routes(tmp_path):

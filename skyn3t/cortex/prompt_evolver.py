@@ -21,8 +21,9 @@ Import is side-effect free.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus
@@ -49,7 +50,7 @@ class PromptCandidate:
     parent: str | None = None
     notes: str = ""
 
-    def dominates(self, other: "PromptCandidate") -> bool:
+    def dominates(self, other: PromptCandidate) -> bool:
         # Single-objective here; extend with extra metrics for true Pareto.
         return self.score > other.score
 

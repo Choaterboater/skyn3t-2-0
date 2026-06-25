@@ -242,6 +242,8 @@ class LearningLoop:
         try:
             from skyn3t.core.events import EventType
 
+            if self.event_bus is None:
+                return
             await self.event_bus.emit(
                 EventType.LESSON_CAPTURED,
                 source="intelligence.learning_loop",

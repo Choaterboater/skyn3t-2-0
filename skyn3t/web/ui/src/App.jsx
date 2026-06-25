@@ -97,7 +97,10 @@ export default function App() {
           shrink below its content, so a wide table (e.g. Projects) pushes the
           whole page sideways instead of scrolling inside its own container. */}
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-8 py-8">
+        {/* Wide enough for data-dense tables (Projects' 10 cols) to use the
+            screen instead of stranding a big empty gutter and clipping the last
+            column; still capped so prose pages don't sprawl on ultrawide. */}
+        <div className="mx-auto max-w-screen-2xl px-8 py-8">
           <Suspense
             fallback={
               <div className="flex items-center gap-2 px-1 py-8 font-mono text-[11px] text-ash">

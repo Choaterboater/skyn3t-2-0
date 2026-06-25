@@ -1,21 +1,28 @@
-import React, { Suspense, useEffect, useRef } from "react";
+import React, { Suspense, useEffect, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
 import { PageHeader, Panel, PanelHead, Stat, Pill } from "../components/ui.jsx";
 
+// How many lessons captured this session light the brain to full heat. Small,
+// so a handful of lessons visibly warms the core rather than staying flat.
+const LESSONS_TO_FULL = 8;
+
 // A lightweight stand-in "brain": an icosahedron core wrapped in a wireframe
 // shell with orbiting synapse nodes. Pure r3f/three primitives — no asset
 // loading, so it builds and runs without external models.
 // Themed in SYNAPSE violet (the mind) with EMBER accents (active thought).
-function BrainMesh({ activity = 0.3 }) {
+function BrainMesh({ activity = 0, reduced = false }) {
   const core = useRef();
   const shell = useRef();
 
   useFrame((state, delta) => {
-    if (core.current) core.current.rotation.y += delta * 0.3;
+    if (reduced) return; // honor prefers-reduced-motion — hold still
+    // Spins faster the more it's learning, so motion itself reads as thought.
+    const spin = 0.18 + activity * 0.55;
+    if (core.current) core.current.rotation.y += delta * spin;
     if (shell.current) {
-      shell.current.rotation.y -= delta * 0.15;
+      shell.current.rotation.y -= delta * spin * 0.5;
       shell.current.rotation.x += delta * 0.05;
     }
   });
@@ -32,7 +39,7 @@ function BrainMesh({ activity = 0.3 }) {
     ]);
   }
 
-  const glow = 0.4 + Math.min(activity, 1) * 0.6;
+  const glow = 0.35 + Math.min(activity, 1) * 0.65;
 
   return (
     <group>
@@ -68,6 +75,14 @@ export default function Brain({ stream }) {
   // Hold the WebGL renderer so we can free its GPU context on unmount.
   const glRef = useRef(null);
 
+  // Honor prefers-reduced-motion: the 3D spin is JS-driven (useFrame), so the
+  // global CSS reduced-motion rule can't reach it — gate it here instead.
+  const [reduced] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+  );
+
   // Free the context when leaving the page. Without this, each visit leaks a
   // WebGL context; browsers cap them (~16) and force-lose old ones, which spams
   // "THREE.WebGLRenderer: Context Lost".
@@ -100,11 +115,12 @@ export default function Brain({ stream }) {
     )
   ).length;
 
-  const activity =
-    (data?.activity != null ? Number(data.activity) : 0) +
-    Math.min(learningEvents / 20, 1);
-
-  const hot = activity > 0.5;
+  // `data.activity` from /brain is a *cumulative* event counter (published_count),
+  // not a 0–1 level — feeding it to the glow pinned the core at max forever, so
+  // the page never reacted. Drive the glow from live learning this session
+  // instead, normalized to 0–1, so an idle brain rests and lessons heat it.
+  const activity = Math.min(learningEvents / LESSONS_TO_FULL, 1);
+  const hot = learningEvents > 0;
 
   return (
     <div>
@@ -114,21 +130,29 @@ export default function Brain({ stream }) {
         sub="Knowledge graph activity. The core glows as the swarm learns — synapses fire with every lesson captured."
         actions={
           <Pill tone={hot ? "ember" : "synapse"}>
-            {hot ? "thinking" : "at rest"}
+            {hot ? "learning" : "at rest"}
           </Pill>
         }
       />
 
-      <div className="mb-6 grid grid-cols-3 gap-4">
+      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat
           label="Documents"
           value={data?.documents ?? "—"}
           tone="synapse"
+          hint="builds remembered"
         />
         <Stat
           label="Lessons"
           value={data?.lessons ?? "—"}
           tone="synapse"
+          hint="learned the hard way"
+        />
+        <Stat
+          label="Agents"
+          value={data?.agents ?? "—"}
+          tone="synapse"
+          hint="minds in the swarm"
         />
         <Stat
           label="Learning events"
@@ -166,9 +190,22 @@ export default function Brain({ stream }) {
             <pointLight position={[5, 5, 5]} intensity={1.2} color="#A688FF" />
             <pointLight position={[-5, -3, -5]} intensity={0.6} color="#FF6A3D" />
             <Suspense fallback={null}>
-              <BrainMesh activity={activity} />
+              <BrainMesh activity={activity} reduced={reduced} />
             </Suspense>
           </Canvas>
+        </div>
+        {/* Give both states direction: tell the reader what the glow means and,
+            when idle, what would make it move — an empty state as invitation. */}
+        <div className="border-t border-hairline px-4 py-2.5 font-mono text-[11px] text-ash">
+          {hot ? (
+            <>
+              Core heating —{" "}
+              <span className="text-ember">{learningEvents}</span> lesson
+              {learningEvents !== 1 ? "s" : ""} captured this session.
+            </>
+          ) : (
+            "At rest. The core warms as the swarm captures lessons and updates the knowledge graph."
+          )}
         </div>
       </Panel>
     </div>

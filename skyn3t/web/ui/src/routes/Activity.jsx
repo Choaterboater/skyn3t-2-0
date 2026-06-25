@@ -39,7 +39,7 @@ export default function Activity({ stream }) {
       />
 
       <Panel className="overflow-hidden">
-        <div className="max-h-[70vh] overflow-y-auto">
+        <div className="max-h-[70vh] overflow-auto">
           {filtered.length === 0 ? (
             <Empty icon="≋">
               {filter ? "No events match this filter." : "Quiet forge. No events yet."}

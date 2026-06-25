@@ -173,6 +173,19 @@ class CodeImproverAgent(BaseAgent):
                          r"cannot find module|failed to resolve", text, re.I):
                 if (worktree / "package.json").is_file():
                     candidates.append("package.json")
+            # "X is not exported from '../lib/constants'" — a named export the
+            # module never defines. Route to that module so the repair adds the
+            # real export (e.g. the HVAC `services`/`companyInfo` data), instead
+            # of an unrelated entrypoint. The spec lacks an extension, so glob it.
+            for spec in re.findall(r"not exported from ['\"]([^'\"]+)['\"]", text):
+                tail = re.sub(r"^(?:@[\w-]*/|\.\.?/)+", "", spec.split("?")[0]).strip("/")
+                if not tail:
+                    continue
+                for ext in (".js", ".jsx", ".ts", ".tsx"):
+                    hits = sorted(worktree.glob(f"**/{tail}{ext}"))
+                    if hits:
+                        candidates.append(str(hits[0].relative_to(worktree)))
+                        break
         if candidates:
             return list(dict.fromkeys(candidates))
         # Default to known entrypoints that exist.

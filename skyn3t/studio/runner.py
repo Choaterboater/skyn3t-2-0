@@ -41,7 +41,12 @@ from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_inte
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
-from skyn3t.studio.proof_run import extract_error_gaps, proof_run, reconcile_npm_deps
+from skyn3t.studio.proof_run import (
+    extract_error_gaps,
+    proof_run,
+    reconcile_npm_deps,
+    scaffold_missing_imports,
+)
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
@@ -1567,6 +1572,15 @@ class StudioRunner:
             if added_deps:
                 manifest.extra["npm_deps_added"] = added_deps
                 log.info("runner.npm_deps_reconciled", added=added_deps)
+
+            # Scaffold minimal stubs for LOCAL imports whose target file was never
+            # generated (the recurring '@/components/ui/button -> Module not found'
+            # break) so the build resolves instead of hard-failing. A genuinely
+            # broken stub is still caught by the boot/liveness gate.
+            stubbed = scaffold_missing_imports(project_dir, stack=plan.stack)
+            if stubbed:
+                manifest.extra["imports_scaffolded"] = stubbed
+                log.info("runner.imports_scaffolded", files=stubbed)
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous

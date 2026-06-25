@@ -80,6 +80,16 @@ _DESIGN_DIRECTIVE = (
     "use emoji as icons or primary UI elements — use inline SVG or CSS shapes for icons. "
     "Avoid the unstyled create-react-app look."
 )
+# Config hygiene — keeps codegen from hardcoding API keys/endpoints. Reading
+# config through env/an accessor lets the post-build config surfacer detect it and
+# wire it to a generated Settings screen.
+_CONFIG_DIRECTIVE = (
+    "CONFIGURATION: never hardcode API keys, tokens, secrets or external endpoint "
+    "URLs. Read them from configuration — `import.meta.env.VITE_*` / `process.env.*` "
+    "for web/Node, `os.getenv(...)` for Python — with a sensible fallback. For a "
+    "web UI that needs user-supplied values (e.g. an API key), expose them via a "
+    "config module and a Settings screen the user can fill in, not literals in code."
+)
 # Stacks for which the design bar applies.
 _WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
@@ -325,6 +335,7 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
+            + f"{_CONFIG_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
         )
 

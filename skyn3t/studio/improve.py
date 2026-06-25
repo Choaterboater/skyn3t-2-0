@@ -135,10 +135,18 @@ class ImproveEngine:
             # so a real delivery is never reported as empty (design rule #1).
             if not delivered:
                 delivered = list_files(str(project_dir))
+            # Config surfacing: an improve goal may introduce a new API/setting.
+            # Re-detect from the goal + the (now edited) code, (re)generate the
+            # settings UI for any client keys, and verify wiring. Best-effort.
+            config_summary = await self._surface_config(project_dir, goal, stack, slug, cid)
+            if config_summary.get("files_written"):
+                delivered = list_files(str(project_dir))
+
             # Delivery already happened. A failure while recording history must NOT
             # relabel a successful deliver as 'failed' (no partial-result lie).
             try:
-                self._record_history(manifest, project_dir, goal, delivered, proof, stack, slug)
+                self._record_history(manifest, project_dir, goal, delivered, proof,
+                                     stack, slug, config_summary)
             except Exception as rec_exc:  # noqa: BLE001
                 _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
 
@@ -175,12 +183,30 @@ class ImproveEngine:
         err = "" if ok else str(getattr(result, "error", "") or "improver did not succeed")
         return files, ok, err
 
+    async def _surface_config(self, project_dir: Path, goal: str, stack: str,
+                              slug: str, cid: str) -> dict[str, Any]:
+        """Detect/generate/verify config for the edited project. Never raises."""
+        try:
+            from skyn3t.agents.config_ui_agent import apply_config
+
+            summary = apply_config(str(project_dir), goal, stack)
+        except Exception as exc:  # noqa: BLE001 - config surfacing never breaks improve
+            _log.warning("improve.config_surface_failed", slug=slug, error=str(exc))
+            return {}
+        await self._emit(EventType.CONFIG_CHECK,
+                         {"slug": slug, "stack": stack, **summary}, cid)
+        return summary
+
     def _record_history(self, manifest: BuildManifest | None, project_dir: Path,
                         goal: str, delivered: list[str], proof: Any,
-                        stack: str, slug: str) -> None:
+                        stack: str, slug: str,
+                        config_summary: dict[str, Any] | None = None) -> None:
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
         hist = man.extra.setdefault("improve_history", [])
         hist.append({"goal": goal, "files": len(delivered),
                      "proof_passed": bool(proof.passed), "score": float(proof.score)})
+        if config_summary:
+            man.extra["config_spec"] = config_summary.get("config_spec", {})
+            man.extra["config_wiring"] = config_summary.get("wiring", {})
         man.touch()
         man.save(project_dir)

@@ -16,6 +16,69 @@ import pytest
 from skyn3t.studio.proof_run import proof_run, reconcile_npm_deps
 
 
+# ---- npm install failure classification (offline soft-skip vs real defect) ---
+def test_npm_install_offline_classifier():
+    """Only genuine connectivity failures soft-skip; dependency defects are
+    real failures. This is the gate that decides if an un-installable tree can
+    still certify proof.passed=True."""
+    from skyn3t.studio.proof_run import _npm_install_is_offline
+
+    # genuine connectivity -> offline (soft-skip allowed)
+    for off in ("npm error code ENOTFOUND\ngetaddrinfo ENOTFOUND registry.npmjs.org",
+                "npm error network request to https://registry.npmjs.org failed",
+                "npm error code ECONNREFUSED", "npm error code ETIMEDOUT",
+                "npm error code EAI_AGAIN"):
+        assert _npm_install_is_offline(off) is True, off
+
+    # real dependency defects -> NOT offline (must hard-fail)
+    for real in ("npm error code ERESOLVE unable to resolve dependency tree",
+                 "npm error code E404 Not Found - GET https://registry.npmjs.org/bogus",
+                 "npm error code ETARGET No matching version found for @react-three/fiber@8.15.21",
+                 "npm error code EINVALIDPACKAGENAME Invalid package name"):
+        assert _npm_install_is_offline(real) is False, real
+
+
+def _node_proj(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "x", "dependencies": {"react": "^18.2.0"},
+        "scripts": {"build": "next build"},
+    }), encoding="utf-8")
+    return tmp_path
+
+
+def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
+    """ERESOLVE/E404/ETARGET install failures must return ran=True, ok=False so
+    proof.passed flips to False (was soft-skipped as 'offline')."""
+    import subprocess as _sp
+    import skyn3t.studio.proof_run as pr
+    _node_proj(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
+
+    class _CP:
+        def __init__(self, rc, out): self.returncode = rc; self.stdout = out; self.stderr = ""
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(
+        1, "npm error code ETARGET\nnpm error notarget No matching version found for @react-three/fiber@8.15.21"))
+
+    ran, ok, summary = pr._run_node_build(tmp_path, "nextjs", 120)
+    assert ran is True and ok is False, (ran, ok, summary)
+
+
+def test_run_node_build_offline_soft_skips(tmp_path, monkeypatch):
+    """A genuine ENOTFOUND connectivity failure stays a soft-skip (ran=False)."""
+    import subprocess as _sp
+    import skyn3t.studio.proof_run as pr
+    _node_proj(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
+
+    class _CP:
+        def __init__(self, rc, out): self.returncode = rc; self.stdout = out; self.stderr = ""
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(
+        1, "npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND"))
+
+    ran, ok, summary = pr._run_node_build(tmp_path, "nextjs", 120)
+    assert ran is False, (ran, ok, summary)
+
+
 def test_adds_only_undeclared_bare_imports(tmp_path):
     (tmp_path / "package.json").write_text(
         json.dumps({"name": "x", "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")

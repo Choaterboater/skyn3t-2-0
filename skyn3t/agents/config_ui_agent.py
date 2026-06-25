@@ -29,10 +29,13 @@ from skyn3t.core.events import EventBus
 from skyn3t.studio.config_spec import ConfigKey, ConfigSpec
 
 # Stacks that get a React settings component vs. a vanilla HTML settings page.
-_REACT_FAMILY = frozenset({"react", "react_vite", "vite", "nextjs", "next"})
+# Next.js is file-routed, so it needs the settings UI emitted as a real route
+# (app/settings/page.jsx), NOT an orphaned src/Settings.jsx nothing can reach.
+_NEXT_FAMILY = frozenset({"nextjs", "next"})
+_REACT_FAMILY = frozenset({"react", "react_vite", "vite"})
 _STATIC_FAMILY = frozenset({"static", "static_html", "html"})
 _OTHER_WEB = frozenset({"vue", "svelte", "astro", "remix"})
-_WEB_STACKS = _REACT_FAMILY | _STATIC_FAMILY | _OTHER_WEB
+_WEB_STACKS = _NEXT_FAMILY | _REACT_FAMILY | _STATIC_FAMILY | _OTHER_WEB
 
 
 def _keys_json(keys: list[ConfigKey]) -> str:
@@ -104,9 +107,7 @@ export default useConfig;
 """
 
 
-def _settings_jsx() -> str:
-    """A self-contained React Settings screen driven by CONFIG_KEYS."""
-    return """\
+_SETTINGS_JSX_BODY = """\
 import React, { useState } from 'react';
 import { CONFIG_KEYS, getConfig, setConfig } from './config.js';
 
@@ -160,6 +161,16 @@ export default function Settings() {
   );
 }
 """
+
+
+def _settings_jsx(config_import: str = "./config.js", *, use_client: bool = False) -> str:
+    """A self-contained React Settings screen driven by CONFIG_KEYS.
+
+    ``config_import`` sets the relative import path to the accessor; ``use_client``
+    prepends the Next.js App-Router directive (the component uses useState, which a
+    React Server Component cannot)."""
+    body = _SETTINGS_JSX_BODY.replace("from './config.js'", "from '" + config_import + "'")
+    return ("'use client';\n\n" + body) if use_client else body
 
 
 def _settings_html(config_path: str) -> str:
@@ -257,6 +268,11 @@ def generate_config_ui(project_dir: str | Path, stack: str, spec: ConfigSpec,
     if stack_l in _STATIC_FAMILY:
         write("config.js", _config_js(client_keys))
         write("settings.html", _settings_html("./config.js"))
+    elif stack_l in _NEXT_FAMILY:
+        # File-routed: emit a REAL /settings route (App Router) that resolves to a
+        # page, plus the accessor it imports — so it is actually reachable.
+        write("app/config.js", _config_js(client_keys))
+        write("app/settings/page.jsx", _settings_jsx("../config.js", use_client=True))
     elif stack_l in _REACT_FAMILY:
         write("src/config.js", _config_js(client_keys))
         write("src/Settings.jsx", _settings_jsx())
@@ -291,9 +307,20 @@ def check_config_wiring(project_dir: str | Path, spec: ConfigSpec) -> dict[str, 
     flags hardcoded http(s) URLs that should be configuration. Advisory: callers
     decide whether to act, so this never fails a build on its own."""
     root = Path(project_dir)
-    present = {p.name for p in root.rglob("*") if p.is_file()}
+    files_list = [p for p in root.rglob("*") if p.is_file()]
+    present = {p.name for p in files_list}
+    rel_posix = [p.relative_to(root).as_posix().lower() for p in files_list]
     accessor = any(n in present for n in _ACCESSOR_NAMES)
-    settings_ui = any(n in present for n in _SETTINGS_NAMES)
+    # A settings UI is a Settings component/page OR a file-routed settings route
+    # (Next.js app/settings/page.* or pages/settings.*) — name-only detection
+    # missed the latter and falsely reported "no settings UI".
+    settings_route = any(
+        rp.endswith(suffix)
+        for rp in rel_posix
+        for suffix in ("settings/page.jsx", "settings/page.tsx", "settings/page.js",
+                       "pages/settings.jsx", "pages/settings.tsx", "pages/settings.js")
+    )
+    settings_ui = any(n in present for n in _SETTINGS_NAMES) or settings_route
 
     hardcoded: list[str] = []
     if root.is_dir():
@@ -314,6 +341,26 @@ def check_config_wiring(project_dir: str | Path, spec: ConfigSpec) -> dict[str, 
                     seen.add(url)
                     hardcoded.append(url)
 
+    # Advisory: is the accessor actually IMPORTED by real app code (not just the
+    # Settings screen)? An accessor nothing imports is dead weight — surfaced for
+    # observability but NOT a gap (whether app code uses it is codegen's call, so
+    # we never fail a build on it).
+    accessor_imported = False
+    if accessor and root.is_dir():
+        for p in _iter_source(root):
+            relp = p.relative_to(root).as_posix().lower()
+            if (p.name in _SETTINGS_NAMES or p.name in _ACCESSOR_NAMES
+                    or "settings/page." in relp or relp.endswith("/settings.jsx")
+                    or relp.endswith("/settings.tsx") or relp.endswith("/settings.js")):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if "getConfig" in text or "useConfig" in text or "config.js'" in text or 'config.js"' in text:
+                accessor_imported = True
+                break
+
     client_needed = bool(spec.client_keys())
     gaps: list[str] = []
     if client_needed and not settings_ui:
@@ -326,6 +373,7 @@ def check_config_wiring(project_dir: str | Path, spec: ConfigSpec) -> dict[str, 
     return {
         "accessor_present": accessor,
         "settings_ui_present": settings_ui,
+        "accessor_imported": accessor_imported,
         "hardcoded_urls": hardcoded[:10],
         "gaps": gaps,
         "ok": not gaps,

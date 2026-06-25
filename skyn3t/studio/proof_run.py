@@ -486,6 +486,25 @@ def _invalid_npm_package_names(pkg: dict[str, Any]) -> list[str]:
     return sorted(set(invalid))
 
 
+# npm error signatures that mean the REGISTRY was unreachable (offline dev box),
+# as opposed to a real dependency defect. Only these soft-skip the build; every
+# other non-zero install (ERESOLVE peer conflicts, E404/ETARGET nonexistent
+# versions, EINVALIDPACKAGENAME) is a genuine, build-breaking failure.
+_OFFLINE_NPM_MARKERS = (
+    "ENOTFOUND", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH",
+    "ECONNRESET", "EHOSTUNREACH", "getaddrinfo", "network request to",
+    "request to https://registry", "socket hang up",
+)
+
+
+def _npm_install_is_offline(output: str) -> bool:
+    """True only for genuine connectivity/registry-unreachable failures, which
+    legitimately soft-skip the build. Dependency defects (ERESOLVE/E404/ETARGET/
+    EINVALIDPACKAGENAME) return False — they are real failures that must fail the
+    proof so the fix-loop gets the real error to repair."""
+    return any(m in (output or "") for m in _OFFLINE_NPM_MARKERS)
+
+
 def _project_invalid_npm_package_names(root: Path) -> list[str]:
     pkg_path = root / "package.json"
     if not pkg_path.is_file():
@@ -1051,22 +1070,29 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
         return (False, False, "no build/typecheck script — skipped")
 
     env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
-    # Install (bounded). A failure here is environmental (offline registry), not
-    # a code defect -> soft skip rather than fail the build.
-    install_budget = max(30, int(timeout * 0.6))
+    # Install (bounded). A non-zero install is a REAL, build-breaking failure
+    # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
+    # fix-loop sees the error. ONLY a genuine connectivity failure (offline
+    # registry) soft-skips. Floor the budget at 120s so a slow-but-valid install
+    # isn't starved into a false timeout.
+    install_budget = max(120, int(timeout * 0.6))
     try:
         inst = subprocess.run(
             [npm, "install", "--no-audit", "--no-fund", "--no-progress"],
             cwd=str(pdir), stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=install_budget, env=env,
         )
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        return (False, False, "npm install timed out/failed (offline?) — build skipped")
+    except subprocess.TimeoutExpired:
+        # A hang/too-slow install is a delivery problem, not a free pass.
+        return (True, False, f"npm install timed out after {install_budget}s")
+    except (OSError, ValueError):
+        # npm could not even be launched -> environmental, soft-skip.
+        return (False, False, "npm install could not be launched — build skipped")
     if inst.returncode != 0:
         out = ((inst.stdout or "") + (inst.stderr or "")).strip()
-        if "EINVALIDPACKAGENAME" in out or "Invalid package name" in out:
-            return (True, False, out[-700:])
-        return (False, False, "npm install failed (offline?) — build skipped")
+        if _npm_install_is_offline(out):
+            return (False, False, "npm install failed (offline registry) — build skipped")
+        return (True, False, out[-700:])
 
     try:
         bld = subprocess.run(

@@ -74,6 +74,25 @@ async def test_code_agent_writes_runnable_offline(tmp_path):
     assert "import App" in main
 
 
+async def test_degraded_flag_does_not_leak_across_builds(tmp_path):
+    """The singleton CodeAgent must not carry a prior build's `degraded` flag
+    into a fresh, clean build (it would force a false no_go + halved score)."""
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus)
+    await agent.start()
+    # Simulate a previous build having marked this singleton degraded.
+    agent.metadata["degraded"] = True
+    agent.metadata["degraded_reason"] = "prior build under-delivered"
+    task = TaskRequest(
+        type="codegen",
+        payload={"brief": "a react counter app", "slug": "counter2",
+                 "worktree_dir": str(tmp_path)},
+    )
+    result = await agent.run(task)
+    assert result.success
+    assert "degraded" not in result.output, result.output.get("degraded_reason")
+
+
 async def test_code_agent_python_cli(tmp_path):
     bus = EventBus()
     agent = CodeAgent(event_bus=bus)

@@ -60,14 +60,26 @@ log = structlog.get_logger(__name__)
 # included deliberately: SkyN3t's fastapi builds are web apps that serve a UI
 # and always have API/interface-design concerns; the design skills are advisory.
 _WEB_STACKS = frozenset({
-    "react", "react_vite", "nextjs", "static", "static_html",
-    "fastapi", "node_express", "express",
+    "react", "react_vite", "nextjs", "next", "astro", "remix",
+    "static", "static_html", "fastapi", "node_express", "express",
+})
+# Stacks that warrant design-skill injection but are NOT HTTP-served (so they
+# must not trigger the web liveness GET-/ probe). react_native renders UI but
+# boots in a simulator, not a localhost server.
+_DESIGN_STACKS = _WEB_STACKS | frozenset({"react_native"})
+
+# UI web stacks whose root '/' MUST render a page — used for the always-on
+# runtime gate. Excludes API-only stacks (fastapi/express) whose '/' may
+# legitimately 404, so we never falsely no_go a working API.
+_UI_WEB_STACKS = frozenset({
+    "react", "react_vite", "vite", "nextjs", "next",
+    "astro", "remix", "static", "static_html",
 })
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 
 
 def _web_design_tags(stack: str) -> list[str] | None:
-    return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _WEB_STACKS else None
+    return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _DESIGN_STACKS else None
 
 
 def _resolve_stack_pin(extra: dict) -> str:
@@ -623,6 +635,30 @@ class StudioRunner:
         critic = prior.get("critic") or {}
         return str(critic.get("verdict", "pass")) != "block"
 
+    @staticmethod
+    def _clamp_score_to_verdict(score: float, verdict: str) -> float:
+        """A non-'go' verdict is a failed delivery and must never carry a
+        success-looking score. Clamp to ≤49 so score=100+no_go can't happen and
+        the learning loop (graded on score) isn't trained backward by failures."""
+        return min(float(score), 49.0) if verdict != "go" else float(score)
+
+    @staticmethod
+    def _liveness_gate(verdict: str, stack: str, dead: int,
+                       dead_routes: list[str], broad_gate_on: bool) -> tuple[str, str | None]:
+        """Decide the post-liveness verdict from real route health.
+
+        Always-on (conservative): a UI web app whose ROOT '/' is dead after
+        repair does not serve a homepage — an unambiguous failed delivery. This
+        is scoped to UI stacks and the root only, so a 405/POST-only/SPA
+        sub-route never falsely fails a working app. The broad "any dead route"
+        gate stays opt-in via ``liveness_gates_verdict``."""
+        routes = dead_routes or []
+        if broad_gate_on and dead > 0:
+            return "no_go", f"{dead} route(s) dead: {', '.join(routes[:5])}"
+        if stack in _UI_WEB_STACKS and "/" in routes:
+            return "no_go", "root route '/' dead after repair — app does not serve a homepage"
+        return verdict, None
+
     async def _run_liveness(self, manifest, project_dir, plan, proof,
                             final_score: float, verdict: str):
         """Serve the delivered web app, check every route/page, repair failures,
@@ -655,11 +691,14 @@ class StudioRunner:
         if proof.passed and report.total:
             final_score = round(final_score * (0.5 + 0.5 * report.health), 2)
             manifest.score = final_score
-        # Opt-in hard gate: any route still dead after repair -> no_go.
-        if getattr(self.settings, "liveness_gates_verdict", False) and report.dead > 0:
-            verdict = "no_go"
-            manifest.extra["liveness_gate"] = (
-                f"{report.dead} route(s) dead: {', '.join(report.dead_routes[:5])}")
+        # Runtime gate: serve+probe decides the verdict. Always-on for a dead
+        # UI root '/'; the broad any-dead-route gate stays opt-in.
+        verdict, gate_reason = self._liveness_gate(
+            verdict, plan.stack, report.dead, report.dead_routes,
+            bool(getattr(self.settings, "liveness_gates_verdict", False)),
+        )
+        if gate_reason:
+            manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
 
     async def _surface_config(self, manifest, project_dir: str, plan: BuildPlan,
@@ -1669,6 +1708,10 @@ class StudioRunner:
             if plan.stack in _WEB_STACKS and getattr(self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
                     manifest, project_dir, plan, proof, final_score, verdict)
+            # Verdict is now fully settled (post-liveness): a no_go must not read
+            # like a success. Clamp before the score feeds lessons + _finalize.
+            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
 

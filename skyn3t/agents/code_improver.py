@@ -9,6 +9,7 @@ always makes a concrete, non-destructive change (design rules #1 and #6).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -25,6 +26,48 @@ _SYSTEM = (
     "rewrite the file to resolve them. Output ONLY the corrected file contents, "
     "no commentary, no markdown fences."
 )
+
+
+def _sanitize_package_json(content: str) -> str | None:
+    """Deterministically repair malformed dependency keys in package.json.
+
+    Trims a fixable leading/trailing space (' slick-carousel' -> 'slick-carousel'),
+    drops names that can't be made npm-legal (empty, internal whitespace). Returns
+    the rewritten JSON, or None when nothing needed fixing / not parseable — so a
+    valid file is never touched. This lets the fix-loop repair the dominant JS
+    failure class (EINVALIDPACKAGENAME) with no model round-trip.
+    """
+    try:
+        pkg = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(pkg, dict):
+        return None
+    changed = False
+    for section in ("dependencies", "devDependencies",
+                    "peerDependencies", "optionalDependencies"):
+        deps = pkg.get(section)
+        if not isinstance(deps, dict):
+            continue
+        rebuilt: dict[str, Any] = {}
+        for name, ver in deps.items():
+            if not isinstance(name, str):
+                changed = True
+                continue
+            trimmed = name.strip()
+            # Unfixable: empty, or internal whitespace a trim can't resolve.
+            if not trimmed or re.search(r"\s", trimmed):
+                changed = True
+                continue
+            if trimmed != name:
+                changed = True
+            rebuilt[trimmed] = ver
+        if rebuilt != deps:
+            pkg[section] = rebuilt
+            changed = True
+    if not changed:
+        return None
+    return json.dumps(pkg, indent=2) + "\n"
 
 
 class CodeImproverAgent(BaseAgent):
@@ -100,6 +143,10 @@ class CodeImproverAgent(BaseAgent):
 
     def _deterministic_fix(self, rel: str, content: str, stack: str) -> str:
         """Safe offline improvements that don't break a working file."""
+        if rel.endswith("package.json"):
+            sanitized = _sanitize_package_json(content)
+            if sanitized:
+                return sanitized
         if rel.endswith(".jsx") and "App" in rel and "export default" not in content:
             if re.search(r"function\s+App\b", content):
                 return content.rstrip() + "\n\nexport default App\n"
@@ -112,8 +159,15 @@ class CodeImproverAgent(BaseAgent):
         candidates: list[str] = []
         for g in gaps:
             text = g if isinstance(g, str) else str(g)
-            for m in re.findall(r"[\w./-]+\.(?:jsx|tsx|js|ts|py|css|html)", text):
+            for m in re.findall(r"[\w./-]+\.(?:jsx|tsx|js|ts|json|py|css|html)", text):
                 candidates.append(m)
+            # A dependency/install failure must route to package.json even when
+            # the gap text never names the file — otherwise the loop rewrites an
+            # unrelated source entrypoint and the same build error recurs.
+            if re.search(r"npm error|EINVALIDPACKAGENAME|ERESOLVE|ETARGET|E404|"
+                         r"Invalid package name|npm install|peer dep", text, re.I):
+                if (worktree / "package.json").is_file():
+                    candidates.append("package.json")
         if candidates:
             return list(dict.fromkeys(candidates))
         # Default to known entrypoints that exist.

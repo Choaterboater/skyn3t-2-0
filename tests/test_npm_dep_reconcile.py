@@ -87,6 +87,31 @@ def test_invalid_npm_dependency_names_fail_proof(tmp_path):
     assert "<package.json>" in res.missing
 
 
+def test_invalid_npm_names_catches_whitespace():
+    """npm rejects names with leading/trailing/internal spaces
+    (EINVALIDPACKAGENAME). The validator must flag them so a generated
+    `" slick-carousel"` never sails through the build verifier's dry check."""
+    from skyn3t.studio.proof_run import _invalid_npm_package_names
+
+    pkg = {
+        "dependencies": {
+            " slick-carousel": "^1.8.1",   # leading space (real codegen bug)
+            "react": "^18.2.0",            # valid -> not flagged
+            "@react-three/fiber": "8.0.0", # valid scoped -> not flagged
+        },
+        "devDependencies": {
+            "trailing ": "1.0.0",          # trailing space
+            "has space": "1.0.0",          # internal space
+        },
+    }
+    flagged = _invalid_npm_package_names(pkg)
+    assert " slick-carousel" in flagged
+    assert "trailing " in flagged
+    assert "has space" in flagged
+    assert "react" not in flagged
+    assert "@react-three/fiber" not in flagged
+
+
 def test_unknown_package_gets_latest(tmp_path):
     (tmp_path / "package.json").write_text('{"name":"x","dependencies":{}}', encoding="utf-8")
     (tmp_path / "a.jsx").write_text("import x from 'some-rare-pkg'\n", encoding="utf-8")

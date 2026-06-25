@@ -137,6 +137,43 @@ def test_build_verifier_degraded(tmp_path):
     assert "reward_hacking" in res.output
 
 
+def test_build_verifier_runs_real_build_for_nextjs(tmp_path, monkeypatch):
+    """A nextjs/react project must trigger the REAL npm install/build, not the
+    degraded dry check. Otherwise install-breaking codegen (hallucinated
+    versions, route conflicts, malformed deps) sails through as a false 'pass'
+    and the fix-loop never gets a failure to repair."""
+    import skyn3t.agents.build_verifier as bv
+
+    root = tmp_path / "web"
+    root.mkdir()
+    (root / "package.json").write_text(json.dumps({
+        "name": "web", "scripts": {"build": "next build"},
+        "dependencies": {"next": "14.2.3"},
+    }))
+    (root / "index.jsx").write_text("export default function H(){return null}\n")
+
+    # npm is "available" but every command fails (simulate a real install error).
+    monkeypatch.setattr(bv.shutil, "which",
+                        lambda x: "/usr/bin/npm" if x == "npm" else None)
+    calls = []
+
+    async def fake_run(self, cmd, cwd, timeout):
+        calls.append(list(cmd))
+        return False, "npm error code EINVALIDPACKAGENAME"
+
+    monkeypatch.setattr(bv.BuildVerifierAgent, "_run", fake_run)
+
+    agent = bv.BuildVerifierAgent(event_bus=EventBus())
+    res = _run(agent.run(TaskRequest(
+        type="verify_build",
+        payload={"worktree_dir": str(root), "stack": "nextjs"})))
+
+    assert res.success
+    assert any(c[:2] == ["npm", "install"] for c in calls), f"never ran npm install: {calls}"
+    assert res.output["ran_real_build"] is True
+    assert res.output["verdict"] == "fail"  # install failed -> honest fail, feeds fix-loop
+
+
 def test_boot_verifier_python(tmp_path):
     root = tmp_path / "py"
     root.mkdir()

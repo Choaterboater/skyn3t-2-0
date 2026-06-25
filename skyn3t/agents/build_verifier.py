@@ -228,7 +228,13 @@ class BuildVerifierAgent(BaseAgent):
         # We only run real builds inline here; docker backend is owned elsewhere.
         allow_real = backend in ("auto", "inline")
 
-        if stack == "node" and allow_real and shutil.which("npm"):
+        # Key the npm path on a real package.json, NOT the stack label. The label
+        # for a JS app is "nextjs"/"react"/"static"/"vite"/… — none of which is
+        # literally "node", so gating on stack=="node" silently sent every web
+        # build to the degraded dry check and the real `npm install`/build never
+        # ran (hallucinated versions + app/pages route conflicts slipped through
+        # as a false "pass"). package.json presence is the honest signal.
+        if (root / "package.json").is_file() and allow_real and shutil.which("npm"):
             ok, out = await self._run(["npm", "install", "--no-audit", "--no-fund"], root, timeout=300)
             if ok:
                 # build script optional — try it but don't hard-fail if absent

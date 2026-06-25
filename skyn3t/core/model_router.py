@@ -29,13 +29,17 @@ class Tier(str, Enum):
     DOCS = "docs"        # writer / documentation
 
 
-# Sensible free defaults (OpenRouter ":free" catalog).
+# Free defaults — a FALLBACK only. OpenRouter retires ":free" model IDs ~daily
+# (the old deepseek-*:free defaults started 404-ing, which silently degraded every
+# build to the offline scaffold). The router now self-heals from the LIVE catalog
+# (see _valid_free_model); these are the last-known-good ids used when the live
+# fetch is unavailable (offline).
 _FREE_DEFAULTS: dict[Tier, str] = {
-    Tier.CHEAP: "deepseek/deepseek-chat-v3.1:free",
-    Tier.UI: "deepseek/deepseek-chat-v3.1:free",
-    Tier.BACKEND: "deepseek/deepseek-chat-v3.1:free",
-    Tier.STRONG: "deepseek/deepseek-r1:free",
-    Tier.DOCS: "deepseek/deepseek-chat-v3.1:free",
+    Tier.CHEAP: "qwen/qwen3-coder:free",
+    Tier.UI: "qwen/qwen3-coder:free",
+    Tier.BACKEND: "qwen/qwen3-coder:free",
+    Tier.STRONG: "qwen/qwen3-next-80b-a3b-instruct:free",
+    Tier.DOCS: "qwen/qwen3-coder:free",
 }
 
 # Paid defaults used when free_only=0.
@@ -44,8 +48,46 @@ _PAID_DEFAULTS: dict[Tier, str] = {
     Tier.UI: "deepseek/deepseek-chat",
     Tier.BACKEND: "deepseek/deepseek-chat",
     Tier.STRONG: "deepseek/deepseek-r1",
-    Tier.DOCS: "deepseek/deepseek-chat-v3.1:free",
+    Tier.DOCS: "deepseek/deepseek-chat",
 }
+
+# When a configured :free model is no longer in the live catalog, substitute a
+# valid one preferring these markers per tier (best-for-purpose first).
+_FREE_TIER_PREFS: dict[Tier, tuple[str, ...]] = {
+    Tier.CHEAP: ("qwen3-coder", "coder", "qwen3", "llama-3.3", "deepseek", "qwen"),
+    Tier.UI: ("qwen3-coder", "coder", "qwen3", "llama-3.3", "deepseek", "qwen"),
+    Tier.BACKEND: ("qwen3-coder", "coder", "qwen3", "deepseek", "llama-3.3", "qwen"),
+    Tier.DOCS: ("qwen3-coder", "qwen3", "llama-3.3", "deepseek", "qwen"),
+    Tier.STRONG: ("qwen3-next", "llama-3.3-70b", "deepseek-r1", "qwen3", "deepseek", "qwen"),
+}
+
+# Live ":free" catalog cache (id list), refreshed at most every _LIVE_TTL seconds.
+_LIVE_FREE: dict[str, object] = {"ids": None, "at": 0.0}
+_LIVE_TTL = 3600.0
+
+
+def live_free_model_ids(timeout: float = 8.0) -> list[str]:
+    """Current OpenRouter ``:free`` model ids (cached). [] when unreachable so the
+    caller keeps the hardcoded fallback. Public endpoint — no API key needed."""
+    import time as _t
+    now = _t.time()
+    ids = _LIVE_FREE.get("ids")
+    if ids is not None and (now - float(_LIVE_FREE.get("at", 0.0))) < _LIVE_TTL:
+        return ids  # type: ignore[return-value]
+    fresh: list[str] = []
+    try:
+        import json as _j
+        import urllib.request as _u
+        req = _u.Request("https://openrouter.ai/api/v1/models",
+                         headers={"User-Agent": "skyn3t"})
+        data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
+        fresh = [m["id"] for m in data
+                 if isinstance(m.get("id"), str) and m["id"].endswith(":free")]
+    except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
+        log.warning("router.live_models_unavailable", error=str(exc)[:120])
+    _LIVE_FREE["ids"] = fresh
+    _LIVE_FREE["at"] = now
+    return fresh
 
 _CLAUDE_MARKERS = ("claude", "anthropic")
 
@@ -84,7 +126,28 @@ class ModelRouter:
             base = _FREE_DEFAULTS if self.settings.free_only else _PAID_DEFAULTS
             model = base[tier]
 
-        return self._apply_policy(model, tier)
+        model = self._apply_policy(model, tier)
+        # Self-heal a retired :free id against OpenRouter's LIVE catalog (only
+        # worth a fetch when an OpenRouter key is configured — otherwise the
+        # backend is claude/stub and the model id is unused).
+        if (self.settings.free_only and model.endswith(":free")
+                and str(getattr(self.settings, "openrouter_api_key", "") or "").strip()):
+            model = self._valid_free_model(model, tier)
+        return model
+
+    def _valid_free_model(self, model: str, tier: Tier) -> str:
+        """Substitute a live valid :free model when ``model`` was retired from the
+        catalog (OpenRouter rotates these ~daily). Returns ``model`` unchanged when
+        the live list is unknown (offline) or still contains it."""
+        live = live_free_model_ids()
+        if not live or model in live:
+            return model
+        for marker in _FREE_TIER_PREFS.get(tier, ()):  # best-for-tier first
+            for m in live:
+                if marker in m.lower():
+                    log.info("router.free_model_substituted", tier=tier.value, was=model, now=m)
+                    return m
+        return live[0]
 
     def _apply_policy(self, model: str, tier: Tier) -> str:
         low = model.lower()

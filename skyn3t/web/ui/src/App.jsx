@@ -43,16 +43,22 @@ export default function App() {
 
   return (
     <div className="flex h-full min-h-screen">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-hairline bg-panel/40 px-4 py-5">
-        {/* wordmark */}
-        <div className="mb-7 px-2">
-          <div className="flex items-baseline gap-2">
+      {/* Collapses to an icon rail below lg so data-dense pages (Projects) get
+          back ~176px instead of being cramped by a fixed 240px sidebar. The
+          nav glyphs carry the rail; labels return when there's room. */}
+      <aside className="flex w-16 shrink-0 flex-col border-r border-hairline bg-panel/40 px-2 py-5 lg:w-60 lg:px-4">
+        {/* wordmark — full on wide, monogram on the rail */}
+        <div className="mb-7 lg:px-2">
+          <div className="hidden items-baseline gap-2 lg:flex">
             <span className="font-display text-xl font-bold tracking-tight text-bone">
               SKY<span className="text-ember">N3T</span>
             </span>
             <span className="badge border-hairline text-ash">v2.0</span>
           </div>
-          <div className="eyebrow mt-1">Autonomous Foundry</div>
+          <div className="text-center font-display text-lg font-bold tracking-tight text-bone lg:hidden">
+            S<span className="text-ember">N</span>
+          </div>
+          <div className="eyebrow mt-1 hidden lg:block">Autonomous Foundry</div>
         </div>
 
         <nav className="flex flex-1 flex-col gap-0.5">
@@ -60,29 +66,37 @@ export default function App() {
             <NavLink
               key={item.to}
               to={item.to}
+              title={item.label}
               className={({ isActive }) =>
-                `nav-link relative ${isActive ? "nav-link-active" : ""}`
+                `nav-link relative justify-center lg:justify-start ${
+                  isActive ? "nav-link-active" : ""
+                }`
               }
             >
               <span className="w-4 text-center opacity-70">{item.glyph}</span>
-              {item.label}
+              <span className="hidden lg:inline">{item.label}</span>
             </NavLink>
           ))}
         </nav>
 
-        {/* forge status */}
-        <div className="mt-4 flex items-center justify-between border-t border-hairline px-2 pt-3">
+        {/* forge status — dot always; details when there's room */}
+        <div className="mt-4 flex items-center justify-center gap-2 border-t border-hairline pt-3 lg:justify-between lg:px-2">
           <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${ws.dot}`} />
-            <span className={`font-mono text-[11px] ${ws.cls}`}>ws · {ws.label}</span>
+            <span className={`h-2 w-2 rounded-full ${ws.dot}`} title={`ws · ${ws.label}`} />
+            <span className={`hidden font-mono text-[11px] lg:inline ${ws.cls}`}>
+              ws · {ws.label}
+            </span>
           </div>
-          <span className="font-mono text-[11px] text-ash">
+          <span className="hidden font-mono text-[11px] text-ash lg:inline">
             {stream.events?.length || 0} evt
           </span>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto">
+      {/* min-w-0: without it a flex child keeps min-width:auto and refuses to
+          shrink below its content, so a wide table (e.g. Projects) pushes the
+          whole page sideways instead of scrolling inside its own container. */}
+      <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-6xl px-8 py-8">
           <Suspense
             fallback={

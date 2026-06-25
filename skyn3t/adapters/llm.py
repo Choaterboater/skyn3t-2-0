@@ -721,6 +721,12 @@ class LLMClient:
             # "" so the contract "text is always a str" holds (matches the CLI path)
             # and downstream len()/json parsing never hits None.
             text = data["choices"][0]["message"]["content"] or ""
+            # OpenRouter models wrap structured output in a ```json fence; the CLI
+            # path strips it (see _cli_complete) but this one didn't — so the
+            # reviewer/intent/critic json.loads silently failed and the whole
+            # scoring brain went dark on the OpenRouter backend. Strip it here too.
+            if json_mode:
+                text = _strip_code_fences(text)
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             log.warning("llm.openrouter_malformed", error=str(exc)[:160])
             return self._stub(model, prompt, system, json_mode)

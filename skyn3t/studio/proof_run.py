@@ -78,7 +78,13 @@ def _import_resolves(importer: Path, spec: str, root: Path) -> bool:
     """
     for c in _import_candidates(importer, spec):
         try:
-            if c.exists():
+            # is_file (not exists): a bare DIRECTORY satisfies exists() but isn't an
+            # importable module, so `import X from './components/Header'` would
+            # falsely resolve when only ./components/Header/Header.module.css exists
+            # and the component was dropped — the exact half-build the gate must
+            # catch. The index candidates (Header/index.jsx) are real files and
+            # still resolve a dir-with-index.
+            if c.is_file():
                 return True
         except OSError:
             return True

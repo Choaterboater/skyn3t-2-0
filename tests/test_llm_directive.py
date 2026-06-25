@@ -42,3 +42,12 @@ def test_default_model_is_cheap_not_claude_not_free():
     # Guard the chosen default: not a Claude model (cost), not a :free id (retired).
     assert "claude" not in _OPENROUTER_DEFAULT_MODEL.lower()
     assert ":free" not in _OPENROUTER_DEFAULT_MODEL
+
+
+def test_llm_directive_mandates_server_side_proxy():
+    # The hardened directive: the call lives behind the app's own /api/llm route,
+    # and the key must never reach the browser.
+    p = _prompt("react")
+    assert "/api/llm" in p
+    assert "NEVER" in p
+    assert "client-exposed prefix" in p.lower()  # forbids VITE_/NEXT_PUBLIC_ on the key

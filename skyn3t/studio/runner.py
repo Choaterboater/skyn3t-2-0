@@ -643,6 +643,33 @@ class StudioRunner:
         return min(float(score), 49.0) if verdict != "go" else float(score)
 
     @staticmethod
+    def _verifiers_gate(prior: dict) -> tuple[bool, str | None]:
+        """Consume the objective-verifier verdicts the gate previously ignored.
+
+        Returns (ok, reason). Blocks ONLY on a verifier's REAL failure so a
+        degraded/offline verifier never false-fails a build (the swarm's caution):
+        - verify_build: a real install/build that actually ran and failed, OR a
+          reward-hacking-suspected (gamed/empty) project. An offline 'dry' fail
+          does NOT block.
+        - verify_boot: a real Python import/boot smoke that ran and failed (web
+          'structural' boot is advisory-only — proof_run already covers entries)."""
+        vb = prior.get("verify_build") if isinstance(prior, dict) else None
+        if isinstance(vb, dict) and str(vb.get("verdict", "")).lower() == "fail":
+            reward = vb.get("reward_hacking") or {}
+            if vb.get("ran_real_build") is True:
+                return False, "verify_build: real build failed — " + str(vb.get("details", ""))[:120]
+            if reward.get("suspicious"):
+                return False, "verify_build: reward-hacking suspected — " + "; ".join(
+                    [str(f) for f in (reward.get("flags") or [])][:3])
+        vboot = prior.get("verify_boot") if isinstance(prior, dict) else None
+        if isinstance(vboot, dict) and str(vboot.get("verdict", "")).lower() == "fail":
+            # Only a real run (python import / node boot) is a hard signal; the
+            # web path is structural and overlaps proof_run's entry checks.
+            if str(vboot.get("mode", "")).lower() in ("import", "python", "node", "boot"):
+                return False, "verify_boot: entrypoint failed to boot — " + str(vboot.get("details", ""))[:120]
+        return True, None
+
+    @staticmethod
     def _liveness_gate(verdict: str, stack: str, dead: int,
                        dead_routes: list[str], broad_gate_on: bool) -> tuple[str, str | None]:
         """Decide the post-liveness verdict from real route health.
@@ -1281,6 +1308,12 @@ class StudioRunner:
         if extra.get("build_id"):
             manifest.build_id = str(extra["build_id"])
         manifest.status = "running"
+        # Stamp the owning process so startup reconciliation can tell a genuinely
+        # orphaned 'running' row (dead owner) from a live concurrent build (#25).
+        import os as _os
+        import socket as _socket
+        manifest.extra["owner_pid"] = _os.getpid()
+        manifest.extra["owner_host"] = _socket.gethostname()
         manifest.extra["clarification"] = clar.to_dict()
         manifest.extra["stack_selection"] = {
             "method": choice.method, "stack": choice.stack,
@@ -1666,11 +1699,17 @@ class StudioRunner:
             # issues but don't let manufactured/truncation-driven "blocks" flip a
             # verified-running app to no_go.
             critic_gate = critic_ok or not bool(getattr(self.settings, "critic_gates_verdict", False))
+            # Consume the objective-verifier verdicts (previously recorded but
+            # never gated): a real build failure or a reward-hacked/un-bootable
+            # delivery blocks. Offline/degraded verifiers never false-fail here.
+            verifiers_ok, verifier_reason = self._verifiers_gate(prior)
+            if not verifiers_ok:
+                manifest.extra["verifier_gate"] = verifier_reason
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
                     and substantive and has_entry and intent_ok and critic_gate
-                    and not scaffold_stub and not code_degraded)
+                    and verifiers_ok and not scaffold_stub and not code_degraded)
                 else "no_go"
             )
             # Don't let the learning loop reward an under-delivered build (only

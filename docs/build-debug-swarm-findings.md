@@ -2,7 +2,21 @@
 
 ## 0. Implementation Status (2026-06-25, branch `fix/build-pipeline-debug-swarm`)
 
-**FIXED (14, all TDD'd; full suite green):**
+### Second pass (deferred tail revisited — all TDD'd):
+- #4 (full)/#21/#26 — verdict now **consumes verifier verdicts** (`runner._verifiers_gate`): a real build failure, a reward-hacked/empty project, or a real python/node boot failure blocks; degraded/offline verifiers never false-fail.
+- #22 — react_native scaffold no longer ships an **unrunnable jest test** or claims a `test` script it can't run.
+- #27 — `consistency_reviewer` stack branches now match real families (was dead).
+- #28 — `_ENTRY_NAMES` includes Next.js App Router entries (`page.*`/`layout.*`) so the dead-code check works on app-router apps (additive/safe; alias bypass left intentional).
+- #25 — `reconcile_orphaned_builds` now interrupts only **dead-owner** running rows (pid+host liveness), preserving live concurrent builds (was a blanket clobber).
+
+### Still deferred (genuine regression risk / large feature):
+- #5 execute JS/TS tests — node test runners lack pytest's clean "no tests" exit code, so a subtly-wrong generated test would false-fail valid builds; the substance-exclusion fallback can push test-heavy apps under the floor.
+- #8/#9 registry version resolution — network in the build hot path = flakiness; covered reactively by #1+#3.
+- #13 (full) rewrite generated app env reads — invasive edits to LLM-authored code; route reachability already fixed via #14.
+- #23 behavioral acceptance tests — requires LLM-generated behavioral assertions (large); current test is honestly labeled "documented", not "verified".
+- #29/#35 LLM config detection — needs a fragile sync↔async bridge for low value; keyword fallback covers common services.
+
+### First pass — FIXED (14, all TDD'd; full suite green):
 - #1 `proof_run._run_node_build` — non-zero npm install now fails the proof; only genuine connectivity soft-skips (`_npm_install_is_offline`). +#15 install-timeout hard-fail.
 - #3/#11 `code_improver` — fix-loop targets & deterministically sanitizes `package.json`.
 - #7/#16 `code_agent._normalize_nextjs_router` (content-preserving) + `architect` App-Router/.jsx directive.
@@ -15,16 +29,7 @@
 - #24 `check_config_wiring` — advisory `accessor_imported` signal.
 - #4 user-harm resolved via #1 (verdict reflects real installability).
 
-**DEFERRED, with reason (do-no-harm — each risks a regression or needs design):**
-- #5 execute JS/TS tests — flaky jsdom/canvas false-fails.
-- #8/#9 registry version resolution — network flakiness in build hot path; covered reactively by #1+#3.
-- #21/#26/#27 + #4-stage-deletion — verifier-verdict consumption rewiring; swarm warned not to blindly AND raw verdicts (regresses offline builds).
-- #25 orphan-build reconcile — needs session-token/heartbeat schema; tz-naive `created_at`.
-- #28 path-alias dead-code bypass — bypass is intentional (resolver is alias-blind); removing it false-fails alias apps.
-- #22 react_native unrunnable jest test — entangled with reward-hacking detector + tsc-exclude + contract test + RN install weight; no clean minimal fix.
-- #23 behavior-free acceptance test — skip band-aid trips the reward-hacking detector.
-- #13 (app env-read rewrite) — route part done via #14; full rewrite of generated code too invasive.
-- #29/#35 keyword-only config detection — needs a sync↔async LLM bridge; keyword fallback already works.
+(For the second-pass fixes — #4-full/#21/#22/#25/#26/#27/#28 — and the remaining deferred set with reasons, see the top of §0.)
 
 ## 1. Executive Summary
 

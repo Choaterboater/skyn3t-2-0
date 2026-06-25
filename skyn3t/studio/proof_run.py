@@ -243,6 +243,11 @@ def _guarded_import_nodes(tree: ast.AST) -> set[int]:
 # we skip projects with path aliases (we can't trace aliased imports reliably).
 _ENTRY_NAMES = frozenset({
     "App.jsx", "App.tsx", "main.jsx", "main.tsx", "index.jsx", "index.tsx",
+    # Next.js App Router entries — every app/**/page.* and app/**/layout.* is a
+    # real route entry, so the reachability tracer must start from them too
+    # (else app-router components looked "unwired"). Additive: only widens what
+    # counts as reachable, never narrows it.
+    "page.jsx", "page.tsx", "layout.jsx", "layout.tsx",
 })
 
 

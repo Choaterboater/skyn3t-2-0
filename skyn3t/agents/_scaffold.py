@@ -608,8 +608,7 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
             '    "start": "expo start",\n'
             '    "android": "expo start --android",\n'
             '    "ios": "expo start --ios",\n'
-            '    "typecheck": "tsc --noEmit",\n'
-            '    "test": "jest"\n'
+            '    "typecheck": "tsc --noEmit"\n'
             "  },\n"
             '  "dependencies": {\n'
             '    "expo": "~51.0.0",\n'
@@ -650,10 +649,7 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
             '    "esModuleInterop": true,\n'
             '    "skipLibCheck": true\n'
             "  },\n"
-            # Exclude the Jest test from the typecheck proof: it uses Jest globals
-            # (describe/it/expect) with no @types/jest, which made `tsc --noEmit`
-            # fail and every react_native build read no_go. The test still ships.
-            '  "exclude": ["node_modules", "__tests__"]\n'
+            '  "exclude": ["node_modules"]\n'
             "}\n"
         ),
         "babel.config.js": (
@@ -717,17 +713,6 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
             "  label: { color: '#fff', fontSize: 16 },\n"
             "});\n"
         ),
-        "__tests__/App.test.tsx": (
-            "import { Counter } from '../src/components/Counter';\n\n"
-            "// A lightweight smoke test: the component is a function and accepts\n"
-            "// the documented props. (Full render tests need @testing-library/\n"
-            "// react-native, which we keep out of the offline scaffold.)\n"
-            "describe('Counter', () => {\n"
-            "  it('is a renderable component function', () => {\n"
-            "    expect(typeof Counter).toBe('function');\n"
-            "  });\n"
-            "});\n"
-        ),
         ".gitignore": "node_modules/\n.expo/\ndist/\nweb-build/\n*.log\n",
         "README.md": compose_readme(
             title,
@@ -751,7 +736,6 @@ def _react_native_expo(app_name: str, brief: str) -> dict[str, str]:
                 ("package.json", "Dependencies and npm scripts (start, ios, android, typecheck)"),
                 ("tsconfig.json", "TypeScript config (extends expo/tsconfig.base)"),
                 ("babel.config.js", "Babel preset for Expo"),
-                ("__tests__/App.test.tsx", "Smoke test for the Counter component"),
             ],
             features=[
                 "Cross-platform iOS + Android from one codebase via Expo",

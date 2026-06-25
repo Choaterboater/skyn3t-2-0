@@ -65,9 +65,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # Remix (Vite): the manifest, the root document, and the index route.
     "remix": ("README.md", "package.json", "app/root.tsx", "app/routes/_index.tsx"),
     # Expo mobile app: the manifest (package.json), the Expo config (app.json),
-    # the root screen (App.tsx) and a test. No index.html — mobile has no DOM
-    # root and cannot be iframe-previewed like the web stacks.
-    "react_native": ("README.md", "package.json", "app.json", "App.tsx", "__tests__/App.test.tsx"),
+    # and the root screen (App.tsx). No index.html — mobile has no DOM root and
+    # cannot be iframe-previewed like the web stacks. (No jest test in the
+    # checklist — the scaffold ships no jest runner, so scoring one was theater.)
+    "react_native": ("README.md", "package.json", "app.json", "App.tsx"),
     "express": ("README.md", "package.json", "src/index.js", "test/app.test.js"),
     # CLI/python: a runnable root ``main.py`` (synthesized if the codegen only
     # produced a package) + a manifest + README. Tests are scored as substance,

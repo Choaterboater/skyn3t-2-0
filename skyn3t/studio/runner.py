@@ -1453,6 +1453,26 @@ class StudioRunner:
                     manifest, plan, project_dir, proof, correlation_id, extra
                 )
 
+            # Final delivery guard: a dangling LOCAL stylesheet can survive the
+            # fix-loop (the per-attempt stub runs against the PRIOR proof, then the
+            # improver rewrites files, so a stylesheet import present only at the
+            # final re-proof is never stubbed — e.g. a slice's redundant
+            # `import './App.css'`). Stub it in the DELIVERED tree and re-verify
+            # ONCE so the shipped app has no boot-breaking stylesheet import. Runs
+            # last, so nothing in the loop can undo it.
+            if not proof.passed and (getattr(proof, "detail", None) or {}).get("unresolved_imports"):
+                if self._stub_dangling_stylesheets(project_dir, proof):
+                    manifest.files = list_files(project_dir)
+                    proof = await asyncio.to_thread(
+                        proof_run, project_dir, checklist=plan.checklist,
+                        execution_backend=self.settings.execution_backend, stack=plan.stack,
+                        run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                        test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                        run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                        build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                    )
+                    manifest.extra["proof"] = proof.to_dict()
+
             # Re-score the DELIVERED tree. The reviewer/critic/verifier stages ran
             # on the pre-merge worktree BEFORE the fix loop, so a *stale* verdict
             # (e.g. the reviewer stage never ran, or it passed but the proof later

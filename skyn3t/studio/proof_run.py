@@ -118,6 +118,167 @@ def _unresolved_local_imports(root: Path) -> list[str]:
     return out
 
 
+# Parses `import Default, * as NS, { A, B as C } from 'spec'` capturing the names.
+_IMPORT_NAMES_RE = re.compile(
+    r"""import\s+"""
+    r"""(?:(?P<default>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
+    r"""(?:\*\s+as\s+(?P<ns>[A-Za-z_$][\w$]*)\s*)?"""
+    r"""(?:\{(?P<named>[^}]*)\}\s*)?"""
+    r"""from\s*['"](?P<spec>[^'"]+)['"]""",
+    re.MULTILINE,
+)
+# Common UI component name -> semantic HTML element, so a stub renders REAL,
+# usable markup (a stub Button is an actual <button>, not an empty div).
+_HTML_FOR = {
+    "button": "button", "input": "input", "textarea": "textarea", "select": "select",
+    "label": "label", "form": "form", "link": "a", "anchor": "a", "img": "img",
+    "image": "img", "nav": "nav", "navbar": "nav", "header": "header", "footer": "footer",
+    "section": "section", "badge": "span", "chip": "span", "list": "ul", "table": "table",
+}
+
+
+def _alias_map(root: Path) -> dict[str, list[Path]]:
+    """alias prefix ('@/') -> base dirs, from jsconfig/tsconfig ``paths``."""
+    import json
+    out: dict[str, list[Path]] = {}
+    for name in ("tsconfig.json", "jsconfig.json"):
+        p = root / name
+        if not p.is_file():
+            continue
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        co = cfg.get("compilerOptions") or {}
+        base = co.get("baseUrl") or "."
+        for pat, targets in (co.get("paths") or {}).items():
+            if not isinstance(targets, list) or not pat.endswith("/*"):
+                continue
+            dirs = [root / base / (t[:-1] if t.endswith("/*") else t) for t in targets
+                    if isinstance(t, str)]
+            if dirs:
+                out.setdefault(pat[:-1], dirs)   # '@/*' -> '@/'
+        if out:
+            break
+    return out
+
+
+def _local_import_base(importer: Path, spec: str, aliases: dict[str, list[Path]]) -> Path | None:
+    """On-disk base path (no extension) for a LOCAL (relative or aliased) import,
+    or None for a bare npm package."""
+    spec = spec.split("?", 1)[0].split("#", 1)[0]
+    if spec.startswith("."):
+        return importer.parent / spec
+    for prefix, dirs in aliases.items():
+        if spec.startswith(prefix) and dirs:
+            return dirs[0] / spec[len(prefix):]
+    return None
+
+
+def _base_resolves(base: Path) -> bool:
+    for ext in ("", *_RESOLVE_EXTS):
+        cand = base if not ext else base.with_name(base.name + ext)
+        try:
+            if cand.is_file():
+                return True
+        except OSError:
+            return True
+    for ext in _RESOLVE_EXTS:
+        try:
+            if (base / f"index{ext}").is_file():
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _make_import_stub(spec: str, default: str | None, ns: str | None, named: list[str]) -> str:
+    """A minimal but valid React/JS module satisfying the requested imports.
+    Components (PascalCase) render a sensible semantic element forwarding props +
+    children; hooks (useX) return {}; other utilities return ''. Uses
+    React.createElement (no JSX) so the file is valid as .js/.jsx/.ts/.tsx."""
+    last = spec.rstrip("/").rsplit("/", 1)[-1].lower()
+    default_el = _HTML_FOR.get(last, "div")
+    lines = [
+        "// Auto-scaffolded by SkyN3t: the imported module was missing, so this",
+        "// minimal stub lets the build resolve. Replace with a real implementation.",
+        "import React from 'react';",
+        "",
+    ]
+
+    def component(name: str, el: str) -> str:
+        return (f"export function {name}(props) {{\n"
+                f"  const {{ children, ...rest }} = props || {{}};\n"
+                f"  return React.createElement('{el}', rest, children);\n"
+                f"}}")
+
+    def utility(name: str) -> str:
+        if name.startswith("use") and name[3:4].isupper():
+            return f"export function {name}() {{ return {{}}; }}"
+        return f"export const {name} = (...args) => '';"
+
+    if default:
+        lines.append(f"function {default}(props) {{\n"
+                     f"  const {{ children, ...rest }} = props || {{}};\n"
+                     f"  return React.createElement('{default_el}', rest, children);\n}}")
+        lines.append(f"export default {default};")
+    for raw in named:
+        nm = raw.strip().split(" as ")[-1].strip()
+        if not nm:
+            continue
+        if nm[:1].isupper():
+            lines.append(component(nm, _HTML_FOR.get(nm.lower(), default_el)))
+        else:
+            lines.append(utility(nm))
+    if ns:
+        lines.append(f"const {ns} = {{}};")
+        lines.append(f"export default {ns};" if not default else f"export const {ns} = {{}};")
+    if not default and not named and not ns:
+        lines.append("export {};")  # side-effect import
+    return "\n".join(lines) + "\n"
+
+
+def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
+    """Generate minimal stubs for LOCAL imports (relative or '@/' aliased) whose
+    target file does not exist — the recurring 'codegen imports a component it
+    never created' break (e.g. '@/components/ui/button' -> Module not found). The
+    stub renders real markup so the app builds AND runs; a genuinely broken stub
+    is still caught downstream by the boot/liveness gate. Returns paths written."""
+    root = Path(root)
+    aliases = _alias_map(root)
+    ts = (root / "tsconfig.json").is_file()
+    written: list[str] = []
+    planned: set[Path] = set()
+    for f in _iter_files(root):
+        if f.suffix not in _JS_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in _IMPORT_NAMES_RE.finditer(text):
+            spec = m.group("spec")
+            base = _local_import_base(f, spec, aliases)
+            if base is None or _base_resolves(base):
+                continue
+            named = [n for n in (m.group("named") or "").split(",") if n.strip()]
+            # Component-ish (any PascalCase default/named) -> .jsx/.tsx, else util.
+            comp = bool(m.group("default")) or any(n.strip()[:1].isupper() for n in named)
+            ext = (".tsx" if ts else ".jsx") if comp else (".ts" if ts else ".js")
+            stub = base.with_name(base.name + ext)
+            if stub in planned or stub.exists():
+                continue
+            content = _make_import_stub(spec, m.group("default"), m.group("ns"), named)
+            try:
+                stub.parent.mkdir(parents=True, exist_ok=True)
+                stub.write_text(content, encoding="utf-8")
+                planned.add(stub)
+                written.append(str(stub.relative_to(root)))
+            except OSError:
+                continue
+    return written
+
+
 def _module_resolves(base: Path, dotted: str) -> bool:
     """True if dotted module ``a.b.c`` resolves to a file/package under ``base``.
 
@@ -388,11 +549,20 @@ def extract_error_gaps(
     return gaps
 
 
+# Generated/installed trees that are NOT the app's own source — scanning them
+# (e.g. the minified `.next/` build output) scraped pseudo-imports like `${r}`
+# into package.json and polluted the import/substance signals.
+_NON_SOURCE_DIRS = frozenset({
+    ".git", "__pycache__", ".venv", "node_modules", ".next", "dist", "build",
+    ".vite", "out", "coverage", ".turbo", ".cache", "vendor", ".svelte-kit",
+})
+
+
 def _iter_files(root: Path):
     for p in root.rglob("*"):
         if p.is_dir():
             continue
-        if any(part in {".git", "__pycache__", ".venv", "node_modules"} for part in p.relative_to(root).parts):
+        if any(part in _NON_SOURCE_DIRS for part in p.relative_to(root).parts):
             continue
         yield p
 
@@ -498,6 +668,9 @@ def _invalid_npm_package_names(pkg: dict[str, Any]) -> list[str]:
                 # EINVALIDPACKAGENAME ("name can only contain URL-friendly
                 # characters") — e.g. a generated `" slick-carousel"`.
                 or re.search(r"\s", name)
+                # …and any other non-URL-safe char: a template-literal fragment
+                # like `${r}` scraped from minified code must never be a dep.
+                or re.search(r"[${}()<>\[\]'\"`!*~,;]", name)
             ):
                 invalid.append(name)
     return sorted(set(invalid))

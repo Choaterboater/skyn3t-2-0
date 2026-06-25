@@ -341,3 +341,17 @@ def test_targets_package_json_on_module_not_found(tmp_path):
     gaps = ["BUILD FAILED: Module not found: Can't resolve '@hookform/resolvers/yup' "
             "in ./components/ContactForm.jsx"]
     assert "package.json" in agent._targets_from_gaps(gaps, tmp_path)
+
+
+# ---- fix-loop targets the module on a "not exported" error (HVAC layer 3) ---
+def test_targets_module_on_not_exported(tmp_path):
+    """A `next build` 'X is not exported from <module>' must route the fix-loop
+    to that module (so the repair adds the real export), not an entrypoint."""
+    from skyn3t.agents.code_improver import CodeImproverAgent
+    agent = CodeImproverAgent(event_bus=EventBus())
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "constants.js").write_text("export const x = 1\n", encoding="utf-8")
+    gaps = ["Attempted import error: 'services' is not exported from '../lib/constants'",
+            "Attempted import error: 'companyInfo' is not exported from '@/lib/constants'"]
+    targets = agent._targets_from_gaps(gaps, tmp_path)
+    assert "lib/constants.js" in targets

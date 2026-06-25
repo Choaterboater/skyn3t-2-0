@@ -559,6 +559,30 @@ class StudioRunner:
                     pass
         return cached
 
+    def _config_llm_fn(self) -> Any:
+        """A SYNC ``llm_fn`` for config detection, bridged to the async LLM in a
+        worker thread (runs once per build, off the hot path). Returns None when
+        no real LLM is configured (stub/offline) so detection cleanly falls back
+        to the keyword heuristic — and any bridge failure degrades the same way."""
+        llm = self._intent_llm()
+        if llm is None or getattr(llm, "backend", "stub") == "stub":
+            return None
+
+        def fn(prompt: str) -> str:
+            import asyncio
+            import concurrent.futures
+
+            async def _go() -> str:
+                res = await llm.complete(prompt, task_type="config_detect")
+                return getattr(res, "text", "") or ""
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                try:
+                    return ex.submit(lambda: asyncio.run(_go())).result(timeout=30)
+                except Exception:  # noqa: BLE001 - any failure -> keyword fallback
+                    return ""
+        return fn
+
     # Generated/installed trees that are NOT the app's own implementation — they
     # otherwise dwarf the real source (node_modules alone is ~MBs of .js) and make
     # the stub-vs-app substance signal meaningless.
@@ -736,7 +760,11 @@ class StudioRunner:
         try:
             from skyn3t.agents.config_ui_agent import apply_config
 
-            summary = apply_config(project_dir, plan.brief, plan.stack)
+            # Pass a real LLM (bridged sync) so novel/niche services in the brief
+            # are detected, not just keyword-matched ones; None falls back to the
+            # keyword heuristic offline/in tests.
+            summary = apply_config(project_dir, plan.brief, plan.stack,
+                                   llm_fn=self._config_llm_fn())
         except Exception as exc:  # noqa: BLE001 - config surfacing never breaks a build
             log.warning("config.surface_failed", error=str(exc))
             return
@@ -1634,6 +1662,12 @@ class StudioRunner:
             final_score = self._honest_score(
                 round(0.6 * reviewer_score + 0.4 * proof.score, 2), proof.passed
             )
+            # Advisory JS/TS tests (run after a green build): a failure dampens
+            # the score but never flips the verdict — surfacing real test
+            # regressions without false-failing a building app on a flaky test.
+            if (getattr(proof, "detail", None) or {}).get("node_tests") == "failed":
+                final_score = round(final_score * 0.85, 2)
+                manifest.extra["node_tests_advisory"] = "failed — score dampened (non-gating)"
             manifest.score = final_score
             # Verdict: the (re-scored) reviewer "go" is necessary but NOT
             # sufficient — the objective proof, non-empty delivery, real

@@ -122,12 +122,18 @@ def render_test_file(acceptance: list[str], brief: str, slug: str = "app") -> st
         "]",
         "",
         "",
+        # Skipped, not silently green: a documented criterion is NOT a behavioral
+        # guarantee, so it must not read as a passing acceptance test (false
+        # confidence). The structural tests above DO assert, so the file still
+        # carries real coverage. Replace skip with real assertions per criterion
+        # as the implementation lands.
+        '@pytest.mark.skip(reason="behavioral assertion pending — criterion documented, not yet verified")',
         '@pytest.mark.parametrize("criterion", ACCEPTANCE)',
         "def test_acceptance_criterion_documented(criterion):",
         '    """Each derived acceptance criterion is recorded for verification.',
         "",
-        "    These are authored test-first; deeper assertions are filled in as the",
-        "    implementation lands. The criterion must be a non-trivial statement.",
+        "    Authored test-first; the skip marks it as PENDING (documented, not",
+        "    yet behaviorally verified) so it never reads as a passing acceptance.",
         '    """',
         "    assert isinstance(criterion, str) and len(criterion.split()) >= 2",
         "",

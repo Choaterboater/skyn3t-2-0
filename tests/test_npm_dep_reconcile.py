@@ -192,3 +192,30 @@ def test_idempotent(tmp_path):
     (tmp_path / "a.jsx").write_text("import P from 'prop-types'\n", encoding="utf-8")
     assert reconcile_npm_deps(tmp_path) == ["prop-types"]
     assert reconcile_npm_deps(tmp_path) == []  # already declared the second time
+
+
+# ---- advisory JS/TS test execution (finding #5) ----------------------------
+def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
+    """_run_node_tests runs only with a real runner + node_modules, and a
+    failure returns (ran=True, passed=False) — advisory, never a proof gate."""
+    import subprocess as _sp
+    import skyn3t.studio.proof_run as pr
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "x", "scripts": {"test": "vitest run"},
+        "devDependencies": {"vitest": "^1.0.0"},
+    }), encoding="utf-8")
+    monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
+
+    class _CP:
+        def __init__(self, rc): self.returncode = rc; self.stdout = "2 failed"; self.stderr = ""
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(1))
+    ran, ok, _ = pr._run_node_tests(tmp_path, 60)
+    assert ran is True and ok is False
+
+    # no recognized runner -> not run (advisory skip, never asserts on the app)
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "x", "scripts": {"test": "echo hi"}, "dependencies": {"react": "^18"},
+    }), encoding="utf-8")
+    ran, ok, why = pr._run_node_tests(tmp_path, 60)
+    assert ran is False

@@ -161,11 +161,16 @@ class CodeImproverAgent(BaseAgent):
             text = g if isinstance(g, str) else str(g)
             for m in re.findall(r"[\w./-]+\.(?:jsx|tsx|js|ts|json|py|css|html)", text):
                 candidates.append(m)
-            # A dependency/install failure must route to package.json even when
-            # the gap text never names the file — otherwise the loop rewrites an
-            # unrelated source entrypoint and the same build error recurs.
+            # A dependency/install/resolution failure must route to package.json
+            # even when the gap text never names the file — otherwise the loop
+            # rewrites an unrelated source entrypoint and the same error recurs.
+            # Includes BUILD-time "module not found" errors (a missing or
+            # version-broken dependency, e.g. '@hookform/resolvers/yup'), not
+            # just npm-install errors.
             if re.search(r"npm error|EINVALIDPACKAGENAME|ERESOLVE|ETARGET|E404|"
-                         r"Invalid package name|npm install|peer dep", text, re.I):
+                         r"Invalid package name|npm install|peer dep|"
+                         r"module not found|can(?:no|')t resolve|cannot resolve|"
+                         r"cannot find module|failed to resolve", text, re.I):
                 if (worktree / "package.json").is_file():
                     candidates.append("package.json")
         if candidates:

@@ -219,3 +219,24 @@ def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
     }), encoding="utf-8")
     ran, ok, why = pr._run_node_tests(tmp_path, 60)
     assert ran is False
+
+
+def test_reconcile_normalizes_latest_for_curated_packages(tmp_path):
+    """A declared `"latest"` pin for a curated package is normalized to a
+    known-good version (codegen's @hookform/resolvers:'latest' broke next build);
+    non-curated 'latest' and concrete pins are left untouched."""
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "x",
+        "dependencies": {
+            "@hookform/resolvers": "latest",   # curated -> normalized
+            "yup": "latest",                   # curated -> normalized
+            "react-hook-form": "7.51.3",       # concrete -> untouched
+            "some-rare-pkg": "latest",         # not curated -> left as latest
+        },
+    }), encoding="utf-8")
+    reconcile_npm_deps(tmp_path)
+    deps = json.load(open(tmp_path / "package.json"))["dependencies"]
+    assert deps["@hookform/resolvers"] != "latest" and deps["@hookform/resolvers"].startswith("^3")
+    assert deps["yup"] != "latest" and deps["yup"].startswith("^1")
+    assert deps["react-hook-form"] == "7.51.3"
+    assert deps["some-rare-pkg"] == "latest"

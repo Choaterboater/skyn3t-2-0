@@ -458,6 +458,11 @@ _KNOWN_NPM_VERSIONS = {
     "react-icons": "^5.0.1", "react-hook-form": "^7.49.0", "dayjs": "^1.11.10",
     "swr": "^2.2.4", "nanoid": "^5.0.4", "recharts": "^2.10.3",
     "tailwind-merge": "^2.2.0", "immer": "^10.0.3", "@heroicons/react": "^2.1.1",
+    # Form validation: pin a KNOWN-COMPATIBLE combo. Codegen emitting
+    # `"@hookform/resolvers": "latest"` resolved to a version whose
+    # `@hookform/resolvers/yup` subpath broke `next build`; resolvers ^3 + yup ^1
+    # + react-hook-form ^7 is the standard working set.
+    "@hookform/resolvers": "^3.3.4", "yup": "^1.4.0",
 }
 
 
@@ -572,13 +577,27 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
             if name and name not in _NODE_BUILTINS:
                 used.add(name)
     missing = sorted(u for u in used if u not in declared)
-    if not missing:
-        return []
     deps = pkg.setdefault("dependencies", {})
     if not isinstance(deps, dict):
         return []
+    changed = False
     for m in missing:
         deps[m] = _KNOWN_NPM_VERSIONS.get(m, "latest")
+        changed = True
+    # Normalize a DECLARED "latest" pin to a known-good version for curated
+    # packages. Codegen sometimes emits `"@hookform/resolvers": "latest"`, which
+    # can resolve to a version whose subpath import breaks the build. Bounded to
+    # the curated table, so an arbitrary package is never touched.
+    for key in ("dependencies", "devDependencies"):
+        d = pkg.get(key)
+        if not isinstance(d, dict):
+            continue
+        for name, ver in list(d.items()):
+            if ver == "latest" and name in _KNOWN_NPM_VERSIONS:
+                d[name] = _KNOWN_NPM_VERSIONS[name]
+                changed = True
+    if not changed:
+        return []
     try:
         pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
     except OSError:

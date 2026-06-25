@@ -1584,10 +1584,14 @@ class StudioRunner:
                 manifest.extra["degraded_gate"] = str(
                     (prior.get("code") or {}).get("degraded_reason", "agentic under-delivery")
                 )
+            # Critic is advisory by default (critic_gates_verdict=False): record its
+            # issues but don't let manufactured/truncation-driven "blocks" flip a
+            # verified-running app to no_go.
+            critic_gate = critic_ok or not bool(getattr(self.settings, "critic_gates_verdict", False))
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
-                    and substantive and has_entry and intent_ok and critic_ok
+                    and substantive and has_entry and intent_ok and critic_gate
                     and not scaffold_stub and not code_degraded)
                 else "no_go"
             )

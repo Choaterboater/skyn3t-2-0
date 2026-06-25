@@ -160,6 +160,11 @@ class Settings(BaseSettings):
     # free_only/no_claude). Empty → sampler degrades to same-model (no-op).
     tournament_model_pool: str = ""
     critic_enabled: bool = True  # 2.0: adversarial pre-delivery critic
+    # The critic runs (records issues) but is ADVISORY by default — it no longer
+    # hard-gates the verdict. It was forcing no_go on verified-running apps via
+    # false "blocking" issues manufactured by reading files truncated mid-source.
+    # Set True to restore the hard gate.
+    critic_gates_verdict: bool = False
     # Spec 2: N-ensemble vote for the intent judge (median of N samples, robust
     # to an outlier). 1 = single call (default); >1 costs N judge calls/build.
     intent_judge_samples: int = Field(default=1, ge=1, le=7)

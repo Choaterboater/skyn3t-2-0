@@ -30,6 +30,30 @@ _SYSTEM = (
     "purpose specific and substantial."
 )
 
+# Plain-JS Vite+React stacks whose scaffold floor is .jsx — the architect must
+# plan .jsx (not .tsx), else the .jsx scaffold main + index.html render the
+# counter stub instead of the real (TS) app.
+_JSX_STACKS = frozenset({"react", "react_vite", "vite"})
+
+
+def _jsx_only(files: list[Any]) -> list[Any]:
+    """Rewrite .tsx->.jsx / .ts->.js and drop tsconfig for a plain-JS React plan."""
+    out: list[Any] = []
+    for f in files:
+        if not isinstance(f, dict) or not f.get("path"):
+            out.append(f)
+            continue
+        path = str(f["path"])
+        low = path.lower()
+        if low.endswith("tsconfig.json") or low.endswith(".d.ts"):
+            continue  # no TS config in a plain-JS project
+        if path.endswith(".tsx"):
+            path = path[:-4] + ".jsx"
+        elif path.endswith(".ts"):
+            path = path[:-3] + ".js"
+        out.append({**f, "path": path})
+    return out
+
 
 class ArchitectAgent(BaseAgent):
     def __init__(self, name: str = "architect", *, event_bus: EventBus,
@@ -69,6 +93,9 @@ class ArchitectAgent(BaseAgent):
         # here: forcing a vision model would downgrade this Tier.STRONG planning
         # call to a weaker generic vision model. The DesignerAgent consumes the
         # image (visual matching is its job); the architect keeps full strength.
+        if stack in _JSX_STACKS:
+            prompt += ("\n\nIMPORTANT: this is a plain JavaScript Vite + React project — "
+                       "use ONLY .jsx/.js files, NEVER .tsx/.ts, and do NOT include a tsconfig.")
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."
@@ -83,6 +110,10 @@ class ArchitectAgent(BaseAgent):
         parsed.setdefault("stack", stack)
         parsed["stack"] = parsed.get("stack") or stack
         files = parsed.get("files") or []
+        # Keep the plan .jsx-consistent with the scaffold floor (D8): a .tsx plan
+        # leaves the .jsx scaffold entry rendering the counter stub.
+        if parsed["stack"] in _JSX_STACKS:
+            files = _jsx_only(files)
         plan = {
             "stack": parsed["stack"],
             "summary": parsed.get("summary", f"Plan for {stack}: {brief}"),

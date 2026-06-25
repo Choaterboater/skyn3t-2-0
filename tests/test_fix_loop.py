@@ -329,3 +329,15 @@ def test_config_llm_fn_bridges_async_when_real(monkeypatch):
     fn = runner._config_llm_fn()
     assert fn is not None
     assert "ACME_API_KEY" in fn("detect config for: an Acme-powered app")
+
+
+# ---- fix-loop targets package.json on build module-not-found (HVAC regress) -
+def test_targets_package_json_on_module_not_found(tmp_path):
+    """A `next build` 'Module not found' is a dependency problem fixable in
+    package.json — the fix-loop must route there, not rewrite source."""
+    from skyn3t.agents.code_improver import CodeImproverAgent
+    agent = CodeImproverAgent(event_bus=EventBus())
+    (tmp_path / "package.json").write_text('{"name":"x"}', encoding="utf-8")
+    gaps = ["BUILD FAILED: Module not found: Can't resolve '@hookform/resolvers/yup' "
+            "in ./components/ContactForm.jsx"]
+    assert "package.json" in agent._targets_from_gaps(gaps, tmp_path)

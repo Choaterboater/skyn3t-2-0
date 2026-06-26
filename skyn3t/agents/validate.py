@@ -24,6 +24,58 @@ _CODE_SIGNAL = re.compile(
 )
 
 
+# Native provider LLM SDKs a generated app must NOT use. SkyN3t routes EVERY LLM
+# call through OpenRouter via the OpenAI SDK (base_url https://openrouter.ai/api/v1,
+# key OPENROUTER_API_KEY) — the only key the user holds. A model sometimes follows
+# a brief that pasted Anthropic/Claude docs and emits `import anthropic` +
+# ANTHROPIC_API_KEY; that ships a go-graded app which crashes at run for a key the
+# host never set. DELIBERATELY excludes the `openai` SDK — that IS the prescribed
+# OpenRouter client, so flagging it would break every compliant LLM app.
+_NATIVE_LLM_SDK = re.compile(
+    r"^\s*import\s+anthropic\b"            # py: import anthropic[.x]
+    r"|^\s*from\s+anthropic\b"            # py: from anthropic import ...
+    r"|['\"]@anthropic-ai/sdk['\"]"       # js: import/require '@anthropic-ai/sdk'
+    r"|\bnew\s+Anthropic\s*\("            # js: new Anthropic(...)
+    r"|\banthropic\.Anthropic\s*\(",      # py: anthropic.Anthropic(...)
+    re.MULTILINE,
+)
+# Native per-provider key the user does NOT hold. Excludes OPENAI_API_KEY: the
+# compliant openai client reads OPENROUTER_API_KEY, and flagging OPENAI_API_KEY
+# risks false-positives on near-compliant apps (verifier risk note).
+#
+# Requires an actual READ or .env ASSIGNMENT context so a mere mention in a comment
+# or docstring (e.g. "no ANTHROPIC_API_KEY needed") is NOT flagged — only real use.
+_NATIVE_KEY_NAMES = r"(?:ANTHROPIC|GEMINI|MISTRAL|COHERE|GROQ)_API_KEY"
+_NATIVE_LLM_KEY = re.compile(
+    rf"{_NATIVE_KEY_NAMES}\s*=\s*\S"                                  # .env assignment
+    rf"|(?:getenv|environ|process\.env|import\.meta\.env)"
+    rf"[\s\[\(.'\"]*{_NATIVE_KEY_NAMES}"                              # code read
+)
+
+
+def native_llm_violation(content: str) -> str:
+    """Reason string if ``content`` uses a native provider LLM SDK or reads a
+    native provider key; '' when compliant.
+
+    Anthropic-scoped on purpose: never flags the `openai` SDK or OPENROUTER_API_KEY
+    (the prescribed OpenRouter client). Used both at codegen-time (validate_source)
+    and as a delivery-verdict backstop in the runner."""
+    if _NATIVE_LLM_SDK.search(content):
+        return "imports a native provider LLM SDK (e.g. anthropic / @anthropic-ai/sdk)"
+    m = _NATIVE_LLM_KEY.search(content)
+    if m:
+        return f"reads {m.group(0)} (a native provider key the user does not hold)"
+    return ""
+
+
+_OPENROUTER_FIX_HINT = (
+    " Route every LLM call through OpenRouter instead: use the OpenAI SDK with "
+    "base_url='https://openrouter.ai/api/v1' reading OPENROUTER_API_KEY (for Claude "
+    "use model id 'anthropic/claude-3.5-haiku'), behind the app's own /api/llm "
+    "endpoint. Do NOT import 'anthropic'/'@anthropic-ai/sdk' or read ANTHROPIC_API_KEY."
+)
+
+
 def _looks_like_prose(content: str) -> bool:
     """True when ``content`` is substantial natural-language prose, not code.
 
@@ -68,6 +120,12 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
         # pass (or skip) the type-specific check must not ship as source.
         if p.endswith(_CODE_EXTS) and _looks_like_prose(content):
             return False, "content looks like prose, not code"
+        # Native-provider-LLM guard: reject `import anthropic` / ANTHROPIC_API_KEY
+        # so codegen's retry regenerates the call the compliant OpenRouter way.
+        if p.endswith(_CODE_EXTS):
+            why = native_llm_violation(content)
+            if why:
+                return False, why + "." + _OPENROUTER_FIX_HINT
     except Exception:  # noqa: BLE001 - validation must never raise
         return True, ""
     return True, ""

@@ -46,6 +46,38 @@ def test_fill_missing_synthesizes_real_entrypoint(tmp_path):
     assert after.passed is True
 
 
+def test_deterministic_repairs_declares_deps_peers_and_stubs(tmp_path):
+    """The deterministic repairs run each fix-loop iteration: declare an
+    imported-but-undeclared npm dep, add the next.config optimizeCss peer
+    (critters), and stub a missing @/ alias import — all idempotent."""
+    runner = _runner()
+    plan = Planner(Settings()).plan("a nextjs marketing site", "site")
+    plan.stack = "nextjs"
+    proj = tmp_path / "p"
+    (proj / "app").mkdir(parents=True)
+    (proj / "components").mkdir()
+    (proj / "jsconfig.json").write_text(
+        _json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["./*"]}}}), encoding="utf-8")
+    (proj / "next.config.js").write_text("module.exports={experimental:{optimizeCss:true}}", encoding="utf-8")
+    (proj / "package.json").write_text(_json.dumps({"dependencies": {"next": "14.2.3"}}), encoding="utf-8")
+    (proj / "app" / "page.jsx").write_text(
+        "import { z } from 'zod'\nimport Hero from '@/components/Hero'\n"
+        "export default function P(){return <Hero/>}\n", encoding="utf-8")
+
+    changes = runner._deterministic_repairs(str(proj), plan)
+    pkg = _json.loads((proj / "package.json").read_text())
+    assert "zod" in pkg["dependencies"]                  # undeclared import declared
+    assert "critters" in pkg.get("devDependencies", {})  # next.config peer added
+    assert (proj / "components" / "Hero.jsx").exists()   # missing alias import stubbed
+    assert "zod" in changes["npm_deps_added"]
+    assert changes["next_config_peers"] == ["critters"]
+
+    # idempotent: a second pass changes nothing
+    again = runner._deterministic_repairs(str(proj), plan)
+    assert again["npm_deps_added"] == [] and again["next_config_peers"] == [] \
+        and again["imports_scaffolded"] == []
+
+
 def test_stub_for_known_files():
     runner = _runner()
     plan = Planner(Settings()).plan("x", "x")

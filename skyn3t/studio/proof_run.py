@@ -169,9 +169,13 @@ def _local_import_base(importer: Path, spec: str, aliases: dict[str, list[Path]]
     spec = spec.split("?", 1)[0].split("#", 1)[0]
     if spec.startswith("."):
         return importer.parent / spec
-    for prefix, dirs in aliases.items():
-        if spec.startswith(prefix) and dirs:
-            return dirs[0] / spec[len(prefix):]
+    # Pick the LONGEST matching alias prefix (webpack/tsc resolution). With a
+    # multi-pattern config ('@/*' -> ./src/* AND '@/components/*' -> ./components/*),
+    # first-match would mis-resolve '@/components/Hero' to src/ and stub it there.
+    matches = [(p, d) for p, d in aliases.items() if spec.startswith(p) and d]
+    if matches:
+        prefix, dirs = max(matches, key=lambda kv: len(kv[0]))
+        return dirs[0] / spec[len(prefix):]
     return None
 
 
@@ -776,6 +780,66 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
     except OSError:
         return []
     return missing
+
+
+# Build-tool PEER deps implied by a next.config flag but never imported in source
+# (so reconcile_npm_deps can't see them): (flag-substring-in-config, package, version).
+# experimental.optimizeCss runs `critters` to inline CSS during `next build`; with
+# critters absent the export throws on EVERY page incl. /404, /500, /_not-found.
+_NEXT_CONFIG_PEERS: tuple[tuple[str, str, str], ...] = (
+    ("optimizeCss", "critters", "^0.0.23"),
+)
+
+
+def reconcile_next_config_peers(root: str | Path) -> list[str]:
+    """Declare build-tool peer deps implied by next.config flags into
+    devDependencies (e.g. ``experimental.optimizeCss`` -> ``critters``).
+
+    These are pulled in by a config flag, never imported in code, so
+    reconcile_npm_deps can't see them — an un-buildable app the offline gate
+    misses. Returns the package names added. Pure on a non-node project (no
+    package.json / no next.config -> []). Never raises."""
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    cfg_text = ""
+    for name in ("next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"):
+        p = root / name
+        if p.is_file():
+            try:
+                cfg_text += p.read_text(encoding="utf-8", errors="replace") + "\n"
+            except OSError:
+                continue
+    if not cfg_text:
+        return []
+    import json as _json
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        d = pkg.get(key)
+        if isinstance(d, dict):
+            declared |= set(d)
+    dev = pkg.setdefault("devDependencies", {})
+    if not isinstance(dev, dict):
+        return []
+    added: list[str] = []
+    for flag, peer, ver in _NEXT_CONFIG_PEERS:
+        if flag in cfg_text and peer not in declared:
+            dev[peer] = ver
+            added.append(peer)
+    if not added:
+        return []
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return added
 
 
 def proof_run(

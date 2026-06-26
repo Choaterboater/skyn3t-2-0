@@ -55,6 +55,36 @@ def test_does_not_touch_existing_or_bare_imports(tmp_path):
     assert scaffold_missing_imports(tmp_path) == []
 
 
+def test_longest_alias_prefix_wins(tmp_path):
+    """Multi-pattern jsconfig (@/* -> ./src/* AND @/components/* -> ./components/*):
+    a component that exists under the LONGER prefix's dir must resolve (no stub),
+    matching webpack/tsc longest-prefix resolution."""
+    (tmp_path / "jsconfig.json").write_text(json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {
+        "@/*": ["./src/*"], "@/components/*": ["./components/*"]}}}), encoding="utf-8")
+    (tmp_path / "components").mkdir()
+    (tmp_path / "components" / "Hero.jsx").write_text(
+        "export default function Hero(){return null}\n", encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "page.jsx").write_text(
+        "import Hero from '@/components/Hero'\nexport default function P(){return <Hero/>}\n", encoding="utf-8")
+    assert scaffold_missing_imports(tmp_path) == []
+
+
+def test_longest_alias_prefix_stub_location(tmp_path):
+    """A genuinely-missing @/components/* import is stubbed under components/, NOT
+    src/components/ (where the old first-match bug wrongly placed it)."""
+    (tmp_path / "jsconfig.json").write_text(json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {
+        "@/*": ["./src/*"], "@/components/*": ["./components/*"]}}}), encoding="utf-8")
+    (tmp_path / "components").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "page.jsx").write_text(
+        "import Hero from '@/components/Hero'\nexport default function P(){return <Hero/>}\n", encoding="utf-8")
+    written = scaffold_missing_imports(tmp_path)
+    assert any("components/Hero" in w for w in written)
+    assert (tmp_path / "components" / "Hero.jsx").exists()
+    assert not (tmp_path / "src" / "components" / "Hero.jsx").exists()
+
+
 def test_invalid_npm_names_rejects_template_fragment():
     # '${r}' scraped from minified code must be rejected (it broke a real build)
     flagged = _invalid_npm_package_names({"dependencies": {"${r}": "latest", "react": "^18"}})

@@ -13,7 +13,43 @@ import shutil
 
 import pytest
 
-from skyn3t.studio.proof_run import proof_run, reconcile_npm_deps
+from skyn3t.studio.proof_run import (
+    proof_run,
+    reconcile_next_config_peers,
+    reconcile_npm_deps,
+)
+
+
+# ---- next.config build-tool peer deps (optimizeCss -> critters) --------------
+def test_reconcile_adds_critters_for_optimizecss(tmp_path):
+    """experimental.optimizeCss runs `critters` to inline CSS during `next build`;
+    absent -> export throws on every page (incl. /404). Declare it as a peer."""
+    (tmp_path / "next.config.js").write_text(
+        "const nextConfig = { experimental: { optimizeCss: true } }\n"
+        "module.exports = nextConfig\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"next": "14.2.3"}}), encoding="utf-8")
+    added = reconcile_next_config_peers(tmp_path)
+    assert added == ["critters"]
+    pkg = json.loads((tmp_path / "package.json").read_text())
+    assert pkg["devDependencies"]["critters"]
+
+
+def test_reconcile_no_critters_without_optimizecss(tmp_path):
+    (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"next": "14.2.3"}}), encoding="utf-8")
+    assert reconcile_next_config_peers(tmp_path) == []
+
+
+def test_reconcile_critters_already_declared_noop(tmp_path):
+    (tmp_path / "next.config.js").write_text("module.exports={experimental:{optimizeCss:true}}", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps(
+        {"dependencies": {"next": "14.2.3"}, "devDependencies": {"critters": "^0.0.23"}}), encoding="utf-8")
+    assert reconcile_next_config_peers(tmp_path) == []
+
+
+def test_reconcile_next_config_peers_no_package_json(tmp_path):
+    # non-node / no package.json -> no-op, never raises
+    assert reconcile_next_config_peers(tmp_path) == []
 
 
 # ---- npm install failure classification (offline soft-skip vs real defect) ---

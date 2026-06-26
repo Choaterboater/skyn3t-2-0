@@ -944,6 +944,70 @@ def add_use_client_directives(root: str | Path) -> list[str]:
 _AT_IMPORT_RE = re.compile(r"""(?:from|import|require\()\s*['"]@/""")
 
 
+# Tauri Cargo features the model commonly hallucinates (e.g. fs-read-text-file) break
+# `cargo build`. The tauri-stack proof only builds the FRONTEND, so a broken Rust shell
+# ships as go — this repair swaps an invalid feature set for a known-good superset.
+_VALID_TAURI_FEATURES = frozenset({
+    "api-all", "custom-protocol", "default", "devtools", "macos-private-api", "isolation",
+    "dialog-all", "dialog-open", "dialog-save", "dialog-ask", "dialog-confirm", "dialog-message",
+    "fs-all", "fs-read-file", "fs-write-file", "fs-read-dir", "fs-create-dir", "fs-copy-file",
+    "fs-remove-file", "fs-remove-dir", "fs-rename-file", "fs-extract-api",
+    "path-all", "shell-all", "shell-open", "shell-execute", "shell-sidecar",
+    "os-all", "process-all", "process-command-api", "process-exit", "process-relaunch",
+    "clipboard-all", "clipboard-read-text", "clipboard-write-text",
+    "http-all", "http-request", "notification-all", "global-shortcut-all",
+    "window-all", "window-center", "window-close", "window-create", "window-hide",
+    "window-maximize", "window-minimize", "window-set-title", "window-set-focus",
+    "window-set-size", "window-set-position", "window-show", "window-start-dragging",
+    "system-tray", "updater", "protocol-all", "protocol-asset", "icon-png", "icon-ico",
+})
+# When the model hallucinates the shell, reset to the matched permissive pair: the
+# `api-all` Cargo feature + allowlist {"all": true}. Tauri REQUIRES the Cargo features
+# to match the allowlist, so a fixed pair is the only reliably-buildable combo.
+_SAFE_TAURI_FEATURES = '["api-all"]'
+_TAURI_FEATURES_RE = re.compile(r"(tauri\s*=\s*\{[^}]*?features\s*=\s*)\[([^\]]*)\]")
+
+
+def reconcile_tauri_cargo_features(root: str | Path) -> list[str]:
+    """Make a Tauri shell buildable when the model hallucinated it. If src-tauri's
+    Cargo.toml has any invalid tauri feature, reset the features to ``api-all`` AND set
+    the tauri.conf.json allowlist to ``{"all": true}`` — Tauri requires the two to
+    match, so this matched pair is the reliable fix. No-op for a valid non-Tauri project
+    or an already-valid feature set. Never raises."""
+    cargo = Path(root) / "src-tauri" / "Cargo.toml"
+    if not cargo.is_file():
+        return []
+    try:
+        text = cargo.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    m = _TAURI_FEATURES_RE.search(text)
+    if not m:
+        return []
+    feats = [f.strip().strip('"\'') for f in m.group(2).split(",") if f.strip()]
+    if not any(f and f not in _VALID_TAURI_FEATURES for f in feats):
+        return []  # all valid — leave both files alone
+    changed: list[str] = []
+    new_text = text[:m.start()] + m.group(1) + _SAFE_TAURI_FEATURES + text[m.end():]
+    try:
+        cargo.write_text(new_text, encoding="utf-8")
+        changed.append("src-tauri/Cargo.toml")
+    except OSError:
+        return changed
+    # Align the allowlist with api-all so Tauri's feature<->allowlist check passes.
+    conf = Path(root) / "src-tauri" / "tauri.conf.json"
+    if conf.is_file():
+        try:
+            data = json.loads(conf.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(data, dict):
+                data.setdefault("tauri", {})["allowlist"] = {"all": True}
+                conf.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+                changed.append("src-tauri/tauri.conf.json")
+        except (OSError, ValueError):
+            pass
+    return changed
+
+
 def _parse_jsonish(raw: str):
     """Parse JSON, tolerating tsconfig JSONC (// and /* */ comments, trailing commas).
     Returns the parsed value, or None if it still can't parse — so callers can REFUSE

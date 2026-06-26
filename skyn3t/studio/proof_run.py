@@ -842,6 +842,103 @@ def reconcile_next_config_peers(root: str | Path) -> list[str]:
     return added
 
 
+# Client-only signals that REQUIRE a `"use client"` directive in a Next.js App
+# Router component: a JSX event-handler prop, a client React/Next hook, or a
+# browser global. Without the directive the component is a Server Component and
+# `next build` fails static generation ("Event handlers cannot be passed to
+# Client Component props" -> static-page-generation timeout).
+_USE_CLIENT_SIGNAL = re.compile(
+    r"\bon[A-Z]\w+\s*=\s*\{"                                          # onClick={...}
+    r"|\buse(?:State|Effect|Reducer|Ref|Context|Callback|Memo|LayoutEffect"
+    r"|Transition|ImperativeHandle|DeferredValue|SyncExternalStore"
+    r"|Router|Pathname|SearchParams|FormState|FormStatus)\s*\("       # client hooks
+    r"|\b(?:window|document|localStorage|sessionStorage|navigator)\." # browser globals
+)
+
+
+def _has_use_client_directive(text: str) -> bool:
+    """True when the first real statement is a ``use client`` directive."""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith(("//", "/*", "*")):
+            continue
+        return s.strip(";") in ('"use client"', "'use client'")
+    return False
+
+
+# Server-only exports that a Client Component is FORBIDDEN to have. When a file
+# needs "use client" (interactivity) AND has one of these, next build errors
+# ("You are attempting to export metadata ... from a component marked with use
+# client"). The deterministic resolution: make it a client component and remove
+# the server-only export (per-page metadata falls back to the layout's).
+_METADATA_EXPORT = re.compile(
+    r"export\s+const\s+metadata\b[^={]*=\s*\{"
+    r"|export\s+(?:async\s+)?function\s+generateMetadata\s*\([^)]*\)\s*(?::[^={]+)?\{"
+)
+
+
+def _strip_metadata_exports(text: str) -> tuple[str, bool]:
+    """Remove `export const metadata = {...}` / `export [async] function
+    generateMetadata(...) {...}` blocks (brace-matched). Returns (new_text, removed)."""
+    removed = False
+    while True:
+        m = _METADATA_EXPORT.search(text)
+        if not m:
+            break
+        open_idx = text.index("{", m.end() - 1)
+        depth, j = 0, open_idx
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        end = j + 1
+        if end < len(text) and text[end] == ";":
+            end += 1
+        text = text[:m.start()] + text[end:]
+        removed = True
+    return text, removed
+
+
+def add_use_client_directives(root: str | Path) -> list[str]:
+    """Prepend ``"use client";`` to Next.js App Router components that use
+    client-only features (event handlers, state/effect hooks, browser globals) but
+    lack the directive — otherwise `next build` fails static generation. Returns
+    the relative paths modified. No-op outside a Next.js app. Never raises."""
+    root = Path(root)
+    is_next = (root / "app").is_dir() or any(
+        (root / f).is_file() for f in
+        ("next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"))
+    if not is_next:
+        return []
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in (".jsx", ".tsx", ".js", ".ts", ".mjs"):
+            continue
+        rel = f.relative_to(root)
+        # Only component dirs — never touch config/util/pages-router files.
+        if not rel.parts or rel.parts[0] not in ("app", "components", "src"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not _USE_CLIENT_SIGNAL.search(text) or _has_use_client_directive(text):
+            continue
+        # A Client Component can't export metadata/generateMetadata — strip those
+        # (server-only) when present so the interactive component can build.
+        body, _ = _strip_metadata_exports(text) if _METADATA_EXPORT.search(text) else (text, False)
+        try:
+            f.write_text('"use client";\n\n' + body.lstrip("﻿"), encoding="utf-8")
+        except OSError:
+            continue
+        changed.append(str(rel))
+    return changed
+
+
 def proof_run(
     project_dir: str | Path,
     *,

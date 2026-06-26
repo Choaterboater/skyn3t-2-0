@@ -42,6 +42,7 @@ from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
+    add_use_client_directives,
     extract_error_gaps,
     proof_run,
     reconcile_next_config_peers,
@@ -1042,10 +1043,14 @@ class StudioRunner:
         stubbed = scaffold_missing_imports(project_dir, stack=plan.stack)
         added = reconcile_npm_deps(project_dir)
         peers = reconcile_next_config_peers(project_dir)
+        # Next.js App Router: prepend "use client" to interactive components so
+        # `next build` doesn't fail static generation on event handlers/hooks.
+        use_client = add_use_client_directives(project_dir)
         return {
             "npm_deps_added": added,
             "next_config_peers": peers,
             "imports_scaffolded": stubbed,
+            "use_client_added": use_client,
         }
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
@@ -1640,6 +1645,9 @@ class StudioRunner:
             if repairs["imports_scaffolded"]:
                 manifest.extra["imports_scaffolded"] = repairs["imports_scaffolded"]
                 log.info("runner.imports_scaffolded", files=repairs["imports_scaffolded"])
+            if repairs["use_client_added"]:
+                manifest.extra["use_client_added"] = repairs["use_client_added"]
+                log.info("runner.use_client_added", files=repairs["use_client_added"])
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous

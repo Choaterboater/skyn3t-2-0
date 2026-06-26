@@ -86,6 +86,7 @@ def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
     """ERESOLVE/E404/ETARGET install failures must return ran=True, ok=False so
     proof.passed flips to False (was soft-skipped as 'offline')."""
     import subprocess as _sp
+
     import skyn3t.studio.proof_run as pr
     _node_proj(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
@@ -102,6 +103,7 @@ def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
 def test_run_node_build_offline_soft_skips(tmp_path, monkeypatch):
     """A genuine ENOTFOUND connectivity failure stays a soft-skip (ran=False)."""
     import subprocess as _sp
+
     import skyn3t.studio.proof_run as pr
     _node_proj(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
@@ -235,6 +237,7 @@ def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
     """_run_node_tests runs only with a real runner + node_modules, and a
     failure returns (ran=True, passed=False) — advisory, never a proof gate."""
     import subprocess as _sp
+
     import skyn3t.studio.proof_run as pr
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "package.json").write_text(json.dumps({

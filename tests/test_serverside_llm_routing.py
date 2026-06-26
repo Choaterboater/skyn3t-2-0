@@ -16,7 +16,6 @@ from skyn3t.agents import integration_verifier as iv
 from skyn3t.studio.app_runner import build_run_spec
 from skyn3t.studio.planner import detect_stack, file_checklist
 
-
 # ---- planner: LLM brief must not land on a server-less web stack ----------
 
 def test_llm_web_briefs_bump_to_nextjs():

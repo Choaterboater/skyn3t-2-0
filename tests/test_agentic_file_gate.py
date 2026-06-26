@@ -5,7 +5,6 @@ discarding good code here reverts the app to the offline scaffold stub -> no_go.
 from __future__ import annotations
 
 from skyn3t.agents.code_agent import CodeAgent
-from skyn3t.core.events import EventBus
 
 
 def _clean(disk, scaffold=None):

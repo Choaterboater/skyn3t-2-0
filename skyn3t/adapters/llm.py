@@ -82,9 +82,22 @@ _AGENTIC_SYSTEM = (
     "with real, production-quality code (no placeholders, no TODOs); use read_file / "
     "list_files to stay coherent across files (imports must resolve, exports must "
     "exist); call finish only when the app is complete and builds/runs with its "
-    "standard command. Build a rich, polished, multi-page app that fully satisfies "
+    "standard command. The homepage MUST render MULTIPLE complete sections as real, "
+    "separate components (hero, services, about, testimonials, contact) with real copy "
+    "and any provided images under /assets, never a thin page or data-only scaffolding. "
+    "Build a rich, polished, multi-page app that fully satisfies "
     "the brief. Do NOT use native provider SDKs or keys — route any LLM calls through "
     "the OpenAI SDK at https://openrouter.ai/api/v1 reading OPENROUTER_API_KEY."
+)
+# Pushed back into the loop when a model calls finish but delivered only scaffolding
+# (data/config, a thin homepage, no section components) — makes cheap models that stop
+# early actually build the full UI.
+_ANTISTUB_NUDGE = (
+    "The app is still a minimal stub: you wrote data/config but the homepage has little "
+    "real UI and few/no section components. Do NOT finish yet. Build the COMPLETE UI now "
+    "as real, separate section components (hero, services, about, testimonials, service "
+    "areas, why-choose-us, contact) with real copy and the images under /assets, then "
+    "assemble them all in the homepage so it renders a full, content-rich, multi-section page."
 )
 _AGENTIC_TOOLS = [
     {"type": "function", "function": {
@@ -583,6 +596,26 @@ class LLMClient:
         max_turns = max(4, int(getattr(self.settings, "openrouter_agentic_max_turns", 60)))
         budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
         wrote, finished, start = 0, False, _t.time()
+        stub_nudges, _MAX_STUB_NUDGES = 0, 2
+
+        def _looks_stub() -> bool:
+            """A delivered project is a stub if it has almost no UI components or the
+            total component code is tiny (data/config scaffolding without real UI)."""
+            comps, ui_bytes = 0, 0
+            for f in root.rglob("*"):
+                if not f.is_file() or f.suffix not in (".jsx", ".tsx"):
+                    continue
+                if {"node_modules", ".next", ".git"} & set(f.parts):
+                    continue
+                rel = "/" + str(f.relative_to(root))
+                try:
+                    n = f.stat().st_size
+                except OSError:
+                    n = 0
+                ui_bytes += n
+                if "/components/" in rel or "/sections/" in rel:
+                    comps += 1
+            return comps < 3 or ui_bytes < 4000
         try:
             async with httpx.AsyncClient(timeout=180) as client:
                 for turn in range(max_turns):
@@ -597,25 +630,33 @@ class LLMClient:
                     messages.append({"role": "assistant", "content": msg.get("content") or "",
                                      "tool_calls": msg.get("tool_calls") or []})
                     tcs = msg.get("tool_calls") or []
-                    if not tcs:
+                    if tcs:
+                        for tc in tcs:
+                            fn = tc.get("function") or {}
+                            name = fn.get("name", "")
+                            try:
+                                args = _json.loads(fn.get("arguments") or "{}")
+                            except ValueError:
+                                args = {}
+                            if name == "finish":
+                                finished, result = True, "OK"
+                            else:
+                                result = _run_tool(name, args)
+                                if name == "write_file" and result.startswith("OK"):
+                                    wrote += 1
+                            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                                             "content": result})
+                    else:
                         finished = True  # final text answer -> done
-                        break
-                    for tc in tcs:
-                        fn = tc.get("function") or {}
-                        name = fn.get("name", "")
-                        try:
-                            args = _json.loads(fn.get("arguments") or "{}")
-                        except ValueError:
-                            args = {}
-                        if name == "finish":
-                            finished, result = True, "OK"
-                        else:
-                            result = _run_tool(name, args)
-                            if name == "write_file" and result.startswith("OK"):
-                                wrote += 1
-                        messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
-                                         "content": result})
                     if finished:
+                        # Refuse a thin result: push the model to build the real UI instead
+                        # of stopping at data/config scaffolding (cheap models do this).
+                        if stub_nudges < _MAX_STUB_NUDGES and _looks_stub():
+                            stub_nudges += 1
+                            finished = False
+                            messages.append({"role": "user", "content": _ANTISTUB_NUDGE})
+                            log.info("llm.or_agentic_antistub", nudge=stub_nudges, wrote=wrote)
+                            continue
                         break
         except Exception as exc:  # noqa: BLE001 - never crash the build
             log.warning("llm.or_agentic_failed", error=str(exc)[:200], wrote=wrote)

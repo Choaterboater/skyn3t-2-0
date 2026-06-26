@@ -34,6 +34,8 @@ class _FakeClient:
         return False
 
     async def post(self, url, json=None, headers=None):
+        if self.i >= len(self._turns):
+            return _FakeResp({"choices": [{"message": {"content": "done"}}]})  # terminal: no tool calls
         p = self._turns[self.i]
         self.i += 1
         return _FakeResp(p)
@@ -72,6 +74,25 @@ def test_agentic_loop_confines_paths(tmp_path, monkeypatch):
     res = asyncio.run(_client()._openrouter_agentic("x", str(sub), "m"))
     assert not outside.exists()   # path traversal blocked
     assert res["ok"] is False     # nothing written
+
+
+def test_agentic_loop_pushes_past_a_stub(tmp_path, monkeypatch):
+    # Model finishes early with only a thin page (a stub). The anti-stub guard must
+    # push it to keep building real section components before accepting finish.
+    big = "x" * 1500
+    turns = [
+        _tool_turn("write_file", {"path": "app/page.jsx", "content": "export default ()=>null"}),
+        _tool_turn("finish", {}, "t2"),                                   # premature finish -> stub
+        _tool_turn("write_file", {"path": "components/Hero.jsx", "content": big}, "t3"),
+        _tool_turn("write_file", {"path": "components/Services.jsx", "content": big}, "t4"),
+        _tool_turn("write_file", {"path": "components/About.jsx", "content": big}, "t5"),
+        _tool_turn("finish", {}, "t6"),                                   # now substantive -> accepted
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m"))
+    assert res["ok"] is True
+    assert (tmp_path / "components" / "Hero.jsx").exists()   # nudge made it build the UI
+    assert (tmp_path / "components" / "Services.jsx").exists()
 
 
 def test_supports_agentic_openrouter_flag():

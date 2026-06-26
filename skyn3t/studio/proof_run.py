@@ -14,6 +14,7 @@ Import has zero side effects (no subprocess, no network).
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -169,9 +170,13 @@ def _local_import_base(importer: Path, spec: str, aliases: dict[str, list[Path]]
     spec = spec.split("?", 1)[0].split("#", 1)[0]
     if spec.startswith("."):
         return importer.parent / spec
-    for prefix, dirs in aliases.items():
-        if spec.startswith(prefix) and dirs:
-            return dirs[0] / spec[len(prefix):]
+    # Pick the LONGEST matching alias prefix (webpack/tsc resolution). With a
+    # multi-pattern config ('@/*' -> ./src/* AND '@/components/*' -> ./components/*),
+    # first-match would mis-resolve '@/components/Hero' to src/ and stub it there.
+    matches = [(p, d) for p, d in aliases.items() if spec.startswith(p) and d]
+    if matches:
+        prefix, dirs = max(matches, key=lambda kv: len(kv[0]))
+        return dirs[0] / spec[len(prefix):]
     return None
 
 
@@ -778,6 +783,239 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
     return missing
 
 
+# Build-tool PEER deps implied by a next.config flag but never imported in source
+# (so reconcile_npm_deps can't see them): (flag-substring-in-config, package, version).
+# experimental.optimizeCss runs `critters` to inline CSS during `next build`; with
+# critters absent the export throws on EVERY page incl. /404, /500, /_not-found.
+_NEXT_CONFIG_PEERS: tuple[tuple[str, str, str], ...] = (
+    ("optimizeCss", "critters", "^0.0.23"),
+)
+
+
+def reconcile_next_config_peers(root: str | Path) -> list[str]:
+    """Declare build-tool peer deps implied by next.config flags into
+    devDependencies (e.g. ``experimental.optimizeCss`` -> ``critters``).
+
+    These are pulled in by a config flag, never imported in code, so
+    reconcile_npm_deps can't see them — an un-buildable app the offline gate
+    misses. Returns the package names added. Pure on a non-node project (no
+    package.json / no next.config -> []). Never raises."""
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    cfg_text = ""
+    for name in ("next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"):
+        p = root / name
+        if p.is_file():
+            try:
+                cfg_text += p.read_text(encoding="utf-8", errors="replace") + "\n"
+            except OSError:
+                continue
+    if not cfg_text:
+        return []
+    import json as _json
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        d = pkg.get(key)
+        if isinstance(d, dict):
+            declared |= set(d)
+    dev = pkg.setdefault("devDependencies", {})
+    if not isinstance(dev, dict):
+        return []
+    added: list[str] = []
+    for flag, peer, ver in _NEXT_CONFIG_PEERS:
+        if flag in cfg_text and peer not in declared:
+            dev[peer] = ver
+            added.append(peer)
+    if not added:
+        return []
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return added
+
+
+# Client-only signals that REQUIRE a `"use client"` directive in a Next.js App
+# Router component: a JSX event-handler prop, a client React/Next hook, or a
+# browser global. Without the directive the component is a Server Component and
+# `next build` fails static generation ("Event handlers cannot be passed to
+# Client Component props" -> static-page-generation timeout).
+_USE_CLIENT_SIGNAL = re.compile(
+    r"\bon[A-Z]\w+\s*=\s*\{"                                          # onClick={...}
+    r"|\buse(?:State|Effect|Reducer|Ref|Context|Callback|Memo|LayoutEffect"
+    r"|Transition|ImperativeHandle|DeferredValue|SyncExternalStore"
+    r"|Router|Pathname|SearchParams|FormState|FormStatus)\s*\("       # client hooks
+    r"|\b(?:window|document|localStorage|sessionStorage|navigator)\." # browser globals
+)
+
+
+def _has_use_client_directive(text: str) -> bool:
+    """True when the first real statement is a ``use client`` directive."""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith(("//", "/*", "*")):
+            continue
+        return s.strip(";") in ('"use client"', "'use client'")
+    return False
+
+
+# Server-only exports that a Client Component is FORBIDDEN to have. When a file
+# needs "use client" (interactivity) AND has one of these, next build errors
+# ("You are attempting to export metadata ... from a component marked with use
+# client"). The deterministic resolution: make it a client component and remove
+# the server-only export (per-page metadata falls back to the layout's).
+_METADATA_EXPORT = re.compile(
+    r"export\s+const\s+metadata\b[^={]*=\s*\{"
+    r"|export\s+(?:async\s+)?function\s+generateMetadata\s*\([^)]*\)\s*(?::[^={]+)?\{"
+)
+
+
+def _strip_metadata_exports(text: str) -> tuple[str, bool]:
+    """Remove `export const metadata = {...}` / `export [async] function
+    generateMetadata(...) {...}` blocks (brace-matched). Returns (new_text, removed)."""
+    removed = False
+    while True:
+        m = _METADATA_EXPORT.search(text)
+        if not m:
+            break
+        open_idx = text.index("{", m.end() - 1)
+        depth, j = 0, open_idx
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        end = j + 1
+        if end < len(text) and text[end] == ";":
+            end += 1
+        text = text[:m.start()] + text[end:]
+        removed = True
+    return text, removed
+
+
+def add_use_client_directives(root: str | Path) -> list[str]:
+    """Prepend ``"use client";`` to Next.js App Router components that use
+    client-only features (event handlers, state/effect hooks, browser globals) but
+    lack the directive — otherwise `next build` fails static generation. Returns
+    the relative paths modified. No-op outside a Next.js app. Never raises."""
+    root = Path(root)
+    is_next = (root / "app").is_dir() or any(
+        (root / f).is_file() for f in
+        ("next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"))
+    if not is_next:
+        return []
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in (".jsx", ".tsx", ".js", ".ts", ".mjs"):
+            continue
+        rel = f.relative_to(root)
+        # Only component dirs — never touch config/util/pages-router files.
+        if not rel.parts or rel.parts[0] not in ("app", "components", "src"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not _USE_CLIENT_SIGNAL.search(text) or _has_use_client_directive(text):
+            continue
+        # A Client Component can't export metadata/generateMetadata — strip those
+        # (server-only) when present so the interactive component can build.
+        body, _ = _strip_metadata_exports(text) if _METADATA_EXPORT.search(text) else (text, False)
+        try:
+            f.write_text('"use client";\n\n' + body.lstrip("﻿"), encoding="utf-8")
+        except OSError:
+            continue
+        changed.append(str(rel))
+    return changed
+
+
+_AT_IMPORT_RE = re.compile(r"""(?:from|import|require\()\s*['"]@/""")
+
+
+def ensure_path_alias_config(root: str | Path) -> list[str]:
+    """If the project imports via the ``@/`` alias but no jsconfig/tsconfig maps it,
+    write the ``@/* -> ./*`` mapping (the Next.js convention) so `next build` resolves
+    those imports — a very common generated-app failure. Returns [config path] or [].
+    Never raises."""
+    root = Path(root)
+    ts, js = root / "tsconfig.json", root / "jsconfig.json"
+    for cfg in (ts, js):
+        if cfg.is_file():
+            try:
+                if '"@/' in cfg.read_text(encoding="utf-8", errors="replace"):
+                    return []  # already mapped
+            except OSError:
+                return []
+    uses_alias = False
+    for f in _iter_files(root):
+        if f.suffix not in (".js", ".jsx", ".ts", ".tsx", ".mjs"):
+            continue
+        try:
+            if _AT_IMPORT_RE.search(f.read_text(encoding="utf-8", errors="replace")):
+                uses_alias = True
+                break
+        except OSError:
+            continue
+    if not uses_alias:
+        return []
+    target = ts if ts.is_file() else js
+    data: dict = {}
+    if target.is_file():
+        try:
+            data = json.loads(target.read_text(encoding="utf-8", errors="replace")) or {}
+        except (OSError, ValueError):
+            data = {}
+    co = data.setdefault("compilerOptions", {})
+    co.setdefault("baseUrl", ".")
+    paths = co.setdefault("paths", {})
+    if "@/*" in paths:
+        return []
+    paths["@/*"] = ["./*"]
+    try:
+        target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return [target.name]
+
+
+_TS_TYPE_LINE = re.compile(r"^\s*(?:export\s+type\s+\w+\s*[=<]|import\s+type\s)")
+
+
+def strip_ts_type_in_js(root: str | Path) -> list[str]:
+    """Drop TypeScript-only single-line statements (``export type X = ...``,
+    ``import type ...``) some models emit into plain .js/.jsx files, which break the
+    JS build ("Expected '{', got 'type'"). Never touches .ts/.tsx (valid there).
+    Returns modified rel paths. Never raises."""
+    root = Path(root)
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in (".js", ".jsx", ".mjs"):
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            continue
+        kept = [ln for ln in lines if not _TS_TYPE_LINE.match(ln)]
+        if len(kept) != len(lines):
+            try:
+                f.write_text("".join(kept), encoding="utf-8")
+            except OSError:
+                continue
+            changed.append(str(f.relative_to(root)))
+    return changed
+
+
 def proof_run(
     project_dir: str | Path,
     *,
@@ -1292,6 +1530,64 @@ def _run_node_tests(pdir: Path, timeout: int) -> tuple[bool, bool, str]:
     return (True, res.returncode == 0, out[-500:])
 
 
+# High-signal build-failure lines that name the offending file/symbol. Next/
+# webpack/tsc emit these EARLY in the log, so a blind tail (out[-700:]) drops the
+# exact lines the code-improver needs to target the right file (e.g. add the
+# missing export). We surface them explicitly.
+_BUILD_DIAG_RE = re.compile(
+    r"Attempted import error:"
+    r"|Module not found:"
+    r"|is not exported from"
+    r"|Type error:"
+    r"|Failed to collect page data for"
+    r"|Error occurred prerendering page"
+    r"|^\s*\./[\w./\-@\[\]]+\.(?:jsx?|tsx?|mjs|cjs)\s*$"   # offending file path line
+)
+
+
+def _distill_build_errors(output: str, *, tail: int = 700, max_diag: int = 30) -> str:
+    """Pair the actionable, file/symbol-naming diagnostic lines pulled from the
+    FULL build log (import errors, module-not-found, type errors, offending file
+    paths) with the log tail. A blind tail misses the early diagnostics the
+    improver needs to repair the real cause. Falls back to the tail when no
+    high-signal line is found."""
+    diag: list[str] = []
+    seen: set[str] = set()
+    for ln in output.splitlines():
+        s = ln.strip()
+        if not s or s in seen or not _BUILD_DIAG_RE.search(s):
+            continue
+        seen.add(s)
+        diag.append(s)
+        if len(diag) >= max_diag:
+            break
+    tail_text = output[-tail:]
+    if not diag:
+        return tail_text
+    return "Key errors:\n" + "\n".join(diag) + "\n\n...build output tail:\n" + tail_text
+
+
+# Generated apps often instantiate an LLM/provider SDK client at module top-level,
+# which `next build`'s "collect page data" phase executes — a MISSING key then crashes
+# the build ("Missing credentials" / "set OPENAI_API_KEY") even though the key is only
+# needed at runtime. Seed placeholders for common providers so build-time evaluation
+# doesn't fail; the real key is still required at serve.
+_BUILD_PLACEHOLDER_KEYS = (
+    "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY", "MISTRAL_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+)
+
+
+def _node_build_env() -> dict:
+    """Build-time env for npm: CI flags + placeholder provider keys so a top-level
+    SDK client init doesn't crash the build on a missing key (real key set at serve)."""
+    import os
+    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    for k in _BUILD_PLACEHOLDER_KEYS:
+        env.setdefault(k, "sk-build-placeholder")
+    return env
+
+
 def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
     """Compile a node/web project for real: npm install + npm run build.
 
@@ -1300,7 +1596,6 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     proof. A non-zero build IS a real failure. Never raises.
     """
     import json as _json
-    import os
     import shutil
     import subprocess
 
@@ -1325,7 +1620,7 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     if build_cmd is None:
         return (False, False, "no build/typecheck script — skipped")
 
-    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    env = _node_build_env()
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
     # fix-loop sees the error. ONLY a genuine connectivity failure (offline
@@ -1363,7 +1658,9 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     out = ((bld.stdout or "") + (bld.stderr or "")).strip()
     if bld.returncode == 0:
         return (True, True, out[-300:])
-    return (True, False, out[-700:])
+    # Surface the file/symbol-naming diagnostics (not just the tail) so the
+    # fix-loop's improver can target the real cause (e.g. a missing export).
+    return (True, False, _distill_build_errors(out))
 
 
 def _docker_daemon_ok() -> bool:

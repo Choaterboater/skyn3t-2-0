@@ -6,7 +6,6 @@ from pathlib import Path
 
 from skyn3t.agents import integration_verifier as iv
 from skyn3t.agents.config_detector import (
-    detect,
     detect_from_brief,
     detect_from_code,
 )
@@ -17,7 +16,6 @@ from skyn3t.agents.config_ui_agent import (
 )
 from skyn3t.agents.validate import validate_source
 from skyn3t.studio.config_spec import ConfigKey, ConfigSpec, kind_for, scope_for
-
 
 # ---- ConfigSpec ----------------------------------------------------------
 

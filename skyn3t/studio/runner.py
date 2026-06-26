@@ -42,10 +42,14 @@ from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
+    add_use_client_directives,
+    ensure_path_alias_config,
     extract_error_gaps,
     proof_run,
+    reconcile_next_config_peers,
     reconcile_npm_deps,
     scaffold_missing_imports,
+    strip_ts_type_in_js,
 )
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
@@ -494,7 +498,8 @@ class StudioRunner:
 
     # ---- asset generation (Replicate, opt-in) ---------------------------
     async def _generate_assets(
-        self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any]
+        self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any],
+        stack: str = "",
     ) -> dict[str, Any]:
         """Generate real image assets into the worktree (when enabled) and thread
         the manifest into the stage ``extra`` so the code prompt references them.
@@ -509,7 +514,7 @@ class StudioRunner:
             if not asset_gen_enabled(self.settings):
                 return extra
             result = await generate_assets(
-                worktree_dir, brief, settings=self.settings
+                worktree_dir, brief, settings=self.settings, stack=stack
             )
         except Exception as exc:  # noqa: BLE001 - asset-gen must never break a build
             log.warning("assets.step_failed", error=str(exc)[:160])
@@ -672,20 +677,24 @@ class StudioRunner:
         return min(float(score), 49.0) if verdict != "go" else float(score)
 
     @staticmethod
-    def _verifiers_gate(prior: dict) -> tuple[bool, str | None]:
+    def _verifiers_gate(prior: dict, proof_build_passed: bool = False) -> tuple[bool, str | None]:
         """Consume the objective-verifier verdicts the gate previously ignored.
 
         Returns (ok, reason). Blocks ONLY on a verifier's REAL failure so a
         degraded/offline verifier never false-fails a build (the swarm's caution):
         - verify_build: a real install/build that actually ran and failed, OR a
           reward-hacking-suspected (gamed/empty) project. An offline 'dry' fail
-          does NOT block.
+          does NOT block. ``proof_build_passed`` overrides a build-failure: the
+          verify_build STAGE runs on the pre-repair worktree (before
+          reconcile_npm_deps / scaffold), so once the authoritative post-repair
+          proof_run build PASSES, a stale verify_build failure must not veto it.
+          (Reward-hacking still blocks — that's a separate, non-stale signal.)
         - verify_boot: a real Python import/boot smoke that ran and failed (web
           'structural' boot is advisory-only — proof_run already covers entries)."""
         vb = prior.get("verify_build") if isinstance(prior, dict) else None
         if isinstance(vb, dict) and str(vb.get("verdict", "")).lower() == "fail":
             reward = vb.get("reward_hacking") or {}
-            if vb.get("ran_real_build") is True:
+            if vb.get("ran_real_build") is True and not proof_build_passed:
                 return False, "verify_build: real build failed — " + str(vb.get("details", ""))[:120]
             if reward.get("suspicious"):
                 return False, "verify_build: reward-hacking suspected — " + "; ".join(
@@ -697,6 +706,36 @@ class StudioRunner:
             if str(vboot.get("mode", "")).lower() in ("import", "python", "node", "boot"):
                 return False, "verify_boot: entrypoint failed to boot — " + str(vboot.get("details", ""))[:120]
         return True, None
+
+    @staticmethod
+    def _native_llm_gate(project_dir: str) -> tuple[bool, str | None]:
+        """Backstop for a delivered app that would require a NATIVE provider LLM
+        key the user doesn't hold (e.g. `import anthropic` + ANTHROPIC_API_KEY).
+
+        SkyN3t routes every LLM call through OpenRouter, so such an app graded
+        'go' crashes at run for a key the host never set (the app_runner fold only
+        renames which secret the serve UI asks for — it never rewrites the source).
+        Returns (violates, reason). Anthropic-scoped via ``native_llm_violation``:
+        never flags the compliant `openai`-over-OpenRouter client. Never raises."""
+        from skyn3t.agents.validate import native_llm_violation
+        code_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+        env_names = {".env", ".env.example", ".env.sample", ".env.local"}
+        try:
+            root = Path(project_dir)
+            for f in root.rglob("*"):
+                if not f.is_file() or {"node_modules", ".git", ".venv"} & set(f.parts):
+                    continue
+                if f.suffix.lower() not in code_exts and f.name not in env_names:
+                    continue
+                try:
+                    why = native_llm_violation(f.read_text(errors="ignore"))
+                except Exception:  # noqa: BLE001 - unreadable file, skip
+                    continue
+                if why:
+                    return True, f"{f.relative_to(root)}: {why}"
+        except Exception:  # noqa: BLE001 - gate must never crash the build
+            return False, None
+        return False, None
 
     @staticmethod
     def _liveness_gate(verdict: str, stack: str, dead: int,
@@ -996,6 +1035,38 @@ class StudioRunner:
             log.warning("debug.improve_failed", label=label, error=str(exc))
             return False
 
+    def _deterministic_repairs(self, project_dir, plan) -> dict:
+        """Run the deterministic, idempotent build repairs and return what changed.
+
+        Declares imported-but-undeclared npm deps, adds next.config build-tool peer
+        deps (e.g. optimizeCss -> critters), and stubs missing local/aliased
+        imports. Safe to call repeatedly (re-running on a complete tree is a no-op),
+        so the fix-loop can re-run it every iteration — surviving an improver pass
+        that introduces a new gap, and giving the loop real repair power even when
+        no LLM ``code_improve`` agent is registered."""
+        # Scaffold FIRST: a generated stub may itself import a package (e.g.
+        # `import React from 'react'`), so declaring deps afterwards picks those up
+        # in the same pass — making the whole repair converge in one call.
+        stubbed = scaffold_missing_imports(project_dir, stack=plan.stack)
+        added = reconcile_npm_deps(project_dir)
+        peers = reconcile_next_config_peers(project_dir)
+        # Next.js App Router: prepend "use client" to interactive components so
+        # `next build` doesn't fail static generation on event handlers/hooks.
+        use_client = add_use_client_directives(project_dir)
+        # Map the @/ import alias (write jsconfig paths) and strip stray TS-only
+        # statements from .js files — two common cheap-model defects that otherwise
+        # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
+        alias_cfg = ensure_path_alias_config(project_dir)
+        ts_stripped = strip_ts_type_in_js(project_dir)
+        return {
+            "npm_deps_added": added,
+            "next_config_peers": peers,
+            "imports_scaffolded": stubbed,
+            "use_client_added": use_client,
+            "path_alias_config": alias_cfg,
+            "ts_in_js_stripped": ts_stripped,
+        }
+
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Repair a failing build until the proof passes or attempts run out.
 
@@ -1015,6 +1086,11 @@ class StudioRunner:
                 correlation_id=correlation_id,
             )
             filled = self._fill_missing(project_dir, plan, manifest.brief, list(proof.missing or []))
+            # Re-run the deterministic repairs every iteration: an improver pass can
+            # introduce a new missing import / undeclared dep, and when no
+            # code_improve agent is registered these are the loop's only real fix
+            # for missing-dep / missing-component / next.config-peer defects.
+            repairs = self._deterministic_repairs(project_dir, plan)
             # A slice can import a local stylesheet no slice actually wrote (e.g.
             # main.jsx -> ./styles/app.css). The improver only REWRITES existing
             # files, so stub the dangling stylesheet here (empty CSS resolves the
@@ -1065,7 +1141,8 @@ class StudioRunner:
             )
             manifest.extra["proof"] = proof.to_dict()
             manifest.extra[f"fix_attempt_{attempt}"] = {
-                "filled": filled, "stubbed": stubbed, "passed": proof.passed}
+                "filled": filled, "stubbed": stubbed, "passed": proof.passed,
+                "repairs": repairs}
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
                 {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "passed": proof.passed},
@@ -1403,7 +1480,7 @@ class StudioRunner:
         # codegen, then tell the code/agentic prompt they exist so the app uses
         # real art. Gated behind a token + asset_gen; a no-op otherwise. Never
         # blocks/crashes the build (design rule #6) — assets are best-effort.
-        extra = await self._generate_assets(main_wt.dir, brief, manifest, extra)
+        extra = await self._generate_assets(main_wt.dir, brief, manifest, extra, stack=plan.stack)
 
         # Observability + budget guard for this build (all best-effort).
         self._obs_call(self.cost_tracker, "start_build", build_id)
@@ -1565,22 +1642,26 @@ class StudioRunner:
             manifest.worktree_dir = main_wt.dir
             manifest.artifact_dir = project_dir
 
-            # Declare any imported-but-undeclared npm package in package.json so the
-            # build/dev server can resolve it (codegen often imports prop-types,
-            # @testing-library/react, axios, ... without adding the dep -> Vite 500).
-            added_deps = reconcile_npm_deps(project_dir)
-            if added_deps:
-                manifest.extra["npm_deps_added"] = added_deps
-                log.info("runner.npm_deps_reconciled", added=added_deps)
-
-            # Scaffold minimal stubs for LOCAL imports whose target file was never
-            # generated (the recurring '@/components/ui/button -> Module not found'
-            # break) so the build resolves instead of hard-failing. A genuinely
-            # broken stub is still caught by the boot/liveness gate.
-            stubbed = scaffold_missing_imports(project_dir, stack=plan.stack)
-            if stubbed:
-                manifest.extra["imports_scaffolded"] = stubbed
-                log.info("runner.imports_scaffolded", files=stubbed)
+            # Deterministic, idempotent build repairs BEFORE the first proof:
+            # declare imported-but-undeclared npm deps (codegen often imports
+            # prop-types/axios/... without the dep -> Vite 500), add next.config
+            # peer deps (optimizeCss -> critters), and stub LOCAL/aliased imports
+            # whose target was never generated (the '@/components/ui/button ->
+            # Module not found' break). Genuinely-broken stubs still fail the
+            # boot/liveness gate. Same repairs re-run inside _fix_loop.
+            repairs = self._deterministic_repairs(project_dir, plan)
+            if repairs["npm_deps_added"]:
+                manifest.extra["npm_deps_added"] = repairs["npm_deps_added"]
+                log.info("runner.npm_deps_reconciled", added=repairs["npm_deps_added"])
+            if repairs["next_config_peers"]:
+                manifest.extra["next_config_peers"] = repairs["next_config_peers"]
+                log.info("runner.next_config_peers_added", added=repairs["next_config_peers"])
+            if repairs["imports_scaffolded"]:
+                manifest.extra["imports_scaffolded"] = repairs["imports_scaffolded"]
+                log.info("runner.imports_scaffolded", files=repairs["imports_scaffolded"])
+            if repairs["use_client_added"]:
+                manifest.extra["use_client_added"] = repairs["use_client_added"]
+                log.info("runner.use_client_added", files=repairs["use_client_added"])
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous
@@ -1750,14 +1831,26 @@ class StudioRunner:
             # Consume the objective-verifier verdicts (previously recorded but
             # never gated): a real build failure or a reward-hacked/un-bootable
             # delivery blocks. Offline/degraded verifiers never false-fail here.
-            verifiers_ok, verifier_reason = self._verifiers_gate(prior)
+            # The verify_build STAGE runs pre-repair; the proof_run build is the
+            # authoritative post-repair compile. If it really built, a stale
+            # verify_build failure must not veto the verdict.
+            proof_build_passed = bool(proof.passed and proof.detail.get("build") == "passed")
+            verifiers_ok, verifier_reason = self._verifiers_gate(prior, proof_build_passed=proof_build_passed)
             if not verifiers_ok:
                 manifest.extra["verifier_gate"] = verifier_reason
+            # An app requiring a native provider LLM key (e.g. `import anthropic` +
+            # ANTHROPIC_API_KEY) can never be "go": the user has no such key, so it
+            # crashes at run. Codegen should already have regenerated it the
+            # OpenRouter way; this is the delivery backstop.
+            native_llm_key, native_reason = self._native_llm_gate(project_dir)
+            if native_llm_key:
+                manifest.extra["native_llm_gate"] = native_reason
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
                     and substantive and has_entry and intent_ok and critic_gate
-                    and verifiers_ok and not scaffold_stub and not code_degraded)
+                    and verifiers_ok and not scaffold_stub and not code_degraded
+                    and not native_llm_key)
                 else "no_go"
             )
             # Don't let the learning loop reward an under-delivered build (only

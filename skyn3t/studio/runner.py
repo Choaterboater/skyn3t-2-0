@@ -471,7 +471,10 @@ class StudioRunner:
             if emb is None:
                 return advice, slugs
             from skyn3t.intelligence.semantic_skills import relevant_skills
-            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=3):
+            # Inject the top-6 (was 3): a rich app needs more than 3 skills — e.g. a
+            # desktop editor wants frontend + theming + editor-layout + a11y together,
+            # which 3 slots starved. The learning loop grades + down-ranks unhelpful ones.
+            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=6):
                 if sl in slugs:
                     continue
                 sk = skills.get(sl)

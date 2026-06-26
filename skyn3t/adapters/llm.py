@@ -109,7 +109,9 @@ _ANTISTUB_NUDGE = (
     "real UI and few/no section components. Do NOT finish yet. Build the COMPLETE UI now "
     "as real, separate section components (hero, services, about, testimonials, service "
     "areas, why-choose-us, contact) with real copy and the images under /assets, then "
-    "assemble them all in the homepage so it renders a full, content-rich, multi-section page."
+    "assemble them all in the homepage so it renders a full, content-rich, multi-section page. "
+    "CRITICAL: if app/page.jsx (the entry/homepage) is still a placeholder or counter demo, "
+    "OVERWRITE it now — import and render your section components; never leave the scaffold."
 )
 _AGENTIC_TOOLS = [
     {"type": "function", "function": {
@@ -610,10 +612,14 @@ class LLMClient:
         wrote, finished, start = 0, False, _t.time()
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
 
+        _entry_names = {"page.jsx", "page.tsx", "app.jsx", "app.tsx", "index.jsx", "index.tsx"}
+
         def _looks_stub() -> bool:
-            """A delivered project is a stub if it has almost no UI components or the
-            total component code is tiny (data/config scaffolding without real UI)."""
-            comps, ui_bytes = 0, 0
+            """A delivered project is a stub if it has almost no UI components, the total
+            component code is tiny, OR an entry file is still the untouched offline
+            scaffold placeholder (marker) — i.e. the model built components but never
+            wrote the homepage, so the placeholder is what renders."""
+            comps, ui_bytes, scaffold_entry = 0, 0, False
             for f in root.rglob("*"):
                 if not f.is_file() or f.suffix not in (".jsx", ".tsx"):
                     continue
@@ -627,7 +633,13 @@ class LLMClient:
                 ui_bytes += n
                 if "/components/" in rel or "/sections/" in rel:
                     comps += 1
-            return comps < 3 or ui_bytes < 4000
+                if f.name.lower() in _entry_names:
+                    try:
+                        if "generated offline by skyn3t" in f.read_text(errors="replace").lower():
+                            scaffold_entry = True
+                    except OSError:
+                        pass
+            return scaffold_entry or comps < 3 or ui_bytes < 4000
         try:
             async with httpx.AsyncClient(timeout=180) as client:
                 for turn in range(max_turns):

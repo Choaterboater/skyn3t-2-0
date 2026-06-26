@@ -46,6 +46,7 @@ from skyn3t.studio.proof_run import (
     ensure_path_alias_config,
     extract_error_gaps,
     proof_run,
+    reconcile_lucide_icons,
     reconcile_next_config_peers,
     reconcile_npm_deps,
     scaffold_missing_imports,
@@ -71,6 +72,7 @@ log = structlog.get_logger(__name__)
 _WEB_STACKS = frozenset({
     "react", "react_vite", "nextjs", "next", "astro", "remix",
     "static", "static_html", "fastapi", "node_express", "express",
+    "tauri", "desktop",  # Tauri desktop: frontend is a Vite/React web app
 })
 # Stacks that warrant design-skill injection but are NOT HTTP-served (so they
 # must not trigger the web liveness GET-/ probe). react_native renders UI but
@@ -83,6 +85,7 @@ _DESIGN_STACKS = _WEB_STACKS | frozenset({"react_native"})
 _UI_WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next",
     "astro", "remix", "static", "static_html",
+    "tauri", "desktop",
 })
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 
@@ -1058,6 +1061,9 @@ class StudioRunner:
         # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
         alias_cfg = ensure_path_alias_config(project_dir)
         ts_stripped = strip_ts_type_in_js(project_dir)
+        # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
+        # ones — the model invents icon names that aren't exported, failing the build.
+        lucide = reconcile_lucide_icons(project_dir)
         return {
             "npm_deps_added": added,
             "next_config_peers": peers,
@@ -1065,19 +1071,29 @@ class StudioRunner:
             "use_client_added": use_client,
             "path_alias_config": alias_cfg,
             "ts_in_js_stripped": ts_stripped,
+            "lucide_icons_fixed": lucide,
         }
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
-        """Repair a failing build until the proof passes or attempts run out.
+        """Convergence loop: re-run the real build, feed the EXACT error back to the
+        improver, and retry until the proof passes or the budget is spent.
 
-        Each iteration: fill missing checklist files (deterministic), then run
-        the code-improver against the flagged gaps (LLM, best-effort), then
-        re-run the objective proof. This is the bounded fix loop the pipeline
-        was missing — a no_go no longer just stops.
+        Each iteration: deterministic repairs + the code-improver against the real
+        compiler errors (LLM) + re-run the objective proof. The cheap model emits a
+        different defect each build, so a single pass rarely converges; this loops to
+        green (or the attempt/wall-clock bound) instead of stopping after 2 tries —
+        the fix for the ~14% go-rate that no amount of per-class repair addressed.
         """
-        max_attempts = int((extra or {}).get("max_fix_attempts", 2))
+        import time as _t
+        max_attempts = int((extra or {}).get(
+            "max_fix_attempts", getattr(self.settings, "max_fix_attempts", 6)))
+        budget_s = int(getattr(self.settings, "fix_loop_budget_s", 720))
+        loop_start = _t.time()
         attempt = 0
         while not proof.passed and attempt < max_attempts:
+            if _t.time() - loop_start > budget_s:
+                log.info("fix.budget_exhausted", attempts=attempt, elapsed=int(_t.time() - loop_start))
+                break
             attempt += 1
             self._obs_call(self.budget_guard, "heartbeat")
             await self.event_bus.emit(
@@ -1149,6 +1165,9 @@ class StudioRunner:
                 correlation_id=correlation_id,
             )
             log.info("fix.iteration", attempt=attempt, filled=filled, passed=proof.passed)
+        log.info("fix.converged" if proof.passed else "fix.unconverged",
+                 attempts=attempt, passed=proof.passed,
+                 elapsed=int(_t.time() - loop_start))
         return proof
 
     # ---- self-improvement: capture lessons, record pattern, promote skill

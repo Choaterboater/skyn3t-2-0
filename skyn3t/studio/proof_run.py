@@ -1567,6 +1567,27 @@ def _distill_build_errors(output: str, *, tail: int = 700, max_diag: int = 30) -
     return "Key errors:\n" + "\n".join(diag) + "\n\n...build output tail:\n" + tail_text
 
 
+# Generated apps often instantiate an LLM/provider SDK client at module top-level,
+# which `next build`'s "collect page data" phase executes — a MISSING key then crashes
+# the build ("Missing credentials" / "set OPENAI_API_KEY") even though the key is only
+# needed at runtime. Seed placeholders for common providers so build-time evaluation
+# doesn't fail; the real key is still required at serve.
+_BUILD_PLACEHOLDER_KEYS = (
+    "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
+    "GROQ_API_KEY", "MISTRAL_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+)
+
+
+def _node_build_env() -> dict:
+    """Build-time env for npm: CI flags + placeholder provider keys so a top-level
+    SDK client init doesn't crash the build on a missing key (real key set at serve)."""
+    import os
+    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    for k in _BUILD_PLACEHOLDER_KEYS:
+        env.setdefault(k, "sk-build-placeholder")
+    return env
+
+
 def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
     """Compile a node/web project for real: npm install + npm run build.
 
@@ -1600,7 +1621,7 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     if build_cmd is None:
         return (False, False, "no build/typecheck script — skipped")
 
-    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    env = _node_build_env()
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
     # fix-loop sees the error. ONLY a genuine connectivity failure (offline

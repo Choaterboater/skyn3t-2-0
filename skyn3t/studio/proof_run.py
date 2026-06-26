@@ -1453,6 +1453,43 @@ def _run_node_tests(pdir: Path, timeout: int) -> tuple[bool, bool, str]:
     return (True, res.returncode == 0, out[-500:])
 
 
+# High-signal build-failure lines that name the offending file/symbol. Next/
+# webpack/tsc emit these EARLY in the log, so a blind tail (out[-700:]) drops the
+# exact lines the code-improver needs to target the right file (e.g. add the
+# missing export). We surface them explicitly.
+_BUILD_DIAG_RE = re.compile(
+    r"Attempted import error:"
+    r"|Module not found:"
+    r"|is not exported from"
+    r"|Type error:"
+    r"|Failed to collect page data for"
+    r"|Error occurred prerendering page"
+    r"|^\s*\./[\w./\-@\[\]]+\.(?:jsx?|tsx?|mjs|cjs)\s*$"   # offending file path line
+)
+
+
+def _distill_build_errors(output: str, *, tail: int = 700, max_diag: int = 30) -> str:
+    """Pair the actionable, file/symbol-naming diagnostic lines pulled from the
+    FULL build log (import errors, module-not-found, type errors, offending file
+    paths) with the log tail. A blind tail misses the early diagnostics the
+    improver needs to repair the real cause. Falls back to the tail when no
+    high-signal line is found."""
+    diag: list[str] = []
+    seen: set[str] = set()
+    for ln in output.splitlines():
+        s = ln.strip()
+        if not s or s in seen or not _BUILD_DIAG_RE.search(s):
+            continue
+        seen.add(s)
+        diag.append(s)
+        if len(diag) >= max_diag:
+            break
+    tail_text = output[-tail:]
+    if not diag:
+        return tail_text
+    return "Key errors:\n" + "\n".join(diag) + "\n\n...build output tail:\n" + tail_text
+
+
 def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
     """Compile a node/web project for real: npm install + npm run build.
 
@@ -1524,7 +1561,9 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     out = ((bld.stdout or "") + (bld.stderr or "")).strip()
     if bld.returncode == 0:
         return (True, True, out[-300:])
-    return (True, False, out[-700:])
+    # Surface the file/symbol-naming diagnostics (not just the tail) so the
+    # fix-loop's improver can target the real cause (e.g. a missing export).
+    return (True, False, _distill_build_errors(out))
 
 
 def _docker_daemon_ok() -> bool:

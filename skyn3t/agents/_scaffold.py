@@ -1214,8 +1214,130 @@ def _static_threejs(app_name: str, brief: str) -> dict[str, str]:
     return files
 
 
+def _tauri(app_name: str, brief: str) -> dict[str, str]:
+    """Cross-platform desktop (Tauri) scaffold = skyn3t's Vite/React frontend (codegen
+    fills it with the app UI) + a minimal, FIXED src-tauri/ Rust shell for native file
+    dialogs, fs access, and a run_command for scripting. `npm run build` builds the
+    frontend (the proof); `npm run tauri build` produces the Mac .app / Windows .msi."""
+    files = dict(_react_vite(app_name, brief))
+    title = (brief.strip() or app_name).split("\n")[0][:80]
+    crate = _re.sub(r"[^a-z0-9_]", "_", app_name.lower()).strip("_") or "app"
+    ident = "com.greentext." + (_re.sub(r"[^a-z0-9]", "", app_name.lower()) or "app")
+    prod = _re.sub(r"[^A-Za-z0-9 _-]", "", title) or app_name
+
+    files["package.json"] = (
+        "{\n"
+        f'  "name": "{app_name}",\n'
+        '  "private": true,\n'
+        '  "version": "0.1.0",\n'
+        '  "type": "module",\n'
+        '  "scripts": {\n'
+        '    "dev": "vite",\n'
+        '    "build": "vite build",\n'
+        '    "preview": "vite preview",\n'
+        '    "tauri": "tauri"\n'
+        "  },\n"
+        '  "dependencies": {\n'
+        '    "react": "^18.2.0",\n'
+        '    "react-dom": "^18.2.0",\n'
+        '    "@tauri-apps/api": "^1.6.0"\n'
+        "  },\n"
+        '  "devDependencies": {\n'
+        '    "@vitejs/plugin-react": "^4.2.0",\n'
+        '    "vite": "^5.0.0",\n'
+        '    "@tauri-apps/cli": "^1.6.0"\n'
+        "  }\n"
+        "}\n"
+    )
+    files["vite.config.js"] = (
+        "import { defineConfig } from 'vite'\n"
+        "import react from '@vitejs/plugin-react'\n\n"
+        "// Tauri wants a fixed dev port + no clearScreen so its CLI can attach.\n"
+        "export default defineConfig({\n"
+        "  plugins: [react()],\n"
+        "  clearScreen: false,\n"
+        "  server: { port: 1420, strictPort: true },\n"
+        "})\n"
+    )
+    files["src-tauri/Cargo.toml"] = (
+        "[package]\n"
+        f'name = "{crate}"\n'
+        'version = "0.1.0"\n'
+        'edition = "2021"\n\n'
+        "[build-dependencies]\n"
+        'tauri-build = { version = "1.5", features = [] }\n\n'
+        "[dependencies]\n"
+        'tauri = { version = "1.6", features = ["dialog-open", "dialog-save", '
+        '"fs-read-file", "fs-write-file", "fs-read-dir", "fs-exists", "fs-create-dir", '
+        '"path-all", "shell-open", "os-all", "window-set-title"] }\n'
+        'serde = { version = "1", features = ["derive"] }\n'
+        'serde_json = "1"\n\n'
+        "[features]\n"
+        'custom-protocol = ["tauri/custom-protocol"]\n'
+    )
+    files["src-tauri/build.rs"] = "fn main() {\n    tauri_build::build()\n}\n"
+    files["src-tauri/tauri.conf.json"] = (
+        "{\n"
+        '  "build": {\n'
+        '    "beforeDevCommand": "npm run dev",\n'
+        '    "beforeBuildCommand": "npm run build",\n'
+        '    "devPath": "http://localhost:1420",\n'
+        '    "distDir": "../dist"\n'
+        "  },\n"
+        f'  "package": {{ "productName": "{prod}", "version": "0.1.0" }},\n'
+        '  "tauri": {\n'
+        '    "allowlist": {\n'
+        '      "dialog": { "all": true },\n'
+        '      "fs": { "all": true, "scope": ["$HOME/**", "$DESKTOP/**", "$DOCUMENT/**", "$DOWNLOAD/**"] },\n'
+        '      "shell": { "open": true },\n'
+        '      "os": { "all": true },\n'
+        '      "window": { "setTitle": true }\n'
+        "    },\n"
+        f'    "bundle": {{ "active": true, "identifier": "{ident}", "targets": "all" }},\n'
+        f'    "windows": [{{ "title": "{prod}", "width": 1200, "height": 820, "resizable": true }}],\n'
+        '    "security": { "csp": null }\n'
+        "  }\n"
+        "}\n"
+    )
+    files["src-tauri/src/main.rs"] = (
+        '#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]\n\n'
+        "use std::io::Write;\n"
+        "use std::process::{Command, Stdio};\n\n"
+        "// Run a shell command, piping `input` to stdin, returning stdout — powers\n"
+        "// the editor's \"run command on selection\" / scripting for repeat work.\n"
+        "#[tauri::command]\n"
+        "fn run_command(command: String, input: String) -> Result<String, String> {\n"
+        '    let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };\n'
+        '    let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };\n'
+        "    let mut child = Command::new(shell)\n"
+        "        .arg(flag).arg(&command)\n"
+        "        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())\n"
+        "        .spawn().map_err(|e| e.to_string())?;\n"
+        "    if let Some(mut stdin) = child.stdin.take() {\n"
+        "        let _ = stdin.write_all(input.as_bytes());\n"
+        "    }\n"
+        "    let out = child.wait_with_output().map_err(|e| e.to_string())?;\n"
+        "    if out.status.success() {\n"
+        "        Ok(String::from_utf8_lossy(&out.stdout).into_owned())\n"
+        "    } else {\n"
+        "        Err(String::from_utf8_lossy(&out.stderr).into_owned())\n"
+        "    }\n"
+        "}\n\n"
+        "fn main() {\n"
+        "    tauri::Builder::default()\n"
+        "        .invoke_handler(tauri::generate_handler![run_command])\n"
+        "        .run(tauri::generate_context!())\n"
+        '        .expect("error while running tauri application");\n'
+        "}\n"
+    )
+    files["src-tauri/.gitignore"] = "/target\n"
+    return files
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
+    "tauri": _tauri,
+    "desktop": _tauri,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

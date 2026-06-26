@@ -1613,6 +1613,9 @@ def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bo
 _NODE_STACKS = (
     "react", "react_vite", "react_native", "node", "node_express", "express",
     "nextjs", "astro", "remix", "static",
+    # Tauri desktop: the frontend is a Vite/React app — `npm run build` builds it
+    # (the proof); the fixed src-tauri/ Rust shell is bundled separately.
+    "tauri", "desktop",
 )
 
 

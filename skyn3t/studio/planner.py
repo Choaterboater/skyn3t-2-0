@@ -36,6 +36,11 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "mobile app", "react native", "react-native", "expo",
         "ios app", "android app", "mobile application",
     )),
+    # Tauri desktop must precede react/static — a desktop app uses a React frontend
+    # and may say "app"/"web", but it bundles to a native Mac/Windows binary.
+    ("tauri", ("desktop app", "tauri", "mac app", "macos app", "windows app",
+               "native app", "desktop application", "standalone app", "menu bar app",
+               "cross-platform app", "desktop")),
     ("react", ("react", "vite", "spa", "single page", "frontend", "dashboard ui")),
     ("fastapi", ("fastapi", "rest api", "http api", "backend api", "endpoint")),
     ("flask", ("flask",)),
@@ -57,6 +62,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     "flask": ("README.md", "requirements.txt", "app.py", "tests/test_app.py"),
     "django": ("README.md", "requirements.txt", "manage.py", "project/settings.py"),
     "react": ("README.md", "package.json", "src/App.jsx", "src/main.jsx", "index.html"),
+    # Tauri desktop: the Vite/React frontend entry + the Tauri shell config. The
+    # src-tauri Rust shell is fixed boilerplate; `npm run build` builds the frontend.
+    "tauri": ("README.md", "package.json", "index.html", "src/main.jsx",
+              "src-tauri/tauri.conf.json"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),

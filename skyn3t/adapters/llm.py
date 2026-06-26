@@ -28,6 +28,7 @@ import shutil
 import signal
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 import structlog
@@ -71,6 +72,37 @@ _CLI_COMMANDS: dict[str, list[str]] = {
     "copilot": ["copilot", "-p"],
 }
 _KNOWN_CLI_PROVIDERS = ("claude", "kimi", "copilot")
+
+# Whole-project agentic codegen over the OpenRouter API: the model authors the
+# entire app itself via tool-calls (the way bolt/v0/Aider build coherent apps with
+# cheap models), instead of skyn3t's weak per-file generation.
+_AGENTIC_SYSTEM = (
+    "You are an expert full-stack engineer building a COMPLETE, runnable project. "
+    "Author the WHOLE app yourself using the tools: call write_file for EVERY file "
+    "with real, production-quality code (no placeholders, no TODOs); use read_file / "
+    "list_files to stay coherent across files (imports must resolve, exports must "
+    "exist); call finish only when the app is complete and builds/runs with its "
+    "standard command. Build a rich, polished, multi-page app that fully satisfies "
+    "the brief. Do NOT use native provider SDKs or keys — route any LLM calls through "
+    "the OpenAI SDK at https://openrouter.ai/api/v1 reading OPENROUTER_API_KEY."
+)
+_AGENTIC_TOOLS = [
+    {"type": "function", "function": {
+        "name": "write_file", "description": "Create or overwrite a project file with its full content.",
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string", "description": "project-relative file path"},
+            "content": {"type": "string", "description": "the complete file content"}},
+            "required": ["path", "content"]}}},
+    {"type": "function", "function": {
+        "name": "read_file", "description": "Read a file you have written, to stay coherent.",
+        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+    {"type": "function", "function": {
+        "name": "list_files", "description": "List the project files written so far.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "finish", "description": "Call when the complete app is written and should build/run.",
+        "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}}}},
+]
 
 # Flags that make each headless CLI ignore the host's ambient MCP servers, so a
 # skyn3t build never boots the user's whole ~/.claude / ~/.copilot MCP fleet
@@ -497,10 +529,107 @@ class LLMClient:
             prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
         )
 
+    async def _openrouter_agentic(self, prompt: str, workdir: str, model: str,
+                                  timeout: int | None = None) -> dict:
+        """Whole-project agentic codegen on an OpenRouter model: the model writes the
+        app itself via tool-calls (write_file/read_file/list_files/finish) with full
+        context — coherent like bolt/v0/Aider, vs skyn3t's weak per-file gen. Files
+        are confined to ``workdir``. Returns {ok, backend, error}. Never raises."""
+        import json as _json
+        import time as _t
+        root = Path(workdir).resolve()
+
+        def _safe(path: str) -> Path | None:
+            try:
+                p = (root / str(path)).resolve()
+            except Exception:  # noqa: BLE001
+                return None
+            return p if (p == root or str(p).startswith(str(root) + os.sep)) else None
+
+        def _run_tool(name: str, args: dict) -> str:
+            if name == "write_file":
+                p = _safe(args.get("path", ""))
+                if not p:
+                    return "ERROR: path escapes the project"
+                try:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    body = str(args.get("content", ""))
+                    p.write_text(body, encoding="utf-8")
+                    return f"OK wrote {args.get('path')} ({len(body)} bytes)"
+                except OSError as e:
+                    return f"ERROR: {e}"
+            if name == "read_file":
+                p = _safe(args.get("path", ""))
+                if not p or not p.is_file():
+                    return "ERROR: not found"
+                try:
+                    return p.read_text(encoding="utf-8", errors="replace")[:8000]
+                except OSError as e:
+                    return f"ERROR: {e}"
+            if name == "list_files":
+                out: list[str] = []
+                for f in root.rglob("*"):
+                    if f.is_file() and not ({"node_modules", ".git", ".next", "dist"} & set(f.parts)):
+                        out.append(str(f.relative_to(root)))
+                        if len(out) >= 200:
+                            break
+                return "\n".join(sorted(out)) or "(empty)"
+            return "ERROR: unknown tool"
+
+        messages = [{"role": "system", "content": _AGENTIC_SYSTEM},
+                    {"role": "user", "content": prompt}]
+        headers = {"Authorization": f"Bearer {self.settings.openrouter_api_key}",
+                   "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
+        max_turns = max(4, int(getattr(self.settings, "openrouter_agentic_max_turns", 60)))
+        budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
+        wrote, finished, start = 0, False, _t.time()
+        try:
+            async with httpx.AsyncClient(timeout=180) as client:
+                for turn in range(max_turns):
+                    if _t.time() - start > budget:
+                        log.warning("llm.or_agentic_timeout", turns=turn, wrote=wrote)
+                        break
+                    body = {"model": model, "messages": messages, "tools": _AGENTIC_TOOLS,
+                            "tool_choice": "auto", "max_tokens": 16384}
+                    resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                    resp.raise_for_status()
+                    msg = resp.json()["choices"][0]["message"]
+                    messages.append({"role": "assistant", "content": msg.get("content") or "",
+                                     "tool_calls": msg.get("tool_calls") or []})
+                    tcs = msg.get("tool_calls") or []
+                    if not tcs:
+                        finished = True  # final text answer -> done
+                        break
+                    for tc in tcs:
+                        fn = tc.get("function") or {}
+                        name = fn.get("name", "")
+                        try:
+                            args = _json.loads(fn.get("arguments") or "{}")
+                        except ValueError:
+                            args = {}
+                        if name == "finish":
+                            finished, result = True, "OK"
+                        else:
+                            result = _run_tool(name, args)
+                            if name == "write_file" and result.startswith("OK"):
+                                wrote += 1
+                        messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                                         "content": result})
+                    if finished:
+                        break
+        except Exception as exc:  # noqa: BLE001 - never crash the build
+            log.warning("llm.or_agentic_failed", error=str(exc)[:200], wrote=wrote)
+        log.info("llm.or_agentic_done", model=model, files_written=wrote, finished=finished)
+        return {"ok": wrote > 0, "backend": "openrouter",
+                "error": "" if wrote > 0 else "agentic loop wrote no files"}
+
     @property
     def supports_agentic(self) -> bool:
-        """CLI backends are full coding agents that can write a whole project."""
-        return self.backend.endswith("_cli")
+        """Whole-project codegen: CLI backends are coding agents; OpenRouter gets the
+        agentic tool-loop when ``openrouter_agentic`` is on (cheap models, full app)."""
+        b = self.backend
+        return b.endswith("_cli") or (
+            b == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)))
 
     async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None,
                             model: str | None = None, provider: str | None = None) -> dict:
@@ -517,7 +646,14 @@ class LLMClient:
         """
         backend = self.backend
         provider = (provider or (backend[:-4] if backend.endswith("_cli") else "")).lower()
-        if not provider or not self._cli_available(provider):
+        if not provider:
+            # No CLI agent: OpenRouter models get the agentic tool-loop (cheap,
+            # whole-project codegen) instead of the weak per-file path.
+            if backend == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)):
+                m = model or self.router.resolve(Tier.BACKEND)
+                return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout)
+            return {"ok": False, "backend": backend, "error": "agentic unsupported"}
+        if not self._cli_available(provider):
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         # acceptEdits lets the headless agent write files without prompting.
         # _no_mcp_args keeps the agent from loading the host's ambient MCP fleet.
@@ -528,7 +664,9 @@ class LLMClient:
         # guard instead of always burning the full ceiling. copilot has no such
         # mode, so it keeps the blocking path.
         stream = provider in ("claude", "kimi")
-        stream_args = ["--output-format", "stream-json", "--verbose"] if stream else []
+        # claude takes --verbose with stream-json; kimi's stream-json does not.
+        stream_args = (["--output-format", "stream-json", "--verbose"] if provider == "claude"
+                       else ["--output-format", "stream-json"] if provider == "kimi" else [])
         # Optional per-call model pin (claude/kimi accept --model); ignored when
         # no model is given so the CLI's default applies (today's behaviour).
         model_args = ["--model", model] if (model and provider in ("claude", "kimi")) else []
@@ -537,7 +675,9 @@ class LLMClient:
         argv = {
             "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
                        "--setting-sources", "project", *model_args, *stream_args, *nm],
-            "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits", *model_args, *stream_args, *nm],
+            # kimi-code's -p is non-interactive (rejects -y/--auto/--permission-mode)
+            # and has no --strict-mcp-config. Needs `kimi login` (OAuth) to run.
+            "kimi": ["kimi", "-p", prompt, *model_args, *stream_args],
             "copilot": ["copilot", "-p", prompt, *nm],
         }.get(provider, [provider, "-p", prompt])
         proc = None

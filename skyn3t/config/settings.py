@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     # Set to "claude" to get high-quality codegen on the authed claude CLI without
     # paying for claude on brainstorm/architecture/review/docs.
     codegen_cli_provider: str = ""
+    # Give OpenRouter (cheap) models a whole-project AGENTIC codegen loop — the
+    # model writes files itself via tool-calls with full context (like bolt/v0/
+    # Aider), instead of the weak per-file generation. This is what lets cheap
+    # models build coherent full apps. Max tool-call turns bounds it.
+    openrouter_agentic: bool = True
+    openrouter_agentic_max_turns: int = 60
     cli_llm_timeout: int = 300  # generating a substantial file via claude -p needs room
     # Run the headless build CLIs (claude/kimi -p) WITHOUT the host's ambient MCP
     # servers. Otherwise every codegen call boots the user's whole ~/.claude MCP

@@ -1070,6 +1070,81 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
     return changed
 
 
+_LUCIDE_IMPORT_RE = re.compile(r"import\s*\{([^}]*)\}\s*from\s*['\"]lucide-react['\"]")
+
+
+def _lucide_real_exports(root: Path) -> set[str]:
+    """Real lucide-react icon names from the INSTALLED package's d.ts (each icon is a
+    `declare const Name`). Empty when not installed — then we can't validate, so no-op."""
+    dts = root / "node_modules" / "lucide-react" / "dist" / "lucide-react.d.ts"
+    try:
+        text = dts.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return set(re.findall(r"declare const ([A-Z][A-Za-z0-9]+)\b", text))
+
+
+def reconcile_lucide_icons(root: str | Path) -> list[str]:
+    """Replace hallucinated lucide-react icon imports (e.g. ``GeneratorIcon``, which the
+    package doesn't export) with a real icon — in the import AND its JSX usages — so the
+    build doesn't fail with "X is not exported from 'lucide-react'". Tries the name minus
+    a trailing 'Icon', else a safe generic. No-op when lucide isn't installed (can't
+    validate against real exports). Never raises."""
+    root = Path(root)
+    real = _lucide_real_exports(root)
+    if not real:
+        return []
+    fallback = next((c for c in ("Circle", "Square", "Star", "Box") if c in real), "")
+    if not fallback:
+        return []
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in (".jsx", ".tsx", ".js", ".ts"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "lucide-react" not in text:
+            continue
+        repls: dict[str, str] = {}
+        for m in _LUCIDE_IMPORT_RE.finditer(text):
+            for raw in m.group(1).split(","):
+                src = raw.split(" as ")[0].strip()
+                if src and src not in real and src not in repls:
+                    base = src[:-4] if (src.endswith("Icon") and src[:-4] in real) else None
+                    repls[src] = base or fallback
+        if not repls:
+            continue
+        new_text = text
+        for src, rep in repls.items():
+            new_text = re.sub(rf"\b{re.escape(src)}\b", rep, new_text)
+        # Replacing two hallucinated names with the same fallback (or one already
+        # imported) yields a duplicate specifier — `{ Circle, Circle }` — which is a
+        # syntax error. Dedupe each lucide import's name list (usages can repeat fine).
+        def _dedupe_import(m: re.Match) -> str:
+            seen: set[str] = set()
+            kept: list[str] = []
+            for raw in m.group(1).split(","):
+                nm = raw.strip()
+                if not nm:
+                    continue
+                key = nm.split(" as ")[-1].strip()
+                if key not in seen:
+                    seen.add(key)
+                    kept.append(nm)
+            return "import { " + ", ".join(kept) + " } from 'lucide-react'"
+
+        new_text = _LUCIDE_IMPORT_RE.sub(_dedupe_import, new_text)
+        if new_text != text:
+            try:
+                f.write_text(new_text, encoding="utf-8")
+            except OSError:
+                continue
+            changed.append(str(f.relative_to(root)))
+    return changed
+
+
 def proof_run(
     project_dir: str | Path,
     *,

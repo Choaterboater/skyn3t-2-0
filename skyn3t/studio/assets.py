@@ -34,6 +34,9 @@ log = structlog.get_logger(__name__)
 
 # Hard cap on images per build — bounded + cost-aware (each is a paid prediction).
 MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 -> last services fell back to icon tiles)
+# Web frameworks that serve static files from public/ (vs ./assets/ for static html).
+_WEB_STACKS = {"nextjs", "next", "react", "vite", "remix", "astro", "svelte",
+               "sveltekit", "vue", "nuxt", "solid", "node"}
 
 # Words that imply the app SHOWS pictures / art, so generating real assets pays
 # off. Absent these, we skip (no point spending predictions on a calculator).
@@ -139,6 +142,7 @@ async def generate_assets(
     settings: Settings,
     client: ReplicateClient | None = None,
     max_assets: int = MAX_ASSETS,
+    stack: str = "",
 ) -> dict[str, Any]:
     """Generate + write coloring-page assets for ``brief`` into ``project_dir``.
 
@@ -171,7 +175,10 @@ async def generate_assets(
     # a JS framework (package.json) and place + reference under public/ so generated
     # images actually load; keep ./assets/ for static/python stacks.
     proj = Path(project_dir)
-    _web = (proj / "package.json").is_file()
+    # Web frameworks serve static files from public/. Assets run BEFORE codegen, so
+    # package.json doesn't exist yet — rely on the known stack first, package.json
+    # second. Otherwise images land in ./assets/ and the code's /assets/... refs 404.
+    _web = (stack or "").lower() in _WEB_STACKS or (proj / "package.json").is_file()
     assets_dir = (proj / "public" / "assets") if _web else (proj / "assets")
     _url_base = "/assets" if _web else "assets"
     written: list[dict[str, str]] = []

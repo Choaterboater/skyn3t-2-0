@@ -498,7 +498,8 @@ class StudioRunner:
 
     # ---- asset generation (Replicate, opt-in) ---------------------------
     async def _generate_assets(
-        self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any]
+        self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any],
+        stack: str = "",
     ) -> dict[str, Any]:
         """Generate real image assets into the worktree (when enabled) and thread
         the manifest into the stage ``extra`` so the code prompt references them.
@@ -513,7 +514,7 @@ class StudioRunner:
             if not asset_gen_enabled(self.settings):
                 return extra
             result = await generate_assets(
-                worktree_dir, brief, settings=self.settings
+                worktree_dir, brief, settings=self.settings, stack=stack
             )
         except Exception as exc:  # noqa: BLE001 - asset-gen must never break a build
             log.warning("assets.step_failed", error=str(exc)[:160])
@@ -1479,7 +1480,7 @@ class StudioRunner:
         # codegen, then tell the code/agentic prompt they exist so the app uses
         # real art. Gated behind a token + asset_gen; a no-op otherwise. Never
         # blocks/crashes the build (design rule #6) — assets are best-effort.
-        extra = await self._generate_assets(main_wt.dir, brief, manifest, extra)
+        extra = await self._generate_assets(main_wt.dir, brief, manifest, extra, stack=plan.stack)
 
         # Observability + budget guard for this build (all best-effort).
         self._obs_call(self.cost_tracker, "start_build", build_id)

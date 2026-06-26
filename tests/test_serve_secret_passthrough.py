@@ -10,9 +10,8 @@ store, while every other host secret stays scrubbed.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
 import sys
+from pathlib import Path
 
 from skyn3t.config.settings import Settings
 from skyn3t.security.secrets import SecretsStore, is_secret_name

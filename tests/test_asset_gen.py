@@ -84,6 +84,43 @@ async def test_writes_images_and_manifest(tmp_path):
     assert all((proj / a["file"]).read_bytes() == _PNG for a in res["assets"])
 
 
+async def test_stack_arg_routes_to_public_before_package_json(tmp_path):
+    # Assets run BEFORE codegen, so package.json doesn't exist yet — the known stack
+    # must still route images to public/ (else the code's /assets/... refs 404).
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    assert not (proj / "package.json").exists()
+    s = _settings(replicate_api_token="r8_x", asset_gen=True)
+    res = await generate_assets(
+        str(proj), "an HVAC company services website", settings=s,
+        client=_FakeClient(), max_assets=2, stack="nextjs",
+    )
+    assert res["generated"] >= 1
+    assert (proj / "public" / "assets").is_dir()
+    for a in res["assets"]:
+        assert a["file"].startswith("/assets/")
+        assert (proj / "public" / a["file"].lstrip("/")).is_file()
+
+
+async def test_web_stack_writes_images_to_public(tmp_path):
+    # Regression: a Next.js/Vite app serves static files from public/ — writing to
+    # ./assets/ made the code's /assets/... refs 404 on the live site. A JS framework
+    # (package.json present) must place images under public/ and reference /assets/...
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "package.json").write_text('{"name": "site"}')
+    s = _settings(replicate_api_token="r8_x", asset_gen=True)
+    res = await generate_assets(
+        str(proj), "an HVAC company services website", settings=s,
+        client=_FakeClient(), max_assets=2,
+    )
+    assert res["generated"] >= 1
+    assert (proj / "public" / "assets").is_dir()
+    for a in res["assets"]:
+        assert a["file"].startswith("/assets/")            # served URL, not a bare path
+        assert (proj / "public" / a["file"].lstrip("/")).is_file()  # resolves from public/
+
+
 async def test_noop_when_disabled(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()

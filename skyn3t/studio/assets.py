@@ -33,7 +33,10 @@ from skyn3t.config.settings import Settings
 log = structlog.get_logger(__name__)
 
 # Hard cap on images per build — bounded + cost-aware (each is a paid prediction).
-MAX_ASSETS = 4
+MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 -> last services fell back to icon tiles)
+# Web frameworks that serve static files from public/ (vs ./assets/ for static html).
+_WEB_STACKS = {"nextjs", "next", "react", "vite", "remix", "astro", "svelte",
+               "sveltekit", "vue", "nuxt", "solid", "node"}
 
 # Words that imply the app SHOWS pictures / art, so generating real assets pays
 # off. Absent these, we skip (no point spending predictions on a calculator).
@@ -55,10 +58,27 @@ _ANIMALS = ("cat", "dog", "elephant", "lion", "rabbit", "fox", "owl", "fish",
             "bear", "frog", "horse", "penguin", "turtle", "butterfly")
 _NATURE = ("tree", "flower", "sun", "star", "cloud", "rainbow", "house", "car")
 
+# Business / marketing / home-services briefs imply real PHOTOS (a hero banner +
+# per-service shots), not coloring pages. Without this, a company site shipped with
+# zero imagery ("no_subjects"). Map the services a brief names to concrete subjects.
+_BUSINESS_SIGNALS = ("service", "services", "company", "business", "marketing",
+                     "website", " site", "contractor", "repair", "installation",
+                     "commercial", "residential", "agency", "clinic", "shop", "store")
+_SERVICE_SUBJECTS = (
+    (("air conditioning", "a/c", "hvac", "cooling", " ac "), "air conditioning condenser unit beside a house"),
+    (("heating", "furnace", "heat pump", "boiler"), "home furnace heating system"),
+    (("plumbing", "plumber", "drain", " pipe"), "plumber repairing a pipe under a sink"),
+    (("electrical", "electrician", "wiring", " panel"), "electrician working on a home electrical panel"),
+    (("generator",), "home standby backup generator"),
+    (("commercial", "office", "business", "retail"), "commercial HVAC rooftop units on an office building"),
+    (("roofing", "roof"), "roofer installing shingles on a roof"),
+    (("landscaping", "lawn care"), "professionally landscaped residential yard"),
+)
+
 
 def _wants_images(brief: str) -> bool:
     low = (brief or "").lower()
-    return any(sig in low for sig in _IMAGE_SIGNALS)
+    return any(sig in low for sig in _IMAGE_SIGNALS) or any(w in low for w in _BUSINESS_SIGNALS)
 
 
 def _extract_subjects(brief: str, limit: int) -> list[str]:
@@ -79,6 +99,14 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     if any(w in low for w in ("animal", "zoo", "kid", "child", "toddler",
                               "coloring", "colouring")):
         return list(_ANIMALS[:limit])
+    # Business / marketing / home-services site: ship a hero + the per-service
+    # photos the brief names, so a company site has real imagery instead of none.
+    if any(w in low for w in _BUSINESS_SIGNALS):
+        subs = ["uniformed HVAC technician servicing an outdoor air conditioning unit at a home"]
+        for keys, subject in _SERVICE_SUBJECTS:
+            if any(k in low for k in keys) and subject not in subs:
+                subs.append(subject)
+        return subs[:limit]
     # Nothing nameable. Do NOT invent coloring-book defaults — a brief that
     # merely *mentions* images (e.g. a tool that takes an image as INPUT) is not
     # an app that ships decorative pictures. Generating cat/dog/tree/flower here
@@ -114,6 +142,7 @@ async def generate_assets(
     settings: Settings,
     client: ReplicateClient | None = None,
     max_assets: int = MAX_ASSETS,
+    stack: str = "",
 ) -> dict[str, Any]:
     """Generate + write coloring-page assets for ``brief`` into ``project_dir``.
 
@@ -141,7 +170,17 @@ async def generate_assets(
     # logo->recraft SVG, photo->flux-1.1-pro, etc.) instead of line-art for all.
     style = select_asset_style(brief)
     model = asset_model(style)
-    assets_dir = Path(project_dir) / "assets"
+    # Next.js/Vite/CRA serve static files from public/ — writing to ./assets/ makes
+    # the code's `/assets/...` refs 404 (they did on the first agentic build). Detect
+    # a JS framework (package.json) and place + reference under public/ so generated
+    # images actually load; keep ./assets/ for static/python stacks.
+    proj = Path(project_dir)
+    # Web frameworks serve static files from public/. Assets run BEFORE codegen, so
+    # package.json doesn't exist yet — rely on the known stack first, package.json
+    # second. Otherwise images land in ./assets/ and the code's /assets/... refs 404.
+    _web = (stack or "").lower() in _WEB_STACKS or (proj / "package.json").is_file()
+    assets_dir = (proj / "public" / "assets") if _web else (proj / "assets")
+    _url_base = "/assets" if _web else "assets"
     written: list[dict[str, str]] = []
     try:
         assets_dir.mkdir(parents=True, exist_ok=True)
@@ -170,7 +209,7 @@ async def generate_assets(
         except OSError as exc:
             log.warning("assets.write_failed", file=fname, error=str(exc)[:160])
             continue
-        written.append({"subject": subject, "file": f"assets/{fname}"})
+        written.append({"subject": subject, "file": f"{_url_base}/{fname}"})
 
     manifest = {
         "generated": len(written),

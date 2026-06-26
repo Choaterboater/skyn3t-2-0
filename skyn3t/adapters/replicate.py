@@ -73,8 +73,9 @@ _STYLE_PROMPTS = {
                      "white background, no text, no lettering"),
     "sticker":      ("die-cut sticker of a cute {subject}, bold clean outline, vibrant "
                      "flat colors, glossy cartoon style, white border, transparent background"),
-    "photo":        ("professional high-resolution photograph of a {subject}, natural soft "
-                     "lighting, realistic, sharp focus, shallow depth of field, no text, "
+    "photo":        ("candid documentary-style high-resolution photograph of {subject}, "
+                     "authentic real working environment, on the job, true to the trade, "
+                     "natural light, sharp focus, photojournalistic, not posed, no text, "
                      "no watermark"),
     "illustration": ("colorful friendly flat vector illustration of a {subject}, clean "
                      "simple shapes, soft shadows, plain background, modern app asset, no text"),
@@ -89,7 +90,10 @@ _STYLE_SIGNALS = (
     ("sticker",  ("sticker", "stickers", "emoji", "decal")),
     ("photo",    ("photo", "photograph", "photorealistic", "realistic", "product shot",
                   "product photo", "real-life", "recipe", "food", "menu", "restaurant",
-                  "travel", "real estate", "portrait", "headshot")),
+                  "travel", "real estate", "portrait", "headshot",
+                  # home-services / trades marketing sites want real photos, not vectors
+                  "hvac", "plumbing", "electrical", "contractor", "heating",
+                  "air conditioning")),
 )
 
 

@@ -49,3 +49,54 @@ def test_balanced_js_with_block_comment_passes():
 def test_unbalanced_js_fails():
     ok, err = validate_source("app.jsx", "function f() { return 1 \n")
     assert not ok and err
+
+
+# --- native-provider-LLM guard ----------------------------------------------
+# SkyN3t routes every LLM call through OpenRouter (the only key the user holds).
+# A generated app that imports the native Anthropic SDK / reads ANTHROPIC_API_KEY
+# ships go-graded then crashes at run for a key the host never set. validate_source
+# must reject it so codegen's retry regenerates the compliant OpenRouter way — but
+# must NEVER flag the prescribed `openai`-over-OpenRouter client.
+
+def test_native_anthropic_sdk_import_rejected():
+    ok, err = validate_source("client.py", "import anthropic\nc = anthropic.Anthropic()\n")
+    assert not ok
+    assert "openrouter" in err.lower()
+
+
+def test_native_anthropic_key_read_rejected():
+    src = (
+        "import os\n"
+        "key = os.getenv('ANTHROPIC_API_KEY')\n"
+        "if not key:\n"
+        "    raise ValueError('ANTHROPIC_API_KEY environment variable is required')\n"
+    )
+    ok, err = validate_source("main.py", src)
+    assert not ok
+    assert "openrouter" in err.lower()
+
+
+def test_js_native_anthropic_sdk_rejected():
+    ok, err = validate_source(
+        "llm.ts", "import Anthropic from '@anthropic-ai/sdk'\nconst c = new Anthropic()\n"
+    )
+    assert not ok and err
+
+
+def test_compliant_openai_over_openrouter_passes():
+    # The PRESCRIBED client: openai SDK pointed at OpenRouter, OPENROUTER_API_KEY.
+    src = (
+        "import os\n"
+        "from openai import OpenAI\n"
+        "client = OpenAI(base_url='https://openrouter.ai/api/v1',\n"
+        "                api_key=os.getenv('OPENROUTER_API_KEY'))\n"
+    )
+    ok, err = validate_source("llm.py", src)
+    assert ok and err == ""
+
+
+def test_openai_import_is_never_flagged_as_native():
+    # `import openai` IS the OpenRouter client — flagging it would break every
+    # compliant LLM app, so it must always pass the native-provider guard.
+    ok, _ = validate_source("svc.py", "import openai\n\n\ndef ask(q):\n    return q\n")
+    assert ok

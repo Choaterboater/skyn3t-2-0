@@ -13,7 +13,43 @@ import shutil
 
 import pytest
 
-from skyn3t.studio.proof_run import proof_run, reconcile_npm_deps
+from skyn3t.studio.proof_run import (
+    proof_run,
+    reconcile_next_config_peers,
+    reconcile_npm_deps,
+)
+
+
+# ---- next.config build-tool peer deps (optimizeCss -> critters) --------------
+def test_reconcile_adds_critters_for_optimizecss(tmp_path):
+    """experimental.optimizeCss runs `critters` to inline CSS during `next build`;
+    absent -> export throws on every page (incl. /404). Declare it as a peer."""
+    (tmp_path / "next.config.js").write_text(
+        "const nextConfig = { experimental: { optimizeCss: true } }\n"
+        "module.exports = nextConfig\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"next": "14.2.3"}}), encoding="utf-8")
+    added = reconcile_next_config_peers(tmp_path)
+    assert added == ["critters"]
+    pkg = json.loads((tmp_path / "package.json").read_text())
+    assert pkg["devDependencies"]["critters"]
+
+
+def test_reconcile_no_critters_without_optimizecss(tmp_path):
+    (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"next": "14.2.3"}}), encoding="utf-8")
+    assert reconcile_next_config_peers(tmp_path) == []
+
+
+def test_reconcile_critters_already_declared_noop(tmp_path):
+    (tmp_path / "next.config.js").write_text("module.exports={experimental:{optimizeCss:true}}", encoding="utf-8")
+    (tmp_path / "package.json").write_text(json.dumps(
+        {"dependencies": {"next": "14.2.3"}, "devDependencies": {"critters": "^0.0.23"}}), encoding="utf-8")
+    assert reconcile_next_config_peers(tmp_path) == []
+
+
+def test_reconcile_next_config_peers_no_package_json(tmp_path):
+    # non-node / no package.json -> no-op, never raises
+    assert reconcile_next_config_peers(tmp_path) == []
 
 
 # ---- npm install failure classification (offline soft-skip vs real defect) ---
@@ -50,6 +86,7 @@ def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
     """ERESOLVE/E404/ETARGET install failures must return ran=True, ok=False so
     proof.passed flips to False (was soft-skipped as 'offline')."""
     import subprocess as _sp
+
     import skyn3t.studio.proof_run as pr
     _node_proj(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
@@ -66,6 +103,7 @@ def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
 def test_run_node_build_offline_soft_skips(tmp_path, monkeypatch):
     """A genuine ENOTFOUND connectivity failure stays a soft-skip (ran=False)."""
     import subprocess as _sp
+
     import skyn3t.studio.proof_run as pr
     _node_proj(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
@@ -199,6 +237,7 @@ def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
     """_run_node_tests runs only with a real runner + node_modules, and a
     failure returns (ran=True, passed=False) — advisory, never a proof gate."""
     import subprocess as _sp
+
     import skyn3t.studio.proof_run as pr
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "package.json").write_text(json.dumps({

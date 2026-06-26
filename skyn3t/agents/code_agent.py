@@ -181,10 +181,17 @@ class CodeAgent(BaseAgent):
         files: dict[str, str] = dict(scaffold)
 
         knowledge = knowledge_block(p)
-        if self.llm.backend == "stub":
+        # Codegen-only CLI routing: a configured `codegen_cli_provider` (e.g.
+        # "claude") runs the agentic whole-app build on that CLI even when the
+        # global backend is cheap (OpenRouter) — high-quality codegen without
+        # paying for the CLI on every other stage.
+        from skyn3t.config.settings import get_settings as _gs
+        _codegen_prov = (getattr(_gs(), "codegen_cli_provider", "") or "").lower()
+        _codegen_cli_ok = bool(_codegen_prov) and self.llm._cli_available(_codegen_prov)
+        if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
-        elif getattr(self.llm, "supports_agentic", False):
+        elif getattr(self.llm, "supports_agentic", False) or _codegen_cli_ok:
             # CLI backend is a coding AGENT: ONE agentic session authors the
             # whole coherent multi-file app — including its OWN entrypoint —
             # into a CLEAN worktree. (Pre-laying the scaffold left a stub main.py
@@ -211,7 +218,11 @@ class CodeAgent(BaseAgent):
                     else self._agentic_retry_prompt(
                         brief, stack, plan, knowledge, code_bytes)
                 )
-                res = await self.llm.agentic_build(prompt, str(worktree))
+                res = await (
+                    self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov)
+                    if _codegen_prov
+                    else self.llm.agentic_build(prompt, str(worktree))
+                )
                 self.metadata["agentic"] = res
                 agentic_ok = bool(res.get("ok", True))
                 agentic_error = res.get("error", "")
@@ -584,25 +595,39 @@ class CodeAgent(BaseAgent):
     def _clean_agentic_files(
         disk: dict[str, str], scaffold: dict[str, str]
     ) -> tuple[dict[str, str], list[str]]:
-        """Drop source files the agent wrote that are prose, not code.
+        """Drop source files the agent wrote that are PROSE, not code.
 
         Returns ``(clean_files, rejected_paths)``. A rejected file is reverted to
         its scaffold version when one exists (a runnable baseline), else dropped
-        entirely — so chat prose never ships as source. Non-code files are kept
-        untouched.
+        entirely — so chat prose never ships as source. Non-code files are kept.
+
+        DELIBERATELY LENIENT on syntax: a coding agent authors real files that the
+        authoritative gate (proof_run's real `npm build` / pytest, then the
+        fix-loop) validates downstream. The only hard rejects here are (a) a CLEAR
+        prose file — the agent chatted instead of coding — and (b) a Python file
+        that won't even compile. We do NOT run the cheap JS/TS brace-balance
+        heuristic: it false-positives on valid code (regex literals, nested
+        template literals) and silently reverting the agent's app to the offline
+        scaffold stub guarantees a no_go on a build that would otherwise compile.
         """
-        from skyn3t.agents.validate import validate_source
+        from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose
 
         clean: dict[str, str] = {}
         rejected: list[str] = []
         for path, content in disk.items():
-            ok, _ = validate_source(path, content)
-            if ok:
-                clean[path] = content
-            else:
+            p = path.lower()
+            drop = p.endswith(_CODE_EXTS) and _looks_like_prose(content)
+            if not drop and p.endswith(".py"):
+                try:
+                    compile(content, path, "exec")
+                except SyntaxError:
+                    drop = True
+            if drop:
                 rejected.append(path)
                 if path in scaffold:
                     clean[path] = scaffold[path]
+            else:
+                clean[path] = content
         return clean, rejected
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
@@ -649,7 +674,7 @@ class CodeAgent(BaseAgent):
             + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )
         result = await self.llm.complete(
-            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
+            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=16384,  # large data/page files truncated at 8192 -> mid-function EOF syntax error -> no_go
             task_type=self.agent_type, model_override=model_override,
         )
         # If the call degraded to the stub backend (CLI failure/timeout, missing
@@ -663,7 +688,7 @@ class CodeAgent(BaseAgent):
             retry = await self.llm.complete(
                 prompt + f"\n\nThe previous attempt had an error: {err}\n"
                 "Return the COMPLETE corrected file.",
-                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
+                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=16384,  # large data/page files truncated at 8192 -> mid-function EOF syntax error -> no_go
                 task_type=self.agent_type, model_override=model_override,
             )
             if retry.backend != "stub":

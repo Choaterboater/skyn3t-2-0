@@ -854,6 +854,7 @@ _USE_CLIENT_SIGNAL = re.compile(
     r"|Transition|ImperativeHandle|DeferredValue|SyncExternalStore"
     r"|Router|Pathname|SearchParams|FormState|FormStatus)\s*\("       # client hooks
     r"|\b(?:window|document|localStorage|sessionStorage|navigator)\." # browser globals
+    r"|<style\s+jsx"                                                   # styled-jsx (client-only)
 )
 
 

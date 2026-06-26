@@ -33,7 +33,7 @@ from skyn3t.config.settings import Settings
 log = structlog.get_logger(__name__)
 
 # Hard cap on images per build — bounded + cost-aware (each is a paid prediction).
-MAX_ASSETS = 4
+MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 -> last services fell back to icon tiles)
 
 # Words that imply the app SHOWS pictures / art, so generating real assets pays
 # off. Absent these, we skip (no point spending predictions on a calculator).
@@ -67,6 +67,7 @@ _SERVICE_SUBJECTS = (
     (("plumbing", "plumber", "drain", " pipe"), "plumber repairing a pipe under a sink"),
     (("electrical", "electrician", "wiring", " panel"), "electrician working on a home electrical panel"),
     (("generator",), "home standby backup generator"),
+    (("commercial", "office", "business", "retail"), "commercial HVAC rooftop units on an office building"),
     (("roofing", "roof"), "roofer installing shingles on a roof"),
     (("landscaping", "lawn care"), "professionally landscaped residential yard"),
 )
@@ -98,7 +99,7 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     # Business / marketing / home-services site: ship a hero + the per-service
     # photos the brief names, so a company site has real imagery instead of none.
     if any(w in low for w in _BUSINESS_SIGNALS):
-        subs = ["service technician helping a happy homeowner at their house"]
+        subs = ["uniformed HVAC technician servicing an outdoor air conditioning unit at a home"]
         for keys, subject in _SERVICE_SUBJECTS:
             if any(k in low for k in keys) and subject not in subs:
                 subs.append(subject)
@@ -165,7 +166,14 @@ async def generate_assets(
     # logo->recraft SVG, photo->flux-1.1-pro, etc.) instead of line-art for all.
     style = select_asset_style(brief)
     model = asset_model(style)
-    assets_dir = Path(project_dir) / "assets"
+    # Next.js/Vite/CRA serve static files from public/ — writing to ./assets/ makes
+    # the code's `/assets/...` refs 404 (they did on the first agentic build). Detect
+    # a JS framework (package.json) and place + reference under public/ so generated
+    # images actually load; keep ./assets/ for static/python stacks.
+    proj = Path(project_dir)
+    _web = (proj / "package.json").is_file()
+    assets_dir = (proj / "public" / "assets") if _web else (proj / "assets")
+    _url_base = "/assets" if _web else "assets"
     written: list[dict[str, str]] = []
     try:
         assets_dir.mkdir(parents=True, exist_ok=True)
@@ -194,7 +202,7 @@ async def generate_assets(
         except OSError as exc:
             log.warning("assets.write_failed", file=fname, error=str(exc)[:160])
             continue
-        written.append({"subject": subject, "file": f"assets/{fname}"})
+        written.append({"subject": subject, "file": f"{_url_base}/{fname}"})
 
     manifest = {
         "generated": len(written),

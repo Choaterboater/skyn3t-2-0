@@ -43,11 +43,13 @@ from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
     add_use_client_directives,
+    ensure_path_alias_config,
     extract_error_gaps,
     proof_run,
     reconcile_next_config_peers,
     reconcile_npm_deps,
     scaffold_missing_imports,
+    strip_ts_type_in_js,
 )
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
@@ -1050,11 +1052,18 @@ class StudioRunner:
         # Next.js App Router: prepend "use client" to interactive components so
         # `next build` doesn't fail static generation on event handlers/hooks.
         use_client = add_use_client_directives(project_dir)
+        # Map the @/ import alias (write jsconfig paths) and strip stray TS-only
+        # statements from .js files — two common cheap-model defects that otherwise
+        # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
+        alias_cfg = ensure_path_alias_config(project_dir)
+        ts_stripped = strip_ts_type_in_js(project_dir)
         return {
             "npm_deps_added": added,
             "next_config_peers": peers,
             "imports_scaffolded": stubbed,
             "use_client_added": use_client,
+            "path_alias_config": alias_cfg,
+            "ts_in_js_stripped": ts_stripped,
         }
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):

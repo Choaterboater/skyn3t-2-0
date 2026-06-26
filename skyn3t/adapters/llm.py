@@ -61,8 +61,12 @@ _VISION_MODEL_MARKERS = ("gpt-4o", "gpt-4.1", "vision", "claude-3", "gemini",
 
 # Headless print-mode invocation per CLI provider. The prompt is appended as
 # the final argv. Confirmed: ``claude -p "<prompt>"`` prints the reply.
+# ``--setting-sources project`` isolates codegen from the HOST user's Claude Code
+# config (output-style plugins, hooks, custom themes) — otherwise e.g. an
+# "explanatory" output-style plugin injects prose/insight blocks into the
+# generated code. Only project-level settings load; auth still works.
 _CLI_COMMANDS: dict[str, list[str]] = {
-    "claude": ["claude", "-p"],
+    "claude": ["claude", "-p", "--setting-sources", "project"],
     "kimi": ["kimi", "-p"],
     "copilot": ["copilot", "-p"],
 }
@@ -499,20 +503,22 @@ class LLMClient:
         return self.backend.endswith("_cli")
 
     async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None,
-                            model: str | None = None) -> dict:
+                            model: str | None = None, provider: str | None = None) -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
         This is the RIGHT way to use claude/kimi/copilot for codegen: one
         agentic session that authors a coherent multi-file app, instead of N
         slow per-file completion calls that spin up an agent each and time out.
         ``model`` optionally pins the CLI to a specific model (used by parallel
-        code-slicing to route cheap/strong tiers per slice). Returns
-        {ok, backend, error}. Only meaningful for *_cli backends.
+        code-slicing to route cheap/strong tiers per slice). ``provider`` forces a
+        specific CLI (e.g. "claude") regardless of the global backend — this is how
+        codegen-only CLI routing works: the global backend stays cheap (OpenRouter)
+        while ONLY codegen runs on the claude CLI. Returns {ok, backend, error}.
         """
         backend = self.backend
-        if not backend.endswith("_cli"):
+        provider = (provider or (backend[:-4] if backend.endswith("_cli") else "")).lower()
+        if not provider or not self._cli_available(provider):
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
-        provider = backend[:-4]
         # acceptEdits lets the headless agent write files without prompting.
         # _no_mcp_args keeps the agent from loading the host's ambient MCP fleet.
         nm = _no_mcp_args(self.settings, provider)
@@ -526,8 +532,11 @@ class LLMClient:
         # Optional per-call model pin (claude/kimi accept --model); ignored when
         # no model is given so the CLI's default applies (today's behaviour).
         model_args = ["--model", model] if (model and provider in ("claude", "kimi")) else []
+        # --setting-sources project isolates codegen from the host's Claude Code
+        # config (output-style plugins, hooks) so they can't corrupt the build.
         argv = {
-            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits", *model_args, *stream_args, *nm],
+            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
+                       "--setting-sources", "project", *model_args, *stream_args, *nm],
             "kimi": ["kimi", "-p", prompt, "--permission-mode", "acceptEdits", *model_args, *stream_args, *nm],
             "copilot": ["copilot", "-p", prompt, *nm],
         }.get(provider, [provider, "-p", prompt])

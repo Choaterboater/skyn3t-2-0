@@ -36,7 +36,9 @@ def test_no_mcp_args_suppressed_when_disabled():
 def test_assembled_argv_includes_isolation_flag():
     s = Settings()
     argv = [*_CLI_COMMANDS["claude"], *_no_mcp_args(s, "claude")]
-    assert argv == ["claude", "-p", "--strict-mcp-config"]
+    # claude codegen is isolated from the host's Claude Code config
+    # (--setting-sources project) so host output-style/hook plugins can't corrupt it.
+    assert argv == ["claude", "-p", "--setting-sources", "project", "--strict-mcp-config"]
 
 
 def test_returned_list_is_a_copy():

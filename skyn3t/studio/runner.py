@@ -46,6 +46,7 @@ from skyn3t.studio.proof_run import (
     ensure_path_alias_config,
     extract_error_gaps,
     proof_run,
+    reconcile_lucide_icons,
     reconcile_next_config_peers,
     reconcile_npm_deps,
     scaffold_missing_imports,
@@ -1058,6 +1059,9 @@ class StudioRunner:
         # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
         alias_cfg = ensure_path_alias_config(project_dir)
         ts_stripped = strip_ts_type_in_js(project_dir)
+        # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
+        # ones — the model invents icon names that aren't exported, failing the build.
+        lucide = reconcile_lucide_icons(project_dir)
         return {
             "npm_deps_added": added,
             "next_config_peers": peers,
@@ -1065,6 +1069,7 @@ class StudioRunner:
             "use_client_added": use_client,
             "path_alias_config": alias_cfg,
             "ts_in_js_stripped": ts_stripped,
+            "lucide_icons_fixed": lucide,
         }
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):

@@ -14,6 +14,7 @@ Import has zero side effects (no subprocess, no network).
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -936,6 +937,82 @@ def add_use_client_directives(root: str | Path) -> list[str]:
         except OSError:
             continue
         changed.append(str(rel))
+    return changed
+
+
+_AT_IMPORT_RE = re.compile(r"""(?:from|import|require\()\s*['"]@/""")
+
+
+def ensure_path_alias_config(root: str | Path) -> list[str]:
+    """If the project imports via the ``@/`` alias but no jsconfig/tsconfig maps it,
+    write the ``@/* -> ./*`` mapping (the Next.js convention) so `next build` resolves
+    those imports — a very common generated-app failure. Returns [config path] or [].
+    Never raises."""
+    root = Path(root)
+    ts, js = root / "tsconfig.json", root / "jsconfig.json"
+    for cfg in (ts, js):
+        if cfg.is_file():
+            try:
+                if '"@/' in cfg.read_text(encoding="utf-8", errors="replace"):
+                    return []  # already mapped
+            except OSError:
+                return []
+    uses_alias = False
+    for f in _iter_files(root):
+        if f.suffix not in (".js", ".jsx", ".ts", ".tsx", ".mjs"):
+            continue
+        try:
+            if _AT_IMPORT_RE.search(f.read_text(encoding="utf-8", errors="replace")):
+                uses_alias = True
+                break
+        except OSError:
+            continue
+    if not uses_alias:
+        return []
+    target = ts if ts.is_file() else js
+    data: dict = {}
+    if target.is_file():
+        try:
+            data = json.loads(target.read_text(encoding="utf-8", errors="replace")) or {}
+        except (OSError, ValueError):
+            data = {}
+    co = data.setdefault("compilerOptions", {})
+    co.setdefault("baseUrl", ".")
+    paths = co.setdefault("paths", {})
+    if "@/*" in paths:
+        return []
+    paths["@/*"] = ["./*"]
+    try:
+        target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return [target.name]
+
+
+_TS_TYPE_LINE = re.compile(r"^\s*(?:export\s+type\s+\w+\s*[=<]|import\s+type\s)")
+
+
+def strip_ts_type_in_js(root: str | Path) -> list[str]:
+    """Drop TypeScript-only single-line statements (``export type X = ...``,
+    ``import type ...``) some models emit into plain .js/.jsx files, which break the
+    JS build ("Expected '{', got 'type'"). Never touches .ts/.tsx (valid there).
+    Returns modified rel paths. Never raises."""
+    root = Path(root)
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in (".js", ".jsx", ".mjs"):
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            continue
+        kept = [ln for ln in lines if not _TS_TYPE_LINE.match(ln)]
+        if len(kept) != len(lines):
+            try:
+                f.write_text("".join(kept), encoding="utf-8")
+            except OSError:
+                continue
+            changed.append(str(f.relative_to(root)))
     return changed
 
 

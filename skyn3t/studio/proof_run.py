@@ -1596,7 +1596,6 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     proof. A non-zero build IS a real failure. Never raises.
     """
     import json as _json
-    import os
     import shutil
     import subprocess
 

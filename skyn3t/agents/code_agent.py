@@ -181,10 +181,17 @@ class CodeAgent(BaseAgent):
         files: dict[str, str] = dict(scaffold)
 
         knowledge = knowledge_block(p)
-        if self.llm.backend == "stub":
+        # Codegen-only CLI routing: a configured `codegen_cli_provider` (e.g.
+        # "claude") runs the agentic whole-app build on that CLI even when the
+        # global backend is cheap (OpenRouter) — high-quality codegen without
+        # paying for the CLI on every other stage.
+        from skyn3t.config.settings import get_settings as _gs
+        _codegen_prov = (getattr(_gs(), "codegen_cli_provider", "") or "").lower()
+        _codegen_cli_ok = bool(_codegen_prov) and self.llm._cli_available(_codegen_prov)
+        if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
-        elif getattr(self.llm, "supports_agentic", False):
+        elif getattr(self.llm, "supports_agentic", False) or _codegen_cli_ok:
             # CLI backend is a coding AGENT: ONE agentic session authors the
             # whole coherent multi-file app — including its OWN entrypoint —
             # into a CLEAN worktree. (Pre-laying the scaffold left a stub main.py
@@ -211,7 +218,11 @@ class CodeAgent(BaseAgent):
                     else self._agentic_retry_prompt(
                         brief, stack, plan, knowledge, code_bytes)
                 )
-                res = await self.llm.agentic_build(prompt, str(worktree))
+                res = await (
+                    self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov)
+                    if _codegen_prov
+                    else self.llm.agentic_build(prompt, str(worktree))
+                )
                 self.metadata["agentic"] = res
                 agentic_ok = bool(res.get("ok", True))
                 agentic_error = res.get("error", "")

@@ -95,6 +95,27 @@ def test_agentic_loop_pushes_past_a_stub(tmp_path, monkeypatch):
     assert (tmp_path / "components" / "Services.jsx").exists()
 
 
+def test_antistub_catches_leftover_scaffold_homepage(tmp_path, monkeypatch):
+    # The model builds components but leaves the offline-scaffold placeholder homepage
+    # (orphaned library + counter stub renders). The guard must catch the leftover
+    # scaffold ENTRY (not just count components) and push it to overwrite app/page.jsx.
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "page.jsx").write_text("// generated offline by SkyN3t\nexport default () => 'count is 0';")
+    (tmp_path / "components").mkdir()
+    for n in ("Hero", "Services", "About"):
+        (tmp_path / "components" / f"{n}.jsx").write_text("x" * 1500)
+    turns = [
+        _tool_turn("finish", {}, "t1"),  # premature: scaffold homepage still present
+        _tool_turn("write_file", {"path": "app/page.jsx",
+                                  "content": "import Hero from '../components/Hero';\nexport default () => <Hero/>;"}, "t2"),
+        _tool_turn("finish", {}, "t3"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m"))
+    assert res["ok"] is True
+    assert "generated offline" not in (tmp_path / "app" / "page.jsx").read_text().lower()
+
+
 def test_supports_agentic_openrouter_flag():
     on = LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x", openrouter_agentic=True))
     off = LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x", openrouter_agentic=False))

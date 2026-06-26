@@ -337,6 +337,20 @@ def test_verifiers_gate_consumes_real_failures():
     assert g({})[0] is True
 
 
+def test_verifiers_gate_proof_build_overrides_stale_verify_build():
+    # verify_build runs as a STAGE on the pre-repair worktree; once the
+    # authoritative post-repair proof_run build passes, a stale verify_build
+    # failure must not veto the verdict — but reward-hacking still blocks.
+    from skyn3t.studio.runner import StudioRunner
+    g = StudioRunner._verifiers_gate
+    vb_fail = {"verify_build": {"verdict": "fail", "ran_real_build": True, "details": "Module not found"}}
+    assert g(vb_fail, proof_build_passed=True)[0] is True   # stale -> overridden
+    assert g(vb_fail)[0] is False                            # no passing proof -> still blocks
+    rh = {"verify_build": {"verdict": "fail", "ran_real_build": False,
+                           "reward_hacking": {"suspicious": True, "flags": ["empty"]}}}
+    assert g(rh, proof_build_passed=True)[0] is False        # reward-hacking still blocks
+
+
 # ---- LLM-backed config detection bridge (findings #29/#35) ------------------
 def test_config_llm_fn_none_on_stub_backend():
     """With the stub backend (tests/offline) the config llm_fn is None, so

@@ -674,20 +674,24 @@ class StudioRunner:
         return min(float(score), 49.0) if verdict != "go" else float(score)
 
     @staticmethod
-    def _verifiers_gate(prior: dict) -> tuple[bool, str | None]:
+    def _verifiers_gate(prior: dict, proof_build_passed: bool = False) -> tuple[bool, str | None]:
         """Consume the objective-verifier verdicts the gate previously ignored.
 
         Returns (ok, reason). Blocks ONLY on a verifier's REAL failure so a
         degraded/offline verifier never false-fails a build (the swarm's caution):
         - verify_build: a real install/build that actually ran and failed, OR a
           reward-hacking-suspected (gamed/empty) project. An offline 'dry' fail
-          does NOT block.
+          does NOT block. ``proof_build_passed`` overrides a build-failure: the
+          verify_build STAGE runs on the pre-repair worktree (before
+          reconcile_npm_deps / scaffold), so once the authoritative post-repair
+          proof_run build PASSES, a stale verify_build failure must not veto it.
+          (Reward-hacking still blocks — that's a separate, non-stale signal.)
         - verify_boot: a real Python import/boot smoke that ran and failed (web
           'structural' boot is advisory-only — proof_run already covers entries)."""
         vb = prior.get("verify_build") if isinstance(prior, dict) else None
         if isinstance(vb, dict) and str(vb.get("verdict", "")).lower() == "fail":
             reward = vb.get("reward_hacking") or {}
-            if vb.get("ran_real_build") is True:
+            if vb.get("ran_real_build") is True and not proof_build_passed:
                 return False, "verify_build: real build failed — " + str(vb.get("details", ""))[:120]
             if reward.get("suspicious"):
                 return False, "verify_build: reward-hacking suspected — " + "; ".join(
@@ -1817,7 +1821,11 @@ class StudioRunner:
             # Consume the objective-verifier verdicts (previously recorded but
             # never gated): a real build failure or a reward-hacked/un-bootable
             # delivery blocks. Offline/degraded verifiers never false-fail here.
-            verifiers_ok, verifier_reason = self._verifiers_gate(prior)
+            # The verify_build STAGE runs pre-repair; the proof_run build is the
+            # authoritative post-repair compile. If it really built, a stale
+            # verify_build failure must not veto the verdict.
+            proof_build_passed = bool(proof.passed and proof.detail.get("build") == "passed")
+            verifiers_ok, verifier_reason = self._verifiers_gate(prior, proof_build_passed=proof_build_passed)
             if not verifiers_ok:
                 manifest.extra["verifier_gate"] = verifier_reason
             # An app requiring a native provider LLM key (e.g. `import anthropic` +

@@ -595,25 +595,39 @@ class CodeAgent(BaseAgent):
     def _clean_agentic_files(
         disk: dict[str, str], scaffold: dict[str, str]
     ) -> tuple[dict[str, str], list[str]]:
-        """Drop source files the agent wrote that are prose, not code.
+        """Drop source files the agent wrote that are PROSE, not code.
 
         Returns ``(clean_files, rejected_paths)``. A rejected file is reverted to
         its scaffold version when one exists (a runnable baseline), else dropped
-        entirely — so chat prose never ships as source. Non-code files are kept
-        untouched.
+        entirely — so chat prose never ships as source. Non-code files are kept.
+
+        DELIBERATELY LENIENT on syntax: a coding agent authors real files that the
+        authoritative gate (proof_run's real `npm build` / pytest, then the
+        fix-loop) validates downstream. The only hard rejects here are (a) a CLEAR
+        prose file — the agent chatted instead of coding — and (b) a Python file
+        that won't even compile. We do NOT run the cheap JS/TS brace-balance
+        heuristic: it false-positives on valid code (regex literals, nested
+        template literals) and silently reverting the agent's app to the offline
+        scaffold stub guarantees a no_go on a build that would otherwise compile.
         """
-        from skyn3t.agents.validate import validate_source
+        from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose
 
         clean: dict[str, str] = {}
         rejected: list[str] = []
         for path, content in disk.items():
-            ok, _ = validate_source(path, content)
-            if ok:
-                clean[path] = content
-            else:
+            p = path.lower()
+            drop = p.endswith(_CODE_EXTS) and _looks_like_prose(content)
+            if not drop and p.endswith(".py"):
+                try:
+                    compile(content, path, "exec")
+                except SyntaxError:
+                    drop = True
+            if drop:
                 rejected.append(path)
                 if path in scaffold:
                     clean[path] = scaffold[path]
+            else:
+                clean[path] = content
         return clean, rejected
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,

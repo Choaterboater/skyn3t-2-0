@@ -943,11 +943,29 @@ def add_use_client_directives(root: str | Path) -> list[str]:
 _AT_IMPORT_RE = re.compile(r"""(?:from|import|require\()\s*['"]@/""")
 
 
+def _parse_jsonish(raw: str):
+    """Parse JSON, tolerating tsconfig JSONC (// and /* */ comments, trailing commas).
+    Returns the parsed value, or None if it still can't parse — so callers can REFUSE
+    to clobber a config they couldn't read (do-no-harm)."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    txt = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)   # block comments
+    txt = re.sub(r"(?m)//[^\n]*$", "", txt)                  # line comments (best-effort)
+    txt = re.sub(r",(\s*[}\]])", r"\1", txt)                 # trailing commas
+    try:
+        return json.loads(txt)
+    except ValueError:
+        return None
+
+
 def ensure_path_alias_config(root: str | Path) -> list[str]:
     """If the project imports via the ``@/`` alias but no jsconfig/tsconfig maps it,
-    write the ``@/* -> ./*`` mapping (the Next.js convention) so `next build` resolves
-    those imports — a very common generated-app failure. Returns [config path] or [].
-    Never raises."""
+    write the ``@/*`` mapping so `next build` resolves those imports — a common
+    generated-app failure. Maps to ``./src/*`` for a src/ layout, ``./*`` otherwise.
+    MERGES into an existing config and NEVER clobbers one it can't parse. Returns
+    [config path] or []. Never raises."""
     root = Path(root)
     ts, js = root / "tsconfig.json", root / "jsconfig.json"
     for cfg in (ts, js):
@@ -973,15 +991,21 @@ def ensure_path_alias_config(root: str | Path) -> list[str]:
     data: dict = {}
     if target.is_file():
         try:
-            data = json.loads(target.read_text(encoding="utf-8", errors="replace")) or {}
-        except (OSError, ValueError):
-            data = {}
+            raw = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        parsed = _parse_jsonish(raw)
+        if not isinstance(parsed, dict):
+            return []  # do-no-harm: never overwrite a config we couldn't parse
+        data = parsed
+    # A src/ layout serves @/ from ./src/*, not ./* — else the alias still won't resolve.
+    src_layout = any((root / "src" / d).is_dir() for d in ("app", "components", "pages", "lib"))
     co = data.setdefault("compilerOptions", {})
     co.setdefault("baseUrl", ".")
     paths = co.setdefault("paths", {})
     if "@/*" in paths:
         return []
-    paths["@/*"] = ["./*"]
+    paths["@/*"] = ["./src/*"] if src_layout else ["./*"]
     try:
         target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError:
@@ -989,14 +1013,22 @@ def ensure_path_alias_config(root: str | Path) -> list[str]:
     return [target.name]
 
 
-_TS_TYPE_LINE = re.compile(r"^\s*(?:export\s+type\s+\w+\s*[=<]|import\s+type\s)")
+_IMPORT_TYPE_RE = re.compile(r"^\s*import\s+type\s")
+_EXPORT_TYPE_RE = re.compile(r"^\s*export\s+type\s+\w")
+
+
+def _balanced_line(s: str) -> bool:
+    return (s.count("(") == s.count(")") and s.count("[") == s.count("]")
+            and s.count("{") == s.count("}"))
 
 
 def strip_ts_type_in_js(root: str | Path) -> list[str]:
-    """Drop TypeScript-only single-line statements (``export type X = ...``,
-    ``import type ...``) some models emit into plain .js/.jsx files, which break the
-    JS build ("Expected '{', got 'type'"). Never touches .ts/.tsx (valid there).
-    Returns modified rel paths. Never raises."""
+    """Drop TypeScript-only statements some models emit into plain .js/.jsx files, which
+    break the JS build ("Expected '{', got 'type'"). CONSERVATIVE to avoid corrupting
+    valid code: only removes a single-line ``import type ...`` or a SELF-CONTAINED
+    one-line ``export type X = ...;`` (brackets balanced, ends with ';'); multi-line
+    type forms are left for the fix-loop. Skips lines inside block comments. Never
+    touches .ts/.tsx. Returns modified rel paths. Never raises."""
     root = Path(root)
     changed: list[str] = []
     for f in _iter_files(root):
@@ -1006,10 +1038,31 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
             lines = f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         except OSError:
             continue
-        kept = [ln for ln in lines if not _TS_TYPE_LINE.match(ln)]
-        if len(kept) != len(lines):
+        out: list[str] = []
+        in_block = False
+        removed = False
+        for ln in lines:
+            stripped = ln.strip()
+            if in_block:
+                out.append(ln)
+                if "*/" in ln:
+                    in_block = False
+                continue
+            if stripped.startswith("/*") and "*/" not in stripped:
+                in_block = True
+                out.append(ln)
+                continue
+            if _IMPORT_TYPE_RE.match(ln):
+                removed = True
+                continue
+            if (_EXPORT_TYPE_RE.match(ln) and _balanced_line(ln)
+                    and stripped.endswith(";")):
+                removed = True
+                continue
+            out.append(ln)
+        if removed:
             try:
-                f.write_text("".join(kept), encoding="utf-8")
+                f.write_text("".join(out), encoding="utf-8")
             except OSError:
                 continue
             changed.append(str(f.relative_to(root)))

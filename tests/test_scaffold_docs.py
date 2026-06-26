@@ -32,6 +32,7 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "nextjs": ("package.json",),
     "astro": ("package.json",),
     "remix": ("package.json",),
+    "tauri": ("package.json",),
 }
 
 

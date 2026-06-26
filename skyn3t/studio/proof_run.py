@@ -854,6 +854,7 @@ _USE_CLIENT_SIGNAL = re.compile(
     r"|Transition|ImperativeHandle|DeferredValue|SyncExternalStore"
     r"|Router|Pathname|SearchParams|FormState|FormStatus)\s*\("       # client hooks
     r"|\b(?:window|document|localStorage|sessionStorage|navigator)\." # browser globals
+    r"|<style\s+jsx"                                                   # styled-jsx (client-only)
 )
 
 
@@ -943,11 +944,29 @@ def add_use_client_directives(root: str | Path) -> list[str]:
 _AT_IMPORT_RE = re.compile(r"""(?:from|import|require\()\s*['"]@/""")
 
 
+def _parse_jsonish(raw: str):
+    """Parse JSON, tolerating tsconfig JSONC (// and /* */ comments, trailing commas).
+    Returns the parsed value, or None if it still can't parse — so callers can REFUSE
+    to clobber a config they couldn't read (do-no-harm)."""
+    try:
+        return json.loads(raw)
+    except ValueError:
+        pass
+    txt = re.sub(r"/\*.*?\*/", "", raw, flags=re.DOTALL)   # block comments
+    txt = re.sub(r"(?m)//[^\n]*$", "", txt)                  # line comments (best-effort)
+    txt = re.sub(r",(\s*[}\]])", r"\1", txt)                 # trailing commas
+    try:
+        return json.loads(txt)
+    except ValueError:
+        return None
+
+
 def ensure_path_alias_config(root: str | Path) -> list[str]:
     """If the project imports via the ``@/`` alias but no jsconfig/tsconfig maps it,
-    write the ``@/* -> ./*`` mapping (the Next.js convention) so `next build` resolves
-    those imports — a very common generated-app failure. Returns [config path] or [].
-    Never raises."""
+    write the ``@/*`` mapping so `next build` resolves those imports — a common
+    generated-app failure. Maps to ``./src/*`` for a src/ layout, ``./*`` otherwise.
+    MERGES into an existing config and NEVER clobbers one it can't parse. Returns
+    [config path] or []. Never raises."""
     root = Path(root)
     ts, js = root / "tsconfig.json", root / "jsconfig.json"
     for cfg in (ts, js):
@@ -973,15 +992,21 @@ def ensure_path_alias_config(root: str | Path) -> list[str]:
     data: dict = {}
     if target.is_file():
         try:
-            data = json.loads(target.read_text(encoding="utf-8", errors="replace")) or {}
-        except (OSError, ValueError):
-            data = {}
+            raw = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        parsed = _parse_jsonish(raw)
+        if not isinstance(parsed, dict):
+            return []  # do-no-harm: never overwrite a config we couldn't parse
+        data = parsed
+    # A src/ layout serves @/ from ./src/*, not ./* — else the alias still won't resolve.
+    src_layout = any((root / "src" / d).is_dir() for d in ("app", "components", "pages", "lib"))
     co = data.setdefault("compilerOptions", {})
     co.setdefault("baseUrl", ".")
     paths = co.setdefault("paths", {})
     if "@/*" in paths:
         return []
-    paths["@/*"] = ["./*"]
+    paths["@/*"] = ["./src/*"] if src_layout else ["./*"]
     try:
         target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError:
@@ -989,14 +1014,22 @@ def ensure_path_alias_config(root: str | Path) -> list[str]:
     return [target.name]
 
 
-_TS_TYPE_LINE = re.compile(r"^\s*(?:export\s+type\s+\w+\s*[=<]|import\s+type\s)")
+_IMPORT_TYPE_RE = re.compile(r"^\s*import\s+type\s")
+_EXPORT_TYPE_RE = re.compile(r"^\s*export\s+type\s+\w")
+
+
+def _balanced_line(s: str) -> bool:
+    return (s.count("(") == s.count(")") and s.count("[") == s.count("]")
+            and s.count("{") == s.count("}"))
 
 
 def strip_ts_type_in_js(root: str | Path) -> list[str]:
-    """Drop TypeScript-only single-line statements (``export type X = ...``,
-    ``import type ...``) some models emit into plain .js/.jsx files, which break the
-    JS build ("Expected '{', got 'type'"). Never touches .ts/.tsx (valid there).
-    Returns modified rel paths. Never raises."""
+    """Drop TypeScript-only statements some models emit into plain .js/.jsx files, which
+    break the JS build ("Expected '{', got 'type'"). CONSERVATIVE to avoid corrupting
+    valid code: only removes a single-line ``import type ...`` or a SELF-CONTAINED
+    one-line ``export type X = ...;`` (brackets balanced, ends with ';'); multi-line
+    type forms are left for the fix-loop. Skips lines inside block comments. Never
+    touches .ts/.tsx. Returns modified rel paths. Never raises."""
     root = Path(root)
     changed: list[str] = []
     for f in _iter_files(root):
@@ -1006,10 +1039,106 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
             lines = f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         except OSError:
             continue
-        kept = [ln for ln in lines if not _TS_TYPE_LINE.match(ln)]
-        if len(kept) != len(lines):
+        out: list[str] = []
+        in_block = False
+        removed = False
+        for ln in lines:
+            stripped = ln.strip()
+            if in_block:
+                out.append(ln)
+                if "*/" in ln:
+                    in_block = False
+                continue
+            if stripped.startswith("/*") and "*/" not in stripped:
+                in_block = True
+                out.append(ln)
+                continue
+            if _IMPORT_TYPE_RE.match(ln):
+                removed = True
+                continue
+            if (_EXPORT_TYPE_RE.match(ln) and _balanced_line(ln)
+                    and stripped.endswith(";")):
+                removed = True
+                continue
+            out.append(ln)
+        if removed:
             try:
-                f.write_text("".join(kept), encoding="utf-8")
+                f.write_text("".join(out), encoding="utf-8")
+            except OSError:
+                continue
+            changed.append(str(f.relative_to(root)))
+    return changed
+
+
+_LUCIDE_IMPORT_RE = re.compile(r"import\s*\{([^}]*)\}\s*from\s*['\"]lucide-react['\"]")
+
+
+def _lucide_real_exports(root: Path) -> set[str]:
+    """Real lucide-react icon names from the INSTALLED package's d.ts (each icon is a
+    `declare const Name`). Empty when not installed — then we can't validate, so no-op."""
+    dts = root / "node_modules" / "lucide-react" / "dist" / "lucide-react.d.ts"
+    try:
+        text = dts.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    return set(re.findall(r"declare const ([A-Z][A-Za-z0-9]+)\b", text))
+
+
+def reconcile_lucide_icons(root: str | Path) -> list[str]:
+    """Replace hallucinated lucide-react icon imports (e.g. ``GeneratorIcon``, which the
+    package doesn't export) with a real icon — in the import AND its JSX usages — so the
+    build doesn't fail with "X is not exported from 'lucide-react'". Tries the name minus
+    a trailing 'Icon', else a safe generic. No-op when lucide isn't installed (can't
+    validate against real exports). Never raises."""
+    root = Path(root)
+    real = _lucide_real_exports(root)
+    if not real:
+        return []
+    fallback = next((c for c in ("Circle", "Square", "Star", "Box") if c in real), "")
+    if not fallback:
+        return []
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in (".jsx", ".tsx", ".js", ".ts"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "lucide-react" not in text:
+            continue
+        repls: dict[str, str] = {}
+        for m in _LUCIDE_IMPORT_RE.finditer(text):
+            for raw in m.group(1).split(","):
+                src = raw.split(" as ")[0].strip()
+                if src and src not in real and src not in repls:
+                    base = src[:-4] if (src.endswith("Icon") and src[:-4] in real) else None
+                    repls[src] = base or fallback
+        if not repls:
+            continue
+        new_text = text
+        for src, rep in repls.items():
+            new_text = re.sub(rf"\b{re.escape(src)}\b", rep, new_text)
+        # Replacing two hallucinated names with the same fallback (or one already
+        # imported) yields a duplicate specifier — `{ Circle, Circle }` — which is a
+        # syntax error. Dedupe each lucide import's name list (usages can repeat fine).
+        def _dedupe_import(m: re.Match) -> str:
+            seen: set[str] = set()
+            kept: list[str] = []
+            for raw in m.group(1).split(","):
+                nm = raw.strip()
+                if not nm:
+                    continue
+                key = nm.split(" as ")[-1].strip()
+                if key not in seen:
+                    seen.add(key)
+                    kept.append(nm)
+            return "import { " + ", ".join(kept) + " } from 'lucide-react'"
+
+        new_text = _LUCIDE_IMPORT_RE.sub(_dedupe_import, new_text)
+        if new_text != text:
+            try:
+                f.write_text(new_text, encoding="utf-8")
             except OSError:
                 continue
             changed.append(str(f.relative_to(root)))
@@ -1484,6 +1613,9 @@ def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bo
 _NODE_STACKS = (
     "react", "react_vite", "react_native", "node", "node_express", "express",
     "nextjs", "astro", "remix", "static",
+    # Tauri desktop: the frontend is a Vite/React app — `npm run build` builds it
+    # (the proof); the fixed src-tauri/ Rust shell is bundled separately.
+    "tauri", "desktop",
 )
 
 

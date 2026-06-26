@@ -42,6 +42,17 @@ def test_adds_use_client_for_browser_global(tmp_path):
     assert any("Theme" in c for c in add_use_client_directives(tmp_path))
 
 
+def test_adds_use_client_for_styled_jsx(tmp_path):
+    # styled-jsx is client-only — a Server Component using <style jsx> fails next build.
+    _next(tmp_path)
+    (tmp_path / "components").mkdir()
+    (tmp_path / "components" / "Footer.jsx").write_text(
+        "export default function Footer(){\n"
+        "  return <footer><style jsx>{`footer{color:red}`}</style>hi</footer>;\n}\n",
+        encoding="utf-8")
+    assert any("Footer" in c for c in add_use_client_directives(tmp_path))
+
+
 def test_skips_pure_server_component(tmp_path):
     _next(tmp_path)
     (tmp_path / "app").mkdir()

@@ -111,6 +111,43 @@ async def test_fix_loop_stops_when_proof_passes(tmp_path):
     assert out.passed is True
 
 
+async def test_fix_loop_converges_past_two_attempts(tmp_path, monkeypatch):
+    # The convergence loop must keep retrying past the old 2-cap until the proof
+    # passes — a multi-error cascade needs >2 passes (each proof reveals the next).
+    runner = _runner()
+    plan = Planner(Settings()).plan("a python tool", "t")
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "main.py").write_text("print('hi')\n")
+
+    class _P:
+        def __init__(self, passed):
+            self.passed, self.missing, self.detail = passed, [], {}
+
+        def error_gaps(self):
+            return []
+
+        def to_dict(self):
+            return {"passed": self.passed}
+
+    seq = [_P(False), _P(False), _P(False), _P(True)]  # green on the 4th re-proof
+    calls = {"n": 0}
+
+    def fake_proof(*a, **k):
+        i = calls["n"]
+        calls["n"] += 1
+        return seq[min(i, len(seq) - 1)]
+
+    monkeypatch.setattr("skyn3t.studio.runner.proof_run", fake_proof)
+
+    class _M:
+        build_id, slug, brief, files, extra = "b", "t", "a python tool", [], {}
+
+    out = await runner._fix_loop(_M(), plan, str(proj), _P(False), "cid", {})
+    assert out.passed is True
+    assert calls["n"] >= 3  # iterated past the old 2-attempt cap
+
+
 # ---- substance gate + best-of-N richness ranking -------------------------
 def test_largest_source_bytes(tmp_path):
     runner = _runner()

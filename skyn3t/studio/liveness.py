@@ -14,7 +14,14 @@ _PY_ROUTE = re.compile(r"""@\w+\.(get|post|put|patch|delete|route)\(\s*['"]([^'"
 _JS_ROUTE = re.compile(r"""\b(?:app|router)\.(get|post|put|patch|delete)\(\s*['"]([^'"]+)['"]""", re.I)
 _REACT_ROUTE = re.compile(r"""(?:<Route\s+[^>]*\bpath=|["']path["']\s*:\s*)['"]([^'"]+)['"]""")
 _SRC_SUFFIXES = (".py", ".js", ".ts", ".jsx", ".tsx", ".mjs")
-_IGNORE_PARTS = frozenset({".git", "node_modules", ".venv", "__pycache__", "dist", "build"})
+# Build-output / dependency dirs whose files must NEVER be mistaken for app routes.
+# Missing ".next" meant Next.js prerender output (.next/server/app/about.html,
+# .next/server/pages/404.html) was enumerated as routes that then 404'd, tanking
+# liveness_health and capping the build score (~75 even for a perfect app).
+_IGNORE_PARTS = frozenset({
+    ".git", "node_modules", ".venv", "__pycache__", "dist", "build",
+    ".next", "out", ".vite", ".svelte-kit", ".turbo", ".cache", "coverage", ".output",
+})
 
 
 @dataclass(slots=True)

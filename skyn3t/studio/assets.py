@@ -55,10 +55,26 @@ _ANIMALS = ("cat", "dog", "elephant", "lion", "rabbit", "fox", "owl", "fish",
             "bear", "frog", "horse", "penguin", "turtle", "butterfly")
 _NATURE = ("tree", "flower", "sun", "star", "cloud", "rainbow", "house", "car")
 
+# Business / marketing / home-services briefs imply real PHOTOS (a hero banner +
+# per-service shots), not coloring pages. Without this, a company site shipped with
+# zero imagery ("no_subjects"). Map the services a brief names to concrete subjects.
+_BUSINESS_SIGNALS = ("service", "services", "company", "business", "marketing",
+                     "website", " site", "contractor", "repair", "installation",
+                     "commercial", "residential", "agency", "clinic", "shop", "store")
+_SERVICE_SUBJECTS = (
+    (("air conditioning", "a/c", "hvac", "cooling", " ac "), "air conditioning condenser unit beside a house"),
+    (("heating", "furnace", "heat pump", "boiler"), "home furnace heating system"),
+    (("plumbing", "plumber", "drain", " pipe"), "plumber repairing a pipe under a sink"),
+    (("electrical", "electrician", "wiring", " panel"), "electrician working on a home electrical panel"),
+    (("generator",), "home standby backup generator"),
+    (("roofing", "roof"), "roofer installing shingles on a roof"),
+    (("landscaping", "lawn care"), "professionally landscaped residential yard"),
+)
+
 
 def _wants_images(brief: str) -> bool:
     low = (brief or "").lower()
-    return any(sig in low for sig in _IMAGE_SIGNALS)
+    return any(sig in low for sig in _IMAGE_SIGNALS) or any(w in low for w in _BUSINESS_SIGNALS)
 
 
 def _extract_subjects(brief: str, limit: int) -> list[str]:
@@ -79,6 +95,14 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     if any(w in low for w in ("animal", "zoo", "kid", "child", "toddler",
                               "coloring", "colouring")):
         return list(_ANIMALS[:limit])
+    # Business / marketing / home-services site: ship a hero + the per-service
+    # photos the brief names, so a company site has real imagery instead of none.
+    if any(w in low for w in _BUSINESS_SIGNALS):
+        subs = ["service technician helping a happy homeowner at their house"]
+        for keys, subject in _SERVICE_SUBJECTS:
+            if any(k in low for k in keys) and subject not in subs:
+                subs.append(subject)
+        return subs[:limit]
     # Nothing nameable. Do NOT invent coloring-book defaults — a brief that
     # merely *mentions* images (e.g. a tool that takes an image as INPUT) is not
     # an app that ships decorative pictures. Generating cat/dog/tree/flower here

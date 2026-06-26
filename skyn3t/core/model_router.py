@@ -42,13 +42,15 @@ _FREE_DEFAULTS: dict[Tier, str] = {
     Tier.DOCS: "qwen/qwen3-coder:free",
 }
 
-# Paid defaults used when free_only=0.
+# Paid defaults used when free_only=0. Kept CURRENT (not the 2024 deepseek-chat) —
+# OpenRouter rotates models constantly, so these are last-known-good recent ids;
+# the live-catalog resolver (newest_paid_model) supersedes them when reachable.
 _PAID_DEFAULTS: dict[Tier, str] = {
-    Tier.CHEAP: "deepseek/deepseek-chat",
-    Tier.UI: "deepseek/deepseek-chat",
-    Tier.BACKEND: "deepseek/deepseek-chat",
-    Tier.STRONG: "deepseek/deepseek-r1",
-    Tier.DOCS: "deepseek/deepseek-chat",
+    Tier.CHEAP: "deepseek/deepseek-v3.2",
+    Tier.UI: "deepseek/deepseek-v3.2",
+    Tier.BACKEND: "deepseek/deepseek-v3.2",
+    Tier.STRONG: "deepseek/deepseek-v3.2",
+    Tier.DOCS: "deepseek/deepseek-v3.2",
 }
 
 # When a configured :free model is no longer in the live catalog, substitute a
@@ -90,6 +92,62 @@ def live_free_model_ids(timeout: float = 8.0) -> list[str]:
     _LIVE_FREE_AT = now
     return fresh
 
+
+# Full live catalog cache (id + created epoch), for auto-picking the NEWEST model
+# in a family so a pin never goes stale (OpenRouter rotates models constantly).
+_LIVE_CATALOG: list[dict] | None = None
+_LIVE_CATALOG_AT = 0.0
+
+
+def live_catalog(timeout: float = 8.0) -> list[dict]:
+    """Current OpenRouter catalog as ``[{"id","created"}]`` (cached, public endpoint).
+    Returns ``[]`` when unreachable so callers keep their static fallback."""
+    global _LIVE_CATALOG, _LIVE_CATALOG_AT
+    import time as _t
+    now = _t.time()
+    if _LIVE_CATALOG is not None and (now - _LIVE_CATALOG_AT) < _LIVE_TTL:
+        return _LIVE_CATALOG
+    fresh: list[dict] = []
+    try:
+        import json as _j
+        import urllib.request as _u
+        req = _u.Request("https://openrouter.ai/api/v1/models", headers={"User-Agent": "skyn3t"})
+        data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
+        fresh = [{"id": m["id"], "created": int(m.get("created", 0) or 0)}
+                 for m in data if isinstance(m.get("id"), str)]
+    except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
+        log.warning("router.catalog_unavailable", error=str(exc)[:120])
+    _LIVE_CATALOG = fresh
+    _LIVE_CATALOG_AT = now
+    return fresh
+
+
+# Substrings that disqualify a model from "newest" auto-pick: reasoning/base/
+# experimental/preview variants aren't general codegen-chat models.
+_NEWEST_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp", "thinking", "preview")
+
+# Strong code-capable families on OpenRouter. ``newest:coder`` picks the freshest
+# across ALL of them (so it tracks the genuinely-newest coder, e.g. a 2026 kimi/
+# minimax/qwen3-coder, not just the newest deepseek). Keep this list current as
+# new strong coders ship.
+_CODER_FAMILIES = ("kimi-k2", "qwen3-coder", "deepseek-v3", "minimax-m",
+                   "glm-4", "codestral", "grok-code")
+
+
+def newest_paid_model(family: str) -> str | None:
+    """The NEWEST live, non-free, non-experimental catalog id matching ``family``.
+
+    ``family="coder"`` -> newest across ALL strong coder families; otherwise a
+    substring match (e.g. ``"deepseek-v3"`` -> newest deepseek-v3.x). ``None`` when
+    the catalog is unreachable or nothing matches — caller keeps a static fallback."""
+    fam = family.lower()
+    families = _CODER_FAMILIES if fam == "coder" else (fam,)
+    cands = [(m["id"], m["created"]) for m in live_catalog()
+             if any(f in m["id"].lower() for f in families) and not m["id"].endswith(":free")
+             and not any(x in m["id"].lower() for x in _NEWEST_EXCLUDE)]
+    return max(cands, key=lambda c: c[1])[0] if cands else None
+
+
 _CLAUDE_MARKERS = ("claude", "anthropic")
 
 
@@ -126,6 +184,18 @@ class ModelRouter:
         else:
             base = _FREE_DEFAULTS if self.settings.free_only else _PAID_DEFAULTS
             model = base[tier]
+
+        # ``newest:<family>`` auto-resolves to the freshest matching model from the
+        # LIVE catalog (so a pin never ages into a stale model). Falls back to the
+        # paid default for the tier when the catalog is unreachable.
+        if model.startswith("newest:"):
+            family = model.split(":", 1)[1]
+            live = newest_paid_model(family)
+            if live:
+                log.info("router.newest_resolved", family=family, model=live)
+                model = live
+            else:
+                model = _PAID_DEFAULTS.get(tier, "deepseek/deepseek-v3.2")
 
         model = self._apply_policy(model, tier)
         # Self-heal a retired :free id against OpenRouter's LIVE catalog (only

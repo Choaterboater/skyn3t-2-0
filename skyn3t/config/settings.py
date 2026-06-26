@@ -207,6 +207,12 @@ class Settings(BaseSettings):
     # fed to the fix loop as a gap so a real backend can repair it.
     run_generated_build: bool = True
     generated_build_timeout: int = 300
+    # Convergence loop: keep re-running build -> feed the exact error to the improver
+    # -> retry until the proof passes or these bounds hit. The cheap model emits a
+    # different defect each build; a multi-error cascade (e.g. styled-jsx + a bad
+    # import) needs more than 2 passes to clear. Bounded by attempts AND wall-clock.
+    max_fix_attempts: int = 6
+    fix_loop_budget_s: int = 720
     visual_self_heal: bool = False  # 2.0: drive rendered UI (needs browser)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 

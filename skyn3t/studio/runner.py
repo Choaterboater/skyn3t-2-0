@@ -49,6 +49,7 @@ from skyn3t.studio.proof_run import (
     reconcile_lucide_icons,
     reconcile_next_config_peers,
     reconcile_npm_deps,
+    reconcile_tauri_cargo_features,
     scaffold_missing_imports,
     strip_ts_type_in_js,
 )
@@ -1064,6 +1065,8 @@ class StudioRunner:
         # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
         # ones — the model invents icon names that aren't exported, failing the build.
         lucide = reconcile_lucide_icons(project_dir)
+        # Tauri desktop: fix hallucinated Cargo feature names so the Rust shell builds.
+        tauri_cargo = reconcile_tauri_cargo_features(project_dir)
         return {
             "npm_deps_added": added,
             "next_config_peers": peers,
@@ -1072,6 +1075,7 @@ class StudioRunner:
             "path_alias_config": alias_cfg,
             "ts_in_js_stripped": ts_stripped,
             "lucide_icons_fixed": lucide,
+            "tauri_cargo_fixed": tauri_cargo,
         }
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):

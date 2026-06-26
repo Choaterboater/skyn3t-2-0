@@ -674,7 +674,7 @@ class CodeAgent(BaseAgent):
             + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )
         result = await self.llm.complete(
-            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
+            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=16384,  # large data/page files truncated at 8192 -> mid-function EOF syntax error -> no_go
             task_type=self.agent_type, model_override=model_override,
         )
         # If the call degraded to the stub backend (CLI failure/timeout, missing
@@ -688,7 +688,7 @@ class CodeAgent(BaseAgent):
             retry = await self.llm.complete(
                 prompt + f"\n\nThe previous attempt had an error: {err}\n"
                 "Return the COMPLETE corrected file.",
-                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=8192,
+                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=16384,  # large data/page files truncated at 8192 -> mid-function EOF syntax error -> no_go
                 task_type=self.agent_type, model_override=model_override,
             )
             if retry.backend != "stub":

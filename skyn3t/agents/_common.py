@@ -22,6 +22,7 @@ KNOWN_STACKS = (
     "python_cli",
     "fastapi",
     "node_express",
+    "tauri",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -61,6 +62,14 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "ios app", "android app", "mobile application",
     )):
         return "react_native"
+    # Desktop (Tauri): a native Mac/Windows app. Must precede the generic react/vite
+    # check — a desktop app's brief usually says "app" and uses a React frontend.
+    if any(k in text for k in (
+        "desktop app", "tauri", "native app", "mac app", "macos app",
+        "windows app", "electron", "standalone app", "desktop application",
+        "cross-platform app", "menu bar app",
+    )):
+        return "tauri"
     # Next.js / Astro / Remix must precede the generic ``react`` check — they are
     # React-family frameworks whose briefs often also say "react", but they have
     # their own real builder now (not the plain Vite scaffold).
@@ -87,6 +96,12 @@ def _normalize_stack(value: str) -> str:
         "react_vite": "react_vite",
         "vite_react": "react_vite",
         "spa": "react_vite",
+        # Tauri cross-platform desktop (Vite/React frontend + Rust shell).
+        "tauri": "tauri",
+        "desktop": "tauri",
+        "desktop_app": "tauri",
+        "electron": "tauri",
+        "macos": "tauri",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

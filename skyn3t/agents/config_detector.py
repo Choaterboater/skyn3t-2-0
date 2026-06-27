@@ -33,6 +33,9 @@ LLMFn = Callable[[str], str]
 _CLIENT_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
     "static", "static_html", "html", "vue", "svelte",
+    # Phaser is a pure-frontend Vite SPA with no backend (unlike tauri's Rust
+    # shell), so any key it references is client-visible.
+    "phaser",
 })
 
 

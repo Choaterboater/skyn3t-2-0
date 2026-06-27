@@ -22,6 +22,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "python": "a Python CLI tool, script, or library (no web UI)",
     "express": "a Node.js web server / API",
     "tauri": "a cross-platform desktop app for Mac/Windows (Vite + React frontend + Tauri Rust shell)",
+    "phaser": "a 2D browser game — arcade / platformer / shooter (Phaser 3 + Vite, canvas)",
 }
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.

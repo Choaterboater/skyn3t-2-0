@@ -41,6 +41,7 @@ _INSTALL_HINTS: dict[str, str] = {
     ),
     "node_express": "```bash\nnpm install\n```\n\nRequires Node.js 18+.",
     "react_native": "```bash\nnpm install\n```\n\nRequires Node.js 18+ and the Expo CLI (`npx expo`).",
+    "phaser": "```bash\nnpm install\n```\n\nRequires Node.js 18+.",
 }
 
 _RUN_HINTS: dict[str, str] = {
@@ -53,6 +54,7 @@ _RUN_HINTS: dict[str, str] = {
     ),
     "node_express": "```bash\nnpm start\n```\n\nThe server listens on `http://localhost:3000`.",
     "react_native": "```bash\nnpm start\n```\n\nThen press `i` for the iOS simulator, `a` for Android, or scan the QR with Expo Go.",
+    "phaser": "```bash\nnpm run dev\n```\n\nThen build for production with `npm run build` (outputs `dist/`).",
 }
 
 # Short, filename-based descriptions for the README's project-structure section.
@@ -160,6 +162,7 @@ class WriterAgent(BaseAgent):
         "fastapi": "FastAPI",
         "node_express": "Node.js + Express",
         "react_native": "Expo + React Native + TypeScript",
+        "phaser": "Phaser 3 + Vite",
     }
 
     def _offline_readme(self, title: str, brief: str, stack: str,

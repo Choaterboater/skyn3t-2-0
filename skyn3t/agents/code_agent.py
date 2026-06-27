@@ -129,6 +129,7 @@ _LLM_DIRECTIVE = (
 _WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
     "static", "html", "node", "node_express", "express", "vue", "svelte",
+    "phaser",  # a Phaser game has real HUD/menu visual-design concerns
 })
 
 

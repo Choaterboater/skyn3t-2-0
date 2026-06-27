@@ -718,3 +718,85 @@ async def test_transient_improver_crash_does_not_block_missing_core(tmp_path, mo
     gate = await runner._headless_gate_pass(m, _phaser_plan(), str(tmp_path), "cid", {})
     assert gate.passed is True, "a never-run improver must not block (do-no-harm)"
     assert "headless_gate_note" in m.extra
+
+
+# ---- #8 input-wiring specialist: advisory, drives repair, NEVER blocks ----
+_UNWIRED_SIM = (
+    "export function createState(seed){ return {x:0, rng:seed>>>0, paused:false, over:false} }\n"
+    "export function step(s, input, dt){ s.x += 1; return s }\n"  # reads NO input
+    "export function isWin(s){ return false }\nexport function isLose(s){ return false }\n"
+)
+
+
+async def test_uncontrollable_but_passing_game_is_recorded_not_repaired(tmp_path, monkeypatch):
+    # do-no-harm: a game that PASSES the gate but ignores input must NOT start a
+    # repair pass (which could transitively regress the passing gate into a no_go) —
+    # it is only RECORDED. The improver is never invoked.
+    _write(tmp_path, {"src/sim.js": _UNWIRED_SIM})
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+    passing = HeadlessGateResult(applicable=True, passed=True, detail={"sim": "src/sim.js"})
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: passing
+    )
+    n = {"submits": 0}
+
+    async def fake_submit(task):
+        n["submits"] += 1
+        return None
+
+    monkeypatch.setattr(runner.orchestrator, "submit", fake_submit)
+    m = _M()
+    gate = await runner._headless_gate_pass(m, _phaser_plan(), str(tmp_path), "cid", {})
+    assert n["submits"] == 0, "wiring must NOT start a repair on a passing gate"
+    assert gate.passed is True, "input-wiring never blocks the verdict"
+    assert m.extra["input_wiring"]["ok"] is False  # but it IS recorded
+
+
+async def test_wiring_gap_enriches_an_already_running_gate_repair(tmp_path, monkeypatch):
+    # When the gate is ALREADY failing (so a repair runs anyway), the wiring gap is
+    # added to that repair's feedback so the improver also fixes the controls.
+    _write(tmp_path, {"src/sim.js": _UNWIRED_SIM})
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+    failing = HeadlessGateResult(
+        applicable=True, passed=False, violations=["NaN in state.x"],
+        detail={"sim": "src/sim.js"},
+    )
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: failing
+    )
+    seen: list = []
+
+    async def fake_submit(task):
+        seen.append(task.payload.get("gaps") or [])
+        return None
+
+    monkeypatch.setattr(runner.orchestrator, "submit", fake_submit)
+    await runner._headless_gate_pass(_M(), _phaser_plan(), str(tmp_path), "cid", {})
+    assert seen, "a failing gate runs the repair loop"
+    assert any(any("ignores player input" in g.lower() for g in gaps) for gaps in seen), \
+        "the wiring gap enriches the existing repair's feedback"
+    assert any(any("nan" in g.lower() for g in gaps) for gaps in seen), \
+        "the real gate violation is still fed too"
+
+
+async def test_controllable_game_records_ok_and_needs_no_wiring_repair(tmp_path, monkeypatch):
+    _write(tmp_path, {"src/sim.js": _GOODISH})  # reads input.right/left/action
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+    passing = HeadlessGateResult(applicable=True, passed=True, detail={"sim": "src/sim.js"})
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: passing
+    )
+    n = {"submits": 0}
+
+    async def fake_submit(task):
+        n["submits"] += 1
+        return None
+
+    monkeypatch.setattr(runner.orchestrator, "submit", fake_submit)
+    m = _M()
+    await runner._headless_gate_pass(m, _phaser_plan(), str(tmp_path), "cid", {})
+    assert n["submits"] == 0, "a wired game + passing gate triggers no repair"
+    assert m.extra["input_wiring"]["ok"] is True

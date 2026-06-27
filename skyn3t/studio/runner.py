@@ -1227,6 +1227,16 @@ class StudioRunner:
             log.warning("headless_gate.failed", error=str(exc))
             return None
 
+        # #8 input-wiring specialist: an uncontrollable game (the sim reads none of
+        # the input controls) ENRICHES a repair that is ALREADY running for a real
+        # gate violation, and is always recorded — but it NEVER starts the loop on
+        # an otherwise-passing build. That keeps it strictly do-no-harm: it can't
+        # trigger an improver pass that transitively regresses a passing gate into a
+        # no_go (and can't inflate the missing-core seal's repair_attempted).
+        from skyn3t.studio.gameplay_checks import check_input_wiring
+
+        wiring_gap = check_input_wiring(project_dir)
+
         attempts = int(getattr(self.settings, "headless_gate_attempts", 3))
         n = 0
         completed = 0  # improver runs that actually FINISHED (not just attempted)
@@ -1244,7 +1254,7 @@ class StudioRunner:
                 "stack": plan.stack, "plan": plan.to_dict(),
                 # Feed the EXACT invariant violations (or the sim-core extraction
                 # instruction) back, like compile errors.
-                "gaps": self._headless_gate_gaps(gate),
+                "gaps": self._headless_gate_gaps(gate) + ([wiring_gap] if wiring_gap else []),
             }
             if extra:
                 payload["extra"] = extra
@@ -1263,6 +1273,7 @@ class StudioRunner:
             completed += 1
             manifest.files = list_files(project_dir)
             gate = await asyncio.to_thread(run_headless_gate, project_dir)
+            wiring_gap = check_input_wiring(project_dir)
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
                 {"build_id": manifest.build_id, "stage": f"headless_gate#{n}", "passed": gate.passed},
@@ -1285,6 +1296,8 @@ class StudioRunner:
                 detail={**(gate.detail or {}), "blocked": "missing_sim_core"},
             )
         manifest.extra["headless_gate"] = gate.to_dict()
+        # Advisory: record whether the game ended up controllable (never blocks).
+        manifest.extra["input_wiring"] = {"ok": wiring_gap is None, "gap": wiring_gap or ""}
         # When a game has no sim core but we couldn't repair it (no improver
         # capability), surface the gap without blocking — do-no-harm keeps it from
         # no_go'ing a build on our own inability to run the improver.

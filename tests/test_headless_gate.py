@@ -146,6 +146,53 @@ _IMPURE = (
     "export function step(s){ return s }\n"
 )
 
+# A bounded array that first appears AFTER the half-way point (lazy level load).
+# Its baseline must be its first-sighting size, not 0, so it is NOT a false leak.
+_LATE_STATIC_ARRAY = (
+    "export function createState(seed){ return {t:0, rng:seed} }\n"
+    "export function step(s){ s.t += 1; if(s.t===200 && !s.grid){ s.grid=new Array(5000).fill(0) } return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# State holds a Map with a reference cycle AND is non-deterministic. The snapshot
+# must tolerate the Map cycle (not stack-overflow) so the determinism check still
+# RUNS and catches the Math.random.
+_MAP_CYCLE_NONDET = (
+    "export function createState(seed){ const m=new Map(); m.set('self', m); return {m, x:0} }\n"
+    "export function step(s){ s.x = Math.random(); return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A leak in a non-last sibling of an array-of-arrays — must not be masked by the
+# last-write-wins collapse of the shared '[]' path key.
+_NESTED_LEAK = (
+    "export function createState(seed){ return {lanes:[[], [0,0,0]], rng:seed} }\n"
+    "export function step(s){ for(let i=0;i<20;i++) s.lanes[0].push(1); return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# An array declared empty at start then BULK-LOADED once (lazy level load) to a
+# bounded size — NOT a leak. Baseline = first non-zero size, so it must PASS.
+_LAZY_BULK_LOAD = (
+    "export function createState(seed){ return {grid:[], t:0, rng:seed} }\n"
+    "export function step(s){ s.t+=1; if(s.t===200 && s.grid.length===0){ "
+    "for(let i=0;i<5000;i++) s.grid.push(0) } return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A leaking array under a state field literally named 'constructor' — must still
+# be caught (null-proto maps, so the inherited 'constructor' doesn't mask it).
+_PROTO_KEY_LEAK = (
+    "export function createState(seed){ return {constructor:[], rng:seed} }\n"
+    "export function step(s){ for(let i=0;i<100;i++) s.constructor.push(1); return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
 
 # ---- pure-Python contract (no node) --------------------------------------
 def test_gate_skips_gracefully_when_no_sim(tmp_path):
@@ -295,3 +342,54 @@ def test_impure_sim_blocks(tmp_path):
     res = run_headless_gate(tmp_path)
     assert res.applicable is True
     assert res.passed is False
+
+
+# ---- node-backed: fix-round-2 regressions (re-review of the harness rewrite) --
+@requires_node
+def test_gate_does_not_flag_late_spawned_bounded_array(tmp_path):
+    # An array that first appears after the midpoint at a bounded size is NOT a
+    # leak — its baseline is the first-sighting size, not 0. (False-positive guard.)
+    _write(tmp_path, {"src/sim.js": _LATE_STATIC_ARRAY})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_gate_handles_map_cycle_and_still_runs_determinism(tmp_path):
+    # A Map reference cycle must not stack-overflow the snapshot and silently skip
+    # the determinism check — the Math.random must still be caught.
+    _write(tmp_path, {"src/sim.js": _MAP_CYCLE_NONDET})
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.passed is False
+    assert any("determinism" in v.lower() for v in res.violations), res.violations
+
+
+@requires_node
+def test_gate_catches_leak_in_nested_array_sibling(tmp_path):
+    # A leak in a non-last inner array (array-of-arrays) must not be masked by the
+    # last-write-wins collapse of the shared '[]' path key.
+    _write(tmp_path, {"src/sim.js": _NESTED_LEAK})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.passed is False
+    assert any("pool" in v.lower() for v in res.violations), res.violations
+
+
+@requires_node
+def test_gate_does_not_flag_lazy_bulk_loaded_array(tmp_path):
+    # An array empty at start then bulk-loaded once to a bounded size is NOT a
+    # leak (baseline = first non-zero size). Blocking-false-positive guard.
+    _write(tmp_path, {"src/sim.js": _LAZY_BULK_LOAD})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_gate_catches_leak_under_prototype_named_field(tmp_path):
+    # A leak in a field named 'constructor' must still be caught — the per-path
+    # maps are null-proto so the inherited key doesn't mask it.
+    _write(tmp_path, {"src/sim.js": _PROTO_KEY_LEAK})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.passed is False
+    assert any("pool" in v.lower() for v in res.violations), res.violations

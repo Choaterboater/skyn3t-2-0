@@ -81,11 +81,14 @@ function snapshot(x) {
   const seen = new WeakSet()
   return JSON.stringify(x, (k, v) => {
     if (typeof v === 'bigint') return 'BIGINT:' + v.toString()
-    if (v instanceof Map) return { __map: [...v.entries()] }
-    if (v instanceof Set) return { __set: [...v.values()] }
     if (v && typeof v === 'object') {
+      // Register EVERY object (Map/Set included) in the cycle guard BEFORE
+      // expanding it, so a reference cycle THROUGH a Map/Set value short-circuits
+      // to '[Circular]' instead of recursing forever (stack overflow).
       if (seen.has(v)) return '[Circular]'
       seen.add(v)
+      if (v instanceof Map) return { __map: [...v.entries()] }
+      if (v instanceof Set) return { __set: [...v.values()] }
     }
     return v
   })
@@ -120,7 +123,7 @@ function inputAt(t) {
 // the leak is caught by length, scalar NaNs by the cap.
 function scan(state) {
   let bad = null
-  const arrs = {}
+  const arrs = Object.create(null)  // null proto: 'constructor'/'toString' keys aren't inherited-present
   const seen = new Set()
   function note(kind, path, value) { if (!bad) bad = { kind, path, value } }
   function walk(v, path, key) {
@@ -135,14 +138,19 @@ function scan(state) {
     if (seen.has(v)) return
     seen.add(v)
     if (Array.isArray(v)) {
-      arrs[path || '(root)'] = v.length
+      // max(): sibling containers share the '[]' suffix, so last-write-wins would
+      // hide a leak in a non-last sibling — keep the LARGEST length seen per path.
+      const key = path || '(root)'
+      arrs[key] = Math.max(arrs[key] || 0, v.length)
       const lim = Math.min(v.length, 2000)
       for (let i = 0; i < lim; i++) walk(v[i], path + '[]', '')
     } else if (v instanceof Map) {
-      arrs[path || '(root)'] = v.size
+      const key = path || '(root)'
+      arrs[key] = Math.max(arrs[key] || 0, v.size)
       for (const [mk, mv] of v) walk(mv, path + '.' + String(mk), String(mk))
     } else if (v instanceof Set) {
-      arrs[path || '(root)'] = v.size
+      const key = path || '(root)'
+      arrs[key] = Math.max(arrs[key] || 0, v.size)
       for (const sv of v) walk(sv, path + '#', '')
     } else {
       for (const k in v) walk(v[k], path ? path + '.' + k : k, k)
@@ -160,7 +168,9 @@ function advance(s, input) {
 function run(ticks, inputFn) {
   let s = createState(SEED)
   let firstBad = null, win = false, lose = false
-  const arrMid = {}, arrEnd = {}
+  // null-proto maps so `p in arrMid` only sees real keys (a state field literally
+  // named 'constructor'/'toString' would otherwise read as inherited-present).
+  const arrFirst = Object.create(null), arrMid = Object.create(null), arrEnd = Object.create(null)
   const half = Math.floor(ticks / 2)
   for (let t = 0; t < ticks; t++) {
     s = advance(s, inputFn(t))
@@ -168,13 +178,16 @@ function run(ticks, inputFn) {
     if (sc.bad && !firstBad) firstBad = { ...sc.bad, tick: t }
     for (const p in sc.arrs) {
       const len = sc.arrs[p]
+      // Baseline = first NON-ZERO size: an array that's empty early then bulk-loads
+      // once to a bounded size must not read as growth-from-0 (a blocking FP).
+      if (len > 0 && !(p in arrFirst)) arrFirst[p] = len
       if (t < half && len > (arrMid[p] || 0)) arrMid[p] = len
       if (len > (arrEnd[p] || 0)) arrEnd[p] = len
     }
     if (typeof isWin === 'function' && isWin(s)) win = true
     if (typeof isLose === 'function' && isLose(s)) lose = true
   }
-  return { state: s, firstBad, arrMid, arrEnd, win, lose }
+  return { state: s, firstBad, arrFirst, arrMid, arrEnd, win, lose }
 }
 
 const violations = []
@@ -193,9 +206,14 @@ if (A.firstBad) {
 // 3. unbounded pool growth (leak), per array path — not masked by a coexisting
 // large-but-static array.
 for (const p in A.arrEnd) {
-  const end = A.arrEnd[p], mid = A.arrMid[p] || 0
-  if (end > POOL_FLOOR && end >= mid * 1.8) {
-    violations.push(`pool leak: array '${p}' grew to ${end} entries (was ${mid} at the half-way point) — likely an unbounded spawn/leak`)
+  const end = A.arrEnd[p]
+  // Baseline = the array's size BEFORE any leak: its max in the first half if it
+  // existed then, otherwise its length when it first appeared. Using the
+  // first-sighting size (not 0) means a BOUNDED array that spawns AFTER the
+  // midpoint is not false-flagged as a leak (only genuine growth trips it).
+  const baseline = (p in A.arrMid) ? A.arrMid[p] : (A.arrFirst[p] || 0)
+  if (end > POOL_FLOOR && end >= baseline * 1.8) {
+    violations.push(`pool leak: array '${p}' grew to ${end} entries (was ${baseline} earlier) — likely an unbounded spawn/leak`)
     break
   }
 }

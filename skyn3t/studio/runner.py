@@ -1070,6 +1070,14 @@ class StudioRunner:
         lucide = reconcile_lucide_icons(project_dir)
         # Tauri desktop: fix hallucinated Cargo feature names so the Rust shell builds.
         tauri_cargo = reconcile_tauri_cargo_features(project_dir)
+        # design.md contrast lint: surface text/bg token pairs that fail WCAG AA, so a
+        # white-default / unreadable UI is CAUGHT (logged) rather than silently shipped.
+        # Pairs with the injected token contract that prevents it in the first place.
+        from skyn3t.studio.design_tokens import lint_contrast
+        contrast_issues = lint_contrast(project_dir)
+        if contrast_issues:
+            log.warning("design.contrast_fail", count=len(contrast_issues),
+                        worst=min(i["ratio"] for i in contrast_issues))
         return {
             "npm_deps_added": added,
             "next_config_peers": peers,
@@ -1079,6 +1087,7 @@ class StudioRunner:
             "ts_in_js_stripped": ts_stripped,
             "lucide_icons_fixed": lucide,
             "tauri_cargo_fixed": tauri_cargo,
+            "contrast_issues": contrast_issues,
         }
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
@@ -1521,6 +1530,12 @@ class StudioRunner:
         # ones we used so we can grade them by the build's outcome.
         skill_advice, skill_slugs = self._skill_advice(plan.stack, brief)
         recall = self._recall(brief, plan.stack)
+        # design.md token contract: give UI builds a concrete, branded, AA-contrast
+        # token set to theme from (one source of truth) instead of ad-hoc hex. Only
+        # for design stacks so it never pollutes a CLI/API build.
+        if plan.stack in _DESIGN_STACKS:
+            from skyn3t.studio.design_tokens import design_md_block
+            skill_advice = f"{skill_advice}\n\n{design_md_block(brief)}".strip()
         if skill_advice or recall:
             extra = {**extra, "skills_advice": skill_advice, "recall": recall}
         # Observable record of what RAG recall fed this build (so you can verify

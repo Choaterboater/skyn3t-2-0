@@ -124,10 +124,11 @@ def live_catalog(timeout: float = 8.0) -> list[dict]:
 
 # Substrings that disqualify a model from "newest" auto-pick: reasoning/base/
 # experimental/preview variants aren't general codegen-chat models.
-_NEWEST_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp", "thinking", "preview")
-# Explicit ids that stay eligible even if they match an exclude substring — for a
-# vetted/promising preview we deliberately want in the coder pool (e.g. cheap + big ctx).
-_NEWEST_ALLOW = ("tencent/hy3-preview",)
+# Previews ARE allowed in the coder pool (opted in) — the cortex tournament learns
+# which previews are actually good and down-ranks the rest, so we don't pre-filter them.
+_NEWEST_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp", "thinking")
+# Explicit ids that stay eligible even if they ever match an exclude substring (escape hatch).
+_NEWEST_ALLOW = ()
 
 # Strong code-capable families on OpenRouter. ``newest:coder`` picks the freshest
 # across ALL of them (so it tracks the genuinely-newest coder, e.g. a 2026 kimi/

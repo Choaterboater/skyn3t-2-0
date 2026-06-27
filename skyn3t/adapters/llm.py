@@ -668,6 +668,10 @@ class LLMClient:
                                 result = _run_tool(name, args)
                                 if name == "write_file" and result.startswith("OK"):
                                     wrote += 1
+                                    # Live per-file progress so a tailed build log shows
+                                    # codegen advancing (the agentic phase was silent).
+                                    log.info("llm.agentic_wrote",
+                                             file=str(args.get("path", ""))[:80], n=wrote)
                             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                                              "content": result})
                     else:

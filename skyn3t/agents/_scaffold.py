@@ -1334,7 +1334,104 @@ def _tauri(app_name: str, brief: str) -> dict[str, str]:
     return files
 
 
-def _phaser(app_name: str, brief: str) -> dict[str, str]:
+def _phaser_main_js(art: bool) -> str:
+    """The Phaser scene (``src/main.js``). With ``art`` it preloads role sprites and
+    renders them with a colored-primitive FALLBACK (a missing/failed sprite never
+    breaks the game); without it, the exact primitive-only baseline. The pure sim
+    import + step() are identical either way — art is rendering-only."""
+    preload = (
+        (
+            "  preload() {\n"
+            "    // Role sprites written to public/assets/sprites/ at build time (generated\n"
+            "    // by Replicate or a bundled CC0 fallback). If a file is absent Phaser skips\n"
+            "    // it and create() falls back to a colored primitive — a missing sprite\n"
+            "    // never breaks the game.\n"
+            "    this.load.image('player', '/assets/sprites/player.png')\n"
+            "    this.load.image('coin', '/assets/sprites/coin.png')\n"
+            "  }\n\n"
+        )
+        if art
+        else ""
+    )
+    views = (
+        (
+            "    this.playerView = this.textures.exists('player')\n"
+            "      ? this.add.sprite(0, 0, 'player').setDisplaySize(40, 40)\n"
+            "      : this.add.rectangle(0, 0, 36, 36, 0x4ade80)\n"
+            "    this.coinView = this.textures.exists('coin')\n"
+            "      ? this.add.sprite(0, 0, 'coin').setDisplaySize(28, 28)\n"
+            "      : this.add.circle(0, 0, 12, 0xfbbf24)\n"
+        )
+        if art
+        else (
+            "    this.playerView = this.add.rectangle(0, 0, 36, 36, 0x4ade80)\n"
+            "    this.coinView = this.add.circle(0, 0, 12, 0xfbbf24)\n"
+        )
+    )
+    return (
+        "import Phaser from 'phaser'\n"
+        "import './styles.css'\n"
+        "import { createState, step, isWin, isLose, WIDTH, HEIGHT } from './sim.js'\n\n"
+        "// The Phaser scene owns NO game logic — all of it lives in the pure\n"
+        "// src/sim.js (one authoritative state advanced by one step()). Each frame\n"
+        "// the scene reads input, advances the sim by the real delta, and RENDERS\n"
+        "// the returned state. This split is what lets the headless invariant gate\n"
+        "// run the game's logic in Node.\n"
+        "class MainScene extends Phaser.Scene {\n"
+        "  constructor() { super('main') }\n\n"
+        + preload +
+        "  create() {\n"
+        "    this.cameras.main.setBackgroundColor('#1d2330')\n"
+        "    this.state = createState((Math.random() * 0xffffffff) >>> 0)\n\n"
+        + views +
+        "    this.hud = this.add.text(16, 16, '', {\n"
+        "      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#e5e7eb',\n"
+        "    })\n"
+        "    this.add.text(16, HEIGHT - 30, 'Arrow keys or WASD to move · P to pause', {\n"
+        "      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8',\n"
+        "    })\n\n"
+        "    this.cursors = this.input.keyboard.createCursorKeys()\n"
+        "    this.keys = this.input.keyboard.addKeys('W,A,S,D')\n"
+        "    this.input.keyboard.on('keydown-P', () => { this.state.paused = !this.state.paused })\n"
+        "  }\n\n"
+        "  update(time, delta) {\n"
+        "    const input = {\n"
+        "      left: this.cursors.left.isDown || this.keys.A.isDown,\n"
+        "      right: this.cursors.right.isDown || this.keys.D.isDown,\n"
+        "      up: this.cursors.up.isDown || this.keys.W.isDown,\n"
+        "      down: this.cursors.down.isDown || this.keys.S.isDown,\n"
+        "      action: false,\n"
+        "      pause: false,\n"
+        "    }\n"
+        "    // Advance the pure simulation by the real delta (seconds), then render.\n"
+        "    this.state = step(this.state, input, delta / 1000)\n"
+        "    this.draw(this.state)\n"
+        "  }\n\n"
+        "  draw(s) {\n"
+        "    this.playerView.setPosition(s.player.x, s.player.y)\n"
+        "    this.coinView.setPosition(s.coin.x, s.coin.y)\n"
+        "    const status = isWin(s) ? '· YOU WIN' : isLose(s) ? '· TIME UP' : ''\n"
+        "    this.hud.setText(`Score: ${s.score}  Time: ${Math.ceil(s.timeLeft)}  ${status}`)\n"
+        "  }\n"
+        "}\n\n"
+        "const config = {\n"
+        "  type: Phaser.AUTO,\n"
+        "  parent: 'game-container',\n"
+        "  width: WIDTH,\n"
+        "  height: HEIGHT,\n"
+        "  backgroundColor: '#1d2330',\n"
+        "  scale: {\n"
+        "    mode: Phaser.Scale.FIT,\n"
+        "    autoCenter: Phaser.Scale.CENTER_BOTH,\n"
+        "  },\n"
+        "  scene: [MainScene],\n"
+        "}\n\n"
+        "// eslint-disable-next-line no-new\n"
+        "new Phaser.Game(config)\n"
+    )
+
+
+def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
     """Phaser 3 + Vite 2D browser-game scaffold = a genuinely PLAYABLE vanilla-JS
     starter the codegen extends (NOT React — built fresh, not cloned from
     ``_react_vite``, so it never inherits react/react-dom/@vitejs-plugin-react).
@@ -1456,67 +1553,7 @@ def _phaser(app_name: str, brief: str) -> dict[str, str]:
             "export function isWin(state) { return state.won }\n"
             "export function isLose(state) { return state.over && !state.won }\n"
         ),
-        "src/main.js": (
-            "import Phaser from 'phaser'\n"
-            "import './styles.css'\n"
-            "import { createState, step, isWin, isLose, WIDTH, HEIGHT } from './sim.js'\n\n"
-            "// The Phaser scene owns NO game logic — all of it lives in the pure\n"
-            "// src/sim.js (one authoritative state advanced by one step()). Each frame\n"
-            "// the scene reads input, advances the sim by the real delta, and RENDERS\n"
-            "// the returned state. This split is what lets the headless invariant gate\n"
-            "// run the game's logic in Node.\n"
-            "class MainScene extends Phaser.Scene {\n"
-            "  constructor() { super('main') }\n\n"
-            "  create() {\n"
-            "    this.cameras.main.setBackgroundColor('#1d2330')\n"
-            "    this.state = createState((Math.random() * 0xffffffff) >>> 0)\n\n"
-            "    this.playerView = this.add.rectangle(0, 0, 36, 36, 0x4ade80)\n"
-            "    this.coinView = this.add.circle(0, 0, 12, 0xfbbf24)\n"
-            "    this.hud = this.add.text(16, 16, '', {\n"
-            "      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#e5e7eb',\n"
-            "    })\n"
-            "    this.add.text(16, HEIGHT - 30, 'Arrow keys or WASD to move · P to pause', {\n"
-            "      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8',\n"
-            "    })\n\n"
-            "    this.cursors = this.input.keyboard.createCursorKeys()\n"
-            "    this.keys = this.input.keyboard.addKeys('W,A,S,D')\n"
-            "    this.input.keyboard.on('keydown-P', () => { this.state.paused = !this.state.paused })\n"
-            "  }\n\n"
-            "  update(time, delta) {\n"
-            "    const input = {\n"
-            "      left: this.cursors.left.isDown || this.keys.A.isDown,\n"
-            "      right: this.cursors.right.isDown || this.keys.D.isDown,\n"
-            "      up: this.cursors.up.isDown || this.keys.W.isDown,\n"
-            "      down: this.cursors.down.isDown || this.keys.S.isDown,\n"
-            "      action: false,\n"
-            "      pause: false,\n"
-            "    }\n"
-            "    // Advance the pure simulation by the real delta (seconds), then render.\n"
-            "    this.state = step(this.state, input, delta / 1000)\n"
-            "    this.draw(this.state)\n"
-            "  }\n\n"
-            "  draw(s) {\n"
-            "    this.playerView.setPosition(s.player.x, s.player.y)\n"
-            "    this.coinView.setPosition(s.coin.x, s.coin.y)\n"
-            "    const status = isWin(s) ? '· YOU WIN' : isLose(s) ? '· TIME UP' : ''\n"
-            "    this.hud.setText(`Score: ${s.score}  Time: ${Math.ceil(s.timeLeft)}  ${status}`)\n"
-            "  }\n"
-            "}\n\n"
-            "const config = {\n"
-            "  type: Phaser.AUTO,\n"
-            "  parent: 'game-container',\n"
-            "  width: WIDTH,\n"
-            "  height: HEIGHT,\n"
-            "  backgroundColor: '#1d2330',\n"
-            "  scale: {\n"
-            "    mode: Phaser.Scale.FIT,\n"
-            "    autoCenter: Phaser.Scale.CENTER_BOTH,\n"
-            "  },\n"
-            "  scene: [MainScene],\n"
-            "}\n\n"
-            "// eslint-disable-next-line no-new\n"
-            "new Phaser.Game(config)\n"
-        ),
+        "src/main.js": _phaser_main_js(art),
         "src/styles.css": (
             ":root { font-family: system-ui, sans-serif; }\n"
             "body { margin: 0; background: #0f172a; display: grid; "
@@ -1570,12 +1607,16 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
 }
 
 
-def scaffold_for(stack: str, app_name: str, brief: str = "") -> dict[str, str]:
+def scaffold_for(
+    stack: str, app_name: str, brief: str = "", *, art: bool = False
+) -> dict[str, str]:
     """Return a ``{path: contents}`` mapping for a runnable project of ``stack``.
 
     Unknown stacks fall back to ``react_vite``. When the brief implies 3D/WebGL,
     the react/static web scaffolds ship a Three.js rotating-cube starter (a
-    template variant, not a separate stack).
+    template variant, not a separate stack). ``art=True`` (game stacks) makes the
+    scaffold preload role sprites and render them with a colored-primitive
+    fallback; it never touches the pure sim core.
     """
     safe_name = (app_name or "app").strip() or "app"
     # Three.js template variant: keyword-guarded so normal builds are unchanged.
@@ -1584,6 +1625,8 @@ def scaffold_for(stack: str, app_name: str, brief: str = "") -> dict[str, str]:
             return _react_vite_threejs(safe_name, brief)
         if stack == "static_html":
             return _static_threejs(safe_name, brief)
+    if stack == "phaser":
+        return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)
     return builder(safe_name, brief)
 

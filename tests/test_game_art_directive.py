@@ -34,6 +34,99 @@ def test_non_game_codegen_prompt_omits_sprite_directive():
     assert "/assets/sprites/" not in prompt
 
 
+# ---- art-director: the directive is GENRE-AWARE (roadmap #6, "fits") ----
+# The directive is built from direct_art(brief), so codegen lists the SAME
+# game-aware role keys the sprite generator produces — and geometric games are
+# told to render crisp primitives, never to load sprites.
+def test_directive_lists_genre_aware_roles_not_generic_set():
+    prompt = _agent()._agentic_prompt("a brick breaker game", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "paddle" in low and "brick" in low, "must name the genre's actual roles"
+    assert "coin" not in low, "must not fall back to the generic role set"
+
+
+def test_geometric_game_directive_is_primitive_only():
+    prompt = _agent()._agentic_prompt("a pong clone", "phaser", _plan(), "")
+    low = prompt.lower()
+    # a geometric game spends $0: codegen is told to render primitives, not sprites
+    assert "primitive" in low
+    assert "/assets/sprites/" not in prompt, "geometric games load no sprite files"
+
+
+def test_sprite_genre_directive_marks_sprites_and_primitives():
+    prompt = _agent()._agentic_prompt("a space shooter with aliens", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "/assets/sprites/" in prompt, "sprite roles load from the sprites dir"
+    assert "textures.exists" in prompt, "with a primitive fallback"
+    assert "ship" in low, "the genre's sprite role is named"
+    assert "primitive" in low, "primitive roles (laser-likes) are called out"
+
+
+def test_directive_includes_the_shared_palette():
+    prompt = _agent()._agentic_prompt("a space shooter", "phaser", _plan(), "")
+    from skyn3t.agents.art_director import direct_art
+
+    palette = direct_art("a space shooter").palette
+    # at least the accent colors are handed to codegen so the art is cohesive
+    assert sum(c in prompt for c in palette) >= 2, "the palette must reach codegen"
+
+
+def test_directive_uses_threaded_art_plan_over_recompute():
+    # When a pre-computed (LLM-tailored) plan is threaded in, the directive lists
+    # ITS roles, not the brief-recomputed generic ones — the alignment guarantee.
+    from skyn3t.agents.art_director import ArtPlan, RoleArt
+
+    plan = ArtPlan(
+        genre="fishing", theme="llm", palette=("#0a2a3a", "#7ec8e3", "#f4d35e"),
+        roles={
+            "boat": RoleArt("boat", "sprite", "fishing boat", "p", "boat_llm", "#7ec8e3"),
+            "fish": RoleArt("fish", "sprite", "silver fish", "p", "fish_llm", "#f4d35e"),
+            "hook": RoleArt("hook", "primitive", "hook", "", "hook_llm", "#7ec8e3"),
+        },
+    )
+    prompt = _agent()._agentic_prompt(
+        "a relaxing fishing game", "phaser", _plan(), "", art_plan=plan.to_dict()
+    )
+    low = prompt.lower()
+    assert "boat" in low and "fish" in low, "the tailored roles reach codegen"
+    assert "/assets/sprites/" in prompt
+    # without threading, the same brief is an open-ended generic plan (no 'boat')
+    assert "boat" not in _agent()._agentic_prompt(
+        "a relaxing fishing game", "phaser", _plan(), ""
+    ).lower()
+
+
+def test_retry_prompt_preserves_threaded_art_plan():
+    # On a retry the directive must still use the THREADED plan — else codegen
+    # recomputes a different role set than the sprite generator already produced.
+    from skyn3t.agents.art_director import ArtPlan, RoleArt
+
+    plan = ArtPlan(
+        genre="fishing", theme="llm", palette=("#0a2a3a", "#7ec8e3", "#f4d35e"),
+        roles={
+            "boat": RoleArt("boat", "sprite", "fishing boat", "p", "boat_llm", "#7ec8e3"),
+            "fish": RoleArt("fish", "sprite", "silver fish", "p", "fish_llm", "#f4d35e"),
+        },
+    )
+    retry = _agent()._agentic_retry_prompt(
+        "a fishing game", "phaser", _plan(), "", 50, art_plan=plan.to_dict()
+    )
+    low = retry.lower()
+    assert "boat" in low and "fish" in low, "retry keeps the threaded roles"
+
+
+def test_unknown_game_directive_is_open_ended():
+    # A game the table doesn't recognize must be told to render the entities THIS
+    # brief implies (game-appropriate roles + the sprite-vs-primitive rule), not a
+    # fixed genre's role list.
+    prompt = _agent()._agentic_prompt("a fishing game", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "/assets/sprites/" in prompt, "baseline sprites still load"
+    assert "textures.exists" in prompt, "with a primitive fallback"
+    assert "primitive" in low, "the sprite-vs-primitive rule is stated"
+    assert "appropriate" in low, "codegen is told to use roles appropriate to THIS game"
+
+
 # ---- stack adherence: codegen must build a GAME, not a website (Phase: reliability) ----
 # Verify-by-running exposed the cheap model ignoring a pinned `phaser` stack and
 # building a Next.js marketing site. The codegen prompt must hard-enforce the stack.
@@ -79,3 +172,18 @@ def test_phaser_codegen_pins_pause_as_host_owned_level_flag():
     assert "if (state.paused || state.over) return state" in prompt
     low = prompt.lower()
     assert "never write state.paused" in low or "must not toggle" in low
+
+
+# ---- FIX B: determinism must seed from the createState(seed) ARGUMENT only ----
+# The tower-defense probe seeded its RNG with Date.now() despite the directive, so
+# state.rng held a Unix timestamp (~1.78e12) -> the headless gate flagged value
+# explosion + non-determinism. The generic "never Math.random or Date.now" wasn't
+# enough; reinforce that ALL randomness derives from the seed ARGUMENT, never the
+# clock — not even to pick the initial seed.
+def test_phaser_codegen_pins_seed_argument_as_only_randomness_source():
+    prompt = _agent()._agentic_prompt("a tower defense game", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "date.now" in low and "math.random" in low
+    # tie determinism to the seed ARGUMENT, not just a generic clock ban
+    assert "seed argument" in low, "must derive randomness from the seed argument"
+    assert "initial seed" in low, "must forbid clock-seeding even the initial seed"

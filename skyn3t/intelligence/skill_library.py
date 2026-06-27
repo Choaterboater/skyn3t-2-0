@@ -53,6 +53,9 @@ _STACK_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"node", "node_express", "express"}),
     frozenset({"fastapi", "flask", "django", "python_api"}),
     frozenset({"static", "static_html", "html"}),
+    # Phaser game: cluster game/phaser-tagged skills so a game build sees them
+    # without bleeding React component advice into a canvas game.
+    frozenset({"phaser", "phaser3", "phaserjs", "game", "arcade"}),
 )
 
 

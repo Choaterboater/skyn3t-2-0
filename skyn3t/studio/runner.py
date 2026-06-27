@@ -471,7 +471,10 @@ class StudioRunner:
             if emb is None:
                 return advice, slugs
             from skyn3t.intelligence.semantic_skills import relevant_skills
-            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=3):
+            # Inject the top-6 (was 3): a rich app needs more than 3 skills — e.g. a
+            # desktop editor wants frontend + theming + editor-layout + a11y together,
+            # which 3 slots starved. The learning loop grades + down-ranks unhelpful ones.
+            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=6):
                 if sl in slugs:
                     continue
                 sk = skills.get(sl)
@@ -1186,26 +1189,55 @@ class StudioRunner:
             return
         slug = f"won-{plan.stack}-shape"
         try:
-            if self.skills.get(slug) is not None:
-                return  # already learned a winning shape for this stack
+            existing = self.skills.get(slug)
+            # Upgrade a structure-only distilled skill to one WITH code; skip if it
+            # already carries reference code for this stack.
+            if existing is not None and "Reference code" in (getattr(existing, "body", "") or ""):
+                return
             from pathlib import Path
 
             from skyn3t.agents import _verify_common as vc
 
             root = Path(project_dir)
             entrypoints = vc.find_entrypoints(root)[:4]
-            srcs = [
-                str(p.relative_to(root))
-                for p in vc.iter_files(root)
+            _skip = {"node_modules", ".next", "dist", "build", "target", ".git"}
+            code_paths = [
+                p for p in vc.iter_files(root)
                 if p.suffix in vc.SOURCE_SUFFIXES and vc.file_size(p) > 0
+                and not (_skip & set(p.relative_to(root).parts))
             ]
-            srcs = sorted(srcs)[:14]
+            srcs = sorted(str(p.relative_to(root)) for p in code_paths)[:14]
+
+            # Capture the ACTUAL winning code — entrypoint + the largest component,
+            # trimmed — so the retrieved+injected skill carries reusable code, not just
+            # a file list. This is how "keep the good parts" reaches future builds.
+            def _snippet(rel: str, limit: int = 1500) -> str:
+                try:
+                    t = (root / rel).read_text(encoding="utf-8", errors="replace").strip()
+                except OSError:
+                    return ""
+                return t[:limit] + ("\n/* …truncated… */" if len(t) > limit else "")
+
+            ordered = list(dict.fromkeys(
+                entrypoints + [str(p.relative_to(root))
+                               for p in sorted(code_paths, key=vc.file_size, reverse=True)]))
+            picks: list[tuple[str, str]] = []
+            for rel in ordered:
+                snip = _snippet(rel)
+                if snip:
+                    picks.append((rel, snip))
+                if len(picks) >= 2:
+                    break
+            code_block = "\n\n".join(f"#### `{rel}`\n```\n{snip}\n```" for rel, snip in picks)
+
             body = (
                 f"A real **{plan.stack}** build scored {(manifest.score or 0.0):.0f} (go) with this "
                 f"structure — reuse it as a starting shape:\n\n"
                 f"- Entrypoint(s): {', '.join(entrypoints) or '(none detected)'}\n"
                 f"- Files ({len(srcs)} shown): {', '.join(srcs)}\n\n"
-                f"Example brief it satisfied: {str(manifest.brief)[:160]}"
+                f"Example brief it satisfied: {str(manifest.brief)[:160]}\n\n"
+                f"## Reference code from the winning build\n"
+                f"Real, working code from this win — adapt these patterns:\n\n{code_block}"
             )
             self.skills.add(
                 title=f"Winning {plan.stack} build shape",
@@ -1215,7 +1247,8 @@ class StudioRunner:
                 source="build-distilled",
                 slug=slug,
             )
-            log.info("skills.distilled", slug=slug, stack=plan.stack, score=manifest.score)
+            log.info("skills.distilled", slug=slug, stack=plan.stack,
+                     score=manifest.score, snippets=len(picks))
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.distill_failed", error=str(exc))
 

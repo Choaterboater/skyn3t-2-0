@@ -100,3 +100,36 @@ async def test_writes_a_role_map_manifest(tmp_path):
     data = json.loads(mf.read_text())
     assert data["role_map"]["player"].endswith("player.png")
     assert data["source"] == "replicate"
+
+
+# ---- runner wiring: role sprites run for game stacks, not others ----
+def _runner(**kw):
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    bus = EventBus()
+    return StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub", **kw))
+
+
+class _Manifest:
+    def __init__(self):
+        self.build_id = "b"
+        self.extra: dict = {}
+
+
+async def test_runner_wires_role_sprites_for_game_stack(tmp_path):
+    # offline source -> no network; the wiring still records the (skipped) result,
+    # proving _generate_assets invokes generate_role_sprites for a game stack.
+    runner = _runner(game_art_source="offline")
+    m = _Manifest()
+    await runner._generate_assets(str(tmp_path), "a space game", m, {}, stack="phaser")
+    assert "role_sprites" in m.extra
+    assert m.extra["role_sprites"]["source"] == "offline"
+
+
+async def test_runner_skips_role_sprites_for_non_game_stack(tmp_path):
+    runner = _runner(game_art_source="offline")
+    m = _Manifest()
+    await runner._generate_assets(str(tmp_path), "a marketing site", m, {}, stack="nextjs")
+    assert "role_sprites" not in m.extra

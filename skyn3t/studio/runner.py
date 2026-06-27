@@ -515,26 +515,44 @@ class StudioRunner:
         """Generate real image assets into the worktree (when enabled) and thread
         the manifest into the stage ``extra`` so the code prompt references them.
 
-        Best-effort: a missing token, asset_gen off, a non-image brief, or any
-        failure leaves the build unchanged. Records what was generated on the
-        build manifest for observability. Never raises.
+        Two independently-gated, best-effort flows: subject coloring/photo images
+        (opt-in via ``asset_gen``) and game ROLE sprites (#6, game stacks, gated by
+        ``game_art_source``). Any missing token, disabled flag, non-image brief, or
+        failure leaves the build unchanged. Records what was generated on the build
+        manifest for observability. Never raises.
         """
+        # 1) Subject coloring/photo images — existing opt-in flow.
         try:
             from skyn3t.studio.assets import asset_gen_enabled, generate_assets
 
-            if not asset_gen_enabled(self.settings):
-                return extra
-            result = await generate_assets(
-                worktree_dir, brief, settings=self.settings, stack=stack
-            )
+            if asset_gen_enabled(self.settings):
+                result = await generate_assets(
+                    worktree_dir, brief, settings=self.settings, stack=stack
+                )
+                manifest.extra["assets"] = result
+                assets = result.get("assets") or []
+                if assets:
+                    log.info("assets.step", count=len(assets))
+                    extra = {**extra, "assets": assets}
         except Exception as exc:  # noqa: BLE001 - asset-gen must never break a build
             log.warning("assets.step_failed", error=str(exc)[:160])
-            return extra
-        manifest.extra["assets"] = result
-        assets = result.get("assets") or []
-        if assets:
-            log.info("assets.step", count=len(assets))
-            return {**extra, "assets": assets}
+
+        # 2) Game role sprites (#6) — game stacks only, independently gated. Writes
+        #    public/assets/sprites/{role}.png that the scaffold's preload() consumes;
+        #    a missing/failed sprite degrades to a colored primitive in the scene.
+        if stack in _GAME_STACKS:
+            try:
+                from skyn3t.studio.assets import generate_role_sprites
+
+                sprites = await generate_role_sprites(
+                    worktree_dir, brief, settings=self.settings
+                )
+                manifest.extra["role_sprites"] = sprites
+                if sprites.get("generated"):
+                    log.info("role_sprites.step", count=sprites["generated"])
+            except Exception as exc:  # noqa: BLE001 - must never break a build
+                log.warning("role_sprites.step_failed", error=str(exc)[:160])
+
         return extra
 
     # ---- bounded fix loop (driven by objective verifier failures) --------

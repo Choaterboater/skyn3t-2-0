@@ -204,7 +204,7 @@ class ReplicateClient:
         """Create one prediction and poll it to a terminal state. Returns the
         list of output image URLs (possibly empty). Never raises."""
         create_url = f"{_API_BASE}/models/{model}/predictions"
-        body = {"input": self._input_for(prompt)}
+        body = {"input": self._input_for(prompt, model)}
         # `Prefer: wait` lets Replicate hold the request open until the model
         # finishes (capped at 60s) — often the whole job in a single round-trip;
         # we still poll as a fallback when it returns early.
@@ -232,10 +232,18 @@ class ReplicateClient:
             return []
         return self._output_urls(data.get("output"))
 
-    def _input_for(self, prompt: str) -> dict:
-        """A generic image-model input. ``prompt`` is the only universal field;
-        keep the rest minimal so it works across SDXL/flux/coloring models."""
-        return {"prompt": prompt}
+    def _input_for(self, prompt: str, model: str = "") -> dict:
+        """Build a model's prediction input. ``prompt`` is the only universal field,
+        so the default is minimal (works across SDXL/flux/recraft/coloring models).
+
+        retro-diffusion/* are pixel game-sprite models with their OWN schema: send
+        ``style='game_asset'`` for a game look, ``remove_bg=True`` for a transparent
+        PNG in one call, and a small 256x256 size to stay in the cheap price tier.
+        These keys are sent ONLY to retro-diffusion/* — flux/recraft reject them."""
+        inp = {"prompt": prompt}
+        if str(model).startswith("retro-diffusion/"):
+            inp.update(style="game_asset", remove_bg=True, width=256, height=256)
+        return inp
 
     @staticmethod
     def _output_urls(output) -> list[str]:

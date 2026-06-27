@@ -136,9 +136,10 @@ async def test_runner_skips_role_sprites_for_non_game_stack(tmp_path):
 
 
 def test_sprite_model_is_an_official_replicate_model():
-    # Verified live: the community model fofr/sticker-maker returns 0 images via
-    # the official-models endpoint the adapter uses. The sprite model MUST be an
-    # OFFICIAL Replicate model (bare owner/name works; community needs a version).
+    # Verified live: community models (fofr/sticker-maker) return 404 on the
+    # official-models endpoint the adapter uses. The sprite model MUST be official.
+    # retro-diffusion/* and black-forest-labs/* are live-verified is_official=True.
     from skyn3t.studio.assets import _SPRITE_ROLE_MODEL
 
-    assert _SPRITE_ROLE_MODEL.startswith("black-forest-labs/"), _SPRITE_ROLE_MODEL
+    owner = _SPRITE_ROLE_MODEL.split("/")[0]
+    assert owner in {"retro-diffusion", "black-forest-labs"}, _SPRITE_ROLE_MODEL

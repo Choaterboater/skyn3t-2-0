@@ -105,6 +105,14 @@ def test_direct_art_never_raises_on_odd_input():
         assert plan.roles  # always a complete, usable plan
 
 
+def test_direct_art_never_raises_on_non_string_brief():
+    # The "never raises" contract must also hold for non-string briefs (the floor
+    # is computed before any caller's guard) — coerce at the entry, not by luck.
+    for brief in (5, 3.14, ["a"], {"x": 1}, b"hi", True):
+        plan = direct_art(brief)  # type: ignore[arg-type]
+        assert plan.roles
+
+
 def test_default_genre_is_arcade_with_generic_roles():
     plan = direct_art("a fun little game")
     assert plan.genre == "arcade"

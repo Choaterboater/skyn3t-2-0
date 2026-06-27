@@ -194,6 +194,11 @@ class CodeAgent(BaseAgent):
         self.metadata.pop("degraded", None)
         self.metadata.pop("degraded_reason", None)
         brief = p.get("brief", "") or p.get("slug", "app")
+        # An art plan the runner computed + threaded (LLM-tailored or the floor); the
+        # game-art directive uses it so codegen lists the SAME roles the sprite
+        # generator produced. Absent for non-game builds / older payloads.
+        _extra = p.get("extra")
+        _art_plan = _extra.get("art_plan") if isinstance(_extra, dict) else None
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         stack = detect_stack(
@@ -257,10 +262,10 @@ class CodeAgent(BaseAgent):
             attempt = 0
             while True:
                 prompt = (
-                    self._agentic_prompt(brief, stack, plan, knowledge)
+                    self._agentic_prompt(brief, stack, plan, knowledge, art_plan=_art_plan)
                     if attempt == 0
                     else self._agentic_retry_prompt(
-                        brief, stack, plan, knowledge, code_bytes)
+                        brief, stack, plan, knowledge, code_bytes, art_plan=_art_plan)
                 )
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov)
@@ -399,7 +404,8 @@ class CodeAgent(BaseAgent):
                 paths.append(path)
         return paths
 
-    def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str) -> str:
+    def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
+                        *, art_plan: dict[str, Any] | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -431,7 +437,7 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
-            + (f"{self._game_art_directive(brief)}\n" if self._game_art_on(stack) else "")
+            + (f"{self._game_art_directive(brief, art_plan)}\n" if self._game_art_on(stack) else "")
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
@@ -449,16 +455,16 @@ class CodeAgent(BaseAgent):
         return bool(getattr(get_settings(), "game_art_enabled", True))
 
     @staticmethod
-    def _game_art_directive(brief: str) -> str:
-        """Genre-aware game-art directive, built from the art director's
-        DETERMINISTIC plan so codegen lists the SAME role keys the sprite generator
-        produces (the alignment trick — no fragile threading). A geometric genre is
-        told to render crisp styled primitives and load NO sprites ($0); a sprite
-        genre gets the per-role load+primitive-fallback idiom. Always one shared
-        palette so the art reads as one piece."""
-        from skyn3t.agents.art_director import direct_art
+    def _game_art_directive(brief: str, art_plan: dict[str, Any] | None = None) -> str:
+        """Genre-aware game-art directive. Uses the runner-threaded ``art_plan`` when
+        present (so codegen lists the SAME roles the sprite generator produced — the
+        alignment guarantee for a non-deterministic LLM plan), else derives the plan
+        from the brief deterministically. A geometric genre is told to render crisp
+        styled primitives and load NO sprites ($0); a sprite genre gets the per-role
+        load+primitive-fallback idiom. Always one shared palette."""
+        from skyn3t.agents.art_director import ArtPlan, direct_art
 
-        plan = direct_art(brief)
+        plan = ArtPlan.from_dict(art_plan) if isinstance(art_plan, dict) else direct_art(brief)
         palette = " ".join(plan.palette)
         sprites = plan.sprite_roles()
         prims = plan.primitive_roles()
@@ -681,9 +687,11 @@ class CodeAgent(BaseAgent):
 
     def _agentic_retry_prompt(
         self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
-        code_bytes: int,
+        code_bytes: int, *, art_plan: dict[str, Any] | None = None,
     ) -> str:
-        """Corrective prompt for a retry after the agent under-delivered."""
+        """Corrective prompt for a retry after the agent under-delivered. Threads the
+        SAME art_plan so the retry's art directive still references the sprites the
+        generator already produced (else it recomputes a divergent role set)."""
         return (
             f"Your previous attempt under-delivered — it wrote only {code_bytes} "
             "bytes of code, essentially just the starter template / a placeholder "
@@ -693,7 +701,7 @@ class CodeAgent(BaseAgent):
             "wired together into the entrypoint, real state and data. NO placeholder "
             "counter, NO 'starter' text, NO TODOs or stubs. Get as close to a "
             "fully-working app as possible.\n\n"
-            + self._agentic_prompt(brief, stack, plan, knowledge)
+            + self._agentic_prompt(brief, stack, plan, knowledge, art_plan=art_plan)
         )
 
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps

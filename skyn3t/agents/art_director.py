@@ -33,6 +33,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class RoleArt:
@@ -74,6 +78,41 @@ class ArtPlan:
     def primitive_roles(self) -> dict[str, RoleArt]:
         """Roles drawn as clean styled shapes from the palette ($0)."""
         return {k: r for k, r in self.roles.items() if r.render == "primitive"}
+
+    def to_dict(self) -> dict:
+        """JSON-safe form so the plan can ride in the codegen payload's ``extra``
+        and be rebuilt by the directive (a non-deterministic LLM plan must be
+        threaded, not recomputed)."""
+        return {
+            "genre": self.genre,
+            "theme": self.theme,
+            "palette": list(self.palette),
+            "open_ended": self.open_ended,
+            "roles": {
+                k: {
+                    "role": r.role, "render": r.render, "subject": r.subject,
+                    "prompt": r.prompt, "variant": r.variant, "color": r.color,
+                }
+                for k, r in self.roles.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ArtPlan:
+        roles = {
+            k: RoleArt(
+                role=v["role"], render=v["render"], subject=v["subject"],
+                prompt=v.get("prompt", ""), variant=v["variant"], color=v["color"],
+            )
+            for k, v in (d.get("roles") or {}).items()
+        }
+        return cls(
+            genre=d.get("genre", "custom"),
+            theme=d.get("theme", ""),
+            palette=tuple(d.get("palette") or ()),
+            roles=roles,
+            open_ended=bool(d.get("open_ended", False)),
+        )
 
 
 # Shared palettes (background first, then accents). Hex is validated by tests. The
@@ -178,10 +217,11 @@ _JUMP = frozenset({"jump", "jumping", "jumper"})
 _DEFEND = frozenset({"defense", "defence", "defend", "defending", "defender"})
 
 
-def _words(brief: str | None) -> set[str]:
+def _words(brief) -> set[str]:
     # Split on every non-alphanumeric char (hyphens included) so multiword genre
     # phrases survive as their component words, and short tokens stay standalone.
-    return set(re.findall(r"[a-z0-9]+", (brief or "").lower()))
+    # ``str(brief or "")`` tolerates any type (the never-raises contract).
+    return set(re.findall(r"[a-z0-9]+", str(brief or "").lower()))
 
 
 def _detect_genre(brief: str | None) -> str:
@@ -282,6 +322,11 @@ def direct_art(brief: str | None, *, settings=None) -> ArtPlan:
     this independently and must agree on role keys, so divergent inputs would break
     that alignment. Never raises; ``settings`` is accepted for forward-compatible LLM
     refinement and is unused by this deterministic floor."""
+    # Coerce once at the contract surface so EVERY downstream helper (incl. the
+    # asset_resolver theme/role functions) sees a str — the never-raises guarantee
+    # must not depend on callers passing the right type.
+    if not isinstance(brief, str):
+        brief = "" if brief is None else str(brief)
     genre = _detect_genre(brief)
     if genre == "arcade":
         return _general_plan(brief)
@@ -301,3 +346,122 @@ def direct_art(brief: str | None, *, settings=None) -> ArtPlan:
             color=colors[role],
         )
     return ArtPlan(genre=genre, theme=spec.palette, palette=palette, roles=roles)
+
+
+# ---- LLM art-director (the long tail) -------------------------------------
+# An OPTIONAL cheap LLM call that tailors roles + palette to ANY brief — the genre
+# table and the open-ended floor handle the rest. Gated by ``art_director_enabled``
+# (default off); NEVER raises; ALWAYS falls back to the deterministic ``direct_art``
+# floor, so the default behavior is unchanged and $0. Because its output is
+# non-deterministic, the RUNNER computes the plan ONCE and threads it to both
+# consumers (sprite generator + codegen directive) — it must not be recomputed.
+_ART_SYSTEM = (
+    "You are a 2D game art director. Given a game brief, decide the small set of "
+    "on-screen ROLES the game needs and, per role, whether it is a generated pixel "
+    "SPRITE (characters, creatures, vehicles, items, themed objects) or a clean "
+    "styled PRIMITIVE (geometric shapes, projectiles, platforms, walls, HUD, "
+    "abstract). Pick ONE cohesive color palette. Respond with JSON only."
+)
+_ART_PROMPT = (
+    "Game brief: {brief}\n\n"
+    'Return JSON exactly like: {{"genre": "<short genre>", '
+    '"palette": ["#RRGGBB", "#RRGGBB", "#RRGGBB", "#RRGGBB"], '
+    '"roles": [{{"role": "<short_snake_key>", "render": "sprite|primitive", '
+    '"subject": "<concrete visual noun>"}}]}}. '
+    "Use 3-7 game-aware roles that FIT this specific game (a fishing game -> boat, "
+    "fish, hook, water; a racing game -> car, track, obstacle). 4-6 palette hex "
+    "colors, background first. JSON only, no prose."
+)
+
+
+def _valid_palette(p) -> tuple[str, ...] | None:
+    if not isinstance(p, list):
+        return None
+    hexes = [
+        c.strip() for c in p
+        if isinstance(c, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", c.strip())
+    ]
+    return tuple(hexes) if len(hexes) >= 2 else None
+
+
+def _plan_from_llm(data, floor: ArtPlan) -> ArtPlan | None:
+    """Build a tailored :class:`ArtPlan` from the model's JSON, or ``None`` if it is
+    unusable (caller then keeps the deterministic floor). Sanitizes every field —
+    fs-safe role keys, render mode in {sprite, primitive}, valid palette — so a
+    sloppy model response can never produce a broken plan."""
+    if not isinstance(data, dict) or data.get("stub") is True:
+        return None
+    raw = data.get("roles")
+    if not isinstance(raw, list) or not raw:
+        return None
+    palette = _valid_palette(data.get("palette")) or floor.palette
+    deduped: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for item in raw[:24]:  # bound the role count (a runaway response can't bloat)
+        if not isinstance(item, dict):
+            continue
+        # Role keys become sprite FILENAMES and a JS identifier in the directive —
+        # whitelist to fs/JS-safe snake and cap the length (no traversal / bloat).
+        key = re.sub(r"[^a-z0-9]+", "_",
+                     str(item.get("role") or item.get("name") or "").strip().lower())
+        key = key.strip("_")[:40]
+        if not key or key in seen:
+            continue
+        render = str(item.get("render") or "sprite").strip().lower()
+        if render not in ("sprite", "primitive"):
+            render = "sprite"
+        # Subject feeds the image-generation prompt — collapse control chars so a
+        # newline/tab/backtick can't corrupt the prompt (or a directive, if reused).
+        subject = re.sub(
+            r"\s+", " ", str(item.get("subject") or key.replace("_", " ")).strip()
+        )[:80] or key
+        seen.add(key)
+        deduped.append((key, render, subject))
+    if not deduped:
+        return None
+    colors = _colors_for([(k, r) for k, r, _ in deduped], palette)
+    roles = {
+        key: RoleArt(
+            role=key, render=render, subject=subject,
+            prompt=_sprite_prompt(key, subject) if render == "sprite" else "",
+            variant=f"{key}_llm", color=colors[key],
+        )
+        for key, render, subject in deduped
+    }
+    # Genre flows into the codegen directive text — whitelist it the same way so a
+    # malicious value can't inject quotes/newlines/instructions to the coder model.
+    genre = re.sub(
+        r"[^a-z0-9]+", "_", str(data.get("genre") or "").strip().lower()
+    ).strip("_")[:40] or "custom"
+    return ArtPlan(genre=genre, theme="llm", palette=palette, roles=roles)
+
+
+async def plan_art_llm(brief: str | None, *, settings, llm=None) -> ArtPlan:
+    """Tailor a game's art to the brief with one cheap LLM call, gated by
+    ``settings.art_director_enabled`` (default off). Returns the deterministic
+    ``direct_art`` floor when the flag is off or on ANY failure/stub/garbage —
+    never raises, never blocks a build, costs nothing when disabled."""
+    floor = direct_art(brief)
+    if not bool(getattr(settings, "art_director_enabled", False)):
+        return floor
+    try:
+        from skyn3t.agents._common import parse_json
+        from skyn3t.adapters.llm import LLMClient
+        from skyn3t.core.model_router import Tier
+
+        client = llm or LLMClient(settings)
+        result = await client.complete(
+            _ART_PROMPT.format(brief=(brief or "").strip()[:2000]),
+            tier=Tier.CHEAP, system=_ART_SYSTEM, json_mode=True,
+            task_type="art_director",
+        )
+        if getattr(result, "backend", "") == "stub":
+            return floor
+        plan = _plan_from_llm(parse_json(getattr(result, "text", "") or ""), floor)
+        if plan is None:
+            return floor
+        log.info("art_director.llm_plan", genre=plan.genre, roles=list(plan.roles))
+        return plan
+    except Exception as exc:  # noqa: BLE001 - art direction must never break a build
+        log.warning("art_director.llm_failed", error=str(exc)[:160])
+        return floor

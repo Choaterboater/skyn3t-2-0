@@ -542,12 +542,24 @@ class StudioRunner:
         #    a missing/failed sprite degrades to a colored primitive in the scene.
         if stack in _GAME_STACKS:
             try:
+                from skyn3t.agents.art_director import direct_art, plan_art_llm
                 from skyn3t.studio.assets import generate_role_sprites
 
+                # Compute the art plan ONCE here and thread it to BOTH consumers: the
+                # sprite generator below AND codegen, via extra["art_plan"]. A
+                # non-deterministic plan must be threaded, not recomputed, or the two
+                # would disagree on role keys. Only spend the optional LLM call
+                # (plan_art_llm, gated by art_director_enabled) when game art is
+                # actually active; otherwise the deterministic floor — no wasted call.
+                if bool(getattr(self.settings, "game_art_enabled", True)):
+                    art_plan = await plan_art_llm(brief, settings=self.settings)
+                else:
+                    art_plan = direct_art(brief)
                 sprites = await generate_role_sprites(
-                    worktree_dir, brief, settings=self.settings
+                    worktree_dir, brief, settings=self.settings, art_plan=art_plan
                 )
                 manifest.extra["role_sprites"] = sprites
+                extra = {**extra, "art_plan": art_plan.to_dict()}
                 if sprites.get("generated"):
                     log.info("role_sprites.step", count=sprites["generated"])
             except Exception as exc:  # noqa: BLE001 - must never break a build

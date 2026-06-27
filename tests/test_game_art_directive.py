@@ -71,6 +71,50 @@ def test_directive_includes_the_shared_palette():
     assert sum(c in prompt for c in palette) >= 2, "the palette must reach codegen"
 
 
+def test_directive_uses_threaded_art_plan_over_recompute():
+    # When a pre-computed (LLM-tailored) plan is threaded in, the directive lists
+    # ITS roles, not the brief-recomputed generic ones — the alignment guarantee.
+    from skyn3t.agents.art_director import ArtPlan, RoleArt
+
+    plan = ArtPlan(
+        genre="fishing", theme="llm", palette=("#0a2a3a", "#7ec8e3", "#f4d35e"),
+        roles={
+            "boat": RoleArt("boat", "sprite", "fishing boat", "p", "boat_llm", "#7ec8e3"),
+            "fish": RoleArt("fish", "sprite", "silver fish", "p", "fish_llm", "#f4d35e"),
+            "hook": RoleArt("hook", "primitive", "hook", "", "hook_llm", "#7ec8e3"),
+        },
+    )
+    prompt = _agent()._agentic_prompt(
+        "a relaxing fishing game", "phaser", _plan(), "", art_plan=plan.to_dict()
+    )
+    low = prompt.lower()
+    assert "boat" in low and "fish" in low, "the tailored roles reach codegen"
+    assert "/assets/sprites/" in prompt
+    # without threading, the same brief is an open-ended generic plan (no 'boat')
+    assert "boat" not in _agent()._agentic_prompt(
+        "a relaxing fishing game", "phaser", _plan(), ""
+    ).lower()
+
+
+def test_retry_prompt_preserves_threaded_art_plan():
+    # On a retry the directive must still use the THREADED plan — else codegen
+    # recomputes a different role set than the sprite generator already produced.
+    from skyn3t.agents.art_director import ArtPlan, RoleArt
+
+    plan = ArtPlan(
+        genre="fishing", theme="llm", palette=("#0a2a3a", "#7ec8e3", "#f4d35e"),
+        roles={
+            "boat": RoleArt("boat", "sprite", "fishing boat", "p", "boat_llm", "#7ec8e3"),
+            "fish": RoleArt("fish", "sprite", "silver fish", "p", "fish_llm", "#f4d35e"),
+        },
+    )
+    retry = _agent()._agentic_retry_prompt(
+        "a fishing game", "phaser", _plan(), "", 50, art_plan=plan.to_dict()
+    )
+    low = retry.lower()
+    assert "boat" in low and "fish" in low, "retry keeps the threaded roles"
+
+
 def test_unknown_game_directive_is_open_ended():
     # A game the table doesn't recognize must be told to render the entities THIS
     # brief implies (game-appropriate roles + the sprite-vs-primitive rule), not a

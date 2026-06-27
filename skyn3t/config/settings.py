@@ -170,6 +170,12 @@ class Settings(BaseSettings):
     # (replicate when a token is configured, else offline).
     game_art_enabled: bool = True
     game_art_source: str = "auto"  # offline | replicate | auto
+    # When on, a cheap LLM art-director (one call/build, gated here) tailors a game's
+    # roles + palette to the brief for the long tail of games the deterministic
+    # planner doesn't recognize (e.g. fishing -> boat/fish/hook). Off -> the
+    # deterministic genre/open-ended floor (no call, $0). Never blocks a build: any
+    # failure falls back to the floor.
+    art_director_enabled: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
     # tournament_model_pool so the run is a real cross-model contest (genuine

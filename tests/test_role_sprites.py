@@ -79,6 +79,26 @@ async def test_manifest_records_genre_and_palette(tmp_path):
     assert res["palette"] and all(c.startswith("#") for c in res["palette"])
 
 
+async def test_generator_uses_threaded_art_plan(tmp_path):
+    # A pre-computed (e.g. LLM-tailored) plan overrides the brief-derived one, so its
+    # OWN sprite roles get generated — the runner threads one plan to both consumers.
+    from skyn3t.agents.art_director import ArtPlan, RoleArt
+
+    plan = ArtPlan(
+        genre="fishing", theme="llm", palette=("#0a2a3a", "#7ec8e3", "#f4d35e"),
+        roles={
+            "boat": RoleArt("boat", "sprite", "fishing boat", "a boat sprite", "boat_llm", "#7ec8e3"),
+            "water": RoleArt("water", "primitive", "water", "", "water_llm", "#0a2a3a"),
+        },
+    )
+    res = await generate_role_sprites(
+        str(tmp_path), "unused brief", settings=_settings(), client=_StubClient(), art_plan=plan
+    )
+    assert "boat" in res["role_map"], "the threaded plan's sprite role is generated"
+    assert "water" not in res["role_map"], "its primitive role is not generated"
+    assert res["genre"] == "fishing"
+
+
 async def test_per_role_failure_omits_that_role_not_a_gap(tmp_path):
     # The coin's themed subject ("coin") is in its prompt; fail only that one.
     client = _StubClient(fail_substr="coin")
@@ -163,6 +183,23 @@ async def test_runner_skips_role_sprites_for_non_game_stack(tmp_path):
     m = _Manifest()
     await runner._generate_assets(str(tmp_path), "a marketing site", m, {}, stack="nextjs")
     assert "role_sprites" not in m.extra
+
+
+async def test_runner_threads_art_plan_into_extra_for_game_stack(tmp_path):
+    # The runner computes the art plan ONCE and threads its serialized form on the
+    # returned extra, so codegen's directive uses the SAME plan the generator did.
+    runner = _runner(game_art_source="offline")
+    m = _Manifest()
+    out = await runner._generate_assets(str(tmp_path), "a space game", m, {}, stack="phaser")
+    assert isinstance(out.get("art_plan"), dict)
+    assert out["art_plan"].get("roles"), "the threaded plan carries roles"
+
+
+async def test_runner_does_not_thread_art_plan_for_non_game_stack(tmp_path):
+    runner = _runner(game_art_source="offline")
+    m = _Manifest()
+    out = await runner._generate_assets(str(tmp_path), "a marketing site", m, {}, stack="nextjs")
+    assert "art_plan" not in out
 
 
 def test_sprite_model_is_an_official_replicate_model():

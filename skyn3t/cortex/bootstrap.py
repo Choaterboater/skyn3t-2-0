@@ -353,10 +353,17 @@ def build_cortex(
             or getattr(settings, "github_token", "")
             or None
         )
+        # Make the silent failure visible: a stale process started before the token
+        # was loaded gets token=None and the scout no-ops. Log it so "scout stopped
+        # scanning" is diagnosable instead of a mystery (restart to reload .env).
+        if not token and _log is not None:
+            _log.warning("cortex.scout_disabled_no_token",
+                         hint="set SKYN3T_GITHUB_TOKEN or restart so .env is reloaded")
         cortex.add_component(
             RepoScout(cortex, event_bus, settings, github_token=token)
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        if _log is not None:
+            _log.warning("cortex.scout_init_failed", error=str(exc))
 
     return cortex

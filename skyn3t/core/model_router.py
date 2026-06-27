@@ -46,11 +46,11 @@ _FREE_DEFAULTS: dict[Tier, str] = {
 # OpenRouter rotates models constantly, so these are last-known-good recent ids;
 # the live-catalog resolver (newest_paid_model) supersedes them when reachable.
 _PAID_DEFAULTS: dict[Tier, str] = {
-    Tier.CHEAP: "deepseek/deepseek-v3.2",
-    Tier.UI: "deepseek/deepseek-v3.2",
-    Tier.BACKEND: "deepseek/deepseek-v3.2",
-    Tier.STRONG: "deepseek/deepseek-v3.2",
-    Tier.DOCS: "deepseek/deepseek-v3.2",
+    Tier.CHEAP: "deepseek/deepseek-v4-flash",
+    Tier.UI: "deepseek/deepseek-v4-flash",
+    Tier.BACKEND: "deepseek/deepseek-v4-flash",
+    Tier.STRONG: "deepseek/deepseek-v4-flash",
+    Tier.DOCS: "deepseek/deepseek-v4-flash",
 }
 
 # When a configured :free model is no longer in the live catalog, substitute a
@@ -124,14 +124,18 @@ def live_catalog(timeout: float = 8.0) -> list[dict]:
 
 # Substrings that disqualify a model from "newest" auto-pick: reasoning/base/
 # experimental/preview variants aren't general codegen-chat models.
-_NEWEST_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp", "thinking", "preview")
+# Previews ARE allowed in the coder pool (opted in) — the cortex tournament learns
+# which previews are actually good and down-ranks the rest, so we don't pre-filter them.
+_NEWEST_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp", "thinking")
+# Explicit ids that stay eligible even if they ever match an exclude substring (escape hatch).
+_NEWEST_ALLOW = ()
 
 # Strong code-capable families on OpenRouter. ``newest:coder`` picks the freshest
 # across ALL of them (so it tracks the genuinely-newest coder, e.g. a 2026 kimi/
 # minimax/qwen3-coder, not just the newest deepseek). Keep this list current as
 # new strong coders ship.
 _CODER_FAMILIES = ("kimi-k2", "qwen3-coder", "deepseek-v3", "minimax-m",
-                   "glm-4", "codestral", "grok-code")
+                   "glm-4", "codestral", "grok-code", "hy3")
 
 
 def newest_paid_model(family: str) -> str | None:
@@ -144,7 +148,8 @@ def newest_paid_model(family: str) -> str | None:
     families = _CODER_FAMILIES if fam == "coder" else (fam,)
     cands = [(m["id"], m["created"]) for m in live_catalog()
              if any(f in m["id"].lower() for f in families) and not m["id"].endswith(":free")
-             and not any(x in m["id"].lower() for x in _NEWEST_EXCLUDE)]
+             and (m["id"] in _NEWEST_ALLOW
+                  or not any(x in m["id"].lower() for x in _NEWEST_EXCLUDE))]
     return max(cands, key=lambda c: c[1])[0] if cands else None
 
 
@@ -195,7 +200,7 @@ class ModelRouter:
                 log.info("router.newest_resolved", family=family, model=live)
                 model = live
             else:
-                model = _PAID_DEFAULTS.get(tier, "deepseek/deepseek-v3.2")
+                model = _PAID_DEFAULTS.get(tier, "deepseek/deepseek-v4-flash")
 
         model = self._apply_policy(model, tier)
         # Self-heal a retired :free id against OpenRouter's LIVE catalog (only

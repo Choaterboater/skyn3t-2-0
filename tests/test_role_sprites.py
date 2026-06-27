@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 
+from skyn3t.agents.art_director import direct_art
 from skyn3t.config.settings import Settings
-from skyn3t.studio.asset_resolver import ROLES
 from skyn3t.studio.assets import generate_role_sprites
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16  # magic header is all _ext_for reads
@@ -38,17 +38,45 @@ def _settings(**kw):
     return Settings(**base)
 
 
-async def test_generates_a_png_per_role(tmp_path):
+async def test_generates_a_png_per_sprite_role(tmp_path):
+    # Genre-aware: only the genre's SPRITE roles are generated; its PRIMITIVE roles
+    # (laser-likes, backdrops) cost nothing and never get a file.
+    brief = "a space shooter with aliens"
     client = _StubClient()
     res = await generate_role_sprites(
-        str(tmp_path), "a space shooter", settings=_settings(), client=client, seed=1
+        str(tmp_path), brief, settings=_settings(), client=client, seed=1
     )
+    plan = direct_art(brief)
+    sprite_roles = set(plan.sprite_roles())
+    assert sprite_roles, "this genre has sprite roles"
     assert res["source"] == "replicate"
-    assert res["generated"] == len(ROLES)
+    assert res["generated"] == len(sprite_roles)
     sprites = tmp_path / "public" / "assets" / "sprites"
-    for role in ROLES:
+    for role in sprite_roles:
         assert (sprites / f"{role}.png").is_file()
         assert res["role_map"][role] == f"/assets/sprites/{role}.png"
+    for role in plan.primitive_roles():
+        assert role not in res["role_map"]
+        assert not (sprites / f"{role}.png").exists()
+
+
+async def test_geometric_game_spends_zero(tmp_path):
+    # The $0 win: a geometric game is all primitives -> not a single generation.
+    client = _StubClient()
+    res = await generate_role_sprites(
+        str(tmp_path), "a brick breaker", settings=_settings(), client=client, seed=0
+    )
+    assert res["generated"] == 0
+    assert res["role_map"] == {}
+    assert client.prompts == [], "a geometric game must not spend a generation"
+
+
+async def test_manifest_records_genre_and_palette(tmp_path):
+    res = await generate_role_sprites(
+        str(tmp_path), "a space shooter", settings=_settings(), client=_StubClient(), seed=1
+    )
+    assert res["genre"] == "space_shooter"
+    assert res["palette"] and all(c.startswith("#") for c in res["palette"])
 
 
 async def test_per_role_failure_omits_that_role_not_a_gap(tmp_path):
@@ -92,13 +120,15 @@ async def test_auto_without_token_uses_offline(tmp_path):
 
 
 async def test_writes_a_role_map_manifest(tmp_path):
+    brief = "a space game"
     res = await generate_role_sprites(
-        str(tmp_path), "a space game", settings=_settings(), client=_StubClient(), seed=2
+        str(tmp_path), brief, settings=_settings(), client=_StubClient(), seed=2
     )
     mf = tmp_path / "public" / "assets" / "sprites" / "assets.json"
     assert mf.is_file()
     data = json.loads(mf.read_text())
-    assert data["role_map"]["player"].endswith("player.png")
+    a_sprite = next(iter(direct_art(brief).sprite_roles()))
+    assert data["role_map"][a_sprite].endswith(f"{a_sprite}.png")
     assert data["source"] == "replicate"
 
 

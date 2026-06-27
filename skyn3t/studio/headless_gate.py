@@ -50,8 +50,18 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# Candidate locations for the pure sim core, most-specific first.
-_SIM_CANDIDATES = ("src/sim.js", "sim.js", "src/game/sim.js", "src/game/sim.mjs")
+# Candidate locations for the pure sim core, most-specific first. Games that split
+# their logic into a src/sim/ folder are just as valid as a flat src/sim.js —
+# missing these made the gate report the MISLEADING "no pure sim core" (a false
+# negative) instead of verifying a sim that was really there. A verifier's error
+# reason is part of its contract, so the canonical flat paths stay FIRST (they win
+# when both exist) and the nested src/sim/ forms follow, ahead of the src/game/*
+# fallbacks. Both .js and .mjs are covered for each nested name.
+_SIM_CANDIDATES = (
+    "src/sim.js", "sim.js",
+    "src/sim/sim.js", "src/sim/sim.mjs", "src/sim/index.js", "src/sim/index.mjs",
+    "src/game/sim.js", "src/game/sim.mjs", "src/game/sim/sim.js",
+)
 
 # The Node harness: imports the sim by absolute path, runs the battery, and
 # prints a single JSON object to stdout. Embedded (like proof_run shells out to

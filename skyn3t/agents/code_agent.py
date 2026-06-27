@@ -131,7 +131,13 @@ _GAME_STACK_DIRECTIVE = (
     "that ONLY renders state and reads input) plus a PURE src/sim.js holding ALL game "
     "logic — createState(seed), step(state, input, dt), isWin(state), isLose(state) "
     "with NO Phaser import; ONE authoritative state advanced only by step(); a SEEDED "
-    "rng carried in state, NEVER Math.random or Date.now. "
+    "rng carried in state. "
+    "DETERMINISM (non-negotiable): createState(seed) MUST derive ALL randomness from "
+    "its seed ARGUMENT only — never from Math.random() or Date.now(), NOT EVEN to pick "
+    "the initial seed value. The runtime gate replays the sim twice from one fixed "
+    "seed and flags any divergence as non-determinism, so a clock-seeded rng (e.g. "
+    "`rng = Date.now()`) fails the gate. The same seed must always reproduce the exact "
+    "same game. "
     "INPUT CONTRACT (exact): step()'s `input` is ALWAYS the object "
     "`{left, right, up, down, action, pause}` — all BOOLEANS. Read ONLY these fields; "
     "NEVER invent custom input fields (do NOT read input.paddleDir, input.launch, "
@@ -151,20 +157,11 @@ _GAME_STACK_DIRECTIVE = (
     "web-framework routes — those build a website, not this game. Everything renders "
     "to a single Phaser canvas."
 )
-_GAME_ART_DIRECTIVE = (
-    "GAME ART (sprites): render the game's on-screen entities as Phaser SPRITES, "
-    "not bare colored shapes. In the scene's preload(), load each role from "
-    "`/assets/sprites/<role>.png` via "
-    "`this.load.image('<role>', '/assets/sprites/<role>.png')` for the roles the "
-    "game uses (player, enemy, coin, projectile, platform, background). In create(), "
-    "instantiate each entity WITH a colored-primitive FALLBACK so a missing sprite "
-    "never breaks the game: "
-    "`const v = this.textures.exists('player') ? this.add.sprite(x, y, 'player') : "
-    "this.add.rectangle(x, y, w, h, 0x4ade80)`. The sprite files are generated into "
-    "public/assets/sprites/ by the build — do NOT create them yourself, just "
-    "reference them. Sprites are a RENDER concern in src/main.js ONLY; keep ALL game "
-    "logic in the pure src/sim.js unchanged."
-)
+# The game-art directive is now GENRE-AWARE and built per-brief from the art
+# director's deterministic plan — see CodeAgent._game_art_directive. (A geometric
+# game is told to render crisp primitives; a sprite genre gets the load+fallback
+# idiom per game-aware role; both over one shared palette.)
+
 # Stacks for which the design bar applies.
 _WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
@@ -434,7 +431,7 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
-            + (f"{_GAME_ART_DIRECTIVE}\n" if self._game_art_on(stack) else "")
+            + (f"{self._game_art_directive(brief)}\n" if self._game_art_on(stack) else "")
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
@@ -450,6 +447,56 @@ class CodeAgent(BaseAgent):
         from skyn3t.config.settings import get_settings
 
         return bool(getattr(get_settings(), "game_art_enabled", True))
+
+    @staticmethod
+    def _game_art_directive(brief: str) -> str:
+        """Genre-aware game-art directive, built from the art director's
+        DETERMINISTIC plan so codegen lists the SAME role keys the sprite generator
+        produces (the alignment trick — no fragile threading). A geometric genre is
+        told to render crisp styled primitives and load NO sprites ($0); a sprite
+        genre gets the per-role load+primitive-fallback idiom. Always one shared
+        palette so the art reads as one piece."""
+        from skyn3t.agents.art_director import direct_art
+
+        plan = direct_art(brief)
+        palette = " ".join(plan.palette)
+        sprites = plan.sprite_roles()
+        prims = plan.primitive_roles()
+
+        if not sprites:
+            ents = ", ".join(f"{r.role} ({r.color})" for r in prims.values())
+            return (
+                f"GAME ART — genre '{plan.genre}', a GEOMETRIC game: render EVERY "
+                "entity as a clean styled PRIMITIVE (crisp Phaser rectangles/circles "
+                "with a subtle glow), NOT sprites and NOT muddy gradients, and load "
+                "NO sprite image. Use this EXACT shared palette (hex): "
+                f"{palette}. Entities and their colors: {ents}; background "
+                f"~{plan.palette[0]}. Art is a RENDER concern in src/main.js ONLY; "
+                "keep ALL game logic in the pure src/sim.js unchanged."
+            )
+
+        example = next(iter(sprites))
+        sprite_list = ", ".join(sprites)
+        prim_list = (
+            ", ".join(f"{r.role} ({r.color})" for r in prims.values()) or "none"
+        )
+        hex_no_hash = plan.roles[example].color.lstrip("#")
+        return (
+            f"GAME ART — genre '{plan.genre}'. Use this EXACT shared palette (hex): "
+            f"{palette}. "
+            f"SPRITE ROLES — {sprite_list}: in preload() load each from "
+            "`/assets/sprites/<role>.png` via "
+            "`this.load.image('<role>', '/assets/sprites/<role>.png')`, then in "
+            "create() render each WITH a colored-primitive FALLBACK so a missing "
+            "sprite never breaks the game: "
+            f"`const v = this.textures.exists('{example}') ? this.add.sprite(x, y, "
+            f"'{example}') : this.add.rectangle(x, y, w, h, 0x{hex_no_hash})`. "
+            f"PRIMITIVE ROLES — {prim_list}: draw as clean styled shapes using the "
+            "palette color shown (NO sprite file). The sprite files are generated "
+            "into public/assets/sprites/ by the build — do NOT create them yourself, "
+            "just reference them. Art is a RENDER concern in src/main.js ONLY; keep "
+            "ALL game logic in the pure src/sim.js unchanged."
+        )
 
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
     async def _execute_slice(

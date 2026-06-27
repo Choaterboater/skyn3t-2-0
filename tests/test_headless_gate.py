@@ -278,6 +278,32 @@ def test_gate_skips_gracefully_when_no_sim(tmp_path):
     assert res.violations == []
 
 
+def test_find_sim_locates_nested_sim_core(tmp_path):
+    # FIX A: a game that splits its sim into src/sim/sim.js must be FOUND, not
+    # reported as "no pure sim core". A verifier's error REASON is part of its
+    # contract — a misleading reason sends the fix-loop chasing the wrong defect.
+    from skyn3t.studio.headless_gate import _find_sim
+
+    _write(tmp_path, {"src/sim/sim.js": _GOODISH})
+    assert _find_sim(tmp_path) == tmp_path / "src/sim/sim.js"
+
+
+def test_find_sim_locates_sim_index(tmp_path):
+    # A sim folder with an index entry is just as valid a split.
+    from skyn3t.studio.headless_gate import _find_sim
+
+    _write(tmp_path, {"src/sim/index.js": _GOODISH})
+    assert _find_sim(tmp_path) == tmp_path / "src/sim/index.js"
+
+
+def test_find_sim_prefers_canonical_over_nested(tmp_path):
+    # When both exist, the canonical src/sim.js wins (most-specific-first order).
+    from skyn3t.studio.headless_gate import _find_sim
+
+    _write(tmp_path, {"src/sim.js": _GOODISH, "src/sim/sim.js": _GOODISH})
+    assert _find_sim(tmp_path) == tmp_path / "src/sim.js"
+
+
 def test_error_gaps_one_feedback_line_per_violation():
     res = HeadlessGateResult(
         applicable=True,
@@ -315,6 +341,16 @@ def test_gate_passes_scaffold_sim(tmp_path):
 @requires_node
 def test_gate_passes_minimal_good_sim(tmp_path):
     _write(tmp_path, {"src/sim.js": _GOODISH})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_gate_runs_nested_sim_core(tmp_path):
+    # FIX A end-to-end: a located nested sim is GATED (applicable), not skipped
+    # open — so the gate stays load-bearing for games that split src/sim/.
+    _write(tmp_path, {"src/sim/sim.js": _GOODISH})
     res = run_headless_gate(tmp_path, ticks=300)
     assert res.applicable is True, res.detail
     assert res.passed is True, res.violations

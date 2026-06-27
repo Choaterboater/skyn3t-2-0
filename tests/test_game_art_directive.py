@@ -71,6 +71,18 @@ def test_directive_includes_the_shared_palette():
     assert sum(c in prompt for c in palette) >= 2, "the palette must reach codegen"
 
 
+def test_unknown_game_directive_is_open_ended():
+    # A game the table doesn't recognize must be told to render the entities THIS
+    # brief implies (game-appropriate roles + the sprite-vs-primitive rule), not a
+    # fixed genre's role list.
+    prompt = _agent()._agentic_prompt("a fishing game", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "/assets/sprites/" in prompt, "baseline sprites still load"
+    assert "textures.exists" in prompt, "with a primitive fallback"
+    assert "primitive" in low, "the sprite-vs-primitive rule is stated"
+    assert "appropriate" in low, "codegen is told to use roles appropriate to THIS game"
+
+
 # ---- stack adherence: codegen must build a GAME, not a website (Phase: reliability) ----
 # Verify-by-running exposed the cheap model ignoring a pinned `phaser` stack and
 # building a Next.js marketing site. The codegen prompt must hard-enforce the stack.

@@ -182,3 +182,31 @@ def test_roleart_fields_are_complete():
         assert r.subject
         assert r.variant
         assert _HEX.match(r.color)
+
+
+# ---- generalization: the built-in genres are a fast-path, NOT the catalog ----
+# Any game the keyword table doesn't recognize must still get a sensible, themed,
+# game-aware plan (an OPEN-ENDED one) — never silently forced into a rigid generic
+# set. The known genres are an optimization on top of this floor.
+def test_unknown_game_gets_an_open_ended_plan():
+    for brief in ("a fishing game", "a farming sim", "a cooking game", "a typing game"):
+        plan = direct_art(brief)
+        assert plan.open_ended is True, brief
+        assert plan.roles, brief  # still a usable plan
+        # the plan still carries a real palette + at least one generatable sprite
+        assert plan.palette
+        assert plan.sprite_roles(), brief
+
+
+def test_recognized_genres_are_not_open_ended():
+    # A genre the table DOES know is treated specifically, not as the open floor.
+    for brief in ("a brick breaker", "a space shooter", "a tower defense game"):
+        assert direct_art(brief).open_ended is False, brief
+
+
+def test_open_ended_plan_is_themed_by_brief():
+    # A space-flavored unknown game still gets the space palette, not a flat default.
+    space = direct_art("a space fishing game")
+    fantasy = direct_art("a medieval blacksmith game")
+    assert space.open_ended and fantasy.open_ended
+    assert space.palette != fantasy.palette

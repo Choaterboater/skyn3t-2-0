@@ -51,13 +51,21 @@ class RoleArt:
 
 @dataclass
 class ArtPlan:
-    """A genre's complete, deterministic art plan: the roles it uses, each tagged
-    sprite/primitive, over one shared palette."""
+    """A game's complete, deterministic art plan: the roles it uses, each tagged
+    sprite/primitive, over one shared palette.
+
+    ``open_ended`` marks a plan for a game the known-genre table did NOT recognize.
+    Its roles are a sensible THEMED BASELINE, not a tailored genre set — so the
+    codegen directive tells the model to render whatever entities THIS brief
+    implies (following the sprite-vs-primitive rule + palette), rather than a fixed
+    role list. The built-in genres are a fast-path optimization on top of this
+    open-ended floor; they are examples, not the catalog of games."""
 
     genre: str
     theme: str
     palette: tuple[str, ...]
     roles: dict[str, RoleArt] = field(default_factory=dict)
+    open_ended: bool = False
 
     def sprite_roles(self) -> dict[str, RoleArt]:
         """Roles to GENERATE — the only ones that cost money."""
@@ -231,10 +239,13 @@ def _colors_for(order: list[tuple[str, str]], palette: tuple[str, ...]) -> dict[
     return out
 
 
-def _arcade_plan(brief: str | None) -> ArtPlan:
-    """The default genre: the resolver's generic, brief-themed roles, with sensible
-    render modes (characters/coin = sprite; platform/projectile/background = a
-    palette primitive) and a palette matched to the resolver's detected theme."""
+def _general_plan(brief: str | None) -> ArtPlan:
+    """The OPEN-ENDED fallback for any game the genre table doesn't recognize: a
+    sensible THEMED BASELINE (characters/coin = sprite; platform/projectile/
+    background = a palette primitive) over the brief's detected-theme palette. It is
+    flagged ``open_ended`` so the codegen directive invites game-appropriate roles
+    rather than pinning this generic set — the known genres are a fast-path, not the
+    whole catalog of games."""
     from skyn3t.studio.asset_resolver import _detect_theme, plan_roles
 
     theme = _detect_theme(brief or "")
@@ -257,19 +268,23 @@ def _arcade_plan(brief: str | None) -> ArtPlan:
             variant=f"{role}_arcade",
             color=colors[role],
         )
-    return ArtPlan(genre="arcade", theme=theme, palette=palette, roles=roles)
+    return ArtPlan(
+        genre="arcade", theme=theme, palette=palette, roles=roles, open_ended=True
+    )
 
 
 def direct_art(brief: str | None, *, settings=None) -> ArtPlan:
     """Plan a game's art from its brief — game-aware roles, each tagged sprite or
-    primitive, over one shared palette. Deterministic on the brief ALONE (no seed):
-    the sprite generator and the codegen directive both call this independently and
-    must agree on role keys, so divergent inputs would break that alignment. Never
-    raises; ``settings`` is accepted for forward-compatible LLM refinement and is
-    unused by this deterministic floor."""
+    primitive, over one shared palette. A recognized genre gets a tailored role set;
+    ANY other game gets an open-ended themed baseline (``_general_plan``) so the
+    built-in genres stay a fast-path, never a closed catalog. Deterministic on the
+    brief ALONE (no seed): the sprite generator and the codegen directive both call
+    this independently and must agree on role keys, so divergent inputs would break
+    that alignment. Never raises; ``settings`` is accepted for forward-compatible LLM
+    refinement and is unused by this deterministic floor."""
     genre = _detect_genre(brief)
     if genre == "arcade":
-        return _arcade_plan(brief)
+        return _general_plan(brief)
 
     spec = _GENRES[genre]
     palette = _PALETTES.get(spec.palette, _PALETTES["arcade"])

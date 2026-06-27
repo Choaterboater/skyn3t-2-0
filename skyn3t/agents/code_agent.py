@@ -463,6 +463,30 @@ class CodeAgent(BaseAgent):
         sprites = plan.sprite_roles()
         prims = plan.primitive_roles()
 
+        if plan.open_ended:
+            # A game the genre table doesn't recognize: don't pin a role list — give
+            # codegen the sprite-vs-primitive RULE + palette + a baseline sprite set,
+            # and let it render the entities THIS brief implies.
+            sprite_list = ", ".join(sprites)
+            return (
+                "GAME ART — this is an open-ended game: render the entities THIS "
+                "brief implies, using roles APPROPRIATE to the actual game (not a "
+                "fixed list). RULE per entity: a character / creature / vehicle / "
+                "collectible / themed object = a SPRITE; a geometric shape, "
+                "projectile, platform, wall, HUD bar, or abstract element = a clean "
+                "styled PRIMITIVE from the palette. Use this EXACT shared palette "
+                f"(hex): {palette}. BASELINE sprites ARE generated at "
+                f"/assets/sprites/<role>.png for: {sprite_list} — load those in "
+                "preload() and render WITH a colored-primitive FALLBACK: `const v = "
+                "this.textures.exists('<role>') ? this.add.sprite(x, y, '<role>') : "
+                "this.add.rectangle(x, y, w, h, 0x"
+                f"{plan.palette[1].lstrip('#')})`. For any other role this game "
+                "needs, reuse a fitting baseline sprite or draw a styled primitive "
+                f"from the palette; background ~{plan.palette[0]}. Art is a RENDER "
+                "concern in src/main.js ONLY; keep ALL game logic in the pure "
+                "src/sim.js unchanged."
+            )
+
         if not sprites:
             ents = ", ".join(f"{r.role} ({r.color})" for r in prims.values())
             return (

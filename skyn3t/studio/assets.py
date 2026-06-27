@@ -232,12 +232,15 @@ async def generate_assets(
     return manifest
 
 
-# An OFFICIAL Replicate model for role sprites. The adapter calls the
-# official-models endpoint (/models/{owner}/{name}/predictions), which only works
-# for official models — a community model like fofr/sticker-maker 404s there and
-# silently yields zero images (verified live). flux-schnell is official, fast, and
-# cheap; the resolver's prompt asks for a clean, centered game sprite.
-_SPRITE_ROLE_MODEL = DEFAULT_MODEL
+# The role-sprite model. retro-diffusion/rd-fast is an OFFICIAL Replicate model
+# (live-verified is_official=True — works on the official-models endpoint the
+# adapter uses, unlike community models that 404 there) that is PIXEL-NATIVE and
+# game-styled. The adapter (ReplicateClient._input_for) sends its rd-specific
+# params — style='game_asset' + remove_bg=True (transparent PNG in one call) +
+# 256x256 (cheap tier, ~$0.017/image). A strict upgrade over flux-schnell, which
+# produced generic OPAQUE images. (DEFAULT_MODEL/flux-schnell remains the fallback
+# for the subject-image flows above.)
+_SPRITE_ROLE_MODEL = "retro-diffusion/rd-fast"
 
 
 def _role_art_source(settings: Settings) -> str:

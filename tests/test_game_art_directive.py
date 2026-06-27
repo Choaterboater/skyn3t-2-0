@@ -57,3 +57,25 @@ def test_non_game_codegen_prompt_has_no_game_stack_directive():
     prompt = _agent()._agentic_prompt("a marketing site", "nextjs", _plan(), "")
     assert "src/sim.js" not in prompt
     assert "Build a GAME" not in prompt
+
+
+# ---- input contract: the root cause of the NaN + pause failures (sim-correctness) ----
+# The gate feeds step() EXACTLY {left,right,up,down,action,pause}. A real build read an
+# invented input.paddleDir (undefined -> NaN) and toggled paused inside step() (un-froze
+# itself). The directive must pin the input contract + pause semantics.
+def test_phaser_codegen_pins_the_input_contract():
+    prompt = _agent()._agentic_prompt("a brick breaker", "phaser", _plan(), "")
+    low = prompt.lower()
+    for field in ("left", "right", "up", "down", "action", "pause"):
+        assert field in low, f"input field {field} must be named"
+    # codegen must NOT invent custom input fields (the paddleDir->NaN bug)
+    assert "never invent" in low or "do not invent" in low
+    assert "paddledir" in low, "name the exact anti-example that caused the NaN"
+
+
+def test_phaser_codegen_pins_pause_as_host_owned_level_flag():
+    prompt = _agent()._agentic_prompt("a brick breaker", "phaser", _plan(), "")
+    # step() must early-return on paused/over and must NOT toggle paused itself
+    assert "if (state.paused || state.over) return state" in prompt
+    low = prompt.lower()
+    assert "never write state.paused" in low or "must not toggle" in low

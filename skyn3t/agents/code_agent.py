@@ -131,7 +131,13 @@ _GAME_STACK_DIRECTIVE = (
     "that ONLY renders state and reads input) plus a PURE src/sim.js holding ALL game "
     "logic — createState(seed), step(state, input, dt), isWin(state), isLose(state) "
     "with NO Phaser import; ONE authoritative state advanced only by step(); a SEEDED "
-    "rng carried in state, NEVER Math.random or Date.now. "
+    "rng carried in state. "
+    "DETERMINISM (non-negotiable): createState(seed) MUST derive ALL randomness from "
+    "its seed ARGUMENT only — never from Math.random() or Date.now(), NOT EVEN to pick "
+    "the initial seed value. The runtime gate replays the sim twice from one fixed "
+    "seed and flags any divergence as non-determinism, so a clock-seeded rng (e.g. "
+    "`rng = Date.now()`) fails the gate. The same seed must always reproduce the exact "
+    "same game. "
     "INPUT CONTRACT (exact): step()'s `input` is ALWAYS the object "
     "`{left, right, up, down, action, pause}` — all BOOLEANS. Read ONLY these fields; "
     "NEVER invent custom input fields (do NOT read input.paddleDir, input.launch, "
@@ -151,20 +157,11 @@ _GAME_STACK_DIRECTIVE = (
     "web-framework routes — those build a website, not this game. Everything renders "
     "to a single Phaser canvas."
 )
-_GAME_ART_DIRECTIVE = (
-    "GAME ART (sprites): render the game's on-screen entities as Phaser SPRITES, "
-    "not bare colored shapes. In the scene's preload(), load each role from "
-    "`/assets/sprites/<role>.png` via "
-    "`this.load.image('<role>', '/assets/sprites/<role>.png')` for the roles the "
-    "game uses (player, enemy, coin, projectile, platform, background). In create(), "
-    "instantiate each entity WITH a colored-primitive FALLBACK so a missing sprite "
-    "never breaks the game: "
-    "`const v = this.textures.exists('player') ? this.add.sprite(x, y, 'player') : "
-    "this.add.rectangle(x, y, w, h, 0x4ade80)`. The sprite files are generated into "
-    "public/assets/sprites/ by the build — do NOT create them yourself, just "
-    "reference them. Sprites are a RENDER concern in src/main.js ONLY; keep ALL game "
-    "logic in the pure src/sim.js unchanged."
-)
+# The game-art directive is now GENRE-AWARE and built per-brief from the art
+# director's deterministic plan — see CodeAgent._game_art_directive. (A geometric
+# game is told to render crisp primitives; a sprite genre gets the load+fallback
+# idiom per game-aware role; both over one shared palette.)
+
 # Stacks for which the design bar applies.
 _WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
@@ -197,6 +194,14 @@ class CodeAgent(BaseAgent):
         self.metadata.pop("degraded", None)
         self.metadata.pop("degraded_reason", None)
         brief = p.get("brief", "") or p.get("slug", "app")
+        # An art plan the runner computed + threaded (LLM-tailored or the floor); the
+        # game-art directive uses it so codegen lists the SAME roles the sprite
+        # generator produced. Absent for non-game builds / older payloads.
+        _extra = p.get("extra")
+        _art_plan = _extra.get("art_plan") if isinstance(_extra, dict) else None
+        # The runner-threaded GDD (LLM-tailored or the deterministic floor); the
+        # depth directive uses it so a retry keeps the SAME design the run committed.
+        _game_design = _extra.get("game_design") if isinstance(_extra, dict) else None
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         stack = detect_stack(
@@ -260,10 +265,13 @@ class CodeAgent(BaseAgent):
             attempt = 0
             while True:
                 prompt = (
-                    self._agentic_prompt(brief, stack, plan, knowledge)
+                    self._agentic_prompt(
+                        brief, stack, plan, knowledge,
+                        art_plan=_art_plan, game_design=_game_design)
                     if attempt == 0
                     else self._agentic_retry_prompt(
-                        brief, stack, plan, knowledge, code_bytes)
+                        brief, stack, plan, knowledge, code_bytes,
+                        art_plan=_art_plan, game_design=_game_design)
                 )
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov)
@@ -402,7 +410,9 @@ class CodeAgent(BaseAgent):
                 paths.append(path)
         return paths
 
-    def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str) -> str:
+    def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
+                        *, art_plan: dict[str, Any] | None = None,
+                        game_design: dict[str, Any] | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -413,6 +423,7 @@ class CodeAgent(BaseAgent):
             f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
             f"{brief}\n\n"
             + (f"{_GAME_STACK_DIRECTIVE}\n\n" if stack == "phaser" else "")
+            + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "
@@ -434,7 +445,7 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
-            + (f"{_GAME_ART_DIRECTIVE}\n" if self._game_art_on(stack) else "")
+            + (f"{self._game_art_directive(brief, art_plan)}\n" if self._game_art_on(stack) else "")
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
@@ -450,6 +461,111 @@ class CodeAgent(BaseAgent):
         from skyn3t.config.settings import get_settings
 
         return bool(getattr(get_settings(), "game_art_enabled", True))
+
+    @staticmethod
+    def _game_art_directive(brief: str, art_plan: dict[str, Any] | None = None) -> str:
+        """Genre-aware game-art directive. Uses the runner-threaded ``art_plan`` when
+        present (so codegen lists the SAME roles the sprite generator produced — the
+        alignment guarantee for a non-deterministic LLM plan), else derives the plan
+        from the brief deterministically. A geometric genre is told to render crisp
+        styled primitives and load NO sprites ($0); a sprite genre gets the per-role
+        load+primitive-fallback idiom. Always one shared palette."""
+        from skyn3t.agents.art_director import ArtPlan, direct_art
+
+        plan = ArtPlan.from_dict(art_plan) if isinstance(art_plan, dict) else direct_art(brief)
+        palette = " ".join(plan.palette)
+        sprites = plan.sprite_roles()
+        prims = plan.primitive_roles()
+
+        if plan.open_ended:
+            # A game the genre table doesn't recognize: don't pin a role list — give
+            # codegen the sprite-vs-primitive RULE + palette + a baseline sprite set,
+            # and let it render the entities THIS brief implies.
+            sprite_list = ", ".join(sprites)
+            return (
+                "GAME ART — this is an open-ended game: render the entities THIS "
+                "brief implies, using roles APPROPRIATE to the actual game (not a "
+                "fixed list). RULE per entity: a character / creature / vehicle / "
+                "collectible / themed object = a SPRITE; a geometric shape, "
+                "projectile, platform, wall, HUD bar, or abstract element = a clean "
+                "styled PRIMITIVE from the palette. Use this EXACT shared palette "
+                f"(hex): {palette}. BASELINE sprites ARE generated at "
+                f"/assets/sprites/<role>.png for: {sprite_list} — load those in "
+                "preload() and render WITH a colored-primitive FALLBACK: `const v = "
+                "this.textures.exists('<role>') ? this.add.sprite(x, y, '<role>') : "
+                "this.add.rectangle(x, y, w, h, 0x"
+                f"{plan.palette[1].lstrip('#')})`. For any other role this game "
+                "needs, reuse a fitting baseline sprite or draw a styled primitive "
+                f"from the palette; background ~{plan.palette[0]}. Art is a RENDER "
+                "concern in src/main.js ONLY; keep ALL game logic in the pure "
+                "src/sim.js unchanged."
+            )
+
+        if not sprites:
+            ents = ", ".join(f"{r.role} ({r.color})" for r in prims.values())
+            return (
+                f"GAME ART — genre '{plan.genre}', a GEOMETRIC game: render EVERY "
+                "entity as a clean styled PRIMITIVE (crisp Phaser rectangles/circles "
+                "with a subtle glow), NOT sprites and NOT muddy gradients, and load "
+                "NO sprite image. Use this EXACT shared palette (hex): "
+                f"{palette}. Entities and their colors: {ents}; background "
+                f"~{plan.palette[0]}. Art is a RENDER concern in src/main.js ONLY; "
+                "keep ALL game logic in the pure src/sim.js unchanged."
+            )
+
+        example = next(iter(sprites))
+        sprite_list = ", ".join(sprites)
+        prim_list = (
+            ", ".join(f"{r.role} ({r.color})" for r in prims.values()) or "none"
+        )
+        hex_no_hash = plan.roles[example].color.lstrip("#")
+        return (
+            f"GAME ART — genre '{plan.genre}'. Use this EXACT shared palette (hex): "
+            f"{palette}. "
+            f"SPRITE ROLES — {sprite_list}: in preload() load each from "
+            "`/assets/sprites/<role>.png` via "
+            "`this.load.image('<role>', '/assets/sprites/<role>.png')`, then in "
+            "create() render each WITH a colored-primitive FALLBACK so a missing "
+            "sprite never breaks the game: "
+            f"`const v = this.textures.exists('{example}') ? this.add.sprite(x, y, "
+            f"'{example}') : this.add.rectangle(x, y, w, h, 0x{hex_no_hash})`. "
+            f"PRIMITIVE ROLES — {prim_list}: draw as clean styled shapes using the "
+            "palette color shown (NO sprite file). The sprite files are generated "
+            "into public/assets/sprites/ by the build — do NOT create them yourself, "
+            "just reference them. Art is a RENDER concern in src/main.js ONLY; keep "
+            "ALL game logic in the pure src/sim.js unchanged."
+        )
+
+    @staticmethod
+    def _game_depth_directive(brief: str, game_design: dict[str, Any] | None = None) -> str:
+        """Demand DEPTH so the cheap model can't ship a thin one-mechanic toy
+        (roadmap #7). Uses the runner-threaded GDD when present (LLM-tailored), else
+        derives it deterministically from the brief. Every element below is a hard
+        requirement; all of it lives in the pure src/sim.js so the headless gate and
+        art tier keep working unchanged."""
+        from skyn3t.agents.game_designer import GameDesign, design_game
+
+        gd = (
+            GameDesign.from_dict(game_design)
+            if isinstance(game_design, dict)
+            else design_game(brief)
+        )
+        n_pow = max(2, min(3, len(gd.powerups)))
+        return (
+            "GAME DEPTH (required — a thin one-mechanic toy is a FAIL): build a "
+            f"COMPLETE {gd.genre} game with real depth.\n"
+            f"- CORE LOOP: {gd.core_loop}.\n"
+            f"- WIN: {gd.win}. LOSE: {gd.lose}. Both must be REACHABLE and shown to "
+            "the player (a win/lose screen or banner).\n"
+            f"- PROGRESSION: {gd.progression} — NOT a single static screen.\n"
+            f"- MECHANICS (implement each, interacting): {', '.join(gd.mechanics)}.\n"
+            f"- POWER-UPS / UPGRADES (at least {n_pow}, with REAL gameplay effects, "
+            f"not just labels): {', '.join(gd.powerups)}.\n"
+            f"- VARIETY (distinct types with different behavior): {', '.join(gd.variety)}.\n"
+            f"- ECONOMY / SCORING: {gd.economy}.\n"
+            "Put ALL of this in the pure src/sim.js state + step() (the Phaser scene "
+            "only renders it), so it stays deterministic and testable."
+        )
 
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
     async def _execute_slice(
@@ -610,9 +726,12 @@ class CodeAgent(BaseAgent):
 
     def _agentic_retry_prompt(
         self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
-        code_bytes: int,
+        code_bytes: int, *, art_plan: dict[str, Any] | None = None,
+        game_design: dict[str, Any] | None = None,
     ) -> str:
-        """Corrective prompt for a retry after the agent under-delivered."""
+        """Corrective prompt for a retry after the agent under-delivered. Threads the
+        SAME art_plan + game_design so the retry's art/depth directives still match
+        the sprites the generator produced and the GDD the run committed to."""
         return (
             f"Your previous attempt under-delivered — it wrote only {code_bytes} "
             "bytes of code, essentially just the starter template / a placeholder "
@@ -622,7 +741,8 @@ class CodeAgent(BaseAgent):
             "wired together into the entrypoint, real state and data. NO placeholder "
             "counter, NO 'starter' text, NO TODOs or stubs. Get as close to a "
             "fully-working app as possible.\n\n"
-            + self._agentic_prompt(brief, stack, plan, knowledge)
+            + self._agentic_prompt(
+                brief, stack, plan, knowledge, art_plan=art_plan, game_design=game_design)
         )
 
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps

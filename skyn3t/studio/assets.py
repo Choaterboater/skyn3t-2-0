@@ -29,8 +29,8 @@ from skyn3t.adapters.replicate import (
     asset_prompt,
     select_asset_style,
 )
+from skyn3t.agents.art_director import ArtPlan, direct_art
 from skyn3t.config.settings import Settings
-from skyn3t.studio.asset_resolver import plan_roles
 
 log = structlog.get_logger(__name__)
 
@@ -262,9 +262,14 @@ async def generate_role_sprites(
     settings: Settings,
     client: ReplicateClient | None = None,
     seed: int = 0,
+    art_plan: ArtPlan | None = None,
 ) -> dict[str, Any]:
     """Generate one themed sprite per game ROLE at build time, written to
     ``public/assets/sprites/{role}.png`` with a ``role_map`` manifest.
+
+    ``art_plan`` lets the runner thread a pre-computed plan (e.g. an LLM-tailored
+    one) so this generator and the codegen directive use the SAME role set; when
+    omitted it derives the plan from the brief (``direct_art``).
 
     Gated by ``game_art_enabled`` + ``game_art_source`` (``offline``/``disabled``
     skip cleanly — the scaffold renders colored primitives). Never raises: a
@@ -281,16 +286,27 @@ async def generate_role_sprites(
         return {"generated": 0, "skipped": True, "reason": "no_token",
                 "source": "offline", "role_map": {}}
 
-    plan = plan_roles(brief, seed=seed)
+    # The art director decides, per genre, which roles are SPRITES vs styled
+    # PRIMITIVES — we generate ONLY the sprite roles, so a geometric game (all
+    # primitives) spends nothing and a themed game gets exactly its game-aware
+    # sprites. The codegen directive reads the SAME deterministic plan, so the two
+    # agree on role keys with no threading.
+    # Use the threaded plan when the runner computed one (LLM-tailored), else derive
+    # it from the brief. The codegen directive plans from the SAME source, so the two
+    # structurally agree on which roles get a sprite file.
+    plan = art_plan or direct_art(brief)
+    sprite_roles = plan.sprite_roles()
     sprites_dir = Path(project_dir) / "public" / "assets" / "sprites"
     try:
         sprites_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         log.warning("role_sprites.mkdir_failed", error=str(exc)[:160])
         return {"generated": 0, "skipped": True, "reason": "mkdir_failed",
-                "source": "offline", "role_map": {}}
+                "source": "offline", "role_map": {},
+                "genre": plan.genre, "palette": list(plan.palette)}
 
-    # One independent prediction per role, run CONCURRENTLY (the build hot path).
+    # One independent prediction per SPRITE role, run CONCURRENTLY (the build hot
+    # path). Primitive roles are never generated — they render from the palette.
     async def _gen(role: str, rp) -> tuple[str, bytes | None]:
         try:
             images = await cli.generate_images(rp.prompt, n=1, model=_SPRITE_ROLE_MODEL)
@@ -299,7 +315,7 @@ async def generate_role_sprites(
             log.warning("role_sprites.role_failed", role=role, error=str(exc)[:160])
             return role, None
 
-    results = await asyncio.gather(*(_gen(role, rp) for role, rp in plan.items()))
+    results = await asyncio.gather(*(_gen(role, rp) for role, rp in sprite_roles.items()))
     role_map: dict[str, str] = {}
     for role, data in results:
         if not data:
@@ -314,12 +330,22 @@ async def generate_role_sprites(
             continue
         role_map[role] = f"/assets/sprites/{fname}"
 
+    # Accurate reason — a geometric genre with NO sprite roles is "all_primitive"
+    # (intended, $0), distinct from a real generation miss ("no_images").
+    if not sprite_roles:
+        reason = "all_primitive"
+    elif not role_map:
+        reason = "no_images"
+    else:
+        reason = ""
     manifest = {
         "generated": len(role_map),
         "skipped": len(role_map) == 0,
-        "reason": "" if role_map else "no_images",
+        "reason": reason,
         "source": "replicate",
         "model": _SPRITE_ROLE_MODEL,
+        "genre": plan.genre,
+        "palette": list(plan.palette),
         "role_map": role_map,
     }
     if role_map:

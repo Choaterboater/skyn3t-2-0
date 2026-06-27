@@ -23,6 +23,7 @@ from typing import Any
 import structlog
 
 from skyn3t.adapters.replicate import (
+    DEFAULT_MODEL,
     ReplicateClient,
     asset_model,
     asset_prompt,
@@ -231,9 +232,12 @@ async def generate_assets(
     return manifest
 
 
-# Die-cut, transparent-background, cartoon model — ideal for game sprites (vs the
-# subject-image flows above). The resolver's prompt already requests transparency.
-_SPRITE_ROLE_MODEL = asset_model("sticker")
+# An OFFICIAL Replicate model for role sprites. The adapter calls the
+# official-models endpoint (/models/{owner}/{name}/predictions), which only works
+# for official models — a community model like fofr/sticker-maker 404s there and
+# silently yields zero images (verified live). flux-schnell is official, fast, and
+# cheap; the resolver's prompt asks for a clean, centered game sprite.
+_SPRITE_ROLE_MODEL = DEFAULT_MODEL
 
 
 def _role_art_source(settings: Settings) -> str:

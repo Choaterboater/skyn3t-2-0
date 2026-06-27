@@ -133,3 +133,12 @@ async def test_runner_skips_role_sprites_for_non_game_stack(tmp_path):
     m = _Manifest()
     await runner._generate_assets(str(tmp_path), "a marketing site", m, {}, stack="nextjs")
     assert "role_sprites" not in m.extra
+
+
+def test_sprite_model_is_an_official_replicate_model():
+    # Verified live: the community model fofr/sticker-maker returns 0 images via
+    # the official-models endpoint the adapter uses. The sprite model MUST be an
+    # OFFICIAL Replicate model (bare owner/name works; community needs a version).
+    from skyn3t.studio.assets import _SPRITE_ROLE_MODEL
+
+    assert _SPRITE_ROLE_MODEL.startswith("black-forest-labs/"), _SPRITE_ROLE_MODEL

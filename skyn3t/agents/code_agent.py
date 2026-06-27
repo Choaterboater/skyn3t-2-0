@@ -125,6 +125,20 @@ _LLM_DIRECTIVE = (
     "FastAPI/Flask — an `@app.post('/api/llm')` handler. The route is the ONLY place "
     "the key and OpenRouter client live; keep key and model in env, never hardcoded."
 )
+_GAME_ART_DIRECTIVE = (
+    "GAME ART (sprites): render the game's on-screen entities as Phaser SPRITES, "
+    "not bare colored shapes. In the scene's preload(), load each role from "
+    "`/assets/sprites/<role>.png` via "
+    "`this.load.image('<role>', '/assets/sprites/<role>.png')` for the roles the "
+    "game uses (player, enemy, coin, projectile, platform, background). In create(), "
+    "instantiate each entity WITH a colored-primitive FALLBACK so a missing sprite "
+    "never breaks the game: "
+    "`const v = this.textures.exists('player') ? this.add.sprite(x, y, 'player') : "
+    "this.add.rectangle(x, y, w, h, 0x4ade80)`. The sprite files are generated into "
+    "public/assets/sprites/ by the build — do NOT create them yourself, just "
+    "reference them. Sprites are a RENDER concern in src/main.js ONLY; keep ALL game "
+    "logic in the pure src/sim.js unchanged."
+)
 # Stacks for which the design bar applies.
 _WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
@@ -393,10 +407,22 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
+            + (f"{_GAME_ART_DIRECTIVE}\n" if self._game_art_on(stack) else "")
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
         )
+
+    @staticmethod
+    def _game_art_on(stack: str) -> bool:
+        """Game stacks get the sprite directive when game art is enabled — the
+        runner writes the sprite files, so codegen must reference them with a
+        primitive fallback (else it rewrites main.js and drops the art)."""
+        if stack != "phaser":
+            return False
+        from skyn3t.config.settings import get_settings
+
+        return bool(getattr(get_settings(), "game_art_enabled", True))
 
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
     async def _execute_slice(

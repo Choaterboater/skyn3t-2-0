@@ -125,6 +125,17 @@ _LLM_DIRECTIVE = (
     "FastAPI/Flask — an `@app.post('/api/llm')` handler. The route is the ONLY place "
     "the key and OpenRouter client live; keep key and model in env, never hardcoded."
 )
+_GAME_STACK_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a GAME, not a website. This is a Phaser 3 + Vite "
+    "browser game in VANILLA JavaScript. The entry is src/main.js (a Phaser Scene "
+    "that ONLY renders state and reads input) plus a PURE src/sim.js holding ALL game "
+    "logic — createState(seed), step(state, input, dt), isWin(state), isLose(state) "
+    "with NO Phaser import; ONE authoritative state advanced only by step(); a SEEDED "
+    "rng carried in state, NEVER Math.random or Date.now. Use ONLY plain .js. Do NOT "
+    "use React, Next.js, Vue, JSX/TSX, or TypeScript, and do NOT create app/, pages/, "
+    "components/, next.config, tsconfig, or any web-framework routes — those build a "
+    "website, not this game. Everything renders to a single Phaser canvas."
+)
 _GAME_ART_DIRECTIVE = (
     "GAME ART (sprites): render the game's on-screen entities as Phaser SPRITES, "
     "not bare colored shapes. In the scene's preload(), load each role from "
@@ -386,7 +397,8 @@ class CodeAgent(BaseAgent):
             f"{knowledge}"
             f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
             f"{brief}\n\n"
-            f"Architecture summary: {plan.get('summary', '')}\n"
+            + (f"{_GAME_STACK_DIRECTIVE}\n\n" if stack == "phaser" else "")
+            + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "
             "Make it a real, fully-featured, MULTI-FILE app — implement every feature in the "

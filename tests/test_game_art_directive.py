@@ -32,3 +32,28 @@ def test_phaser_codegen_prompt_includes_sprite_directive():
 def test_non_game_codegen_prompt_omits_sprite_directive():
     prompt = _agent()._agentic_prompt("a marketing site", "nextjs", _plan(), "")
     assert "/assets/sprites/" not in prompt
+
+
+# ---- stack adherence: codegen must build a GAME, not a website (Phase: reliability) ----
+# Verify-by-running exposed the cheap model ignoring a pinned `phaser` stack and
+# building a Next.js marketing site. The codegen prompt must hard-enforce the stack.
+def test_phaser_codegen_prompt_enforces_vanilla_game_stack():
+    prompt = _agent()._agentic_prompt("a space shooter", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "src/sim.js" in prompt, "codegen must be told the pure sim entry"
+    assert "vanilla" in low, "must demand vanilla JS"
+    # the exact frameworks it wrongly built must be explicitly forbidden
+    assert "react" in low and "next.js" in low
+    assert "do not" in low
+
+
+def test_phaser_codegen_forbids_website_scaffolding():
+    prompt = _agent()._agentic_prompt("a space shooter", "phaser", _plan(), "")
+    # the rogue build created next.config/components/pages — name them as forbidden
+    assert "next.config" in prompt and "components/" in prompt and "pages/" in prompt
+
+
+def test_non_game_codegen_prompt_has_no_game_stack_directive():
+    prompt = _agent()._agentic_prompt("a marketing site", "nextjs", _plan(), "")
+    assert "src/sim.js" not in prompt
+    assert "Build a GAME" not in prompt

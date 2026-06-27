@@ -543,6 +543,7 @@ class StudioRunner:
         if stack in _GAME_STACKS:
             try:
                 from skyn3t.agents.art_director import direct_art, plan_art_llm
+                from skyn3t.agents.game_designer import design_game_llm
                 from skyn3t.studio.assets import generate_role_sprites
 
                 # Compute the art plan ONCE here and thread it to BOTH consumers: the
@@ -559,7 +560,16 @@ class StudioRunner:
                     worktree_dir, brief, settings=self.settings, art_plan=art_plan
                 )
                 manifest.extra["role_sprites"] = sprites
-                extra = {**extra, "art_plan": art_plan.to_dict()}
+                # The GDD (depth spec, #7) — LLM-tailored when game_designer_enabled,
+                # else the deterministic floor (no call). Threaded to codegen so the
+                # depth directive (and its retry) demand the SAME design.
+                game_design = await design_game_llm(brief, settings=self.settings)
+                manifest.extra["game_design"] = game_design.to_dict()
+                extra = {
+                    **extra,
+                    "art_plan": art_plan.to_dict(),
+                    "game_design": game_design.to_dict(),
+                }
                 if sprites.get("generated"):
                     log.info("role_sprites.step", count=sprites["generated"])
             except Exception as exc:  # noqa: BLE001 - must never break a build

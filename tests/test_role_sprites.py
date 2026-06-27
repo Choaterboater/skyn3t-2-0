@@ -200,6 +200,16 @@ async def test_runner_does_not_thread_art_plan_for_non_game_stack(tmp_path):
     m = _Manifest()
     out = await runner._generate_assets(str(tmp_path), "a marketing site", m, {}, stack="nextjs")
     assert "art_plan" not in out
+    assert "game_design" not in out
+
+
+async def test_runner_threads_game_design_for_game_stack(tmp_path):
+    # The GDD (depth spec) is threaded to codegen like the art plan.
+    runner = _runner(game_art_source="offline")
+    m = _Manifest()
+    out = await runner._generate_assets(str(tmp_path), "a space game", m, {}, stack="phaser")
+    assert isinstance(out.get("game_design"), dict)
+    assert out["game_design"].get("powerups"), "the threaded GDD carries power-ups"
 
 
 def test_sprite_model_is_an_official_replicate_model():

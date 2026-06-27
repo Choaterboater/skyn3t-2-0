@@ -199,6 +199,9 @@ class CodeAgent(BaseAgent):
         # generator produced. Absent for non-game builds / older payloads.
         _extra = p.get("extra")
         _art_plan = _extra.get("art_plan") if isinstance(_extra, dict) else None
+        # The runner-threaded GDD (LLM-tailored or the deterministic floor); the
+        # depth directive uses it so a retry keeps the SAME design the run committed.
+        _game_design = _extra.get("game_design") if isinstance(_extra, dict) else None
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         stack = detect_stack(
@@ -262,10 +265,13 @@ class CodeAgent(BaseAgent):
             attempt = 0
             while True:
                 prompt = (
-                    self._agentic_prompt(brief, stack, plan, knowledge, art_plan=_art_plan)
+                    self._agentic_prompt(
+                        brief, stack, plan, knowledge,
+                        art_plan=_art_plan, game_design=_game_design)
                     if attempt == 0
                     else self._agentic_retry_prompt(
-                        brief, stack, plan, knowledge, code_bytes, art_plan=_art_plan)
+                        brief, stack, plan, knowledge, code_bytes,
+                        art_plan=_art_plan, game_design=_game_design)
                 )
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov)
@@ -405,7 +411,8 @@ class CodeAgent(BaseAgent):
         return paths
 
     def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
-                        *, art_plan: dict[str, Any] | None = None) -> str:
+                        *, art_plan: dict[str, Any] | None = None,
+                        game_design: dict[str, Any] | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -416,6 +423,7 @@ class CodeAgent(BaseAgent):
             f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
             f"{brief}\n\n"
             + (f"{_GAME_STACK_DIRECTIVE}\n\n" if stack == "phaser" else "")
+            + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "
@@ -526,6 +534,37 @@ class CodeAgent(BaseAgent):
             "into public/assets/sprites/ by the build — do NOT create them yourself, "
             "just reference them. Art is a RENDER concern in src/main.js ONLY; keep "
             "ALL game logic in the pure src/sim.js unchanged."
+        )
+
+    @staticmethod
+    def _game_depth_directive(brief: str, game_design: dict[str, Any] | None = None) -> str:
+        """Demand DEPTH so the cheap model can't ship a thin one-mechanic toy
+        (roadmap #7). Uses the runner-threaded GDD when present (LLM-tailored), else
+        derives it deterministically from the brief. Every element below is a hard
+        requirement; all of it lives in the pure src/sim.js so the headless gate and
+        art tier keep working unchanged."""
+        from skyn3t.agents.game_designer import GameDesign, design_game
+
+        gd = (
+            GameDesign.from_dict(game_design)
+            if isinstance(game_design, dict)
+            else design_game(brief)
+        )
+        n_pow = max(2, min(3, len(gd.powerups)))
+        return (
+            "GAME DEPTH (required — a thin one-mechanic toy is a FAIL): build a "
+            f"COMPLETE {gd.genre} game with real depth.\n"
+            f"- CORE LOOP: {gd.core_loop}.\n"
+            f"- WIN: {gd.win}. LOSE: {gd.lose}. Both must be REACHABLE and shown to "
+            "the player (a win/lose screen or banner).\n"
+            f"- PROGRESSION: {gd.progression} — NOT a single static screen.\n"
+            f"- MECHANICS (implement each, interacting): {', '.join(gd.mechanics)}.\n"
+            f"- POWER-UPS / UPGRADES (at least {n_pow}, with REAL gameplay effects, "
+            f"not just labels): {', '.join(gd.powerups)}.\n"
+            f"- VARIETY (distinct types with different behavior): {', '.join(gd.variety)}.\n"
+            f"- ECONOMY / SCORING: {gd.economy}.\n"
+            "Put ALL of this in the pure src/sim.js state + step() (the Phaser scene "
+            "only renders it), so it stays deterministic and testable."
         )
 
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
@@ -688,10 +727,11 @@ class CodeAgent(BaseAgent):
     def _agentic_retry_prompt(
         self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
         code_bytes: int, *, art_plan: dict[str, Any] | None = None,
+        game_design: dict[str, Any] | None = None,
     ) -> str:
         """Corrective prompt for a retry after the agent under-delivered. Threads the
-        SAME art_plan so the retry's art directive still references the sprites the
-        generator already produced (else it recomputes a divergent role set)."""
+        SAME art_plan + game_design so the retry's art/depth directives still match
+        the sprites the generator produced and the GDD the run committed to."""
         return (
             f"Your previous attempt under-delivered — it wrote only {code_bytes} "
             "bytes of code, essentially just the starter template / a placeholder "
@@ -701,7 +741,8 @@ class CodeAgent(BaseAgent):
             "wired together into the entrypoint, real state and data. NO placeholder "
             "counter, NO 'starter' text, NO TODOs or stubs. Get as close to a "
             "fully-working app as possible.\n\n"
-            + self._agentic_prompt(brief, stack, plan, knowledge, art_plan=art_plan)
+            + self._agentic_prompt(
+                brief, stack, plan, knowledge, art_plan=art_plan, game_design=game_design)
         )
 
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps

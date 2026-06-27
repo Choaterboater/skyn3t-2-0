@@ -108,6 +108,25 @@ def test_scaffold_phaser_is_runnable_shape():
     assert "plugin-react" not in files.get("vite.config.js", "")
 
 
+def test_phaser_scaffold_has_pure_sim_render_split():
+    # The headless invariant gate (roadmap #5) requires a PURE sim core separate
+    # from Phaser. The scaffold ships src/sim.js exporting the contract, and
+    # src/main.js (the Phaser scene) consumes it — it does NOT own the logic.
+    files = scaffold_for("phaser", "dino-run", "a dino jump game")
+    assert "src/sim.js" in files, "phaser scaffold must ship a pure src/sim.js"
+    sim = files["src/sim.js"]
+    for export in ("createState", "step", "isWin", "isLose"):
+        assert export in sim, f"sim.js missing {export} export"
+    # sim.js is PURE — it must not IMPORT Phaser (else it can't run headless in
+    # Node). Comments may still mention Phaser; we forbid the actual import.
+    assert "import Phaser" not in sim, "sim.js must not import Phaser"
+    assert "from 'phaser'" not in sim, "sim.js must not import from phaser"
+    # main.js consumes the sim core rather than owning the logic.
+    main = files["src/main.js"]
+    assert "./sim" in main, "main.js must import the sim core"
+    assert "step(" in main, "main.js must call step()"
+
+
 def test_scaffold_phaser_has_no_react_confusion():
     # A Phaser game must NOT accidentally produce the React Vite scaffold (the
     # silent fallback this whole stack guards against).

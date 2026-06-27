@@ -1339,13 +1339,16 @@ def _phaser(app_name: str, brief: str) -> dict[str, str]:
     starter the codegen extends (NOT React — built fresh, not cloned from
     ``_react_vite``, so it never inherits react/react-dom/@vitejs-plugin-react).
 
-    The starter bakes in the correctness rules a hand-rolled game loop gets wrong
-    (the COIN REAPER class): **Phaser owns the loop** (fixed-step Arcade physics —
-    no manual ``requestAnimationFrame``, no integrating positions by hand), **one
-    authoritative Scene** holds the whole simulation (no desynced React copy), and
-    **Arcade overlap is the single collision authority** checked against the real
-    physics bodies — and each body IS the visible shape, so collisions can't fire
-    "from far away". ``npm run build`` (``vite build`` → ``dist/``) is the proof.
+    Architected as a **pure simulation core + a render-only scene** (the COIN
+    REAPER fix): ALL game logic lives in ``src/sim.js`` — one authoritative state
+    advanced by one ``step(state, input, dt)`` — with NO Phaser import. The Phaser
+    scene in ``src/main.js`` owns no logic; each frame it reads input, calls
+    ``step``, and RENDERS the returned state, so there is never a second copy of
+    the simulation to desync from. Collision is a single distance test against the
+    same coords that get drawn, so it can't fire "from far away". This split is
+    also what makes the game testable by the headless invariant gate (it runs
+    ``src/sim.js`` in Node). ``npm run build`` (``vite build`` → ``dist/``) is the
+    build proof.
     """
     title = (brief.strip() or app_name).split("\n")[0][:120]
     html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1389,70 +1392,114 @@ def _phaser(app_name: str, brief: str) -> dict[str, str]:
             "  </body>\n"
             "</html>\n"
         ),
+        "src/sim.js": (
+            "// Pure simulation core — NO Phaser, NO DOM. The headless invariant gate\n"
+            "// runs THIS module in Node. All game state lives in one object advanced\n"
+            "// by one step(state, input, dt); the Phaser scene only renders what step\n"
+            "// returns, so there is never a second copy of the sim to desync from.\n\n"
+            "export const WIDTH = 800\n"
+            "export const HEIGHT = 600\n"
+            "const PLAYER = 18      // half-extent of the player square\n"
+            "const COIN = 12        // coin radius\n"
+            "const SPEED = 260      // px/sec\n"
+            "const TARGET = 10      // coins to win\n"
+            "const TIME_LIMIT = 30  // seconds before time runs out\n\n"
+            "// Seeded RNG (mulberry32) carried in state — NEVER Math.random, so the\n"
+            "// simulation is fully reproducible (the gate's determinism check enforces it).\n"
+            "function nextRandom(state) {\n"
+            "  state.rng = (state.rng + 0x6d2b79f5) >>> 0\n"
+            "  let t = state.rng\n"
+            "  t = Math.imul(t ^ (t >>> 15), t | 1)\n"
+            "  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)\n"
+            "  return ((t ^ (t >>> 14)) >>> 0) / 4294967296\n"
+            "}\n\n"
+            "function placeCoin(state) {\n"
+            "  state.coin.x = COIN + nextRandom(state) * (WIDTH - 2 * COIN)\n"
+            "  state.coin.y = COIN + nextRandom(state) * (HEIGHT - 2 * COIN)\n"
+            "}\n\n"
+            "export function createState(seed) {\n"
+            "  const state = {\n"
+            "    rng: (seed >>> 0) || 1,\n"
+            "    player: { x: WIDTH / 2, y: HEIGHT / 2 },\n"
+            "    coin: { x: 0, y: 0 },\n"
+            "    score: 0,\n"
+            "    timeLeft: TIME_LIMIT,\n"
+            "    paused: false,\n"
+            "    over: false,\n"
+            "    won: false,\n"
+            "  }\n"
+            "  placeCoin(state)\n"
+            "  return state\n"
+            "}\n\n"
+            "const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)\n\n"
+            "export function step(state, input, dt) {\n"
+            "  // pause freezes the sim; game-over ignores input — both required by the gate.\n"
+            "  if (state.paused || state.over) return state\n\n"
+            "  const vx = (input.right ? 1 : 0) - (input.left ? 1 : 0)\n"
+            "  const vy = (input.down ? 1 : 0) - (input.up ? 1 : 0)\n"
+            "  state.player.x = clamp(state.player.x + vx * SPEED * dt, PLAYER, WIDTH - PLAYER)\n"
+            "  state.player.y = clamp(state.player.y + vy * SPEED * dt, PLAYER, HEIGHT - PLAYER)\n\n"
+            "  // Collision is a single distance test against the SAME coords we render —\n"
+            "  // no separate physics body to fall out of sync with the sprite.\n"
+            "  const dx = state.player.x - state.coin.x\n"
+            "  const dy = state.player.y - state.coin.y\n"
+            "  const reach = PLAYER + COIN\n"
+            "  if (dx * dx + dy * dy <= reach * reach) {\n"
+            "    state.score += 1\n"
+            "    placeCoin(state)\n"
+            "  }\n\n"
+            "  state.timeLeft = Math.max(0, state.timeLeft - dt)\n"
+            "  if (state.score >= TARGET) { state.won = true; state.over = true }\n"
+            "  else if (state.timeLeft <= 0) { state.over = true }\n"
+            "  return state\n"
+            "}\n\n"
+            "export function isWin(state) { return state.won }\n"
+            "export function isLose(state) { return state.over && !state.won }\n"
+        ),
         "src/main.js": (
             "import Phaser from 'phaser'\n"
-            "import './styles.css'\n\n"
-            "const WIDTH = 800\n"
-            "const HEIGHT = 600\n\n"
-            "// ONE authoritative Scene owns the whole simulation. Phaser drives the\n"
-            "// loop with a fixed-step Arcade physics update, so we never hand-roll\n"
-            "// requestAnimationFrame and never integrate positions by hand — motion is\n"
-            "// expressed as velocity and the physics step applies it with the real\n"
-            "// delta, so it's identical at 30fps or 144fps.\n"
+            "import './styles.css'\n"
+            "import { createState, step, isWin, isLose, WIDTH, HEIGHT } from './sim.js'\n\n"
+            "// The Phaser scene owns NO game logic — all of it lives in the pure\n"
+            "// src/sim.js (one authoritative state advanced by one step()). Each frame\n"
+            "// the scene reads input, advances the sim by the real delta, and RENDERS\n"
+            "// the returned state. This split is what lets the headless invariant gate\n"
+            "// run the game's logic in Node.\n"
             "class MainScene extends Phaser.Scene {\n"
-            "  constructor() {\n"
-            "    super('main')\n"
-            "    this.score = 0\n"
-            "  }\n\n"
+            "  constructor() { super('main') }\n\n"
             "  create() {\n"
-            "    this.cameras.main.setBackgroundColor('#1d2330')\n\n"
-            "    // Player: a physics-enabled rectangle. The physics BODY is the\n"
-            "    // rectangle itself, so the collision shape always matches what you\n"
-            "    // see — no 'hit by an enemy that's visually far away'.\n"
-            "    this.player = this.add.rectangle(WIDTH / 2, HEIGHT / 2, 36, 36, 0x4ade80)\n"
-            "    this.physics.add.existing(this.player)\n"
-            "    this.player.body.setCollideWorldBounds(true)\n\n"
-            "    // The collectible the player chases. setCircle makes the physics\n"
-            "    // body a real circle matching the drawn radius — collision shape ==\n"
-            "    // visual shape, so overlap can't fire 'from far away'.\n"
-            "    this.coin = this.add.circle(0, 0, 12, 0xfbbf24)\n"
-            "    this.physics.add.existing(this.coin)\n"
-            "    this.coin.body.setCircle(12)\n"
-            "    this.spawnCoin()\n\n"
-            "    // Arcade overlap is the SINGLE collision authority — evaluated every\n"
-            "    // physics step against the real bodies, never a stale state copy.\n"
-            "    this.physics.add.overlap(this.player, this.coin, () => this.collect())\n\n"
-            "    this.scoreText = this.add.text(16, 16, 'Score: 0', {\n"
+            "    this.cameras.main.setBackgroundColor('#1d2330')\n"
+            "    this.state = createState((Math.random() * 0xffffffff) >>> 0)\n\n"
+            "    this.playerView = this.add.rectangle(0, 0, 36, 36, 0x4ade80)\n"
+            "    this.coinView = this.add.circle(0, 0, 12, 0xfbbf24)\n"
+            "    this.hud = this.add.text(16, 16, '', {\n"
             "      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#e5e7eb',\n"
             "    })\n"
-            "    this.add.text(16, HEIGHT - 30, 'Arrow keys or WASD to move', {\n"
+            "    this.add.text(16, HEIGHT - 30, 'Arrow keys or WASD to move · P to pause', {\n"
             "      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8',\n"
             "    })\n\n"
             "    this.cursors = this.input.keyboard.createCursorKeys()\n"
             "    this.keys = this.input.keyboard.addKeys('W,A,S,D')\n"
+            "    this.input.keyboard.on('keydown-P', () => { this.state.paused = !this.state.paused })\n"
             "  }\n\n"
-            "  spawnCoin() {\n"
-            "    const m = 40\n"
-            "    this.coin.body.reset(\n"
-            "      Phaser.Math.Between(m, WIDTH - m),\n"
-            "      Phaser.Math.Between(m, HEIGHT - m),\n"
-            "    )\n"
+            "  update(time, delta) {\n"
+            "    const input = {\n"
+            "      left: this.cursors.left.isDown || this.keys.A.isDown,\n"
+            "      right: this.cursors.right.isDown || this.keys.D.isDown,\n"
+            "      up: this.cursors.up.isDown || this.keys.W.isDown,\n"
+            "      down: this.cursors.down.isDown || this.keys.S.isDown,\n"
+            "      action: false,\n"
+            "      pause: false,\n"
+            "    }\n"
+            "    // Advance the pure simulation by the real delta (seconds), then render.\n"
+            "    this.state = step(this.state, input, delta / 1000)\n"
+            "    this.draw(this.state)\n"
             "  }\n\n"
-            "  collect() {\n"
-            "    this.score += 1\n"
-            "    this.scoreText.setText('Score: ' + this.score)\n"
-            "    this.spawnCoin()\n"
-            "  }\n\n"
-            "  update() {\n"
-            "    const speed = 260\n"
-            "    const left = this.cursors.left.isDown || this.keys.A.isDown\n"
-            "    const right = this.cursors.right.isDown || this.keys.D.isDown\n"
-            "    const up = this.cursors.up.isDown || this.keys.W.isDown\n"
-            "    const down = this.cursors.down.isDown || this.keys.S.isDown\n"
-            "    const vx = (right ? 1 : 0) - (left ? 1 : 0)\n"
-            "    const vy = (down ? 1 : 0) - (up ? 1 : 0)\n"
-            "    // Set velocity (px/sec); the fixed-step integrator advances it.\n"
-            "    this.player.body.setVelocity(vx * speed, vy * speed)\n"
+            "  draw(s) {\n"
+            "    this.playerView.setPosition(s.player.x, s.player.y)\n"
+            "    this.coinView.setPosition(s.coin.x, s.coin.y)\n"
+            "    const status = isWin(s) ? '· YOU WIN' : isLose(s) ? '· TIME UP' : ''\n"
+            "    this.hud.setText(`Score: ${s.score}  Time: ${Math.ceil(s.timeLeft)}  ${status}`)\n"
             "  }\n"
             "}\n\n"
             "const config = {\n"
@@ -1461,10 +1508,6 @@ def _phaser(app_name: str, brief: str) -> dict[str, str]:
             "  width: WIDTH,\n"
             "  height: HEIGHT,\n"
             "  backgroundColor: '#1d2330',\n"
-            "  physics: {\n"
-            "    default: 'arcade',\n"
-            "    arcade: { gravity: { y: 0 }, debug: false },\n"
-            "  },\n"
             "  scale: {\n"
             "    mode: Phaser.Scale.FIT,\n"
             "    autoCenter: Phaser.Scale.CENTER_BOTH,\n"
@@ -1494,16 +1537,17 @@ def _phaser(app_name: str, brief: str) -> dict[str, str]:
                 "```bash\nnpm run build\nnpm run preview\n```"
             ),
             structure=[
+                ("src/sim.js", "Pure game logic — createState/step/isWin/isLose (no Phaser; runs headless)"),
+                ("src/main.js", "Phaser scene — renders the sim state and reads input (extend the visuals here)"),
                 ("index.html", "HTML entry that mounts the Phaser canvas"),
-                ("src/main.js", "Phaser game config + the main Scene (extend this with your gameplay)"),
                 ("src/styles.css", "Page styles that center the game canvas"),
                 ("vite.config.js", "Vite configuration (plain JS — no framework plugin)"),
                 ("package.json", "Dependencies and npm scripts"),
             ],
             features=[
-                "Phaser 3 owns the game loop — fixed-step Arcade physics",
-                "A single authoritative Scene (no desynced state copies)",
-                "Arcade overlap collision evaluated against real bodies",
+                "Pure simulation core (src/sim.js) separate from rendering — one authoritative state",
+                "Deterministic, seeded logic that runs headless for automated correctness checks",
+                "Single distance-based collision against the rendered coords (no desync)",
                 "Production build + preview scripts",
             ],
         ),

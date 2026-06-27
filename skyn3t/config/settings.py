@@ -213,6 +213,13 @@ class Settings(BaseSettings):
     # import) needs more than 2 passes to clear. Bounded by attempts AND wall-clock.
     max_fix_attempts: int = 6
     fix_loop_budget_s: int = 720
+    # Headless invariant gate (game stacks): run the pure sim core (src/sim.js) in
+    # Node and assert hard runtime invariants (NaN/pool-leak/determinism/pause/
+    # game-over). Violations feed the improver like compile errors; unresolved
+    # ones block the verdict. Game-stacks only; non-games + games without a sim
+    # core are unaffected.
+    headless_gate_enabled: bool = True
+    headless_gate_attempts: int = 3
     visual_self_heal: bool = False  # 2.0: drive rendered UI (needs browser)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 

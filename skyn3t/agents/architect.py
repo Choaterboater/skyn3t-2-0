@@ -135,11 +135,16 @@ class ArchitectAgent(BaseAgent):
                        ".jsx/.js, NEVER .tsx/.ts, and do NOT include a tsconfig.")
         if stack in _GAME_STACKS:
             prompt += ("\n\nIMPORTANT: this is a Phaser 3 + Vite browser game in VANILLA "
-                       "JavaScript. Author Phaser.Scene subclasses and one Phaser.Game in "
-                       "src/*.js; load images/audio in a preload() scene; let Phaser own "
-                       "the game loop and use Arcade physics for movement/collision (never "
-                       "hand-roll requestAnimationFrame or integrate positions by hand). "
-                       "Use ONLY .js — NEVER .ts/.tsx/.jsx, no React, no tsconfig.")
+                       "JavaScript, structured as a PURE SIMULATION CORE plus a render-only "
+                       "scene. Put ALL game logic in src/sim.js as pure functions with NO "
+                       "Phaser import: createState(seed), step(state, input, dt), "
+                       "isWin(state), isLose(state). Keep ONE authoritative state advanced "
+                       "only by step(); use a SEEDED rng carried in state (NEVER Math.random "
+                       "or Date.now); honor state.paused (freeze the sim) and state.over "
+                       "(ignore input). The Phaser scene in src/main.js owns NO logic — each "
+                       "frame it reads input, calls step(), and renders the returned state. "
+                       "Use ONLY .js — NEVER .ts/.tsx/.jsx, no React, no tsconfig. This split "
+                       "is required so the headless invariant gate can verify the game.")
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."

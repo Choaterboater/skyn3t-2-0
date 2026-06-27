@@ -29,6 +29,7 @@ from skyn3t.adapters.replicate import (
     select_asset_style,
 )
 from skyn3t.config.settings import Settings
+from skyn3t.studio.asset_resolver import plan_roles
 
 log = structlog.get_logger(__name__)
 
@@ -227,4 +228,98 @@ async def generate_assets(
         except OSError as exc:
             log.warning("assets.manifest_write_failed", error=str(exc)[:160])
     log.info("assets.generated", count=len(written), subjects=[a["subject"] for a in written])
+    return manifest
+
+
+# Die-cut, transparent-background, cartoon model — ideal for game sprites (vs the
+# subject-image flows above). The resolver's prompt already requests transparency.
+_SPRITE_ROLE_MODEL = asset_model("sticker")
+
+
+def _role_art_source(settings: Settings) -> str:
+    """Resolve where role sprites come from: ``replicate``, ``offline``, or
+    ``disabled`` — from ``game_art_enabled`` + ``game_art_source``. ``auto`` uses
+    replicate when a token is configured, else the free offline floor."""
+    if not bool(getattr(settings, "game_art_enabled", True)):
+        return "disabled"
+    src = str(getattr(settings, "game_art_source", "auto")).lower()
+    if src in ("replicate", "offline"):
+        return src
+    return "replicate" if bool(getattr(settings, "replicate_available", False)) else "offline"
+
+
+async def generate_role_sprites(
+    project_dir: str,
+    brief: str,
+    *,
+    settings: Settings,
+    client: ReplicateClient | None = None,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Generate one themed sprite per game ROLE at build time, written to
+    ``public/assets/sprites/{role}.png`` with a ``role_map`` manifest.
+
+    Gated by ``game_art_enabled`` + ``game_art_source`` (``offline``/``disabled``
+    skip cleanly — the scaffold renders colored primitives). Never raises: a
+    per-role generation failure OMITS that role (primitive fallback), so the result
+    is never a gap and never crashes the build.
+    """
+    decision = _role_art_source(settings)
+    if decision != "replicate":
+        return {"generated": 0, "skipped": True, "reason": decision,
+                "source": "offline", "role_map": {}}
+
+    cli = client or ReplicateClient(settings)
+    if not cli.available:
+        return {"generated": 0, "skipped": True, "reason": "no_token",
+                "source": "offline", "role_map": {}}
+
+    plan = plan_roles(brief, seed=seed)
+    sprites_dir = Path(project_dir) / "public" / "assets" / "sprites"
+    try:
+        sprites_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("role_sprites.mkdir_failed", error=str(exc)[:160])
+        return {"generated": 0, "skipped": True, "reason": "mkdir_failed",
+                "source": "offline", "role_map": {}}
+
+    # One independent prediction per role, run CONCURRENTLY (the build hot path).
+    async def _gen(role: str, rp) -> tuple[str, bytes | None]:
+        try:
+            images = await cli.generate_images(rp.prompt, n=1, model=_SPRITE_ROLE_MODEL)
+            return role, (images[0] if images else None)
+        except Exception as exc:  # noqa: BLE001 - never break the build over one role
+            log.warning("role_sprites.role_failed", role=role, error=str(exc)[:160])
+            return role, None
+
+    results = await asyncio.gather(*(_gen(role, rp) for role, rp in plan.items()))
+    role_map: dict[str, str] = {}
+    for role, data in results:
+        if not data:
+            continue  # omitted -> the scaffold renders a colored primitive for this role
+        # Force .png: the scaffold's preload() loads {role}.png, and the sprite
+        # model returns PNG. A failed/odd format simply 404s -> primitive fallback.
+        fname = f"{role}.png"
+        try:
+            (sprites_dir / fname).write_bytes(data)
+        except OSError as exc:
+            log.warning("role_sprites.write_failed", role=role, error=str(exc)[:160])
+            continue
+        role_map[role] = f"/assets/sprites/{fname}"
+
+    manifest = {
+        "generated": len(role_map),
+        "skipped": len(role_map) == 0,
+        "reason": "" if role_map else "no_images",
+        "source": "replicate",
+        "model": _SPRITE_ROLE_MODEL,
+        "role_map": role_map,
+    }
+    if role_map:
+        try:
+            (sprites_dir / "assets.json").write_text(
+                json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            log.warning("role_sprites.manifest_failed", error=str(exc)[:160])
+    log.info("role_sprites.generated", count=len(role_map), roles=list(role_map))
     return manifest

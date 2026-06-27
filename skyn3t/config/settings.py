@@ -163,6 +163,13 @@ class Settings(BaseSettings):
     reflective_retry: bool = True
     auto_route: bool = False  # opt-in: gates the learned router; enable together with model_evolution
     asset_gen: bool = False
+    # Game art tier (#6): role sprites for game stacks. `game_art_enabled` on by
+    # default (the floor degrades to clean colored primitives at $0). `game_art_source`
+    # picks where sprites come from: "offline" (primitives / bundled CC0, free),
+    # "replicate" (themed sprites generated at build time, ~cents), or "auto"
+    # (replicate when a token is configured, else offline).
+    game_art_enabled: bool = True
+    game_art_source: str = "auto"  # offline | replicate | auto
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
     # tournament_model_pool so the run is a real cross-model contest (genuine

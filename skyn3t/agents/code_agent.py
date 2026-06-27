@@ -177,8 +177,14 @@ class CodeAgent(BaseAgent):
                 task, p, brief, stack, plan, app_name, worktree, slice_scope)
 
         # Decide what files to write. Prefer the architect's plan; otherwise the
-        # canonical scaffold. The scaffold guarantees a runnable baseline.
-        scaffold = scaffold_for(stack, app_name, brief)
+        # canonical scaffold. The scaffold guarantees a runnable baseline. For game
+        # stacks, make the scaffold art-aware (preload role sprites + primitive
+        # fallback) when game_art is enabled — the sprites themselves are written by
+        # the runner's role-sprite step (#6).
+        from skyn3t.config.settings import get_settings as _gs_art
+
+        art = stack == "phaser" and bool(getattr(_gs_art(), "game_art_enabled", True))
+        scaffold = scaffold_for(stack, app_name, brief, art=art)
         files: dict[str, str] = dict(scaffold)
 
         knowledge = knowledge_block(p)

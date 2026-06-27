@@ -17,9 +17,13 @@ which the build fix-loop feeds back like compile errors. Reachability + juice ar
 NON-blocking and returned in ``report``.
 
 Design rules: pure (no project I/O beyond reading the sim), offline (no network),
-and NEVER raises. Any infrastructure problem (no ``node``, import failure, crash,
-timeout) degrades to ``applicable=False, passed=True`` — the gate never blocks a
-build because the gate itself couldn't run; only real invariant violations block.
+and NEVER raises. GENUINE infra problems (no ``node``, couldn't launch the
+harness) degrade to ``applicable=False, passed=True`` — the gate never blocks a
+build because *it* couldn't run. But once a sim FILE is located, any failure to
+verify it cleanly — a runtime throw, a hang/timeout, a crash, or a corrupted
+result — is attributable to the BUILD and BLOCKS (``applicable=True,
+passed=False``). The harness writes its verdict to a PRIVATE file, so the sim's
+own ``console.log`` can never corrupt the result and silently discard violations.
 
 The sim-core contract (``src/sim.js``, a pure ES module with NO Phaser import)::
 
@@ -56,8 +60,9 @@ _SIM_CANDIDATES = ("src/sim.js", "sim.js", "src/game/sim.js", "src/game/sim.mjs"
 # the determinism + pause + game-over comparisons.
 _HARNESS = r"""
 import { pathToFileURL } from 'node:url'
+import { writeFileSync } from 'node:fs'
 
-const [,, simPath, ticksArg, seedArg] = process.argv
+const [,, simPath, ticksArg, seedArg, resultPath] = process.argv
 const TICKS = parseInt(ticksArg || '600', 10)
 const SEED = parseInt(seedArg || '1234', 10)
 const DT = 1 / 60
@@ -73,7 +78,10 @@ const POOL_FLOOR = 2000
 // integers, excluded from the explosion check only (still scanned for NaN/Inf).
 const SKIP_MAG = /rng|seed|hash|uuid|^id$/i
 
-function out(obj) { process.stdout.write(JSON.stringify(obj)) }
+// Write the verdict to a PRIVATE file (not stdout): a sim that does its own
+// console.log must NOT be able to corrupt the result JSON and make the gate
+// degrade open, silently discarding real invariant violations.
+function out(obj) { writeFileSync(resultPath, JSON.stringify(obj)) }
 
 // Cycle- / BigInt- / Map- / Set-tolerant serializer for the snapshot comparisons,
 // so a later check can NEVER throw and discard violations already found in run A.
@@ -193,29 +201,39 @@ function run(ticks, inputFn) {
 const violations = []
 const report = {}
 
-const A = run(TICKS, inputAt)
+// Run A + the NaN/leak scan are wrapped: a sim that THROWS at runtime (a real
+// defect — null deref, bad index) must become a BLOCKING violation with a useful
+// message, NOT crash the harness into empty output that the caller would have to
+// treat as "couldn't run". (The post-A battery has its own guard below.)
+let A
+try {
+  A = run(TICKS, inputAt)
 
-// 1+2. NaN / Inf / value explosion
-if (A.firstBad) {
-  const b = A.firstBad
-  if (b.kind === 'nan') violations.push(`NaN in state.${b.path} after ${b.tick} ticks`)
-  else if (b.kind === 'inf') violations.push(`Infinity in state.${b.path} after ${b.tick} ticks`)
-  else violations.push(`value explosion: state.${b.path} = ${b.value} (> ${MAG_CAP}) after ${b.tick} ticks`)
-}
-
-// 3. unbounded pool growth (leak), per array path — not masked by a coexisting
-// large-but-static array.
-for (const p in A.arrEnd) {
-  const end = A.arrEnd[p]
-  // Baseline = the array's size BEFORE any leak: its max in the first half if it
-  // existed then, otherwise its length when it first appeared. Using the
-  // first-sighting size (not 0) means a BOUNDED array that spawns AFTER the
-  // midpoint is not false-flagged as a leak (only genuine growth trips it).
-  const baseline = (p in A.arrMid) ? A.arrMid[p] : (A.arrFirst[p] || 0)
-  if (end > POOL_FLOOR && end >= baseline * 1.8) {
-    violations.push(`pool leak: array '${p}' grew to ${end} entries (was ${baseline} earlier) — likely an unbounded spawn/leak`)
-    break
+  // 1+2. NaN / Inf / value explosion
+  if (A.firstBad) {
+    const b = A.firstBad
+    if (b.kind === 'nan') violations.push(`NaN in state.${b.path} after ${b.tick} ticks`)
+    else if (b.kind === 'inf') violations.push(`Infinity in state.${b.path} after ${b.tick} ticks`)
+    else violations.push(`value explosion: state.${b.path} = ${b.value} (> ${MAG_CAP}) after ${b.tick} ticks`)
   }
+
+  // 3. unbounded pool growth (leak), per array path — not masked by a coexisting
+  // large-but-static array.
+  for (const p in A.arrEnd) {
+    const end = A.arrEnd[p]
+    // Baseline = the array's size BEFORE any leak: its max in the first half if it
+    // existed then, otherwise its length when it first appeared. Using the
+    // first-sighting size (not 0) means a BOUNDED array that spawns AFTER the
+    // midpoint is not false-flagged as a leak (only genuine growth trips it).
+    const baseline = (p in A.arrMid) ? A.arrMid[p] : (A.arrFirst[p] || 0)
+    if (end > POOL_FLOOR && end >= baseline * 1.8) {
+      violations.push(`pool leak: array '${p}' grew to ${end} entries (was ${baseline} earlier) — likely an unbounded spawn/leak`)
+      break
+    }
+  }
+} catch (e) {
+  out({ applicable: true, passed: false, violations: ['sim threw at runtime: ' + ((e && e.message) || String(e))] })
+  process.exit(0)
 }
 
 // The post-A checks build/compare snapshots; wrap them so a throw can NEVER
@@ -223,15 +241,32 @@ for (const p in A.arrEnd) {
 try {
   // 4. determinism: run twice with DIVERGENT time/entropy so a sim that reads
   // them differs reliably. Math.random diverges via the advancing global PRNG;
-  // Date.now / performance.now are stubbed to different values per run (their 1ms
-  // resolution otherwise makes back-to-back runs land in the same millisecond).
-  const realNow = Date.now
+  // Date.now / new Date() / performance.now are stubbed to different values per
+  // run (their 1ms resolution otherwise makes back-to-back runs land in the same
+  // millisecond). The Date CONSTRUCTOR is stubbed too — `new Date().getTime()` is
+  // a common wall-clock read that a Date.now-only stub would miss.
+  const RealDate = globalThis.Date
   const perf = globalThis.performance
   const realPerf = perf && perf.now ? perf.now.bind(perf) : null
-  const setTime = (v) => { globalThis.Date.now = () => v; if (perf) perf.now = () => v }
+  // A Proxy (not a subclass) so the stub is callable BOTH as a constructor
+  // (`new Date()` -> pinned epoch v) AND as a plain function (`Date()` -> a date
+  // STRING, like the real thing) — an ES6 class throws when called without `new`,
+  // and that throw would be swallowed by the determinism try and silently disable
+  // the whole battery. Date.now / new Date()/Date(arg…) / parse / UTC all preserved.
+  const setTime = (v) => {
+    globalThis.Date = new Proxy(RealDate, {
+      apply() { return new RealDate(v).toString() },
+      construct(target, args) { return args.length === 0 ? new RealDate(v) : new RealDate(...args) },
+      get(target, prop, receiver) {
+        if (prop === 'now') return () => v
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    if (perf) perf.now = () => v
+  }
   setTime(1000); const d1 = run(TICKS, inputAt)
   setTime(9000); const d2 = run(TICKS, inputAt)
-  globalThis.Date.now = realNow; if (realPerf) perf.now = realPerf
+  globalThis.Date = RealDate; if (realPerf) perf.now = realPerf
   if (snapshot(d1.state) !== snapshot(d2.state)) {
     violations.push('non-determinism: identical seed + inputs produced different state (Math.random / Date.now / performance.now?)')
   }
@@ -339,34 +374,63 @@ def run_headless_gate(
     if node is None:
         return _skip("node not available")
 
+    # A located sim FILE that can't be cleanly verified is the BUILD's defect, not
+    # infra — it BLOCKS rather than degrading open (the whole point of the gate).
+    def _blocked(message: str, **detail: Any) -> HeadlessGateResult:
+        return HeadlessGateResult(
+            applicable=True,
+            passed=False,
+            violations=[message],
+            detail={"sim": str(sim.relative_to(pdir)), **detail},
+        )
+
     try:
         with tempfile.TemporaryDirectory(prefix="skyn3t-headless-") as td:
             harness = Path(td) / "harness.mjs"
             harness.write_text(_HARNESS, encoding="utf-8")
-            proc = subprocess.run(
-                [node, str(harness), str(sim.resolve()), str(ticks), str(seed)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
+            result_file = Path(td) / "result.json"
+            try:
+                proc = subprocess.run(
+                    [node, str(harness), str(sim.resolve()), str(ticks),
+                     str(seed), str(result_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                # The located sim hung past the timeout — a pure N-tick sim cannot
+                # legitimately do that, so it is the build's defect (likely an
+                # infinite loop), not an infra problem.
+                return _blocked(
+                    f"sim hung at runtime (> {timeout}s) — runtime invariants could "
+                    "not be verified (likely an infinite loop)",
+                    timeout=timeout,
+                )
+            # Read the verdict from the PRIVATE result file (immune to any stdout
+            # the sim itself produced). Read inside the with so the temp dir is
+            # still present.
+            raw = (
+                result_file.read_text(encoding="utf-8").strip()
+                if result_file.is_file() else ""
             )
-    except subprocess.TimeoutExpired:
-        return _skip("headless harness timed out", timeout=timeout)
-    except Exception as exc:  # noqa: BLE001 - infra failure must never block the build
+    except Exception as exc:  # noqa: BLE001 - couldn't even launch node: genuine infra
         log.warning("headless_gate.run_failed", error=str(exc))
         return _skip(f"harness execution failed: {exc}")
 
-    raw = (proc.stdout or "").strip()
     if not raw:
-        return _skip(
-            "harness produced no output",
+        # node ran on a located sim but emitted no verdict — it crashed before
+        # writing (OOM, stack overflow, hard process exit). Attributable to the build.
+        return _blocked(
+            "sim crashed at runtime (no result emitted) — runtime invariants could "
+            "not be verified",
             returncode=proc.returncode,
             stderr=(proc.stderr or "")[:1000],
         )
     try:
         data = json.loads(raw)
     except (ValueError, json.JSONDecodeError):
-        return _skip("harness output was not JSON", stdout=raw[:1000])
+        return _blocked("headless harness result was not JSON", stdout=raw[:1000])
 
     if not data.get("applicable", False):
         # We reach here only when node RAN the harness on a sim file that

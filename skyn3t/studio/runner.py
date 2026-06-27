@@ -1094,20 +1094,92 @@ class StudioRunner:
             "contrast_issues": contrast_issues,
         }
 
+    @staticmethod
+    def _missing_sim_core(gate) -> bool:
+        """True when the gate didn't run specifically because there is NO pure sim
+        core — attributable to the BUILD (the common Phaser idiom puts logic in the
+        scene), as opposed to a genuine infra skip (no node / timeout / garbled
+        output) whose reason does not mention the sim core and which must keep
+        degrading open."""
+        return (
+            gate is not None and not gate.applicable
+            and "sim core" in str((gate.detail or {}).get("reason", ""))
+        )
+
+    @staticmethod
+    def _needs_sim_repair(gate) -> bool:
+        """Should the improver loop run? Yes for real invariant violations (incl. a
+        present-but-broken sim, which the gate marks applicable+failed) OR for an
+        attributable missing sim core. No for a passing gate or an infra skip."""
+        if gate is None:
+            return False
+        if gate.applicable:
+            return not gate.passed
+        return StudioRunner._missing_sim_core(gate)
+
+    @staticmethod
+    def _headless_gate_gaps(gate) -> list[str]:
+        """Fix-loop feedback. For a missing sim core there are no invariant
+        violations yet, so synthesize the extraction instruction; otherwise feed the
+        exact violations back like compile errors."""
+        if StudioRunner._missing_sim_core(gate):
+            return [
+                "Headless invariant gate could not run: the game exposes no pure "
+                "simulation core. Extract ALL game logic into src/sim.js as a pure "
+                "ES module (NO Phaser/DOM import) exporting createState(seed), "
+                "step(state, input, dt), isWin(state) and isLose(state); the Phaser "
+                "scene must only RENDER the state that step() returns."
+            ]
+        return gate.error_gaps()
+
+    @staticmethod
+    def _headless_gate_blocks(gate, stack, *, repair_attempted) -> tuple[bool, str | None]:
+        """The verdict's headless-gate decision (game stacks only) — the single
+        source of truth for whether a game build is blocked on runtime correctness.
+
+        * ``None`` / non-game stack / passing applicable gate -> does NOT block.
+        * An applicable gate with violations (incl. a present-but-broken sim core,
+          which the gate itself marks applicable+failed) -> BLOCKS.
+        * A game stack that produced NO pure sim core is the false-negative this
+          seal closes: it BLOCKS *iff* a repair was actually attempted (do-no-harm —
+          never no_go for our own inability to run the improver). A genuine infra
+          skip (no node/timeout: applicable=False, reason not about the sim core)
+          still degrades open.
+        """
+        if gate is None or stack not in _GAME_STACKS:
+            return False, None
+        if gate.applicable:
+            if gate.passed:
+                return False, None
+            return True, (
+                f"{len(gate.violations)} runtime invariant violation(s): "
+                + "; ".join(gate.violations[:3])
+            )
+        if StudioRunner._missing_sim_core(gate) and repair_attempted:
+            return True, (
+                "game stack produced no pure src/sim.js after repair — runtime "
+                "invariants were not verified"
+            )
+        return False, None
+
     async def _headless_gate_pass(self, manifest, plan, project_dir, correlation_id, extra):
         """Game stacks: run the headless invariant gate on the delivered tree, repair
-        violations via the improver (bounded, like the proof fix-loop), and return the
-        final ``HeadlessGateResult`` (or ``None`` when it doesn't apply).
+        violations (and a missing sim core) via the improver (bounded, like the proof
+        fix-loop), and return the final ``HeadlessGateResult`` (or ``None`` when it
+        doesn't apply).
 
-        Non-blocking when there is no pure sim core (``applicable=False`` ->
-        ``passed=True``). Never raises — gate infrastructure problems must never
-        block a build; only genuine invariant violations do (via the verdict).
+        Sealed against the false-negative where a game with logic in the scene (no
+        ``src/sim.js``) made the gate skip and silently pass: a missing core now
+        DRIVES the repair loop, and an unrepaired game BLOCKS (the gate is converted
+        to applicable+failed so the verdict, which reads ``gate.passed``, bites).
+        Genuine infra problems still degrade open — only real, attributable gaps
+        block. Never raises.
         """
         if plan.stack not in _GAME_STACKS:
             return None
         if not bool(getattr(self.settings, "headless_gate_enabled", True)):
             return None
-        from skyn3t.studio.headless_gate import run_headless_gate
+        from skyn3t.studio.headless_gate import HeadlessGateResult, run_headless_gate
 
         try:
             gate = await asyncio.to_thread(run_headless_gate, project_dir)
@@ -1117,7 +1189,8 @@ class StudioRunner:
 
         attempts = int(getattr(self.settings, "headless_gate_attempts", 3))
         n = 0
-        while (gate.applicable and not gate.passed and n < attempts
+        completed = 0  # improver runs that actually FINISHED (not just attempted)
+        while (self._needs_sim_repair(gate) and n < attempts
                and self._has_capability("code_improve")):
             n += 1
             await self.event_bus.emit(
@@ -1129,8 +1202,9 @@ class StudioRunner:
                 "brief": manifest.brief, "slug": manifest.slug,
                 "worktree_dir": project_dir, "project_dir": project_dir,
                 "stack": plan.stack, "plan": plan.to_dict(),
-                # Feed the EXACT invariant violations back, like compile errors.
-                "gaps": gate.error_gaps(),
+                # Feed the EXACT invariant violations (or the sim-core extraction
+                # instruction) back, like compile errors.
+                "gaps": self._headless_gate_gaps(gate),
             }
             if extra:
                 payload["extra"] = extra
@@ -1146,6 +1220,7 @@ class StudioRunner:
             except Exception as exc:  # noqa: BLE001
                 log.warning("headless_gate.improve_failed", error=str(exc))
                 break
+            completed += 1
             manifest.files = list_files(project_dir)
             gate = await asyncio.to_thread(run_headless_gate, project_dir)
             await self.event_bus.emit(
@@ -1154,11 +1229,26 @@ class StudioRunner:
                 correlation_id=correlation_id,
             )
 
+        # Only a COMPLETED improver run counts as a repair attempt — a submit that
+        # raised/timed out (break above, completed not incremented) must degrade
+        # open, never no_go a build on the improver's own failure to run.
+        repair_attempted = completed > 0
+        blocks, reason = self._headless_gate_blocks(
+            gate, plan.stack, repair_attempted=repair_attempted
+        )
+        # Convert an attributable missing-core skip into a blocking gate so the
+        # verdict (which reads gate.passed) treats an unverifiable game as a real
+        # failure — not a silent pass.
+        if blocks and not gate.applicable:
+            gate = HeadlessGateResult(
+                applicable=True, passed=False, violations=[reason],
+                detail={**(gate.detail or {}), "blocked": "missing_sim_core"},
+            )
         manifest.extra["headless_gate"] = gate.to_dict()
-        # A game stack with NO pure sim core wasn't invariant-gated — surface it
-        # (non-blocking; do-no-harm keeps it from no_go'ing a game that simply
-        # hasn't adopted the convention, but the gap is visible).
-        if not gate.applicable and "sim core" in str((gate.detail or {}).get("reason", "")):
+        # When a game has no sim core but we couldn't repair it (no improver
+        # capability), surface the gap without blocking — do-no-harm keeps it from
+        # no_go'ing a build on our own inability to run the improver.
+        if self._missing_sim_core(gate):
             manifest.extra["headless_gate_note"] = (
                 "game stack has no pure src/sim.js — runtime invariants were NOT "
                 "verified (add a sim core to enable the headless gate)"

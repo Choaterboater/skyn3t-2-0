@@ -12,11 +12,17 @@ contract tests always run.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 
 import pytest
 
+from skyn3t.config.settings import Settings
+from skyn3t.core.events import EventBus
+from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.headless_gate import HeadlessGateResult, run_headless_gate
+from skyn3t.studio.planner import Planner
+from skyn3t.studio.runner import StudioRunner
 
 requires_node = pytest.mark.skipif(
     shutil.which("node") is None, reason="node not installed"
@@ -189,6 +195,74 @@ _LAZY_BULK_LOAD = (
 _PROTO_KEY_LEAK = (
     "export function createState(seed){ return {constructor:[], rng:seed} }\n"
     "export function step(s){ for(let i=0;i<100;i++) s.constructor.push(1); return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A real NaN violation in a sim that ALSO writes to stdout (a ubiquitous debug
+# log). Parsing the sim's stdout as the verdict would corrupt the JSON and discard
+# the NaN — the result must travel a private channel the sim can't pollute.
+_STDOUT_NOISE_NAN = (
+    "export function createState(seed){ return {x:0, rng:seed} }\n"
+    "export function step(s){ console.log('dbg tick'); s.x += 0/0; return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A perfectly good sim that also logs — must still pass (the log must NOT make the
+# gate degrade open or block).
+_STDOUT_NOISE_GOOD = (
+    "export function createState(seed){ return {x:0, score:0, rng:seed>>>0} }\n"
+    "export function step(s, input, dt){ console.log('frame'); "
+    "if(input.right) s.x += 60*dt; if(input.action) s.score += 1; return s }\n"
+    "export function isWin(s){ return s.score >= 10 }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A sim that THROWS at runtime (null deref). The most basic runtime defect — it
+# must BLOCK (attributable to the build), not crash the harness into a degrade-open.
+_THROWS_AT_RUNTIME = (
+    "export function createState(seed){ return {x:0, e:null, rng:seed} }\n"
+    "export function step(s){ s.x += s.e.value; return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A sim that HANGS (infinite loop). With a short timeout it must be attributed to
+# the build and BLOCK — a 600-tick pure sim has no business taking seconds.
+_HANGS_AT_RUNTIME = (
+    "export function createState(seed){ return {x:0, rng:seed} }\n"
+    "export function step(s){ while(true){} return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# Non-determinism sourced from the Date CONSTRUCTOR (not Date.now). The
+# determinism check must stub the constructor too, else this escapes to a 'go'.
+_DATE_CTOR_NONDET = (
+    "export function createState(seed){ return {x:0} }\n"
+    "export function step(s){ s.x = (new Date().getTime()) % 7; return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A sim that calls BARE Date() (legal — real Date() returns a string, never
+# throws) AND is non-deterministic. A class-based Date stub throws on bare Date()
+# and that throw, swallowed by the determinism try, silently disables the WHOLE
+# battery — so the Date.now non-determinism escapes. The stub must be callable.
+_BARE_DATE_NONDET = (
+    "export function createState(seed){ return {x:0, label:''} }\n"
+    "export function step(s){ s.label = Date(); s.x = Date.now() % 7; return s }\n"
+    "export function isWin(s){ return false }\n"
+    "export function isLose(s){ return false }\n"
+)
+
+# A deterministic sim that constructs Date WITH args (a fixed date). The time stub
+# must preserve multi-arg construction so this stays a clean pass (guard against
+# the stub breaking legitimate Date use).
+_DATE_ARGS_OK = (
+    "export function createState(seed){ return {y:0, rng:seed} }\n"
+    "export function step(s){ s.y = new Date(2020, 0, 1).getFullYear(); return s }\n"
     "export function isWin(s){ return false }\n"
     "export function isLose(s){ return false }\n"
 )
@@ -393,3 +467,218 @@ def test_gate_catches_leak_under_prototype_named_field(tmp_path):
     res = run_headless_gate(tmp_path, ticks=300)
     assert res.passed is False
     assert any("pool" in v.lower() for v in res.violations), res.violations
+
+
+# ---- node-backed: result-channel + crash/hang seals (debug-team findings) ----
+@requires_node
+def test_sim_stdout_noise_does_not_discard_violation(tmp_path):
+    # A sim that logs to stdout must NOT corrupt the verdict channel: the NaN it
+    # also produces must still be caught (the result travels a private file, not
+    # the sim-polluted stdout).
+    _write(tmp_path, {"src/sim.js": _STDOUT_NOISE_NAN})
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "a logging sim's NaN must not be discarded"
+    assert any("nan" in v.lower() for v in res.violations), res.violations
+
+
+@requires_node
+def test_good_sim_that_logs_still_passes(tmp_path):
+    # Control: a correct sim that happens to log must remain a clean pass, not
+    # degrade open or block on the stdout noise.
+    _write(tmp_path, {"src/sim.js": _STDOUT_NOISE_GOOD})
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.applicable is True, res.detail
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_sim_that_throws_at_runtime_blocks(tmp_path):
+    # A located sim that crashes at runtime is attributable to the build — it must
+    # BLOCK (applicable=True, passed=False), not degrade open on empty output.
+    _write(tmp_path, {"src/sim.js": _THROWS_AT_RUNTIME})
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "a sim that throws must block, not silently pass"
+    assert res.violations
+
+
+@requires_node
+def test_sim_that_hangs_blocks_not_degrades_open(tmp_path):
+    # A located sim that hangs past the timeout is attributable to the build — it
+    # must BLOCK, not degrade open (a 600-tick pure sim cannot legitimately hang).
+    _write(tmp_path, {"src/sim.js": _HANGS_AT_RUNTIME})
+    res = run_headless_gate(tmp_path, ticks=600, timeout=3)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "a hung sim must block, not silently pass"
+    assert res.violations
+
+
+@requires_node
+def test_nondeterminism_via_date_constructor_is_caught(tmp_path):
+    # Non-determinism from `new Date()` (not just Date.now) must be caught — the
+    # determinism check stubs the Date constructor to a divergent epoch per run.
+    _write(tmp_path, {"src/sim.js": _DATE_CTOR_NONDET})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is False
+    assert any("determinism" in v.lower() for v in res.violations), res.violations
+
+
+@requires_node
+def test_bare_date_call_does_not_disable_determinism_battery(tmp_path):
+    # Regression guard (re-review finding): a sim that calls bare Date() must NOT
+    # throw inside the time stub and silently swallow the determinism/pause/
+    # game-over battery — the Date.now non-determinism must still be caught.
+    _write(tmp_path, {"src/sim.js": _BARE_DATE_NONDET})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "bare Date() must not disable the determinism check"
+    assert any("determinism" in v.lower() for v in res.violations), res.violations
+
+
+@requires_node
+def test_date_with_args_construction_still_works(tmp_path):
+    # Guard: the time stub must preserve multi-arg Date construction — a fixed
+    # `new Date(2020,0,1)` is deterministic and must remain a clean pass.
+    _write(tmp_path, {"src/sim.js": _DATE_ARGS_OK})
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.applicable is True, res.detail
+    assert res.passed is True, res.violations
+
+
+# ---- runner policy: SEAL the gate on a game stack with no pure sim core ------
+# The gate (run_headless_gate) degrades open when there's no src/sim.js — correct
+# for a pure verifier. The POLICY that a game stack MUST expose a sim core (so the
+# gate actually bites) lives in the runner: a missing core drives the repair loop
+# to extract one, and an unrepaired game blocks instead of silently passing.
+def _runner():
+    bus = EventBus()
+    return StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"))
+
+
+def _phaser_plan():
+    plan = Planner(Settings()).plan("a dino jump game", "dino")
+    plan.stack = "phaser"
+    return plan
+
+
+class _M:
+    build_id = "b"
+    slug = "dino"
+    brief = "a dino jump game"
+
+    def __init__(self):
+        self.files = []
+        self.extra = {}
+
+
+_MISSING = HeadlessGateResult(
+    applicable=False, passed=True,
+    detail={"reason": "no pure sim core (src/sim.js) found"},
+)
+_INFRA = HeadlessGateResult(
+    applicable=False, passed=True, detail={"reason": "node not available"},
+)
+
+
+def test_headless_gate_blocks_policy():
+    g = StudioRunner._headless_gate_blocks
+    # game stack, NO sim core, AFTER a repair attempt -> BLOCKS (the sealed hole).
+    assert g(_MISSING, "phaser", repair_attempted=True)[0] is True
+    # no repair was possible (no improver) -> do-no-harm, never block on our own
+    # inability.
+    assert g(_MISSING, "phaser", repair_attempted=False) == (False, None)
+    # a genuine infra skip (no node) -> never blocks, even after a repair attempt.
+    assert g(_INFRA, "phaser", repair_attempted=True) == (False, None)
+    # a non-game stack is never gated by the headless gate.
+    assert g(_MISSING, "nextjs", repair_attempted=True) == (False, None)
+    # a passing applicable gate -> fine.
+    ok = HeadlessGateResult(applicable=True, passed=True)
+    assert g(ok, "phaser", repair_attempted=True) == (False, None)
+    # an applicable gate with real violations -> blocks (repair_attempted moot).
+    bad = HeadlessGateResult(applicable=True, passed=False, violations=["NaN in state.x"])
+    assert g(bad, "phaser", repair_attempted=False)[0] is True
+    # gate disabled / None -> never blocks.
+    assert g(None, "phaser", repair_attempted=True) == (False, None)
+
+
+async def test_missing_sim_core_drives_repair_then_blocks_when_unfixed(tmp_path, monkeypatch):
+    # THE BUG: a game with logic in main.js (no src/sim.js) made the gate skip and
+    # the improver loop never ran -> a silent verdict pass with ZERO invariant
+    # verification. It must now drive repair and, if still unfixed, block.
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+    seen = {"n": 0, "gaps": None}
+
+    async def fake_submit(task):
+        seen["n"] += 1
+        seen["gaps"] = task.payload.get("gaps")
+        return None  # the improver fails to extract a sim core
+
+    monkeypatch.setattr(runner.orchestrator, "submit", fake_submit)
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: _MISSING
+    )
+
+    gate = await runner._headless_gate_pass(_M(), _phaser_plan(), str(tmp_path), "cid", {})
+    assert seen["n"] >= 1, "a missing sim core must DRIVE the repair loop"
+    assert seen["gaps"] and any("sim.js" in g for g in seen["gaps"]), seen["gaps"]
+    assert gate.passed is False, "an unrepaired game stack must block the verdict"
+
+
+async def test_missing_sim_core_repaired_by_improver_passes(tmp_path, monkeypatch):
+    # Once the improver extracts a valid sim core, the gate runs and passes — no
+    # block. This proves the loop converges, not just blocks.
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+    state = {"fixed": False}
+    good = HeadlessGateResult(applicable=True, passed=True, detail={"sim": "src/sim.js"})
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate",
+        lambda *a, **k: good if state["fixed"] else _MISSING,
+    )
+
+    async def fake_submit(task):
+        state["fixed"] = True  # the improver extracts a valid sim core
+        return None
+
+    monkeypatch.setattr(runner.orchestrator, "submit", fake_submit)
+
+    gate = await runner._headless_gate_pass(_M(), _phaser_plan(), str(tmp_path), "cid", {})
+    assert gate.applicable is True and gate.passed is True
+
+
+async def test_no_improver_capability_keeps_missing_core_nonblocking(tmp_path, monkeypatch):
+    # do-no-harm guard: with NO improver to add a sim core, a game without one must
+    # NOT no_go — degrade open with a visible note (never block on inability).
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: False)
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: _MISSING
+    )
+    m = _M()
+    gate = await runner._headless_gate_pass(m, _phaser_plan(), str(tmp_path), "cid", {})
+    assert gate.passed is True
+    assert "headless_gate_note" in m.extra
+
+
+async def test_transient_improver_crash_does_not_block_missing_core(tmp_path, monkeypatch):
+    # do-no-harm: a flaky improver (submit raises / stage timeout) that NEVER
+    # actually ran must not be credited as a repair attempt — a sim-less game must
+    # degrade open, not no_go. (repair_attempted counts COMPLETED submits, not the
+    # pre-increment loop counter.)
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+
+    async def boom(task):
+        raise asyncio.TimeoutError("improver timed out")
+
+    monkeypatch.setattr(runner.orchestrator, "submit", boom)
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: _MISSING
+    )
+    m = _M()
+    gate = await runner._headless_gate_pass(m, _phaser_plan(), str(tmp_path), "cid", {})
+    assert gate.passed is True, "a never-run improver must not block (do-no-harm)"
+    assert "headless_gate_note" in m.extra

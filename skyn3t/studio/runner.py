@@ -89,6 +89,9 @@ _UI_WEB_STACKS = frozenset({
     "astro", "remix", "static", "static_html",
     "tauri", "desktop", "phaser",
 })
+# Stacks whose runtime LOGIC is verified by the headless invariant gate (it runs
+# the pure src/sim.js core in Node). Keep in sync with architect._GAME_STACKS.
+_GAME_STACKS = frozenset({"phaser"})
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 
 
@@ -1091,6 +1094,77 @@ class StudioRunner:
             "contrast_issues": contrast_issues,
         }
 
+    async def _headless_gate_pass(self, manifest, plan, project_dir, correlation_id, extra):
+        """Game stacks: run the headless invariant gate on the delivered tree, repair
+        violations via the improver (bounded, like the proof fix-loop), and return the
+        final ``HeadlessGateResult`` (or ``None`` when it doesn't apply).
+
+        Non-blocking when there is no pure sim core (``applicable=False`` ->
+        ``passed=True``). Never raises — gate infrastructure problems must never
+        block a build; only genuine invariant violations do (via the verdict).
+        """
+        if plan.stack not in _GAME_STACKS:
+            return None
+        if not bool(getattr(self.settings, "headless_gate_enabled", True)):
+            return None
+        from skyn3t.studio.headless_gate import run_headless_gate
+
+        try:
+            gate = await asyncio.to_thread(run_headless_gate, project_dir)
+        except Exception as exc:  # noqa: BLE001 - infra failure must not block the build
+            log.warning("headless_gate.failed", error=str(exc))
+            return None
+
+        attempts = int(getattr(self.settings, "headless_gate_attempts", 3))
+        n = 0
+        while (gate.applicable and not gate.passed and n < attempts
+               and self._has_capability("code_improve")):
+            n += 1
+            await self.event_bus.emit(
+                EventType.BUILD_STAGE_STARTED, "studio",
+                {"build_id": manifest.build_id, "stage": f"headless_gate#{n}", "agent_type": "fix"},
+                correlation_id=correlation_id,
+            )
+            payload = {
+                "brief": manifest.brief, "slug": manifest.slug,
+                "worktree_dir": project_dir, "project_dir": project_dir,
+                "stack": plan.stack, "plan": plan.to_dict(),
+                # Feed the EXACT invariant violations back, like compile errors.
+                "gaps": gate.error_gaps(),
+            }
+            if extra:
+                payload["extra"] = extra
+            task = TaskRequest(
+                type="code_improver", payload=payload,
+                capabilities_required=("code_improve",),
+                correlation_id=correlation_id, metadata={"stage": f"headless_gate#{n}"},
+            )
+            try:
+                await asyncio.wait_for(
+                    self.orchestrator.submit(task), timeout=self.stage_exec_timeout
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("headless_gate.improve_failed", error=str(exc))
+                break
+            manifest.files = list_files(project_dir)
+            gate = await asyncio.to_thread(run_headless_gate, project_dir)
+            await self.event_bus.emit(
+                EventType.BUILD_STAGE_COMPLETED, "studio",
+                {"build_id": manifest.build_id, "stage": f"headless_gate#{n}", "passed": gate.passed},
+                correlation_id=correlation_id,
+            )
+
+        manifest.extra["headless_gate"] = gate.to_dict()
+        # A game stack with NO pure sim core wasn't invariant-gated — surface it
+        # (non-blocking; do-no-harm keeps it from no_go'ing a game that simply
+        # hasn't adopted the convention, but the gap is visible).
+        if not gate.applicable and "sim core" in str((gate.detail or {}).get("reason", "")):
+            manifest.extra["headless_gate_note"] = (
+                "game stack has no pure src/sim.js — runtime invariants were NOT "
+                "verified (add a sim core to enable the headless gate)"
+            )
+        return gate
+
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
         improver, and retry until the proof passes or the budget is spent.
@@ -1917,12 +1991,25 @@ class StudioRunner:
             native_llm_key, native_reason = self._native_llm_gate(project_dir)
             if native_llm_key:
                 manifest.extra["native_llm_gate"] = native_reason
+            # Headless invariant gate (game stacks only): run the pure sim core in
+            # Node, repair invariant violations via the improver, and block the
+            # verdict on any that remain. Non-game stacks + games without a pure sim
+            # core are unaffected (gate is None / applicable=False -> passed=True).
+            gate = await self._headless_gate_pass(
+                manifest, plan, project_dir, correlation_id, extra
+            )
+            headless_gate_ok = gate is None or gate.passed
+            if gate is not None and gate.applicable and not gate.passed:
+                manifest.extra["headless_gate_gate"] = (
+                    f"{len(gate.violations)} runtime invariant violation(s): "
+                    + "; ".join(gate.violations[:3])
+                )
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
                     and substantive and has_entry and intent_ok and critic_gate
                     and verifiers_ok and not scaffold_stub and not code_degraded
-                    and not native_llm_key)
+                    and not native_llm_key and headless_gate_ok)
                 else "no_go"
             )
             # Don't let the learning loop reward an under-delivered build (only

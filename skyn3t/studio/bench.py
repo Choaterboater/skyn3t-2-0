@@ -18,14 +18,16 @@ from typing import Any
 # A small, stack-diverse default brief-set. Intentionally concrete so intent
 # scoring + stack selection have real signal to measure.
 # Stacks MUST be valid selector pin keys (studio.stack_selector._validate_pin):
-# static/python/fastapi/react/express/react_native + collapses (flask->fastapi,
-# cli->python). 'python_cli'/'react_vite' are NOT pin keys and silently drop.
+# static/python/fastapi/react/express/react_native/phaser + collapses
+# (flask->fastapi, cli->python). 'python_cli'/'react_vite' are NOT pin keys and
+# silently drop.
 DEFAULT_CASES_RAW = [
     ("coloring-site", "a website with printable coloring pages for kids", "static"),
     ("todo-cli", "a python command-line to-do list that saves tasks to a file", "python"),
     ("notes-api", "a FastAPI service to create and list short text notes", "fastapi"),
     ("weather-spa", "a React app that shows a 5-day weather forecast for a city", "react"),
     ("expense-tracker", "a Flask web app to track monthly expenses by category", "flask"),
+    ("dino-runner", "a phaser browser game where a dino jumps over cacti to score points", "phaser"),
 ]
 
 

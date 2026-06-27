@@ -21,7 +21,7 @@ from skyn3t.core.events import EventBus
 # Marker filenames that strongly imply a web frontend.
 _WEB_DEP_HINTS = (
     "react", "react-dom", "next", "vite", "vue", "svelte", "@sveltejs",
-    "solid-js", "preact", "astro", "@angular/core", "vue-router",
+    "solid-js", "preact", "phaser", "astro", "@angular/core", "vue-router",
 )
 # Marker filenames / deps that imply a backend server.
 _SERVER_DEP_HINTS = (

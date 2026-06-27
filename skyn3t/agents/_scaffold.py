@@ -1334,10 +1334,187 @@ def _tauri(app_name: str, brief: str) -> dict[str, str]:
     return files
 
 
+def _phaser(app_name: str, brief: str) -> dict[str, str]:
+    """Phaser 3 + Vite 2D browser-game scaffold = a genuinely PLAYABLE vanilla-JS
+    starter the codegen extends (NOT React — built fresh, not cloned from
+    ``_react_vite``, so it never inherits react/react-dom/@vitejs-plugin-react).
+
+    The starter bakes in the correctness rules a hand-rolled game loop gets wrong
+    (the COIN REAPER class): **Phaser owns the loop** (fixed-step Arcade physics —
+    no manual ``requestAnimationFrame``, no integrating positions by hand), **one
+    authoritative Scene** holds the whole simulation (no desynced React copy), and
+    **Arcade overlap is the single collision authority** checked against the real
+    physics bodies — and each body IS the visible shape, so collisions can't fire
+    "from far away". ``npm run build`` (``vite build`` → ``dist/``) is the proof.
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "type": "module",\n'
+            '  "scripts": {\n'
+            '    "dev": "vite",\n'
+            '    "build": "vite build",\n'
+            '    "preview": "vite preview"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "phaser": "^3.80.0"\n'
+            "  },\n"
+            '  "devDependencies": {\n'
+            '    "vite": "^5.0.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "vite.config.js": (
+            "import { defineConfig } from 'vite'\n\n"
+            "// A Phaser game is a plain-JS Vite app — no framework plugin needed.\n"
+            "export default defineConfig({})\n"
+        ),
+        "index.html": (
+            "<!doctype html>\n"
+            '<html lang="en">\n'
+            "  <head>\n"
+            '    <meta charset="UTF-8" />\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
+            f"    <title>{html_title}</title>\n"
+            "  </head>\n"
+            "  <body>\n"
+            '    <div id="game-container"></div>\n'
+            '    <script type="module" src="/src/main.js"></script>\n'
+            "  </body>\n"
+            "</html>\n"
+        ),
+        "src/main.js": (
+            "import Phaser from 'phaser'\n"
+            "import './styles.css'\n\n"
+            "const WIDTH = 800\n"
+            "const HEIGHT = 600\n\n"
+            "// ONE authoritative Scene owns the whole simulation. Phaser drives the\n"
+            "// loop with a fixed-step Arcade physics update, so we never hand-roll\n"
+            "// requestAnimationFrame and never integrate positions by hand — motion is\n"
+            "// expressed as velocity and the physics step applies it with the real\n"
+            "// delta, so it's identical at 30fps or 144fps.\n"
+            "class MainScene extends Phaser.Scene {\n"
+            "  constructor() {\n"
+            "    super('main')\n"
+            "    this.score = 0\n"
+            "  }\n\n"
+            "  create() {\n"
+            "    this.cameras.main.setBackgroundColor('#1d2330')\n\n"
+            "    // Player: a physics-enabled rectangle. The physics BODY is the\n"
+            "    // rectangle itself, so the collision shape always matches what you\n"
+            "    // see — no 'hit by an enemy that's visually far away'.\n"
+            "    this.player = this.add.rectangle(WIDTH / 2, HEIGHT / 2, 36, 36, 0x4ade80)\n"
+            "    this.physics.add.existing(this.player)\n"
+            "    this.player.body.setCollideWorldBounds(true)\n\n"
+            "    // The collectible the player chases. setCircle makes the physics\n"
+            "    // body a real circle matching the drawn radius — collision shape ==\n"
+            "    // visual shape, so overlap can't fire 'from far away'.\n"
+            "    this.coin = this.add.circle(0, 0, 12, 0xfbbf24)\n"
+            "    this.physics.add.existing(this.coin)\n"
+            "    this.coin.body.setCircle(12)\n"
+            "    this.spawnCoin()\n\n"
+            "    // Arcade overlap is the SINGLE collision authority — evaluated every\n"
+            "    // physics step against the real bodies, never a stale state copy.\n"
+            "    this.physics.add.overlap(this.player, this.coin, () => this.collect())\n\n"
+            "    this.scoreText = this.add.text(16, 16, 'Score: 0', {\n"
+            "      fontFamily: 'system-ui, sans-serif', fontSize: '20px', color: '#e5e7eb',\n"
+            "    })\n"
+            "    this.add.text(16, HEIGHT - 30, 'Arrow keys or WASD to move', {\n"
+            "      fontFamily: 'system-ui, sans-serif', fontSize: '14px', color: '#94a3b8',\n"
+            "    })\n\n"
+            "    this.cursors = this.input.keyboard.createCursorKeys()\n"
+            "    this.keys = this.input.keyboard.addKeys('W,A,S,D')\n"
+            "  }\n\n"
+            "  spawnCoin() {\n"
+            "    const m = 40\n"
+            "    this.coin.body.reset(\n"
+            "      Phaser.Math.Between(m, WIDTH - m),\n"
+            "      Phaser.Math.Between(m, HEIGHT - m),\n"
+            "    )\n"
+            "  }\n\n"
+            "  collect() {\n"
+            "    this.score += 1\n"
+            "    this.scoreText.setText('Score: ' + this.score)\n"
+            "    this.spawnCoin()\n"
+            "  }\n\n"
+            "  update() {\n"
+            "    const speed = 260\n"
+            "    const left = this.cursors.left.isDown || this.keys.A.isDown\n"
+            "    const right = this.cursors.right.isDown || this.keys.D.isDown\n"
+            "    const up = this.cursors.up.isDown || this.keys.W.isDown\n"
+            "    const down = this.cursors.down.isDown || this.keys.S.isDown\n"
+            "    const vx = (right ? 1 : 0) - (left ? 1 : 0)\n"
+            "    const vy = (down ? 1 : 0) - (up ? 1 : 0)\n"
+            "    // Set velocity (px/sec); the fixed-step integrator advances it.\n"
+            "    this.player.body.setVelocity(vx * speed, vy * speed)\n"
+            "  }\n"
+            "}\n\n"
+            "const config = {\n"
+            "  type: Phaser.AUTO,\n"
+            "  parent: 'game-container',\n"
+            "  width: WIDTH,\n"
+            "  height: HEIGHT,\n"
+            "  backgroundColor: '#1d2330',\n"
+            "  physics: {\n"
+            "    default: 'arcade',\n"
+            "    arcade: { gravity: { y: 0 }, debug: false },\n"
+            "  },\n"
+            "  scale: {\n"
+            "    mode: Phaser.Scale.FIT,\n"
+            "    autoCenter: Phaser.Scale.CENTER_BOTH,\n"
+            "  },\n"
+            "  scene: [MainScene],\n"
+            "}\n\n"
+            "// eslint-disable-next-line no-new\n"
+            "new Phaser.Game(config)\n"
+        ),
+        "src/styles.css": (
+            ":root { font-family: system-ui, sans-serif; }\n"
+            "body { margin: 0; background: #0f172a; display: grid; "
+            "place-items: center; min-height: 100vh; }\n"
+            "#game-container { line-height: 0; }\n"
+            "canvas { max-width: 100%; height: auto; }\n"
+        ),
+        ".gitignore": "node_modules\ndist\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Phaser 3 + Vite",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18+.",
+            usage=(
+                "Start the dev server with hot-reload:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Build a production bundle and preview it:\n\n"
+                "```bash\nnpm run build\nnpm run preview\n```"
+            ),
+            structure=[
+                ("index.html", "HTML entry that mounts the Phaser canvas"),
+                ("src/main.js", "Phaser game config + the main Scene (extend this with your gameplay)"),
+                ("src/styles.css", "Page styles that center the game canvas"),
+                ("vite.config.js", "Vite configuration (plain JS — no framework plugin)"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Phaser 3 owns the game loop — fixed-step Arcade physics",
+                "A single authoritative Scene (no desynced state copies)",
+                "Arcade overlap collision evaluated against real bodies",
+                "Production build + preview scripts",
+            ],
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
     "desktop": _tauri,
+    "phaser": _phaser,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

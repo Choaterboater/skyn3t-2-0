@@ -33,6 +33,7 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "astro": ("package.json",),
     "remix": ("package.json",),
     "tauri": ("package.json",),
+    "phaser": ("package.json",),
 }
 
 

@@ -37,6 +37,7 @@ _STACK_LIBS: dict[str, list[str]] = {
     "python_cli": ["argparse (stdlib)"],
     "fastapi": ["fastapi", "uvicorn", "pydantic", "httpx"],
     "node_express": ["express"],
+    "phaser": ["phaser", "vite"],
 }
 
 

@@ -1680,6 +1680,8 @@ _NODE_STACKS = (
     # Tauri desktop: the frontend is a Vite/React app — `npm run build` builds it
     # (the proof); the fixed src-tauri/ Rust shell is bundled separately.
     "tauri", "desktop",
+    # Phaser 3 game: a Vite npm build (`vite build` -> dist/) is the proof.
+    "phaser",
 )
 
 

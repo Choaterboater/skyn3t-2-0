@@ -36,7 +36,7 @@ log = structlog.get_logger(__name__)
 MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 -> last services fell back to icon tiles)
 # Web frameworks that serve static files from public/ (vs ./assets/ for static html).
 _WEB_STACKS = {"nextjs", "next", "react", "vite", "remix", "astro", "svelte",
-               "sveltekit", "vue", "nuxt", "solid", "node"}
+               "sveltekit", "vue", "nuxt", "solid", "node", "phaser"}
 
 # Words that imply the app SHOWS pictures / art, so generating real assets pays
 # off. Absent these, we skip (no point spending predictions on a calculator).

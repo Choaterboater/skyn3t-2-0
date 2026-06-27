@@ -41,6 +41,15 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tauri", ("desktop app", "tauri", "mac app", "macos app", "windows app",
                "native app", "desktop application", "standalone app", "menu bar app",
                "cross-platform app", "desktop")),
+    # Phaser game must precede react/static: a "single-page browser game" or an
+    # "html5 game" (contains "html") would otherwise collapse to the React or
+    # plain-HTML scaffold. First-matching signature wins. Bare "game" is omitted
+    # (it steals "board game tracker" / "video game blog"); the ambiguous single
+    # words (arcade/platformer/shooter) are matched whole-word via
+    # _WORD_BOUNDED_KEYWORDS so "troubleshooter"/"endgame"/"barcade" don't match.
+    ("phaser", ("phaser", "arcade", "platformer", "browser game",
+                "html5 game", "2d game", "game engine", "shooter",
+                "side-scroller", "endless runner", "tower defense")),
     ("react", ("react", "vite", "spa", "single page", "frontend", "dashboard ui")),
     ("fastapi", ("fastapi", "rest api", "http api", "backend api", "endpoint")),
     ("flask", ("flask",)),
@@ -66,6 +75,9 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # src-tauri Rust shell is fixed boilerplate; `npm run build` builds the frontend.
     "tauri": ("README.md", "package.json", "index.html", "src/main.jsx",
               "src-tauri/tauri.conf.json"),
+    # Phaser 3 + Vite game: the HTML entry + the vanilla-JS game module. Note
+    # src/main.js (NOT main.jsx) — a Phaser game is plain JS, not React.
+    "phaser": ("README.md", "package.json", "index.html", "src/main.js"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),
@@ -128,7 +140,12 @@ def detect_stack(brief: str, hint: str | None = None) -> str:
 # Bare framework names that are substrings of common English words: match them
 # only as whole words so "astrology"/"astronomy"/"gastro" don't route to astro
 # and "remixing" doesn't route to remix.
-_WORD_BOUNDED_KEYWORDS = frozenset({"astro", "remix"})
+_WORD_BOUNDED_KEYWORDS = frozenset({
+    "astro", "remix",
+    # Single-word game genres: match whole words so "troubleshooter" (≠ shooter),
+    # "endgame" (≠ game) and "barcade" (≠ arcade) don't false-route to phaser.
+    "arcade", "platformer", "shooter",
+})
 
 
 def _kw_match(keyword: str, text: str) -> bool:

@@ -40,6 +40,13 @@ _JSX_STACKS = frozenset({"react", "react_vite", "vite"})
 # never a pages/ tree, else it collides with the scaffold's app/page on '/'.
 _NEXT_STACKS = frozenset({"nextjs", "next"})
 
+# Phaser games are a vanilla-JS Vite app (scaffold floor is src/main.js — NO
+# React). Same .ts-vs-.js mismatch class as _JSX_STACKS: a .ts plan would leave
+# the .js scaffold entry rendering the starter stub. Plan plain .js + Phaser
+# Scenes, never React/.tsx. Kept OUT of _JSX_STACKS so the React directive +
+# .tsx->.jsx rewrite (both wrong for a non-React game) never fire.
+_GAME_STACKS = frozenset({"phaser"})
+
 
 def _jsx_only(files: list[Any]) -> list[Any]:
     """Rewrite .tsx->.jsx / .ts->.js and drop tsconfig for a plain-JS React plan."""
@@ -54,6 +61,26 @@ def _jsx_only(files: list[Any]) -> list[Any]:
             continue  # no TS config in a plain-JS project
         if path.endswith(".tsx"):
             path = path[:-4] + ".jsx"
+        elif path.endswith(".ts"):
+            path = path[:-3] + ".js"
+        out.append({**f, "path": path})
+    return out
+
+
+def _plain_js(files: list[Any]) -> list[Any]:
+    """Rewrite .tsx/.ts->.js and drop tsconfig for a plain-JS, non-React plan
+    (Phaser games): the entry is src/main.js, so .jsx would be just as wrong."""
+    out: list[Any] = []
+    for f in files:
+        if not isinstance(f, dict) or not f.get("path"):
+            out.append(f)
+            continue
+        path = str(f["path"])
+        low = path.lower()
+        if low.endswith("tsconfig.json") or low.endswith(".d.ts"):
+            continue
+        if path.endswith(".tsx"):
+            path = path[:-4] + ".js"
         elif path.endswith(".ts"):
             path = path[:-3] + ".js"
         out.append({**f, "path": path})
@@ -106,6 +133,13 @@ class ArchitectAgent(BaseAgent):
                        "Pages Router files (no pages/index, pages/_app, pages/_document, "
                        "pages/api) — mixing the two routers breaks `next build`. Use ONLY "
                        ".jsx/.js, NEVER .tsx/.ts, and do NOT include a tsconfig.")
+        if stack in _GAME_STACKS:
+            prompt += ("\n\nIMPORTANT: this is a Phaser 3 + Vite browser game in VANILLA "
+                       "JavaScript. Author Phaser.Scene subclasses and one Phaser.Game in "
+                       "src/*.js; load images/audio in a preload() scene; let Phaser own "
+                       "the game loop and use Arcade physics for movement/collision (never "
+                       "hand-roll requestAnimationFrame or integrate positions by hand). "
+                       "Use ONLY .js — NEVER .ts/.tsx/.jsx, no React, no tsconfig.")
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."
@@ -125,6 +159,8 @@ class ArchitectAgent(BaseAgent):
         # the .jsx floor, so normalize it the same way.
         if parsed["stack"] in _JSX_STACKS or parsed["stack"] in _NEXT_STACKS:
             files = _jsx_only(files)
+        elif parsed["stack"] in _GAME_STACKS:
+            files = _plain_js(files)
         plan = {
             "stack": parsed["stack"],
             "summary": parsed.get("summary", f"Plan for {stack}: {brief}"),

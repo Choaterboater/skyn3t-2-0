@@ -23,6 +23,7 @@ KNOWN_STACKS = (
     "fastapi",
     "node_express",
     "tauri",
+    "phaser",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -53,6 +54,18 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         return "fastapi"
     if any(k in text for k in ("express", "node server", "node.js server")):
         return "node_express"
+    # Phaser game must precede the cli/"script" check ("script" is a substring of
+    # "javascript") AND the generic react/static checks below — a "browser game"
+    # would otherwise route to python_cli or the React/Vite scaffold. Bare "game"
+    # is intentionally NOT a keyword (it steals "board game tracker", "video game
+    # blog", "game of thrones wiki"); the single-word genres are matched WHOLE-WORD
+    # so "troubleshooter"≠shooter and "endgame"≠game. The LLM selector + an explicit
+    # "game"/"phaser" pin (REAL_BUILDER_STACKS / _normalize_stack) cover the rest.
+    if any(k in text for k in (
+        "phaser", "2d game", "html5 game", "browser game", "game engine",
+        "side-scroller", "endless runner", "tower defense", "tilemap",
+    )) or any(re.search(rf"\b{k}\b", text) for k in ("arcade", "platformer", "shooter")):
+        return "phaser"
     if any(k in text for k in ("cli", "command line", "command-line", "terminal tool", "script")):
         return "python_cli"
     # Mobile must precede react_vite: "mobile app" / "react native" / "ios app"
@@ -102,6 +115,11 @@ def _normalize_stack(value: str) -> str:
         "desktop_app": "tauri",
         "electron": "tauri",
         "macos": "tauri",
+        # Phaser 3 + Vite 2D browser game (vanilla JS, not React).
+        "phaser": "phaser",
+        "phaser3": "phaser",
+        "phaserjs": "phaser",
+        "game": "phaser",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

@@ -143,7 +143,7 @@ class ConsistencyReviewerAgent(BaseAgent):
         _PY = {"python", "python_cli", "fastapi", "flask", "django"}
         _JS = {"node", "web", "react", "react_vite", "vite", "nextjs", "next",
                "static", "static_html", "astro", "remix", "node_express",
-               "express", "svelte", "vue"}
+               "express", "svelte", "vue", "phaser"}
         has_pkg = (root / "package.json").is_file()
         has_py = (root / "requirements.txt").is_file() or (root / "pyproject.toml").is_file()
         broken: list[dict] = []

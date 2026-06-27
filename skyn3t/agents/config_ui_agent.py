@@ -34,7 +34,7 @@ from skyn3t.studio.config_spec import ConfigKey, ConfigSpec
 _NEXT_FAMILY = frozenset({"nextjs", "next"})
 _REACT_FAMILY = frozenset({"react", "react_vite", "vite"})
 _STATIC_FAMILY = frozenset({"static", "static_html", "html"})
-_OTHER_WEB = frozenset({"vue", "svelte", "astro", "remix"})
+_OTHER_WEB = frozenset({"vue", "svelte", "astro", "remix", "phaser"})
 _WEB_STACKS = _NEXT_FAMILY | _REACT_FAMILY | _STATIC_FAMILY | _OTHER_WEB
 
 

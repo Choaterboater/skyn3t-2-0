@@ -350,7 +350,7 @@ def studio_build(
     best_of: int = typer.Option(0, "--best-of", "-n", help="Best-of-N code trajectories."),
     no_critic: bool = typer.Option(False, "--no-critic", help="Disable the adversarial critic gate."),
     slug: str = typer.Option("", "--slug", help="Override the project slug."),
-    stack: str = typer.Option("", "--stack", help="Pin the stack: react|react_native|fastapi|static|python|express."),
+    stack: str = typer.Option("", "--stack", help="Pin the stack: react|react_native|fastapi|static|python|express|phaser."),
 ) -> None:
     """Run a build end to end and print the result + artifact path."""
     console = _console()

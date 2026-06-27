@@ -74,6 +74,7 @@ _WEB_STACKS = frozenset({
     "react", "react_vite", "nextjs", "next", "astro", "remix",
     "static", "static_html", "fastapi", "node_express", "express",
     "tauri", "desktop",  # Tauri desktop: frontend is a Vite/React web app
+    "phaser",  # Phaser 3 game: a Vite-built web app served (canvas) at '/'
 })
 # Stacks that warrant design-skill injection but are NOT HTTP-served (so they
 # must not trigger the web liveness GET-/ probe). react_native renders UI but
@@ -86,7 +87,7 @@ _DESIGN_STACKS = _WEB_STACKS | frozenset({"react_native"})
 _UI_WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next",
     "astro", "remix", "static", "static_html",
-    "tauri", "desktop",
+    "tauri", "desktop", "phaser",
 })
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 

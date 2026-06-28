@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SkyN3t 2.0 — Architecture Explorer (Foundry)</title>
+<style>
+  :root{
+    --bg:#0b0a0d; --panel:#121117; --panel2:#191820; --line:#272430;
+    --text:#ece8f0; --muted:#7E8AA0; --accent:#FF6A3D;            /* ember */
+    --ember:#FF6A3D; --plasma:#3DD9C4; --synapse:#A688FF; --ash:#7E8AA0;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--ui);font-size:13px;overflow:hidden}
+  .app{display:grid;grid-template-columns:312px 1fr;height:100vh}
+  /* sidebar */
+  .side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+  .side h1{font-size:14px;margin:0;padding:14px 16px 2px;letter-spacing:.3px}
+  .side h1 b{color:var(--ember)}
+  .side .sub{padding:0 16px 12px;color:var(--muted);font-size:11px;line-height:1.55}
+  .scroll{overflow:auto;padding:0 16px 18px;flex:1;min-height:0}
+  .grp{margin-top:16px}
+  .grp>.lbl{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);margin-bottom:8px}
+  .presets{display:flex;flex-wrap:wrap;gap:6px}
+  .presets button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:11px;cursor:pointer;transition:.12s}
+  .presets button:hover{border-color:var(--ember);color:#fff}
+  .presets button.active{background:var(--ember);border-color:var(--ember);color:#160a06;font-weight:700}
+  .check{display:flex;align-items:center;gap:8px;padding:5px 0;cursor:pointer;user-select:none}
+  .check input{accent-color:var(--ember);width:14px;height:14px}
+  .swatch{width:22px;border-top-width:3px;border-top-style:solid;display:inline-block;flex:0 0 auto}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block;flex:0 0 auto;border:1px solid rgba(255,255,255,.18)}
+  .check .name{flex:1}
+  .check .cnt{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+  .comments .empty{color:var(--muted);font-size:11px;font-style:italic;line-height:1.5}
+  .cmt{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--ember);border-radius:6px;padding:8px 9px;margin-bottom:7px}
+  .cmt .ct{font-weight:600;font-size:11px}
+  .cmt .cf{font-family:var(--mono);font-size:10px;color:var(--muted);margin:1px 0 5px}
+  .cmt .cx{font-size:11px;color:#d3cfdd;line-height:1.45;white-space:pre-wrap}
+  .cmt .del{float:right;background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0 0 0 6px}
+  .cmt .del:hover{color:var(--ember)}
+  /* main */
+  .main{position:relative;min-width:0;display:flex;flex-direction:column}
+  .canvaswrap{flex:1;overflow:auto;position:relative;background:
+     radial-gradient(circle at 1px 1px, rgba(255,106,61,.07) 1px, transparent 0) 0 0/26px 26px,
+     radial-gradient(900px 500px at 60% 38%, rgba(255,106,61,.05), transparent 70%), var(--bg)}
+  svg{display:block}
+  .node{cursor:pointer}
+  .node rect{transition:filter .12s, stroke-width .12s}
+  .node:hover rect{filter:brightness(1.3) saturate(1.1)}
+  .ntitle{font-weight:600;font-size:12.5px}
+  .nsub{font-family:var(--mono);font-size:9px;opacity:.72}
+  .clabel{font-size:9px;font-family:var(--mono)}
+  .zoom{position:absolute;top:12px;right:12px;display:flex;gap:6px;z-index:5}
+  .zoom button{width:30px;height:30px;border-radius:7px;background:var(--panel2);border:1px solid var(--line);color:var(--text);cursor:pointer;font-size:15px}
+  .zoom button:hover{border-color:var(--ember)}
+  .legend{position:absolute;left:12px;bottom:12px;background:rgba(18,17,23,.92);border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:10px;z-index:5;backdrop-filter:blur(4px)}
+  .legend .row{display:flex;align-items:center;gap:7px;margin:3px 0;color:var(--muted)}
+  .legend .hd{color:#ece8f0;font-weight:600;margin:6px 0 4px}
+  .legend .hd:first-child{margin-top:0}
+  .hint{position:absolute;top:12px;left:12px;background:rgba(18,17,23,.92);border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:10.5px;color:var(--muted);z-index:5;backdrop-filter:blur(4px)}
+  /* prompt bar */
+  .promptbar{border-top:1px solid var(--line);background:var(--panel);padding:11px 14px;display:flex;gap:12px;align-items:flex-start;max-height:30vh}
+  .promptbar .ptext{flex:1;font-family:var(--mono);font-size:11px;line-height:1.55;color:#d3cfdd;white-space:pre-wrap;overflow:auto;max-height:24vh;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .copy{flex:0 0 auto;background:var(--ember);color:#160a06;border:none;border-radius:8px;padding:10px 16px;font-weight:700;cursor:pointer;font-size:12px}
+  .copy:hover{filter:brightness(1.08)}
+  .copy.ok{background:var(--plasma);color:#04201c}
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.58);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal.open{display:flex}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:460px;max-width:92vw;padding:18px}
+  .card h3{margin:0 0 2px;font-size:15px}
+  .card .cf{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:7px}
+  .card .desc{font-size:11.5px;color:#b7bccb;line-height:1.55;margin-bottom:12px;border-left:2px solid var(--ember);padding-left:10px}
+  .card textarea{width:100%;height:96px;resize:vertical;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px;font-family:var(--ui);font-size:12px}
+  .card .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+  .card button{border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;border:1px solid var(--line)}
+  .card .save{background:var(--ember);color:#160a06;border-color:var(--ember);font-weight:700}
+  .card .cancel{background:transparent;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <h1>SkyN3t 2.0 — <b>Foundry</b></h1>
+    <div class="sub">Autonomous multi-agent app factory. A brief runs the 11-stage forge line (plan → code → verify → critic → deliver) over an event-sourced spine. Colors follow the real Foundry system: <b style="color:var(--ember)">ember</b>=working, <b style="color:var(--plasma)">plasma</b>=infra, <b style="color:var(--synapse)">synapse</b>=brain. Click any box to attach feedback.</div>
+    <div class="scroll">
+      <div class="grp"><div class="lbl">View presets</div><div class="presets" id="presets"></div></div>
+      <div class="grp"><div class="lbl">Layers</div><div id="layers"></div></div>
+      <div class="grp"><div class="lbl">Connections</div><div id="conns"></div></div>
+      <div class="grp comments"><div class="lbl">Comments (<span id="cmtCount">0</span>)</div><div id="cmtList"></div></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="canvaswrap" id="cw">
+      <div class="hint">Tip: click a component to comment · scroll/drag to pan · zoom top-right</div>
+      <div class="zoom"><button id="zout" title="Zoom out">−</button><button id="zrst" title="Reset">⤢</button><button id="zin" title="Zoom in">+</button></div>
+      <svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="promptbar">
+      <div class="ptext" id="ptext"></div>
+      <button class="copy" id="copy">Copy Prompt</button>
+    </div>
+  </main>
+</div>
+
+<div class="modal" id="modal">
+  <div class="card">
+    <h3 id="mTitle"></h3>
+    <div class="cf" id="mFile"></div>
+    <div class="desc" id="mDesc"></div>
+    <textarea id="mText" placeholder="What do you want to change, add, or ask about this component?"></textarea>
+    <div class="acts"><button class="cancel" id="mCancel">Cancel</button><button class="save" id="mSave">Save comment</button></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   DATA — verified against the real skyn3t/ package
+   (LOC + import graph + studio/stages.py + planner.py + tailwind Foundry palette)
+   ============================================================ */
+const VIEW_W = 1120, VIEW_H = 778;
+
+/* Foundry palette: ember=working, plasma=infra/idle, synapse=brain, ash=muted */
+const LAYERS = {
+  external:      { name:'External I/O',     fill:'#15131a', stroke:'#6b6577', text:'#c7c2d2' },
+  interface:     { name:'Interface',        fill:'#0f2421', stroke:'#3DD9C4', text:'#7FEBDD' },
+  orchestration: { name:'Orchestration',    fill:'#2a1410', stroke:'#FF6A3D', text:'#FF9166' },
+  agents:        { name:'Agents (swarm)',   fill:'#241510', stroke:'#FF9166', text:'#FFB68F' },
+  knowledge:     { name:'Knowledge / Brain',fill:'#1b1530', stroke:'#A688FF', text:'#C5B2FF' },
+  platform:      { name:'Platform',         fill:'#171a22', stroke:'#7E8AA0', text:'#aab4c6' },
+};
+
+const CONNTYPES = {
+  dataflow:   { name:'Build flow (forge line)',        color:'#FF6A3D', dash:'' },
+  event:      { name:'Events (EventBus → live UI)',    color:'#3DD9C4', dash:'5,4' },
+  learning:   { name:'Learning / RAG loop',            color:'#A688FF', dash:'8,4' },
+  dependency: { name:'Imports / dependencies',         color:'#7E8AA0', dash:'2,5' },
+};
+
+const nodes = [
+  // external
+  { id:'brief', label:'Plain-English brief', sub:'you → skyn3t studio build', layer:'external', x:250,y:26,w:200,h:42,
+    desc:'The human input. You hand SkyN3t a brief; it plans, builds, verifies, critiques and delivers a real project — offline by default, paid models only when you opt in.' },
+  { id:'delivered', label:'Delivered project tree', sub:'Projects/<slug>/', layer:'external', x:250,y:694,w:212,h:46,
+    desc:'The output. A build only "succeeds" if substantive files actually land here — checked by an objective proof-run, not by vibes.' },
+  { id:'llm', label:'LLM providers (opt-in)', sub:'OpenRouter · Anthropic · OpenAI · Kimi · stub', layer:'external', x:762,y:694,w:236,h:46,
+    desc:'External models. free_only by default; a deterministic stub backend runs the entire pipeline with no API keys.' },
+
+  // interface
+  { id:'cli', label:'CLI · skyn3t', sub:'cli/main.py · 905 LOC', layer:'interface', x:250,y:102,w:178,h:50,
+    desc:'Typer app & entry point: doctor, start, studio build, project list, snapshot, domain ingest, studio approve/reject. ~20 agents register by capability at start.' },
+  { id:'web', label:'Web API', sub:'web/ (app·routes·ws) · 1575 LOC', layer:'interface', x:556,y:102,w:178,h:50,
+    desc:'FastAPI control plane: app.py, routes.py, deps.py, websockets.py. Loopback-only unless SKYN3T_AUTH_TOKEN is set. Streams the EventBus to the dashboard over WebSockets.' },
+  { id:'foundry', label:'Foundry dashboard', sub:'web/ui/src (React + Vite)', layer:'interface', x:818,y:102,w:222,h:50,
+    desc:'React/Vite UI. Routes: Overview, Studio (forge line), Cortex, Brain, Agents, Skills, Activity, Settings. Design language: ember=working, plasma=idle, synapse=brain.' },
+
+  // orchestration
+  { id:'studio', label:'Studio pipeline', sub:'studio/ · 2329 LOC', layer:'orchestration', x:250,y:206,w:212,h:60,
+    desc:'StudioRunner over the EventBus. Canonical 11-stage forge line: brainstorm → research → architect → design → code → verify_contract → verify_build → verify_boot → critic → review → package. Best-of-N in isolated worktrees; brainstorm/research/critic are optional gates.' },
+  { id:'core', label:'Core spine — EventBus + Orchestrator', sub:'core/ · 709 LOC', layer:'orchestration', x:600,y:206,w:244,h:60,
+    desc:'The event-sourced foundation. EventBus = every build/stage/proposal/lesson is a replayable event; Orchestrator routes capability-tagged tasks to agents. Imported by almost everything (agents alone: 56×).' },
+
+  // agents
+  { id:'agents', label:'Agents · ~20 specialists', sub:'agents/ · 4716 LOC', layer:'agents', x:420,y:322,w:262,h:56,
+    desc:'~20 capability-tagged agents matched to stages (brainstorm, research, architect, designer, code, the verifiers, critic, reviewer, packaging…). Largest subsystem; calls LLMs via adapters and records lessons to memory.' },
+
+  // knowledge
+  { id:'cortex', label:'Cortex', sub:'cortex/ · 2122 LOC', layer:'knowledge', x:110,y:430,w:162,h:54,
+    desc:'Autonomous brain: ingests repos, distills reusable Skills, rotates scout topics, emits gated proposals (tuning / feature / ingest / code_patch). feature & ingest are always gated; safe proposals with confidence ≥ 0.75 can auto-apply.' },
+  { id:'rag', label:'RAG corpus', sub:'rag/ · 1584 LOC', layer:'knowledge', x:306,y:430,w:150,h:54,
+    desc:'Hybrid retrieval: BM25 (lexical) + semantic, fused by reciprocal-rank fusion (alpha, rrf_k). ChromaDB + sentence-transformers with an in-memory fallback. Recall is surfaced into stage prompts.' },
+  { id:'memory', label:'Memory / lessons', sub:'memory/ · 1330 LOC', layer:'knowledge', x:490,y:430,w:172,h:54,
+    desc:'SQLite (aiosqlite) lessons + closed learning loop: injects lessons into stage prompts and grades them by build outcome. Also model tournament & build-pattern stats. Imports rag.' },
+  { id:'intelligence', label:'Intelligence', sub:'intelligence/ · 1916 LOC', layer:'knowledge', x:696,y:430,w:176,h:54,
+    desc:'Higher-order reasoning over the corpus: scout topic selection, FeatureSuggester, curiosity / quality signals.' },
+
+  // platform
+  { id:'config', label:'Config', sub:'config/ · 169', layer:'platform', x:40,y:550,w:122,h:48,
+    desc:'Typed settings: model routing, hard caps (per-build $0.50 / daily $5 / 5M tokens / daily build cap), stall_idle_seconds, free_only, approval gates, Cortex auto-approve threshold (0.75). Imported nearly everywhere.' },
+  { id:'adapters', label:'LLM adapters', sub:'adapters/ · 328', layer:'platform', x:174,y:550,w:122,h:48,
+    desc:'Backend abstraction over OpenRouter / Anthropic / OpenAI / Kimi plus a deterministic stub. agents import it 7×.' },
+  { id:'integrations', label:'Integrations', sub:'integrations/ · 1386', layer:'platform', x:308,y:550,w:122,h:48,
+    desc:'External hooks, incl. the GitHub webhook (integrations/github_webhook.py). Imports core, security.' },
+  { id:'security', label:'Security', sub:'security/ · 716', layer:'platform', x:442,y:550,w:122,h:48,
+    desc:'Auth tokens, sandbox guards, safe-by-default policy. Imported by agents and integrations.' },
+  { id:'observability', label:'Observability', sub:'observability/ · 537', layer:'platform', x:576,y:550,w:122,h:48,
+    desc:'Prometheus metrics (no-op without prometheus_client) and tracing over the event stream.' },
+  { id:'persistence', label:'Persistence', sub:'persistence/ · 259', layer:'platform', x:710,y:550,w:122,h:48,
+    desc:'Durable storage beneath memory and the event history (snapshots).' },
+  { id:'registry', label:'Registry', sub:'registry/ · 242', layer:'platform', x:844,y:550,w:122,h:48,
+    desc:'Capability ↔ agent registry — the map of which agent satisfies which capability tag.' },
+  { id:'self_healing', label:'Self-healing', sub:'self_healing/ · 187', layer:'platform', x:978,y:550,w:122,h:48,
+    desc:'Detects and repairs failed builds / visual regressions, emitting heal events back onto the bus.' },
+];
+
+const connections = [
+  // build flow (forge line)
+  { from:'brief',  to:'cli',    type:'dataflow', label:'brief' },
+  { from:'cli',    to:'studio', type:'dataflow', label:'studio build' },
+  { from:'studio', to:'agents', type:'dataflow', label:'dispatch stages' },
+  { from:'agents', to:'adapters', type:'dataflow', label:'LLM calls' },
+  { from:'adapters', to:'llm',  type:'dataflow', label:'API' },
+  { from:'studio', to:'delivered', type:'dataflow', label:'deliver' },
+  { from:'web',    to:'foundry', type:'dataflow', label:'websocket' },
+
+  // events on the EventBus
+  { from:'studio',       to:'core', type:'event', label:'BUILD_STARTED' },
+  { from:'agents',       to:'core', type:'event', label:'stage events' },
+  { from:'core',         to:'web',  type:'event', label:'event stream' },
+  { from:'self_healing', to:'core', type:'event', label:'heal events' },
+  { from:'cortex',       to:'core', type:'event', label:'proposals' },
+
+  // learning loop
+  { from:'memory', to:'agents', type:'learning', label:'inject lessons' },
+  { from:'studio', to:'memory', type:'learning', label:'grade outcome' },
+  { from:'rag',    to:'agents', type:'learning', label:'recall' },
+  { from:'cortex', to:'rag',    type:'learning', label:'ingest / distill' },
+
+  // import dependencies (real graph, deduped vs above)
+  { from:'agents', to:'memory',   type:'dependency' },
+  { from:'agents', to:'security', type:'dependency' },
+  { from:'cortex', to:'agents',   type:'dependency' },
+  { from:'cortex', to:'core',     type:'dependency' },
+  { from:'cortex', to:'memory',   type:'dependency' },
+  { from:'memory', to:'rag',      type:'dependency' },
+  { from:'memory', to:'core',     type:'dependency' },
+  { from:'web',    to:'adapters', type:'dependency' },
+  { from:'intelligence', to:'core', type:'dependency' },
+  { from:'integrations', to:'core', type:'dependency' },
+  { from:'integrations', to:'security', type:'dependency' },
+  { from:'cli', to:'web',     type:'dependency' },
+  { from:'cli', to:'cortex',  type:'dependency' },
+  { from:'cli', to:'memory',  type:'dependency' },
+  { from:'core', to:'config', type:'dependency' },
+  { from:'agents', to:'config', type:'dependency' },
+  { from:'web', to:'config',  type:'dependency' },
+  { from:'security', to:'config', type:'dependency' },
+];
+
+const PRESETS = {
+  'Full system':    { layers:['external','interface','orchestration','agents','knowledge','platform'], conns:['dataflow','event','learning','dependency'] },
+  'Forge line':     { layers:['external','interface','orchestration','agents'], conns:['dataflow','event'] },
+  'Brain / RAG loop':{ layers:['orchestration','agents','knowledge'], conns:['dependency','learning'] },
+  'Event spine':    { layers:['external','interface','orchestration','agents','knowledge','platform'], conns:['event'] },
+  'Imports only':   { layers:['external','interface','orchestration','agents','knowledge','platform'], conns:['dependency'] },
+};
+
+/* ============================================================ STATE */
+const DEFAULT_PRESET='Full system';
+const state={ preset:DEFAULT_PRESET, layers:{}, conns:{}, comments:[], zoom:1 };
+const nodeById=Object.fromEntries(nodes.map(n=>[n.id,n]));
+const NS='http://www.w3.org/2000/svg';
+
+function applyPreset(name){
+  const p=PRESETS[name]; if(!p) return;
+  state.preset=name;
+  for(const k in LAYERS) state.layers[k]=p.layers.includes(k);
+  for(const k in CONNTYPES) state.conns[k]=p.conns.includes(k);
+  buildControls(); renderAll();
+}
+
+/* ============================================================ CONTROLS */
+function buildControls(){
+  const pe=document.getElementById('presets'); pe.innerHTML='';
+  Object.keys(PRESETS).forEach(name=>{
+    const b=document.createElement('button'); b.textContent=name;
+    if(name===state.preset) b.classList.add('active');
+    b.onclick=()=>applyPreset(name); pe.appendChild(b);
+  });
+  const le=document.getElementById('layers'); le.innerHTML='';
+  Object.entries(LAYERS).forEach(([k,v])=>{
+    le.appendChild(checkRow({checked:state.layers[k],
+      swatch:`<span class="dot" style="background:${v.fill};border-color:${v.stroke}"></span>`,
+      name:v.name, cnt:nodes.filter(n=>n.layer===k).length,
+      onChange:c=>{ state.layers[k]=c; markCustom(); renderAll(); }}));
+  });
+  const ce=document.getElementById('conns'); ce.innerHTML='';
+  Object.entries(CONNTYPES).forEach(([k,v])=>{
+    ce.appendChild(checkRow({checked:state.conns[k],
+      swatch:`<span class="swatch" style="border-top-color:${v.color};border-top-style:${v.dash?'dashed':'solid'}"></span>`,
+      name:v.name, cnt:connections.filter(c=>c.type===k).length,
+      onChange:c=>{ state.conns[k]=c; markCustom(); renderAll(); }}));
+  });
+  buildLegend();
+}
+function checkRow({checked,swatch,name,cnt,onChange}){
+  const l=document.createElement('label'); l.className='check';
+  l.innerHTML=`<input type="checkbox" ${checked?'checked':''}/>${swatch}<span class="name">${name}</span><span class="cnt">${cnt}</span>`;
+  l.querySelector('input').onchange=e=>onChange(e.target.checked);
+  return l;
+}
+function markCustom(){ state.preset='Custom'; document.querySelectorAll('#presets button').forEach(b=>b.classList.remove('active')); }
+function buildLegend(){
+  const el=document.getElementById('legend');
+  let h='<div class="hd">Layers</div>';
+  Object.values(LAYERS).forEach(v=>{ h+=`<div class="row"><span class="dot" style="background:${v.fill};border-color:${v.stroke}"></span>${v.name}</div>`; });
+  h+='<div class="hd">Connections</div>';
+  Object.values(CONNTYPES).forEach(v=>{ h+=`<div class="row"><span class="swatch" style="border-top-color:${v.color};border-top-style:${v.dash?'dashed':'solid'}"></span>${v.name}</div>`; });
+  el.innerHTML=h;
+}
+
+/* ============================================================ SVG */
+function visibleNode(n){ return state.layers[n.layer]; }
+function edgePoint(n,tx,ty){
+  const cx=n.x+n.w/2, cy=n.y+n.h/2, hw=n.w/2, hh=n.h/2;
+  let dx=tx-cx, dy=ty-cy; if(dx===0&&dy===0) return {x:cx,y:cy};
+  const sx=dx!==0?hw/Math.abs(dx):Infinity, sy=dy!==0?hh/Math.abs(dy):Infinity;
+  const s=Math.min(sx,sy); return {x:cx+dx*s,y:cy+dy*s};
+}
+function renderAll(){
+  const svg=document.getElementById('svg');
+  svg.setAttribute('viewBox',`0 0 ${VIEW_W} ${VIEW_H}`);
+  svg.setAttribute('width',VIEW_W*state.zoom); svg.setAttribute('height',VIEW_H*state.zoom);
+  svg.innerHTML='';
+  const defs=document.createElementNS(NS,'defs');
+  Object.entries(CONNTYPES).forEach(([k,v])=>{
+    const m=document.createElementNS(NS,'marker');
+    m.setAttribute('id','ah-'+k); m.setAttribute('markerWidth','9'); m.setAttribute('markerHeight','7');
+    m.setAttribute('refX','8'); m.setAttribute('refY','3.5'); m.setAttribute('orient','auto'); m.setAttribute('markerUnits','userSpaceOnUse');
+    const p=document.createElementNS(NS,'polygon'); p.setAttribute('points','0 0, 9 3.5, 0 7'); p.setAttribute('fill',v.color);
+    m.appendChild(p); defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  const gC=document.createElementNS(NS,'g');
+  connections.forEach(c=>{
+    if(!state.conns[c.type]) return;
+    const a=nodeById[c.from], b=nodeById[c.to];
+    if(!a||!b||!visibleNode(a)||!visibleNode(b)) return;
+    const ac={x:a.x+a.w/2,y:a.y+a.h/2}, bc={x:b.x+b.w/2,y:b.y+b.h/2};
+    const p1=edgePoint(a,bc.x,bc.y), p2=edgePoint(b,ac.x,ac.y), my=(p1.y+p2.y)/2;
+    const t=CONNTYPES[c.type];
+    const path=document.createElementNS(NS,'path');
+    path.setAttribute('d',`M ${p1.x} ${p1.y} C ${p1.x} ${my}, ${p2.x} ${my}, ${p2.x} ${p2.y}`);
+    path.setAttribute('fill','none'); path.setAttribute('stroke',t.color);
+    path.setAttribute('stroke-width','1.7'); path.setAttribute('opacity','.85');
+    if(t.dash) path.setAttribute('stroke-dasharray',t.dash);
+    path.setAttribute('marker-end','url(#ah-'+c.type+')');
+    gC.appendChild(path);
+    if(c.label){
+      const txt=document.createElementNS(NS,'text');
+      txt.setAttribute('x',(p1.x+p2.x)/2); txt.setAttribute('y',my-3); txt.setAttribute('text-anchor','middle');
+      txt.setAttribute('class','clabel'); txt.setAttribute('fill',t.color); txt.setAttribute('opacity','.92');
+      txt.textContent=c.label; gC.appendChild(txt);
+    }
+  });
+  svg.appendChild(gC);
+
+  nodes.forEach(n=>{
+    if(!visibleNode(n)) return;
+    const L=LAYERS[n.layer];
+    const g=document.createElementNS(NS,'g'); g.setAttribute('class','node'); g.onclick=()=>openModal(n.id);
+    const r=document.createElementNS(NS,'rect');
+    r.setAttribute('x',n.x); r.setAttribute('y',n.y); r.setAttribute('width',n.w); r.setAttribute('height',n.h);
+    r.setAttribute('rx','11'); r.setAttribute('fill',L.fill);
+    const hasC=state.comments.some(c=>c.target===n.id);
+    r.setAttribute('stroke', hasC?'#FF6A3D':L.stroke); r.setAttribute('stroke-width', hasC?'2.6':'1.3');
+    g.appendChild(r);
+    const t1=document.createElementNS(NS,'text');
+    t1.setAttribute('x',n.x+n.w/2); t1.setAttribute('y',n.y+(n.sub?n.h/2-1:n.h/2+4));
+    t1.setAttribute('text-anchor','middle'); t1.setAttribute('class','ntitle'); t1.setAttribute('fill',L.text);
+    t1.textContent=n.label; g.appendChild(t1);
+    if(n.sub){
+      const t2=document.createElementNS(NS,'text');
+      t2.setAttribute('x',n.x+n.w/2); t2.setAttribute('y',n.y+n.h/2+12);
+      t2.setAttribute('text-anchor','middle'); t2.setAttribute('class','nsub'); t2.setAttribute('fill',L.text);
+      t2.textContent=n.sub; g.appendChild(t2);
+    }
+    if(hasC){
+      const cd=document.createElementNS(NS,'circle');
+      cd.setAttribute('cx',n.x+n.w-9); cd.setAttribute('cy',n.y+9); cd.setAttribute('r','5'); cd.setAttribute('fill','#FF6A3D');
+      g.appendChild(cd);
+    }
+    svg.appendChild(g);
+  });
+  renderComments(); updatePrompt();
+}
+
+/* ============================================================ COMMENTS + MODAL */
+let editingId=null;
+function openModal(id){
+  const n=nodeById[id]; if(!n) return; editingId=id;
+  document.getElementById('mTitle').textContent=n.label;
+  document.getElementById('mFile').textContent=n.sub||'';
+  document.getElementById('mDesc').textContent=n.desc||'';
+  const ex=state.comments.find(c=>c.target===id);
+  document.getElementById('mText').value=ex?ex.text:'';
+  document.getElementById('modal').classList.add('open');
+  document.getElementById('mText').focus();
+}
+function closeModal(){ document.getElementById('modal').classList.remove('open'); editingId=null; }
+function saveComment(){
+  const n=nodeById[editingId]; if(!n){ closeModal(); return; }
+  const text=document.getElementById('mText').value.trim();
+  state.comments=state.comments.filter(c=>c.target!==editingId);
+  if(text) state.comments.push({target:n.id,label:n.label,file:n.sub||'',text});
+  closeModal(); renderAll();
+}
+function renderComments(){
+  document.getElementById('cmtCount').textContent=state.comments.length;
+  const el=document.getElementById('cmtList');
+  if(!state.comments.length){ el.innerHTML='<div class="empty">No comments yet. Click a component box to attach feedback — it becomes part of the copied prompt.</div>'; return; }
+  el.innerHTML='';
+  state.comments.forEach((c,i)=>{
+    const d=document.createElement('div'); d.className='cmt';
+    d.innerHTML=`<button class="del" title="Delete">×</button><div class="ct">${esc(c.label)}</div><div class="cf">${esc(c.file)}</div><div class="cx">${esc(c.text)}</div>`;
+    d.querySelector('.del').onclick=()=>{ state.comments.splice(i,1); renderAll(); };
+    el.appendChild(d);
+  });
+}
+
+/* ============================================================ PROMPT */
+function updatePrompt(){
+  const visLayers=Object.entries(LAYERS).filter(([k])=>state.layers[k]).map(([,v])=>v.name);
+  const allLayers=Object.keys(LAYERS).every(k=>state.layers[k]);
+  const visConns=Object.entries(CONNTYPES).filter(([k])=>state.conns[k]).map(([,v])=>v.name);
+  let p='This is the SkyN3t 2.0 architecture — an autonomous, multi-agent app factory on an event-sourced spine (EventBus + Orchestrator). A plain-English brief runs an 11-stage forge line (brainstorm → research → architect → design → code → verify_contract → verify_build → verify_boot → critic → review → package) and is delivered to Projects/<slug>/ only if a proof-run confirms real files.';
+  p+=`\n\nCurrent view: ${state.preset}`+(allLayers?' (full system).':`, showing layers: ${visLayers.join(', ')||'(none)'}.`);
+  p+=`\nConnection types shown: ${visConns.join(', ')||'(none)'}.`;
+  if(state.comments.length){
+    p+='\n\nFeedback on specific components:\n';
+    state.comments.forEach(c=>{ p+=`\n**${c.label}** (${c.file}):\n${c.text}\n`; });
+  }else{
+    p+='\n\n(No component comments yet — click any box to attach feedback, or ask me to walk through how a brief flows through these subsystems.)';
+  }
+  document.getElementById('ptext').textContent=p;
+}
+function esc(s){ return (s||'').replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+
+/* ============================================================ WIRING */
+document.getElementById('mSave').onclick=saveComment;
+document.getElementById('mCancel').onclick=closeModal;
+document.getElementById('modal').onclick=e=>{ if(e.target.id==='modal') closeModal(); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
+document.getElementById('zin').onclick =()=>{ state.zoom=Math.min(2.2,state.zoom+0.15); renderAll(); };
+document.getElementById('zout').onclick=()=>{ state.zoom=Math.max(0.5,state.zoom-0.15); renderAll(); };
+document.getElementById('zrst').onclick=()=>{ state.zoom=1; renderAll(); };
+function flashCopy(btn, ok){
+  btn.textContent = ok ? 'Copied!' : 'Copy failed';
+  btn.classList.toggle('ok', ok);
+  setTimeout(()=>{ btn.textContent='Copy Prompt'; btn.classList.remove('ok'); },1400);
+}
+function fallbackCopy(text){
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=text; ta.style.position='fixed'; ta.style.top='-1000px'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok=document.execCommand('copy'); document.body.removeChild(ta); return ok;
+  }catch(e){ return false; }
+}
+document.getElementById('copy').onclick=function(){
+  const btn=this, text=document.getElementById('ptext').textContent;
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>flashCopy(btn,true)).catch(()=>flashCopy(btn, fallbackCopy(text)));
+  }else{
+    flashCopy(btn, fallbackCopy(text));   // file:// / insecure context: no async clipboard
+  }
+};
+applyPreset(DEFAULT_PRESET);
+</script>
+</body>
+</html>

@@ -127,6 +127,21 @@ def test_phaser_scaffold_has_pure_sim_render_split():
     assert "step(" in main, "main.js must call step()"
 
 
+def test_phaser_codegen_prompt_pins_dt_in_seconds():
+    # A model writing its OWN Phaser scene (not the scaffold's) drifted to passing
+    # Phaser's raw delta (MILLISECONDS) into step(), so the headless gate (dt=1/60
+    # SECONDS) ran the game ~1000x too slow and never exercised it (a false PASS).
+    # The agentic codegen prompt must restate the seconds contract the scaffold pins.
+    from skyn3t.agents.code_agent import CodeAgent
+    from skyn3t.core.events import EventBus
+
+    p = CodeAgent(event_bus=EventBus())._agentic_prompt(
+        "a brick breaker game", "phaser", {"files": []}, "K ")
+    assert "delta / 1000" in p, "prompt must tell the scene to pass delta/1000"
+    low = p.lower()
+    assert "second" in low and "millisecond" in low, "prompt must pin dt UNITS (seconds, not ms)"
+
+
 def test_phaser_scaffold_wires_the_action_control(tmp_path):
     # The {left,right,up,down,action,pause} input contract includes `action`; the
     # scaffold floor must actually SEND it (Space/Click), not hardcode `action:false`

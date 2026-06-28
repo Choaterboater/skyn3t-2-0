@@ -3,10 +3,10 @@ slug: frontend-ui-engineering
 title: frontend-ui-engineering
 stack: generic
 tags: frontend, design, ui, web
-uses: 10
-helpful: 4
-quality_sum: 7.4580
-score: 0.746
+uses: 20
+helpful: 9
+quality_sum: 14.7080
+score: 0.735
 source: agent-skills
 ---
 

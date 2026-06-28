@@ -308,6 +308,30 @@ try {
       report.gameOver = 'not testable (no state.over convention)'
     }
   }
+
+  // 7. input responsiveness (NON-blocking; the #8 input-wiring specialist consumes
+  // this). Holding each CONTRACT control changes the trajectory vs a no-input
+  // baseline iff the sim actually reads that control. This is behavioral — a
+  // doc-comment, an off-contract field name, or a renamed/aliased param can't fool
+  // it the way static text-parsing did. Probes the six-boolean contract ONLY: a sim
+  // that reads fields the host never sets is, by design, uncontrollable, and is
+  // correctly reported unresponsive.
+  {
+    const NONE = { left: false, right: false, up: false, down: false, action: false, pause: false }
+    const PROBE = 120
+    const probe = (key) => {
+      let s = createState(SEED)
+      for (let t = 0; t < PROBE; t++) s = advance(s, key ? { ...NONE, [key]: true } : NONE)
+      return snapshot(s)
+    }
+    const base = probe(null)
+    const reads = []
+    for (const c of ['left', 'right', 'up', 'down', 'action']) {
+      if (probe(c) !== base) reads.push(c)
+    }
+    report.inputResponsive = reads.length > 0
+    report.inputControls = reads
+  }
 } catch (e) {
   report.gateError = (e && e.message) || String(e)
 }

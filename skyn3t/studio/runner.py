@@ -1235,7 +1235,9 @@ class StudioRunner:
         # no_go (and can't inflate the missing-core seal's repair_attempted).
         from skyn3t.studio.gameplay_checks import check_input_wiring
 
-        wiring_gap = check_input_wiring(project_dir)
+        # Reuse the gate's single sim run (it carries the behavioral inputResponsive
+        # probe) — no second Node launch.
+        wiring_gap = check_input_wiring(project_dir, gate=gate)
 
         attempts = int(getattr(self.settings, "headless_gate_attempts", 3))
         n = 0
@@ -1273,7 +1275,7 @@ class StudioRunner:
             completed += 1
             manifest.files = list_files(project_dir)
             gate = await asyncio.to_thread(run_headless_gate, project_dir)
-            wiring_gap = check_input_wiring(project_dir)
+            wiring_gap = check_input_wiring(project_dir, gate=gate)
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
                 {"build_id": manifest.build_id, "stage": f"headless_gate#{n}", "passed": gate.passed},

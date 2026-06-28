@@ -142,6 +142,20 @@ def test_phaser_codegen_prompt_pins_dt_in_seconds():
     assert "second" in low and "millisecond" in low, "prompt must pin dt UNITS (seconds, not ms)"
 
 
+def test_phaser_codegen_prompt_demands_generous_entity_sizing():
+    # Generated games rendered entities as tiny specks on a big canvas (a 256px sprite
+    # shrunk to ~40px), wasting the screen. The prompt must demand generous,
+    # screen-filling entity sizes so the game is readable.
+    from skyn3t.agents.code_agent import CodeAgent
+    from skyn3t.core.events import EventBus
+
+    p = CodeAgent(event_bus=EventBus())._agentic_prompt(
+        "a space shooter", "phaser", {"files": []}, "K ")
+    low = p.lower()
+    assert "setdisplaysize" in low or "size" in low
+    assert "tiny" in low or "fill the screen" in low or "generous" in low
+
+
 def test_phaser_scaffold_wires_the_action_control(tmp_path):
     # The {left,right,up,down,action,pause} input contract includes `action`; the
     # scaffold floor must actually SEND it (Space/Click), not hardcode `action:false`

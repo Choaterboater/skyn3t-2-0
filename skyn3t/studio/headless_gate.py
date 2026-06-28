@@ -97,6 +97,18 @@ const SKIP_MAG = /rng|seed|hash|uuid|^id$/i
 // degrade open, silently discarding real invariant violations.
 function out(obj) { writeFileSync(resultPath, JSON.stringify(obj)) }
 
+// A runtime throw must carry its LOCATION to the fix-loop — a bare message like
+// "Cannot read properties of undefined (reading 'push')" is unlocalizable, so the
+// improver can't find the bug. Append the top stack frames (file:line:col), which
+// point at the real defect site (e.g. src/utils.js:52), so the repair can target it.
+function errStr(e) {
+  const msg = (e && e.message) || String(e)
+  const frames = e && typeof e.stack === 'string'
+    ? e.stack.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('at ')).slice(0, 4)
+    : []
+  return frames.length ? msg + ' | ' + frames.join(' ') : msg
+}
+
 // Cycle- / BigInt- / Map- / Set-tolerant serializer for the snapshot comparisons,
 // so a later check can NEVER throw and discard violations already found in run A.
 function snapshot(x) {
@@ -189,8 +201,7 @@ function advance(s, input) {
 
 function run(ticks, inputFn) {
   let s = createState(SEED)
-  const score0 = (typeof s.score === 'number') ? s.score : null
-  let firstBad = null, win = false, lose = false, winTick = -1, winScore = null
+  let firstBad = null, win = false, lose = false, winTick = -1, winEmptyArr = false
   // null-proto maps so `p in arrMid` only sees real keys (a state field literally
   // named 'constructor'/'toString' would otherwise read as inherited-present).
   const arrFirst = Object.create(null), arrMid = Object.create(null), arrEnd = Object.create(null)
@@ -209,11 +220,18 @@ function run(ticks, inputFn) {
     }
     if (typeof isWin === 'function' && isWin(s)) {
       win = true
-      if (winTick < 0) { winTick = t; winScore = (typeof s.score === 'number') ? s.score : null }
+      if (winTick < 0) {
+        winTick = t
+        // Empty entity collection at the win = the "empty board" shape. NON-BLOCKING
+        // advisory only (see 3b) — every blocking discriminator either false-no_go'd
+        // a real genre or missed the real bug.
+        winEmptyArr = !!s && typeof s === 'object' &&
+          Object.keys(s).some((k) => Array.isArray(s[k]) && s[k].length === 0)
+      }
     }
     if (typeof isLose === 'function' && isLose(s)) lose = true
   }
-  return { state: s, firstBad, arrFirst, arrMid, arrEnd, win, lose, winTick, winScore, score0 }
+  return { state: s, firstBad, arrFirst, arrMid, arrEnd, win, lose, winTick, winEmptyArr }
 }
 
 const violations = []
@@ -250,23 +268,22 @@ try {
     }
   }
 
-  // 3b. degenerate (trivial / instant) win: won within a handful of ticks of the
-  // generic input script AND with NO score earned. Reaching a win is normally GOOD;
-  // reaching it instantly having scored nothing means the level has no challenge to
-  // clear — an empty board / no obstacles / a win condition already true at start
-  // (e.g. a level parser that yields zero entities, so an "all-cleared" check is true
-  // on launch). It ships as go/100 because every other check passes and "win
-  // reachable" reads as success when it IS the bug. Gated on score so a minimal game
-  // that wins by actually SCORING is not flagged, and degrade-open when there is no
-  // numeric `score` field (don't guess). Validated: a working breakout never wins
-  // under this script; a minimal score-to-win sim wins at ~tick 27 WITH score; the
-  // broken empty-board game wins at ~tick 6 with score 0.
-  if (A.winTick >= 0 && A.winTick < TRIVIAL_WIN_TICKS &&
-      A.winScore !== null && A.score0 !== null && A.winScore <= A.score0) {
-    violations.push(`trivial win: WON after only ${A.winTick} ticks of generic input with NO score earned — the level has no real challenge to clear (likely no obstacles / an empty board / a win condition already true at start). Build the level so winning REQUIRES clearing its actual content.`)
+  // 3b. fast-empty win — a NON-BLOCKING advisory, recorded NOT blocked. A win within
+  // TRIVIAL_WIN_TICKS of the generic script while some entity collection is empty
+  // CORRELATES with the empty-board bug (the deepseek-2 "win on click" defect), but
+  // four discriminators + two adversarial teams could not make it a clean BLOCKING
+  // signal: keying on score false-no_go'd positional wins; keying on ANY empty array
+  // false-no_go's every roadmap-#7 game (it GUARANTEES a `powerups:[]` array); a
+  // no-input check and a load-bearing-sentinel check BOTH MISS the real deepseek-2
+  // (it needs a launch action and latches a `won` flag, so no array is load-bearing).
+  // "Is there anything to play?" is a VISUAL property — the robust catch is a
+  // vision-model on a screenshot, not this heuristic. So we only RECORD it; a
+  // false signal here can never no_go a good game.
+  if (A.winTick >= 0 && A.winTick < TRIVIAL_WIN_TICKS && A.winEmptyArr) {
+    report.fastEmptyWin = { winTick: A.winTick }
   }
 } catch (e) {
-  out({ applicable: true, passed: false, violations: ['sim threw at runtime: ' + ((e && e.message) || String(e))] })
+  out({ applicable: true, passed: false, violations: ['sim threw at runtime: ' + errStr(e)] })
   process.exit(0)
 }
 
@@ -387,7 +404,7 @@ try {
     report.inputResponsive = reads.length > 0
     report.inputControls = reads
   } catch (e) {
-    violations.push('sim threw while holding an input control: ' + ((e && e.message) || String(e)))
+    violations.push('sim threw while holding an input control: ' + errStr(e))
   }
 } catch (e) {
   // A throw anywhere in the invariant battery (determinism / pause / game-over /
@@ -395,7 +412,7 @@ try {
   // BLOCK rather than swallow it into a non-blocking gateError (which shipped crashing
   // + broken-pause games as GO). The push lands before the final out(), so any run-A
   // violations are preserved too.
-  violations.push('sim threw during the invariant battery (held / pause / over input): ' + ((e && e.message) || String(e)))
+  violations.push('sim threw during the invariant battery (held / pause / over input): ' + errStr(e))
 }
 
 // Non-blocking: reachability (best-effort under the generic input script).

@@ -406,12 +406,12 @@ def test_sim_that_throws_only_while_a_control_is_held_blocks(tmp_path):
 
 
 @requires_node
-def test_degenerate_instant_win_is_blocked(tmp_path):
-    # A game you WIN within a few ticks of generic input has no real challenge — an
-    # empty board / no-op win condition (the deepseek-2 failure: buildBricks returned
-    # [] so `bricks.every(dead)` was trivially true -> win on launch). The gate scored
-    # it go/100 because every other check passed and "win reachable" looked like
-    # success when it WAS the bug. Block it and feed the fix-loop.
+def test_fast_empty_win_is_recorded_not_blocked(tmp_path):
+    # An empty-board "win on launch" (the deepseek-2 shape) CORRELATES with the bug,
+    # but four discriminators + two adversarial teams could not make it a clean
+    # BLOCKING signal (every one false-no_go'd a real genre or missed the real bug),
+    # so it is a NON-BLOCKING advisory — recorded in report.fastEmptyWin, never a
+    # no_go. "Is there anything to play?" is a visual property, caught by a screenshot.
     _write(tmp_path, {"src/sim.js":
         "export function createState(seed){ return {bricks:[], score:0, rng:seed>>>0, paused:false, over:false} }\n"
         "export function step(s, input, dt){ if(s.paused||s.over) return s;"
@@ -419,9 +419,42 @@ def test_degenerate_instant_win_is_blocked(tmp_path):
         "export function isWin(s){ return !!s.won }\nexport function isLose(s){ return false }\n"})
     res = run_headless_gate(tmp_path, ticks=300)
     assert res.applicable is True, res.detail
-    assert res.passed is False, "an instant/trivial win must block"
-    blob = " ".join(res.violations).lower()
-    assert "win" in blob, res.violations
+    assert res.passed is True, "the advisory must NOT block (do-no-harm: no false no_go)"
+    assert res.report.get("fastEmptyWin"), "the fast-empty win must be recorded"
+
+
+@requires_node
+def test_runtime_throw_violation_carries_a_location(tmp_path):
+    # The fix-loop needs WHERE the throw happened — a bare message
+    # ("Cannot read properties of undefined") is unlocalizable, so the improver can't
+    # find the bug (this is why a real deepseek build no_go'd without self-repair).
+    # The violation must carry stack frames pointing at the defect site.
+    _write(tmp_path, {"src/sim.js":
+        "function boom(s){ s.pool.items.push(1) }\n"  # s.pool undefined -> throws in boom
+        "export function createState(seed){ return {x:0, rng:seed>>>0} }\n"
+        "export function step(s, input, dt){ boom(s); return s }\n"
+        "export function isWin(s){return false}\nexport function isLose(s){return false}\n"})
+    res = run_headless_gate(tmp_path, ticks=60)
+    assert res.passed is False
+    blob = " ".join(res.violations)
+    assert "threw" in blob.lower()
+    assert ".js:" in blob or "boom" in blob, f"violation must localize the throw: {res.violations}"
+
+
+@requires_node
+def test_fast_positional_win_with_content_is_not_advised(tmp_path):
+    # A legitimate fast POSITIONAL win (reach a goal) keeps its content non-empty, so
+    # no entity collection is empty at the win — it is neither blocked NOR even
+    # recorded as a fast-empty win. (Confirms the advisory doesn't fire on real games
+    # whose content is non-empty.)
+    _write(tmp_path, {"src/sim.js":
+        "export function createState(seed){ return {x:0, goalX:5, coins:[{x:8}], rng:seed>>>0, paused:false, over:false} }\n"
+        "export function step(s, input, dt){ if(s.paused||s.over) return s; if(input.right) s.x+=2; return s }\n"
+        "export function isWin(s){ return s.x>=s.goalX }\nexport function isLose(s){ return false }\n"})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is True, res.violations
+    assert not res.report.get("fastEmptyWin"), "non-empty content must not trip the advisory"
 
 
 @requires_node

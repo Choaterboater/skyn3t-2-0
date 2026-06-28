@@ -156,16 +156,26 @@ _GENRES: dict[str, _GenreSpec] = {
     "tetris": _GenreSpec("neon", (
         ("block", "primitive", "tetromino block"),
     )),
+    # Sprite genres carry DISTINCT enemy types + a boss so the art matches the depth
+    # the game-designer ([[game_designer]]) demands (its `variety` lists several enemy
+    # kinds + a boss). One generic "enemy" left every foe looking identical and gave no
+    # boss; each distinct foe now gets its own sprite. Bolts/beams/paths/platforms and
+    # the backdrop stay crisp primitives.
     "space_shooter": _GenreSpec("space", (
         ("ship", "sprite", "sleek space fighter ship"),
-        ("alien", "sprite", "menacing alien creature"),
+        ("enemy", "sprite", "diving alien fighter craft"),
+        ("interceptor", "sprite", "fast zig-zagging alien scout ship"),
+        ("gunship", "sprite", "heavy armored alien gunship"),
+        ("boss", "sprite", "massive menacing alien mothership boss"),
         ("laser", "primitive", "laser bolt"),
         ("powerup", "sprite", "glowing power-up capsule"),
         ("background", "primitive", "deep-space starfield"),
     )),
     "platformer": _GenreSpec("arcade", (
         ("player", "sprite", "cheerful platformer hero"),
-        ("enemy", "sprite", "grumpy slime monster"),
+        ("enemy", "sprite", "grumpy walking slime monster"),
+        ("flyer", "sprite", "winged flying enemy creature"),
+        ("boss", "sprite", "big hulking platformer boss monster"),
         ("coin", "sprite", "shiny gold coin"),
         ("platform", "primitive", "solid ground block"),
         ("background", "primitive", "bright sky with rolling hills"),
@@ -173,14 +183,19 @@ _GENRES: dict[str, _GenreSpec] = {
     "tower_defense": _GenreSpec("earth", (
         ("tower", "sprite", "stone defense turret"),
         ("enemy", "sprite", "marching creep monster"),
-        ("projectile", "primitive", "cannon shot"),
+        ("brute", "sprite", "armored heavy creep monster"),
+        ("flyer", "sprite", "winged flying creep"),
+        ("boss", "sprite", "giant boss creep monster"),
         ("gold", "sprite", "stack of gold coins"),
+        ("projectile", "primitive", "cannon shot"),
         ("path", "primitive", "dirt path tile"),
         ("background", "primitive", "grassy battlefield map"),
     )),
     "top_down": _GenreSpec("arcade", (
         ("player", "sprite", "top-down adventurer hero"),
-        ("enemy", "sprite", "prowling monster"),
+        ("enemy", "sprite", "prowling melee monster"),
+        ("ranged", "sprite", "spell-casting ranged enemy"),
+        ("boss", "sprite", "fearsome top-down dungeon boss"),
         ("item", "sprite", "treasure item"),
         ("background", "primitive", "top-down dungeon floor"),
     )),

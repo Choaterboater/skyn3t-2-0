@@ -195,6 +195,18 @@ def test_control_that_reconverges_by_last_tick_is_still_wired(tmp_path):
 
 
 @requires_node
+def test_input_arg_mutation_is_not_mistaken_for_control(tmp_path):
+    # The no-input BASELINE must pass a FRESH input object each tick, like the control
+    # probes — else a sim that mutates+reads its input arg makes the shared baseline
+    # object accumulate, diverging from the (fresh-copy) control runs and falsely
+    # reading as controllable. This sim reads NO contract control -> uncontrollable.
+    _write(tmp_path, {"src/sim.js": _CREATE
+        + "export function step(s, input, dt){ input.tick=(input.tick||0)+1; s.counter=input.tick; return s }\n"
+        + _TAIL})
+    assert check_input_wiring(tmp_path) is not None
+
+
+@requires_node
 def test_doc_comment_then_genuinely_unwired_step_is_still_flagged(tmp_path):
     # The comment must not mask a real defect: a documented-but-uncontrollable game
     # (step ignores input) is still flagged.

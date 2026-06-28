@@ -406,6 +406,43 @@ def test_sim_that_throws_only_while_a_control_is_held_blocks(tmp_path):
 
 
 @requires_node
+def test_degenerate_instant_win_is_blocked(tmp_path):
+    # A game you WIN within a few ticks of generic input has no real challenge — an
+    # empty board / no-op win condition (the deepseek-2 failure: buildBricks returned
+    # [] so `bricks.every(dead)` was trivially true -> win on launch). The gate scored
+    # it go/100 because every other check passed and "win reachable" looked like
+    # success when it WAS the bug. Block it and feed the fix-loop.
+    _write(tmp_path, {"src/sim.js":
+        "export function createState(seed){ return {bricks:[], score:0, rng:seed>>>0, paused:false, over:false} }\n"
+        "export function step(s, input, dt){ if(s.paused||s.over) return s;"
+        " if(s.bricks.length===0) s.won=true; return s }\n"
+        "export function isWin(s){ return !!s.won }\nexport function isLose(s){ return false }\n"})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "an instant/trivial win must block"
+    blob = " ".join(res.violations).lower()
+    assert "win" in blob, res.violations
+
+
+@requires_node
+def test_crash_during_held_input_invariant_checks_blocks(tmp_path):
+    # The pause/game-over checks hold ALL controls for 30 ticks BEFORE the §7 input
+    # probe, so a sim that crashes under sustained held input throws THERE. That throw
+    # must BLOCK, not be swallowed into a non-blocking gateError (which shipped
+    # crashing scaffold games — which declare paused/over — as GO).
+    _write(tmp_path, {"src/sim.js":
+        "export function createState(seed){ return {x:0, held:0, paused:false, over:false, rng:seed>>>0} }\n"
+        "export function step(s, input, dt){"  # deliberately ignores s.paused
+        " s.held = (input.left||input.right||input.up||input.down||input.action) ? (s.held||0)+1 : 0;"
+        " if(s.held > 20) throw new Error('held crash'); return s }\n"
+        "export function isWin(s){return false}\nexport function isLose(s){return false}\n"})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "a crash during the held-input invariant checks must block"
+    assert any("threw" in v.lower() for v in res.violations), res.violations
+
+
+@requires_node
 def test_gate_violations_feed_fix_loop(tmp_path):
     _write(tmp_path, {"src/sim.js": _NAN})
     res = run_headless_gate(tmp_path, ticks=120)

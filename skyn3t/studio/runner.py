@@ -2149,6 +2149,26 @@ class StudioRunner:
                     f"{len(gate.violations)} runtime invariant violation(s): "
                     + "; ".join(gate.violations[:3])
                 )
+            # Visual check (opt-in, game stacks): screenshot the delivered, RUNNING game
+            # mid-play and vision-judge it for an EMPTY play field / TINY entities — the
+            # "is there anything to play / does it look right" question headless gates
+            # fundamentally can't answer (a human catches these by looking). ADVISORY:
+            # recorded to the manifest and never blocks the verdict; soft-skips with no
+            # vision model. `gate is not None` selects game stacks.
+            if gate is not None and bool(
+                    getattr(self.settings, "game_visual_check_enabled", False)):
+                try:
+                    from skyn3t.studio.game_visual_check import check_game_visual
+
+                    gv = await check_game_visual(project_dir, settings=self.settings)
+                    manifest.extra["game_visual"] = {
+                        "ok": gv.ok, "skipped": gv.skipped,
+                        "issues": list(gv.issues), "gap": gv.gap() or "",
+                    }
+                    if gv.gap():
+                        log.info("game_visual_check.flagged", issues=gv.issues)
+                except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+                    log.warning("game_visual_check.failed", error=str(exc))
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty

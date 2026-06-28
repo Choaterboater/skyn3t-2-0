@@ -84,6 +84,10 @@ const MAG_CAP = 1e10
 // a larger static array elsewhere. Flagged when an array grows >=1.8x from the
 // half-way point AND ends above this floor.
 const POOL_FLOOR = 2000
+// A win reached within this many ticks of the generic input script is degenerate
+// (no real challenge to clear). Far below any real game's win time (a working
+// breakout never wins under this script) yet far above the instant-win bug (~tick 6).
+const TRIVIAL_WIN_TICKS = 30
 // Belt-and-suspenders alongside MAG_CAP: fields that may legitimately hold large
 // integers, excluded from the explosion check only (still scanned for NaN/Inf).
 const SKIP_MAG = /rng|seed|hash|uuid|^id$/i
@@ -185,7 +189,8 @@ function advance(s, input) {
 
 function run(ticks, inputFn) {
   let s = createState(SEED)
-  let firstBad = null, win = false, lose = false
+  const score0 = (typeof s.score === 'number') ? s.score : null
+  let firstBad = null, win = false, lose = false, winTick = -1, winScore = null
   // null-proto maps so `p in arrMid` only sees real keys (a state field literally
   // named 'constructor'/'toString' would otherwise read as inherited-present).
   const arrFirst = Object.create(null), arrMid = Object.create(null), arrEnd = Object.create(null)
@@ -202,10 +207,13 @@ function run(ticks, inputFn) {
       if (t < half && len > (arrMid[p] || 0)) arrMid[p] = len
       if (len > (arrEnd[p] || 0)) arrEnd[p] = len
     }
-    if (typeof isWin === 'function' && isWin(s)) win = true
+    if (typeof isWin === 'function' && isWin(s)) {
+      win = true
+      if (winTick < 0) { winTick = t; winScore = (typeof s.score === 'number') ? s.score : null }
+    }
     if (typeof isLose === 'function' && isLose(s)) lose = true
   }
-  return { state: s, firstBad, arrFirst, arrMid, arrEnd, win, lose }
+  return { state: s, firstBad, arrFirst, arrMid, arrEnd, win, lose, winTick, winScore, score0 }
 }
 
 const violations = []
@@ -240,6 +248,22 @@ try {
       violations.push(`pool leak: array '${p}' grew to ${end} entries (was ${baseline} earlier) — likely an unbounded spawn/leak`)
       break
     }
+  }
+
+  // 3b. degenerate (trivial / instant) win: won within a handful of ticks of the
+  // generic input script AND with NO score earned. Reaching a win is normally GOOD;
+  // reaching it instantly having scored nothing means the level has no challenge to
+  // clear — an empty board / no obstacles / a win condition already true at start
+  // (e.g. a level parser that yields zero entities, so an "all-cleared" check is true
+  // on launch). It ships as go/100 because every other check passes and "win
+  // reachable" reads as success when it IS the bug. Gated on score so a minimal game
+  // that wins by actually SCORING is not flagged, and degrade-open when there is no
+  // numeric `score` field (don't guess). Validated: a working breakout never wins
+  // under this script; a minimal score-to-win sim wins at ~tick 27 WITH score; the
+  // broken empty-board game wins at ~tick 6 with score 0.
+  if (A.winTick >= 0 && A.winTick < TRIVIAL_WIN_TICKS &&
+      A.winScore !== null && A.score0 !== null && A.winScore <= A.score0) {
+    violations.push(`trivial win: WON after only ${A.winTick} ticks of generic input with NO score earned — the level has no real challenge to clear (likely no obstacles / an empty board / a win condition already true at start). Build the level so winning REQUIRES clearing its actual content.`)
   }
 } catch (e) {
   out({ applicable: true, passed: false, violations: ['sim threw at runtime: ' + ((e && e.message) || String(e))] })
@@ -319,9 +343,16 @@ try {
   //   * compare the WHOLE trajectory, not just the endpoint, so a control that
   //     diverges then RECONVERGES (screen-wrap / oscillation) by the last tick is
   //     still detected;
-  //   * a sim that THROWS only while a control is HELD continuously is a real defect
-  //     (only this probe holds one long enough) -> its own try makes it a BLOCKING
-  //     violation, not a swallowed gateError -> GO;
+  //   * pass a FRESH no-input object to the baseline each tick (symmetric with the
+  //     control probes) so a sim that MUTATES its input arg can't make the shared
+  //     baseline accumulate and false-read as controllable;
+  //   * hold each control for the FULL window (no early-exit) so a sim that THROWS
+  //     only under a SUSTAINED single-control hold is provoked here and BLOCKS via
+  //     the inner try (a crash that needs HELD input never fires under run A's
+  //     1-in-8 cycling). A THROW elsewhere in the battery (e.g. the pause/over checks
+  //     hold all controls 30 ticks) BLOCKS via the outer catch below. KNOWN RESIDUAL:
+  //     these full traces are PROBE*6 snapshots — fine for the small games this
+  //     targets, but an atypically large state could approach the harness timeout.
   //   * probe from the PLAYING state (clear a born-true `paused` flag).
   // A diverging snapshot proves the sim READS input, NOT that the delivered game is
   // playable (bookkeeping/rng fields count too): treat inputResponsive as a lower
@@ -337,8 +368,10 @@ try {
     const trace = (key) => {
       const snaps = []
       let s = fresh()
+      // Fresh input object EVERY tick (incl. the no-input baseline) so a sim that
+      // mutates its input arg can't make one path accumulate and skew the compare.
       for (let t = 0; t < PROBE; t++) {
-        s = advance(s, key ? { ...NONE, [key]: true } : NONE)
+        s = advance(s, key ? { ...NONE, [key]: true } : { ...NONE })
         snaps.push(snapshot(s))
       }
       return snaps
@@ -357,7 +390,12 @@ try {
     violations.push('sim threw while holding an input control: ' + ((e && e.message) || String(e)))
   }
 } catch (e) {
-  report.gateError = (e && e.message) || String(e)
+  // A throw anywhere in the invariant battery (determinism / pause / game-over /
+  // input probe — several hold controls for many ticks) is a real runtime defect, so
+  // BLOCK rather than swallow it into a non-blocking gateError (which shipped crashing
+  // + broken-pause games as GO). The push lands before the final out(), so any run-A
+  // violations are preserved too.
+  violations.push('sim threw during the invariant battery (held / pause / over input): ' + ((e && e.message) || String(e)))
 }
 
 // Non-blocking: reachability (best-effort under the generic input script).

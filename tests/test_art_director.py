@@ -59,6 +59,19 @@ def test_sprite_genre_mixes_sprite_and_primitive_roles():
     assert any(v == "primitive" for v in renders.values()), "laser-likes stay primitive"
 
 
+def test_sprite_genres_have_enemy_variety_and_a_boss():
+    # The art must match the depth the game-designer demands (its `variety` lists
+    # several enemy kinds + a boss), not a single generic enemy that leaves every foe
+    # identical and gives no boss. Each sprite genre ships a boss sprite plus >=2
+    # distinct foe sprites.
+    foe_roles = {"enemy", "interceptor", "gunship", "flyer", "brute", "ranged"}
+    for brief in ("a space shooter with aliens", "a platformer",
+                  "a tower defense game", "a top-down dungeon crawler"):
+        sprites = set(direct_art(brief).sprite_roles())
+        assert "boss" in sprites, f"{brief}: needs a boss sprite"
+        assert len(sprites & foe_roles) >= 2, f"{brief}: needs >=2 distinct foe sprites, got {sprites}"
+
+
 # ---- palette: one shared, valid-hex palette across the game ----
 def test_palette_is_shared_and_valid_hex():
     plan = direct_art("a space shooter")

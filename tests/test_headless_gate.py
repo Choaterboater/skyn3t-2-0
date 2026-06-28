@@ -389,6 +389,23 @@ def test_gate_flags_bad_sim(tmp_path, sim, marker):
 
 
 @requires_node
+def test_sim_that_throws_only_while_a_control_is_held_blocks(tmp_path):
+    # A sim that crashes when a control is HELD continuously (only the input-probe
+    # holds one control long enough to provoke it) is a real defect — the probe must
+    # turn it into a BLOCKING violation, not swallow it into report.gateError -> GO.
+    _write(tmp_path, {"src/sim.js":
+        "export function createState(seed){ return {x:0, up:0, rng:seed>>>0, paused:false, over:false} }\n"
+        "export function step(s, input, dt){ if(s.paused||s.over) return s;"
+        " s.up = input.up ? (s.up||0)+1 : 0;"
+        " if(s.up > 100) throw new Error('held-up crash'); return s }\n"
+        "export function isWin(s){return false}\nexport function isLose(s){return false}\n"})
+    res = run_headless_gate(tmp_path, ticks=300)
+    assert res.applicable is True, res.detail
+    assert res.passed is False, "a held-control crash must block the gate"
+    assert any(("threw" in v.lower() or "crash" in v.lower()) for v in res.violations), res.violations
+
+
+@requires_node
 def test_gate_violations_feed_fix_loop(tmp_path):
     _write(tmp_path, {"src/sim.js": _NAN})
     res = run_headless_gate(tmp_path, ticks=120)

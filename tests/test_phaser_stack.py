@@ -127,6 +127,17 @@ def test_phaser_scaffold_has_pure_sim_render_split():
     assert "step(" in main, "main.js must call step()"
 
 
+def test_phaser_scaffold_wires_the_action_control(tmp_path):
+    # The {left,right,up,down,action,pause} input contract includes `action`; the
+    # scaffold floor must actually SEND it (Space/Click), not hardcode `action:false`
+    # — otherwise one-button games (jump/shoot/launch) ship uncontrollable even
+    # though their sim reads input.action (found by adversarial review of #8).
+    main = scaffold_for("phaser", "flap", "a one-button flappy jumper")["src/main.js"]
+    assert "action: false" not in main, "action must be bound to a real control, not hardcoded false"
+    assert "addKey('SPACE')" in main or "SPACE" in main, "scaffold must bind a Space key for action"
+    assert "this.space.isDown" in main or "pointerDown" in main, "action must read the bound key/pointer"
+
+
 def test_scaffold_phaser_has_no_react_confusion():
     # A Phaser game must NOT accidentally produce the React Vite scaffold (the
     # silent fallback this whole stack guards against).

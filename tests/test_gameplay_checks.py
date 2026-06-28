@@ -184,6 +184,17 @@ def test_block_comment_mentioning_step_does_not_false_flag(tmp_path):
 
 
 @requires_node
+def test_control_that_reconverges_by_last_tick_is_still_wired(tmp_path):
+    # Whole-trajectory, not endpoint-only: holding 'right' flips x 0->1->0..., so at
+    # the final (even) tick it equals the no-input baseline even though the game IS
+    # controllable. Endpoint-only comparison false-flagged this; trajectory catches
+    # the tick-1 divergence.
+    _write(tmp_path, {"src/sim.js": _CREATE
+        + "export function step(s, input, dt){ if(input.right) s.x = s.x ? 0 : 1; return s }\n" + _TAIL})
+    assert check_input_wiring(tmp_path) is None
+
+
+@requires_node
 def test_doc_comment_then_genuinely_unwired_step_is_still_flagged(tmp_path):
     # The comment must not mask a real defect: a documented-but-uncontrollable game
     # (step ignores input) is still flagged.

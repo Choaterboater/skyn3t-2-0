@@ -11,8 +11,15 @@ the headless gate's Node harness), not by parsing its text: the harness holds ea
 contract control (left/right/up/down/action) and reports which ones change the
 trajectory vs a no-input baseline. Run-don't-parse is deliberate — the previous
 regex parser was repeatedly fooled by real generated code (a doc-comment that
-mentioned ``step(...)``, a renamed param, an off-contract field name). Behavior can't
-be fooled that way: a control that moves the game is wired; one that doesn't isn't.
+mentioned ``step(...)``, a renamed param, an off-contract field name), and behavior is
+much harder to fool: a control that moves the simulation is read; one that doesn't
+isn't.
+
+This is a LOWER BOUND on uncontrollability, not proof of playability. A diverging
+trajectory proves the pure sim READS input — but a snapshot diff can also be a
+bookkeeping/rng/cosmetic field, and the Phaser scene's own key->input->step wiring
+runs in the browser, not here. So ``None`` (no gap) means "the sim reads input", NOT
+"the delivered game is controllable". The check stays conservative and advisory.
 
 When the sim couldn't be RUN (no pure core, no ``node``, a runtime throw before the
 probe) the check degrades open (no gap) — a controllable game is never false-flagged.

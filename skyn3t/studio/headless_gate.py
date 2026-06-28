@@ -309,28 +309,52 @@ try {
     }
   }
 
-  // 7. input responsiveness (NON-blocking; the #8 input-wiring specialist consumes
-  // this). Holding each CONTRACT control changes the trajectory vs a no-input
-  // baseline iff the sim actually reads that control. This is behavioral — a
+  // 7. input responsiveness (the #8 input-wiring specialist consumes
+  // report.inputResponsive). Holding each CONTRACT control over the probe window
+  // changes the TRAJECTORY iff the sim reads that control — behavioral, so a
   // doc-comment, an off-contract field name, or a renamed/aliased param can't fool
   // it the way static text-parsing did. Probes the six-boolean contract ONLY: a sim
-  // that reads fields the host never sets is, by design, uncontrollable, and is
-  // correctly reported unresponsive.
-  {
+  // that reads fields the host never sets is, by design, uncontrollable.
+  // Adversarial-review hardening:
+  //   * compare the WHOLE trajectory, not just the endpoint, so a control that
+  //     diverges then RECONVERGES (screen-wrap / oscillation) by the last tick is
+  //     still detected;
+  //   * a sim that THROWS only while a control is HELD continuously is a real defect
+  //     (only this probe holds one long enough) -> its own try makes it a BLOCKING
+  //     violation, not a swallowed gateError -> GO;
+  //   * probe from the PLAYING state (clear a born-true `paused` flag).
+  // A diverging snapshot proves the sim READS input, NOT that the delivered game is
+  // playable (bookkeeping/rng fields count too): treat inputResponsive as a lower
+  // bound on uncontrollability, never as proof of controllability.
+  try {
     const NONE = { left: false, right: false, up: false, down: false, action: false, pause: false }
     const PROBE = 120
-    const probe = (key) => {
-      let s = createState(SEED)
-      for (let t = 0; t < PROBE; t++) s = advance(s, key ? { ...NONE, [key]: true } : NONE)
-      return snapshot(s)
+    const fresh = () => {
+      const s = createState(SEED)
+      if (s && typeof s === 'object' && 'paused' in s) s.paused = false
+      return s
     }
-    const base = probe(null)
+    const trace = (key) => {
+      const snaps = []
+      let s = fresh()
+      for (let t = 0; t < PROBE; t++) {
+        s = advance(s, key ? { ...NONE, [key]: true } : NONE)
+        snaps.push(snapshot(s))
+      }
+      return snaps
+    }
+    const baseTrace = trace(null)
     const reads = []
     for (const c of ['left', 'right', 'up', 'down', 'action']) {
-      if (probe(c) !== base) reads.push(c)
+      const t = trace(c)
+      for (let i = 0; i < PROBE; i++) {
+        if (t[i] !== baseTrace[i]) { reads.push(c); break }
+      }
     }
     report.inputResponsive = reads.length > 0
     report.inputControls = reads
+  } catch (e) {
+    violations.push('sim threw while holding an input control: ' + ((e && e.message) || String(e)))
   }
 } catch (e) {
   report.gateError = (e && e.message) || String(e)

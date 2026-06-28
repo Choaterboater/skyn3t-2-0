@@ -735,7 +735,12 @@ async def test_uncontrollable_but_passing_game_is_recorded_not_repaired(tmp_path
     _write(tmp_path, {"src/sim.js": _UNWIRED_SIM})
     runner = _runner()
     monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
-    passing = HeadlessGateResult(applicable=True, passed=True, detail={"sim": "src/sim.js"})
+    # The gate now CARRIES the behavioral wiring verdict in its report (run-don't-parse):
+    # an unwired sim probes as inputResponsive=False.
+    passing = HeadlessGateResult(
+        applicable=True, passed=True, detail={"sim": "src/sim.js"},
+        report={"inputResponsive": False, "inputControls": []},
+    )
     monkeypatch.setattr(
         "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: passing
     )
@@ -762,6 +767,7 @@ async def test_wiring_gap_enriches_an_already_running_gate_repair(tmp_path, monk
     failing = HeadlessGateResult(
         applicable=True, passed=False, violations=["NaN in state.x"],
         detail={"sim": "src/sim.js"},
+        report={"inputResponsive": False, "inputControls": []},
     )
     monkeypatch.setattr(
         "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: failing
@@ -785,7 +791,10 @@ async def test_controllable_game_records_ok_and_needs_no_wiring_repair(tmp_path,
     _write(tmp_path, {"src/sim.js": _GOODISH})  # reads input.right/left/action
     runner = _runner()
     monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
-    passing = HeadlessGateResult(applicable=True, passed=True, detail={"sim": "src/sim.js"})
+    passing = HeadlessGateResult(
+        applicable=True, passed=True, detail={"sim": "src/sim.js"},
+        report={"inputResponsive": True, "inputControls": ["left", "right", "action"]},
+    )
     monkeypatch.setattr(
         "skyn3t.studio.headless_gate.run_headless_gate", lambda *a, **k: passing
     )

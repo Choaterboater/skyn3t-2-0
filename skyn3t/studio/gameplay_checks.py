@@ -1,116 +1,63 @@
-"""Gameplay specialist checks (roadmap #8) — deterministic, conservative, advisory.
+"""Gameplay specialist checks (roadmap #8) — behavioral, conservative, advisory.
 
-These are static reviews of a generated game's pure sim that catch a class of defect
-the runtime headless gate (NaN/pool-leak/determinism/pause/game-over) does not. They
-feed the existing fix-loop as GUIDANCE and never hard-block a build — so a (very
-unlikely) false positive can at worst cost a bounded repair pass, never a false
-``no_go``. Each check is conservative and never raises.
+These review a generated game's pure sim for a class of defect the headless invariant
+gate (NaN/pool-leak/determinism/pause/game-over) does not. They feed the fix-loop as
+GUIDANCE and never hard-block a build — so a (very unlikely) false positive can at
+worst cost a bounded repair pass, never a false ``no_go``. Each check never raises.
 
-First check: **input-wiring**. A game whose ``step()`` never READS its input
-parameter is uncontrollable — a real cheap-model defect. We look at reads off the
-input PARAM specifically (not bare words anywhere in the file): that way bounds/
-geometry code that mentions ``left``/``right`` off *state* doesn't mask a missing
-input read, and an off-contract-but-real read like ``input.moveLeft`` still counts as
-wired. When ``step`` can't be confidently located/parsed we degrade open (no gap), so
-a controllable game is never false-flagged.
+First check: **input-wiring**. A game whose pure sim does not RESPOND to any input is
+uncontrollable — a real cheap-model defect. This is checked by RUNNING the sim (via
+the headless gate's Node harness), not by parsing its text: the harness holds each
+contract control (left/right/up/down/action) and reports which ones change the
+trajectory vs a no-input baseline. Run-don't-parse is deliberate — the previous
+regex parser was repeatedly fooled by real generated code (a doc-comment that
+mentioned ``step(...)``, a renamed param, an off-contract field name). Behavior can't
+be fooled that way: a control that moves the game is wired; one that doesn't isn't.
+
+When the sim couldn't be RUN (no pure core, no ``node``, a runtime throw before the
+probe) the check degrades open (no gap) — a controllable game is never false-flagged.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-# Match a `step` definition and capture its parameter list. Covers
-# `function step(...)`, `step(...) {` (method), `step = (...) =>`, and
-# `step = function(...)`. `[^()]*` keeps it to a flat param list (good enough; a
-# param list with nested parens is rare and just degrades open).
-_STEP_SIG = re.compile(r"\bstep\b\s*(?:=\s*)?(?:function\b\s*)?\(([^()]*)\)")
-_IDENT = re.compile(r"[A-Za-z_$][\w$]*")
 
+def check_input_wiring(project_dir: str | Path, *, gate=None) -> str | None:
+    """Return a fix-loop gap string if the game's pure sim does not RESPOND to any
+    input control, else ``None``.
 
-def _split_top_level(params: str) -> list[str]:
-    """Split a param list on top-level commas (so a destructured ``{a, b}`` param
-    stays intact)."""
-    out: list[str] = []
-    depth = 0
-    cur: list[str] = []
-    for ch in params:
-        if ch in "{[(":
-            depth += 1
-        elif ch in "}])":
-            depth = max(0, depth - 1)
-        if ch == "," and depth == 0:
-            out.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    if "".join(cur).strip():
-        out.append("".join(cur))
-    return [p.strip() for p in out]
+    Behavioral (run-don't-parse): it consults the headless gate's ``inputResponsive``
+    signal, produced by holding each contract control and watching whether the sim's
+    trajectory diverges from a no-input baseline. Pass an already-computed ``gate``
+    (:class:`~skyn3t.studio.headless_gate.HeadlessGateResult`) to reuse its single sim
+    run; otherwise the gate is run here.
 
-
-def _body_after(src: str, start: int) -> str:
-    """Return the brace-matched function body starting at/after ``start``."""
-    i = src.find("{", start)
-    if i == -1:
-        return ""
-    depth = 0
-    out: list[str] = []
-    for ch in src[i:]:
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-        out.append(ch)
-        if depth == 0:
-            break
-    return "".join(out)
-
-
-def _step_reads_input(src: str) -> bool | None:
-    """True if ``step``'s second (input) parameter is read in its body, False if it
-    plainly isn't (or there's no input param), None if ``step`` can't be parsed
-    (degrade open)."""
-    m = _STEP_SIG.search(src)
-    if not m:
-        return None
-    params = _split_top_level(m.group(1))
-    if len(params) < 2:
-        return False  # no input parameter at all -> uncontrollable
-    p = params[1]
-    if p.startswith("{"):
-        return True  # destructures fields straight off input -> wired
-    name = _IDENT.match(p)
-    if not name:
-        return None  # an odd param shape -> don't guess
-    body = _body_after(src, m.end())
-    if not body:
-        return None
-    # Wired iff the body references the input param by name (any read: input.foo,
-    # input[k], `const {x} = input`, etc.) — field NAMES don't matter, only that
-    # input is consulted at all.
-    return bool(re.search(r"\b" + re.escape(name.group(0)) + r"\b", body))
-
-
-def check_input_wiring(project_dir: str | Path) -> str | None:
-    """Return a fix-loop gap string if the pure sim's ``step()`` never reads its
-    input parameter (an uncontrollable game), else ``None``. Never raises; a missing/
-    unreadable/unparseable sim returns ``None`` (degrade open — never false-flag)."""
+    Degrades open (``None``) whenever the sim could not be run to a verdict — no pure
+    sim core, no ``node``, or a runtime throw before the probe — so a controllable
+    game is never false-flagged. Never raises.
+    """
     try:
-        from skyn3t.studio.headless_gate import _find_sim
+        if gate is None:
+            from skyn3t.studio.headless_gate import run_headless_gate
 
-        sim = _find_sim(Path(project_dir))
-        if sim is None:
+            gate = run_headless_gate(project_dir)
+        # No runnable sim core / no node / couldn't launch -> can't judge -> open.
+        if not getattr(gate, "applicable", False):
             return None
-        src = sim.read_text(encoding="utf-8", errors="ignore")
-        reads_input = _step_reads_input(src) if src else None
+        report = getattr(gate, "report", None) or {}
+        # The probe didn't run (e.g. the sim threw before section 7) -> degrade open.
+        if "inputResponsive" not in report:
+            return None
+        # At least one contract control changes the simulation -> controllable.
+        if report.get("inputResponsive"):
+            return None
     except Exception:  # noqa: BLE001 - a checker must never break a build
         return None
-    if reads_input is None or reads_input:
-        return None
     return (
-        "the game IGNORES player input — its pure sim step(state, input, dt) never "
-        "reads the input parameter, so the game is uncontrollable. Read the input "
-        "controls (input.left/right/up/down/action — all booleans) in step() and "
-        "move/act on them."
+        "the game IGNORES player input — holding each control (left/right/up/down/"
+        "action) leaves its pure simulation's trajectory identical to no input, so "
+        "the game is uncontrollable. In step(state, input, dt), read the input "
+        "booleans (input.left / input.right / input.up / input.down / input.action) "
+        "and move/act on them."
     )

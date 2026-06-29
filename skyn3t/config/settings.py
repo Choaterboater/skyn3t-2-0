@@ -189,6 +189,12 @@ class Settings(BaseSettings):
     # soft-skips with no vision model. Off by default (it serves + screenshots the
     # game, so it adds time + a vision call).
     game_visual_check_enabled: bool = False
+    # When on (and a vision model + the code-improver are available), the game visual
+    # check ACTS — it feeds an EMPTY/TINY gap to the improver and keeps the repair only
+    # if it preserves headless-gate correctness, improves the visual verdict, and still
+    # builds (else rolls back). Off => the check stays advisory/record-only. Never blocks
+    # the verdict.
+    game_visual_repair_enabled: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
     # tournament_model_pool so the run is a real cross-model contest (genuine

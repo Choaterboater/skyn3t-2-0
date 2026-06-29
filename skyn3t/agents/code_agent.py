@@ -170,6 +170,36 @@ _GAME_STACK_DIRECTIVE = (
     "web-framework routes — those build a website, not this game. Everything renders "
     "to a single Phaser canvas."
 )
+
+# Game FEEL / juice — the difference between a game that FUNCTIONS and one that feels
+# good. Backed by data/skills/game-feel-juice.md (retrieved into the prompt); concrete
+# per-event mandates so a cheap model wires real feedback instead of a flat tech demo.
+# Effects live in the Scene/renderer ONLY so the pure src/sim.js stays deterministic.
+_GAME_FEEL_DIRECTIVE = (
+    "GAME FEEL (required — a game with no impact feedback is a FAIL, not a real game): "
+    "implement juice in the Phaser Scene/renderer ONLY — NEVER in src/sim.js (the pure "
+    "sim stays deterministic; it emits typed events, e.g. push to a state.events list, "
+    "that the scene drains and reacts to each frame). Mandatory feedback, BY EVENT: "
+    "(1) on-shoot — an additive muzzle-flash sprite (~50ms) + a small gun-kickback tween "
+    "(~5px, 40ms yoyo Back.easeOut) + a light camera.shake(70, 0.004); bullets rendered "
+    "bigger (~1.8x) and stretched along travel. "
+    "(2) on-hit (enemy survives) — flash the enemy solid white with setTintFill(0xffffff) "
+    "cleared after ~80ms, knock it back away from the impact, and explode an ~8-particle "
+    "ADD burst at the hit point. "
+    "(3) on-kill — HITSTOP ~50ms (briefly freeze gameplay via a time/physics/tween "
+    "timeScale, restored on a REAL-TIME timer so determinism holds) + a ~24-particle "
+    "death burst + camera.shake(150, 0.012) + a squash/scale-pop tween + a rising, fading "
+    "'+score' text. "
+    "(4) on-player-hit — camera.flash(200, 255, 0, 0) (red), red setTintFill, "
+    "camera.shake(300, 0.02), and an invincibility alpha-blink the damage check honors. "
+    "(5) on-powerup / level-up — a celebration: a gold camera.flash, an upward particle "
+    "fountain, a scale-pop (Back.easeOut), a brief slow-mo, and floating text. "
+    "RULES: screen shake is strongest-request-wins (take the MAX in a frame, NEVER sum) "
+    "and capped (~0.05 intensity); .destroy() every emitter/sprite and clearTint() after "
+    "use (a leaked pool fails the runtime gate). At minimum, hitstop + hit-flash + screen "
+    "shake + particle bursts MUST be wired and firing — see the game-feel-juice skill for "
+    "exact Phaser-3.60 snippets per event."
+)
 # The game-art directive is now GENRE-AWARE and built per-brief from the art
 # director's deterministic plan — see CodeAgent._game_art_directive. (A geometric
 # game is told to render crisp primitives; a sprite genre gets the load+fallback
@@ -436,6 +466,7 @@ class CodeAgent(BaseAgent):
             f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
             f"{brief}\n\n"
             + (f"{_GAME_STACK_DIRECTIVE}\n\n" if stack == "phaser" else "")
+            + (f"{_GAME_FEEL_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")

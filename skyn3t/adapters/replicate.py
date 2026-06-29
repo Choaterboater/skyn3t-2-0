@@ -237,12 +237,17 @@ class ReplicateClient:
         so the default is minimal (works across SDXL/flux/recraft/coloring models).
 
         retro-diffusion/* are pixel game-sprite models with their OWN schema: send
-        ``style='game_asset'`` for a game look, ``remove_bg=True`` for a transparent
-        PNG in one call, and a small 256x256 size to stay in the cheap price tier.
-        These keys are sent ONLY to retro-diffusion/* — flux/recraft reject them."""
+        ``style='game_asset'`` for a game look and a small 256x256 size to stay in the
+        cheap price tier. These keys are sent ONLY to retro-diffusion/* — flux/recraft
+        reject them.
+
+        NOTE: do NOT send ``remove_bg=True``. It currently triggers a server-side
+        ``inference_failed`` ("Unable to run inference") on rd-fast — verified that the
+        identical call SUCCEEDS once ``remove_bg`` is dropped. Transparency is done
+        downstream instead (flood-fill the border background to alpha in assets.py)."""
         inp = {"prompt": prompt}
         if str(model).startswith("retro-diffusion/"):
-            inp.update(style="game_asset", remove_bg=True, width=256, height=256)
+            inp.update(style="game_asset", width=256, height=256)
         return inp
 
     @staticmethod

@@ -195,6 +195,14 @@ class Settings(BaseSettings):
     # builds (else rolls back). Off => the check stays advisory/record-only. Never blocks
     # the verdict.
     game_visual_repair_enabled: bool = False
+    # QA-playtest gate (roadmap #9): serves the built game and DRIVES every control with
+    # Playwright — movement, fire, the off-contract barrel-roll (Z/Shift), pause — long
+    # enough to spawn a wave, failing on any uncaught console/page error (the freeze/
+    # ReferenceError class the sim gate's {left,right,up,down,action,pause} contract never
+    # triggers); also verifies generated sprites are actually preloaded/rendered. ADVISORY:
+    # recorded to the manifest and fed to the fix-loop; it NEVER blocks the verdict by
+    # itself. Opt-in because it serves + drives a real browser (adds time).
+    qa_playtest_enabled: bool = False
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
     # tournament_model_pool so the run is a real cross-model contest (genuine

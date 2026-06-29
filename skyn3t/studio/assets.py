@@ -235,12 +235,76 @@ async def generate_assets(
 # The role-sprite model. retro-diffusion/rd-fast is an OFFICIAL Replicate model
 # (live-verified is_official=True — works on the official-models endpoint the
 # adapter uses, unlike community models that 404 there) that is PIXEL-NATIVE and
-# game-styled. The adapter (ReplicateClient._input_for) sends its rd-specific
-# params — style='game_asset' + remove_bg=True (transparent PNG in one call) +
-# 256x256 (cheap tier, ~$0.017/image). A strict upgrade over flux-schnell, which
-# produced generic OPAQUE images. (DEFAULT_MODEL/flux-schnell remains the fallback
-# for the subject-image flows above.)
+# game-styled. The adapter (ReplicateClient._input_for) sends its rd params
+# (style='game_asset' + 256x256, cheap tier ~$0.017/image) but NOT remove_bg —
+# that flag currently fails server-side; we strip the background ourselves below.
 _SPRITE_ROLE_MODEL = "retro-diffusion/rd-fast"
+
+# CASCADE: the preferred pixel model first, then a working OFFICIAL fallback so a
+# single-model outage degrades to the next model instead of all the way to
+# primitives. flux-schnell is opaque/generic but available + cheap; the bg keyer
+# below makes its (and rd-fast's) solid background transparent.
+_SPRITE_ROLE_MODELS = (_SPRITE_ROLE_MODEL, "black-forest-labs/flux-schnell")
+
+
+def _key_bg_to_alpha(png_bytes: bytes) -> bytes:
+    """Flood-fill the border-connected background of a sprite to transparent.
+
+    The sprite models return a SOLID background (rd-fast can't use its broken
+    remove_bg; flux paints one), which looks wrong dropped onto a scrolling scene.
+    This makes only the background touching the image border transparent, via a
+    flood-fill from the four corners — so interior light pixels (a white star or
+    cockpit *inside* the plane) are PRESERVED, unlike a naive global colour key.
+
+    Only keys when the four corners are a near-uniform colour (a real backdrop); a
+    busy/non-uniform frame is left untouched. Returns the input bytes unchanged on
+    any problem (not an image, busy bg). Never raises."""
+    try:
+        import io as _io
+
+        from PIL import Image, ImageDraw
+
+        im = Image.open(_io.BytesIO(png_bytes)).convert("RGB")
+        w, h = im.size
+        if w < 4 or h < 4:
+            return png_bytes
+        corners = [im.getpixel((0, 0)), im.getpixel((w - 1, 0)),
+                   im.getpixel((0, h - 1)), im.getpixel((w - 1, h - 1))]
+
+        def _close(a, b, t=24):
+            return all(abs(a[i] - b[i]) <= t for i in range(3))
+
+        if not all(_close(corners[0], c) for c in corners[1:]):
+            return png_bytes  # busy backdrop -> don't risk mangling it
+        sentinel = (1, 254, 1)  # unlikely to occur naturally; marks filled bg
+        for seed in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+            ImageDraw.floodfill(im, seed, sentinel, thresh=40)
+        rgba = im.convert("RGBA")
+        px = rgba.load()
+        for y in range(h):
+            for x in range(w):
+                r, g, b, _a = px[x, y]
+                if (r, g, b) == sentinel:
+                    px[x, y] = (0, 0, 0, 0)
+        out = _io.BytesIO()
+        rgba.save(out, "PNG")
+        return out.getvalue()
+    except Exception:  # noqa: BLE001 - keying is best-effort; never break a build
+        return png_bytes
+
+
+async def _generate_role_image(cli: Any, prompt: str) -> tuple[bytes | None, str | None]:
+    """Try each sprite model in order; return (bytes, model) for the first that yields
+    an image, with the solid background keyed to transparent, else (None, None).
+    Resilient to a single model outage. Never raises."""
+    for mdl in _SPRITE_ROLE_MODELS:
+        try:
+            images = await cli.generate_images(prompt, n=1, model=mdl)
+        except Exception:  # noqa: BLE001 - try the next model
+            images = []
+        if images and images[0]:
+            return _key_bg_to_alpha(images[0]), mdl
+    return None, None
 
 
 def _role_art_source(settings: Settings) -> str:
@@ -309,8 +373,8 @@ async def generate_role_sprites(
     # path). Primitive roles are never generated — they render from the palette.
     async def _gen(role: str, rp) -> tuple[str, bytes | None]:
         try:
-            images = await cli.generate_images(rp.prompt, n=1, model=_SPRITE_ROLE_MODEL)
-            return role, (images[0] if images else None)
+            data, _mdl = await _generate_role_image(cli, rp.prompt)
+            return role, data
         except Exception as exc:  # noqa: BLE001 - never break the build over one role
             log.warning("role_sprites.role_failed", role=role, error=str(exc)[:160])
             return role, None

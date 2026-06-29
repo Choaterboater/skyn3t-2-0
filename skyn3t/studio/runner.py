@@ -2235,6 +2235,51 @@ class StudioRunner:
                         manifest.extra["headless_gate"] = gate.to_dict()
                 except Exception as exc:  # noqa: BLE001 - advisory; never break a build
                     log.warning("game_visual_check.failed", error=str(exc))
+            # QA-playtest (opt-in, game stacks): serve the delivered game and DRIVE every
+            # control with a browser — movement, fire, the off-contract barrel-roll
+            # (Z/Shift), pause — failing on any uncaught console/page error (the freeze/
+            # ReferenceError class the sim gate's contract never triggers), and verify
+            # generated sprites actually render. ADVISORY: recorded + fed to the fix-loop;
+            # NEVER flips the verdict. `gate is not None` selects game stacks.
+            if gate is not None and bool(
+                    getattr(self.settings, "qa_playtest_enabled", False)):
+                try:
+                    from skyn3t.studio.game_visual_loop import select_game_source_files
+                    from skyn3t.studio.qa_playtest import qa_playtest
+
+                    qa_verdict = await qa_playtest(project_dir, settings=self.settings)
+                    manifest.extra["qa_playtest"] = qa_verdict.to_dict()
+                    gaps = qa_verdict.gaps()
+                    if gaps:
+                        log.info("qa_playtest.flagged",
+                                 console_errors=qa_verdict.console_errors,
+                                 missing_sprite_roles=qa_verdict.missing_sprite_roles)
+                        if self._has_capability("code_improve"):
+                            files = select_game_source_files(project_dir)
+                            payload = {
+                                "brief": manifest.brief, "slug": manifest.slug,
+                                "worktree_dir": project_dir, "project_dir": project_dir,
+                                "stack": plan.stack, "plan": plan.to_dict(),
+                                "gaps": list(gaps), "files": list(files),
+                            }
+                            if extra:
+                                payload["extra"] = extra
+                            task = TaskRequest(
+                                type="code_improver", payload=payload,
+                                capabilities_required=("code_improve",),
+                                correlation_id=correlation_id,
+                                metadata={"stage": "qa_playtest"},
+                            )
+                            try:
+                                await asyncio.wait_for(
+                                    self.orchestrator.submit(task),
+                                    timeout=self.stage_exec_timeout,
+                                )
+                                manifest.files = list_files(project_dir)
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning("qa_playtest.improve_failed", error=str(exc))
+                except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+                    log.warning("qa_playtest.failed", error=str(exc))
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty

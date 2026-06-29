@@ -267,15 +267,43 @@ def _detect_genre(brief: str | None) -> str:
     return "arcade"
 
 
-def _sprite_prompt(role: str, subject: str) -> str:
+# A top-down/vertical SHOOTER needs orientation-correct sprites: the player faces
+# UP, enemies face DOWN (toward the player). A generic "a fighter plane" prompt yields
+# a 3/4-view plane facing diagonally — wrong for a top-down shmup. Role-class is matched
+# ENEMY-first so "enemy_plane" (which also contains "plane") reads as an enemy. Skipped
+# for side/horizontal shooters (their player faces right, not up).
+_PLAYER_TOKENS = ("player", "ship", "hero", "fighter", "jet", "craft")
+_ENEMY_TOKENS = ("enemy", "boss", "alien", "interceptor", "gunship", "bomber",
+                 "mothership", "ufo", "foe", "invader")
+
+
+def _orientation_for(genre: str, role: str) -> str:
+    """A top-down + nose-direction phrase for shooter-genre sprite roles, else ``""``."""
+    g = str(genre).lower()
+    if "shooter" not in g and "shmup" not in g:
+        return ""
+    if "side" in g or "horizontal" in g:
+        return ""  # a horizontal shooter's player faces right — don't impose up/down
+    base = "top-down view from directly above"
+    r = str(role).lower()
+    if any(t in r for t in _ENEMY_TOKENS):
+        return f"{base}, nose pointing DOWN toward the player"
+    if any(t in r for t in _PLAYER_TOKENS):
+        return f"{base}, nose pointing UP"
+    return base  # neutral roles (powerup, etc.): top-down, no nose direction
+
+
+def _sprite_prompt(role: str, subject: str, genre: str = "") -> str:
     if role == "background":
         return (
             f"2D game background art of {subject}, wide seamless scene, "
             "flat vector illustration, soft depth, no text, no characters"
         )
+    orient = _orientation_for(genre, role)
+    tail = f", {orient}" if orient else ""
     return (
         f"2D game sprite of a {subject}, centered, transparent background, "
-        "clean flat shading, crisp edges, vibrant, no text"
+        f"clean flat shading, crisp edges, vibrant, no text{tail}"
     )
 
 
@@ -356,7 +384,7 @@ def direct_art(brief: str | None, *, settings=None) -> ArtPlan:
             role=role,
             render=render,
             subject=subject,
-            prompt=_sprite_prompt(role, subject) if render == "sprite" else "",
+            prompt=_sprite_prompt(role, subject, genre) if render == "sprite" else "",
             variant=f"{role}_{genre}",
             color=colors[role],
         )
@@ -435,19 +463,20 @@ def _plan_from_llm(data, floor: ArtPlan) -> ArtPlan | None:
     if not deduped:
         return None
     colors = _colors_for([(k, r) for k, r, _ in deduped], palette)
+    # Genre flows into the codegen directive text AND the sprite orientation phrase —
+    # whitelist it the same way so a malicious value can't inject quotes/newlines/
+    # instructions to the coder model.
+    genre = re.sub(
+        r"[^a-z0-9]+", "_", str(data.get("genre") or "").strip().lower()
+    ).strip("_")[:40] or "custom"
     roles = {
         key: RoleArt(
             role=key, render=render, subject=subject,
-            prompt=_sprite_prompt(key, subject) if render == "sprite" else "",
+            prompt=_sprite_prompt(key, subject, genre) if render == "sprite" else "",
             variant=f"{key}_llm", color=colors[key],
         )
         for key, render, subject in deduped
     }
-    # Genre flows into the codegen directive text — whitelist it the same way so a
-    # malicious value can't inject quotes/newlines/instructions to the coder model.
-    genre = re.sub(
-        r"[^a-z0-9]+", "_", str(data.get("genre") or "").strip().lower()
-    ).strip("_")[:40] or "custom"
     return ArtPlan(genre=genre, theme="llm", palette=palette, roles=roles)
 
 

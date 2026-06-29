@@ -2158,15 +2158,81 @@ class StudioRunner:
             if gate is not None and bool(
                     getattr(self.settings, "game_visual_check_enabled", False)):
                 try:
-                    from skyn3t.studio.game_visual_check import check_game_visual
+                    from skyn3t.studio.game_visual_loop import repair_game_visual
+                    from skyn3t.studio.headless_gate import run_headless_gate
 
-                    gv = await check_game_visual(project_dir, settings=self.settings)
+                    # The visual check ACTS (feeds the EMPTY/TINY gap to the improver,
+                    # keeping the repair only if it preserves the headless gate, improves
+                    # the visual verdict, and still builds) ONLY when we can actually
+                    # improve AND repair is enabled; otherwise it degrades to record-only
+                    # (today's advisory behavior, no mutation).
+                    run_improver = None
+                    build_check = None
+                    if (self._has_capability("code_improve")
+                            and bool(getattr(self.settings,
+                                             "game_visual_repair_enabled", False))):
+                        async def run_improver(gaps, files):  # noqa: A001
+                            payload = {
+                                "brief": manifest.brief, "slug": manifest.slug,
+                                "worktree_dir": project_dir, "project_dir": project_dir,
+                                "stack": plan.stack, "plan": plan.to_dict(),
+                                "gaps": list(gaps), "files": list(files),
+                            }
+                            if extra:
+                                payload["extra"] = extra
+                            task = TaskRequest(
+                                type="code_improver", payload=payload,
+                                capabilities_required=("code_improve",),
+                                correlation_id=correlation_id,
+                                metadata={"stage": "game_visual"},
+                            )
+                            try:
+                                await asyncio.wait_for(
+                                    self.orchestrator.submit(task),
+                                    timeout=self.stage_exec_timeout,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log.warning("game_visual.improve_failed", error=str(exc))
+                                return False
+                            manifest.files = list_files(project_dir)
+                            return True
+
+                        def _build_ok(p):
+                            res = proof_run(p, stack=plan.stack, run_build=True,
+                                            run_tests=False)
+                            return bool(res.passed
+                                        and res.detail.get("build") == "passed")
+
+                        build_check = lambda p: asyncio.to_thread(_build_ok, p)  # noqa: E731
+
+                    gv_res = await repair_game_visual(
+                        project_dir, settings=self.settings, brief=manifest.brief,
+                        stack=plan.stack, plan_dict=plan.to_dict(), extra=extra,
+                        gate=gate, run_improver=run_improver,
+                        run_gate=lambda p: asyncio.to_thread(run_headless_gate, p),
+                        build_check=build_check,
+                    )
                     manifest.extra["game_visual"] = {
-                        "ok": gv.ok, "skipped": gv.skipped,
-                        "issues": list(gv.issues), "gap": gv.gap() or "",
+                        "ok": gv_res.final.ok, "skipped": gv_res.final.skipped,
+                        "issues": list(gv_res.final.issues),
+                        "gap": gv_res.final.gap() or "",
+                        "repaired": gv_res.repaired,
+                        "build_reverted": gv_res.build_reverted,
+                        "rounds": [r.to_dict() for r in gv_res.rounds],
                     }
-                    if gv.gap():
-                        log.info("game_visual_check.flagged", issues=gv.issues)
+                    if gv_res.final.gap():
+                        log.info("game_visual_check.flagged", issues=gv_res.final.issues)
+                    # Adopt the visual loop's gate ONLY when it is genuinely applicable
+                    # (drop the raw degrade-open skip a missing-sim-core game returns, so
+                    # the missing-core block stays a no_go) and never let it RAISE the
+                    # gate result: AND with the prior verdict so a repair can't flip
+                    # no_go -> go, while a legitimately-passing applicable gate is still
+                    # recorded for the final tree.
+                    if (gv_res.gate is not None and gv_res.gate is not gate
+                            and getattr(gv_res.gate, "applicable", False)):
+                        gate = gv_res.gate
+                        headless_gate_ok = headless_gate_ok and gate.passed
+                        manifest.extra["headless_gate"] = gate.to_dict()
                 except Exception as exc:  # noqa: BLE001 - advisory; never break a build
                     log.warning("game_visual_check.failed", error=str(exc))
             verdict = (

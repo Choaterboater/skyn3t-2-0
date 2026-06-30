@@ -238,6 +238,11 @@ class Settings(BaseSettings):
     # (default; a normal single build). e.g. "react,static,fastapi". Costs N
     # builds, so it's an explicit opt-in.
     autonomous_fanout_stacks: str = ""
+    # Descriptive build metadata overrides. "auto" keeps inference from the brief
+    # + stack; set via env/UI when a user wants a specific app-type or engine label
+    # without hardcoding it in prompts or scaffolds.
+    app_type_override: str = "auto"
+    engine_override: str = "auto"
     # Spec 3: vision model (OpenRouter id) for the visual loop's judgement step.
     # Empty -> a built-in default; the loop activates only when openrouter_api_key
     # is also set, else it soft-skips the screenshot judgement.

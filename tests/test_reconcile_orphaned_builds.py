@@ -46,3 +46,28 @@ async def test_reconcile_leaves_live_owner_interrupts_dead(tmp_path):
     assert n == 1  # only the dead-owner row
     assert (await store.get_build("live"))["status"] == "running"     # live owner preserved
     assert (await store.get_build("dead"))["status"] == "interrupted"
+
+
+async def test_recent_builds_exposes_manifest_classification(tmp_path):
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    await store.save_build(
+        build_id="b1",
+        slug="x",
+        brief="a dashboard",
+        stack="react",
+        status="running",
+        manifest={
+            "extra": {
+                "classification": {"app_type": "dashboard", "engine": "dom"},
+                "stack_selection": {"method": "keyword", "stack": "react"},
+            }
+        },
+    )
+
+    row = (await store.recent_builds(limit=1))[0]
+
+    assert row["stack"] == "react"
+    assert row["app_type"] == "dashboard"
+    assert row["engine"] == "dom"
+    assert row["stack_selection"]["stack"] == "react"

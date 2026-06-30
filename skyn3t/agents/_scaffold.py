@@ -1356,11 +1356,11 @@ def _phaser_main_js(art: bool) -> str:
     views = (
         (
             "    this.playerView = this.textures.exists('player')\n"
-            "      ? this.add.sprite(0, 0, 'player').setDisplaySize(40, 40)\n"
-            "      : this.add.rectangle(0, 0, 36, 36, 0x4ade80)\n"
+            "      ? this.add.sprite(0, 0, 'player').setDisplaySize(40, 40).setDepth(10)\n"
+            "      : this.add.rectangle(0, 0, 36, 36, 0x4ade80).setDepth(10)\n"
             "    this.coinView = this.textures.exists('coin')\n"
-            "      ? this.add.sprite(0, 0, 'coin').setDisplaySize(28, 28)\n"
-            "      : this.add.circle(0, 0, 12, 0xfbbf24)\n"
+            "      ? this.add.sprite(0, 0, 'coin').setDisplaySize(28, 28).setDepth(20)\n"
+            "      : this.add.circle(0, 0, 12, 0xfbbf24).setDepth(20)\n"
         )
         if art
         else (

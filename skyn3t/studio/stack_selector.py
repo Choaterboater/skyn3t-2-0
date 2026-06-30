@@ -39,6 +39,22 @@ class StackChoice:
     rationale: str
 
 
+@dataclass(slots=True)
+class BuildClassification:
+    app_type: str
+    engine: str
+    method: str
+    rationale: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "app_type": self.app_type,
+            "engine": self.engine,
+            "method": self.method,
+            "rationale": self.rationale,
+        }
+
+
 def _to_real_builder(stack: str) -> str:
     s = (stack or "").strip().lower()
     s = _COLLAPSE.get(s, s)
@@ -57,6 +73,84 @@ def keyword_choice(brief: str) -> StackChoice:
     raw = _planner_detect(brief)
     stack = _to_real_builder(raw)
     return StackChoice(stack, "keyword", 0.5, f"keyword heuristic → {stack}")
+
+
+def classify_build(
+    brief: str,
+    stack: str,
+    *,
+    app_type_override: str = "",
+    engine_override: str = "",
+) -> BuildClassification:
+    """Infer app type + engine metadata for docs/UI without pinning the builder.
+
+    The stack remains the build substrate. This classification is descriptive
+    metadata for the dashboard, manifests, and future routing. Env/UI overrides
+    win, then the stack/brief heuristics pick a safe default.
+    """
+    app_type = _normalize_override(app_type_override)
+    engine = _normalize_override(engine_override)
+    method = "override" if app_type or engine else "inferred"
+    low = (brief or "").lower()
+    s = _to_real_builder(stack)
+
+    if not app_type:
+        app_type = _infer_app_type(low, s)
+    if not engine:
+        engine = _infer_engine(low, s)
+    return BuildClassification(
+        app_type=app_type,
+        engine=engine,
+        method=method,
+        rationale=f"{method} from stack={s}",
+    )
+
+
+def _normalize_override(value: str) -> str:
+    v = (value or "").strip().lower().replace(" ", "_")
+    return "" if v in ("", "auto", "none") else v
+
+
+def _infer_app_type(low: str, stack: str) -> str:
+    if stack == "phaser" or any(k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")):
+        return "game"
+    if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):
+        return "developer_tool"
+    if stack in ("fastapi", "express") or any(k in low for k in ("api", "rest", "backend", "server")):
+        return "api_service"
+    if stack == "react_native":
+        return "mobile_app"
+    if stack == "tauri":
+        return "desktop_app"
+    if any(k in low for k in ("dashboard", "admin", "analytics", "metrics")):
+        return "dashboard"
+    if any(k in low for k in ("landing", "marketing", "homepage", "portfolio")):
+        return "landing_page"
+    if any(k in low for k in ("crud", "database", "records", "inventory", "form")):
+        return "crud_app"
+    if any(k in low for k in ("chart", "csv", "visualization", "graph")):
+        return "data_viz"
+    if any(k in low for k in ("saas", "billing", "settings", "onboarding")):
+        return "saas_product"
+    return "product_app"
+
+
+def _infer_engine(low: str, stack: str) -> str:
+    if stack == "phaser":
+        return "phaser"
+    if stack in ("react", "nextjs", "remix", "astro", "static"):
+        if any(k in low for k in ("canvas", "pixi", "three", "webgl", "visual repair")):
+            return "browser_native"
+        return "dom"
+    if stack == "react_native":
+        return "expo"
+    if stack == "tauri":
+        return "tauri"
+    if stack in ("fastapi", "express"):
+        return "server"
+    if stack == "python":
+        return "python"
+    return "none"
 
 
 async def _llm_choice(brief: str, llm: Any) -> StackChoice | None:

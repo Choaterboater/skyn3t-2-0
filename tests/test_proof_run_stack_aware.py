@@ -12,6 +12,7 @@ execution_backend="inline" flag so no daemon probe occurs.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from skyn3t.studio.proof_run import _stack_artifact_check, proof_run
 
@@ -199,3 +200,55 @@ def test_proof_run_does_not_claim_sandbox_for_local_checks(tmp_path, monkeypatch
     assert res.passed is True
     assert res.mode == "local"
     assert res.detail.get("sandbox_available") is True
+
+
+def test_proof_run_routes_boot_command_through_sandbox(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _make_python_project(proj)
+    calls = []
+
+    class _FakeSandbox:
+        def docker_available(self):
+            return True
+
+        async def run(self, command, **kw):
+            calls.append({"command": command, **kw})
+            return SimpleNamespace(
+                exit_code=0, stdout="", stderr="", backend="docker", timed_out=False, warning=None)
+
+    monkeypatch.setattr(proof_mod, "_new_sandbox_runner", lambda execution_backend: _FakeSandbox())
+
+    res = proof_mod.proof_run(proj, stack="python", execution_backend="docker")
+
+    assert res.passed is True
+    assert res.mode == "sandbox"
+    assert res.detail.get("sandbox_backend") == "docker"
+    assert calls and calls[0]["command"][0] == "python"
+    assert calls[0]["stack"] == "python"
+
+
+def test_node_build_uses_node_sandbox_and_network_only_for_install(tmp_path):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"vite build"},"dependencies":{"vite":"^5.0.0"}}'
+    )
+    calls = []
+
+    class _FakeSandbox:
+        async def run(self, command, **kw):
+            calls.append({"command": command, **kw})
+            return SimpleNamespace(
+                exit_code=0, stdout="ok", stderr="", backend="docker", timed_out=False, warning=None)
+
+    ctx = proof_mod._ProofCommandContext(runner=_FakeSandbox(), stack="node")
+    ran, passed, _summary = proof_mod._run_node_build(tmp_path, "react", 120, ctx)
+
+    assert ran is True and passed is True
+    assert [c["command"][:2] for c in calls] == [["npm", "install"], ["npm", "run"]]
+    assert calls[0]["stack"] == "node"
+    assert calls[0]["network"] is True
+    assert calls[1]["network"] is False

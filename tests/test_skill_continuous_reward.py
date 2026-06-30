@@ -48,6 +48,20 @@ def test_quality_sum_round_trips(tmp_path):
     assert abs(lib2.get("r").score - 0.8) < 1e-6
 
 
+def test_record_use_keeps_skill_markdown_stable(tmp_path):
+    lib = SkillLibrary(skills_dir=tmp_path)
+    lib.add("Stable", "body", slug="stable")
+    path = tmp_path / "stable.md"
+    before = path.read_text()
+
+    lib.record_use("stable", helpful=True, quality=0.7)
+
+    assert path.read_text() == before
+    lib2 = SkillLibrary(skills_dir=tmp_path)
+    assert lib2.get("stable").uses == 1
+    assert abs(lib2.get("stable").score - 0.7) < 1e-6
+
+
 def test_record_learning_grades_skills_by_build_score(tmp_path):
     async def go():
         lib = SkillLibrary(skills_dir=tmp_path)

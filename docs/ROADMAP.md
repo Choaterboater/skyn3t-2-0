@@ -45,7 +45,7 @@ The 2.0 feature backlog, grouped by priority. Status legend:
 | Item | Status | Notes |
 | --- | --- | --- |
 | Trajectory replay / time-travel UI | ✅ | `/api/trajectory` exposes replay slices; Activity UI can load, filter, seek/freeze, and inspect event payloads. |
-| Model tournament / evolution | 🟡 | `intelligence.model_tournament`; `model_evolution` flag. |
+| Model tournament / evolution | ✅ | Build stages and debates feed `ModelTournament`; `auto_route` + `model_evolution` gate the learned router, and Cortex proposes enabling them once evidence is confident. |
 | Skill library / build patterns reuse | 🟡 | `intelligence.skill_library`, `intelligence.build_patterns`. |
 | Visual self-heal (drive rendered UI) | ⬜ | `visual_self_heal` flag; needs `playwright`. |
 | Asset generation | ⬜ | `asset_gen` flag; not yet wired. |

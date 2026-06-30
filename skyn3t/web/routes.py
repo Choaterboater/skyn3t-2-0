@@ -667,6 +667,16 @@ async def decide_proposal(state: AppState, proposal_id: str, approved: bool, rea
 
 async def list_skills(state: AppState) -> dict[str, Any]:
     skills = state.skills
+    patterns: list[dict[str, Any]] = []
+    scoreboard = getattr(getattr(state, "patterns", None), "scoreboard", None)
+    if scoreboard is not None:
+        try:
+            raw_patterns = scoreboard()
+            if hasattr(raw_patterns, "__await__"):
+                raw_patterns = await raw_patterns
+            patterns = [p for p in list(raw_patterns or []) if isinstance(p, dict)]
+        except Exception:  # noqa: BLE001
+            patterns = []
     # SkillLibrary exposes .all() -> list[Skill]; serialize for the SPA.
     getter = getattr(skills, "all", None) or getattr(skills, "list_skills", None)
     if skills is not None and getter is not None:
@@ -691,12 +701,12 @@ async def list_skills(state: AppState) -> dict[str, Any]:
                         "score": getattr(s, "score", 0),
                         "source": getattr(s, "source", ""),
                     })
-            return {"skills": out}
+            return {"skills": out, "patterns": patterns}
         except Exception:  # noqa: BLE001
             pass
     # Degraded: surface configured skill-hub paths from settings.
     paths = [p for p in state.settings.skills_hub_paths.split(",") if p.strip()]
-    return {"skills": [], "hub_paths": paths}
+    return {"skills": [], "patterns": patterns, "hub_paths": paths}
 
 
 async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str, Any]:

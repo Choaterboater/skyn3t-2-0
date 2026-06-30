@@ -10,6 +10,7 @@ export default function Skills() {
   });
 
   const skills = Array.isArray(data) ? data : data?.skills || [];
+  const patterns = Array.isArray(data?.patterns) ? data.patterns : [];
 
   return (
     <div>
@@ -41,6 +42,12 @@ export default function Skills() {
           label="Scored"
           value={skills.filter((s) => s.score != null).length}
           hint="have a score"
+        />
+        <Stat
+          label="Patterns"
+          value={patterns.length}
+          tone={patterns.length ? "ember" : "bone"}
+          hint="build shapes"
         />
       </div>
 
@@ -84,6 +91,49 @@ export default function Skills() {
                 ) : null}
               </div>
             ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel className="mt-6">
+        <PanelHead
+          label="Build-pattern reuse"
+          right={<span className="font-mono text-[11px] text-ash">/skills · patterns</span>}
+        />
+        {patterns.length === 0 ? (
+          <Empty icon="◇">
+            No build patterns recorded yet. Successful builds fill this scoreboard and promote repeat winners into skills.
+          </Empty>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full text-left font-mono text-xs">
+              <thead>
+                <tr className="border-b border-hairline">
+                  <th className="eyebrow px-4 py-3 font-normal">Stack</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Uses</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Win rate</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Mean score</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Shape</th>
+                </tr>
+              </thead>
+              <tbody>
+                {patterns.slice(0, 20).map((p, i) => (
+                  <tr key={p.fp || `${p.stack || "pattern"}-${i}`} className="border-b border-hairline/60">
+                    <td className="px-4 py-2 text-bone">{p.stack || "generic"}</td>
+                    <td className="px-4 py-2 text-ash">{p.uses ?? 0}</td>
+                    <td className="px-4 py-2 text-plasma">
+                      {Math.round((p.win_rate ?? 0) * 100)}%
+                    </td>
+                    <td className="px-4 py-2 text-ash">
+                      {Number(p.mean_score ?? 0).toFixed(1)}
+                    </td>
+                    <td className="max-w-xl truncate px-4 py-2 text-ash/80">
+                      {JSON.stringify(p.shape || {})}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </Panel>

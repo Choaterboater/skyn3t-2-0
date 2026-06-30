@@ -112,3 +112,11 @@ def test_activity_wires_trajectory_replay_ui() -> None:
     assert "Trajectory replay / time travel" in activity
     assert "Freeze latest" in activity
     assert "correlation_id" in activity
+
+
+def test_skills_wires_build_pattern_scoreboard() -> None:
+    skills = (ROUTES / "Skills.jsx").read_text()
+    assert "data?.patterns" in skills
+    assert "Build-pattern reuse" in skills
+    assert "Successful builds fill this scoreboard" in skills
+    assert "win_rate" in skills

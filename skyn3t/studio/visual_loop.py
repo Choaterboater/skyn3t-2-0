@@ -22,6 +22,7 @@ class VisualRound:
     skipped: bool
     issues: list[str] = field(default_factory=list)
     improved: bool = False
+    proof_passed: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -51,7 +52,8 @@ def _fix_goal(verdict: Any) -> str:
 async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                               checker: Any, improve_engine: Any,
                               vision_fn: Any = None, stack: str = "",
-                              max_rounds: int = 2) -> VisualLoopResult:
+                              max_rounds: int = 2,
+                              correlation_id: str | None = None) -> VisualLoopResult:
     """Serve -> inspect -> improve -> re-check, up to max_rounds inspections.
 
     Returns passed when an inspection matches the goal; skipped when there's no
@@ -66,7 +68,8 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                 return VisualLoopResult(passed=False, skipped=True, rounds=rounds,
                                         reason="no live preview")
             verdict = await checker.check(getattr(app, "url", ""), goal,
-                                          vision_fn=vision_fn)
+                                          vision_fn=vision_fn,
+                                          correlation_id=correlation_id)
         finally:
             try:
                 app_runner.stop(app)
@@ -88,14 +91,20 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
         issues = list(getattr(verdict, "issues", None) or [])
         last = i >= n - 1
         improved = False
+        proof_passed = None
         if not last:
             try:
-                await improve_engine.improve(project_dir, goal=_fix_goal(verdict))
-                improved = True
+                out = await improve_engine.improve(
+                    project_dir, goal=_fix_goal(verdict),
+                    correlation_id=correlation_id)
+                improved = getattr(out, "status", "") == "completed"
+                proof_passed = getattr(out, "proof_passed", None)
             except Exception:  # noqa: BLE001 - an improve failure ends the loop
                 improved = False
+                proof_passed = None
         rounds.append(VisualRound(index=i, matches=False, skipped=False,
-                                  issues=issues, improved=improved))
+                                  issues=issues, improved=improved,
+                                  proof_passed=proof_passed))
         if last or not improved:
             break
 

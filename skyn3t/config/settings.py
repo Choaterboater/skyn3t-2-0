@@ -285,7 +285,8 @@ class Settings(BaseSettings):
     # game). Default OFF: the reachability probe can't always reach an ending in a
     # legit game, so this stays opt-in to avoid a false no_go.
     headless_gate_requires_reachable: bool = False
-    visual_self_heal: bool = False  # 2.0: drive rendered UI (needs browser)
+    visual_self_heal: bool = False  # opt-in: drive rendered UI + repair with vision (needs browser)
+    visual_self_heal_max_rounds: int = Field(default=2, ge=1, le=5)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 
     # ---- Autonomy --------------------------------------------------------

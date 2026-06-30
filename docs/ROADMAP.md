@@ -47,7 +47,7 @@ The 2.0 feature backlog, grouped by priority. Status legend:
 | Trajectory replay / time-travel UI | ✅ | `/api/trajectory` exposes replay slices; Activity UI can load, filter, seek/freeze, and inspect event payloads. |
 | Model tournament / evolution | ✅ | Build stages and debates feed `ModelTournament`; `auto_route` + `model_evolution` gate the learned router, and Cortex proposes enabling them once evidence is confident. |
 | Skill library / build patterns reuse | ✅ | Skills inject into builds, receive continuous rewards, wins/patterns promote into reusable skills, and `/skills` shows both skills and build-pattern reuse. |
-| Visual self-heal (drive rendered UI) | ⬜ | `visual_self_heal` flag; needs `playwright`. |
+| Visual self-heal (drive rendered UI) | ✅ | `visual_self_heal` opt-in serves UI builds, screenshots + vision-judges them, repairs through the improver, re-proofs changed trees, and soft-skips without Playwright/vision. |
 | Asset generation | ⬜ | `asset_gen` flag; not yet wired. |
 | Prometheus metrics surface | 🟡 | `skyn3t.observability`; no-ops without `prometheus_client`. |
 

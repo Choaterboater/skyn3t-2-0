@@ -56,6 +56,7 @@ from skyn3t.studio.proof_run import (
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
+from skyn3t.studio.visual_loop import visual_self_improve
 from skyn3t.worktree import (
     Worktree,
     cleanup_worktree,
@@ -867,6 +868,69 @@ class StudioRunner:
         if gate_reason:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
+
+    async def _run_visual_self_heal(
+        self,
+        manifest,
+        project_dir: str,
+        plan,
+        correlation_id: str | None = None,
+    ) -> bool:
+        """Serve a rendered UI, vision-judge it against the brief, and repair.
+
+        Returns True when the loop actually changed files, so the caller can
+        re-run proof against the final tree. Non-UI stacks, missing browsers, and
+        missing vision providers degrade into a recorded skip.
+        """
+        stack = str(getattr(plan, "stack", "") or "")
+        if stack not in _UI_WEB_STACKS:
+            manifest.extra["visual_self_heal"] = {
+                "passed": False,
+                "skipped": True,
+                "rounds": [],
+                "reason": f"stack {stack or 'unknown'} has no rendered UI preview",
+            }
+            return False
+
+        try:
+            from skyn3t.studio.app_runner import AppRunner
+            from skyn3t.studio.improve import ImproveEngine
+            from skyn3t.studio.visual_check import VisualChecker, make_vision_fn
+
+            outcome = await visual_self_improve(
+                project_dir,
+                manifest.brief,
+                app_runner=AppRunner(),
+                checker=VisualChecker(event_bus=self.event_bus),
+                improve_engine=ImproveEngine(
+                    self.event_bus,
+                    self.orchestrator,
+                    settings=self.settings,
+                    memory=self.memory,
+                    skills=self.skills,
+                    rag=self.rag,
+                ),
+                vision_fn=make_vision_fn(self.settings),
+                stack=stack,
+                max_rounds=int(getattr(self.settings, "visual_self_heal_max_rounds", 2)),
+                correlation_id=correlation_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional visual loop must not crash a build
+            log.warning("visual_self_heal.failed", error=str(exc))
+            manifest.extra["visual_self_heal"] = {
+                "passed": False,
+                "skipped": True,
+                "rounds": [],
+                "reason": f"visual self-heal failed: {str(exc)[:160]}",
+            }
+            return False
+
+        data = outcome.to_dict()
+        manifest.extra["visual_self_heal"] = data
+        changed = any(bool(r.get("improved")) for r in data.get("rounds", []))
+        if changed:
+            manifest.files = list_files(project_dir)
+        return changed
 
     async def _surface_config(self, manifest, project_dir: str, plan: BuildPlan,
                               correlation_id: str) -> None:
@@ -2385,6 +2449,29 @@ class StudioRunner:
             # BEFORE liveness so a generated settings page is part of the served
             # app. Never crashes the build (best-effort, advisory).
             await self._surface_config(manifest, project_dir, plan, correlation_id)
+
+            # Opt-in rendered-UI self-heal: serve the built UI, screenshot + judge it
+            # against the original brief, repair with the improver, then re-proof if
+            # files changed so a visual repair cannot silently break the build.
+            if bool(getattr(self.settings, "visual_self_heal", False)):
+                visual_changed = await self._run_visual_self_heal(
+                    manifest, project_dir, plan, correlation_id)
+                if visual_changed:
+                    proof = await asyncio.to_thread(
+                        proof_run,
+                        project_dir,
+                        checklist=plan.checklist,
+                        execution_backend=self.settings.execution_backend,
+                        stack=plan.stack,
+                        run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                        test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                        run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                        build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                    )
+                    manifest.extra["proof"] = proof.to_dict()
+                    manifest.extra["proof_after_visual_self_heal"] = proof.to_dict()
+                    if not proof.passed:
+                        verdict = "no_go"
 
             # End-of-build liveness (web stacks): serve the delivered app, hit
             # every route/page, repair failures, and dampen the score by how many

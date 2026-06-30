@@ -81,3 +81,40 @@ def test_liveness_never_crashes_the_build(tmp_path, monkeypatch):
         r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="fastapi"),
                         SimpleNamespace(passed=True), 80.0, "go"))
     assert score == 80.0 and verdict == "go"  # degraded, build unaffected
+
+
+def test_visual_self_heal_records_skip_for_non_ui_stack(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="b", stack="python_cli")
+    changed = asyncio.run(
+        r._run_visual_self_heal(man, str(tmp_path), SimpleNamespace(stack="python_cli")))
+    assert changed is False
+    assert man.extra["visual_self_heal"]["skipped"] is True
+    assert "rendered UI" in man.extra["visual_self_heal"]["reason"]
+
+
+def test_visual_self_heal_records_result_and_refreshes_files(tmp_path, monkeypatch):
+    async def fake_loop(project_dir, goal, **kw):
+        assert goal == "a polished landing page"
+        assert kw["stack"] == "react"
+        (tmp_path / "visual-fix.txt").write_text("fixed")
+
+        class _Outcome:
+            def to_dict(self):
+                return {
+                    "passed": True,
+                    "skipped": False,
+                    "reason": "",
+                    "rounds": [{"index": 0, "improved": True}],
+                }
+
+        return _Outcome()
+
+    monkeypatch.setattr(runner_mod, "visual_self_improve", fake_loop)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="a polished landing page", stack="react")
+    changed = asyncio.run(
+        r._run_visual_self_heal(man, str(tmp_path), SimpleNamespace(stack="react")))
+    assert changed is True
+    assert man.extra["visual_self_heal"]["passed"] is True
+    assert "visual-fix.txt" in man.files

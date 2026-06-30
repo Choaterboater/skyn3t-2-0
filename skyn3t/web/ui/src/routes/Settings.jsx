@@ -19,11 +19,12 @@ const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app
 const ENGINES = ["auto", "dom", "browser_native", "phaser", "godot", "bevy", "raylib", "expo", "tauri", "server", "python", "none"];
 
 export default function Settings() {
-  const { data, error } = useQuery({
+  const settings = useQuery({
     queryKey: ["settings"],
     queryFn: queryFn("/settings"),
     retry: 0,
   });
+  const { data, error } = settings;
 
   const secrets = useQuery({
     queryKey: ["llm-secrets"],
@@ -55,6 +56,7 @@ export default function Settings() {
   const [repToken, setRepToken] = useState("");
   const [repModel, setRepModel] = useState("");
   const [repMsg, setRepMsg] = useState("");
+  const [visualMsg, setVisualMsg] = useState("");
 
   const [appTypeOverride, setAppTypeOverride] = useState("auto");
   const [engineOverride, setEngineOverride] = useState("auto");
@@ -65,17 +67,17 @@ export default function Settings() {
   const [chTarget, setChTarget] = useState("");
   const [chMsg, setChMsg] = useState("");
 
+  useEffect(() => {
+    if (!data) return;
+    setAppTypeOverride(data.app_type_override || "auto");
+    setEngineOverride(data.engine_override || "auto");
+  }, [data]);
+
   function saveToken() {
     if (typeof localStorage !== "undefined") {
       if (token) localStorage.setItem("skyn3t_token", token);
       else localStorage.removeItem("skyn3t_token");
     }
-
-    useEffect(() => {
-      if (!data) return;
-      setAppTypeOverride(data.app_type_override || "auto");
-      setEngineOverride(data.engine_override || "auto");
-    }, [data]);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -132,17 +134,32 @@ export default function Settings() {
     } catch (e) {
       setRepMsg(String(e.message));
     }
+  }
 
-    async function saveBuildMetadata() {
-      try {
-        const r = await apiPost("/settings/build_metadata", {
-          app_type: appTypeOverride || "auto",
-          engine: engineOverride || "auto",
-        });
-        setMetaMsg(`build metadata -> app ${r.app_type_override}, engine ${r.engine_override}`);
-      } catch (e) {
-        setMetaMsg(String(e.message));
-      }
+  async function saveVisualSelfHeal(enabled) {
+    try {
+      const r = await apiPost("/settings/visual_self_heal", { enabled });
+      setVisualMsg(
+        r.visual_self_heal
+          ? `visual self-heal ON → up to ${r.visual_self_heal_max_rounds} rendered repair round(s)`
+          : "visual self-heal off"
+      );
+      settings.refetch();
+      secrets.refetch();
+    } catch (e) {
+      setVisualMsg(String(e.message));
+    }
+  }
+
+  async function saveBuildMetadata() {
+    try {
+      const r = await apiPost("/settings/build_metadata", {
+        app_type: appTypeOverride || "auto",
+        engine: engineOverride || "auto",
+      });
+      setMetaMsg(`build metadata -> app ${r.app_type_override}, engine ${r.engine_override}`);
+    } catch (e) {
+      setMetaMsg(String(e.message));
     }
   }
 
@@ -191,6 +208,8 @@ export default function Settings() {
         execution_backend: data.execution_backend,
         autonomous_builds: data.autonomous_builds,
         approval_gates: data.approval_gates,
+        visual_self_heal: data.visual_self_heal,
+        visual_self_heal_max_rounds: data.visual_self_heal_max_rounds,
         per_build_usd_cap: data.per_build_usd_cap,
         daily_usd_cap: data.daily_usd_cap,
       }
@@ -428,6 +447,44 @@ export default function Settings() {
             </label>
             {repMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{repMsg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            label="Visual self-heal"
+            right={
+              <Pill tone={data?.visual_self_heal ? "plasma" : "ash"}>
+                {data?.visual_self_heal ? "ON" : "off"}
+              </Pill>
+            }
+          />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              When enabled, UI web builds are served in a browser, screenshotted,
+              judged against the original brief, and repaired before liveness. It
+              soft-skips when Playwright or a vision provider is unavailable.
+            </p>
+            <label className="flex items-center gap-2 text-sm text-bone">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-ember"
+                checked={!!data?.visual_self_heal}
+                onChange={(e) => saveVisualSelfHeal(e.target.checked)}
+              />
+              <span>
+                Drive rendered UI{" "}
+                <span className="font-mono text-ash">(visual_self_heal)</span>
+                {data?.visual_self_heal ? (
+                  <span className="text-plasma"> — ON</span>
+                ) : (
+                  <span className="text-ash"> — off</span>
+                )}
+              </span>
+            </label>
+            {visualMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{visualMsg}</p>
             ) : null}
           </div>
         </Panel>

@@ -131,9 +131,19 @@ async def test_settings_payload_surfaces_learned_router_flags():
     st = _state()
     st.settings.auto_route = True
     st.settings.model_evolution = True
+    st.settings.visual_self_heal = True
     payload = await routes.settings_payload(st)
     assert payload["auto_route"] is True
     assert payload["model_evolution"] is True
+    assert payload["visual_self_heal"] is True
+    assert payload["visual_self_heal_max_rounds"] >= 1
+
+
+async def test_visual_self_heal_setting_toggle_does_not_persist_in_tests():
+    st = _state()
+    res = await routes.set_visual_self_heal(st, True, persist=False)
+    assert res["visual_self_heal"] is True
+    assert st.settings.visual_self_heal is True
 
 
 async def test_submit_build_requires_brief():

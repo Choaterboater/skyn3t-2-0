@@ -37,7 +37,7 @@ The 2.0 feature backlog, grouped by priority. Status legend:
 | Reflective retry / reward hardening | ✅ | `reflective_retry`, `reward_hardening` flags. |
 | Approval gates (human / Cortex auto-approve-safe) | ✅ | `studio.approval_gate`. |
 | Out-of-band `studio approve/reject` reattaching to live builds | ✅ | CLI posts to `/api/studio/approve`; the web API resolves the live `ApprovalGate` and persists fallback decisions. |
-| Docker-sandboxed proof-run | 🟡 | Proof results now record Docker readiness without over-claiming sandbox mode; command-level proof execution still needs full `SandboxRunner` routing. |
+| Docker-sandboxed proof-run | ✅ | Structural scans stay local, while proof commands (boot import, generated tests, npm install/build/test) route through `SandboxRunner`; results report `mode="sandbox"` only when Docker executed and record fallback warnings otherwise. |
 | Debate / multi-agent A2A conversation | ✅ | `intelligence.debate`; opt-in full debate via `debate_enabled` or `a2a_conversation`, cheap single-completion fallback by default. |
 
 ## P2 — Advanced / experimental

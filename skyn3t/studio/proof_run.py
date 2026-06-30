@@ -522,6 +522,163 @@ class ProofResult:
         return extract_error_gaps(self.detail, self.syntax_errors)
 
 
+@dataclass(slots=True)
+class _ProofCommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    backend: str = "local"
+    timed_out: bool = False
+
+
+@dataclass(slots=True)
+class _ProofCommandContext:
+    runner: Any | None
+    stack: str
+    used_backend: str = ""
+    docker_available: bool = False
+    warnings: list[str] = field(default_factory=list)
+
+
+_NODE_SANDBOX_STACKS = {
+    "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
+    "svelte", "sveltekit", "vue", "nuxt", "solid", "tauri", "desktop",
+    "phaser", "node", "node_express", "express",
+}
+
+
+def _sandbox_stack(stack: str) -> str:
+    low = (stack or "").lower()
+    if low in _NODE_SANDBOX_STACKS:
+        return "node"
+    if low in ("static", "static_html"):
+        return "static"
+    return "python"
+
+
+def _new_sandbox_runner(execution_backend: str):
+    if execution_backend == "inline":
+        return None
+    try:
+        from skyn3t.config.settings import Settings
+        from skyn3t.security.sandbox import SandboxRunner
+
+        return SandboxRunner(settings=Settings(execution_backend=execution_backend))
+    except Exception:  # noqa: BLE001 - proof can still run deterministic local checks
+        return None
+
+
+def _proof_command_context(execution_backend: str, stack: str) -> _ProofCommandContext:
+    return _ProofCommandContext(
+        runner=_new_sandbox_runner(execution_backend),
+        stack=_sandbox_stack(stack),
+    )
+
+
+def _sandbox_available(ctx: _ProofCommandContext, execution_backend: str) -> bool:
+    if execution_backend not in ("docker", "auto"):
+        return False
+    if _DOCKER_IMPORTABLE and _docker_daemon_ok():
+        return True
+    runner = ctx.runner
+    if runner is not None and hasattr(runner, "docker_available"):
+        try:
+            return bool(runner.docker_available())
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
+def _run_proof_command(
+    ctx: _ProofCommandContext | None,
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    env: dict[str, str] | None = None,
+    network: bool = False,
+) -> _ProofCommandResult:
+    """Run a proof command through SandboxRunner when configured, else locally."""
+    runner = ctx.runner if ctx is not None else None
+    if runner is not None:
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop_running = False
+        else:
+            loop_running = True
+        if loop_running:
+            if ctx is not None:
+                ctx.warnings.append(
+                    "sandbox unavailable inside running event loop; using local proof command"
+                )
+        else:
+            try:
+                res = asyncio.run(
+                    runner.run(
+                        command,
+                        cwd=cwd,
+                        timeout=timeout,
+                        stack=ctx.stack if ctx is not None else None,
+                        env=env,
+                        network=network,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - proof commands report failure
+                return _ProofCommandResult(127, "", f"sandbox exec failed: {exc}", backend="sandbox")
+            backend = str(getattr(res, "backend", "") or "")
+            if ctx is not None and backend:
+                ctx.used_backend = backend
+            warning = getattr(res, "warning", None)
+            if ctx is not None and warning:
+                ctx.warnings.append(str(warning))
+            return _ProofCommandResult(
+                returncode=int(getattr(res, "exit_code", 1)),
+                stdout=str(getattr(res, "stdout", "") or ""),
+                stderr=str(getattr(res, "stderr", "") or ""),
+                backend=backend or "sandbox",
+                timed_out=bool(getattr(res, "timed_out", False)),
+            )
+
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        return _ProofCommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        return _ProofCommandResult(124, stdout, stderr, timed_out=True)
+    except (OSError, ValueError) as exc:
+        return _ProofCommandResult(127, "", f"exec failed: {exc}")
+
+
+def _using_sandbox(ctx: _ProofCommandContext | None) -> bool:
+    return bool(ctx is not None and ctx.runner is not None)
+
+
+def _use_container_command_names(ctx: _ProofCommandContext | None) -> bool:
+    if not _using_sandbox(ctx):
+        return False
+    runner = ctx.runner
+    if runner is None:
+        return False
+    if not hasattr(runner, "docker_available"):
+        return True
+    backend = str(getattr(getattr(runner, "settings", None), "execution_backend", "") or "")
+    return bool(ctx.docker_available or backend == "docker")
+
+
 def extract_error_gaps(
     detail: dict[str, Any] | None, syntax_errors: list[str] | None = None
 ) -> list[str]:
@@ -1222,19 +1379,17 @@ def proof_run(
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
-    ``execution_backend``: "auto" | "docker" | "inline". The deterministic proof
-    gates currently run locally; Docker readiness is recorded separately so we do
-    not over-claim sandbox isolation in the result mode.
+    ``execution_backend``: "auto" | "docker" | "inline". Structural file scans are
+    local, but proof commands (boot import, generated tests, npm install/build/test)
+    route through :class:`SandboxRunner` unless inline mode is requested.
     """
     pdir = Path(project_dir)
     checklist = checklist or []
 
     mode = "local"
-    sandbox_available = False
-    if execution_backend in ("docker", "auto") and _DOCKER_IMPORTABLE:
-        # Even with docker importable, a daemon may be absent. We probe lazily and
-        # record readiness without claiming the local proof ran inside Docker.
-        sandbox_available = _docker_daemon_ok()
+    cmd_ctx = _proof_command_context(execution_backend, stack)
+    sandbox_available = _sandbox_available(cmd_ctx, execution_backend)
+    cmd_ctx.docker_available = sandbox_available
 
     if not pdir.exists():
         return ProofResult(passed=False, mode=mode, detail={"reason": "project_dir missing"})
@@ -1261,7 +1416,7 @@ def proof_run(
     # entrypoint, or whose entrypoint cannot even be imported, has NOT been
     # proven — a missing/broken root was the exact failure the old static-only
     # proof greenlit. Web/static stacks count index.html as an entrypoint.
-    entrypoints, boot_error = _entrypoint_check(pdir, stack)
+    entrypoints, boot_error = _entrypoint_check(pdir, stack, cmd_ctx)
     detail: dict[str, Any] = {
         "stack": stack,
         "entrypoints": entrypoints,
@@ -1340,7 +1495,7 @@ def proof_run(
     # A real failure fails the proof (and routes into the fix loop). Inability to
     # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
     if run_tests and passed:
-        ran, tests_passed, summary = _run_generated_tests(pdir, stack, test_timeout)
+        ran, tests_passed, summary = _run_generated_tests(pdir, stack, test_timeout, cmd_ctx)
         if ran:
             detail["tests"] = "passed" if tests_passed else "failed"
             detail["test_summary"] = summary
@@ -1357,7 +1512,7 @@ def proof_run(
     # run build). A static "package.json exists" check greenlit a build that
     # didn't type-check/compile; this catches that. Soft-skips offline.
     if run_build and passed:
-        ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout)
+        ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
         if ran:
             detail["build"] = "passed" if build_ok else "failed"
             detail["build_summary"] = summary
@@ -1370,7 +1525,7 @@ def proof_run(
                 # the project's test script if a real runner is declared. This is
                 # NOT a hard gate — a subtly-wrong generated test must not no_go a
                 # building app; the result is recorded for score dampening only.
-                t_ran, t_ok, t_sum = _run_node_tests(pdir, test_timeout)
+                t_ran, t_ok, t_sum = _run_node_tests(pdir, test_timeout, cmd_ctx)
                 if t_ran:
                     detail["node_tests"] = "passed" if t_ok else "failed"
                     detail["node_tests_summary"] = t_sum
@@ -1378,6 +1533,13 @@ def proof_run(
             detail.setdefault("build", "skipped")
             if summary:
                 detail["build_summary"] = summary
+
+    if cmd_ctx.used_backend:
+        detail["sandbox_backend"] = cmd_ctx.used_backend
+        if cmd_ctx.used_backend == "docker":
+            mode = "sandbox"
+        elif cmd_ctx.warnings:
+            detail["sandbox_warning"] = cmd_ctx.warnings[-1]
 
     return ProofResult(
         passed=passed,
@@ -1545,7 +1707,11 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
     return (False, False, "")
 
 
-def _entrypoint_check(pdir: Path, stack: str) -> tuple[list[str], str]:
+def _entrypoint_check(
+    pdir: Path,
+    stack: str,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[list[str], str]:
     """Return (entrypoints found, boot_error). Boot is a guarded import smoke.
 
     Degrades to a static presence check when no python runtime is available or
@@ -1568,28 +1734,29 @@ def _entrypoint_check(pdir: Path, stack: str) -> tuple[list[str], str]:
 
     py = _python_executable()
     target = next((e for e in entrypoints if e.endswith(".py")), None)
-    if py is None or target is None:
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if py is None and not use_container_names:
+        return (entrypoints, "")  # no runtime -> presence-only (already syntax-checked)
+    if target is None:
         return (entrypoints, "")  # no runtime -> presence-only (already syntax-checked)
 
     module = target[:-3].replace("/", ".")
     import os
-    import subprocess
 
     # -B + PYTHONDONTWRITEBYTECODE so the smoke import never leaves a
     # __pycache__/.pyc inside the delivered artifact (the proof must not pollute
     # what it proves).
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    try:
-        proc = subprocess.run(
-            [py, "-B", "-c", f"import sys; sys.path.insert(0, '.'); import importlib; importlib.import_module({module!r})"],
-            cwd=str(pdir),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=20,
-            env=env,
-        )
-    except (subprocess.TimeoutExpired, OSError, ValueError):
+    py_cmd = "python" if use_container_names else str(py)
+    proc = _run_proof_command(
+        cmd_ctx,
+        [py_cmd, "-B", "-c",
+         f"import sys; sys.path.insert(0, '.'); import importlib; importlib.import_module({module!r})"],
+        cwd=pdir,
+        timeout=20,
+        env=env,
+    )
+    if proc.timed_out:
         # A hung/uncrunnable import is indeterminate, not a pass.
         return (entrypoints, "entrypoint import did not complete (hung or unrunnable)")
     if proc.returncode == 0:
@@ -1618,46 +1785,55 @@ def _has_python_tests(pdir: Path) -> bool:
     return False
 
 
-def _run_generated_tests(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
+def _run_generated_tests(
+    pdir: Path,
+    stack: str,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
     """Run the generated project's own test suite.
 
     Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no test
     runner, no deps, or no tests) and must NOT fail the proof. Never raises.
     """
     import os
-    import subprocess
 
     py = _python_executable()
     low = (stack or "").lower()
     is_python = low in ("cli", "python", "fastapi", "flask", "django")
-    if py is None or not (is_python or _has_python_tests(pdir)):
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if py is None and not use_container_names:
+        return (False, False, "")
+    if not (is_python or _has_python_tests(pdir)):
         return (False, False, "")  # node/web tests need an install step we skip
     if not _has_python_tests(pdir):
         return (False, False, "")
 
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(pdir)}
+    env = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "." if use_container_names else str(pdir),
+    }
+    py_cmd = "python" if use_container_names else str(py)
     # pytest must be importable; otherwise soft-skip rather than fail a build for
     # a missing dev tool in the environment.
-    try:
-        probe = subprocess.run([py, "-c", "import pytest"], capture_output=True, timeout=15)
-    except (subprocess.TimeoutExpired, OSError):
+    probe = _run_proof_command(
+        cmd_ctx, [py_cmd, "-c", "import pytest"], cwd=pdir, timeout=15, env=env)
+    if probe.timed_out or probe.returncode == 127:
         return (False, False, "")
     if probe.returncode != 0:
         return (False, False, "pytest not installed — tests skipped")
 
-    try:
-        proc = subprocess.run(
-            [py, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "addopts=", str(pdir)],
-            cwd=str(pdir),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
+    proc = _run_proof_command(
+        cmd_ctx,
+        [py_cmd, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "addopts=", "."],
+        cwd=pdir,
+        timeout=timeout,
+        env=env,
+    )
+    if proc.timed_out:
         return (True, False, f"tests timed out after {timeout}s")
-    except (OSError, ValueError):
+    if proc.returncode == 127:
         return (False, False, "")
 
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -1691,7 +1867,11 @@ _NODE_TEST_RUNNERS = ("vitest", "jest", "mocha", "@testing-library/react",
                       "@testing-library/vue", "ava")
 
 
-def _run_node_tests(pdir: Path, timeout: int) -> tuple[bool, bool, str]:
+def _run_node_tests(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
     """Advisory: run the project's JS/TS test script when a REAL runner is
     declared and node_modules is present. Returns ``(ran, passed, summary)``.
 
@@ -1703,11 +1883,13 @@ def _run_node_tests(pdir: Path, timeout: int) -> tuple[bool, bool, str]:
     import json as _json
     import os
     import shutil
-    import subprocess
 
     npm = shutil.which("npm")
     pkg_path = pdir / "package.json"
-    if npm is None or not pkg_path.exists() or not (pdir / "node_modules").is_dir():
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if npm is None and not use_container_names:
+        return (False, False, "")
+    if not pkg_path.exists() or not (pdir / "node_modules").is_dir():
         return (False, False, "")
     try:
         pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
@@ -1719,12 +1901,10 @@ def _run_node_tests(pdir: Path, timeout: int) -> tuple[bool, bool, str]:
     if not any(r in all_deps for r in _NODE_TEST_RUNNERS):
         return (False, False, "no recognized test runner")
     env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
-    try:
-        res = subprocess.run(
-            [npm, "test", "--silent"], cwd=str(pdir), stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=timeout, env=env,
-        )
-    except (subprocess.TimeoutExpired, OSError, ValueError):
+    npm_cmd = "npm" if use_container_names else str(npm)
+    res = _run_proof_command(
+        cmd_ctx, [npm_cmd, "test", "--silent"], cwd=pdir, timeout=timeout, env=env)
+    if res.timed_out or res.returncode == 127:
         return (False, False, "node tests timed out / failed to launch")
     out = ((res.stdout or "") + (res.stderr or "")).strip()
     return (True, res.returncode == 0, out[-500:])
@@ -1788,7 +1968,12 @@ def _node_build_env() -> dict:
     return env
 
 
-def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, str]:
+def _run_node_build(
+    pdir: Path,
+    stack: str,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
     """Compile a node/web project for real: npm install + npm run build.
 
     Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no npm, no
@@ -1797,14 +1982,16 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
     """
     import json as _json
     import shutil
-    import subprocess
 
     pkg_path = pdir / "package.json"
     low = (stack or "").lower()
     if low not in _NODE_STACKS and not pkg_path.exists():
         return (False, False, "")
     npm = shutil.which("npm")
-    if npm is None or not pkg_path.exists():
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if npm is None and not use_container_names:
+        return (False, False, "npm or package.json missing — build skipped")
+    if not pkg_path.exists():
         return (False, False, "npm or package.json missing — build skipped")
     try:
         pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
@@ -1821,22 +2008,25 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
         return (False, False, "no build/typecheck script — skipped")
 
     env = _node_build_env()
+    npm_cmd = "npm" if use_container_names else str(npm)
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
     # fix-loop sees the error. ONLY a genuine connectivity failure (offline
     # registry) soft-skips. Floor the budget at 120s so a slow-but-valid install
     # isn't starved into a false timeout.
     install_budget = max(120, int(timeout * 0.6))
-    try:
-        inst = subprocess.run(
-            [npm, "install", "--no-audit", "--no-fund", "--no-progress"],
-            cwd=str(pdir), stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=install_budget, env=env,
-        )
-    except subprocess.TimeoutExpired:
+    inst = _run_proof_command(
+        cmd_ctx,
+        [npm_cmd, "install", "--no-audit", "--no-fund", "--no-progress"],
+        cwd=pdir,
+        timeout=install_budget,
+        env=env,
+        network=True,
+    )
+    if inst.timed_out:
         # A hang/too-slow install is a delivery problem, not a free pass.
         return (True, False, f"npm install timed out after {install_budget}s")
-    except (OSError, ValueError):
+    if inst.returncode == 127:
         # npm could not even be launched -> environmental, soft-skip.
         return (False, False, "npm install could not be launched — build skipped")
     if inst.returncode != 0:
@@ -1845,15 +2035,16 @@ def _run_node_build(pdir: Path, stack: str, timeout: int) -> tuple[bool, bool, s
             return (False, False, "npm install failed (offline registry) — build skipped")
         return (True, False, out[-700:])
 
-    try:
-        bld = subprocess.run(
-            [npm, "run", build_cmd],
-            cwd=str(pdir), stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=max(30, timeout - install_budget), env=env,
-        )
-    except subprocess.TimeoutExpired:
+    bld = _run_proof_command(
+        cmd_ctx,
+        [npm_cmd, "run", build_cmd],
+        cwd=pdir,
+        timeout=max(30, timeout - install_budget),
+        env=env,
+    )
+    if bld.timed_out:
         return (True, False, f"npm run {build_cmd} timed out after build budget")
-    except (OSError, ValueError):
+    if bld.returncode == 127:
         return (False, False, "")
     out = ((bld.stdout or "") + (bld.stderr or "")).strip()
     if bld.returncode == 0:

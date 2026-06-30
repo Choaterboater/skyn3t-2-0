@@ -112,6 +112,15 @@ function ForgeStage({ stage, state }) {
   );
 }
 
+function buildMeta(build) {
+  const cls = build.classification || {};
+  return {
+    stack: build.stack || build.stack_selection?.stack || "auto",
+    appType: build.app_type || cls.app_type || "auto",
+    engine: build.engine || cls.engine || "auto",
+  };
+}
+
 export default function Studio({ stream }) {
   const qc = useQueryClient();
   const [brief, setBrief] = useState("");
@@ -493,6 +502,9 @@ export default function Studio({ stream }) {
               <thead>
                 <tr className="eyebrow border-b border-hairline text-ash">
                   <th className="px-4 py-2 font-normal">Slug</th>
+                  <th className="px-4 py-2 font-normal">Stack</th>
+                  <th className="px-4 py-2 font-normal">Type</th>
+                  <th className="px-4 py-2 font-normal">Engine</th>
                   <th className="px-4 py-2 font-normal">Status</th>
                   <th className="px-4 py-2 font-normal">Score</th>
                   <th className="px-4 py-2 font-normal">Cost</th>
@@ -500,60 +512,66 @@ export default function Studio({ stream }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-hairline/60">
-                {recentBuilds.map((b) => (
-                  <tr key={b.build_id || b.slug}>
-                    <td className="px-4 py-2 font-mono text-xs text-bone">
-                      {b.slug}
-                    </td>
-                    <td className="px-4 py-2">
-                      <Pill tone={verdictTone(b.status)}>{b.status}</Pill>
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs text-ash">
-                      {b.score ?? "—"}
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs text-ash">
-                      {b.cost_usd != null
-                        ? `$${Number(b.cost_usd).toFixed(4)}`
-                        : "—"}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      {["running", "queued", "pending", "awaiting_approval"].includes(b.status) ? (
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => {
-                              setPendingBuildId(b.build_id || b.slug);
-                              approve.mutate({
-                                build_id: b.build_id || b.slug,
-                                approved: true,
-                                reason: "",
-                              });
-                            }}
-                            disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
-                            className="btn-ember disabled:opacity-50"
-                            title="Approve this build"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => {
-                              setPendingBuildId(b.build_id || b.slug);
-                              approve.mutate({
-                                build_id: b.build_id || b.slug,
-                                approved: false,
-                                reason: "",
-                              });
-                            }}
-                            disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
-                            className="btn-ghost disabled:opacity-50"
-                            title="Reject this build"
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
+                {recentBuilds.map((b) => {
+                  const meta = buildMeta(b);
+                  return (
+                    <tr key={b.build_id || b.slug}>
+                      <td className="px-4 py-2 font-mono text-xs text-bone">
+                        {b.slug}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs text-ash">{meta.stack}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-ash">{meta.appType}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-ash">{meta.engine}</td>
+                      <td className="px-4 py-2">
+                        <Pill tone={verdictTone(b.status)}>{b.status}</Pill>
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs text-ash">
+                        {b.score ?? "—"}
+                      </td>
+                      <td className="px-4 py-2 font-mono text-xs text-ash">
+                        {b.cost_usd != null
+                          ? `$${Number(b.cost_usd).toFixed(4)}`
+                          : "—"}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        {["running", "queued", "pending", "awaiting_approval"].includes(b.status) ? (
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => {
+                                setPendingBuildId(b.build_id || b.slug);
+                                approve.mutate({
+                                  build_id: b.build_id || b.slug,
+                                  approved: true,
+                                  reason: "",
+                                });
+                              }}
+                              disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                              className="btn-ember disabled:opacity-50"
+                              title="Approve this build"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => {
+                                setPendingBuildId(b.build_id || b.slug);
+                                approve.mutate({
+                                  build_id: b.build_id || b.slug,
+                                  approved: false,
+                                  reason: "",
+                                });
+                              }}
+                              disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                              className="btn-ghost disabled:opacity-50"
+                              title="Reject this build"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

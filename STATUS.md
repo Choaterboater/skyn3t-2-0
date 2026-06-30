@@ -9,6 +9,16 @@ project tree. Adding API keys and optional packages upgrades quality and
 surfaces (real LLMs, Docker-sandboxed proof-runs, the web dashboard, vector
 RAG) without changing the core flow.
 
+## Resume fast
+
+If you get disconnected, open these in order:
+
+1. `docs/START_HERE.md`
+2. `docs/WORKFLOW.md`
+3. `docs/FILE_MAP.md`
+4. `docs/ARCHITECTURE.md`
+5. `docs/ROADMAP.md`
+
 ## What works offline (no keys, no heavy deps)
 
 | Capability | Notes |

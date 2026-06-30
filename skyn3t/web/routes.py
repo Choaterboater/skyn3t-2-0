@@ -944,6 +944,33 @@ async def set_asset_gen(state: AppState, enabled: bool, persist: bool = True) ->
     }
 
 
+async def set_build_metadata_overrides(
+    state: AppState, app_type: str = "auto", engine: str = "auto", persist: bool = True
+) -> dict[str, Any]:
+    """Set optional app-type/engine labels used by future builds.
+
+    These are metadata overrides only: they do not pin the implementation stack.
+    Use "auto" to let SkyN3t infer from the brief and selected stack.
+    """
+    import os
+
+    app_type = (app_type or "auto").strip().lower().replace(" ", "_")
+    engine = (engine or "auto").strip().lower().replace(" ", "_")
+    app_type = app_type or "auto"
+    engine = engine or "auto"
+    try:
+        state.settings.app_type_override = app_type
+        state.settings.engine_override = engine
+    except Exception:  # noqa: BLE001
+        pass
+    os.environ["SKYN3T_APP_TYPE_OVERRIDE"] = app_type
+    os.environ["SKYN3T_ENGINE_OVERRIDE"] = engine
+    if persist:
+        _persist_env_var("SKYN3T_APP_TYPE_OVERRIDE", app_type)
+        _persist_env_var("SKYN3T_ENGINE_OVERRIDE", engine)
+    return {"app_type_override": app_type, "engine_override": engine}
+
+
 async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str, Any]:
     """Drop cached proposals. ``scope='resolved'`` keeps genuinely-pending ones;
     ``scope='all'`` clears everything. In-memory only — never raises."""
@@ -1115,7 +1142,8 @@ async def brain_payload(state: AppState) -> dict[str, Any]:
 async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
-            "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend")
+            "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
+            "app_type_override", "engine_override")
     return {k: getattr(s, k, None) for k in keys}
 
 
@@ -1311,6 +1339,14 @@ def build_router(state: AppState) -> Any:
     @router.post("/settings/asset_gen", dependencies=[auth])
     async def _set_asset_gen(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_asset_gen(state, bool(body.get("enabled", body.get("on", False))))
+
+    @router.post("/settings/build_metadata", dependencies=[auth])
+    async def _set_build_metadata(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await set_build_metadata_overrides(
+            state,
+            app_type=str(body.get("app_type", body.get("app_type_override", "auto"))),
+            engine=str(body.get("engine", body.get("engine_override", "auto"))),
+        )
 
     @router.post("/proposals/clear", dependencies=[auth])
     async def _clear_proposals(body: dict[str, Any] = empty_body) -> dict[str, Any]:

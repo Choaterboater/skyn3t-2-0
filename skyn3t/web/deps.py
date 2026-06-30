@@ -56,6 +56,10 @@ class BuildRecord:
     brief: str
     slug: str = ""
     stack: str = ""
+    app_type: str = ""
+    engine: str = ""
+    stack_selection: dict[str, Any] = field(default_factory=dict)
+    classification: dict[str, Any] = field(default_factory=dict)
     status: str = "queued"
     score: float | None = None
     verdict: str = ""
@@ -70,6 +74,10 @@ class BuildRecord:
             "brief": self.brief,
             "slug": self.slug,
             "stack": self.stack,
+            "app_type": self.app_type,
+            "engine": self.engine,
+            "stack_selection": self.stack_selection,
+            "classification": self.classification,
             "status": self.status,
             "score": self.score,
             "verdict": self.verdict,
@@ -236,9 +244,12 @@ class AppState:
                 rec = BuildRecord(build_id=bid, brief=str(ev.payload.get("brief", "")))
                 self.builds[bid] = rec
             # Identity fields may arrive on any build event.
-            for k in ("slug", "stack"):
+            for k in ("slug", "stack", "app_type", "engine"):
                 if ev.payload.get(k):
                     setattr(rec, k, str(ev.payload[k]))
+            for k in ("stack_selection", "classification"):
+                if isinstance(ev.payload.get(k), dict):
+                    setattr(rec, k, dict(ev.payload[k]))
             if "cost_usd" in ev.payload:
                 try:
                     rec.cost_usd = float(ev.payload["cost_usd"])
@@ -306,6 +317,8 @@ class AppState:
                 # token is set; the asset-gen step additionally needs asset_gen.
                 "replicate_available": getattr(s, "replicate_available", False),
                 "asset_gen": s.asset_gen,
+                "app_type_override": s.app_type_override,
+                "engine_override": s.engine_override,
             },
         }
 

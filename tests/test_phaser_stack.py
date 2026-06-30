@@ -105,7 +105,9 @@ def test_scaffold_phaser_is_runnable_shape():
     assert "/src/main.js" in files["index.html"]
 
     # vite.config has NO react plugin (a Phaser game is not React).
-    assert "plugin-react" not in files.get("vite.config.js", "")
+    vite_config = files.get("vite.config.js", "")
+    assert "plugin-react" not in vite_config
+    assert "chunkSizeWarningLimit" in vite_config
 
 
 def test_phaser_scaffold_has_pure_sim_render_split():

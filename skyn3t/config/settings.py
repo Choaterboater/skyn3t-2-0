@@ -159,7 +159,7 @@ class Settings(BaseSettings):
 
     # ---- Feature flags ---------------------------------------------------
     debate_enabled: bool = False  # opt-in: when on, `skyn3t debate` runs a full multi-model debate
-    a2a_conversation: bool = False
+    a2a_conversation: bool = False  # opt-in alias for debate-style agent-to-agent conversation
     reflective_retry: bool = True
     auto_route: bool = False  # opt-in: gates the learned router; enable together with model_evolution
     asset_gen: bool = False

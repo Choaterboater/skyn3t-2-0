@@ -38,7 +38,7 @@ The 2.0 feature backlog, grouped by priority. Status legend:
 | Approval gates (human / Cortex auto-approve-safe) | ✅ | `studio.approval_gate`. |
 | Out-of-band `studio approve/reject` reattaching to live builds | ✅ | CLI posts to `/api/studio/approve`; the web API resolves the live `ApprovalGate` and persists fallback decisions. |
 | Docker-sandboxed proof-run | 🟡 | Proof results now record Docker readiness without over-claiming sandbox mode; command-level proof execution still needs full `SandboxRunner` routing. |
-| Debate / multi-agent A2A conversation | 🟡 | `intelligence.debate`; off by default (`debate_enabled`, `a2a_conversation`). |
+| Debate / multi-agent A2A conversation | ✅ | `intelligence.debate`; opt-in full debate via `debate_enabled` or `a2a_conversation`, cheap single-completion fallback by default. |
 
 ## P2 — Advanced / experimental
 

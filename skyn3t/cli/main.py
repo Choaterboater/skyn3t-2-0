@@ -400,7 +400,10 @@ async def _run_debate(question: str, settings: Any | None = None) -> Any:
     return await run_debate(
         llm,
         question,
-        enabled=bool(settings.debate_enabled),
+        enabled=bool(
+            getattr(settings, "debate_enabled", False)
+            or getattr(settings, "a2a_conversation", False)
+        ),
         tournament=tournament,
         event_bus=EventBus(),
     )
@@ -412,9 +415,10 @@ def debate(
 ) -> None:
     """Multi-model debate: propose -> cross-examine -> vote -> synthesise.
 
-    Gated by SKYN3T_DEBATE_ENABLED: off (default) is a single cheap completion;
-    on runs several models and records the winner into the ModelTournament that
-    feeds the learned router. Degrades deterministically on the stub backend.
+    Gated by SKYN3T_DEBATE_ENABLED or SKYN3T_A2A_CONVERSATION: off (default)
+    is a single cheap completion; on runs several models and records the winner
+    into the ModelTournament that feeds the learned router. Degrades
+    deterministically on the stub backend.
     """
     console = _console()
     result = asyncio.run(_run_debate(question))

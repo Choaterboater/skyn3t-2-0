@@ -174,35 +174,48 @@ class Settings(BaseSettings):
     # roles + palette to the brief for the long tail of games the deterministic
     # planner doesn't recognize (e.g. fishing -> boat/fish/hook). Off -> the
     # deterministic genre/open-ended floor (no call, $0). Never blocks a build: any
-    # failure falls back to the floor.
-    art_director_enabled: bool = False
+    # failure falls back to the floor. Default ON for game builds — costs nothing on
+    # the stub backend (returns the $0 floor), tailors art only when a real LLM exists.
+    art_director_enabled: bool = True
     # When on, a cheap LLM game-designer (one call/build, gated here) tailors the
     # game's DEPTH spec (named power-ups, levels, economy) to the brief; off -> the
     # deterministic genre-aware GDD floor (no call, $0). The depth contract (>=2
-    # power-ups, win+lose) is guaranteed either way. Never blocks a build.
-    game_designer_enabled: bool = False
+    # power-ups, win+lose) is guaranteed either way. Never blocks a build. Default ON
+    # for game builds — $0 on the stub backend, deepens design only with a real LLM.
+    game_designer_enabled: bool = True
     # When on (and a vision model is reachable), a game build's delivered, RUNNING
     # game is screenshotted mid-play and judged by a vision model for the things
     # headless gates fundamentally can't see — an EMPTY play field / TINY entities /
     # "nothing to play" (a human catches these by looking). ADVISORY: recorded to the
     # manifest and fed to the fix-loop as guidance; it NEVER blocks the verdict, and
-    # soft-skips with no vision model. Off by default (it serves + screenshots the
-    # game, so it adds time + a vision call).
-    game_visual_check_enabled: bool = False
+    # soft-skips with no vision model. Default ON for game builds: it checks (no key is
+    # needed BEFORE it serves — without a vision model it returns immediately, $0 + no
+    # added time), and adds the serve + screenshot + a vision call only when a vision
+    # model is configured.
+    game_visual_check_enabled: bool = True
     # When on (and a vision model + the code-improver are available), the game visual
     # check ACTS — it feeds an EMPTY/TINY gap to the improver and keeps the repair only
     # if it preserves headless-gate correctness, improves the visual verdict, and still
     # builds (else rolls back). Off => the check stays advisory/record-only. Never blocks
-    # the verdict.
-    game_visual_repair_enabled: bool = False
+    # the verdict. Default ON for game builds — a no-vision-model run never judges, so
+    # there is nothing to repair (no-op, $0).
+    game_visual_repair_enabled: bool = True
     # QA-playtest gate (roadmap #9): serves the built game and DRIVES every control with
     # Playwright — movement, fire, the off-contract barrel-roll (Z/Shift), pause — long
     # enough to spawn a wave, failing on any uncaught console/page error (the freeze/
     # ReferenceError class the sim gate's {left,right,up,down,action,pause} contract never
     # triggers); also verifies generated sprites are actually preloaded/rendered. ADVISORY:
     # recorded to the manifest and fed to the fix-loop; it NEVER blocks the verdict by
-    # itself. Opt-in because it serves + drives a real browser (adds time).
-    qa_playtest_enabled: bool = False
+    # itself. Default ON for game builds — it checks Playwright availability BEFORE it
+    # serves, so without Playwright it soft-skips immediately ($0 + no added time).
+    qa_playtest_enabled: bool = True
+    # Master switch that turns the (otherwise advisory) game_visual + qa_playtest
+    # checks into HARD verdict gates for game stacks. When on, a REAL, non-skipped
+    # failure (game_visual.ok is False / qa_playtest.ok is False) forces no_go (and
+    # the score auto-clamps to <=49). Safe by construction: a SKIPPED check (no vision
+    # model / no Playwright) never blocks, so offline builds are unaffected. Default ON
+    # — this is the fix for "a broken game still scored go". Set 0 to restore advisory.
+    game_quality_gates_verdict: bool = True
     best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
     # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
     # tournament_model_pool so the run is a real cross-model contest (genuine
@@ -260,6 +273,13 @@ class Settings(BaseSettings):
     # core are unaffected.
     headless_gate_enabled: bool = True
     headless_gate_attempts: int = 3
+    # Opt-in strengthening: the headless harness records winReachable/loseReachable
+    # but its pass/fail is driven by invariant violations alone, so a game you can
+    # neither win nor lose still passes. When on, an APPLICABLE gate with BOTH
+    # win+lose unreachable blocks the verdict (a game with no reachable ending isn't a
+    # game). Default OFF: the reachability probe can't always reach an ending in a
+    # legit game, so this stays opt-in to avoid a false no_go.
+    headless_gate_requires_reachable: bool = False
     visual_self_heal: bool = False  # 2.0: drive rendered UI (needs browser)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 

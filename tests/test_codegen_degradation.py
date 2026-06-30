@@ -36,7 +36,7 @@ async def _run_agentic(tmp_path, agentic_result: dict, *, write_code: bool = Fal
     agent = CodeAgent(event_bus=bus)
     await agent.start()
 
-    async def fake_agentic_build(prompt, workdir, timeout=None):
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
         if write_code:
             code = "# Generated app\n" + ("x = 1  # padding line\n" * 80)  # ~1700 bytes, well over 800
             pathlib.Path(workdir, "main.py").write_text(code)

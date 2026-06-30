@@ -1472,7 +1472,10 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
             '    "phaser": "^3.80.0"\n'
             "  },\n"
             '  "devDependencies": {\n'
-            '    "vite": "^5.0.0"\n'
+            # vite >=7: vite 5.x's bundled parse5/sourcemap-codec fails to compile
+            # under Node 25's ESM loader ("Unexpected identifier 'lastGapPos'"),
+            # which breaks every HTML build/dev-serve. 7.x keeps the v5 config API.
+            '    "vite": "^7.0.0"\n'
             "  }\n"
             "}\n"
         ),

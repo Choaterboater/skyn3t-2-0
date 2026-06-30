@@ -76,13 +76,30 @@ _KNOWN_CLI_PROVIDERS = ("claude", "kimi", "copilot")
 # Whole-project agentic codegen over the OpenRouter API: the model authors the
 # entire app itself via tool-calls (the way bolt/v0/Aider build coherent apps with
 # cheap models), instead of skyn3t's weak per-file generation.
-_AGENTIC_SYSTEM = (
+# The agentic codegen system prompt is COMPOSED per stack: a universal engineering core +
+# a stack-appropriate body + a universal tail. SkyN3t builds every kind of app (web sites,
+# web apps, games, mobile/iOS/Android, desktop/Windows/macOS, APIs, CLIs, …), so codegen
+# must NOT hardcode "build a React/Next marketing site" for every brief — that hardcoding
+# is what dragged a game build into building a website. See `_agentic_system_for`.
+_AGENTIC_SYSTEM_CORE = (
     "You are an expert full-stack engineer building a COMPLETE, runnable project. "
     "Author the WHOLE app yourself using the tools: call write_file for EVERY file "
     "with real, production-quality code (no placeholders, no TODOs); use read_file / "
     "list_files to stay coherent across files (imports must resolve, exports must "
     "exist); call finish only when the app is complete and builds/runs with its "
-    "standard command. The homepage MUST render MULTIPLE complete sections as real, "
+    "standard command. Build exactly the kind of app the brief and the pinned stack "
+    "describe — never silently switch to a different kind of project (e.g. do not turn "
+    "a game, mobile, desktop, API or CLI brief into a website). "
+    "You are creating brand-new files from scratch in a fresh workspace — there is NO "
+    "pre-existing version of any file. Write every file IN FULL: NEVER elide code with "
+    "an edit-style placeholder such as '/* ... unchanged ... */', '// rest of the file "
+    "is unchanged', '// ... existing code ...', or 'unchanged from the original'. Every "
+    "function and class body must be fully implemented; an elided body ships a stub that "
+    "crashes at run. "
+)
+# Web sites / web apps: react_vite, nextjs, astro, remix, static_html.
+_AGENTIC_SYSTEM_WEB = (
+    "The homepage MUST render MULTIPLE complete sections as real, "
     "separate components (hero, services, about, testimonials, contact) with real copy "
     "and any provided images under /assets, never a thin page or data-only scaffolding. "
     "When the brief implies distinct pages (a company's Services, About, Contact, "
@@ -97,10 +114,88 @@ _AGENTIC_SYSTEM = (
     "next/font); consistent spacing, border-radius and shadows on a fixed scale; strong "
     "visual hierarchy, generous whitespace, and WCAG-AA contrast. Aim for the polish of a "
     "top-tier modern marketing site, not a default-styled template. "
-    "Build a rich, polished, multi-page app that fully satisfies "
-    "the brief. Do NOT use native provider SDKs or keys — route any LLM calls through "
+    "Build a rich, polished, multi-page app that fully satisfies the brief. "
+)
+# Real-time games: phaser.
+_AGENTIC_SYSTEM_GAME = (
+    "This is a real-time GAME, not a website or marketing page: never build a landing "
+    "page, hero/section components, or content pages. Build the actual game — a real "
+    "game loop (update + render every frame), sprites/entities that move and collide, "
+    "responsive player input, clearly REACHABLE win AND lose conditions, an on-screen "
+    "score/HUD, and a game-over plus restart flow. The entry point must mount the game "
+    "canvas and start the loop immediately. Make it polished and juicy — readable art, "
+    "motion, and clear visual/audio feedback — but never substitute web or marketing UI "
+    "for real gameplay. "
+)
+# Mobile apps — iOS / Android / phone: react_native.
+_AGENTIC_SYSTEM_MOBILE = (
+    "This is a MOBILE app (iOS/Android), not a website: build real screens wired through "
+    "native navigation (a stack/tab navigator), touch-friendly controls, and platform-"
+    "appropriate components — never a marketing homepage or desktop web layout. Use a "
+    "shared design system (spacing, type scale, color tokens) across screens, respect "
+    "safe-area insets, handle loading/empty/error states, and make every primary screen "
+    "in the brief reachable through navigation. "
+)
+# Desktop apps — Windows / macOS / Linux: tauri.
+_AGENTIC_SYSTEM_DESKTOP = (
+    "This is a DESKTOP app (Windows/macOS/Linux), not a website: build a real application "
+    "UI — an app window layout, menus/toolbars and keyboard shortcuts where appropriate, "
+    "and views the user navigates between — not a centered marketing page. Persist app "
+    "state/data locally as the brief implies, handle loading/empty/error states, and wire "
+    "the front-end to the app's native/backend commands. "
+)
+# Backend services / APIs: fastapi, node_express.
+_AGENTIC_SYSTEM_API = (
+    "This is a BACKEND service/API, not a website: build real endpoints/routes with "
+    "request validation, correct status codes, consistent JSON error handling, and a "
+    "clear separation of routes, business logic, and data/models. Do NOT build marketing "
+    "pages or UI components. Include a health check and run with the stack's standard "
+    "server command. "
+)
+# Command-line tools: python_cli.
+_AGENTIC_SYSTEM_CLI = (
+    "This is a COMMAND-LINE tool, not a website: build a real CLI with argument/subcommand "
+    "parsing, helpful --help output, clear stdout/stderr separation, sensible exit codes, "
+    "and the actual functionality the brief describes. Do NOT build web pages or UI "
+    "components. "
+)
+_AGENTIC_SYSTEM_TAIL = (
+    "Do NOT use native provider SDKs or keys — route any LLM calls through "
     "the OpenAI SDK at https://openrouter.ai/api/v1 reading OPENROUTER_API_KEY."
 )
+# Stack -> body mapping. Keep these aligned with KNOWN_STACKS in skyn3t/agents/_common.py.
+_WEB_UI_STACKS = frozenset({"react_vite", "nextjs", "astro", "remix", "static_html"})
+_MOBILE_STACKS = frozenset({"react_native"})
+_DESKTOP_STACKS = frozenset({"tauri"})
+_API_STACKS = frozenset({"fastapi", "node_express"})
+_CLI_STACKS = frozenset({"python_cli"})
+_GAME_STACKS = frozenset({"phaser"})
+
+
+def _agentic_system_for(stack: str) -> str:
+    """Compose the agentic codegen system prompt for ``stack``. SkyN3t builds every kind
+    of app, so the body is stack-specific (web / game / mobile / desktop / api / cli)
+    instead of the old hardcoded 'build a React marketing site' that derailed non-web
+    builds. An unknown/empty stack falls back to the web body (the react_vite default)."""
+    if stack in _GAME_STACKS:
+        body = _AGENTIC_SYSTEM_GAME
+    elif stack in _MOBILE_STACKS:
+        body = _AGENTIC_SYSTEM_MOBILE
+    elif stack in _DESKTOP_STACKS:
+        body = _AGENTIC_SYSTEM_DESKTOP
+    elif stack in _API_STACKS:
+        body = _AGENTIC_SYSTEM_API
+    elif stack in _CLI_STACKS:
+        body = _AGENTIC_SYSTEM_CLI
+    elif (not stack) or stack in _WEB_UI_STACKS:
+        body = _AGENTIC_SYSTEM_WEB
+    else:
+        body = ""
+    return _AGENTIC_SYSTEM_CORE + body + _AGENTIC_SYSTEM_TAIL
+
+
+# Back-compat default (web): the composed prompt for the react_vite default stack.
+_AGENTIC_SYSTEM = _AGENTIC_SYSTEM_CORE + _AGENTIC_SYSTEM_WEB + _AGENTIC_SYSTEM_TAIL
 # Pushed back into the loop when a model calls finish but delivered only scaffolding
 # (data/config, a thin homepage, no section components) — makes cheap models that stop
 # early actually build the full UI.
@@ -113,6 +208,13 @@ _ANTISTUB_NUDGE = (
     "CRITICAL: if app/page.jsx (the entry/homepage) is still a placeholder or counter demo, "
     "OVERWRITE it now — import and render your section components; never leave the scaffold."
 )
+# The anti-stub nudge + `_looks_stub()` heuristic are WEB-MARKETING-specific (they count
+# .jsx/.tsx section components, inspect app/page.jsx, and tell the model to build hero/
+# services/etc.). They only make sense for web marketing stacks. On any other stack the
+# heuristic misfires — most dangerously on games, which have no .jsx files, so
+# `_looks_stub()` is ALWAYS true and the nudge would drag the model off-brief into a
+# React marketing site that clobbers the real app. Gate the nudge to these stacks only.
+_ANTISTUB_NUDGE_STACKS = frozenset({"react_vite", "nextjs", "astro", "remix"})
 _AGENTIC_TOOLS = [
     {"type": "function", "function": {
         "name": "write_file", "description": "Create or overwrite a project file with its full content.",
@@ -557,7 +659,7 @@ class LLMClient:
         )
 
     async def _openrouter_agentic(self, prompt: str, workdir: str, model: str,
-                                  timeout: int | None = None) -> dict:
+                                  timeout: int | None = None, stack: str = "") -> dict:
         """Whole-project agentic codegen on an OpenRouter model: the model writes the
         app itself via tool-calls (write_file/read_file/list_files/finish) with full
         context — coherent like bolt/v0/Aider, vs skyn3t's weak per-file gen. Files
@@ -603,7 +705,7 @@ class LLMClient:
                 return "\n".join(sorted(out)) or "(empty)"
             return "ERROR: unknown tool"
 
-        messages = [{"role": "system", "content": _AGENTIC_SYSTEM},
+        messages = [{"role": "system", "content": _agentic_system_for(stack)},
                     {"role": "user", "content": prompt}]
         headers = {"Authorization": f"Bearer {self.settings.openrouter_api_key}",
                    "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
@@ -611,6 +713,10 @@ class LLMClient:
         budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
         wrote, finished, start = 0, False, _t.time()
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
+        # The anti-stub nudge below is web-marketing-specific; only let it fire for those
+        # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
+        # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
+        stub_nudge_applies = (not stack) or (stack in _ANTISTUB_NUDGE_STACKS)
 
         _entry_names = {"page.jsx", "page.tsx", "app.jsx", "app.tsx", "index.jsx", "index.tsx"}
 
@@ -679,7 +785,7 @@ class LLMClient:
                     if finished:
                         # Refuse a thin result: push the model to build the real UI instead
                         # of stopping at data/config scaffolding (cheap models do this).
-                        if stub_nudges < _MAX_STUB_NUDGES and _looks_stub():
+                        if stub_nudge_applies and stub_nudges < _MAX_STUB_NUDGES and _looks_stub():
                             stub_nudges += 1
                             finished = False
                             messages.append({"role": "user", "content": _ANTISTUB_NUDGE})
@@ -701,7 +807,8 @@ class LLMClient:
             b == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)))
 
     async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None,
-                            model: str | None = None, provider: str | None = None) -> dict:
+                            model: str | None = None, provider: str | None = None,
+                            stack: str = "") -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
         This is the RIGHT way to use claude/kimi/copilot for codegen: one
@@ -720,7 +827,8 @@ class LLMClient:
             # whole-project codegen) instead of the weak per-file path.
             if backend == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)):
                 m = model or self.router.resolve(Tier.BACKEND)
-                return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout)
+                return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout,
+                                                      stack=stack)
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         if not self._cli_available(provider):
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}

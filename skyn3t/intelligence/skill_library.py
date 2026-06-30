@@ -5,7 +5,8 @@ matter holding its score. Skills are:
 
   * stored as ``<slug>.md`` files under a skills directory,
   * injected into a matching build as *advisory* context (never binding),
-  * scored after each build via :meth:`record_use` (helpful / not),
+  * scored after each build via :meth:`record_use` (helpful / not); mutable
+    scores live in a sidecar JSON file so source skill markdown stays stable,
   * auto-promoted from a recurring *build pattern* to a first-class skill once
     that pattern wins reliably (>= ~90% helpful over 20+ uses) — closing the
     learning edge between :mod:`build_patterns` and the skill set.
@@ -19,9 +20,12 @@ from __future__ import annotations
 
 import re
 import time
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from skyn3t.atomic_io import atomic_write_text
 
 try:
     import structlog
@@ -37,6 +41,7 @@ except Exception:  # pragma: no cover - defensive
 # requiring a real, repeated win before a shape becomes advice.
 PROMOTE_MIN_USES = 4
 PROMOTE_MIN_RATE = 0.66
+_SCORES_FILENAME = ".skill_scores.json"
 
 # Group equivalent stack vocabularies so a build's detected stack matches skills
 # tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
@@ -180,6 +185,28 @@ class SkillLibrary:
             except Exception as exc:  # noqa: BLE001
                 if _log:
                     _log.warning("skills.parse_failed", file=str(f), error=str(exc))
+        self._load_scores()
+
+    def _load_scores(self) -> None:
+        if self.dir is None:
+            return
+        path = self.dir / _SCORES_FILENAME
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict):
+                return
+            for slug, raw in data.items():
+                sk = self._skills.get(str(slug))
+                if sk is None or not isinstance(raw, dict):
+                    continue
+                sk.uses = int(raw.get("uses", sk.uses) or 0)
+                sk.helpful = int(raw.get("helpful", sk.helpful) or 0)
+                sk.quality_sum = float(raw.get("quality_sum", sk.quality_sum or 0.0))
+        except Exception as exc:  # noqa: BLE001
+            if _log:
+                _log.warning("skills.score_load_failed", error=str(exc))
 
     def _persist(self, skill: Skill) -> bool:
         if self.dir is None:
@@ -191,6 +218,28 @@ class SkillLibrary:
         except Exception as exc:  # noqa: BLE001
             if _log:
                 _log.warning("skills.persist_failed", error=str(exc))
+            return False
+
+    def _persist_scores(self) -> bool:
+        if self.dir is None:
+            return False
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            data = {
+                slug: {
+                    "uses": sk.uses,
+                    "helpful": sk.helpful,
+                    "quality_sum": sk.quality_sum or 0.0,
+                    "score": sk.score,
+                }
+                for slug, sk in sorted(self._skills.items())
+                if sk.uses or sk.helpful or (sk.quality_sum or 0.0)
+            }
+            atomic_write_text(self.dir / _SCORES_FILENAME, json.dumps(data, indent=2, sort_keys=True))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if _log:
+                _log.warning("skills.score_persist_failed", error=str(exc))
             return False
 
     # ---- CRUD ---------------------------------------------------------
@@ -306,7 +355,7 @@ class SkillLibrary:
             if helpful:
                 sk.helpful += 1
             sk.quality_sum = (sk.quality_sum or 0.0) + q
-            self._persist(sk)
+        self._persist_scores()
 
     # ---- auto-promotion from build patterns ---------------------------
     def maybe_promote_pattern(

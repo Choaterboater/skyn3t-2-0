@@ -1222,21 +1222,19 @@ def proof_run(
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
-    ``execution_backend``: "auto" | "docker" | "inline". Docker is only used when
-    the backend is requested AND the docker SDK imports; otherwise we degrade to
-    a deterministic local check. The local check still rejects empty scaffolds.
+    ``execution_backend``: "auto" | "docker" | "inline". The deterministic proof
+    gates currently run locally; Docker readiness is recorded separately so we do
+    not over-claim sandbox isolation in the result mode.
     """
     pdir = Path(project_dir)
     checklist = checklist or []
 
     mode = "local"
-    # "auto" means "use Docker if available" (matches security/sandbox.py and the
-    # rest of the codebase); only "inline" forces the degraded local check.
+    sandbox_available = False
     if execution_backend in ("docker", "auto") and _DOCKER_IMPORTABLE:
         # Even with docker importable, a daemon may be absent. We probe lazily and
-        # fall back to local rather than crashing (degrade, don't crash).
-        if _docker_daemon_ok():
-            mode = "sandbox"
+        # record readiness without claiming the local proof ran inside Docker.
+        sandbox_available = _docker_daemon_ok()
 
     if not pdir.exists():
         return ProofResult(passed=False, mode=mode, detail={"reason": "project_dir missing"})
@@ -1264,7 +1262,11 @@ def proof_run(
     # proven — a missing/broken root was the exact failure the old static-only
     # proof greenlit. Web/static stacks count index.html as an entrypoint.
     entrypoints, boot_error = _entrypoint_check(pdir, stack)
-    detail: dict[str, Any] = {"stack": stack, "entrypoints": entrypoints}
+    detail: dict[str, Any] = {
+        "stack": stack,
+        "entrypoints": entrypoints,
+        "sandbox_available": sandbox_available,
+    }
     if total > 0 and not entrypoints:
         passed = False
         detail["reason"] = "no runnable entrypoint found"

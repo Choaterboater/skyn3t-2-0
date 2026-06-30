@@ -176,6 +176,40 @@ async def test_skills_degraded():
     st = _state()
     res = await routes.list_skills(st)
     assert "skills" in res
+    assert "patterns" in res
+
+
+async def test_skills_payload_surfaces_build_patterns():
+    class _Skill:
+        slug = "react"
+        title = "React app"
+        body = "Build a reliable React app."
+        stack = "react"
+        tags = ["react"]
+        score = 0.9
+        source = "test"
+
+    class _Skills:
+        def all(self):
+            return [_Skill()]
+
+    class _Patterns:
+        def scoreboard(self):
+            return [{
+                "fp": "abc",
+                "stack": "react",
+                "uses": 4,
+                "win_rate": 0.75,
+                "mean_score": 88.5,
+                "shape": {"stages": 5},
+            }]
+
+    st = _state(skills=_Skills(), patterns=_Patterns())
+    res = await routes.list_skills(st)
+
+    assert res["skills"][0]["slug"] == "react"
+    assert res["patterns"][0]["fp"] == "abc"
+    assert res["patterns"][0]["shape"] == {"stages": 5}
 
 
 # ---- trajectory replay / time-travel hooks (P2) ---------------------------

@@ -104,3 +104,11 @@ def test_brain_uses_r3f() -> None:
     brain = (ROUTES / "Brain.jsx").read_text()
     assert "@react-three/fiber" in brain
     assert "Canvas" in brain
+
+
+def test_activity_wires_trajectory_replay_ui() -> None:
+    activity = (ROUTES / "Activity.jsx").read_text()
+    assert 'apiFetch(`/trajectory?' in activity
+    assert "Trajectory replay / time travel" in activity
+    assert "Freeze latest" in activity
+    assert "correlation_id" in activity

@@ -157,12 +157,28 @@ class MemoryStore:
             rows = (await s.execute(
                 select(BuildRow).order_by(BuildRow.created_at.desc()).limit(limit)
             )).scalars().all()
-            return [
-                {"build_id": r.build_id, "slug": r.slug, "status": r.status,
-                 "score": r.score, "verdict": r.verdict, "cost_usd": r.cost_usd,
-                 "artifact_dir": r.artifact_dir}
-                for r in rows
-            ]
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                manifest = r.manifest if isinstance(r.manifest, dict) else {}
+                extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
+                classification = extra.get("classification") if isinstance(extra.get("classification"), dict) else {}
+                stack_selection = extra.get("stack_selection") if isinstance(extra.get("stack_selection"), dict) else {}
+                out.append({
+                    "build_id": r.build_id,
+                    "slug": r.slug,
+                    "brief": r.brief,
+                    "stack": r.stack,
+                    "app_type": classification.get("app_type", ""),
+                    "engine": classification.get("engine", ""),
+                    "stack_selection": stack_selection,
+                    "classification": classification,
+                    "status": r.status,
+                    "score": r.score,
+                    "verdict": r.verdict,
+                    "cost_usd": r.cost_usd,
+                    "artifact_dir": r.artifact_dir,
+                })
+            return out
 
     async def get_build(self, build_id: str) -> dict[str, Any] | None:
         """Return a single build row by primary key, or ``None`` if not found."""
@@ -175,6 +191,7 @@ class MemoryStore:
                 "slug": row.slug,
                 "brief": row.brief,
                 "stack": row.stack,
+                "manifest": row.manifest,
                 "status": row.status,
                 "score": row.score,
                 "verdict": row.verdict,

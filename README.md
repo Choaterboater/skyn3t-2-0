@@ -120,6 +120,12 @@ flowchart TD
     CORTEX["Cortex (autonomous)"] --> SPINE
 ```
 
+If you are returning after a disconnect, start with
+[docs/START_HERE.md](docs/START_HERE.md).
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full package map and
-dataflow, and [docs/ROADMAP.md](docs/ROADMAP.md) for the feature backlog.
-Current state and the offline-vs-keys breakdown live in [STATUS.md](STATUS.md).
+dataflow, [docs/WORKFLOW.md](docs/WORKFLOW.md) for the operating playbook,
+[docs/FILE_MAP.md](docs/FILE_MAP.md) for where code lives,
+[docs/APP_TYPES.md](docs/APP_TYPES.md) for the UI/style defaults by app type,
+[docs/ENGINE_OPTIONS.md](docs/ENGINE_OPTIONS.md) for engine choices, and
+[docs/ROADMAP.md](docs/ROADMAP.md) for the feature backlog. Current state and the
+offline-vs-keys breakdown live in [STATUS.md](STATUS.md).

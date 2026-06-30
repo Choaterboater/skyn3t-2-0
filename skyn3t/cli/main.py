@@ -1197,6 +1197,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
         router=spine["router"],
         cortex=cortex,
         skills=getattr(studio, "skills", None),
+        patterns=getattr(studio, "patterns", None),
         messaging=messaging,
     )
 

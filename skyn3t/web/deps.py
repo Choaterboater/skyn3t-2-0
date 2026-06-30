@@ -137,6 +137,7 @@ class AppState:
         cortex: Any | None = None,
         knowledge: Any | None = None,
         skills: Any | None = None,
+        patterns: Any | None = None,
         messaging: Any | None = None,
     ) -> None:
         self.settings = settings or get_settings()
@@ -147,6 +148,7 @@ class AppState:
         self.cortex = cortex
         self.knowledge = knowledge
         self.skills = skills
+        self.patterns = patterns
         self.messaging = messaging
 
         if llm_client is None and LLMClient is not None:

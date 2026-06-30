@@ -182,3 +182,20 @@ def test_proof_run_empty_project_always_fails(tmp_path):
     proj.mkdir()
     res = proof_run(proj, stack="static", execution_backend="inline")
     assert res.passed is False
+
+
+def test_proof_run_does_not_claim_sandbox_for_local_checks(tmp_path, monkeypatch):
+    """Docker readiness is useful, but mode must describe where proof ran."""
+    import skyn3t.studio.proof_run as proof_mod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _make_static_project(proj)
+    monkeypatch.setattr(proof_mod, "_DOCKER_IMPORTABLE", True)
+    monkeypatch.setattr(proof_mod, "_docker_daemon_ok", lambda: True)
+
+    res = proof_mod.proof_run(proj, stack="static", execution_backend="docker")
+
+    assert res.passed is True
+    assert res.mode == "local"
+    assert res.detail.get("sandbox_available") is True

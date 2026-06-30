@@ -168,7 +168,14 @@ _GENRES: dict[str, _GenreSpec] = {
         ("gunship", "sprite", "heavy armored alien gunship"),
         ("boss", "sprite", "massive menacing alien mothership boss"),
         ("laser", "primitive", "laser bolt"),
-        ("powerup", "sprite", "glowing power-up capsule"),
+        # Distinct power-up TYPES each get their OWN sprite so pickups read differently
+        # in play — the GDD lists rapid-fire / spread / shield / bomb / extra-life, and a
+        # single generic capsule made every power-up look identical.
+        ("powerup_rapid", "sprite", "glowing red rapid-fire weapon power-up capsule"),
+        ("powerup_spread", "sprite", "glowing cyan triple-shot spread power-up capsule"),
+        ("powerup_shield", "sprite", "glowing green energy shield power-up orb"),
+        ("powerup_bomb", "sprite", "glowing orange screen-clearing bomb power-up"),
+        ("powerup_life", "sprite", "glowing pink extra-life 1up heart power-up"),
         ("background", "primitive", "deep-space starfield"),
     )),
     "platformer": _GenreSpec("arcade", (
@@ -267,15 +274,43 @@ def _detect_genre(brief: str | None) -> str:
     return "arcade"
 
 
-def _sprite_prompt(role: str, subject: str) -> str:
+# A top-down/vertical SHOOTER needs orientation-correct sprites: the player faces
+# UP, enemies face DOWN (toward the player). A generic "a fighter plane" prompt yields
+# a 3/4-view plane facing diagonally — wrong for a top-down shmup. Role-class is matched
+# ENEMY-first so "enemy_plane" (which also contains "plane") reads as an enemy. Skipped
+# for side/horizontal shooters (their player faces right, not up).
+_PLAYER_TOKENS = ("player", "ship", "hero", "fighter", "jet", "craft")
+_ENEMY_TOKENS = ("enemy", "boss", "alien", "interceptor", "gunship", "bomber",
+                 "mothership", "ufo", "foe", "invader")
+
+
+def _orientation_for(genre: str, role: str) -> str:
+    """A top-down + nose-direction phrase for shooter-genre sprite roles, else ``""``."""
+    g = str(genre).lower()
+    if "shooter" not in g and "shmup" not in g:
+        return ""
+    if "side" in g or "horizontal" in g:
+        return ""  # a horizontal shooter's player faces right — don't impose up/down
+    base = "top-down view from directly above"
+    r = str(role).lower()
+    if any(t in r for t in _ENEMY_TOKENS):
+        return f"{base}, nose pointing DOWN toward the player"
+    if any(t in r for t in _PLAYER_TOKENS):
+        return f"{base}, nose pointing UP"
+    return base  # neutral roles (powerup, etc.): top-down, no nose direction
+
+
+def _sprite_prompt(role: str, subject: str, genre: str = "") -> str:
     if role == "background":
         return (
             f"2D game background art of {subject}, wide seamless scene, "
             "flat vector illustration, soft depth, no text, no characters"
         )
+    orient = _orientation_for(genre, role)
+    tail = f", {orient}" if orient else ""
     return (
         f"2D game sprite of a {subject}, centered, transparent background, "
-        "clean flat shading, crisp edges, vibrant, no text"
+        f"clean flat shading, crisp edges, vibrant, no text{tail}"
     )
 
 
@@ -356,7 +391,7 @@ def direct_art(brief: str | None, *, settings=None) -> ArtPlan:
             role=role,
             render=render,
             subject=subject,
-            prompt=_sprite_prompt(role, subject) if render == "sprite" else "",
+            prompt=_sprite_prompt(role, subject, genre) if render == "sprite" else "",
             variant=f"{role}_{genre}",
             color=colors[role],
         )
@@ -435,19 +470,20 @@ def _plan_from_llm(data, floor: ArtPlan) -> ArtPlan | None:
     if not deduped:
         return None
     colors = _colors_for([(k, r) for k, r, _ in deduped], palette)
+    # Genre flows into the codegen directive text AND the sprite orientation phrase —
+    # whitelist it the same way so a malicious value can't inject quotes/newlines/
+    # instructions to the coder model.
+    genre = re.sub(
+        r"[^a-z0-9]+", "_", str(data.get("genre") or "").strip().lower()
+    ).strip("_")[:40] or "custom"
     roles = {
         key: RoleArt(
             role=key, render=render, subject=subject,
-            prompt=_sprite_prompt(key, subject) if render == "sprite" else "",
+            prompt=_sprite_prompt(key, subject, genre) if render == "sprite" else "",
             variant=f"{key}_llm", color=colors[key],
         )
         for key, render, subject in deduped
     }
-    # Genre flows into the codegen directive text — whitelist it the same way so a
-    # malicious value can't inject quotes/newlines/instructions to the coder model.
-    genre = re.sub(
-        r"[^a-z0-9]+", "_", str(data.get("genre") or "").strip().lower()
-    ).strip("_")[:40] or "custom"
     return ArtPlan(genre=genre, theme="llm", palette=palette, roles=roles)
 
 
@@ -474,6 +510,22 @@ async def plan_art_llm(brief: str | None, *, settings, llm=None) -> ArtPlan:
             return floor
         plan = _plan_from_llm(parse_json(getattr(result, "text", "") or ""), floor)
         if plan is None:
+            return floor
+        # The LLM layer must ENRICH the art, never IMPOVERISH it. Cheap models tend to
+        # collapse a genre's distinct foes (interceptor / gunship / boss) and the powerup
+        # into one generic "enemy", which strips the game's visual variety BELOW the
+        # deterministic genre floor — the user sees one repeated badguy and no boss/pickup.
+        # Guard ONLY a recognized-genre floor (a curated, rich role set); an open-ended
+        # floor is a generic placeholder the LLM's tailored roles are MEANT to replace, so
+        # it is exempt. If a genre plan has fewer SPRITE roles than its floor, keep the
+        # richer floor (both the sprite generator and codegen directive read this plan).
+        if not floor.open_ended and len(plan.sprite_roles()) < len(floor.sprite_roles()):
+            log.info(
+                "art_director.llm_plan_too_sparse",
+                genre=floor.genre,
+                llm_sprites=len(plan.sprite_roles()),
+                floor_sprites=len(floor.sprite_roles()),
+            )
             return floor
         log.info("art_director.llm_plan", genre=plan.genre, roles=list(plan.roles))
         return plan

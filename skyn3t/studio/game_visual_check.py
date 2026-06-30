@@ -159,5 +159,12 @@ async def check_game_visual(project_dir: str | Path, *, settings: Any,
                 runner.stop(app)
             except Exception:  # noqa: BLE001
                 pass
+            # Reap the stopped child + unlink its temp log; in the long-lived dashboard
+            # process stop() alone leaves a zombie + a leaked logfile per judge.
+            try:
+                from skyn3t.studio.app_runner import cleanup_serve
+                cleanup_serve(app)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001 - a checker must never break a build
         return GameVisualVerdict(skipped=True, reason=f"visual check error: {exc}")

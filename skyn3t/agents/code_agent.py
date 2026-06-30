@@ -170,6 +170,55 @@ _GAME_STACK_DIRECTIVE = (
     "web-framework routes — those build a website, not this game. Everything renders "
     "to a single Phaser canvas."
 )
+
+# Game FEEL / juice — the difference between a game that FUNCTIONS and one that feels
+# good. Backed by data/skills/game-feel-juice.md (retrieved into the prompt); concrete
+# per-event mandates so a cheap model wires real feedback instead of a flat tech demo.
+# Effects live in the Scene/renderer ONLY so the pure src/sim.js stays deterministic.
+_GAME_FEEL_DIRECTIVE = (
+    "GAME FEEL (required — a game with no impact feedback is a FAIL, not a real game): "
+    "implement juice in the Phaser Scene/renderer ONLY — NEVER in src/sim.js (the pure "
+    "sim stays deterministic; it emits typed events, e.g. push to a state.events list, "
+    "that the scene drains and reacts to each frame). Mandatory feedback, BY EVENT: "
+    "(1) on-shoot — an additive muzzle-flash sprite (~50ms) + a small gun-kickback tween "
+    "(~5px, 40ms yoyo Back.easeOut) + a light camera.shake(70, 0.004); bullets rendered "
+    "bigger (~1.8x) and stretched along travel. "
+    "(2) on-hit (enemy survives) — flash the enemy solid white with setTintFill(0xffffff) "
+    "cleared after ~80ms, knock it back away from the impact, and explode an ~8-particle "
+    "ADD burst at the hit point. "
+    "(3) on-kill — HITSTOP ~50ms (briefly freeze gameplay via a time/physics/tween "
+    "timeScale, restored on a REAL-TIME timer so determinism holds) + a ~24-particle "
+    "death burst + camera.shake(150, 0.012) + a squash/scale-pop tween + a rising, fading "
+    "'+score' text. "
+    "(4) on-player-hit — camera.flash(200, 255, 0, 0) (red), red setTintFill, "
+    "camera.shake(300, 0.02), and an invincibility alpha-blink the damage check honors. "
+    "(5) on-powerup / level-up — a celebration: a gold camera.flash, an upward particle "
+    "fountain, a scale-pop (Back.easeOut), a brief slow-mo, and floating text. "
+    "RULES: screen shake is strongest-request-wins (take the MAX in a frame, NEVER sum) "
+    "and capped (~0.05 intensity); .destroy() every emitter/sprite and clearTint() after "
+    "use (a leaked pool fails the runtime gate). At minimum, hitstop + hit-flash + screen "
+    "shake + particle bursts MUST be wired and firing — see the game-feel-juice skill for "
+    "exact Phaser-3.60 snippets per event."
+)
+# Scene WIRING — the single most damaging game bug we see: codegen splits the game
+# into real Scene modules (BootScene.js, GameScene.js, …) but src/main.js never
+# imports them and runs a throwaway INLINE scene instead, so the polished game is
+# orphaned dead code and the player sees "just ships" / colored placeholders. This
+# directive forbids that at the source; CodeAgent._repair_scene_registry is the
+# deterministic safety net that auto-rewires main.js when a model ignores it.
+_GAME_WIRING_DIRECTIVE = (
+    "SCENE WIRING — NON-NEGOTIABLE (the #1 cause of a dead-looking game): src/main.js "
+    "is the ONE entry and the ONE place that calls `new Phaser.Game(config)`. If you "
+    "split the game across multiple Scene files (e.g. BootScene.js, MenuScene.js, "
+    "GameScene.js, GameOverScene.js), EACH file MUST `export default` its Scene class, "
+    "and src/main.js MUST `import` every one of those Scene modules and list them in the "
+    "Phaser `config.scene: [...]` array, with the boot/preload scene FIRST. main.js MUST "
+    "NOT define its own inline Scene classes that shadow those modules — a main.js that "
+    "runs a throwaway inline scene while the real GameScene.js sits unimported renders "
+    "placeholders / a static frame, NEVER the actual game. Every Scene you write MUST be "
+    "reachable from the registry, and every `this.scene.start('key')` target MUST match a "
+    "registered scene key. Do NOT leave any authored Scene module unimported."
+)
 # The game-art directive is now GENRE-AWARE and built per-brief from the art
 # director's deterministic plan — see CodeAgent._game_art_directive. (A geometric
 # game is told to render crisp primitives; a sprite genre gets the load+fallback
@@ -287,9 +336,10 @@ class CodeAgent(BaseAgent):
                         art_plan=_art_plan, game_design=_game_design)
                 )
                 res = await (
-                    self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov)
+                    self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov,
+                                           stack=stack)
                     if _codegen_prov
-                    else self.llm.agentic_build(prompt, str(worktree))
+                    else self.llm.agentic_build(prompt, str(worktree), stack=stack)
                 )
                 self.metadata["agentic"] = res
                 agentic_ok = bool(res.get("ok", True))
@@ -348,6 +398,16 @@ class CodeAgent(BaseAgent):
                             files_on_disk=len(disk), error=agentic_error or "(timeout)")
             if disk and code_bytes >= threshold:
                 files = disk  # the agent's real app becomes the delivery
+                # Insurance against the entrypoint-clobber bug: a weak model can
+                # ship an index.html that never imports the app (a standalone inline
+                # page), so the real game never loads and entities stay primitive.
+                files = self._repair_html_entrypoint(worktree, files, stack, scaffold)
+                # Insurance against the orphaned-scene-graph bug: a model can split
+                # the game into real Scene modules yet leave src/main.js running a
+                # throwaway inline scene that never imports them, so the polished
+                # game is dead code and only placeholders render. Auto-rewire main.js
+                # to register the real scene modules.
+                files = self._repair_scene_registry(worktree, files, stack)
             else:
                 # Under-delivered -> deliver a CLEAN scaffold. The agent wrote
                 # stray files (rejected prose, a partial app, scratch notes) into
@@ -436,6 +496,8 @@ class CodeAgent(BaseAgent):
             f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
             f"{brief}\n\n"
             + (f"{_GAME_STACK_DIRECTIVE}\n\n" if stack == "phaser" else "")
+            + (f"{_GAME_WIRING_DIRECTIVE}\n\n" if stack == "phaser" else "")
+            + (f"{_GAME_FEEL_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
@@ -495,6 +557,7 @@ class CodeAgent(BaseAgent):
             # codegen the sprite-vs-primitive RULE + palette + a baseline sprite set,
             # and let it render the entities THIS brief implies.
             sprite_list = ", ".join(sprites)
+            fallback_hex = plan.palette[1].lstrip("#")
             return (
                 "GAME ART — this is an open-ended game: render the entities THIS "
                 "brief implies, using roles APPROPRIATE to the actual game (not a "
@@ -503,13 +566,24 @@ class CodeAgent(BaseAgent):
                 "projectile, platform, wall, HUD bar, or abstract element = a clean "
                 "styled PRIMITIVE from the palette. Use this EXACT shared palette "
                 f"(hex): {palette}. BASELINE sprites ARE generated at "
-                f"/assets/sprites/<role>.png for: {sprite_list} — load those in "
-                "preload() and render WITH a colored-primitive FALLBACK: `const v = "
-                "this.textures.exists('<role>') ? this.add.sprite(x, y, '<role>') : "
-                "this.add.rectangle(x, y, w, h, 0x"
-                f"{plan.palette[1].lstrip('#')})`. For any other role this game "
-                "needs, reuse a fitting baseline sprite or draw a styled primitive "
-                f"from the palette; background ~{plan.palette[0]}. Art is a RENDER "
+                f"/assets/sprites/<role>.png for: {sprite_list} — load EACH in "
+                "preload() via `this.load.image('<role>', '/assets/sprites/"
+                "<role>.png')` (these PNGs ALREADY EXIST at build time and ARE the "
+                "real art; fabricating textures in code with `make.graphics()` + "
+                "`.generateTexture(...)` is FORBIDDEN — it discards the art). Render "
+                "EVERY on-screen instance AS A PHASER SPRITE "
+                "that uses the texture: `this.add.sprite(x, y, '<role>')` for one "
+                "entity, or a `this.physics.add.group()` keyed to that texture for "
+                "many bullets / enemies / pickups (spawn and recycle sprites from the "
+                "group). Do NOT draw a role that HAS a sprite with this.add.graphics(), "
+                "fillRect, fillCircle or this.add.rectangle — that is a BUG; the ONLY "
+                "allowed fallback is a MISSING texture, guarded by "
+                f"`if (!this.textures.exists('<role>')) {{ /* a 0x{fallback_hex} "
+                "rectangle */ }}`. Scale each sprite to its gameplay size with "
+                "`setDisplaySize(w, h)`. For any other role this game needs, reuse a "
+                "fitting baseline sprite or draw a styled primitive from the palette; "
+                "render a rich LAYERED background (parallax layers + a subtle gradient, "
+                f"NOT a single flat fill) over ~{plan.palette[0]}. Art is a RENDER "
                 "concern in src/main.js ONLY; keep ALL game logic in the pure "
                 "src/sim.js unchanged."
             )
@@ -532,21 +606,47 @@ class CodeAgent(BaseAgent):
             ", ".join(f"{r.role} ({r.color})" for r in prims.values()) or "none"
         )
         hex_no_hash = plan.roles[example].color.lstrip("#")
+        bg = plan.roles.get("background")
+        bg_subject = bg.subject if bg is not None else "the game's setting"
+        pow_sprites = [k for k in sprites if k.startswith("powerup")]
+        powerup_clause = (
+            f"POWER-UP VARIETY — {', '.join(pow_sprites)}: these are DISTINCT power-up "
+            "TYPES, each with its OWN sprite. Render EACH power-up kind with its OWN "
+            "matching texture (e.g. a shield power-up uses `powerup_shield`, rapid-fire "
+            "uses `powerup_rapid`) so different power-ups LOOK different — NEVER draw "
+            "every power-up with the same texture.\n"
+            if len(pow_sprites) > 1 else ""
+        )
         return (
             f"GAME ART — genre '{plan.genre}'. Use this EXACT shared palette (hex): "
-            f"{palette}. "
-            f"SPRITE ROLES — {sprite_list}: in preload() load each from "
-            "`/assets/sprites/<role>.png` via "
-            "`this.load.image('<role>', '/assets/sprites/<role>.png')`, then in "
-            "create() render each WITH a colored-primitive FALLBACK so a missing "
-            "sprite never breaks the game: "
-            f"`const v = this.textures.exists('{example}') ? this.add.sprite(x, y, "
-            f"'{example}') : this.add.rectangle(x, y, w, h, 0x{hex_no_hash})`. "
-            f"PRIMITIVE ROLES — {prim_list}: draw as clean styled shapes using the "
-            "palette color shown (NO sprite file). The sprite files are generated "
-            "into public/assets/sprites/ by the build — do NOT create them yourself, "
-            "just reference them. Art is a RENDER concern in src/main.js ONLY; keep "
-            "ALL game logic in the pure src/sim.js unchanged."
+            f"{palette}.\n"
+            f"SPRITE ROLES — {sprite_list}: in preload() load EACH via "
+            "`this.load.image('<role>', '/assets/sprites/<role>.png')` — these PNG "
+            "files ALREADY EXIST at build time and ARE the game's real art. Do NOT "
+            "fabricate textures in code: calling `make.graphics()`/`add.graphics()` "
+            "then `.generateTexture('<role>', …)` (or otherwise hand-drawing these "
+            "roles) is FORBIDDEN — it throws away the generated art and is a BUG. "
+            "Then render EVERY on-screen instance of that role AS A PHASER SPRITE "
+            "that uses the loaded texture — never as a hand-drawn shape. One entity: "
+            f"`this.add.sprite(x, y, '{example}')` (or `this.physics.add.sprite`). "
+            "MANY entities (bullets, enemies, pickups): make a Phaser GROUP keyed to "
+            "the texture and spawn/recycle sprites from it — e.g. `this.enemies = "
+            "this.physics.add.group(); this.enemies.create(x, y, 'enemy')` — do NOT "
+            "draw them with this.add.graphics(), fillRect, fillCircle or "
+            "this.add.rectangle. Scale each sprite to its gameplay size with "
+            "`setDisplaySize(w, h)`. Rendering an entity that HAS a generated texture "
+            "as a primitive is a BUG; the ONLY allowed fallback is a MISSING texture, "
+            f"guarded by `if (!this.textures.exists('{example}')) {{ /* then a "
+            f"0x{hex_no_hash} rectangle */ }}`.\n"
+            f"{powerup_clause}"
+            f"PRIMITIVE ROLES — {prim_list}: these have NO sprite file — draw them as "
+            "clean styled shapes from the palette color shown.\n"
+            f"BACKGROUND ({bg_subject}): render a rich, LAYERED backdrop with depth — "
+            "several parallax layers, a subtle gradient/atmosphere and a few brighter "
+            f"accent details over ~{plan.palette[0]} — NOT a single flat fill. "
+            "The sprite files are generated into public/assets/sprites/ by the build — "
+            "do NOT create them yourself, just reference them. Art is a RENDER concern "
+            "in src/main.js ONLY; keep ALL game logic in the pure src/sim.js unchanged."
         )
 
     @staticmethod
@@ -563,7 +663,7 @@ class CodeAgent(BaseAgent):
             if isinstance(game_design, dict)
             else design_game(brief)
         )
-        n_pow = max(2, min(3, len(gd.powerups)))
+        n_pow = max(3, min(5, len(gd.powerups)))
         return (
             "GAME DEPTH (required — a thin one-mechanic toy is a FAIL): build a "
             f"COMPLETE {gd.genre} game with real depth.\n"
@@ -610,7 +710,8 @@ class CodeAgent(BaseAgent):
             design = raw_design if isinstance(raw_design, dict) else None
             prompt = self._agentic_slice_prompt(
                 brief, stack, name, slice_files, manifest, knowledge, design=design)
-            res = await self.llm.agentic_build(prompt, str(worktree), model=model_override)
+            res = await self.llm.agentic_build(prompt, str(worktree), model=model_override,
+                                               stack=stack)
             self.metadata["agentic"] = res
             disk = self._read_files(worktree)
             # Reject chat-prose source files (no scaffold to revert to -> dropped).
@@ -785,31 +886,328 @@ class CodeAgent(BaseAgent):
         return out
 
     @staticmethod
+    def _html_entrypoint_intact(html: str, files: dict[str, str]) -> bool:
+        """True if ``index.html`` loads a JS module entrypoint that actually exists
+        among the delivered ``files``.
+
+        The clobber bug ships an index.html whose only ``<script>`` is an inline toy
+        page (or a module ``src`` pointing at a file that was never written), so the
+        real app never loads. A valid ``<script type="module" src="...">`` whose
+        target is on disk means the entrypoint is wired."""
+        for m in re.finditer(
+            r'<script\b[^>]*\btype=["\']module["\'][^>]*\bsrc=["\']([^"\']+)["\']',
+            html, re.IGNORECASE,
+        ):
+            src = m.group(1).split("?")[0].lstrip("/")
+            if src.startswith("./"):
+                src = src[2:]
+            if any(k == src or k.endswith("/" + src) for k in files):
+                return True
+        return False
+
+    def _repair_html_entrypoint(
+        self, worktree: Path, files: dict[str, str], stack: str, scaffold: dict[str, str]
+    ) -> dict[str, str]:
+        """Guarantee an HTML build's ``index.html`` loads its real JS entrypoint.
+
+        A weak codegen model sometimes replaces the scaffold's correct index.html
+        with a standalone inline page that never imports the app — the "real game
+        never loads, enemies stay primitive rectangles" failure. When the delivered
+        index.html has no module script pointing at a delivered file, restore the
+        scaffold's known-good index.html (which loads the canonical entrypoint). The
+        repair is deliberately conservative: it only fires when the delivered file is
+        broken AND the scaffold's index.html points at a file that WAS delivered, so
+        a legitimately renamed entrypoint is never clobbered."""
+        html = files.get("index.html")
+        scaffold_html = scaffold.get("index.html")
+        if not html or not scaffold_html:
+            return files  # not an HTML stack / nothing to restore
+        if self._html_entrypoint_intact(html, files):
+            return files  # delivered index.html already loads a real entrypoint
+        if not self._html_entrypoint_intact(scaffold_html, files):
+            return files  # scaffold entrypoint absent (renamed) -> can't safely repair
+        (Path(worktree) / "index.html").write_text(scaffold_html, encoding="utf-8")
+        files = dict(files)
+        files["index.html"] = scaffold_html
+        self.metadata["index_html_repaired"] = True
+        log.warning("code_agent.index_html_entrypoint_repaired", stack=stack)
+        return files
+
+    # ------------------------------------------------------------------
+    # Scene-graph (entry-point) repair net — the orphaned-scene clobber.
+    #
+    # Symptom: codegen splits the game into real Phaser Scene modules
+    # (BootScene.js, GameScene.js, …) that each `export default` a Scene
+    # subclass and wire to each other, but src/main.js never imports them and
+    # instead defines its OWN throwaway inline scene that it runs via
+    # `new Phaser.Game({ scene: [<inline>] })`. The polished game is orphaned
+    # dead code; the player sees "just ships" / placeholders. Even a top model
+    # makes this error, so we repair it deterministically (mirrors the
+    # index.html entrypoint repair above).
+    # ------------------------------------------------------------------
+
+    _SCENE_EXPORT_RE = re.compile(
+        r"export\s+default\s+class\s+\w+\s+extends\s+(?:Phaser\.)?Scene\b"
+    )
+    _INLINE_SCENE_RE = re.compile(
+        r"\bclass\s+\w+\s+extends\s+(?:Phaser\.)?Scene\b"
+    )
+
+    @staticmethod
+    def _scene_modules(files: dict[str, str]) -> list[tuple[str, str]]:
+        """Return ``(path, import_ident)`` for every ``src/**/*.js`` module other than
+        main.js that default-exports a Phaser ``Scene`` subclass.
+
+        ``import_ident`` is a UNIQUE, safe JS identifier derived from the filename,
+        used for a default import (the module's real class name is irrelevant).
+        Idents are de-duplicated so two filenames that sanitize to the same token
+        (e.g. ``game-over.js`` and ``gameover.js``) cannot emit duplicate imports."""
+        out: list[tuple[str, str]] = []
+        seen: dict[str, int] = {}
+        for path, text in files.items():
+            if not path.endswith(".js") or not text:
+                continue
+            base = path.rsplit("/", 1)[-1]
+            if base == "main.js":
+                continue
+            if not CodeAgent._SCENE_EXPORT_RE.search(text):
+                continue
+            stem = base[:-3]
+            ident = re.sub(r"\W", "", stem) or "Scene"
+            if ident[0].isdigit():
+                ident = "Scene" + ident
+            if ident in seen:
+                seen[ident] += 1
+                ident = f"{ident}_{seen[ident]}"
+            else:
+                seen[ident] = 0
+            out.append((path, ident))
+        return out
+
+    @staticmethod
+    def _order_scenes(modules: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Order scene modules so Phaser auto-starts the right first scene:
+        boot/preload -> title/menu/start -> game/play -> gameover/win/lose/end."""
+        def rank(item: tuple[str, str]) -> int:
+            name = item[1].lower()
+            if any(k in name for k in ("boot", "preload", "load")):
+                return 0
+            if any(k in name for k in ("title", "menu", "start", "home", "splash")):
+                return 1
+            # check end-states BEFORE "game" so GameOverScene sorts last, not as a play scene
+            if any(k in name for k in ("gameover", "over", "win", "lose", "end", "result", "credit")):
+                return 4
+            if any(k in name for k in ("game", "play", "main", "level", "world", "battle")):
+                return 2
+            return 3
+        return sorted(modules, key=lambda m: (rank(m), m[0]))
+
+    @staticmethod
+    def _scene_registry_intact(files: dict[str, str]) -> bool:
+        """True unless the orphaned-scene clobber is present.
+
+        The clobber: real ``export default`` Scene modules exist, but src/main.js
+        imports NONE of them and instead defines its own inline Scene class(es). In
+        that case the authored game never runs. Conservative by design — if main.js
+        imports even one real scene module, or defines no inline scenes of its own,
+        we leave it alone (no false repair)."""
+        main = files.get("src/main.js")
+        if not main:
+            return True  # no Vite entry to wire (single-file / other layout)
+        modules = CodeAgent._scene_modules(files)
+        if not modules:
+            return True  # single-scene game (or scenes inline in main) — nothing to wire
+        for path, _ident in modules:
+            stem = path.rsplit("/", 1)[-1][:-3]
+            if re.search(
+                r"""from\s+["'][^"']*\b""" + re.escape(stem) + r"""(?:\.js)?["']""",
+                main,
+            ):
+                return True  # main imports at least one real scene module -> wired
+        # main imports none of the real scenes. Only treat as the clobber when main
+        # is actually running its OWN inline scene(s) (the shadowing signature).
+        if CodeAgent._INLINE_SCENE_RE.search(main):
+            return False
+        return True
+
+    @staticmethod
+    def _extract_brace_object(text: str, head_pattern: str) -> str | None:
+        """Return the ``{...}`` object literal (inclusive) that IMMEDIATELY follows the
+        first match of ``head_pattern`` (e.g. ``const config =``), brace-matched so
+        nested objects are preserved. ``None`` if the head is not directly followed by
+        an object literal (so ``new Phaser.Game(someVar)`` won't grab a stray brace)."""
+        m = re.search(head_pattern, text)
+        if not m:
+            return None
+        i = m.end()
+        while i < len(text) and text[i] in " \t\r\n":
+            i += 1
+        if i >= len(text) or text[i] != "{":
+            return None  # head isn't directly followed by an object literal
+        depth = 0
+        for j in range(i, len(text)):
+            c = text[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[i : j + 1]
+        return None
+
+    @classmethod
+    def _compose_scene_main(cls, main: str, ordered: list[tuple[str, str]]) -> str | None:
+        """Rebuild src/main.js so it imports + registers the real scene modules.
+
+        Preserves the original non-scene imports and the ``const config = {...}``
+        object literal (swapping only its ``scene: [...]`` array), injects ordered
+        scene-module imports, and drops the inline scene classes (rebuilding the file
+        naturally omits them). Returns ``None`` if it cannot compose safely."""
+        if not ordered:
+            return None
+        stems = {path.rsplit("/", 1)[-1][:-3] for path, _ in ordered}
+        # Capture FULL import statements (incl. multi-line destructured imports and
+        # ASI/no-semicolon forms) so we never truncate one into invalid JS.
+        raw_imports = re.findall(
+            r"import\b[^;'\"]*?from[ \t\r\n]*['\"][^'\"]+['\"][ \t]*;?"
+            r"|import[ \t]*['\"][^'\"]+['\"][ \t]*;?",
+            main,
+        )
+        has_phaser = False
+        kept: list[str] = []
+        for stmt in raw_imports:
+            if re.search(r"""['\"]phaser['\"]""", stmt):
+                has_phaser = True
+                continue  # re-added canonically below
+            # drop any import that already references a scene module we re-add
+            if any(
+                re.search(r"""['\"][^'\"]*\b""" + re.escape(s) + r"""(?:\.js)?['\"]""", stmt)
+                for s in stems
+            ):
+                continue
+            kept.append(stmt.strip())
+
+        header: list[str] = ["import Phaser from 'phaser';"]
+        header.extend(kept)
+        for path, ident in ordered:
+            # Import specifier relative to src/main.js, so scenes in src/scenes/ etc.
+            # resolve correctly (NOT flattened to the basename).
+            if path.startswith("src/"):
+                spec = "./" + path[len("src/"):]
+            else:
+                spec = "../" + path
+            header.append(f"import {ident} from '{spec}';")
+        scene_arr = "[" + ", ".join(ident for _, ident in ordered) + "]"
+
+        inner = cls._extract_brace_object(main, r"\bconst\s+config\s*=\s*")
+        if inner is None:
+            # Some models inline the config object directly in the Game() call:
+            # `new Phaser.Game({ ... })`. Preserve those settings too.
+            inner = cls._extract_brace_object(main, r"new\s+Phaser\.Game\s*\(\s*")
+        if inner:
+            new_inner, n = re.subn(
+                r"scene\s*:\s*\[[^\]]*\]", f"scene: {scene_arr}", inner
+            )
+            if n == 0:  # config had no scene key — inject one before the closing brace
+                new_inner = inner.rstrip()[:-1].rstrip()
+                if not new_inner.endswith(",") and not new_inner.endswith("{"):
+                    new_inner += ","
+                new_inner += f"\n  scene: {scene_arr},\n}}"
+            config_block = "const config = " + new_inner + ";"
+        else:
+            config_block = (
+                "const config = {\n"
+                "  type: Phaser.AUTO,\n"
+                "  parent: 'game-container',\n"
+                "  width: 800,\n"
+                "  height: 600,\n"
+                "  backgroundColor: '#000000',\n"
+                "  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },\n"
+                "  physics: { default: 'arcade', arcade: { debug: false } },\n"
+                f"  scene: {scene_arr},\n"
+                "};"
+            )
+        _ = has_phaser  # phaser import is always emitted canonically
+        result = "\n".join(header) + "\n\n" + config_block + "\n\nnew Phaser.Game(config);\n"
+        # Degrade-safe backstop: never SHIP a non-running entry. If our rebuild is
+        # unbalanced (e.g. a dropped/odd import or config), bail and let the build's
+        # own fix loop handle it rather than overwriting with broken JS.
+        if (
+            result.count("{") != result.count("}")
+            or result.count("(") != result.count(")")
+            or result.count("[") != result.count("]")
+        ):
+            return None
+        return result
+
+    def _repair_scene_registry(
+        self, worktree: Path, files: dict[str, str], stack: str
+    ) -> dict[str, str]:
+        """Guarantee src/main.js imports + registers the real Scene modules.
+
+        When codegen splits the game into ``export default`` Scene modules but main.js
+        ignores them and runs its own inline scene, the authored game is orphaned dead
+        code. Rebuild main.js to import and register the real scenes (boot first).
+        Gated to the phaser stack and to the exact clobber signature, so a correctly
+        wired single- or multi-scene game is never touched."""
+        if stack != "phaser":
+            return files
+        if self._scene_registry_intact(files):
+            return files
+        main = files.get("src/main.js")
+        if not main:
+            return files
+        ordered = self._order_scenes(self._scene_modules(files))
+        new_main = self._compose_scene_main(main, ordered)
+        if not new_main:
+            return files  # could not compose safely — leave as-is for the fix loop
+        (Path(worktree) / "src" / "main.js").write_text(new_main, encoding="utf-8")
+        files = dict(files)
+        files["src/main.js"] = new_main
+        self.metadata["scene_registry_repaired"] = True
+        log.warning(
+            "code_agent.scene_registry_repaired",
+            stack=stack,
+            scenes=[ident for _, ident in ordered],
+        )
+        return files
+
+
+    @staticmethod
     def _clean_agentic_files(
         disk: dict[str, str], scaffold: dict[str, str]
     ) -> tuple[dict[str, str], list[str]]:
-        """Drop source files the agent wrote that are PROSE, not code.
+        """Drop source files the agent wrote that are PROSE or ELIDED, not code.
 
         Returns ``(clean_files, rejected_paths)``. A rejected file is reverted to
         its scaffold version when one exists (a runnable baseline), else dropped
-        entirely — so chat prose never ships as source. Non-code files are kept.
+        entirely — so chat prose / stub placeholders never ship as source.
+        Non-code files are kept.
 
         DELIBERATELY LENIENT on syntax: a coding agent authors real files that the
         authoritative gate (proof_run's real `npm build` / pytest, then the
         fix-loop) validates downstream. The only hard rejects here are (a) a CLEAR
-        prose file — the agent chatted instead of coding — and (b) a Python file
-        that won't even compile. We do NOT run the cheap JS/TS brace-balance
-        heuristic: it false-positives on valid code (regex literals, nested
-        template literals) and silently reverting the agent's app to the offline
-        scaffold stub guarantees a no_go on a build that would otherwise compile.
+        prose file — the agent chatted instead of coding — (b) a Python file
+        that won't even compile, and (c) an ELIDED file — the agent wrote an
+        edit-style "/* ... unchanged ... */" / "rest of the file is unchanged"
+        placeholder as if patching a pre-existing original, leaving a
+        non-functional stub (high-precision idioms only). We do NOT run the cheap
+        JS/TS brace-balance heuristic: it false-positives on valid code (regex
+        literals, nested template literals) and silently reverting the agent's app
+        to the offline scaffold stub guarantees a no_go on a build that would
+        otherwise compile.
         """
-        from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose
+        from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose, looks_elided
 
         clean: dict[str, str] = {}
         rejected: list[str] = []
         for path, content in disk.items():
             p = path.lower()
-            drop = p.endswith(_CODE_EXTS) and _looks_like_prose(content)
+            is_code = p.endswith(_CODE_EXTS)
+            # (a) the agent chatted instead of coding, or (b) it elided the file
+            # body with an edit-style "/* ... unchanged ... */" placeholder (a
+            # non-functional stub — there is no original to be unchanged from).
+            drop = is_code and (_looks_like_prose(content) or looks_elided(content))
             if not drop and p.endswith(".py"):
                 try:
                     compile(content, path, "exec")
@@ -862,7 +1260,10 @@ class CodeAgent(BaseAgent):
             "Write the COMPLETE, production-quality implementation of THIS file. "
             "Fully implement every behavior it owns, with real logic and error "
             "handling. Import from the other project files above where appropriate "
-            "so the codebase coheres. No placeholders, no TODOs, no stub functions."
+            "so the codebase coheres. No placeholders, no TODOs, no stub functions. "
+            "This is a brand-new file with no pre-existing version — write it IN FULL "
+            "and NEVER elide code with an edit-style placeholder like "
+            "'/* ... unchanged ... */' or '// rest of the file is unchanged'."
             + (f"\n{_README_INSTR}" if is_readme else "")
             + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )

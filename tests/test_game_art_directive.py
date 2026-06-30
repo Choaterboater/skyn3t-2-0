@@ -187,3 +187,39 @@ def test_phaser_codegen_pins_seed_argument_as_only_randomness_source():
     # tie determinism to the seed ARGUMENT, not just a generic clock ban
     assert "seed argument" in low, "must derive randomness from the seed argument"
     assert "initial seed" in low, "must forbid clock-seeding even the initial seed"
+
+
+# ---- sprite WIRING: generated textures must actually render (verify-by-playing) ----
+# Regression: the model loaded enemy.png/bullet.png in preload() but then drew enemies and
+# bullets with this.add.graphics() primitives, so the generated sprites NEVER appeared on
+# screen (the player saw shapes). The directive must MANDATE rendering each textured role as
+# a Phaser sprite (groups for swarms) and FORBID drawing a textured role as a primitive.
+def test_sprite_directive_mandates_sprites_and_forbids_primitive_for_textured_roles():
+    prompt = _agent()._agentic_prompt("a space shooter with aliens", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "as a phaser sprite" in low, "textured roles must render as sprites, not shapes"
+    assert "group" in low, "pooled bullets/enemies must use a sprite group keyed to texture"
+    assert "this.add.graphics()" in prompt, "the forbidden primitive path is named"
+    assert "bug" in low and "do not" in low, "drawing a textured role as a shape is a BUG"
+    assert "setdisplaysize" in low, "sprites are scaled to gameplay size"
+    # the model must LOAD the real generated PNG art, not fabricate textures in code
+    assert "this.load.image" in prompt, "must load the generated /assets/sprites PNGs"
+    assert "generatetexture" in low, "fabricating textures in code is named + FORBIDDEN"
+
+
+def test_sprite_directive_demands_a_layered_background_not_flat_fill():
+    # 'better backgrounds': the backdrop must be layered (parallax + gradient), not a fill.
+    prompt = _agent()._agentic_prompt("a space shooter with aliens", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "parallax" in low or "layered" in low
+    assert "not a single flat fill" in low
+
+
+def test_sprite_directive_demands_distinct_powerup_sprites():
+    # 'different types of power ups': the directive must tell codegen each power-up TYPE
+    # uses its OWN matching sprite, never one texture reused for all.
+    prompt = _agent()._agentic_prompt("a space shooter with aliens", "phaser", _plan(), "")
+    low = prompt.lower()
+    assert "power-up variety" in low, "the power-up variety clause is present"
+    assert "powerup_shield" in low and "powerup_rapid" in low, "distinct power-up roles named"
+    assert "never draw every power-up with the same texture" in low

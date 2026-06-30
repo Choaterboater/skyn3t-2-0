@@ -90,6 +90,53 @@ def _looks_like_prose(content: str) -> bool:
     return _CODE_SIGNAL.search(content) is None
 
 
+# Edit-style ELISION placeholders. An agentic coder authoring a brand-new file
+# from scratch sometimes behaves as if PATCHING a pre-existing file and elides
+# the body with "/* ... unchanged ... */", "// rest of the file is unchanged",
+# or "// ... existing code ...". There is no original here, so the delivered file
+# is a non-functional STUB (e.g. an exported function with an empty body) that
+# ships a go-graded app which crashes at run (build #7: `createState` elided ->
+# `state.player` undefined -> the whole game never starts). These idioms never
+# appear in complete from-scratch code, so detection is high-precision.
+#
+# Deliberately anchored: a bare ellipsis or a lone "unchanged"/"existing" is NOT
+# flagged (JS rest/spread `...rest`, `{...existing}`, or a comment like "the
+# array remains unchanged" are legitimate) — only the ellipsis-PAIRED elision
+# idioms and the explicit "rest/remainder of the file/code ... unchanged/omitted"
+# / "unchanged from the original" phrases.
+_ELISION_MARKERS = re.compile(
+    r"\.\.\.\s*(?:unchanged|existing\s+code|rest\s+of|same\s+as\s+before|snipped?|omitted|elided)"
+    r"|(?:unchanged|rest\s+of\s+(?:the\s+)?(?:file|code|implementation)|same\s+as\s+before|snipped?|omitted|elided)\s*\.\.\."
+    r"|(?:rest|remainder|everything\s+else)\s+of\s+(?:the\s+)?(?:file|code|implementation|function|class|module|method)\b[^.\n]{0,40}?(?:unchanged|the\s+same|omitted|identical|as\s+before|as\s+the\s+original)"
+    r"|unchanged\s+from\s+(?:the\s+)?(?:original|previous|earlier\s+version)"
+    r"|\.\.\.\s*existing\s+code\s*\.\.\."
+    r"|//\s*existing\s+code\s+here\b"
+    r"|<!--\s*\.\.\.\s*(?:unchanged|existing|omitted|snip)",
+    re.IGNORECASE,
+)
+
+
+def elided_code_violation(content: str) -> str:
+    """Reason string if ``content`` elides its body with an edit-style 'unchanged'
+    / 'existing code' placeholder (a non-functional stub); '' when complete.
+
+    High-precision: only the ellipsis-paired elision idioms and explicit
+    "rest of the file ... unchanged" / "unchanged from the original" phrases
+    match, so legitimate complete code (rest/spread operators, incidental
+    'unchanged' comments) is never flagged."""
+    m = _ELISION_MARKERS.search(content)
+    if m:
+        return f"elides code with an edit-style placeholder ({m.group(0).strip()!r}); the file is an incomplete stub"
+    return ""
+
+
+def looks_elided(content: str) -> bool:
+    """True when ``content`` is a code file whose body was elided with an
+    edit-style 'unchanged'/'existing code' placeholder. Thin bool wrapper over
+    :func:`elided_code_violation`."""
+    return bool(_ELISION_MARKERS.search(content))
+
+
 def validate_source(path: str, content: str) -> tuple[bool, str]:
     """Return (ok, error). ok=True when valid OR unvalidatable for this type."""
     p = path.lower()
@@ -120,6 +167,16 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
         # pass (or skip) the type-specific check must not ship as source.
         if p.endswith(_CODE_EXTS) and _looks_like_prose(content):
             return False, "content looks like prose, not code"
+        # Elision guard: an edit-style "/* ... unchanged ... */" placeholder leaves
+        # a non-functional stub (there is no original to be unchanged from) — reject
+        # so codegen's retry rewrites the file IN FULL.
+        if p.endswith(_CODE_EXTS):
+            why = elided_code_violation(content)
+            if why:
+                return False, (
+                    why + ". Write the COMPLETE file from scratch — implement every "
+                    "function and class body in full; there is no pre-existing version."
+                )
         # Native-provider-LLM guard: reject `import anthropic` / ANTHROPIC_API_KEY
         # so codegen's retry regenerates the call the compliant OpenRouter way.
         if p.endswith(_CODE_EXTS):

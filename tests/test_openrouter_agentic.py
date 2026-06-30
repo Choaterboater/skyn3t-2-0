@@ -116,6 +116,73 @@ def test_antistub_catches_leftover_scaffold_homepage(tmp_path, monkeypatch):
     assert "generated offline" not in (tmp_path / "app" / "page.jsx").read_text().lower()
 
 
+def test_agentic_system_prompt_is_stack_aware():
+    # SkyN3t builds every kind of app, so the codegen system prompt must be composed per
+    # stack — not hardcoded to "build a React/Next marketing site". Web stacks keep the
+    # marketing guidance; games/mobile/desktop/api/cli get their own, with no web cruft.
+    sysfor = llm._agentic_system_for
+    web, game = sysfor("react_vite"), sysfor("phaser")
+    mobile, desktop = sysfor("react_native"), sysfor("tauri")
+    api, cli = sysfor("fastapi"), sysfor("python_cli")
+
+    # Web keeps its tuned marketing guidance; unknown/empty falls back to web.
+    assert "marketing site" in web and "lucide-react" in web and "next/font" in web
+    assert sysfor("") == web == llm._AGENTIC_SYSTEM        # back-compat default preserved
+
+    # Each non-web stack gets appropriate guidance and NONE of the web-marketing cruft.
+    web_cruft = ("marketing site", "hero, services", "next/font", "lucide-react")
+    assert "real-time GAME" in game and "game loop" in game
+    assert "MOBILE app" in mobile and "native navigation" in mobile
+    assert "DESKTOP app" in desktop
+    assert "BACKEND service/API" in api and "endpoints" in api
+    assert "COMMAND-LINE tool" in cli
+    for body in (game, mobile, desktop, api, cli):
+        assert not any(c in body for c in web_cruft)
+
+    # Universal core + tail + anti-derailment guard present on every stack.
+    for s in (web, game, mobile, desktop, api, cli):
+        assert "OPENROUTER_API_KEY" in s
+        assert "never silently switch to a different kind of project" in s
+
+
+def test_antistub_nudge_skipped_for_game_stack(tmp_path, monkeypatch):
+    # A phaser game has no .jsx components, so the React `_looks_stub()` heuristic is
+    # ALWAYS true. Firing the nudge here drags the model off the game into a React
+    # marketing site that clobbers it (the validated 2026-06-29 derailment). For a
+    # non-React stack the nudge must be suppressed: the early `finish` is accepted and
+    # the would-be marketing components are never written.
+    big = "x" * 1500
+    turns = [
+        _tool_turn("write_file", {"path": "src/sim/sim.js", "content": "export const step=()=>{}"}),
+        _tool_turn("finish", {}, "t2"),                                    # "stub" under React heuristic
+        _tool_turn("write_file", {"path": "components/Hero.jsx", "content": big}, "t3"),  # must NOT run
+        _tool_turn("finish", {}, "t4"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser"))
+    assert res["ok"] is True
+    assert (tmp_path / "src" / "sim" / "sim.js").exists()
+    assert not (tmp_path / "components" / "Hero.jsx").exists()   # nudge suppressed -> no derailment
+
+
+def test_antistub_nudge_still_fires_for_react_stack(tmp_path, monkeypatch):
+    # The nudge must keep working for React-class stacks (its intended target): a thin
+    # homepage + early finish is pushed to build real section components.
+    big = "x" * 1500
+    turns = [
+        _tool_turn("write_file", {"path": "app/page.jsx", "content": "export default ()=>null"}),
+        _tool_turn("finish", {}, "t2"),                                    # premature finish -> stub
+        _tool_turn("write_file", {"path": "components/Hero.jsx", "content": big}, "t3"),
+        _tool_turn("write_file", {"path": "components/Services.jsx", "content": big}, "t4"),
+        _tool_turn("write_file", {"path": "components/About.jsx", "content": big}, "t5"),
+        _tool_turn("finish", {}, "t6"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="react_vite"))
+    assert res["ok"] is True
+    assert (tmp_path / "components" / "Hero.jsx").exists()       # nudge still drives the UI build
+
+
 def test_supports_agentic_openrouter_flag():
     on = LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x", openrouter_agentic=True))
     off = LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x", openrouter_agentic=False))

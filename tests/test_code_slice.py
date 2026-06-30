@@ -52,7 +52,7 @@ async def test_slice_agentic_keeps_small_delivery_no_scaffold_floor(tmp_path):
     agent = CodeAgent(event_bus=EventBus())
     await agent.start()
 
-    async def fake_agentic_build(prompt, workdir, timeout=None, model=None):
+    async def fake_agentic_build(prompt, workdir, timeout=None, model=None, **kwargs):
         comp = pathlib.Path(workdir, "src/components")
         comp.mkdir(parents=True, exist_ok=True)
         (comp / "Card.jsx").write_text(
@@ -91,7 +91,7 @@ async def test_slice_agentic_passes_model_override(tmp_path):
     await agent.start()
     seen: dict = {}
 
-    async def fake_agentic_build(prompt, workdir, timeout=None, model=None):
+    async def fake_agentic_build(prompt, workdir, timeout=None, model=None, **kwargs):
         seen["model"] = model
         pathlib.Path(workdir, "api").mkdir(parents=True, exist_ok=True)
         pathlib.Path(workdir, "api/main.py").write_text("# api\n", encoding="utf-8")

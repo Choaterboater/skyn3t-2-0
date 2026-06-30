@@ -1143,7 +1143,7 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
             "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
-            "app_type_override", "engine_override")
+            "auto_route", "model_evolution", "app_type_override", "engine_override")
     return {k: getattr(s, k, None) for k in keys}
 
 

@@ -127,6 +127,15 @@ async def test_submit_and_list_builds():
     assert any(b["build_id"] == res["build_id"] for b in listed["builds"])
 
 
+async def test_settings_payload_surfaces_learned_router_flags():
+    st = _state()
+    st.settings.auto_route = True
+    st.settings.model_evolution = True
+    payload = await routes.settings_payload(st)
+    assert payload["auto_route"] is True
+    assert payload["model_evolution"] is True
+
+
 async def test_submit_build_requires_brief():
     st = _state()
     with pytest.raises(ValueError):

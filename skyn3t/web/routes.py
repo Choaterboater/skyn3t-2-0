@@ -865,6 +865,7 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         # The asset-gen STEP additionally needs asset_gen on — surface it so the
         # UI can tell the user real assets won't be generated until it's enabled.
         "asset_gen": bool(getattr(s, "asset_gen", False)),
+        "visual_self_heal": bool(getattr(s, "visual_self_heal", False)),
     }
 
 
@@ -951,6 +952,28 @@ async def set_asset_gen(state: AppState, enabled: bool, persist: bool = True) ->
     return {
         "asset_gen": enabled,
         "replicate": bool(getattr(state.settings, "replicate_api_token", "")),
+    }
+
+
+async def set_visual_self_heal(
+    state: AppState, enabled: bool, persist: bool = True
+) -> dict[str, Any]:
+    """Toggle rendered-UI visual self-heal for future builds."""
+    import os
+
+    enabled = bool(enabled)
+    try:
+        state.settings.visual_self_heal = enabled
+    except Exception:  # noqa: BLE001
+        pass
+    os.environ["SKYN3T_VISUAL_SELF_HEAL"] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var("SKYN3T_VISUAL_SELF_HEAL", "true" if enabled else "false")
+    return {
+        "visual_self_heal": enabled,
+        "visual_self_heal_max_rounds": int(
+            getattr(state.settings, "visual_self_heal_max_rounds", 2)
+        ),
     }
 
 
@@ -1153,7 +1176,8 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
             "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
-            "auto_route", "model_evolution", "app_type_override", "engine_override")
+            "auto_route", "model_evolution", "app_type_override", "engine_override",
+            "visual_self_heal", "visual_self_heal_max_rounds")
     return {k: getattr(s, k, None) for k in keys}
 
 
@@ -1349,6 +1373,11 @@ def build_router(state: AppState) -> Any:
     @router.post("/settings/asset_gen", dependencies=[auth])
     async def _set_asset_gen(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_asset_gen(state, bool(body.get("enabled", body.get("on", False))))
+
+    @router.post("/settings/visual_self_heal", dependencies=[auth])
+    async def _set_visual_self_heal(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await set_visual_self_heal(
+            state, bool(body.get("enabled", body.get("on", False))))
 
     @router.post("/settings/build_metadata", dependencies=[auth])
     async def _set_build_metadata(body: dict[str, Any] = empty_body) -> dict[str, Any]:

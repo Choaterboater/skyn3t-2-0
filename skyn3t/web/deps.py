@@ -319,6 +319,7 @@ class AppState:
                 # token is set; the asset-gen step additionally needs asset_gen.
                 "replicate_available": getattr(s, "replicate_available", False),
                 "asset_gen": s.asset_gen,
+                "visual_self_heal": s.visual_self_heal,
                 "app_type_override": s.app_type_override,
                 "engine_override": s.engine_override,
             },

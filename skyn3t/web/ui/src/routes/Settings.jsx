@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn, apiPost } from "../api.js";
 import { PageHeader, Panel, PanelHead, Pill, Empty } from "../components/ui.jsx";
@@ -15,6 +15,8 @@ function Row({ label, value }) {
 const BACKENDS = ["auto", "stub", "claude_cli", "kimi_cli", "copilot_cli", "openrouter"];
 const PROVIDERS = ["openrouter", "anthropic", "openai", "kimi"];
 const CHANNELS = ["telegram", "discord", "slack"];
+const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app", "saas_product", "game", "api_service", "developer_tool", "data_viz", "mobile_app", "desktop_app"];
+const ENGINES = ["auto", "dom", "browser_native", "phaser", "godot", "bevy", "raylib", "expo", "tauri", "server", "python", "none"];
 
 export default function Settings() {
   const { data, error } = useQuery({
@@ -54,6 +56,10 @@ export default function Settings() {
   const [repModel, setRepModel] = useState("");
   const [repMsg, setRepMsg] = useState("");
 
+  const [appTypeOverride, setAppTypeOverride] = useState("auto");
+  const [engineOverride, setEngineOverride] = useState("auto");
+  const [metaMsg, setMetaMsg] = useState("");
+
   const [channel, setChannel] = useState("telegram");
   const [chToken, setChToken] = useState("");
   const [chTarget, setChTarget] = useState("");
@@ -64,6 +70,12 @@ export default function Settings() {
       if (token) localStorage.setItem("skyn3t_token", token);
       else localStorage.removeItem("skyn3t_token");
     }
+
+    useEffect(() => {
+      if (!data) return;
+      setAppTypeOverride(data.app_type_override || "auto");
+      setEngineOverride(data.engine_override || "auto");
+    }, [data]);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -119,6 +131,18 @@ export default function Settings() {
       secrets.refetch();
     } catch (e) {
       setRepMsg(String(e.message));
+    }
+
+    async function saveBuildMetadata() {
+      try {
+        const r = await apiPost("/settings/build_metadata", {
+          app_type: appTypeOverride || "auto",
+          engine: engineOverride || "auto",
+        });
+        setMetaMsg(`build metadata -> app ${r.app_type_override}, engine ${r.engine_override}`);
+      } catch (e) {
+        setMetaMsg(String(e.message));
+      }
     }
   }
 
@@ -222,6 +246,48 @@ export default function Settings() {
             </div>
             {msg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{msg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead label="Build metadata defaults" />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              Leave these on <span className="font-mono text-bone">auto</span> so SkyN3t
+              infers app type and engine from the brief + selected stack. Pick an override
+              only when you want future builds labeled a specific way without hardcoding the
+              scaffold.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <select
+                value={appTypeOverride}
+                onChange={(e) => setAppTypeOverride(e.target.value)}
+                className="field max-w-[14rem]"
+              >
+                {APP_TYPES.map((v) => (
+                  <option key={v} value={v}>
+                    app · {v}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={engineOverride}
+                onChange={(e) => setEngineOverride(e.target.value)}
+                className="field max-w-[14rem]"
+              >
+                {ENGINES.map((v) => (
+                  <option key={v} value={v}>
+                    engine · {v}
+                  </option>
+                ))}
+              </select>
+              <button onClick={saveBuildMetadata} className="btn-ember">
+                Save defaults
+              </button>
+            </div>
+            {metaMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{metaMsg}</p>
             ) : null}
           </div>
         </Panel>

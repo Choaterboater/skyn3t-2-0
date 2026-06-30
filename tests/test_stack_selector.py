@@ -5,6 +5,7 @@ import asyncio
 
 from skyn3t.studio.stack_selector import (
     REAL_BUILDER_STACKS,
+    classify_build,
     keyword_choice,
     select_stack,
 )
@@ -95,3 +96,28 @@ def test_cli_brief_maps_to_python_not_react():
     # "react", so a command-line brief came out a React app. Must be python.
     c = keyword_choice("a cli tool to rename files in a folder")
     assert c.stack == "python" and c.stack != "react"
+
+
+def test_classify_build_infers_game_engine_metadata():
+    c = classify_build("a space arcade shooter game", "phaser")
+    assert c.app_type == "game"
+    assert c.engine == "phaser"
+    assert c.method == "inferred"
+
+
+def test_classify_build_respects_overrides_without_changing_stack():
+    c = classify_build(
+        "a dashboard that charts uploaded CSV data",
+        "react",
+        app_type_override="data viz",
+        engine_override="browser_native",
+    )
+    assert c.app_type == "data_viz"
+    assert c.engine == "browser_native"
+    assert c.method == "override"
+
+
+def test_classify_build_infers_dashboard_dom():
+    c = classify_build("a React admin dashboard for metrics", "react")
+    assert c.app_type == "dashboard"
+    assert c.engine == "dom"

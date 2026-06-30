@@ -1703,11 +1703,17 @@ class StudioRunner:
             except Exception:  # noqa: BLE001 - never break a build over selection
                 sel_llm = None
             self._sel_llm = sel_llm
-        from skyn3t.studio.stack_selector import select_stack
+        from skyn3t.studio.stack_selector import classify_build, select_stack
         pin = _resolve_stack_pin(extra)
         choice = await select_stack(
             brief, pin=pin, llm=sel_llm,
             attended=bool(extra.get("attended", False)),
+        )
+        classification = classify_build(
+            brief,
+            choice.stack,
+            app_type_override=str(extra.get("app_type") or self.settings.app_type_override),
+            engine_override=str(extra.get("engine") or self.settings.engine_override),
         )
         plan = self.planner.plan(
             brief,
@@ -1735,6 +1741,7 @@ class StudioRunner:
             "method": choice.method, "stack": choice.stack,
             "confidence": choice.confidence, "rationale": choice.rationale,
         }
+        manifest.extra["classification"] = classification.to_dict()
         build_id = manifest.build_id
 
         # Persist the 'running' record immediately so a crash or restart can
@@ -1749,7 +1756,9 @@ class StudioRunner:
             EventType.BUILD_STARTED,
             "studio",
             {"build_id": build_id, "slug": slug, "brief": brief, "stack": plan.stack,
-             "stages": plan.stage_names},
+             "app_type": classification.app_type, "engine": classification.engine,
+             "stack_selection": manifest.extra["stack_selection"],
+             "classification": manifest.extra["classification"], "stages": plan.stage_names},
             correlation_id=correlation_id,
         )
 

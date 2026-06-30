@@ -331,6 +331,43 @@ def test_score_clamped_to_verdict():
     assert StudioRunner._clamp_score_to_verdict(12.0, "no_go") == 12.0
 
 
+# ---- game-quality verdict gate (visual + QA hard-gate) ---------------------
+def test_game_quality_gate_blocks_only_real_nonskipped_failures():
+    from skyn3t.studio.runner import StudioRunner
+    g = StudioRunner._game_quality_gate_ok
+    # a REAL, non-skipped failure (empty play field / sprites never render) blocks
+    assert g(False, False, True) is False
+    # a passing check is fine
+    assert g(True, False, True) is True
+    # a SKIPPED check (no vision model / no Playwright) never false-fails a build
+    assert g(False, True, True) is True
+    # gating disabled -> advisory (legacy behavior), never blocks
+    assert g(False, False, False) is True
+    # an unknown/None verdict is treated as non-blocking (do-no-harm)
+    assert g(None, False, True) is True
+
+
+def test_headless_reachable_gate_is_optin_and_safe():
+    from skyn3t.studio.runner import StudioRunner
+    g = StudioRunner._headless_reachable_ok
+
+    class _Gate:
+        def __init__(self, applicable, report):
+            self.applicable = applicable
+            self.report = report
+
+    both_dead = {"winReachable": False, "loseReachable": False}
+    # off by default -> never blocks, even with no reachable ending
+    assert g(_Gate(True, both_dead), False) is True
+    # opt-in ON: a game you can neither win nor lose is blocked
+    assert g(_Gate(True, both_dead), True) is False
+    # at least one reachable ending -> ok
+    assert g(_Gate(True, {"winReachable": True, "loseReachable": False}), True) is True
+    # non-applicable / absent gate never false-fails
+    assert g(_Gate(False, both_dead), True) is True
+    assert g(None, True) is True
+
+
 # ---- runtime liveness gate (findings #2, #19) ------------------------------
 def test_liveness_gate_dead_root_fails_ui_stack():
     from skyn3t.studio.runner import StudioRunner

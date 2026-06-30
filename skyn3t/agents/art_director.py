@@ -168,7 +168,14 @@ _GENRES: dict[str, _GenreSpec] = {
         ("gunship", "sprite", "heavy armored alien gunship"),
         ("boss", "sprite", "massive menacing alien mothership boss"),
         ("laser", "primitive", "laser bolt"),
-        ("powerup", "sprite", "glowing power-up capsule"),
+        # Distinct power-up TYPES each get their OWN sprite so pickups read differently
+        # in play — the GDD lists rapid-fire / spread / shield / bomb / extra-life, and a
+        # single generic capsule made every power-up look identical.
+        ("powerup_rapid", "sprite", "glowing red rapid-fire weapon power-up capsule"),
+        ("powerup_spread", "sprite", "glowing cyan triple-shot spread power-up capsule"),
+        ("powerup_shield", "sprite", "glowing green energy shield power-up orb"),
+        ("powerup_bomb", "sprite", "glowing orange screen-clearing bomb power-up"),
+        ("powerup_life", "sprite", "glowing pink extra-life 1up heart power-up"),
         ("background", "primitive", "deep-space starfield"),
     )),
     "platformer": _GenreSpec("arcade", (
@@ -503,6 +510,22 @@ async def plan_art_llm(brief: str | None, *, settings, llm=None) -> ArtPlan:
             return floor
         plan = _plan_from_llm(parse_json(getattr(result, "text", "") or ""), floor)
         if plan is None:
+            return floor
+        # The LLM layer must ENRICH the art, never IMPOVERISH it. Cheap models tend to
+        # collapse a genre's distinct foes (interceptor / gunship / boss) and the powerup
+        # into one generic "enemy", which strips the game's visual variety BELOW the
+        # deterministic genre floor — the user sees one repeated badguy and no boss/pickup.
+        # Guard ONLY a recognized-genre floor (a curated, rich role set); an open-ended
+        # floor is a generic placeholder the LLM's tailored roles are MEANT to replace, so
+        # it is exempt. If a genre plan has fewer SPRITE roles than its floor, keep the
+        # richer floor (both the sprite generator and codegen directive read this plan).
+        if not floor.open_ended and len(plan.sprite_roles()) < len(floor.sprite_roles()):
+            log.info(
+                "art_director.llm_plan_too_sparse",
+                genre=floor.genre,
+                llm_sprites=len(plan.sprite_roles()),
+                floor_sprites=len(floor.sprite_roles()),
+            )
             return floor
         log.info("art_director.llm_plan", genre=plan.genre, roles=list(plan.roles))
         return plan

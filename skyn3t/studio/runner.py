@@ -728,6 +728,27 @@ class StudioRunner:
         return min(float(score), 49.0) if verdict != "go" else float(score)
 
     @staticmethod
+    def _game_quality_gate_ok(ok: bool | None, skipped: bool, gates: bool) -> bool:
+        """Visual/QA verdict gate for game stacks. Blocks ONLY on a REAL, non-skipped
+        failure (``ok is False``). A SKIPPED check (no vision model / no Playwright) or
+        gating disabled ⇒ True, so an offline/degraded judge never false-fails a build
+        (the swarm's do-no-harm rule). Mirrors ``_critic_ok`` / ``_verifiers_gate``."""
+        if not gates or skipped:
+            return True
+        return ok is not False
+
+    @staticmethod
+    def _headless_reachable_ok(gate: Any, requires_reachable: bool) -> bool:
+        """Opt-in strengthening: an APPLICABLE headless gate whose sim exposes neither a
+        reachable win NOR lose is not a playable game. Off (``requires_reachable`` False),
+        or a non-applicable/absent gate ⇒ True (never false-fail). Only the explicit
+        both-unreachable signal blocks."""
+        if not requires_reachable or gate is None or not getattr(gate, "applicable", False):
+            return True
+        rep = getattr(gate, "report", None) or {}
+        return not (rep.get("winReachable") is False and rep.get("loseReachable") is False)
+
+    @staticmethod
     def _verifiers_gate(prior: dict, proof_build_passed: bool = False) -> tuple[bool, str | None]:
         """Consume the objective-verifier verdicts the gate previously ignored.
 
@@ -2149,6 +2170,21 @@ class StudioRunner:
                     f"{len(gate.violations)} runtime invariant violation(s): "
                     + "; ".join(gate.violations[:3])
                 )
+            # Opt-in strengthening: an applicable gate that PASSED its invariants but
+            # whose sim exposes neither a reachable win NOR lose is not a playable game.
+            # Off by default (the reachability probe can't always reach an ending).
+            if headless_gate_ok and not self._headless_reachable_ok(
+                    gate, bool(getattr(self.settings,
+                                       "headless_gate_requires_reachable", False))):
+                headless_gate_ok = False
+                manifest.extra["headless_reachable_gate"] = (
+                    "no reachable win or lose state "
+                    "(winReachable=false, loseReachable=false)"
+                )
+            # Game-quality verdict gates (visual + QA). Default True so a skipped/absent
+            # judge or a non-game stack never blocks; a REAL failure sets them False below.
+            game_visual_ok = True
+            qa_playtest_ok = True
             # Visual check (opt-in, game stacks): screenshot the delivered, RUNNING game
             # mid-play and vision-judge it for an EMPTY play field / TINY entities — the
             # "is there anything to play / does it look right" question headless gates
@@ -2222,6 +2258,18 @@ class StudioRunner:
                     }
                     if gv_res.final.gap():
                         log.info("game_visual_check.flagged", issues=gv_res.final.issues)
+                    # Hard-gate: a REAL (non-skipped) visual failure blocks the verdict
+                    # for game stacks. A skipped check (no vision model) leaves ok=True,
+                    # so an offline build is never false-failed.
+                    game_visual_ok = self._game_quality_gate_ok(
+                        gv_res.final.ok, gv_res.final.skipped,
+                        bool(getattr(self.settings, "game_quality_gates_verdict", True)))
+                    if not game_visual_ok:
+                        manifest.extra["game_visual_gate"] = (
+                            "visual check failed: "
+                            + (gv_res.final.gap()
+                               or "; ".join(list(gv_res.final.issues)[:3]))
+                        )
                     # Adopt the visual loop's gate ONLY when it is genuinely applicable
                     # (drop the raw degrade-open skip a missing-sim-core game returns, so
                     # the missing-core block stays a no_go) and never let it RAISE the
@@ -2249,6 +2297,17 @@ class StudioRunner:
 
                     qa_verdict = await qa_playtest(project_dir, settings=self.settings)
                     manifest.extra["qa_playtest"] = qa_verdict.to_dict()
+                    # Hard-gate: a REAL (non-skipped) QA failure blocks the verdict for
+                    # game stacks. A soft-skip (no Playwright) leaves ok=True.
+                    qa_playtest_ok = self._game_quality_gate_ok(
+                        qa_verdict.ok, qa_verdict.skipped,
+                        bool(getattr(self.settings, "game_quality_gates_verdict", True)))
+                    if not qa_playtest_ok:
+                        manifest.extra["qa_playtest_gate"] = (
+                            "qa playtest failed: "
+                            + ("; ".join(list(qa_verdict.gaps())[:3])
+                               or "console/sprite render failure")
+                        )
                     gaps = qa_verdict.gaps()
                     if gaps:
                         log.info("qa_playtest.flagged",
@@ -2285,7 +2344,8 @@ class StudioRunner:
                 if (verdict == "go" and proof.passed and delivered_nonempty
                     and substantive and has_entry and intent_ok and critic_gate
                     and verifiers_ok and not scaffold_stub and not code_degraded
-                    and not native_llm_key and headless_gate_ok)
+                    and not native_llm_key and headless_gate_ok
+                    and game_visual_ok and qa_playtest_ok)
                 else "no_go"
             )
             # Don't let the learning loop reward an under-delivered build (only

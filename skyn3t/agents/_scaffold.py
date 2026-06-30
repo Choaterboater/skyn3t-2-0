@@ -1482,7 +1482,11 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
         "vite.config.js": (
             "import { defineConfig } from 'vite'\n\n"
             "// A Phaser game is a plain-JS Vite app — no framework plugin needed.\n"
-            "export default defineConfig({})\n"
+            "export default defineConfig({\n"
+            "  build: {\n"
+            "    chunkSizeWarningLimit: 1600,\n"
+            "  },\n"
+            "})\n"
         ),
         "index.html": (
             "<!doctype html>\n"

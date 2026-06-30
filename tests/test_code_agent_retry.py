@@ -29,7 +29,7 @@ async def _run_with_attempts(tmp_path, attempts):
     await agent.start()
     calls = {"n": 0}
 
-    async def fake_agentic_build(prompt, workdir, timeout=None):
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
         i = calls["n"]
         calls["n"] += 1
         ok, code = attempts[min(i, len(attempts) - 1)]
@@ -84,7 +84,7 @@ async def test_prose_file_in_substantial_app_is_not_degraded(tmp_path):
     agent = CodeAgent(event_bus=bus)
     await agent.start()
 
-    async def fake(prompt, workdir, timeout=None):
+    async def fake(prompt, workdir, timeout=None, **kwargs):
         pathlib.Path(workdir, "App.jsx").write_text(_REAL_APP)  # substantial real code
         pathlib.Path(workdir, "notes.js").write_text(
             "Here is where the picture gets sent to the home so children can enjoy "

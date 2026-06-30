@@ -231,3 +231,15 @@ def test_open_ended_plan_is_themed_by_brief():
     fantasy = direct_art("a medieval blacksmith game")
     assert space.open_ended and fantasy.open_ended
     assert space.palette != fantasy.palette
+
+
+def test_space_shooter_has_distinct_powerup_sprites():
+    # Different power-up TYPES must look different: the floor carries several distinct
+    # powerup_* sprite roles (not one generic capsule reused for every pickup).
+    plan = direct_art("a space shooter with aliens and power-ups")
+    pow_roles = [k for k in plan.sprite_roles() if k.startswith("powerup")]
+    assert len(pow_roles) >= 3, f"expected several distinct power-up sprites, got {pow_roles}"
+    # each is a real sprite with its own generation prompt
+    for k in pow_roles:
+        assert plan.roles[k].render == "sprite"
+        assert plan.roles[k].prompt, f"{k} needs a sprite prompt"

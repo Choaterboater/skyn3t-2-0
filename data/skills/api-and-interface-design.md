@@ -3,10 +3,10 @@ slug: api-and-interface-design
 title: api-and-interface-design
 stack: generic
 tags: frontend, design, ui, web
-uses: 20
-helpful: 9
-quality_sum: 14.7080
-score: 0.735
+uses: 24
+helpful: 13
+quality_sum: 18.2580
+score: 0.761
 source: agent-skills
 ---
 

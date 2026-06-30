@@ -185,3 +185,43 @@ async def test_plan_art_llm_strips_control_chars_from_subject():
     plan = await plan_art_llm("a game", settings=_settings(), llm=_StubLLM(payload))
     s = plan.roles["boat"].subject
     assert "\n" not in s and "\t" not in s
+
+
+# ---- variety guard: the LLM may ENRICH a genre, never IMPOVERISH it ----
+# Regression (verify-by-playing): for a space shooter the cheap model collapsed the
+# genre's distinct foes + boss + powerup into a single generic "enemy", so only 3 sprites
+# were generated and the game looked sparse. A recognized-genre floor must never be reduced
+# below its curated sprite count by the LLM refinement.
+async def test_llm_plan_cannot_reduce_known_genre_sprite_variety_below_floor():
+    brief = "a vertical scrolling space shooter with aliens and a boss"
+    floor = direct_art(brief)
+    assert not floor.open_ended, "space_shooter is a recognized genre"
+    assert len(floor.sprite_roles()) > 3, "the curated floor is rich (distinct foes/boss)"
+    collapsed = json.dumps({
+        "genre": "space_shooter",
+        "palette": ["#0a0e27", "#ff2d55", "#33ddff"],
+        "roles": [
+            {"role": "player_ship", "render": "sprite", "subject": "player ship"},
+            {"role": "enemy", "render": "sprite", "subject": "generic alien"},
+            {"role": "bullet", "render": "primitive", "subject": "laser bolt"},
+        ],
+    })
+    plan = await plan_art_llm(brief, settings=_settings(), llm=_StubLLM(collapsed))
+    # the guard keeps the richer floor, so the variety the user wants survives
+    assert plan.roles.keys() == floor.roles.keys()
+    assert len(plan.sprite_roles()) == len(floor.sprite_roles())
+
+
+async def test_llm_plan_may_replace_open_ended_floor_even_when_smaller():
+    # An open-ended floor is a generic placeholder; the guard EXEMPTS it so a tailored plan
+    # with fewer roles still wins. Only curated genre floors are protected.
+    brief = "a zen pottery wheel game"
+    floor = direct_art(brief)
+    assert floor.open_ended, "an unrecognized game gets an open-ended floor"
+    tiny = json.dumps({
+        "genre": "pottery",
+        "palette": ["#2a1a3a", "#e0a060"],
+        "roles": [{"role": "clay", "render": "sprite", "subject": "spinning clay pot"}],
+    })
+    plan = await plan_art_llm(brief, settings=_settings(), llm=_StubLLM(tiny))
+    assert "clay" in plan.roles, "the tailored role replaces the generic baseline"

@@ -114,6 +114,129 @@ def test_improve_handles_worktree_creation_failure(tmp_path, monkeypatch):
     assert outcome.status == "failed" and "disk full" in outcome.detail.get("error", "")
 
 
+def test_improve_emits_stage_events_through_the_whole_pipeline(tmp_path):
+    # The user asked improve to "show it going through" the pipeline stages
+    # like a regular build does -- previously only ONE improve.stage ("localize")
+    # fired, then the run went silent until improve.completed/failed even though
+    # several more real steps happen (dispatch improver, proof_run, merge_back,
+    # config surfacing).
+    settings = _settings(tmp_path)
+    _seed_project(settings.projects_dir, "demo")
+    bus = EventBus()
+    stages = []
+
+    async def _handler(ev):
+        if ev.type == EventType.IMPROVE_STAGE:
+            stages.append(ev.payload.get("stage"))
+
+    bus.subscribe(EventType.ALL, _handler)
+    engine = ImproveEngine(bus, _FakeOrchestrator(), settings=settings)
+    asyncio.run(engine.improve("demo", "g"))
+
+    assert "localize" in stages
+    # More than the single legacy stage, and each successive step is
+    # represented -- generate/dispatch the improver, verify (proof_run),
+    # deliver (merge_back), finalize (config surfacing).
+    assert len(stages) >= 4
+    assert len(stages) == len(set(stages)), "each stage should be distinct"
+    # localize must come first (repo map is built before anything else runs).
+    assert stages[0] == "localize"
+
+
+def test_improve_outcome_flags_when_no_files_were_touched(tmp_path):
+    # An honest signal for the dashboard: 0 files changed must not read like a
+    # quiet success -- surface it explicitly in detail so the UI can say so.
+    settings = _settings(tmp_path)
+    _seed_project(settings.projects_dir, "demo")
+
+    class _NoOpOrchestrator:
+        async def submit(self, task):
+            return SimpleNamespace(success=True, output={"files": [], "backend": "stub"})
+
+    engine = ImproveEngine(EventBus(), _NoOpOrchestrator(), settings=settings)
+    outcome = asyncio.run(engine.improve("demo", "add a contact form"))
+
+    assert outcome.files_changed == []
+    assert outcome.detail.get("no_targets_found") is True
+
+
+def test_improve_runs_deterministic_repairs_so_a_client_component_builds(tmp_path):
+    # Live-validation finding (Apple-SEO site): improving a Next.js SERVER
+    # component into a CLIENT one (the improver adds useState/onClick) without a
+    # "use client" directive ships an app that `next build` REJECTS. The main
+    # build pipeline auto-fixes exactly this via _deterministic_repairs
+    # (add_use_client_directives); improve() skipped those repairs, so it
+    # delivered a broken app while reporting success — a do-no-harm violation.
+    settings = _settings(tmp_path)
+    projects = settings.projects_dir
+    slug = "nextsite"
+    app = projects / slug / "app"
+    app.mkdir(parents=True)
+    (app / "page.jsx").write_text(
+        "import Link from 'next/link';\n"
+        "export default function Page(){ return <Link href='/'>home</Link>; }\n")
+    (projects / slug / "package.json").write_text(
+        '{"name":"x","dependencies":{"next":"14.2.3"}}')
+    import json
+    (projects / slug / "skyn3t_manifest.json").write_text(json.dumps(
+        {"slug": slug, "brief": "seo site", "stack": "nextjs", "status": "completed"}))
+
+    class _ClientCompOrchestrator:
+        async def submit(self, task):
+            wt = Path(task.payload["worktree_dir"])
+            # The improver adds interactivity but forgets "use client" — a real
+            # cheap-model defect the deterministic repair exists to catch.
+            (wt / "app" / "page.jsx").write_text(
+                "import Link from 'next/link';\n"
+                "import { useState } from 'react';\n"
+                "export default function Page(){ const [v,setV]=useState(0); "
+                "return <button onClick={()=>setV(v+1)}>{v}</button>; }\n")
+            return SimpleNamespace(
+                success=True, output={"files": ["app/page.jsx"], "backend": "stub"})
+
+    engine = ImproveEngine(EventBus(), _ClientCompOrchestrator(), settings=settings)
+    outcome = asyncio.run(engine.improve(slug, "add a click counter"))
+
+    delivered = (projects / slug / "app" / "page.jsx").read_text()
+    first_line = delivered.lstrip().splitlines()[0]
+    assert "use client" in first_line, (
+        f"improve delivered a client component without 'use client' — {first_line!r}")
+    assert outcome.status == "completed"
+
+
+def test_improve_deterministic_repairs_declare_a_new_dependency(tmp_path):
+    # A second facet of the same fix: if the improver introduces an import of a
+    # package the project never declared (e.g. adds `import axios`), improve must
+    # reconcile package.json the same way the main build does, or the delivered
+    # app won't install/build.
+    settings = _settings(tmp_path)
+    projects = settings.projects_dir
+    slug = "reactsite"
+    src = projects / slug / "src"
+    src.mkdir(parents=True)
+    (src / "App.jsx").write_text("export default function App(){ return null; }\n")
+    (projects / slug / "package.json").write_text('{"name":"x","dependencies":{}}')
+    import json
+    (projects / slug / "skyn3t_manifest.json").write_text(json.dumps(
+        {"slug": slug, "brief": "site", "stack": "react", "status": "completed"}))
+
+    class _NewDepOrchestrator:
+        async def submit(self, task):
+            wt = Path(task.payload["worktree_dir"])
+            (wt / "src" / "App.jsx").write_text(
+                "import axios from 'axios';\n"
+                "export default function App(){ axios.get('/'); return null; }\n")
+            return SimpleNamespace(
+                success=True, output={"files": ["src/App.jsx"], "backend": "stub"})
+
+    engine = ImproveEngine(EventBus(), _NewDepOrchestrator(), settings=settings)
+    asyncio.run(engine.improve(slug, "fetch data with axios"))
+
+    import json as _json
+    pkg = _json.loads((projects / slug / "package.json").read_text())
+    assert "axios" in pkg.get("dependencies", {}), "improve did not reconcile the new dep"
+
+
 def test_improve_failed_improver_preserves_original(tmp_path):
     settings = _settings(tmp_path)
     project = _seed_project(settings.projects_dir, "demo")

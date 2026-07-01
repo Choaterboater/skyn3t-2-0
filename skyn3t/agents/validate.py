@@ -163,6 +163,17 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
             ok, err = _balanced(content)
             if not ok:
                 return ok, err
+        elif p.endswith((".html", ".htm")):
+            # `.html` is NOT in _CODE_EXTS, so the prose/elision/native guards below
+            # never see it — an LLM reply would otherwise ship to an .html target
+            # unvalidated. Require a real document root AND a closing </html> (a
+            # token-truncated rewrite loses the tail, leaving a half-page that renders
+            # a blank/broken app). Case-insensitive; attribute-tolerant.
+            low = content.lower()
+            if "<html" not in low and "<!doctype" not in low:
+                return False, "HTML file has no <html> root or <!doctype> declaration"
+            if "</html" not in low:
+                return False, "HTML file appears truncated (no closing </html>)"
         # Generic prose guard for any source-code file: chat prose that happens to
         # pass (or skip) the type-specific check must not ship as source.
         if p.endswith(_CODE_EXTS) and _looks_like_prose(content):

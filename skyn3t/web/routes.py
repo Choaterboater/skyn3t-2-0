@@ -24,6 +24,51 @@ from skyn3t.worktree import PREVIEW_SUBDIR, list_files
 
 log = structlog.get_logger(__name__)
 
+# The process boot instant + a cached staleness probe. A long-running server keeps
+# serving the code imported at boot; when the working tree moves on, features look
+# broken while the fix sits unloaded on disk (this bit us three times — most
+# recently 'Improve under Projects does nothing', 2026-07-01). status/health
+# expose `started_at`/`stale_code` so the UI can tell the user to restart.
+_PROCESS_STARTED = time.time()
+_STALE_PRUNE = frozenset({"node_modules", "__pycache__", ".git", "dist", ".next", "ui"})
+_STALE_TTL_S = 60.0
+_stale_cache: tuple[float, bool] = (0.0, False)
+
+
+def _source_newer_than(root: Path, started: float) -> bool:
+    """True when any ``.py`` under ``root`` (pruned of vendored/derived dirs) has an
+    mtime newer than ``started``. Never raises — an unreadable path is skipped and a
+    broken walk reads as not-stale (a health probe must not invent failures)."""
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _STALE_PRUNE]
+            for fn in filenames:
+                if not fn.endswith(".py"):
+                    continue
+                try:
+                    if os.path.getmtime(os.path.join(dirpath, fn)) > started:
+                        return True
+                except OSError:
+                    continue
+    except Exception:  # noqa: BLE001 - a health probe must never raise
+        return False
+    return False
+
+
+def code_is_stale(force_refresh: bool = False) -> bool:
+    """Whether any skyn3t package source file is newer than this process (cached
+    ``_STALE_TTL_S`` so the health poll doesn't re-walk the tree every request).
+    +1s slack absorbs filesystem mtime granularity around boot."""
+    global _stale_cache
+    now = time.time()
+    if not force_refresh and now - _stale_cache[0] < _STALE_TTL_S:
+        return _stale_cache[1]
+    pkg_root = Path(__file__).resolve().parents[1]
+    stale = _source_newer_than(pkg_root, _PROCESS_STARTED + 1.0)
+    _stale_cache = (now, stale)
+    return stale
+
+
 # Strong references to in-flight background build tasks (prevent GC mid-run).
 _BUILD_TASKS: set = set()
 
@@ -77,7 +122,7 @@ except Exception:  # noqa: BLE001
 # kwargs so they are unit-testable without FastAPI or a running server.
 # ---------------------------------------------------------------------------
 async def status_payload(state: AppState) -> dict[str, Any]:
-    return state.status()
+    return {**state.status(), "started_at": _PROCESS_STARTED, "stale_code": code_is_stale()}
 
 
 async def agents_payload(state: AppState) -> dict[str, Any]:

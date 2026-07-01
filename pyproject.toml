@@ -47,9 +47,13 @@ integrations = [
 ]
 # Visual self-inspection loop (Spec 3): screenshot a running app. Needs
 # `playwright install chromium` after install. The vision JUDGEMENT step also
-# needs a vision-capable LLM wired; without one the loop soft-skips.
+# needs a vision-capable LLM wired; without one the loop soft-skips. Pillow backs
+# a cheap, dependency-soft heuristic (flash-frame detection) that retakes a
+# mid-play game screenshot landing on a transient full-screen FX (e.g. a
+# damage-flash camera tint) — without it, that retake optimization just skips.
 visual = [
     "playwright>=1.40",
+    "pillow>=10.0",
 ]
 dev = [
     "pytest>=8.0",

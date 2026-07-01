@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # Set to "claude" to get high-quality codegen on the authed claude CLI without
     # paying for claude on brainstorm/architecture/review/docs.
     codegen_cli_provider: str = ""
+    # Pin the model the above CLI runs codegen on (e.g. "sonnet"). Accepts the
+    # CLI's own aliases (sonnet/opus/fable) or a full model id. Empty = no pin,
+    # the CLI's own default model applies. Only used when codegen_cli_provider
+    # (or the global CLI backend) is set; ignored otherwise.
+    codegen_cli_model: str = ""
     # Give OpenRouter (cheap) models a whole-project AGENTIC codegen loop — the
     # model writes files itself via tool-calls with full context (like bolt/v0/
     # Aider), instead of the weak per-file generation. This is what lets cheap
@@ -254,6 +259,14 @@ class Settings(BaseSettings):
     liveness_check_enabled: bool = True
     liveness_gates_verdict: bool = False
     liveness_max_rounds: int = 2
+    # Advisory SEO check (web/HTML stacks): a DETERMINISTIC static scan of the delivered
+    # source + built output for the cheap, unambiguous SEO signals — a non-empty <title>
+    # (literal or Next.js metadata), a meta description, one <h1>, an <html lang>, Open
+    # Graph basics, <img> alt coverage, and robots.txt/sitemap.xml. Unlike the game
+    # checks it needs no Playwright/vision (SEO signals are static + free), so it defaults
+    # ON. ADVISORY only: findings are recorded to manifest.extra["seo"] and fed to the
+    # improver; it NEVER flips the verdict (a static SEO nit must not no_go a working app).
+    seo_check_enabled: bool = True
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

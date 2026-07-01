@@ -231,6 +231,34 @@ _WEB_STACKS = frozenset({
     "phaser",  # a Phaser game has real HUD/menu visual-design concerns
 })
 
+# Swift / SwiftUI native macOS (Swift Package Manager). NOT a web app — the model
+# must never emit package.json / npm / index.html / JS. Mirrors the sim-core split:
+# pure logic in its own SwiftUI-free file so it is unit-testable.
+_SWIFT_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a NATIVE macOS app in Swift with SwiftUI, built "
+    "by Swift Package Manager (SPM). This is NOT a web app: NEVER emit package.json, "
+    "npm, node_modules, index.html, JavaScript/TypeScript, Vite, or any web files. "
+    "LAYOUT (SPM): a root `Package.swift` (swift-tools-version:5.9, "
+    "`platforms: [.macOS(.v13)]`) declaring THREE targets — a `.target` library "
+    "`AppCore` for the pure logic, an `.executableTarget` `App` (dependencies: "
+    '["AppCore"]) for the UI, and a `.testTarget` `AppCoreTests` (dependencies: '
+    '["AppCore"]). Sources live under `Sources/AppCore/*.swift`, '
+    "`Sources/App/*.swift`, and tests under `Tests/AppCoreTests/*.swift`. "
+    "ENTRY: `Sources/App/MainApp.swift` holds the `@main struct ...: App` with a "
+    "`WindowGroup { ContentView() }` — the `@main` file must NOT be named "
+    "`main.swift`. "
+    "ARCHITECTURE (pure core + render-only view): put ALL state and logic in "
+    "`Sources/AppCore/` as plain value types / structs with NO `import SwiftUI` "
+    "(so XCTest can exercise them headlessly) — ONE authoritative model with its "
+    "operations. The SwiftUI views in `Sources/App/` own NO logic: they hold the "
+    "model (`@State`/`@StateObject`), render it, and forward user actions to its "
+    "methods. "
+    "TESTS: `Tests/AppCoreTests/` uses XCTest with `@testable import AppCore` and "
+    "asserts the core's real behavior. "
+    "TARGET: macOS 13+; keep it compiling cleanly under the installed toolchain "
+    "(avoid unavailable APIs). Implement the brief's real features, not a stub."
+)
+
 
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
@@ -301,6 +329,7 @@ class CodeAgent(BaseAgent):
         # paying for the CLI on every other stage.
         from skyn3t.config.settings import get_settings as _gs
         _codegen_prov = (getattr(_gs(), "codegen_cli_provider", "") or "").lower()
+        _codegen_model = (getattr(_gs(), "codegen_cli_model", "") or None)
         _codegen_cli_ok = bool(_codegen_prov) and self.llm._cli_available(_codegen_prov)
         if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
@@ -337,7 +366,7 @@ class CodeAgent(BaseAgent):
                 )
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov,
-                                           stack=stack)
+                                           model=_codegen_model, stack=stack)
                     if _codegen_prov
                     else self.llm.agentic_build(prompt, str(worktree), stack=stack)
                 )
@@ -499,6 +528,7 @@ class CodeAgent(BaseAgent):
             + (f"{_GAME_WIRING_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{_GAME_FEEL_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
+            + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "
@@ -575,7 +605,11 @@ class CodeAgent(BaseAgent):
                 "that uses the texture: `this.add.sprite(x, y, '<role>')` for one "
                 "entity, or a `this.physics.add.group()` keyed to that texture for "
                 "many bullets / enemies / pickups (spawn and recycle sprites from the "
-                "group). Set a clear depth order for foreground/background layers with "
+                "group). Load ONLY textures that exist — the baseline list above is "
+                "EXHAUSTIVE on disk; do NOT load any other /assets/ path (an invented "
+                "'gold.png'/'coin.png' 404s and CRASHES the scene at runtime): render "
+                "currency, score and HUD icons as palette-styled primitives or text "
+                "instead. Set a clear depth order for foreground/background layers with "
                 "`setDepth(...)` when the scene has more than one visual plane. Do NOT "
                 "draw a role that HAS a sprite with this.add.graphics(), "
                 "fillRect, fillCircle or this.add.rectangle — that is a BUG; the ONLY "
@@ -646,6 +680,10 @@ class CodeAgent(BaseAgent):
             f"PRIMITIVE ROLES — {prim_list}: these have NO sprite file — draw them as "
             "clean styled shapes from the palette color shown. Give all background and "
             "foreground elements explicit depth ordering so overlaps stay readable.\n"
+            "The SPRITE ROLES list is EXHAUSTIVE: load ONLY textures that exist — do "
+            "NOT load any other /assets/ path (an invented 'gold.png'/'coin.png' 404s "
+            "and CRASHES the scene at runtime). Currency, score and HUD icons are NOT "
+            "sprites: render them as palette-styled primitives or text.\n"
             f"BACKGROUND ({bg_subject}): render a rich, LAYERED backdrop with depth — "
             "several parallax layers, a subtle gradient/atmosphere and a few brighter "
             f"accent details over ~{plan.palette[0]} — NOT a single flat fill. "

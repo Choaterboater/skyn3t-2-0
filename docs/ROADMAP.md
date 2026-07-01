@@ -60,3 +60,46 @@ The 2.0 feature backlog, grouped by priority. Status legend:
   lazily; agents registered by the canonical capability vocabulary.
 - **Docs + roadmap** — ✅ delivered: `README.md`, `STATUS.md`,
   `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`.
+
+## P3 — Game capability track
+
+Full plan + per-item status in
+[docs/game-capability-roadmap.md](game-capability-roadmap.md).
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Phaser 3 + Vite game stack | ✅ | `stack_selector` `phaser`; `_scaffold._phaser` (PR #20). |
+| Headless invariant gate | ✅ | `studio/headless_gate.py` — runs the pure sim, asserts NaN/pool/determinism/pause/game-over; sealed (PR #22/#23). |
+| Game art tier (role→sprite) | ✅ | `agents/art_director.py` + role sprites in `_scaffold.py` (PR #24/#25). |
+| game-designer GDD gate | ✅ | `agents/game_designer.py`; `game_designer_enabled` (default on). |
+| gameplay-specialist checks | 🟡 | `studio/gameplay_checks.py` (advisory, run-don't-parse); physics-specialist agent not built. |
+| qa-playtest + visual repair | ✅ | `studio/qa_playtest.py`, `game_visual_check.py`, `game_visual_loop.py` (default on). |
+| End-of-build liveness loop | ✅ | `studio/liveness.py`; `runner._run_liveness`. |
+| Procedural levels / premium sprites | ⬜ | Deferred (roadmap #11). |
+
+## 2026-06-30/07-01 session
+
+Recently completed (verified in code + tests; full suite 1612 green):
+
+- **Dangling-import codegen bug FIXED** (Workstream 1) — 4 stacked defects: a
+  wrong-filename stub for extension-qualified specs, React-shaped stub content on
+  every stack, `CodeImproverAgent` unable to CREATE missing files, and a non-final
+  "final guard". Added `_final_consistency_check` (true end-of-pipeline,
+  downgrade-only). Bonus: fixed a pre-existing path-traversal / arbitrary-file-write
+  bug (`_confine()` on every stub write).
+- **`apply_deterministic_repairs()` extracted** in `studio/proof_run.py` — single
+  source of truth for build-readying repairs; shared by the build pipeline
+  (`runner`) and the improve engine.
+- **Improve engine hardened** — stack-aware entrypoints + LLM target discovery via
+  `repo_map` (previously a no-op for non-React-Vite stacks); emits `IMPROVE_STAGE`
+  events end to end; now runs the shared deterministic repairs so an improve can't
+  ship a broken app. Live-validated on a real Next.js site.
+- **qa_playtest re-verifies after a repair** — it read the stale pre-repair verdict,
+  so a game repair could never flip `no_go → go`; now repair → re-run once.
+
+Still open / next up (honest):
+
+- **Game sprite-RENDERING reliability** — sprites load but only some render (entities
+  wired to invented, never-loaded texture keys). Being worked now.
+- **Advisory SEO gate** for web stacks — being built now.
+- **Native macOS (Swift/SwiftUI)** + **Godot** stacks — deferred, not started.

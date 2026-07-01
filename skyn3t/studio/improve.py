@@ -21,7 +21,7 @@ from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import get_repo_map
 from skyn3t.studio.manifest import BuildManifest
-from skyn3t.studio.proof_run import proof_run
+from skyn3t.studio.proof_run import apply_deterministic_repairs, proof_run
 from skyn3t.worktree import cleanup_worktree, create_worktree, list_files, merge_back
 
 _log = structlog.get_logger(__name__)
@@ -98,9 +98,32 @@ class ImproveEngine:
                              {"slug": slug, "stage": "localize",
                               "repo_map_chars": len(repo_ctx)}, cid)
 
+            await self._emit(EventType.IMPROVE_STAGE,
+                             {"slug": slug, "stage": "generating"}, cid)
             files_changed, improver_ok, improver_err = await self._run_improver(
                 wt.dir, slug, stack, goal, repo_ctx, cid)
 
+            # Same deterministic, build-readying repairs the main build pipeline
+            # runs (StudioRunner._deterministic_repairs -> apply_deterministic_repairs)
+            # — so an improve that turns a server component into a client one (needs
+            # "use client"), adds a new dependency, or introduces a missing local
+            # import does NOT ship an app that won't build. Without this, improve was
+            # a do-no-harm violation: it delivered a broken tree while reporting
+            # success (found live on the Apple-SEO site — a contact-form improve
+            # added useState/onSubmit with no "use client", breaking `next build`).
+            # Best-effort; never blocks a delivery.
+            repairs: dict[str, Any] = {}
+            try:
+                repairs = apply_deterministic_repairs(wt.dir, stack=stack)
+                changed = {k: v for k, v in repairs.items() if v}
+                if changed:
+                    await self._emit(EventType.IMPROVE_STAGE,
+                                     {"slug": slug, "stage": "repairing", **changed}, cid)
+            except Exception as exc:  # noqa: BLE001 - repairs never break an improve
+                _log.warning("improve.deterministic_repairs_failed", slug=slug, error=str(exc))
+
+            await self._emit(EventType.IMPROVE_STAGE,
+                             {"slug": slug, "stage": "verifying"}, cid)
             proof = proof_run(
                 wt.dir, stack=stack,
                 execution_backend=getattr(self.settings, "execution_backend", "auto"),
@@ -109,6 +132,8 @@ class ImproveEngine:
                 run_build=bool(getattr(self.settings, "run_generated_build", False)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
+            await self._emit(EventType.IMPROVE_STAGE,
+                             {"slug": slug, "stage": "delivering"}, cid)
             # clean=True WIPES project_dir before copying, and merge_back swallows
             # per-file copy errors — a mid-merge failure would leave the original
             # project half-destroyed. Back it up first and restore if the merge
@@ -138,6 +163,8 @@ class ImproveEngine:
             # Config surfacing: an improve goal may introduce a new API/setting.
             # Re-detect from the goal + the (now edited) code, (re)generate the
             # settings UI for any client keys, and verify wiring. Best-effort.
+            await self._emit(EventType.IMPROVE_STAGE,
+                             {"slug": slug, "stage": "finalizing"}, cid)
             config_summary = await self._surface_config(project_dir, goal, stack, slug, cid)
             if config_summary.get("files_written"):
                 delivered = list_files(str(project_dir))
@@ -150,12 +177,22 @@ class ImproveEngine:
             except Exception as rec_exc:  # noqa: BLE001
                 _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
 
+            detail: dict[str, Any] = {
+                "delivered": len(delivered), "proof": proof.to_dict(),
+                "improver_success": improver_ok, "improver_error": improver_err,
+            }
+            # An honest signal for the dashboard: 0 files touched must not read
+            # like a quiet success just because proof_run/merge_back didn't
+            # error — surface it explicitly so the UI can tell the user their
+            # goal wasn't actually acted on (see code_improver's target-discovery
+            # fallback, which can still legitimately come up empty).
+            if not files_changed:
+                detail["no_targets_found"] = True
             outcome = ImproveOutcome(
                 project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
                 files_changed=sorted(files_changed), proof_passed=bool(proof.passed),
                 score=float(proof.score), status="completed",
-                detail={"delivered": len(delivered), "proof": proof.to_dict(),
-                        "improver_success": improver_ok, "improver_error": improver_err},
+                detail=detail,
             )
             await self._emit(EventType.IMPROVE_COMPLETED, outcome.to_dict(), cid)
             return outcome

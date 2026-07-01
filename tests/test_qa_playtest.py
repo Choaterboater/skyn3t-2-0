@@ -19,6 +19,7 @@ from skyn3t.studio.qa_playtest import (
     check_sprites_rendered,
     qa_playtest,
 )
+from skyn3t.studio.visual_check import _vision_locate_start_click, _vision_locate_with_retry
 
 
 # ── injected app_runner stubs (mirror tests/test_visual_loop.py) ──────────────
@@ -102,6 +103,62 @@ def test_sprite_referenced_as_loader_key_only_is_rendered(tmp_path: Path):
     assert rendered is True and missing == []
 
 
+# ── variable-keyed load/render (the dominant idiomatic Phaser pattern) ─────────
+# Live-validation finding (real space-shooter build): the game loaded ALL sprites
+# in a loop `for (const name of spriteList) this.load.image(name, ...)` and
+# rendered enemies via `let textureKey; ...; textureKey='enemy'; this.add.sprite(
+# 0,0,textureKey)`. The static scan only saw LITERAL keys in loader calls, so it
+# false-flagged every variable-keyed role as "missing" — reporting a correctly
+# built, fully-rendered game as no_go. That false positive is the real "games
+# still fail" bug for well-built games. These pin the fix: a variable-keyed
+# loader/render + the role literal present in source ⇒ rendered.
+
+def test_sprite_loaded_and_rendered_via_variable_key_is_not_false_flagged(tmp_path: Path):
+    for role in ("ship", "enemy", "boss"):
+        _sprite(tmp_path, role)
+    _src(tmp_path,
+         "const spriteList = ['ship', 'enemy', 'boss'];\n"
+         "for (const name of spriteList) {\n"
+         "  this.load.image(name, `assets/sprites/${name}.png`);\n"
+         "}\n"
+         "let textureKey;\n"
+         "if (enemy.kind === 0) { textureKey = 'enemy'; } else { textureKey = 'boss'; }\n"
+         "const s = this.add.sprite(0, 0, textureKey);\n"
+         "this.player = this.add.sprite(x, y, 'ship');\n")
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is True, f"variable-keyed render false-flagged: missing={missing}"
+    assert missing == []
+
+
+def test_sprite_rendered_via_settexture_variable_is_recognized(tmp_path: Path):
+    _sprite(tmp_path, "gunship")
+    _src(tmp_path,
+         "const keys = ['gunship'];\n"
+         "keys.forEach(k => this.load.image(k, `assets/sprites/${k}.png`));\n"
+         "const tex = 'gunship';\n"
+         "sprite.setTexture(tex);\n")
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is True and missing == []
+
+
+def test_role_absent_entirely_is_still_flagged_even_with_variable_rendering(tmp_path: Path):
+    # Precision guard (moonshine case): the game renders via variable keys, but a
+    # generated role's literal NEVER appears anywhere (the model invented its own
+    # key). That role genuinely never renders and must STILL be flagged — the
+    # variable-render allowance must not blanket-pass every generated role.
+    _sprite(tmp_path, "player")
+    _sprite(tmp_path, "enemy")
+    _src(tmp_path,
+         "const list = ['enemy'];\n"
+         "list.forEach(n => this.load.image(n, `assets/sprites/${n}.png`));\n"
+         "let k = 'enemy';\n"
+         "this.add.sprite(0, 0, k);\n"
+         "this.base = this.add.sprite(x, y, 'still');\n")  # 'player' never referenced
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is False
+    assert missing == ["player"]
+
+
 def test_no_sprite_files_is_rendered_true(tmp_path: Path):
     _src(tmp_path, "// no sprites generated at all\n")
     assert check_sprites_rendered(tmp_path) == (True, [])
@@ -152,7 +209,7 @@ def test_build_verdict_flags_missing_sprite(tmp_path: Path):
     assert v.ok is False
     assert v.sprites_rendered is False
     assert "player_plane" in v.missing_sprite_roles
-    assert any("preloads/renders" in g for g in v.gaps())
+    assert any("never rendered on screen" in g for g in v.gaps())
 
 
 def test_build_verdict_ignores_benign_console_error(tmp_path: Path):
@@ -189,6 +246,228 @@ def test_verdict_to_dict_roundtrips(tmp_path: Path):
     assert d["console_errors"] == ["boom"]
     assert d["ok"] is False
     assert isinstance(d["gaps"], list) and d["gaps"]
+
+
+# ── _vision_locate_start_click (pure-ish: injected vision_fn, no browser) ──────
+# Genre-aware games (tower defense: menu -> level card -> "Start Wave" button) never
+# reach play state via the generic click(400,300)+Space+Enter heuristic alone — this
+# helper asks a vision model "are we playing yet, and if not, where do I click?" so the
+# driver can progress through arbitrary menu/level-select flows instead of false-no_go
+# on a game that's actually fine (root cause of the Moonshine Hollow false no_go).
+
+def test_vision_locate_reports_already_in_play():
+    vision_fn = lambda path, prompt: '{"in_play": true}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is True
+    assert click is None
+
+
+def test_vision_locate_prompt_excludes_hud_only_screens_from_in_play():
+    # Measured flaky live (the same loaded-but-wave-not-started GameScene — a HUD,
+    # shop panel, path, and the Still sprite, but NO enemies yet — scored ok=True one
+    # run and ok=False the next with no code change): "moving entities" is an ill-posed
+    # criterion for a single STATIC screenshot (it can't show motion), so the model
+    # sometimes satisfied on "HUD + a playable field" alone. The prompt must explicitly
+    # rule out an empty-but-HUD'd field, matching game_visual_check's own "populated"
+    # bar, not just imply it via the word "moving".
+    captured = {}
+
+    def vision_fn(path, prompt):
+        captured["prompt"] = prompt
+        return '{"in_play": true}'
+
+    _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    low = captured["prompt"].lower()
+    assert "moving" not in low  # can't be judged from a single still frame
+    assert "hud" in low and ("waiting" in low or "no entities" in low or "empty" in low)
+
+
+def test_vision_locate_returns_click_target():
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": 180, "y": 275}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click == (180.0, 275.0)
+
+
+def test_vision_locate_handles_markdown_fenced_json():
+    vision_fn = lambda path, prompt: '```json\n{"in_play": false, "x": 10, "y": 20}\n```'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click == (10.0, 20.0)
+
+
+def test_vision_locate_no_vision_fn_is_noop():
+    in_play, click = _vision_locate_start_click(None, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+def test_vision_locate_no_image_bytes_is_noop():
+    vision_fn = lambda path, prompt: '{"in_play": true}'
+    in_play, click = _vision_locate_start_click(vision_fn, None, 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+def test_vision_locate_never_raises_on_garbage_response():
+    vision_fn = lambda path, prompt: "not json at all"
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+def test_vision_locate_never_raises_when_vision_fn_explodes():
+    def vision_fn(path, prompt):
+        raise RuntimeError("vision call failed")
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+def test_vision_locate_ignores_non_numeric_coordinates():
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": "not a number", "y": 20}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+# ── coordinate sanity clamping (hardening pass, same session) ──────────────────
+# A vision model occasionally returns a coordinate outside the screenshot it was
+# shown (hallucination, or a provider-specific normalization mismatch — e.g.
+# answering in a 0-1000 or 0-1 scale instead of raw pixels). Using that blindly sends
+# a click to a meaningless point. Treat out-of-bounds the same as "no instruction"
+# (the existing safe default), not as a real click target.
+
+def test_vision_locate_rejects_negative_coordinates():
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": -50, "y": 20}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+def test_vision_locate_rejects_coordinates_beyond_canvas_bounds():
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": 850, "y": 20}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click is None
+
+
+def test_vision_locate_accepts_coordinates_at_the_exact_boundary():
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": 800, "y": 600}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click == (800.0, 600.0)
+
+
+def test_vision_locate_accepts_origin_coordinates():
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": 0, "y": 0}'
+    in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    assert in_play is False
+    assert click == (0.0, 0.0)
+
+
+# ── _vision_locate_with_retry (intra-round retry, hardening pass) ──────────────
+# A single transient parse failure (a CLI vision backend wrapping JSON in prose
+# despite instructions, a slow frame) shouldn't burn a whole round of the caller's
+# outer 3-round budget — retry ONCE within the round before giving up. Injected
+# shot_fn/wait_fn so this is testable without a real browser.
+
+def test_vision_retry_succeeds_first_attempt_no_extra_calls():
+    calls = {"shot": 0, "wait": 0}
+
+    def shot_fn():
+        calls["shot"] += 1
+        return b"fakepng", {"width": 800, "height": 600}
+
+    def wait_fn():
+        calls["wait"] += 1
+
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": 10, "y": 20}'
+    in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, wait_fn=wait_fn)
+    assert in_play is False
+    assert click == (10.0, 20.0)
+    assert box == {"width": 800, "height": 600}
+    assert calls["shot"] == 1
+    assert calls["wait"] == 0  # no retry needed -> no wasted wait
+
+
+def test_vision_retry_recovers_from_one_unparseable_attempt():
+    attempt = {"n": 0}
+
+    def shot_fn():
+        return b"fakepng", {"width": 800, "height": 600}
+
+    waits = {"n": 0}
+
+    def wait_fn():
+        waits["n"] += 1
+
+    def vision_fn(path, prompt):
+        attempt["n"] += 1
+        if attempt["n"] == 1:
+            return "the model wrapped this in prose, not parseable JSON"
+        return '{"in_play": false, "x": 30, "y": 40}'
+
+    in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, wait_fn=wait_fn)
+    assert click == (30.0, 40.0)
+    assert attempt["n"] == 2  # retried once
+    assert waits["n"] == 1  # exactly one wait, between the two attempts
+
+
+def test_vision_retry_gives_up_after_attempts_exhausted():
+    calls = {"n": 0}
+
+    def shot_fn():
+        calls["n"] += 1
+        return b"fakepng", {"width": 800, "height": 600}
+
+    vision_fn = lambda path, prompt: "always unparseable"
+    in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, attempts=2)
+    assert in_play is False
+    assert click is None
+    assert calls["n"] == 2  # exactly `attempts` tries, no more
+
+
+def test_vision_retry_in_play_true_stops_immediately():
+    calls = {"n": 0}
+
+    def shot_fn():
+        calls["n"] += 1
+        return b"fakepng", {"width": 800, "height": 600}
+
+    vision_fn = lambda path, prompt: '{"in_play": true}'
+    in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, attempts=3)
+    assert in_play is True
+    assert calls["n"] == 1  # already in play -> no retry needed
+
+
+def test_vision_retry_stops_immediately_when_no_screenshot():
+    def shot_fn():
+        return None, None
+
+    vision_fn = lambda path, prompt: '{"in_play": false, "x": 1, "y": 1}'
+    in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, attempts=3)
+    assert in_play is False
+    assert click is None
+    assert box is None
+
+
+def test_vision_locate_prompt_states_coordinate_convention():
+    # Different vision-model backends (claude/kimi CLI vs gpt-4o-mini via OpenRouter)
+    # are not guaranteed to share an implicit coordinate convention under prompt
+    # pressure (some normalize to 0-1000, some to 0-1, some swap x/y order). The
+    # prompt must say explicitly: pixels, top-left origin, 0 to width/height — not
+    # leave it implied by "PIXEL coordinates within this image".
+    captured = {}
+
+    def vision_fn(path, prompt):
+        captured["prompt"] = prompt
+        return '{"in_play": true}'
+
+    _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
+    low = captured["prompt"].lower()
+    assert "top-left" in low
+    assert "0" in low and "800" in low and "600" in low  # the actual numeric range
 
 
 # ── qa_playtest orchestrator (injected app_runner + drive_fn) ─────────────────

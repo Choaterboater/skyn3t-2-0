@@ -12,7 +12,6 @@ Covers the findings whose ORIGINAL code passed CI by accident:
 from __future__ import annotations
 
 import asyncio
-import types
 
 from skyn3t.agents.code_agent import CodeAgent
 from skyn3t.config.settings import Settings
@@ -82,22 +81,34 @@ def test_slices_run_concurrently_through_real_routing(tmp_path, monkeypatch):
 
 # --------------------------------------------------------------------------
 # #1 — stylesheet stub must stay inside the project tree
+#
+# The dedicated `_stub_dangling_stylesheets` this originally covered is retired
+# (its job is fully subsumed by the general `scaffold_missing_imports`, which
+# now handles bare/side-effect imports and stylesheet-aware content too — see
+# tests/test_scaffold_missing_imports.py). Re-pinned here against the new
+# mechanism so this file's historical "findings that passed CI by accident"
+# record stays accurate and green.
 # --------------------------------------------------------------------------
 
 def test_escaping_stylesheet_not_stubbed_out_of_tree(tmp_path):
+    from skyn3t.studio.proof_run import scaffold_missing_imports
+
     proj = tmp_path / "proj"
-    proj.mkdir()
+    (proj / "src").mkdir(parents=True)
     sibling = tmp_path / "sibling"
     sibling.mkdir()
-    proof = types.SimpleNamespace(
-        detail={"unresolved_imports": ["src/main.jsx -> ../../sibling/theme.css"]})
-    n = StudioRunner._stub_dangling_stylesheets(str(proj), proof)
-    assert n == 0  # escaping path is left flagged, not stubbed
+    (proj / "src" / "main.jsx").write_text(
+        "import '../../sibling/theme.css';\nexport default function App(){return null}\n",
+        encoding="utf-8")
+    written = scaffold_missing_imports(proj)
+    assert written == []  # escaping path is left flagged, not stubbed
     assert not (sibling / "theme.css").exists()  # nothing written out-of-tree
     # a normal in-tree dangling stylesheet is still stubbed
-    proof2 = types.SimpleNamespace(
-        detail={"unresolved_imports": ["src/main.jsx -> ./styles/app.css"]})
-    assert StudioRunner._stub_dangling_stylesheets(str(proj), proof2) == 1
+    (proj / "src" / "main.jsx").write_text(
+        "import './styles/app.css';\nexport default function App(){return null}\n",
+        encoding="utf-8")
+    written2 = scaffold_missing_imports(proj)
+    assert "src/styles/app.css" in written2
     assert (proj / "src" / "styles" / "app.css").exists()
 
 

@@ -1523,6 +1523,131 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     }
 
 
+# --- mock-LLM proof seam (research item 42) ---------------------------------
+# A generated project that CALLS an LLM cannot run its OWN tests headlessly
+# without a live endpoint + key. For the TEST step only, we boot a local
+# deterministic OpenAI/Anthropic-compatible mock (skyn3t.studio.mock_llm) and
+# inject a base-url + dummy-key env overlay so those tests exercise real plumbing
+# at ZERO API spend. Advisory + degrade-open everywhere: any failure (not an LLM
+# app / mock can't start / network-isolated sandbox) => the tests run EXACTLY as
+# before. The build step is never touched.
+
+# npm/PyPI client packages that mean "this app calls an LLM" (exact dep-name match
+# via _declared_dep_names — no substring false positives like `openai-tokenizer`).
+_LLM_CLIENT_DEPS = frozenset({"openai", "anthropic", "@anthropic-ai/sdk"})
+# Source references that reveal an LLM call even when the client is instantiated
+# implicitly (no declared dep, e.g. a raw fetch to an OpenAI-compatible endpoint).
+_LLM_SOURCE_MARKERS = (
+    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "openrouter.ai/api",
+)
+_LLM_SCAN_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
+
+def _project_declares_llm_client(root: Path) -> bool:
+    """True if the project declares an openai/anthropic client dependency."""
+    try:
+        from skyn3t.studio.app_runner import _declared_dep_names
+        return bool(_declared_dep_names(root) & _LLM_CLIENT_DEPS)
+    except Exception:  # noqa: BLE001 - detection is best-effort, never blocks proof
+        return False
+
+
+def _project_references_llm(root: Path) -> bool:
+    """True if any source/.env file references an OpenAI/OpenRouter/Anthropic base
+    url or key — an LLM call even without a declared client dep."""
+    for f in _iter_files(root):
+        if f.suffix not in _LLM_SCAN_SUFFIXES and not f.name.startswith(".env"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(m in text for m in _LLM_SOURCE_MARKERS):
+            return True
+    return False
+
+
+def _is_llm_calling_project(root: Path) -> bool:
+    """Detect a project whose delivered app CALLS an LLM (client dep OR source
+    reference). Pure, offline, never raises."""
+    return _project_declares_llm_client(root) or _project_references_llm(root)
+
+
+@dataclass(slots=True)
+class _MockLLMSeam:
+    """A running mock-LLM server plus the env overlay to point tests at it."""
+
+    server: Any
+    env: dict[str, str]
+
+    def stop(self) -> None:
+        try:
+            self.server.stop()
+        except Exception:  # noqa: BLE001 - teardown must never raise
+            pass
+
+
+def _mock_llm_default_enabled() -> bool:
+    """The ``mock_llm_proof_enabled`` setting (default True). Never raises."""
+    try:
+        from skyn3t.config.settings import get_settings
+        return bool(getattr(get_settings(), "mock_llm_proof_enabled", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _start_proof_mock_llm(
+    pdir: Path, cmd_ctx: _ProofCommandContext | None, *, enabled: bool,
+) -> _MockLLMSeam | None:
+    """Boot the mock-LLM server + build the test-step env overlay, or None.
+
+    Returns None (degrade-open, tests run unchanged) when: the seam is disabled,
+    the project doesn't call an LLM, a network-isolated docker sandbox is in use
+    (it can't reach the host-loopback mock, so injecting an unreachable base url
+    would be worse than nothing), or the server fails to start.
+    """
+    if not enabled:
+        return None
+    # Only the local-subprocess proof path has host-network access to reach the
+    # mock on 127.0.0.1; a `--network none` docker sandbox cannot.
+    if cmd_ctx is not None and getattr(cmd_ctx, "docker_available", False):
+        return None
+    try:
+        if not _is_llm_calling_project(pdir):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from skyn3t.security.secrets import MOCK_PROOF_VALUE
+        from skyn3t.studio.mock_llm import MockLLMServer
+
+        server = MockLLMServer()
+        base = server.start()
+    except Exception:  # noqa: BLE001 - never let the seam break the proof
+        return None
+    if not base:
+        try:
+            server.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    # The OpenAI SDK targets `{base}/chat/completions`; Anthropic targets
+    # `{base}/v1/messages`. So OpenAI/OpenRouter clients get a `/v1` base and the
+    # Anthropic client gets the bare base. Dummy keys satisfy client constructors
+    # that require a non-empty key (the mock ignores auth).
+    env = {
+        "OPENAI_BASE_URL": f"{base}/v1",
+        "OPENAI_API_BASE": f"{base}/v1",
+        "ANTHROPIC_BASE_URL": base,
+        "MOCK_LLM_BASE_URL": base,
+        "OPENROUTER_API_KEY": MOCK_PROOF_VALUE,
+        "OPENAI_API_KEY": MOCK_PROOF_VALUE,
+        "ANTHROPIC_API_KEY": MOCK_PROOF_VALUE,
+    }
+    return _MockLLMSeam(server=server, env=env)
+
+
 def proof_run(
     project_dir: str | Path,
     *,
@@ -1533,12 +1658,18 @@ def proof_run(
     test_timeout: int = 90,
     run_build: bool = False,
     build_timeout: int = 300,
+    enable_mock_llm: bool | None = None,
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
     ``execution_backend``: "auto" | "docker" | "inline". Structural file scans are
     local, but proof commands (boot import, generated tests, npm install/build/test)
     route through :class:`SandboxRunner` unless inline mode is requested.
+
+    ``enable_mock_llm``: gate the mock-LLM proof seam (None -> the
+    ``mock_llm_proof_enabled`` setting). When active for an LLM-calling project, a
+    local deterministic OpenAI/Anthropic mock backs the project's OWN test step so
+    it runs headlessly at $0 (build steps are never affected; degrade-open).
     """
     pdir = Path(project_dir)
     checklist = checklist or []
@@ -1648,70 +1779,88 @@ def proof_run(
             if "<wired-entry>" not in missing:
                 missing = [*missing, "<wired-entry>"]
 
-    # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
-    # A real failure fails the proof (and routes into the fix loop). Inability to
-    # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
-    if run_tests and passed:
-        ran, tests_passed, summary = _run_generated_tests(pdir, stack, test_timeout, cmd_ctx)
-        if ran:
-            detail["tests"] = "passed" if tests_passed else "failed"
-            detail["test_summary"] = summary
-            if not tests_passed:
-                passed = False
-                if "<tests>" not in missing:
-                    missing = [*missing, "<tests>"]
-        else:
-            detail["tests"] = "skipped"
-            if summary:
+    # Mock-LLM proof seam: for an LLM-calling project, boot the local mock so the
+    # generated app's OWN tests (below) run headlessly at $0. Started once here,
+    # torn down in the finally — it wraps BOTH test steps (python + advisory node).
+    mock_enabled = enable_mock_llm if enable_mock_llm is not None else _mock_llm_default_enabled()
+    mock_seam = (
+        _start_proof_mock_llm(pdir, cmd_ctx, enabled=mock_enabled)
+        if (run_tests or run_build) and passed else None
+    )
+    mock_env = mock_seam.env if mock_seam is not None else None
+    if mock_seam is not None:
+        detail["mock_llm"] = "active"
+    try:
+        # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
+        # A real failure fails the proof (and routes into the fix loop). Inability to
+        # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
+        if run_tests and passed:
+            ran, tests_passed, summary = _run_generated_tests(
+                pdir, stack, test_timeout, cmd_ctx, extra_env=mock_env)
+            if ran:
+                detail["tests"] = "passed" if tests_passed else "failed"
                 detail["test_summary"] = summary
+                if not tests_passed:
+                    passed = False
+                    if "<tests>" not in missing:
+                        missing = [*missing, "<tests>"]
+            else:
+                detail["tests"] = "skipped"
+                if summary:
+                    detail["test_summary"] = summary
 
-    # Behaviour, not vibes for node/web: actually COMPILE it (npm install + npm
-    # run build). A static "package.json exists" check greenlit a build that
-    # didn't type-check/compile; this catches that. Soft-skips offline.
-    if run_build and passed:
-        # Swift takes its OWN branch (`swift build`); it is NOT a node stack, so it
-        # must not go through the npm install/build path.
-        if (stack or "").lower() in _SWIFT_STACKS:
-            ran, build_ok, summary = _run_swift_build(pdir, build_timeout, cmd_ctx)
-            if ran:
-                detail["build"] = "passed" if build_ok else "failed"
-                detail["build_summary"] = summary
-                if not build_ok:
-                    passed = False
-                    if "<build>" not in missing:
-                        missing = [*missing, "<build>"]
-                elif run_tests:
-                    # Advisory `swift test` (never hard-gates a compiling app).
-                    t_ran, t_ok, t_sum = _run_swift_tests(pdir, test_timeout, cmd_ctx)
-                    if t_ran:
-                        detail["swift_tests"] = "passed" if t_ok else "failed"
-                        detail["swift_tests_summary"] = t_sum
-            else:
-                detail.setdefault("build", "skipped")
-                if summary:
+        # Behaviour, not vibes for node/web: actually COMPILE it (npm install + npm
+        # run build). A static "package.json exists" check greenlit a build that
+        # didn't type-check/compile; this catches that. Soft-skips offline. The
+        # mock-LLM seam is NEVER passed to the build step — only test steps.
+        if run_build and passed:
+            # Swift takes its OWN branch (`swift build`); it is NOT a node stack, so it
+            # must not go through the npm install/build path.
+            if (stack or "").lower() in _SWIFT_STACKS:
+                ran, build_ok, summary = _run_swift_build(pdir, build_timeout, cmd_ctx)
+                if ran:
+                    detail["build"] = "passed" if build_ok else "failed"
                     detail["build_summary"] = summary
-        else:
-            ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
-            if ran:
-                detail["build"] = "passed" if build_ok else "failed"
-                detail["build_summary"] = summary
-                if not build_ok:
-                    passed = False
-                    if "<build>" not in missing:
-                        missing = [*missing, "<build>"]
+                    if not build_ok:
+                        passed = False
+                        if "<build>" not in missing:
+                            missing = [*missing, "<build>"]
+                    elif run_tests:
+                        # Advisory `swift test` (never hard-gates a compiling app).
+                        t_ran, t_ok, t_sum = _run_swift_tests(pdir, test_timeout, cmd_ctx)
+                        if t_ran:
+                            detail["swift_tests"] = "passed" if t_ok else "failed"
+                            detail["swift_tests_summary"] = t_sum
                 else:
-                    # Advisory JS/TS test run: node_modules is now installed, so run
-                    # the project's test script if a real runner is declared. This is
-                    # NOT a hard gate — a subtly-wrong generated test must not no_go a
-                    # building app; the result is recorded for score dampening only.
-                    t_ran, t_ok, t_sum = _run_node_tests(pdir, test_timeout, cmd_ctx)
-                    if t_ran:
-                        detail["node_tests"] = "passed" if t_ok else "failed"
-                        detail["node_tests_summary"] = t_sum
+                    detail.setdefault("build", "skipped")
+                    if summary:
+                        detail["build_summary"] = summary
             else:
-                detail.setdefault("build", "skipped")
-                if summary:
+                ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
+                if ran:
+                    detail["build"] = "passed" if build_ok else "failed"
                     detail["build_summary"] = summary
+                    if not build_ok:
+                        passed = False
+                        if "<build>" not in missing:
+                            missing = [*missing, "<build>"]
+                    else:
+                        # Advisory JS/TS test run: node_modules is now installed, so run
+                        # the project's test script if a real runner is declared. This is
+                        # NOT a hard gate — a subtly-wrong generated test must not no_go a
+                        # building app; the result is recorded for score dampening only.
+                        t_ran, t_ok, t_sum = _run_node_tests(
+                            pdir, test_timeout, cmd_ctx, extra_env=mock_env)
+                        if t_ran:
+                            detail["node_tests"] = "passed" if t_ok else "failed"
+                            detail["node_tests_summary"] = t_sum
+                else:
+                    detail.setdefault("build", "skipped")
+                    if summary:
+                        detail["build_summary"] = summary
+    finally:
+        if mock_seam is not None:
+            mock_seam.stop()
 
     if cmd_ctx.used_backend:
         detail["sandbox_backend"] = cmd_ctx.used_backend
@@ -1985,11 +2134,14 @@ def _run_generated_tests(
     stack: str,
     timeout: int,
     cmd_ctx: _ProofCommandContext | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[bool, bool, str]:
     """Run the generated project's own test suite.
 
     Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no test
-    runner, no deps, or no tests) and must NOT fail the proof. Never raises.
+    runner, no deps, or no tests) and must NOT fail the proof. ``extra_env`` layers
+    the mock-LLM seam's base-url + dummy-key overlay onto the test env. Never raises.
     """
     import os
 
@@ -2008,6 +2160,7 @@ def _run_generated_tests(
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": "." if use_container_names else str(pdir),
+        **(extra_env or {}),
     }
     py_cmd = "python" if use_container_names else str(py)
     # pytest must be importable; otherwise soft-skip rather than fail a build for
@@ -2066,6 +2219,8 @@ def _run_node_tests(
     pdir: Path,
     timeout: int,
     cmd_ctx: _ProofCommandContext | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[bool, bool, str]:
     """Advisory: run the project's JS/TS test script when a REAL runner is
     declared and node_modules is present. Returns ``(ran, passed, summary)``.
@@ -2095,7 +2250,8 @@ def _run_node_tests(
     all_deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
     if not any(r in all_deps for r in _NODE_TEST_RUNNERS):
         return (False, False, "no recognized test runner")
-    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    env = {**os.environ, "CI": "1", "npm_config_audit": "false",
+           "npm_config_fund": "false", **(extra_env or {})}
     npm_cmd = "npm" if use_container_names else str(npm)
     res = _run_proof_command(
         cmd_ctx, [npm_cmd, "test", "--silent"], cwd=pdir, timeout=timeout, env=env)

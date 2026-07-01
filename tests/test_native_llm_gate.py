@@ -62,3 +62,93 @@ def test_gate_ignores_node_modules(tmp_path):
 def test_gate_never_raises_on_missing_dir(tmp_path):
     violates, reason = StudioRunner._native_llm_gate(str(tmp_path / "nope"))
     assert not violates and reason is None
+
+
+# --- item 52: key-in-the-UI anti-pattern -------------------------------------
+# A delivered app must read its LLM key from env/config (the OpenRouter
+# passthrough), never PROMPT the end user for one. `key_prompt_violation` +
+# the gate reject that; a match needs an input/prompt element AND api-key wording
+# together, so a mere mention of a key (env line, os.getenv read) is not flagged.
+
+from skyn3t.agents.validate import key_prompt_violation
+
+
+def test_key_prompt_flags_streamlit_password_input():
+    src = (
+        "import streamlit as st\n"
+        "key = st.sidebar.text_input('OpenAI API Key', type='password')\n"
+    )
+    assert key_prompt_violation(src)
+
+
+def test_key_prompt_flags_html_input_placeholder():
+    src = '<input type="password" placeholder="Enter your OpenAI API key" />'
+    assert key_prompt_violation(src)
+
+
+def test_key_prompt_flags_js_prompt_call():
+    src = "const k = window.prompt('Please paste your API key to continue');"
+    assert key_prompt_violation(src)
+
+
+def test_key_prompt_flags_sk_placeholder_input():
+    src = '<input name="token" placeholder="sk-..." />'
+    assert key_prompt_violation(src)
+
+
+def test_key_prompt_ignores_env_assignment():
+    # The COMPLIANT way — a config template — is not a UI prompt.
+    assert not key_prompt_violation("OPENAI_API_KEY=sk-or-placeholder\n")
+
+
+def test_key_prompt_ignores_env_read_in_code():
+    src = "import os\nkey = os.getenv('OPENAI_API_KEY')\n"
+    assert not key_prompt_violation(src)
+
+
+def test_key_prompt_ignores_unrelated_input():
+    # An input with NO api-key wording must not trip, even if the file mentions a
+    # key elsewhere (comment/read) — element + wording must co-occur.
+    src = (
+        "// reads OPENAI_API_KEY from env\n"
+        '<input type="text" placeholder="Search products" />\n'
+    )
+    assert not key_prompt_violation(src)
+
+
+def test_gate_flags_streamlit_key_prompt_app(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "import streamlit as st\n"
+        "api_key = st.text_input('Enter your API Key', type='password')\n",
+        encoding="utf-8",
+    )
+    violates, reason = StudioRunner._native_llm_gate(str(tmp_path))
+    assert violates
+    assert "app.py" in reason
+    assert "api key" in reason.lower()
+
+
+def test_gate_flags_html_key_prompt_app(tmp_path):
+    (tmp_path / "index.html").write_text(
+        '<!doctype html><html><body>'
+        '<input type="password" placeholder="OpenAI API Key">'
+        '</body></html>',
+        encoding="utf-8",
+    )
+    violates, reason = StudioRunner._native_llm_gate(str(tmp_path))
+    assert violates
+    assert "index.html" in reason
+
+
+def test_gate_passes_env_configured_llm_app(tmp_path):
+    # Reads the key from env (compliant) + no UI prompt -> not flagged.
+    (tmp_path / "llm.py").write_text(
+        "import os\n"
+        "from openai import OpenAI\n"
+        "client = OpenAI(base_url=os.getenv('OPENAI_BASE_URL'),\n"
+        "                api_key=os.getenv('OPENROUTER_API_KEY'))\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env.example").write_text("OPENROUTER_API_KEY=sk-or-xxx\n", encoding="utf-8")
+    violates, reason = StudioRunner._native_llm_gate(str(tmp_path))
+    assert not violates and reason is None

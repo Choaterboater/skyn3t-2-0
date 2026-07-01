@@ -76,6 +76,54 @@ _OPENROUTER_FIX_HINT = (
 )
 
 
+# UI that PROMPTS THE END USER to paste an API key. A delivered app must read its
+# LLM key from env/config (the OpenRouter passthrough) — never nag the user, who
+# is then BLOCKED from using the app without pasting a secret. This is item 52's
+# other half: the seam mandate says LLM calls read a configurable base url + env
+# key; a key-in-the-UI defeats that (and can't be proven headlessly).
+#
+# HIGH PRECISION — a match needs BOTH an input/prompt ELEMENT and api-key WORDING
+# TOGETHER, so prose that merely mentions an API key (docs, comments, a `.env`
+# assignment, an `os.getenv('OPENAI_API_KEY')` read) is NEVER flagged. Tradeoff
+# (documented, accepted): an admin-config settings page that legitimately collects
+# a THIRD-PARTY service key via an input WILL be flagged too — a delivered app is
+# expected to route keys through env/OpenRouter, not an end-user input, so the
+# false-positive risk is deliberately taken in favor of the ban.
+#
+# Wording: "api key" / "api_key" / "apikey" / "api-key" (covers OPENAI_API_KEY,
+# ANTHROPIC_API_KEY, "OpenAI API Key", ...) OR an obvious `sk-...` key placeholder.
+# The sk- alternative is deliberately narrow (an ellipsis, `sk-xxx`, or a long
+# token-shaped run) so a short CSS class like `sk-btn` inside a tag is NOT flagged.
+_KEY_WORDING = r"(?:api[\s_-]?key|sk-(?:\.{3,}|x{3,}|[A-Za-z0-9]{8,}))"
+_KEY_PROMPT_PATTERNS = (
+    # Streamlit (and st.sidebar) text inputs collecting a key.
+    re.compile(rf"st(?:\.sidebar)?\.text_input\([^)]*?{_KEY_WORDING}", re.IGNORECASE | re.DOTALL),
+    # An HTML/JSX <input> whose attributes (placeholder/label/name/aria-label) name a key.
+    re.compile(rf"<input\b[^>]*?{_KEY_WORDING}", re.IGNORECASE),
+    # A JS prompt()/window.prompt() asking for a key.
+    re.compile(rf"\bprompt\(\s*[`'\"][^`'\"]*?{_KEY_WORDING}", re.IGNORECASE),
+)
+
+
+def key_prompt_violation(content: str) -> str:
+    """Reason string if ``content`` PROMPTS the end user for an API key in the UI
+    (an input element/prompt paired with api-key wording); '' when compliant.
+
+    High-precision by construction (element + wording must co-occur), so a mere
+    mention of a key — a `.env` line, an ``os.getenv`` read, a doc comment — is
+    never flagged. Same (reason-or-empty) shape as :func:`native_llm_violation`."""
+    for pat in _KEY_PROMPT_PATTERNS:
+        m = pat.search(content)
+        if m:
+            snippet = " ".join(m.group(0).split())[:80]
+            return (
+                "prompts the end user for an API key in the UI "
+                f"({snippet!r}); a delivered app must read keys from env/config "
+                "(the OpenRouter passthrough), never require the user to paste one"
+            )
+    return ""
+
+
 def _looks_like_prose(content: str) -> bool:
     """True when ``content`` is substantial natural-language prose, not code.
 

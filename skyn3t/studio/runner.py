@@ -801,29 +801,44 @@ class StudioRunner:
     @staticmethod
     def _native_llm_gate(project_dir: str) -> tuple[bool, str | None]:
         """Backstop for a delivered app that would require a NATIVE provider LLM
-        key the user doesn't hold (e.g. `import anthropic` + ANTHROPIC_API_KEY).
+        key the user doesn't hold (e.g. `import anthropic` + ANTHROPIC_API_KEY), OR
+        that PROMPTS THE END USER for an API key in the UI (item 52).
 
-        SkyN3t routes every LLM call through OpenRouter, so such an app graded
+        SkyN3t routes every LLM call through OpenRouter, so a native-key app graded
         'go' crashes at run for a key the host never set (the app_runner fold only
-        renames which secret the serve UI asks for — it never rewrites the source).
-        Returns (violates, reason). Anthropic-scoped via ``native_llm_violation``:
-        never flags the compliant `openai`-over-OpenRouter client. Never raises."""
-        from skyn3t.agents.validate import native_llm_violation
+        renames which secret the serve UI asks for — it never rewrites the source);
+        and a key-in-the-UI app nags the user for a secret instead of reading it
+        from env/config. Returns (violates, reason). Anthropic-scoped via
+        ``native_llm_violation`` (never flags the compliant `openai`-over-OpenRouter
+        client); the key-prompt check is element+wording precise. Never raises."""
+        from skyn3t.agents.validate import key_prompt_violation, native_llm_violation
         code_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+        html_exts = {".html", ".htm"}
         env_names = {".env", ".env.example", ".env.sample", ".env.local"}
         try:
             root = Path(project_dir)
             for f in root.rglob("*"):
                 if not f.is_file() or {"node_modules", ".git", ".venv"} & set(f.parts):
                     continue
-                if f.suffix.lower() not in code_exts and f.name not in env_names:
+                suffix = f.suffix.lower()
+                is_code, is_html = suffix in code_exts, suffix in html_exts
+                is_env = f.name in env_names
+                if not (is_code or is_html or is_env):
                     continue
                 try:
-                    why = native_llm_violation(f.read_text(errors="ignore"))
+                    text = f.read_text(errors="ignore")
                 except Exception:  # noqa: BLE001 - unreadable file, skip
                     continue
-                if why:
-                    return True, f"{f.relative_to(root)}: {why}"
+                # Native-provider-key check: code + .env templates (not HTML markup).
+                if is_code or is_env:
+                    why = native_llm_violation(text)
+                    if why:
+                        return True, f"{f.relative_to(root)}: {why}"
+                # Key-prompt-UI check: code (React/Streamlit) + HTML markup.
+                if is_code or is_html:
+                    why = key_prompt_violation(text)
+                    if why:
+                        return True, f"{f.relative_to(root)}: {why}"
         except Exception:  # noqa: BLE001 - gate must never crash the build
             return False, None
         return False, None

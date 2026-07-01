@@ -34,6 +34,8 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "remix": ("package.json",),
     "tauri": ("package.json",),
     "phaser": ("package.json",),
+    # Swift / SwiftUI native macOS: the SwiftPM manifest is the dependency manifest.
+    "swift": ("Package.swift",),
 }
 
 

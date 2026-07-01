@@ -245,6 +245,13 @@ class BuildVerifierAgent(BaseAgent):
                 return True, True, "npm", "install ok (no build script)"
             return True, False, "npm", out[-500:]
 
+        # Swift Package Manager: key on the manifest (like package.json above),
+        # NOT the stack label, and compile for real with `swift build`. Absent
+        # toolchain falls through to the degraded dry check below.
+        if (root / "Package.swift").is_file() and allow_real and shutil.which("swift"):
+            ok, out = await self._run(["swift", "build"], root, timeout=300)
+            return True, ok, "swift", (out[-500:] if out else "swift build")
+
         if stack == "python" and allow_real and shutil.which("python"):
             req = root / "requirements.txt"
             if req.exists():

@@ -36,6 +36,21 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "mobile app", "react native", "react-native", "expo",
         "ios app", "android app", "mobile application",
     )),
+    # Swift / SwiftUI native macOS must precede tauri AND react/static: a brief
+    # like "a swiftui macos app" contains "macos app" (a Tauri keyword) and "app"
+    # (react/static), so without an earlier, SWIFT-SPECIFIC signature it would
+    # collapse to the cross-platform Tauri or the React scaffold. Keywords are
+    # deliberately Swift-DISTINCTIVE (they name Swift/SwiftUI/SPM) so we never
+    # steal Tauri's ambiguous bare "mac app"/"macos app" briefs — those, with no
+    # Swift signal, still fall through to tauri below. Bare "swift" is omitted (it
+    # steals "a swift/fast web app", "taylor swift fan site"). Phrases that END in
+    # "swift" (macos swift / written in swift / built with swift) plus "spm" are
+    # matched whole-word via _WORD_BOUNDED_KEYWORDS so "swiftly"/"swiftness" and
+    # "raspmelody" don't false-route; the swift-LEADING phrases are safe as plain
+    # substrings (they only extend into other swift wording).
+    ("swift", ("swiftui", "swift app", "swift macos", "swift package",
+               "swiftpm", "swift native", "spm", "macos swift",
+               "written in swift", "built with swift")),
     # Tauri desktop must precede react/static — a desktop app uses a React frontend
     # and may say "app"/"web", but it bundles to a native Mac/Windows binary.
     ("tauri", ("desktop app", "tauri", "mac app", "macos app", "windows app",
@@ -78,6 +93,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # Phaser 3 + Vite game: the HTML entry + the vanilla-JS game module. Note
     # src/main.js (NOT main.jsx) — a Phaser game is plain JS, not React.
     "phaser": ("README.md", "package.json", "index.html", "src/main.js"),
+    # Swift / SwiftUI native macOS (Swift Package Manager): the SwiftPM manifest is
+    # the load-bearing artifact (it declares the executable + test targets). NO
+    # package.json / index.html — this stack has no npm and no DOM.
+    "swift": ("README.md", "Package.swift"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),
@@ -145,6 +164,12 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     # Single-word game genres: match whole words so "troubleshooter" (≠ shooter),
     # "endgame" (≠ game) and "barcade" (≠ arcade) don't false-route to phaser.
     "arcade", "platformer", "shooter",
+    # SwiftPM abbreviation: whole-word so it only fires on the standalone token,
+    # never as a substring buried in an unrelated word.
+    "spm",
+    # Swift phrases that END in "swift": whole-word so the trailing token can't be
+    # "swiftly"/"swiftness" (which are NOT the Swift language).
+    "macos swift", "written in swift", "built with swift",
 })
 
 

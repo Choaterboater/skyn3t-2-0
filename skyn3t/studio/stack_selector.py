@@ -23,6 +23,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "express": "a Node.js web server / API",
     "tauri": "a cross-platform desktop app for Mac/Windows (Vite + React frontend + Tauri Rust shell)",
     "phaser": "a 2D browser game — arcade / platformer / shooter (Phaser 3 + Vite, canvas)",
+    "swift": "a native macOS SwiftUI desktop app (Swift Package Manager)",
 }
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.
@@ -120,7 +121,7 @@ def _infer_app_type(low: str, stack: str) -> str:
         return "api_service"
     if stack == "react_native":
         return "mobile_app"
-    if stack == "tauri":
+    if stack in ("tauri", "swift"):
         return "desktop_app"
     if any(k in low for k in ("dashboard", "admin", "analytics", "metrics")):
         return "dashboard"
@@ -144,6 +145,8 @@ def _infer_engine(low: str, stack: str) -> str:
         return "dom"
     if stack == "react_native":
         return "expo"
+    if stack == "swift":
+        return "swiftui"
     if stack == "tauri":
         return "tauri"
     if stack in ("fastapi", "express"):

@@ -21,6 +21,8 @@ _IGNORE_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache",
     "dist", "build", ".next", ".cache", ".mypy_cache", ".ruff_cache", ".idea",
     ".vscode", "coverage", ".tox", "egg-info",
+    # Swift Package Manager build output / caches.
+    ".build", ".swiftpm",
 }
 _IGNORE_SUFFIXES = {".pyc", ".pyo", ".log", ".lock", ".map"}
 
@@ -36,19 +38,26 @@ ENTRYPOINT_NAMES = {
     "next.config.js", "next.config.mjs",
     "index.astro",
     "root.tsx", "root.jsx", "_index.tsx", "_index.jsx",
+    # Swift / SwiftUI (Swift Package Manager): the manifest declares the executable
+    # target, so it is the stack's runnable-root marker (like next.config.js /
+    # manage.py above). Codegen names the @main file inconsistently, but
+    # Package.swift is always present, so it is the reliable entry marker.
+    "Package.swift",
 }
 
 MANIFEST_NAMES = {
     "package.json", "pyproject.toml", "requirements.txt", "setup.py",
     "setup.cfg", "Cargo.toml", "go.mod", "pom.xml", "build.gradle",
     "Gemfile", "composer.json",
+    # Swift Package Manager manifest.
+    "Package.swift",
 }
 
 # Source extensions that count as meaningful implementation content.
 SOURCE_SUFFIXES = {
     ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".rb", ".java",
     ".php", ".c", ".cc", ".cpp", ".h", ".hpp", ".html", ".css", ".vue",
-    ".svelte", ".astro",
+    ".svelte", ".astro", ".swift",
 }
 
 

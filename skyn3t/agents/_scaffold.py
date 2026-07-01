@@ -1604,11 +1604,248 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
     }
 
 
+def _swift_escape(text: str) -> str:
+    """Escape a string for embedding inside a Swift ``"..."`` string literal."""
+    return (
+        text.replace("\\", "\\\\").replace('"', '\\"')
+        .replace("\n", " ").replace("\r", " ").strip()
+    )
+
+
+def _swift_pkg_name(app_name: str) -> str:
+    """A valid SwiftPM package/product identifier derived from the app name."""
+    ident = _re.sub(r"[^A-Za-z0-9]+", "-", app_name.strip())
+    ident = ident.strip("-") or "App"
+    return ident
+
+
+def _swift(app_name: str, brief: str) -> dict[str, str]:
+    """Swift / SwiftUI native macOS app built with Swift Package Manager.
+
+    A GENUINELY buildable SwiftPM package (``swift build``) — NOT a web app,
+    built FRESH (never cloned from a JS builder, so it never inherits npm /
+    package.json / index.html). Structured as a **pure logic core + a render-only
+    view**, mirroring the Phaser sim-core split:
+
+    - ``Sources/AppCore/AppModel.swift`` — the pure model/state + operations, with
+      NO SwiftUI import, so ``swift test`` can exercise it headlessly.
+    - ``Sources/App/ContentView.swift`` — the SwiftUI view that only RENDERS the
+      model and forwards user actions to it.
+    - ``Sources/App/MainApp.swift`` — the ``@main`` SwiftUI ``App`` entry.
+
+    The library/executable/test target split (not a single executable target) is
+    what lets the tests link ONLY the pure core — testing an ``@main`` executable
+    target directly is fragile, so the core is its own compiled unit. ``swift
+    build`` compiles the whole package; ``swift test`` runs the core's XCTests.
+    """
+    pkg_name = _swift_pkg_name(app_name)
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    swift_title = _swift_escape(title)
+    return {
+        "Package.swift": (
+            "// swift-tools-version:5.9\n"
+            "import PackageDescription\n\n"
+            "let package = Package(\n"
+            f'    name: "{pkg_name}",\n'
+            "    platforms: [.macOS(.v13)],\n"
+            "    targets: [\n"
+            "        // Pure, SwiftUI-free logic — its own compiled unit so the tests\n"
+            "        // can link ONLY this (no @main / no AppKit) and run headless.\n"
+            '        .target(name: "AppCore"),\n'
+            "        // The SwiftUI app: the @main entry + the views that render AppCore.\n"
+            "        .executableTarget(\n"
+            '            name: "App",\n'
+            '            dependencies: ["AppCore"]\n'
+            "        ),\n"
+            "        // Unit tests exercise the pure core.\n"
+            "        .testTarget(\n"
+            '            name: "AppCoreTests",\n'
+            '            dependencies: ["AppCore"]\n'
+            "        ),\n"
+            "    ]\n"
+            ")\n"
+        ),
+        "Sources/AppCore/AppModel.swift": (
+            "import Foundation\n\n"
+            "/// A single item the app tracks. Pure value type — no UI, no I/O.\n"
+            "public struct Item: Identifiable, Equatable {\n"
+            "    public let id: UUID\n"
+            "    public var title: String\n"
+            "    public var done: Bool\n\n"
+            "    public init(id: UUID = UUID(), title: String, done: Bool = false) {\n"
+            "        self.id = id\n"
+            "        self.title = title\n"
+            "        self.done = done\n"
+            "    }\n"
+            "}\n\n"
+            "/// The app's core state + operations, kept free of SwiftUI so it is\n"
+            "/// unit-testable in isolation. The SwiftUI view holds one of these and\n"
+            "/// only renders it — all logic lives HERE (one authoritative model).\n"
+            "public struct AppModel: Equatable {\n"
+            "    public private(set) var items: [Item]\n\n"
+            "    public init(items: [Item] = []) {\n"
+            "        self.items = items\n"
+            "    }\n\n"
+            "    /// Number of items still to do.\n"
+            "    public var remaining: Int {\n"
+            "        items.filter { !$0.done }.count\n"
+            "    }\n\n"
+            "    /// Add a new item; blank/whitespace-only titles are ignored.\n"
+            "    @discardableResult\n"
+            "    public mutating func add(_ title: String) -> Bool {\n"
+            "        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)\n"
+            "        guard !trimmed.isEmpty else { return false }\n"
+            "        items.append(Item(title: trimmed))\n"
+            "        return true\n"
+            "    }\n\n"
+            "    /// Toggle an item's done flag.\n"
+            "    public mutating func toggle(_ id: UUID) {\n"
+            "        guard let idx = items.firstIndex(where: { $0.id == id }) else { return }\n"
+            "        items[idx].done.toggle()\n"
+            "    }\n\n"
+            "    /// Remove an item.\n"
+            "    public mutating func remove(_ id: UUID) {\n"
+            "        items.removeAll { $0.id == id }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "Sources/App/ContentView.swift": (
+            "import SwiftUI\n"
+            "import AppCore\n\n"
+            "/// Renders the AppCore model and forwards user actions to it. The view\n"
+            "/// owns NO logic — it reads `model` and calls its mutating operations.\n"
+            "struct ContentView: View {\n"
+            "    @State private var model = AppModel()\n"
+            '    @State private var draft = ""\n\n'
+            "    var body: some View {\n"
+            "        VStack(alignment: .leading, spacing: 12) {\n"
+            f'            Text("{swift_title}")\n'
+            "                .font(.title2).bold()\n"
+            '            Text("\\(model.remaining) remaining")\n'
+            "                .foregroundStyle(.secondary)\n\n"
+            "            HStack {\n"
+            '                TextField("Add an item", text: $draft)\n'
+            "                    .textFieldStyle(.roundedBorder)\n"
+            '                    .onSubmit(addDraft)\n'
+            '                Button("Add", action: addDraft)\n'
+            "                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)\n"
+            "            }\n\n"
+            "            List {\n"
+            "                ForEach(model.items) { item in\n"
+            "                    Button {\n"
+            "                        model.toggle(item.id)\n"
+            "                    } label: {\n"
+            "                        HStack {\n"
+            '                            Image(systemName: item.done ? "checkmark.circle.fill" : "circle")\n'
+            "                            Text(item.title).strikethrough(item.done)\n"
+            "                            Spacer()\n"
+            "                        }\n"
+            "                    }\n"
+            "                    .buttonStyle(.plain)\n"
+            "                }\n"
+            "                .onDelete { offsets in\n"
+            "                    for index in offsets { model.remove(model.items[index].id) }\n"
+            "                }\n"
+            "            }\n"
+            "        }\n"
+            "        .padding()\n"
+            "        .frame(minWidth: 420, minHeight: 480)\n"
+            "    }\n\n"
+            "    private func addDraft() {\n"
+            "        if model.add(draft) { draft = \"\" }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "Sources/App/MainApp.swift": (
+            "import SwiftUI\n\n"
+            "/// The app entry point. `@main` must NOT live in a file named\n"
+            "/// `main.swift` (that would imply top-level code) — SwiftPM builds this\n"
+            "/// executable target from the `App` protocol conformance.\n"
+            "@main\n"
+            "struct MainApp: App {\n"
+            "    var body: some Scene {\n"
+            "        WindowGroup {\n"
+            "            ContentView()\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "Tests/AppCoreTests/AppCoreTests.swift": (
+            "import XCTest\n"
+            "@testable import AppCore\n\n"
+            "final class AppCoreTests: XCTestCase {\n"
+            "    func testAddIncrementsRemaining() {\n"
+            "        var model = AppModel()\n"
+            '        XCTAssertTrue(model.add("buy milk"))\n'
+            "        XCTAssertEqual(model.items.count, 1)\n"
+            "        XCTAssertEqual(model.remaining, 1)\n"
+            "    }\n\n"
+            "    func testBlankTitleIsIgnored() {\n"
+            "        var model = AppModel()\n"
+            '        XCTAssertFalse(model.add("   "))\n'
+            "        XCTAssertTrue(model.items.isEmpty)\n"
+            "    }\n\n"
+            "    func testToggleFlipsDoneAndRemaining() {\n"
+            "        var model = AppModel()\n"
+            '        model.add("task")\n'
+            "        let id = model.items[0].id\n"
+            "        model.toggle(id)\n"
+            "        XCTAssertTrue(model.items[0].done)\n"
+            "        XCTAssertEqual(model.remaining, 0)\n"
+            "    }\n\n"
+            "    func testRemoveDeletesItem() {\n"
+            "        var model = AppModel()\n"
+            '        model.add("task")\n'
+            "        model.remove(model.items[0].id)\n"
+            "        XCTAssertTrue(model.items.isEmpty)\n"
+            "    }\n"
+            "}\n"
+        ),
+        ".gitignore": ".build/\n.swiftpm/\nDerivedData/\n*.xcodeproj\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Swift + SwiftUI (Swift Package Manager)",
+            install=(
+                "Requires macOS 13+ with the Swift toolchain (Xcode 15+ or the Swift "
+                "command-line tools). No npm — this is a native app.\n\n"
+                "```bash\nswift build\n```"
+            ),
+            usage=(
+                "Build and run the app:\n\n"
+                "```bash\nswift run App\n```\n\n"
+                "Run the unit test suite (the pure logic core):\n\n"
+                "```bash\nswift test\n```\n\n"
+                "Open it in Xcode instead with `xed .` (or double-click "
+                "`Package.swift`)."
+            ),
+            structure=[
+                ("Package.swift", "Swift Package Manager manifest — declares the app + test targets"),
+                ("Sources/AppCore/AppModel.swift", "Pure model/state + logic (no SwiftUI) — unit-tested"),
+                ("Sources/App/ContentView.swift", "SwiftUI view — renders the model, forwards user actions"),
+                ("Sources/App/MainApp.swift", "@main SwiftUI App entry (WindowGroup)"),
+                ("Tests/AppCoreTests/AppCoreTests.swift", "XCTest unit tests for the pure core"),
+            ],
+            features=[
+                "Native macOS SwiftUI app (no browser, no npm)",
+                "Pure logic core split out from the view — one authoritative model, easily testable",
+                "Swift Package Manager build (swift build / swift run / swift test)",
+                "XCTest unit tests exercising the core in isolation",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\nswift test\n```"
+            ),
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
     "desktop": _tauri,
     "phaser": _phaser,
+    "swift": _swift,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

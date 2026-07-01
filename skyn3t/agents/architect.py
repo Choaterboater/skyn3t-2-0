@@ -47,6 +47,10 @@ _NEXT_STACKS = frozenset({"nextjs", "next"})
 # .tsx->.jsx rewrite (both wrong for a non-React game) never fire.
 _GAME_STACKS = frozenset({"phaser"})
 
+# Swift / SwiftUI native macOS (Swift Package Manager): plan a SwiftPM package
+# (Package.swift + Sources/App + a pure Sources/AppCore + Tests), never web files.
+_SWIFT_STACKS = frozenset({"swift"})
+
 
 def _jsx_only(files: list[Any]) -> list[Any]:
     """Rewrite .tsx->.jsx / .ts->.js and drop tsconfig for a plain-JS React plan."""
@@ -145,6 +149,14 @@ class ArchitectAgent(BaseAgent):
                        "frame it reads input, calls step(), and renders the returned state. "
                        "Use ONLY .js — NEVER .ts/.tsx/.jsx, no React, no tsconfig. This split "
                        "is required so the headless invariant gate can verify the game.")
+        if stack in _SWIFT_STACKS:
+            prompt += ("\n\nIMPORTANT: this is a NATIVE macOS app in Swift + SwiftUI built by "
+                       "Swift Package Manager — NOT a web app. Plan a root Package.swift "
+                       "(executable target 'App' + library target 'AppCore' + test target), "
+                       "SwiftUI sources under Sources/App/ (a @main App in MainApp.swift + "
+                       "views), the PURE logic (models/state, NO SwiftUI import) under "
+                       "Sources/AppCore/, and XCTests under Tests/AppCoreTests/. Use ONLY "
+                       ".swift files — NEVER package.json, index.html, JS/TS, or any web files.")
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."

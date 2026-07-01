@@ -50,6 +50,9 @@ _CONFIG_NAMES = frozenset({
 _BACKEND_STACKS = frozenset({
     "python", "cli", "fastapi", "flask", "django", "node", "node_express",
     "express", "script",
+    # Swift native macOS: no frontend/backend DOM split — bucket ambiguous files
+    # with the non-web (backend) group rather than the web/frontend group.
+    "swift",
 })
 
 

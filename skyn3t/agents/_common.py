@@ -24,6 +24,7 @@ KNOWN_STACKS = (
     "node_express",
     "tauri",
     "phaser",
+    "swift",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -75,6 +76,18 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "ios app", "android app", "mobile application",
     )):
         return "react_native"
+    # Swift / SwiftUI native macOS must precede Tauri (which owns the ambiguous
+    # bare "macos app"/"mac app" phrases): a "swiftui macos app" is native Swift,
+    # not a cross-platform Tauri shell. Keywords are Swift-DISTINCTIVE so an
+    # ordinary "a swift/fast X" brief never routes here; "spm" is matched
+    # whole-word so it doesn't fire as a substring.
+    # swift-LEADING phrases are safe as plain substrings; phrases ENDING in "swift"
+    # (plus "spm") are word-bounded so "swiftly"/"swiftness"/"raspmelody" don't match.
+    if any(k in text for k in (
+        "swiftui", "swift app", "swift macos", "swift package", "swiftpm",
+        "swift native",
+    )) or re.search(r"\b(?:spm|macos swift|written in swift|built with swift)\b", text):
+        return "swift"
     # Desktop (Tauri): a native Mac/Windows app. Must precede the generic react/vite
     # check — a desktop app's brief usually says "app" and uses a React frontend.
     if any(k in text for k in (
@@ -120,6 +133,17 @@ def _normalize_stack(value: str) -> str:
         "phaser3": "phaser",
         "phaserjs": "phaser",
         "game": "phaser",
+        # Swift / SwiftUI native macOS (Swift Package Manager). Distinct from the
+        # "macos"->tauri alias below, which is intentionally left untouched: only
+        # explicit swift/swiftui/spm signals map here.
+        "swift": "swift",
+        "swiftui": "swift",
+        "swiftpm": "swift",
+        "spm": "swift",
+        "swift_package": "swift",
+        "macos_native": "swift",
+        "swift_macos": "swift",
+        "swift_native": "swift",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

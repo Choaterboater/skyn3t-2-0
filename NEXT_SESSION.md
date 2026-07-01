@@ -1,5 +1,32 @@
 # Next session — handoff
 
+_Updated 2026-06-30/07-01. Branch: `main` @ `e17a2a8` (+ uncommitted session work).
+Suite: **1612 passed / 2 skipped**._
+
+## TL;DR (2026-06-30/07-01)
+
+The **game capability track is built and merged end to end** — Phaser 3 + Vite
+stack, headless invariant gate (sealed), art tier, game-designer GDD gate, and the
+qa-playtest + visual-repair gates are all live and default-on. See
+[docs/game-capability-roadmap.md](docs/game-capability-roadmap.md) for per-item
+status.
+
+This session (Workstream 1 + follow-ups) fixed the **dangling-import codegen bug**
+(4 stacked defects + a pre-existing path-traversal write bug), hardened the
+**improve engine** (stack-aware entrypoints, `repo_map` target discovery, stage
+events, shared deterministic repairs), made **qa_playtest re-verify after a
+repair**, and extracted a shared **`apply_deterministic_repairs()`** in
+`proof_run.py`. All TDD'd; full suite 1612 green; live-revalidated.
+
+**Still open / next up:** (1) game sprite-RENDERING reliability — sprites load but
+only some render (entities wired to invented, never-loaded texture keys); the real
+"games still fail" root cause, being worked now. (2) An advisory SEO gate for web
+stacks, being built now. (3) Deferred native macOS (Swift/SwiftUI) + Godot stacks.
+
+---
+
+# Historical handoff — 2026-06-22
+
 _Written 2026-06-22. Branch: `main` @ `2e287cc`. Suite: **638 passed / 2 skipped**._
 
 ## TL;DR

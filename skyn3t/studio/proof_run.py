@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -36,7 +37,7 @@ except ImportError:
 
 # Files that don't count as "substantive" deliverables on their own.
 _TRIVIAL_FILES = frozenset({"README.md", ".gitignore", "LICENSE", "skyn3t_manifest.json"})
-_SOURCE_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs", ".java", ".astro")
+_SOURCE_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs", ".java", ".astro", ".swift")
 _MIN_SUBSTANTIVE_BYTES = 16
 
 # --- static boot-readiness: relative-import resolution -----------------------
@@ -197,25 +198,47 @@ def _base_resolves(base: Path) -> bool:
     return False
 
 
-def _make_import_stub(spec: str, default: str | None, ns: str | None, named: list[str]) -> str:
-    """A minimal but valid React/JS module satisfying the requested imports.
-    Components (PascalCase) render a sensible semantic element forwarding props +
-    children; hooks (useX) return {}; other utilities return ''. Uses
-    React.createElement (no JSX) so the file is valid as .js/.jsx/.ts/.tsx."""
+# Stacks whose codegen idiomatically uses JSX/React components. A missing-import
+# stub for any OTHER stack (phaser, express, python web, etc.) must not inject a
+# bogus React dependency — real bug: a Phaser build's stub for a missing
+# './PreloadScene.js' import still failed downstream (a Scene expects to be a
+# class, not a React component) even after the filename was fixed. Empty stack
+# ("" — existing callers that predate the `stack` kwarg) keeps the original
+# React-shaped behavior for backward compatibility.
+_REACT_LIKE_STACKS = frozenset({"react", "react_vite", "nextjs", "remix", "react_native", "tauri"})
+
+
+def _make_import_stub(
+    spec: str, default: str | None, ns: str | None, named: list[str], *, stack: str = "",
+) -> str:
+    """A minimal but valid JS/TS module satisfying the requested imports. For a
+    react-like stack (or no stack specified — preserves prior behavior for
+    existing callers): components (PascalCase) render a sensible semantic
+    element forwarding props + children via React.createElement (no JSX, so the
+    file is valid as .js/.jsx/.ts/.tsx); hooks (useX) return {}. For every other
+    stack: components become an empty exported class (a safe generic stand-in
+    for a Scene/service/anything PascalCase, without assuming a UI framework);
+    utilities are unchanged (a no-op function/const)."""
+    react_shaped = (not stack) or (stack.lower() in _REACT_LIKE_STACKS)
     last = spec.rstrip("/").rsplit("/", 1)[-1].lower()
     default_el = _HTML_FOR.get(last, "div")
-    lines = [
-        "// Auto-scaffolded by SkyN3t: the imported module was missing, so this",
-        "// minimal stub lets the build resolve. Replace with a real implementation.",
-        "import React from 'react';",
-        "",
-    ]
+    header = (
+        ["// Auto-scaffolded by SkyN3t: the imported module was missing, so this",
+         "// minimal stub lets the build resolve. Replace with a real implementation.",
+         "import React from 'react';", ""]
+        if react_shaped else
+        ["// Auto-scaffolded by SkyN3t: the imported module was missing, so this",
+         "// minimal stub lets the build resolve. Replace with a real implementation.", ""]
+    )
+    lines = list(header)
 
     def component(name: str, el: str) -> str:
-        return (f"export function {name}(props) {{\n"
-                f"  const {{ children, ...rest }} = props || {{}};\n"
-                f"  return React.createElement('{el}', rest, children);\n"
-                f"}}")
+        if react_shaped:
+            return (f"export function {name}(props) {{\n"
+                    f"  const {{ children, ...rest }} = props || {{}};\n"
+                    f"  return React.createElement('{el}', rest, children);\n"
+                    f"}}")
+        return f"export class {name} {{}}"
 
     def utility(name: str) -> str:
         if name.startswith("use") and name[3:4].isupper():
@@ -223,10 +246,14 @@ def _make_import_stub(spec: str, default: str | None, ns: str | None, named: lis
         return f"export const {name} = (...args) => '';"
 
     if default:
-        lines.append(f"function {default}(props) {{\n"
-                     f"  const {{ children, ...rest }} = props || {{}};\n"
-                     f"  return React.createElement('{default_el}', rest, children);\n}}")
-        lines.append(f"export default {default};")
+        if react_shaped:
+            lines.append(f"function {default}(props) {{\n"
+                         f"  const {{ children, ...rest }} = props || {{}};\n"
+                         f"  return React.createElement('{default_el}', rest, children);\n}}")
+            lines.append(f"export default {default};")
+        else:
+            lines.append(f"class {default} {{}}")
+            lines.append(f"export default {default};")
     for raw in named:
         nm = raw.strip().split(" as ")[-1].strip()
         if not nm:
@@ -243,13 +270,48 @@ def _make_import_stub(spec: str, default: str | None, ns: str | None, named: lis
     return "\n".join(lines) + "\n"
 
 
+_STYLESHEET_EXTS = (".css", ".scss", ".sass", ".less")
+_STYLESHEET_STUB_CONTENT = "/* stub stylesheet — import target was missing */\n"
+
+
+def _confine(root: Path, target: Path) -> Path | None:
+    """Resolve `target` and return it ONLY if confined within `root` — never
+    write a stub OUTSIDE the project root for an escaping '../../x' relative
+    import (leave it correctly flagged as unresolved/no_go instead). A missing
+    confinement check here is a real path-traversal / arbitrary-file-write bug,
+    not just a correctness nicety. Returns None for anything that escapes, or
+    on any resolution error."""
+    try:
+        resolved = target.resolve()
+        root_resolved = root.resolve()
+        if os.path.commonpath([str(root_resolved), str(resolved)]) != str(root_resolved):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
 def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
     """Generate minimal stubs for LOCAL imports (relative or '@/' aliased) whose
     target file does not exist — the recurring 'codegen imports a component it
     never created' break (e.g. '@/components/ui/button' -> Module not found). The
     stub renders real markup so the app builds AND runs; a genuinely broken stub
-    is still caught downstream by the boot/liveness gate. Returns paths written."""
-    root = Path(root)
+    is still caught downstream by the boot/liveness gate. Returns paths written.
+
+    Two detection passes over each file: `_IMPORT_NAMES_RE` (named/default/
+    namespace bindings — informs component-vs-utility stub CONTENT) and
+    `_REL_IMPORT_RE` (the permissive superset proof_run's OWN unresolved-import
+    detector uses — also catches a BARE side-effect import like
+    `import './app.css';`, which has no `from` clause and `_IMPORT_NAMES_RE`
+    structurally cannot match). Without the second pass, a proof could flag an
+    import as unresolved that this repair could never see, let alone fix — the
+    exact gap that used to require a separate, narrower `_stub_dangling_
+    stylesheets` mechanism working off the proof's own detector instead."""
+    # Resolved once, up front: every stub path is confinement-checked (and thus
+    # resolved) against this same canonical root before being written or
+    # relativized, so `.relative_to(root)` below can't mismatch on a symlink or
+    # a relative/absolute inconsistency.
+    root = Path(root).resolve()
     aliases = _alias_map(root)
     ts = (root / "tsconfig.json").is_file()
     written: list[str] = []
@@ -261,19 +323,55 @@ def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        handled_specs: set[str] = set()
         for m in _IMPORT_NAMES_RE.finditer(text):
             spec = m.group("spec")
+            handled_specs.add(spec)
             base = _local_import_base(f, spec, aliases)
             if base is None or _base_resolves(base):
                 continue
             named = [n for n in (m.group("named") or "").split(",") if n.strip()]
-            # Component-ish (any PascalCase default/named) -> .jsx/.tsx, else util.
-            comp = bool(m.group("default")) or any(n.strip()[:1].isupper() for n in named)
-            ext = (".tsx" if ts else ".jsx") if comp else (".ts" if ts else ".js")
-            stub = base.with_name(base.name + ext)
-            if stub in planned or stub.exists():
+            if base.suffix and base.suffix in _RESOLVE_EXTS:
+                stub = base
+            else:
+                comp = bool(m.group("default")) or any(n.strip()[:1].isupper() for n in named)
+                ext = (".tsx" if ts else ".jsx") if comp else (".ts" if ts else ".js")
+                stub = base.with_name(base.name + ext)
+            stub = _confine(root, stub)
+            if stub is None or stub in planned or stub.exists():
                 continue
-            content = _make_import_stub(spec, m.group("default"), m.group("ns"), named)
+            if stub.suffix in _STYLESHEET_EXTS:
+                content = _STYLESHEET_STUB_CONTENT
+            else:
+                content = _make_import_stub(
+                    spec, m.group("default"), m.group("ns"), named, stack=stack)
+            try:
+                stub.parent.mkdir(parents=True, exist_ok=True)
+                stub.write_text(content, encoding="utf-8")
+                planned.add(stub)
+                written.append(str(stub.relative_to(root)))
+            except OSError:
+                continue
+        # Bare/side-effect imports (`import './x.css';`, no `from`) — invisible
+        # to the pass above. No named/default/ns info exists for these by
+        # construction, so the stub is always the generic "side-effect import"
+        # shape (or the stylesheet shape, when the extension calls for it).
+        for spec in _REL_IMPORT_RE.findall(text):
+            if spec in handled_specs:
+                continue
+            handled_specs.add(spec)
+            base = _local_import_base(f, spec, aliases)
+            if base is None or _base_resolves(base):
+                continue
+            if base.suffix and base.suffix in _RESOLVE_EXTS:
+                stub = base
+            else:
+                stub = base.with_name(base.name + (".ts" if ts else ".js"))
+            stub = _confine(root, stub)
+            if stub is None or stub in planned or stub.exists():
+                continue
+            content = (_STYLESHEET_STUB_CONTENT if stub.suffix in _STYLESHEET_EXTS
+                      else _make_import_stub(spec, None, None, [], stack=stack))
             try:
                 stub.parent.mkdir(parents=True, exist_ok=True)
                 stub.write_text(content, encoding="utf-8")
@@ -553,6 +651,12 @@ def _sandbox_stack(stack: str) -> str:
         return "node"
     if low in ("static", "static_html"):
         return "static"
+    if low == "swift":
+        # security/sandbox.py has no swift docker image; _resolve_image falls back
+        # to the default template for docker, but on a Docker-less host this maps
+        # to the hardened local-subprocess path (which runs `swift build` against
+        # the machine's toolchain). Naming it explicitly documents the routing.
+        return "swift"
     return "python"
 
 
@@ -717,6 +821,8 @@ def extract_error_gaps(
 _NON_SOURCE_DIRS = frozenset({
     ".git", "__pycache__", ".venv", "node_modules", ".next", "dist", "build",
     ".vite", "out", "coverage", ".turbo", ".cache", "vendor", ".svelte-kit",
+    # Swift Package Manager build output / caches — not the app's own source.
+    ".build", ".swiftpm",
 })
 
 
@@ -1366,6 +1472,57 @@ def reconcile_lucide_icons(root: str | Path) -> list[str]:
     return changed
 
 
+def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
+    """Run every deterministic, idempotent, code-MUTATING build repair in one
+    pass and return what changed. This is the single source of truth for the
+    "make a delivered tree build-ready" repairs, shared by the main build
+    pipeline (StudioRunner._deterministic_repairs, which layers the advisory
+    contrast lint on top) AND the headless improve engine
+    (ImproveEngine.improve) — so an improve that introduces a client component,
+    a new dependency, or a missing local import gets the SAME auto-fixes a fresh
+    build would, instead of silently shipping an app that won't build.
+
+    Scaffold FIRST: a generated stub may itself import a package (e.g. ``import
+    React from 'react'``), so declaring deps afterwards picks those up in the
+    same pass — making the whole repair converge in one call. Safe to call
+    repeatedly (a complete tree is a no-op). Never raises on an individual
+    repair's expected filesystem errors (each function is already defensive)."""
+    stubbed = scaffold_missing_imports(project_dir, stack=stack)
+    added = reconcile_npm_deps(project_dir)
+    peers = reconcile_next_config_peers(project_dir)
+    # Next.js App Router: prepend "use client" to interactive components so
+    # `next build` doesn't fail static generation on event handlers/hooks.
+    use_client = add_use_client_directives(project_dir)
+    # Map the @/ import alias (write jsconfig paths) and strip stray TS-only
+    # statements from .js files — two common cheap-model defects that otherwise
+    # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
+    alias_cfg = ensure_path_alias_config(project_dir)
+    ts_stripped = strip_ts_type_in_js(project_dir)
+    # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
+    # ones — the model invents icon names that aren't exported, failing the build.
+    lucide = reconcile_lucide_icons(project_dir)
+    # Tauri desktop: fix hallucinated Cargo feature names so the Rust shell builds.
+    tauri_cargo = reconcile_tauri_cargo_features(project_dir)
+    # Game stacks: synthesize a placeholder PNG for any referenced-but-missing
+    # image asset (codegen loading an invented '/assets/sprites/gold.png' 404s at
+    # runtime and CRASHES the scene — the tower-defence-retry-2 no_go). Creates
+    # files only, never edits code (do-no-harm).
+    from skyn3t.studio.asset_reconcile import reconcile_asset_refs
+    assets = reconcile_asset_refs(project_dir, stack=stack)
+    return {
+        "npm_deps_added": added,
+        "next_config_peers": peers,
+        "imports_scaffolded": stubbed,
+        "use_client_added": use_client,
+        "path_alias_config": alias_cfg,
+        "ts_in_js_stripped": ts_stripped,
+        "lucide_icons_fixed": lucide,
+        "tauri_cargo_fixed": tauri_cargo,
+        "assets_reconciled": assets.get("images_created", []),
+        "assets_missing_audio": assets.get("missing_audio", []),
+    }
+
+
 def proof_run(
     project_dir: str | Path,
     *,
@@ -1512,27 +1669,49 @@ def proof_run(
     # run build). A static "package.json exists" check greenlit a build that
     # didn't type-check/compile; this catches that. Soft-skips offline.
     if run_build and passed:
-        ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
-        if ran:
-            detail["build"] = "passed" if build_ok else "failed"
-            detail["build_summary"] = summary
-            if not build_ok:
-                passed = False
-                if "<build>" not in missing:
-                    missing = [*missing, "<build>"]
-            else:
-                # Advisory JS/TS test run: node_modules is now installed, so run
-                # the project's test script if a real runner is declared. This is
-                # NOT a hard gate — a subtly-wrong generated test must not no_go a
-                # building app; the result is recorded for score dampening only.
-                t_ran, t_ok, t_sum = _run_node_tests(pdir, test_timeout, cmd_ctx)
-                if t_ran:
-                    detail["node_tests"] = "passed" if t_ok else "failed"
-                    detail["node_tests_summary"] = t_sum
-        else:
-            detail.setdefault("build", "skipped")
-            if summary:
+        # Swift takes its OWN branch (`swift build`); it is NOT a node stack, so it
+        # must not go through the npm install/build path.
+        if (stack or "").lower() in _SWIFT_STACKS:
+            ran, build_ok, summary = _run_swift_build(pdir, build_timeout, cmd_ctx)
+            if ran:
+                detail["build"] = "passed" if build_ok else "failed"
                 detail["build_summary"] = summary
+                if not build_ok:
+                    passed = False
+                    if "<build>" not in missing:
+                        missing = [*missing, "<build>"]
+                elif run_tests:
+                    # Advisory `swift test` (never hard-gates a compiling app).
+                    t_ran, t_ok, t_sum = _run_swift_tests(pdir, test_timeout, cmd_ctx)
+                    if t_ran:
+                        detail["swift_tests"] = "passed" if t_ok else "failed"
+                        detail["swift_tests_summary"] = t_sum
+            else:
+                detail.setdefault("build", "skipped")
+                if summary:
+                    detail["build_summary"] = summary
+        else:
+            ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
+            if ran:
+                detail["build"] = "passed" if build_ok else "failed"
+                detail["build_summary"] = summary
+                if not build_ok:
+                    passed = False
+                    if "<build>" not in missing:
+                        missing = [*missing, "<build>"]
+                else:
+                    # Advisory JS/TS test run: node_modules is now installed, so run
+                    # the project's test script if a real runner is declared. This is
+                    # NOT a hard gate — a subtly-wrong generated test must not no_go a
+                    # building app; the result is recorded for score dampening only.
+                    t_ran, t_ok, t_sum = _run_node_tests(pdir, test_timeout, cmd_ctx)
+                    if t_ran:
+                        detail["node_tests"] = "passed" if t_ok else "failed"
+                        detail["node_tests_summary"] = t_sum
+            else:
+                detail.setdefault("build", "skipped")
+                if summary:
+                    detail["build_summary"] = summary
 
     if cmd_ctx.used_backend:
         detail["sandbox_backend"] = cmd_ctx.used_backend
@@ -1627,6 +1806,22 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 except OSError:
                     pass
             return (True, False, f"{low} stack: no file imports/references {low}")
+
+        # ---- swift (SwiftUI / Swift Package Manager) ---------------------
+        if low == "swift":
+            manifest = pdir / "Package.swift"
+            if not manifest.exists() or manifest.stat().st_size < _NONEMPTY:
+                return (True, False, "swift stack: Package.swift missing")
+            swift_srcs = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".swift"
+                and f.name != "Package.swift"
+                and "Sources" in f.relative_to(pdir).parts
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not swift_srcs:
+                return (True, False, "swift stack: no Sources/**/*.swift found")
+            return (True, True, "swift stack: Package.swift + Sources present")
 
         # ---- react_vite / react -----------------------------------------
         if low in ("react", "react_vite"):
@@ -2052,6 +2247,87 @@ def _run_node_build(
     # Surface the file/symbol-naming diagnostics (not just the tail) so the
     # fix-loop's improver can target the real cause (e.g. a missing export).
     return (True, False, _distill_build_errors(out))
+
+
+# Swift is NOT a node stack: it has no package.json and builds via Swift Package
+# Manager (`swift build`), not npm. Its own proof branch keeps it out of the
+# node install/build path entirely.
+_SWIFT_STACKS = ("swift",)
+
+
+def _run_swift_build(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Compile a Swift Package Manager project for real: ``swift build``.
+
+    Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no swift
+    toolchain, or it could not be launched — e.g. a CI box without Xcode) and
+    must NOT fail the proof, so other machines don't false-fail. A non-zero build
+    IS a real, delivery-breaking failure. Routes through the SAME command layer as
+    the node build (SandboxRunner when configured, hardened local subprocess as
+    the fallback). Never raises.
+    """
+    import shutil
+
+    manifest = pdir / "Package.swift"
+    use_container_names = _use_container_command_names(cmd_ctx)
+    swift = shutil.which("swift")
+    if swift is None and not use_container_names:
+        return (False, False, "swift toolchain missing — build skipped")
+    if not manifest.exists():
+        return (False, False, "no Package.swift — build skipped")
+    swift_cmd = "swift" if use_container_names else str(swift or "swift")
+    # `swift build` resolves the package graph + compiles. The scaffold ships no
+    # external SwiftPM deps (compiles offline), but allow the network in case
+    # codegen adds package dependencies.
+    bld = _run_proof_command(
+        cmd_ctx, [swift_cmd, "build"], cwd=pdir, timeout=timeout, network=True)
+    if bld.timed_out:
+        return (True, False, f"swift build timed out after {timeout}s")
+    if bld.returncode == 127:
+        # swift could not even be launched -> environmental, soft-skip.
+        return (False, False, "swift could not be launched — build skipped")
+    out = ((bld.stdout or "") + (bld.stderr or "")).strip()
+    if bld.returncode == 0:
+        return (True, True, out[-300:])
+    return (True, False, out[-700:])
+
+
+def _run_swift_tests(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Advisory: run ``swift test`` when a test target is declared. Returns
+    ``(ran, passed, summary)``.
+
+    ``ran=False`` (no toolchain / no test target / launch failure / timeout) means
+    'could not assess' — callers treat it as advisory and never hard-fail a
+    building app on it (a subtly-wrong generated test must not no_go a compiling
+    app). Never raises."""
+    import shutil
+
+    manifest = pdir / "Package.swift"
+    use_container_names = _use_container_command_names(cmd_ctx)
+    swift = shutil.which("swift")
+    if swift is None and not use_container_names:
+        return (False, False, "")
+    if not manifest.exists():
+        return (False, False, "")
+    try:
+        if "testTarget" not in manifest.read_text(encoding="utf-8", errors="replace"):
+            return (False, False, "no test target")
+    except OSError:
+        return (False, False, "")
+    swift_cmd = "swift" if use_container_names else str(swift or "swift")
+    res = _run_proof_command(
+        cmd_ctx, [swift_cmd, "test"], cwd=pdir, timeout=timeout, network=True)
+    if res.timed_out or res.returncode == 127:
+        return (False, False, "swift test timed out / failed to launch")
+    out = ((res.stdout or "") + (res.stderr or "")).strip()
+    return (True, res.returncode == 0, out[-500:])
 
 
 def _docker_daemon_ok() -> bool:

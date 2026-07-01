@@ -22,7 +22,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from skyn3t.studio.visual_check import VisionFn, _extract_json
+from skyn3t.studio.visual_check import (
+    VisionFn,
+    _dom_start_click,
+    _extract_json,
+    _fit_viewport_to_canvas,
+    _vision_locate_with_retry,
+)
 
 # Concrete, JSON-only questions a vision model answers reliably (validated: gpt-4o-mini
 # flags an empty board and a sparse field). Kept to OBSERVABLE facts ("is it populated",
@@ -31,7 +37,13 @@ GAME_PROMPT = (
     "This is a screenshot of a 2D arcade/action game in mid-play. Judge ONLY what is "
     "visible. Respond with ONLY a JSON object with three keys: "
     '"populated" (true if the play field shows real game entities like enemies, '
-    "obstacles, bricks or pickups; false if it is mostly empty space), "
+    "obstacles, bricks or pickups; false if it is mostly empty space). A BRIEF "
+    "between-wave lull in a tower-defense-style game still counts as populated — a "
+    "\"Wave cleared\"/score banner, a ready-to-press \"Start Wave\" button, towers "
+    "placed on the field, or even just ONE remaining enemy near the goal are all "
+    "normal signs of a working, ongoing session, NOT a broken/empty board. Only mark "
+    "populated=false if the field is genuinely barren: no towers, no enemies, no "
+    "obstacles, and nothing indicating an active session at all. "
     '"entities_readable_size" (true if the main entities are a clear, readable size; '
     "false if they are tiny specks lost in empty space), and "
     '"issues" (a list of short concrete visual problems such as "empty play field", '
@@ -90,10 +102,64 @@ def judge_game_frame(image_path: str, *, vision_fn: VisionFn | None) -> GameVisu
         return GameVisualVerdict(skipped=True, reason=f"vision error: {exc}")
 
 
-def _screenshot_midplay(url: str, out_path: str, *, timeout_ms: int = 15000) -> bool:
-    """Load the game, START it (click + Space, so we see MID-PLAY not just a title
-    screen), settle, and screenshot. Sync Playwright — call via asyncio.to_thread.
-    Returns True on success; never raises."""
+def _looks_like_a_flash_frame(image_bytes: bytes) -> bool:
+    """True if the image is suspiciously close to a single solid color —
+    symptomatic of a screenshot landing mid an in-game full-screen FX (a
+    damage-flash camera tint, a scene-transition fade), not a genuinely
+    empty/broken board. Measured live: the SAME real delivered build judged
+    populated=True then populated=False with zero code change between runs — one
+    judged screenshot happened to land on a solid-red frame from
+    ``cameras.main.flash()``, firing on the Still taking a hit. Best-effort and
+    dependency-soft: Pillow backs this (``pyproject [visual]`` extra); without
+    it, or on any decode failure, this returns False (don't flag) — it's a
+    retake OPTIMIZATION, not a correctness requirement, so absence must never
+    raise or change behavior. Downsamples before computing per-channel stdev so
+    this stays cheap even on a large screenshot."""
+    if not image_bytes:
+        return False
+    try:
+        import io
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img.thumbnail((64, 64))
+        pixels = list(img.getdata())
+        if not pixels:
+            return False
+        n = len(pixels)
+
+        def _stdev(channel: int) -> float:
+            vals = [p[channel] for p in pixels]
+            mean = sum(vals) / n
+            return (sum((v - mean) ** 2 for v in vals) / n) ** 0.5
+
+        return _stdev(0) < 8 and _stdev(1) < 8 and _stdev(2) < 8
+    except Exception:  # noqa: BLE001 - an optimization must never break a build
+        return False
+
+
+def _screenshot_midplay(
+    url: str, out_path: str, *, timeout_ms: int = 15000, vision_fn: VisionFn | None = None,
+) -> bool:
+    """Load the game, START it, settle, and screenshot. Sync Playwright — call via
+    asyncio.to_thread. Returns True on success; never raises.
+
+    Three layers reach an actually-playing frame instead of a title/menu screen:
+      1. The generic click(400,300)+Space heuristic (arcade/shooter games).
+      2. DOM-first (cheap, zero LLM cost): many codegen UIs render the start/level-
+         select screen as REAL HTML (a `<button>` overlay on the canvas, not Phaser-
+         drawn) — invisible to a canvas screenshot. Tried before any vision call, the
+         same DOM-first/vision-fallback split browser-use and Stagehand use.
+      3. When ``vision_fn`` is supplied, up to 2 rounds of vision-grounded "are we
+         actually playing, and if not, where do I click" — ALWAYS run, not gated on
+         "did the canvas already change" (a stray DOM click/CSS transition can satisfy
+         that without the game being in play — the false no_go this replaced twice:
+         once on a pure-canvas menu, once on an HTML-button overlay that layer 1's
+         blind click happened to hit, hiding that layer 3 never ran at all). Mirrors
+         Anthropic's own computer-use loop: verify an action via a fresh observation,
+         don't infer success from a single before/after diff.
+    No vision_fn -> layers 1-2 only (free, deterministic)."""
     try:
         from playwright.sync_api import sync_playwright
 
@@ -103,14 +169,97 @@ def _screenshot_midplay(url: str, out_path: str, *, timeout_ms: int = 15000) -> 
                 page = browser.new_page(viewport={"width": 800, "height": 600})
                 page.goto(url, timeout=timeout_ms, wait_until="load")
                 page.wait_for_timeout(1200)
-                # Launch/start the game so the judge sees real play, not a menu.
-                try:
-                    page.mouse.click(400, 300)
-                    page.keyboard.press("Space")
+                _fit_viewport_to_canvas(page)
+                # Launch/start the game so the judge sees real play, not a menu. A
+                # settle wait after EACH action, not one grouped wait at the end — a
+                # Phaser scene transition/tween triggered by the FIRST action needs
+                # its own moment before the next action lands meaningfully (measured:
+                # this class of under-settling is the likeliest source of the
+                # same-build, same-code "ok=True then ok=False" flakiness found this
+                # session).
+                for act in (lambda: page.mouse.click(400, 300),
+                            lambda: page.keyboard.press("Space")):
+                    try:
+                        act()
+                    except Exception:  # noqa: BLE001 - input is best-effort
+                        pass
+                    page.wait_for_timeout(750)
+                if _dom_start_click(page):
+                    page.wait_for_timeout(700)
+                canvas = page.locator("canvas").first
+                clicked_anything = False
+
+                def _shot_fn():
+                    try:
+                        s = canvas.screenshot(timeout=2000)
+                        b = canvas.bounding_box()
+                    except Exception:  # noqa: BLE001
+                        return None, None
+                    return s, b
+
+                for _ in range(3):
+                    # DOM-first EVERY round, not just once: a level-select screen and
+                    # an in-game "Start Wave" button are routinely TWO SEPARATE DOM
+                    # elements that only exist at different points in the flow (one
+                    # before entering the game scene, one after) — checking once up
+                    # front misses whichever hasn't rendered yet.
+                    if _dom_start_click(page):
+                        clicked_anything = True
+                        page.wait_for_timeout(700)
+                        continue
+                    if vision_fn is None:
+                        break
+                    # Retries a transient parse failure (a CLI backend wrapping JSON
+                    # in prose, a frame caught mid-transition) ONCE within this round
+                    # before falling through — a single bad response shouldn't burn a
+                    # whole round of this loop's own outer budget.
+                    in_play, click, box = _vision_locate_with_retry(
+                        vision_fn, _shot_fn,
+                        wait_fn=lambda: page.wait_for_timeout(300))
+                    if not box:
+                        break
+                    if in_play or click is None:
+                        break
+                    try:
+                        # RAW page coordinates (not Locator.click(position=...)): the
+                        # vision-located target is sometimes a REAL DOM element
+                        # layered over the canvas (an in-game "Start Wave" button
+                        # that only appears once play begins) — canvas.click()
+                        # demands the CANVAS be the actionable target and times out
+                        # fighting the DOM element actually on top. A raw click at
+                        # the same physical point hits whatever's really there,
+                        # canvas-internal Phaser object or DOM element alike. Safe
+                        # now that _fit_viewport_to_canvas guarantees box.x/y >= 0
+                        # (the reason this used to be a Locator click in the first
+                        # place — a too-small viewport could clip the canvas to a
+                        # negative bounding-box origin).
+                        page.mouse.click(box["x"] + click[0], box["y"] + click[1])
+                        clicked_anything = True
+                    except Exception:  # noqa: BLE001
+                        pass
+                    page.wait_for_timeout(700)
+                if clicked_anything:
+                    # A freshly-started wave needs a moment for its first entities to
+                    # actually spawn and become visible — judging immediately after the
+                    # click that triggered it is a coin flip (measured: the SAME build
+                    # scored ok=True and ok=False back to back with no code change,
+                    # purely from how much had spawned by judgement time).
                     page.wait_for_timeout(1500)
-                except Exception:  # noqa: BLE001 - input is best-effort
-                    pass
-                page.screenshot(path=out_path)
+                final_shot = page.screenshot()
+                if _looks_like_a_flash_frame(final_shot):
+                    # Confirmed live: a judged frame can land mid an in-game
+                    # full-screen FX (this build's red damage-flash camera tint on
+                    # the Still taking a hit) — for that ONE frame the canvas is a
+                    # solid color, genuinely showing nothing, even though the
+                    # underlying game state is fine. Retake once after the FX has
+                    # almost certainly finished (measured: a 200ms flash) rather
+                    # than judge a frame that's accidentally unrepresentative.
+                    page.wait_for_timeout(400)
+                    retake = page.screenshot()
+                    if not _looks_like_a_flash_frame(retake):
+                        final_shot = retake
+                with open(out_path, "wb") as f:
+                    f.write(final_shot)
             finally:
                 browser.close()
         return True
@@ -125,7 +274,11 @@ async def check_game_visual(project_dir: str | Path, *, settings: Any,
     whose ``gap()`` feeds the fix-loop; it NEVER blocks a build. Soft-skips (no gap)
     when no vision model is configured, Playwright is unavailable, or the game won't
     serve. Never raises."""
-    from skyn3t.studio.visual_check import make_vision_fn, playwright_available
+    from skyn3t.studio.visual_check import (
+        make_click_vision_fn,
+        make_vision_fn,
+        playwright_available,
+    )
 
     try:
         vision_fn = make_vision_fn(settings)
@@ -145,7 +298,9 @@ async def check_game_visual(project_dir: str | Path, *, settings: Any,
             fd, shot = tempfile.mkstemp(prefix="skyn3t-gameshot-", suffix=".png")
             os.close(fd)
             try:
-                ok = await asyncio.to_thread(_screenshot_midplay, url, shot)
+                click_vision_fn = make_click_vision_fn(settings)
+                ok = await asyncio.to_thread(_screenshot_midplay, url, shot,
+                                              vision_fn=click_vision_fn)
                 if not ok:
                     return GameVisualVerdict(skipped=True, reason="screenshot failed")
                 return judge_game_frame(shot, vision_fn=vision_fn)

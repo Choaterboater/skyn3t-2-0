@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from "react";
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
-import { useEventStream } from "./api.js";
+import { useQuery } from "@tanstack/react-query";
+import { queryFn, useEventStream } from "./api.js";
 
 // Lazy-load each route so its code (and heavy deps) ships in its own chunk and
 // loads on demand. In particular the Brain page pulls in three.js / r3f (~800KB)
@@ -28,6 +29,30 @@ const NAV = [
   { to: "/projects", label: "Projects", glyph: "▤" },
   { to: "/workspace", label: "Workspace", glyph: "⧉" },
 ];
+
+// A long-running server keeps serving the code it imported at boot; when the
+// working tree moves on, features look broken while the fix sits unloaded on
+// disk. /api/health reports `stale_code` — surface it everywhere, loudly.
+function StaleCodeBanner() {
+  const health = useQuery({
+    queryKey: ["health-stale"],
+    queryFn: queryFn("/health"),
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  });
+  if (!health.data?.stale_code) return null;
+  const started = health.data.started_at
+    ? new Date(health.data.started_at * 1000).toLocaleString()
+    : "unknown";
+  return (
+    <div className="mb-6 rounded-md border border-ember/50 bg-ember/10 px-4 py-3 font-mono text-[12px] leading-relaxed text-ember">
+      ⚠ This server is running <span className="font-bold">stale code</span> — source
+      files changed after it started ({started}). Restart it (
+      <span className="font-bold">skyn3t start --web</span>) to load the latest fixes;
+      until then builds and improves run the old code.
+    </div>
+  );
+}
 
 const WS = {
   open: { dot: "bg-plasma", label: "live", cls: "text-plasma" },
@@ -101,6 +126,7 @@ export default function App() {
             screen instead of stranding a big empty gutter and clipping the last
             column; still capped so prose pages don't sprawl on ultrawide. */}
         <div className="mx-auto max-w-screen-2xl px-8 py-8">
+          <StaleCodeBanner />
           <Suspense
             fallback={
               <div className="flex items-center gap-2 px-1 py-8 font-mono text-[11px] text-ash">

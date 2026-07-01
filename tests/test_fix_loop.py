@@ -8,8 +8,10 @@ import shutil
 import pytest
 
 from skyn3t.config.settings import Settings
+from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.planner import Planner
 from skyn3t.studio.proof_run import proof_run
 from skyn3t.studio.runner import StudioRunner
@@ -475,3 +477,244 @@ def test_targets_module_on_not_exported(tmp_path):
             "Attempted import error: 'companyInfo' is not exported from '@/lib/constants'"]
     targets = agent._targets_from_gaps(gaps, tmp_path)
     assert "lib/constants.js" in targets
+
+
+# ---- unconditional final consistency pass (real shipped bug) ----------------
+# _headless_gate_pass, the game-visual loop, qa_playtest's repair, visual_self_heal,
+# and liveness can ALL mutate files after the last proof_run() a build captures —
+# none of them re-verify import resolution against what THEY leave behind. Root
+# cause of a real shipped bug: a fresh agentic codegen session left `src/main.js`
+# importing `./PreloadScene.js`, which was never written — the app couldn't boot,
+# but the STORED proof (captured before that particular file state) still said
+# passed=True. This pass re-checks the TRUE final file state, unconditionally,
+# after every post-proof stage has had its chance to run.
+
+def test_final_consistency_check_forces_no_go_on_a_late_dangling_import(tmp_path):
+    runner = _runner()
+    plan = Planner(Settings()).plan("a phaser game", "moonshine")
+    plan.stack = "phaser"
+    proj = tmp_path / "p"
+    (proj / "src").mkdir(parents=True)
+    # Simulates a post-proof repair stage (e.g. qa_playtest's improver call)
+    # leaving behind exactly the real shipped defect: an import to a file that
+    # was never created, undetectable by scaffold_missing_imports's stub path
+    # only if it too were broken -- here it CAN stub it, but the point is: no
+    # earlier proof_run() saw this file state at all.
+    (proj / "src" / "main.js").write_text(
+        "import { PreloadScene } from './PreloadScene.js';\n"
+        "export default PreloadScene;\n", encoding="utf-8")
+    manifest = BuildManifest(slug="moonshine", brief="a phaser game")
+
+    verdict = runner._final_consistency_check(str(proj), plan, manifest, "go")
+
+    # The deterministic stub scaffolder should have fixed it (Fix #1/#2) --
+    # confirm the pass actually repairs when it CAN, not just detects.
+    assert (proj / "src" / "PreloadScene.js").exists()
+    assert verdict == "go"
+    assert "final_consistency_repairs" in manifest.extra
+    assert "src/PreloadScene.js" in manifest.extra["final_consistency_repairs"]["imports_scaffolded"]
+
+
+def test_final_consistency_check_forces_no_go_when_unfixable(tmp_path, monkeypatch):
+    # When the deterministic repair genuinely can't resolve it (simulated by
+    # neutering scaffold_missing_imports), the pass must still catch the
+    # unresolved import and force no_go -- it must not trust a stale "go".
+    runner = _runner()
+    plan = Planner(Settings()).plan("a phaser game", "moonshine")
+    plan.stack = "phaser"
+    proj = tmp_path / "p"
+    (proj / "src").mkdir(parents=True)
+    (proj / "src" / "main.js").write_text(
+        "import { PreloadScene } from './PreloadScene.js';\n"
+        "export default PreloadScene;\n", encoding="utf-8")
+    manifest = BuildManifest(slug="moonshine", brief="a phaser game")
+
+    # _deterministic_repairs now delegates to proof_run.apply_deterministic_repairs,
+    # which calls scaffold_missing_imports as a proof_run module global — patch it
+    # THERE so the neutering takes effect through the delegation chain.
+    import skyn3t.studio.proof_run as proof_mod
+    monkeypatch.setattr(proof_mod, "scaffold_missing_imports", lambda *a, **kw: [])
+
+    verdict = runner._final_consistency_check(str(proj), plan, manifest, "go")
+
+    assert not (proj / "src" / "PreloadScene.js").exists()
+    assert verdict == "no_go"
+    assert "final_consistency_check" in manifest.extra
+    assert any("PreloadScene" in u for u in manifest.extra["final_consistency_check"]["unresolved_imports"])
+
+
+def test_final_consistency_check_never_downgrades_no_go_to_go(tmp_path):
+    # The pass must never UPGRADE a verdict -- only confirm "go" or downgrade it.
+    runner = _runner()
+    plan = Planner(Settings()).plan("a python tool", "t")
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    manifest = BuildManifest(slug="t", brief="a python tool")
+
+    verdict = runner._final_consistency_check(str(proj), plan, manifest, "no_go")
+
+    assert verdict == "no_go"
+
+
+def test_final_consistency_check_is_a_noop_on_a_clean_tree(tmp_path):
+    runner = _runner()
+    plan = Planner(Settings()).plan("a python tool", "t")
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    manifest = BuildManifest(slug="t", brief="a python tool")
+
+    verdict = runner._final_consistency_check(str(proj), plan, manifest, "go")
+
+    assert verdict == "go"
+    assert "final_consistency_check" not in manifest.extra
+
+
+# ---- qa_playtest gate re-verifies after a repair (real bug) -----------------
+# A successful code_improve repair dispatched off qa_playtest gaps updated
+# manifest.files but NEVER re-ran qa_playtest() — so qa_playtest_ok stayed the
+# STALE pre-repair value forever, and a fully successful repair could never
+# flip the build's verdict from no_go to go via this path. _run_qa_playtest_gate
+# must re-verify ONCE (not loop) after a dispatched repair completes.
+
+class _FakeCodeImprover(BaseAgent):
+    """A no-op code_improve agent: the test's fake qa_playtest (not this agent)
+    decides whether the "repair" succeeded, so this only needs to satisfy
+    _has_capability(...) and return a successful TaskResult."""
+
+    async def initialize(self) -> None:
+        return None
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        return TaskResult(task_id=task.task_id, success=True, output={})
+
+
+async def _register_code_improve(runner: StudioRunner) -> None:
+    agent = _FakeCodeImprover("improver", "code_improve", "stub", runner.event_bus)
+    agent.add_capability(AgentCapability("code_improve"))
+    await runner.orchestrator.register(agent)
+
+
+def _qa_gate_fixture(tmp_path):
+    runner = _runner()
+    plan = Planner(Settings()).plan("a phaser game", "moonshine")
+    plan.stack = "phaser"
+    proj = tmp_path / "p"
+    proj.mkdir()
+    manifest = BuildManifest(slug="moonshine", brief="a phaser game")
+    return runner, plan, proj, manifest
+
+
+async def test_qa_playtest_gate_reverifies_and_flips_no_go_to_go_on_real_repair(
+        tmp_path, monkeypatch):
+    from skyn3t.studio.qa_playtest import QaPlaytestVerdict
+
+    runner, plan, proj, manifest = _qa_gate_fixture(tmp_path)
+    await _register_code_improve(runner)
+
+    calls = {"n": 0}
+
+    async def fake_qa_playtest(project_dir, *, settings, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return QaPlaytestVerdict(console_errors=["ReferenceError: x is not defined"])
+        return QaPlaytestVerdict()  # clean second playthrough -> repair WORKED
+
+    # GOTCHA: qa_playtest is imported LOCALLY inside the gate, so patch the
+    # SOURCE module (skyn3t.studio.qa_playtest.qa_playtest), not any
+    # runner-module name — there is no module-level name to patch there.
+    monkeypatch.setattr("skyn3t.studio.qa_playtest.qa_playtest", fake_qa_playtest)
+    monkeypatch.setattr(
+        "skyn3t.studio.game_visual_loop.select_game_source_files",
+        lambda project_dir: ["src/main.js"],
+    )
+
+    ok = await runner._run_qa_playtest_gate(
+        object(), manifest, plan, str(proj), "cid", {})
+
+    assert calls["n"] == 2  # re-verified exactly once after the repair
+    assert ok is True  # a genuinely successful repair MUST flip the gate
+    assert manifest.extra["qa_playtest"]["ok"] is True  # fresh, not the stale failure
+    assert manifest.extra["qa_playtest"]["console_errors"] == []
+    assert "qa_playtest_gate" not in manifest.extra  # stale failure note dropped
+
+
+async def test_qa_playtest_gate_stays_no_go_with_fresh_gaps_when_repair_incomplete(
+        tmp_path, monkeypatch):
+    from skyn3t.studio.qa_playtest import QaPlaytestVerdict
+
+    runner, plan, proj, manifest = _qa_gate_fixture(tmp_path)
+    await _register_code_improve(runner)
+
+    calls = {"n": 0}
+
+    async def fake_qa_playtest(project_dir, *, settings, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return QaPlaytestVerdict(console_errors=["ReferenceError: first bug"])
+        # Repair didn't fully fix it -- a DIFFERENT error surfaces post-repair.
+        return QaPlaytestVerdict(console_errors=["TypeError: second bug"])
+
+    monkeypatch.setattr("skyn3t.studio.qa_playtest.qa_playtest", fake_qa_playtest)
+    monkeypatch.setattr(
+        "skyn3t.studio.game_visual_loop.select_game_source_files",
+        lambda project_dir: ["src/main.js"],
+    )
+
+    ok = await runner._run_qa_playtest_gate(
+        object(), manifest, plan, str(proj), "cid", {})
+
+    assert calls["n"] == 2
+    assert ok is False  # still genuinely failing -> stays no_go
+    # The reported gap text must be the POST-repair truth, not stale pre-repair text.
+    assert "second bug" in manifest.extra["qa_playtest_gate"]
+    assert "first bug" not in manifest.extra["qa_playtest_gate"]
+    assert manifest.extra["qa_playtest"]["console_errors"] == ["TypeError: second bug"]
+
+
+async def test_qa_playtest_gate_no_repair_dispatched_when_clean_on_first_pass(
+        tmp_path, monkeypatch):
+    """No gaps -> no code_improve task -> qa_playtest called exactly ONCE
+    (guards against the fix accidentally re-verifying every clean build too)."""
+    from skyn3t.studio.qa_playtest import QaPlaytestVerdict
+
+    runner, plan, proj, manifest = _qa_gate_fixture(tmp_path)
+    await _register_code_improve(runner)
+
+    calls = {"n": 0}
+
+    async def fake_qa_playtest(project_dir, *, settings, **kw):
+        calls["n"] += 1
+        return QaPlaytestVerdict()
+
+    monkeypatch.setattr("skyn3t.studio.qa_playtest.qa_playtest", fake_qa_playtest)
+
+    ok = await runner._run_qa_playtest_gate(
+        object(), manifest, plan, str(proj), "cid", {})
+
+    assert calls["n"] == 1
+    assert ok is True
+
+
+async def test_qa_playtest_gate_skips_entirely_for_non_game_stacks(tmp_path, monkeypatch):
+    """``gate is None`` selects non-game stacks -- must short-circuit before ever
+    importing/calling qa_playtest."""
+    runner, plan, proj, manifest = _qa_gate_fixture(tmp_path)
+
+    called = {"n": 0}
+
+    async def fake_qa_playtest(project_dir, *, settings, **kw):
+        called["n"] += 1
+        raise AssertionError("qa_playtest must not run when gate is None")
+
+    monkeypatch.setattr("skyn3t.studio.qa_playtest.qa_playtest", fake_qa_playtest)
+
+    ok = await runner._run_qa_playtest_gate(
+        None, manifest, plan, str(proj), "cid", {})
+
+    assert called["n"] == 0
+    assert ok is True

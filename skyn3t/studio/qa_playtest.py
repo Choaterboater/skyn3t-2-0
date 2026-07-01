@@ -25,10 +25,17 @@ testable without a browser.
 from __future__ import annotations
 
 import asyncio
+import functools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+from skyn3t.studio.visual_check import (
+    _dom_start_click,
+    _fit_viewport_to_canvas,
+    _vision_locate_with_retry,
+)
 
 # Where the build-time art tier writes generated role sprites (see game-art-tier #6).
 _SPRITE_DIR = "public/assets/sprites"
@@ -44,6 +51,22 @@ _COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->|(?<!:)//[^\n]*", re.DOTALL)
 _LOADER_CALL = (
     r"(?:load\.(?:image|spritesheet|atlas)|textures\.exists"
     r"|add\.(?:image|sprite|tileSprite))"
+)
+
+# A texture LOADER or RENDER call whose KEY argument is a bare IDENTIFIER (a variable /
+# member expression), not a quoted literal — the dominant idiomatic Phaser pattern the
+# literal-only scan above misses: loading a whole spriteList in a loop
+# (`for (const name of list) this.load.image(name, ...)`) and rendering via a computed key
+# (`let textureKey; textureKey = 'enemy'; this.add.sprite(x, y, textureKey)` /
+# `sprite.setTexture(tex)`). When such a call is present, a role literal appearing anywhere
+# in the (comment-stripped) source IS being fed through as a texture key — so counting it as
+# rendered stops the scan from false-flagging every correctly-built game that doesn't inline
+# literal keys (the real "a fully-rendered game scores no_go" bug). `.create`/`anims.create`
+# are deliberately NOT matched (anims.create({key:...}) is an animation key, not a texture).
+_VAR_KEYED_TEXTURE = re.compile(
+    r"\.load\.(?:image|spritesheet|atlas)\s*\(\s*[A-Za-z_$]"
+    r"|\.setTexture\s*\(\s*[A-Za-z_$]"
+    r"|(?:\.add|physics\.add)\.(?:sprite|image|tileSprite)\s*\([^)'\"`]*,\s*[A-Za-z_$][\w$.]*\s*[),]"
 )
 
 # Benign console messages a fully-playable Phaser build emits anyway: the favicon 404 (the
@@ -104,10 +127,16 @@ class QaPlaytestVerdict:
         if not self.sprites_rendered:
             roles = ", ".join(self.missing_sprite_roles)
             out.append(
-                f"the build generated sprites ({_SPRITE_DIR}/<role>.png: {roles}) but "
-                "the game never preloads/renders them — preload each in the scene "
-                "preload() and render entities with add.image/sprite (textures.exists "
-                "fallback to a primitive)."
+                f"these generated sprites exist ({_SPRITE_DIR}/<role>.png: {roles}) but "
+                "are never rendered on screen — no game object uses their texture key. "
+                "For the matching game entity, render EACH as a Phaser sprite/image with "
+                "its EXACT key: this.add.sprite(x, y, '<role>') for one, or a physics "
+                "group keyed to '<role>' for many (bullets/enemies/pickups). If the game "
+                "currently draws that entity with a DIFFERENT or invented texture key, "
+                "REMAP it to the generated role name (e.g. a computed textureKey must "
+                "resolve to one of these exact strings). Load each in preload() first "
+                "(this.load.image('<role>', 'assets/sprites/<role>.png')) if not already; "
+                "textures.exists fallback to a primitive only if the file is truly absent."
             )
         return out
 
@@ -128,9 +157,18 @@ def _role_referenced(role: str, text: str) -> bool:
     r = re.escape(role)
     if re.search(rf"\b{r}\.png\b", src) or re.search(rf"assets/sprites/{r}\b", src):
         return True
-    return bool(
-        re.search(rf"{_LOADER_CALL}\s*\([^)]*?['\"`]{r}['\"`]", src, re.DOTALL)
-    )
+    if re.search(rf"{_LOADER_CALL}\s*\([^)]*?['\"`]{r}['\"`]", src, re.DOTALL):
+        return True
+    # Variable-keyed load/render idiom: the game loads/renders textures via computed
+    # keys, and this role's literal appears in source (in the spriteList array, a
+    # `key = 'role'` assignment, a switch case, etc.) — so it IS being fed through as a
+    # texture key. Without this, the literal-only checks above false-flag the extremely
+    # common loop-load + computed-render pattern as "never rendered". A role whose
+    # literal never appears at all (the model invented its own key) is still correctly
+    # flagged, because the presence check below fails for it.
+    if _VAR_KEYED_TEXTURE.search(src) and re.search(rf"['\"`]{r}['\"`]", src):
+        return True
+    return False
 
 
 def check_sprites_rendered(project_dir: str | Path) -> tuple[bool, list[str]]:
@@ -216,21 +254,31 @@ def _canvas_shot(page: Any) -> bytes | None:
             return None
 
 
-def _drive_and_collect(url: str, *, timeout_ms: int = 15000) -> dict[str, Any]:
+def _drive_and_collect(
+    url: str, *, timeout_ms: int = 15000, vision_fn: Any = None,
+) -> dict[str, Any]:
     """Load the running game, register page-error + console-error listeners, START it,
     then exercise EVERY control — arrows + WASD (move), Space (fire), Z and Shift (barrel
     roll), P (pause/unpause) — long enough to spawn a wave, and return
     ``{"errors": [...], "play_confirmed": bool|None}``. Sync Playwright — call via
     ``asyncio.to_thread``. Never raises (returns its partial result on any failure).
 
-    Two reliability fixes over a naive driver:
+    Three reliability fixes over a naive driver:
       * Movement + off-contract keys are HELD across a frame (``down``/wait/``up``) instead
         of ``press``ed, so an ``isDown``-polled barrel-roll actually observes the key in a
         scene ``update()`` and throws its ``BARREL_ROLL_COOLDOWN`` ReferenceError (a
         same-frame keydown+keyup leaves ``isDown`` false by update time).
       * Play state is confirmed by canvas pixel motion before/after driving: a never-
         started game (static menu, wrong start input) yields ``play_confirmed=False`` so
-        the caller soft-skips instead of recording a never-played run as a clean pass."""
+        the caller soft-skips instead of recording a never-played run as a clean pass.
+      * When ``vision_fn`` is supplied AND the canvas hasn't visibly changed after the
+        generic click/Space/Enter attempt, a menu/level-select-driven genre (tower
+        defense: pick a level card, then press a "Start Wave" button) gets up to 2 rounds
+        of vision-grounded "where do I click to reach play" before falling through to the
+        movement/fire loop — this is what the generic heuristic alone cannot do, and what
+        false-no_go'd a genuinely working tower-defense build (see
+        memory/qa-gate-menu-driven-games.md). No vision_fn -> identical to before
+        (free, deterministic skip)."""
     errors: list[str] = []
     play_confirmed: bool | None = None
     try:
@@ -253,8 +301,14 @@ def _drive_and_collect(url: str, *, timeout_ms: int = 15000) -> dict[str, Any]:
 
                 page.goto(url, timeout=timeout_ms, wait_until="load")
                 page.wait_for_timeout(1000)
+                _fit_viewport_to_canvas(page)
                 before = _canvas_shot(page)
-                # START the game (menus respond to click / Space / Enter).
+                # START the game (menus respond to click / Space / Enter). A settle
+                # wait after EACH action, not one grouped wait at the end — a Phaser
+                # scene transition/tween triggered by the FIRST action needs its own
+                # moment before the next action lands meaningfully (measured: this
+                # class of under-settling is the likeliest source of the same-build,
+                # same-code "ok=True then ok=False" flakiness found this session).
                 for act in (lambda: page.mouse.click(400, 300),
                             lambda: page.keyboard.press("Space"),
                             lambda: page.keyboard.press("Enter")):
@@ -262,7 +316,68 @@ def _drive_and_collect(url: str, *, timeout_ms: int = 15000) -> dict[str, Any]:
                         act()
                     except Exception:  # noqa: BLE001
                         pass
-                page.wait_for_timeout(800)
+                    page.wait_for_timeout(250)
+                page.wait_for_timeout(300)
+
+                # Reach actually-playing, not just "the canvas changed": neither the
+                # blind heuristic above nor a single before/after pixel diff can tell a
+                # menu/level-select-driven genre (tower defense: pick a level card,
+                # THEN press a separate "Start Wave" button) is still waiting on the
+                # player. Loop DOM-first (cheap, zero LLM cost — many codegen UIs render
+                # the start/level-select/in-game "Start Wave" controls as REAL HTML
+                # layered over the canvas, not Phaser-drawn — invisible to a canvas
+                # screenshot; the same DOM-first/vision-fallback split browser-use and
+                # Stagehand use), THEN vision-grounded canvas clicks as the fallback.
+                # EVERY round re-checks DOM first: a level-select screen and an in-game
+                # "Start Wave" button are routinely TWO SEPARATE DOM elements that only
+                # exist at different points in the flow, so checking once up front
+                # misses whichever hasn't rendered yet. Mirrors Anthropic's own
+                # computer-use loop: verify via a fresh observation each round, don't
+                # infer success from whether pixels moved.
+                canvas = page.locator("canvas").first
+
+                def _shot_fn():
+                    s = _canvas_shot(page)
+                    b = None
+                    try:
+                        b = canvas.bounding_box()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return s, b
+
+                for _ in range(3):
+                    if _dom_start_click(page):
+                        page.wait_for_timeout(700)
+                        continue
+                    if vision_fn is None:
+                        break
+                    # Retries a transient parse failure (a CLI backend wrapping JSON
+                    # in prose, a frame caught mid-transition) ONCE within this round
+                    # before falling through — a single bad response shouldn't burn a
+                    # whole round of this loop's own outer budget.
+                    in_play, click, box = _vision_locate_with_retry(
+                        vision_fn, _shot_fn,
+                        wait_fn=lambda: page.wait_for_timeout(300))
+                    if not box:
+                        break
+                    if in_play or click is None:
+                        break
+                    try:
+                        # RAW page coordinates (not Locator.click(position=...)): the
+                        # vision-located target is sometimes a REAL DOM element layered
+                        # over the canvas (an in-game "Start Wave" button that only
+                        # appears once play begins) — canvas.click() demands the
+                        # CANVAS be the actionable target and times out fighting the
+                        # DOM element actually on top. A raw click at the same physical
+                        # point hits whatever's really there, canvas-internal Phaser
+                        # object or DOM element alike. Safe now that
+                        # _fit_viewport_to_canvas guarantees box.x/y >= 0 (the reason
+                        # this used to be a Locator click — a too-small viewport could
+                        # clip the canvas to a negative bounding-box origin).
+                        page.mouse.click(box["x"] + click[0], box["y"] + click[1])
+                    except Exception:  # noqa: BLE001
+                        pass
+                    page.wait_for_timeout(700)
 
                 # HOLD movement + off-contract keys across an update frame (isDown polling);
                 # the sim gate never drives these, so the barrel-roll error only fires here.
@@ -312,11 +427,18 @@ async def qa_playtest(
     raises."""
     try:
         if drive_fn is None:
-            from skyn3t.studio.visual_check import playwright_available
+            from skyn3t.studio.visual_check import make_click_vision_fn, playwright_available
 
             if not playwright_available():
                 return QaPlaytestVerdict(skipped=True, reason="playwright not available")
-            drive_fn = _drive_and_collect
+            # Genre-aware fallback (menu/level-select games) when a vision model is
+            # configured; degrades to the prior click+Space+Enter-only behaviour
+            # otherwise (make_click_vision_fn returns None with no key/CLI available).
+            # CLI-preferred (make_click_vision_fn, not make_vision_fn): pixel-grounding
+            # a click target needs precision a cheap OpenRouter vision model doesn't
+            # reliably have — see visual_check.make_click_vision_fn's docstring.
+            vision_fn = make_click_vision_fn(settings)
+            drive_fn = functools.partial(_drive_and_collect, vision_fn=vision_fn)
 
         from skyn3t.studio.app_runner import AppRunner, cleanup_serve
 

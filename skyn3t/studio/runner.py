@@ -23,6 +23,7 @@ Import has zero side effects.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,16 +43,11 @@ from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
-    add_use_client_directives,
-    ensure_path_alias_config,
+    _unresolved_local_imports,
+    _unresolved_python_imports,
+    apply_deterministic_repairs,
     extract_error_gaps,
     proof_run,
-    reconcile_lucide_icons,
-    reconcile_next_config_peers,
-    reconcile_npm_deps,
-    reconcile_tauri_cargo_features,
-    scaffold_missing_imports,
-    strip_ts_type_in_js,
 )
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
@@ -94,6 +90,28 @@ _UI_WEB_STACKS = frozenset({
 # the pure src/sim.js core in Node). Keep in sync with architect._GAME_STACKS.
 _GAME_STACKS = frozenset({"phaser"})
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+
+# Dir names that hold build output / vendored / preview snapshots — never a SEO
+# repair TARGET (rewriting a built `.next` page or a `.preview` mirror is nonsense
+# and can't survive a rebuild). Matched against every path segment.
+_SEO_SELECT_EXCLUDE = frozenset({
+    "node_modules", ".next", "dist", "out", "build", ".output", ".preview",
+})
+# Real page/meta SOURCE files the SEO improver may edit (matched on the POSIX
+# relative path). `.html`/`.htm`/`.astro` are handled separately (any non-build
+# one qualifies). These pin the framework page/metadata entrypoints — the files
+# where title/description/<h1>/<html lang> actually live — so build artifacts and
+# non-page modules (e.g. `app/page.module.css`, `components/Button.tsx`) are not
+# handed to the improver.
+_SEO_SOURCE_RES = (
+    # Next.js App Router (root or under src/): app/layout.*, app/page.*
+    re.compile(r"(?:^|/)(?:src/)?app/(?:layout|page)\.(?:js|jsx|ts|tsx)$", re.I),
+    # Next.js Pages Router (root or under src/): pages/_document|_app|index.*
+    re.compile(r"(?:^|/)(?:src/)?pages/(?:_document|_app|index)\.(?:js|jsx|ts|tsx)$", re.I),
+    # Remix: app/root.* and the index route
+    re.compile(r"(?:^|/)app/root\.(?:js|jsx|ts|tsx)$", re.I),
+    re.compile(r"(?:^|/)app/routes/_index\.(?:js|jsx|ts|tsx)$", re.I),
+)
 
 
 def _web_design_tags(stack: str) -> list[str] | None:
@@ -1036,50 +1054,6 @@ class StudioRunner:
             pass
         return out
 
-    @staticmethod
-    def _stub_dangling_stylesheets(project_dir: str, proof) -> int:
-        """Create an empty stub for each unresolved LOCAL stylesheet import the proof
-        flagged (e.g. ``src/main.jsx -> ./styles/app.css`` that no slice wrote). An
-        empty stylesheet resolves the import without a bundler boot failure — the
-        same safety net CodeAgent applies on the monolithic path, wired here so the
-        slice/fix-loop path gets it too. Only touches relative ('.'-prefixed)
-        stylesheet specifiers. Returns the count stubbed. Never raises."""
-        import os
-        import posixpath
-        from pathlib import Path
-
-        detail = getattr(proof, "detail", None) or {}
-        css_exts = (".css", ".scss", ".sass", ".less")
-        root = Path(project_dir).resolve()
-        stubbed = 0
-        for entry in detail.get("unresolved_imports", []) or []:
-            if not isinstance(entry, str) or " -> " not in entry:
-                continue
-            importer, _, spec = entry.partition(" -> ")
-            spec = spec.strip().split("?", 1)[0].split("#", 1)[0]
-            if not (spec.startswith(".") and spec.endswith(css_exts)):
-                continue  # only dangling LOCAL stylesheets
-            target = posixpath.normpath(posixpath.join(posixpath.dirname(importer.strip()), spec))
-            # Confine to the project tree: a '../'-escaping stylesheet must NOT be
-            # written out-of-tree (it would pollute sibling builds AND falsely
-            # satisfy the un-clamped re-proof while never shipping via merge_back).
-            # Leave it flagged so the build correctly stays no_go.
-            p = (root / target).resolve()
-            try:
-                if os.path.commonpath([str(root), str(p)]) != str(root):
-                    continue
-            except ValueError:
-                continue
-            try:
-                if not p.exists():
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_text("/* stub stylesheet — import target was missing */\n",
-                                 encoding="utf-8")
-                    stubbed += 1
-            except OSError:
-                continue
-        return stubbed
-
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
         """Deterministically create missing checklist files.
 
@@ -1180,25 +1154,11 @@ class StudioRunner:
         so the fix-loop can re-run it every iteration — surviving an improver pass
         that introduces a new gap, and giving the loop real repair power even when
         no LLM ``code_improve`` agent is registered."""
-        # Scaffold FIRST: a generated stub may itself import a package (e.g.
-        # `import React from 'react'`), so declaring deps afterwards picks those up
-        # in the same pass — making the whole repair converge in one call.
-        stubbed = scaffold_missing_imports(project_dir, stack=plan.stack)
-        added = reconcile_npm_deps(project_dir)
-        peers = reconcile_next_config_peers(project_dir)
-        # Next.js App Router: prepend "use client" to interactive components so
-        # `next build` doesn't fail static generation on event handlers/hooks.
-        use_client = add_use_client_directives(project_dir)
-        # Map the @/ import alias (write jsconfig paths) and strip stray TS-only
-        # statements from .js files — two common cheap-model defects that otherwise
-        # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
-        alias_cfg = ensure_path_alias_config(project_dir)
-        ts_stripped = strip_ts_type_in_js(project_dir)
-        # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
-        # ones — the model invents icon names that aren't exported, failing the build.
-        lucide = reconcile_lucide_icons(project_dir)
-        # Tauri desktop: fix hallucinated Cargo feature names so the Rust shell builds.
-        tauri_cargo = reconcile_tauri_cargo_features(project_dir)
+        # The code-mutating repairs live in one shared source of truth so the
+        # improve engine (ImproveEngine) applies the IDENTICAL set — see
+        # apply_deterministic_repairs. Here we layer the advisory contrast lint
+        # (main-build-only; it never mutates code) on top.
+        repairs = apply_deterministic_repairs(project_dir, stack=plan.stack)
         # design.md contrast lint: surface text/bg token pairs that fail WCAG AA, so a
         # white-default / unreadable UI is CAUGHT (logged) rather than silently shipped.
         # Pairs with the injected token contract that prevents it in the first place.
@@ -1207,17 +1167,55 @@ class StudioRunner:
         if contrast_issues:
             log.warning("design.contrast_fail", count=len(contrast_issues),
                         worst=min(i["ratio"] for i in contrast_issues))
-        return {
-            "npm_deps_added": added,
-            "next_config_peers": peers,
-            "imports_scaffolded": stubbed,
-            "use_client_added": use_client,
-            "path_alias_config": alias_cfg,
-            "ts_in_js_stripped": ts_stripped,
-            "lucide_icons_fixed": lucide,
-            "tauri_cargo_fixed": tauri_cargo,
-            "contrast_issues": contrast_issues,
-        }
+        return {**repairs, "contrast_issues": contrast_issues}
+
+    def _final_consistency_check(self, project_dir, plan, manifest, verdict: str) -> str:
+        """Unconditional final pass, run ONCE after every post-proof stage
+        (_headless_gate_pass, the game-visual loop, qa_playtest's repair,
+        visual_self_heal, liveness) has had its chance to mutate files. None of
+        those stages re-verify import resolution against the file state THEY
+        leave behind — only the ORIGINAL proof_run() (captured before any of
+        them ran) is what the verdict otherwise trusts. Root cause of a real
+        shipped bug: a fresh agentic codegen session left `src/main.js`
+        importing `./PreloadScene.js`, which was never written — the app
+        couldn't boot, yet nothing in the pipeline re-checked the FINAL file
+        state before delivery. This IS what "runs last" actually means — the
+        CSS-only `_stub_dangling_stylesheets` guard never was (every stage
+        above ran after it, unchecked).
+
+        Re-runs the (now stack-aware, now filename-correct) deterministic
+        repairs, then a CHEAP, offline unresolved-imports re-scan (no
+        subprocess/build — this runs on every build, so it must stay fast).
+        Only ever DOWNGRADES the verdict to "no_go"; never upgrades one that a
+        brief-aware stage already rejected. Never raises."""
+        try:
+            final_repairs = self._deterministic_repairs(project_dir, plan)
+        except Exception as exc:  # noqa: BLE001 - a safety pass must never break delivery
+            log.warning("runner.final_consistency_repairs_failed", error=str(exc))
+            final_repairs = {}
+        changed_keys = ("npm_deps_added", "next_config_peers",
+                        "imports_scaffolded", "use_client_added")
+        if any(final_repairs.get(k) for k in changed_keys):
+            manifest.files = list_files(project_dir)
+            manifest.extra["final_consistency_repairs"] = {
+                k: final_repairs[k] for k in changed_keys if final_repairs.get(k)
+            }
+            log.info("runner.final_consistency_repaired",
+                     **manifest.extra["final_consistency_repairs"])
+        try:
+            pdir = Path(project_dir)
+            final_unresolved = _unresolved_local_imports(pdir) + _unresolved_python_imports(pdir)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("runner.final_consistency_scan_failed", error=str(exc))
+            final_unresolved = []
+        if final_unresolved:
+            manifest.extra["final_consistency_check"] = {
+                "unresolved_imports": final_unresolved[:10],
+                "note": "a post-repair stage left the delivered tree unbootable",
+            }
+            log.warning("runner.final_consistency_no_go", unresolved=final_unresolved[:10])
+            return "no_go"
+        return verdict
 
     @staticmethod
     def _missing_sim_core(gate) -> bool:
@@ -1395,6 +1393,298 @@ class StudioRunner:
             )
         return gate
 
+    async def _run_qa_playtest_gate(
+        self, gate, manifest, plan, project_dir, correlation_id, extra
+    ) -> bool:
+        """QA-playtest (opt-in, game stacks): serve the delivered game and DRIVE every
+        control with a browser — movement, fire, the off-contract barrel-roll (Z/Shift),
+        pause — failing on any uncaught console/page error (the freeze/ReferenceError
+        class the sim gate's contract never triggers), and verify generated sprites
+        actually render.
+
+        Gaps feed a ``code_improve`` repair task. When a repair is dispatched and
+        completes, this RE-RUNS qa_playtest ONCE (not a loop, to bound cost) so a
+        genuinely successful repair can flip the gate and the manifest reflects the
+        TRUE post-repair state rather than a stale pre-repair failure — mirrors
+        ``_run_visual_self_heal``'s repair-then-re-verify shape. Without this, a fully
+        successful repair could never turn a "no_go" into a "go" via this path.
+
+        `gate is not None` selects game stacks. Never raises; any failure leaves the
+        gate open (True) so a degraded/offline check can't false-fail a build.
+        """
+        qa_playtest_ok = True
+        if gate is None or not bool(getattr(self.settings, "qa_playtest_enabled", False)):
+            return qa_playtest_ok
+        try:
+            from skyn3t.studio.game_visual_loop import select_game_source_files
+            from skyn3t.studio.qa_playtest import qa_playtest
+
+            gates_on = bool(getattr(self.settings, "game_quality_gates_verdict", True))
+
+            def _record(qa_verdict) -> bool:
+                manifest.extra["qa_playtest"] = qa_verdict.to_dict()
+                ok = self._game_quality_gate_ok(qa_verdict.ok, qa_verdict.skipped, gates_on)
+                if ok:
+                    # A prior (pre-repair) failure note is now stale — drop it so
+                    # the manifest never reports a gap that was actually fixed.
+                    manifest.extra.pop("qa_playtest_gate", None)
+                else:
+                    manifest.extra["qa_playtest_gate"] = (
+                        "qa playtest failed: "
+                        + ("; ".join(list(qa_verdict.gaps())[:3])
+                           or "console/sprite render failure")
+                    )
+                return ok
+
+            qa_verdict = await qa_playtest(project_dir, settings=self.settings)
+            qa_playtest_ok = _record(qa_verdict)
+            gaps = qa_verdict.gaps()
+            if gaps:
+                log.info("qa_playtest.flagged",
+                         console_errors=qa_verdict.console_errors,
+                         missing_sprite_roles=qa_verdict.missing_sprite_roles)
+                if self._has_capability("code_improve"):
+                    files = select_game_source_files(project_dir)
+                    payload = {
+                        "brief": manifest.brief, "slug": manifest.slug,
+                        "worktree_dir": project_dir, "project_dir": project_dir,
+                        "stack": plan.stack, "plan": plan.to_dict(),
+                        "gaps": list(gaps), "files": list(files),
+                    }
+                    if extra:
+                        payload["extra"] = extra
+                    task = TaskRequest(
+                        type="code_improver", payload=payload,
+                        capabilities_required=("code_improve",),
+                        correlation_id=correlation_id,
+                        metadata={"stage": "qa_playtest"},
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            self.orchestrator.submit(task),
+                            timeout=self.stage_exec_timeout,
+                        )
+                        manifest.files = list_files(project_dir)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("qa_playtest.improve_failed", error=str(exc))
+                    else:
+                        # Repair dispatched successfully — re-verify ONCE so the
+                        # gate + manifest reflect the ACTUAL post-repair state
+                        # instead of the stale pre-repair failure. A re-verify
+                        # failure here falls through to the outer except below,
+                        # which simply keeps the pre-repair result recorded.
+                        qa_verdict = await qa_playtest(project_dir, settings=self.settings)
+                        qa_playtest_ok = _record(qa_verdict)
+        except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+            log.warning("qa_playtest.failed", error=str(exc))
+        return qa_playtest_ok
+
+    @staticmethod
+    def _select_seo_source_files(project_dir) -> list[str]:
+        """The delivered SEO-relevant SOURCE files (relative POSIX paths) to hand the
+        improver — the page/head/metadata files where title/description/<h1>/<html lang>
+        live. Excludes build output / vendored / preview dirs and matches only real page
+        or metadata entrypoints (a bare substring match wrongly handed the improver
+        `app/page.module.css` and `.next/...` artifacts). Deduped + capped at 6. When the
+        result is empty the caller must NOT dispatch a repair. Never raises."""
+        try:
+            files = list_files(project_dir)
+        except Exception:  # noqa: BLE001 - selection must never raise
+            return []
+        seen: set[str] = set()
+        out: list[str] = []
+        for f in files:
+            posix = f.replace("\\", "/")
+            if any(seg in _SEO_SELECT_EXCLUDE for seg in posix.split("/")):
+                continue
+            low = posix.lower()
+            is_markup = low.endswith((".html", ".htm", ".astro"))
+            if is_markup or any(rx.search(posix) for rx in _SEO_SOURCE_RES):
+                if f not in seen:
+                    seen.add(f)
+                    out.append(f)
+                    if len(out) >= 6:
+                        break
+        return out
+
+    @staticmethod
+    def _safe_list_files(project_dir) -> list[str]:
+        try:
+            return list_files(project_dir)
+        except Exception:  # noqa: BLE001 - reconciliation must never raise
+            return []
+
+    @staticmethod
+    def _snapshot_seo_targets(project_dir, rels) -> dict[str, bytes]:
+        """Map ``rel -> original bytes`` for the ≤6 SEO target files that exist. Bounded
+        to the handful of targets on purpose — a rollback snapshot must NOT copy the tree."""
+        root = Path(project_dir)
+        snaps: dict[str, bytes] = {}
+        for rel in rels:
+            try:
+                p = root / rel
+                if p.is_file():
+                    snaps[rel] = p.read_bytes()
+            except Exception:  # noqa: BLE001
+                continue
+        return snaps
+
+    @staticmethod
+    def _seo_changed_targets(project_dir, snapshots: dict[str, bytes]) -> list[str]:
+        """Snapshotted targets whose bytes differ now (a deleted target counts as changed)."""
+        root = Path(project_dir)
+        changed: list[str] = []
+        for rel, original in snapshots.items():
+            try:
+                p = root / rel
+                current = p.read_bytes() if p.is_file() else None
+            except Exception:  # noqa: BLE001
+                current = None
+            if current != original:
+                changed.append(rel)
+        return changed
+
+    @staticmethod
+    def _rollback_seo(project_dir, snapshots: dict[str, bytes], new_files) -> None:
+        """Restore every snapshotted target to its original bytes and delete any files
+        that APPEARED during the repair. All writes/deletes are confined to the project
+        root (never follow a `..`/symlink out). Best-effort; never raises."""
+        root = Path(project_dir).resolve()
+
+        def _confined(p: Path) -> bool:
+            try:
+                return p.resolve().is_relative_to(root)
+            except Exception:  # noqa: BLE001
+                return False
+
+        for rel, original in snapshots.items():
+            try:
+                p = root / rel
+                if not _confined(p):
+                    continue
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(original)
+            except Exception:  # noqa: BLE001
+                continue
+        for rel in new_files:
+            try:
+                p = root / rel
+                if not _confined(p):
+                    continue
+                if p.is_file():
+                    p.unlink()
+            except Exception:  # noqa: BLE001
+                continue
+
+    async def _run_seo_check(
+        self, manifest, plan, project_dir, correlation_id, extra
+    ) -> None:
+        """Advisory SEO scan (web/HTML stacks): deterministically scan the delivered
+        pages/metadata for the cheap, unambiguous SEO signals and RECORD the verdict to
+        ``manifest.extra["seo"]``. When there are real (hard) issues and a ``code_improve``
+        capability is present, dispatch a repair.
+
+        Do-no-harm: the improver rewrites DELIVERED entry files (index.html / app/layout /
+        …) AFTER proof_run + liveness + the verdict have run, and nothing downstream except
+        the JS-import consistency pass re-verifies them — so a broken rewrite of a page
+        would otherwise ship as ``verdict=go``. This snapshots the ≤6 targets, and after the
+        repair re-runs the REAL proof: a repair is KEPT only if the proof still passes, else
+        every mutation is ROLLED BACK (restore snapshots, delete created files). A failed or
+        timed-out dispatch (which can leave partial writes) is rolled back unconditionally.
+        Strictly ADVISORY: it NEVER touches ``verdict``. Best-effort; never raises."""
+        try:
+            from skyn3t.studio.seo_check import check_seo
+
+            verdict = await asyncio.to_thread(check_seo, project_dir, plan.stack)
+            manifest.extra["seo"] = verdict.to_dict()
+            log.info("seo_check.done", skipped=verdict.skipped, ok=verdict.ok,
+                     issues=len(verdict.issues), warnings=len(verdict.warnings))
+
+            gaps = verdict.gaps()
+            if not gaps or not self._has_capability("code_improve"):
+                return
+            files = self._select_seo_source_files(project_dir)
+            if not files:
+                # No real page/meta source to edit — a files=[] dispatch is doomed
+                # (e.g. a metadata-only Next.js/Remix tree). Don't dispatch.
+                return
+
+            # Snapshot BEFORE the repair so a broken/partial rewrite can be undone.
+            before_files = set(self._safe_list_files(project_dir))
+            snapshots = self._snapshot_seo_targets(project_dir, files)
+
+            payload = {
+                "brief": manifest.brief, "slug": manifest.slug,
+                "worktree_dir": project_dir, "project_dir": project_dir,
+                "stack": plan.stack, "plan": plan.to_dict(),
+                "gaps": list(gaps), "files": list(files),
+            }
+            if extra:
+                payload["extra"] = extra
+            task = TaskRequest(
+                type="code_improver", payload=payload,
+                capabilities_required=("code_improve",),
+                correlation_id=correlation_id,
+                metadata={"stage": "seo_check"},
+            )
+            dispatched_ok = True
+            try:
+                await asyncio.wait_for(
+                    self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
+            except Exception as exc:  # noqa: BLE001 - a timeout can leave partial writes
+                dispatched_ok = False
+                log.warning("seo_check.improve_failed", error=str(exc))
+
+            # Reconcile whatever the dispatch left behind against the snapshot.
+            changed = self._seo_changed_targets(project_dir, snapshots)
+            new_files = sorted(
+                f for f in set(self._safe_list_files(project_dir)) if f not in before_files)
+            if not changed and not new_files:
+                # Nothing survived — the pre-dispatch scan already reflects the tree.
+                return
+            touched = sorted(set(changed) | set(new_files))
+
+            if not dispatched_ok:
+                # An interrupted/failed dispatch leaves an INCOMPLETE repair; never keep a
+                # partial advisory rewrite even if it happens to still build. Roll back.
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["seo_repair"] = {
+                    "kept": False,
+                    "reason": "improver dispatch failed/timed out; rolled back partial writes",
+                    "changed_files": touched,
+                }
+                return
+
+            # Dispatch mutated the tree — keep it only if the REAL proof still passes.
+            proof = await asyncio.to_thread(
+                proof_run,
+                project_dir,
+                checklist=plan.checklist,
+                execution_backend=self.settings.execution_backend,
+                stack=plan.stack,
+                run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+            )
+            if proof.passed:
+                manifest.files = self._safe_list_files(project_dir)
+                verdict = await asyncio.to_thread(check_seo, project_dir, plan.stack)
+                manifest.extra["seo"] = verdict.to_dict()
+                manifest.extra["seo_repair"] = {"kept": True, "changed_files": touched}
+            else:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["seo_repair"] = {
+                    "kept": False,
+                    "reason": "advisory SEO repair broke the build proof; rolled back",
+                    "changed_files": touched,
+                }
+                log.warning("seo_check.repair_rolled_back", changed=touched)
+        except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+            log.warning("seo_check.failed", error=str(exc))
+
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
         improver, and retry until the proof passes or the budget is spent.
@@ -1427,12 +1717,13 @@ class StudioRunner:
             # introduce a new missing import / undeclared dep, and when no
             # code_improve agent is registered these are the loop's only real fix
             # for missing-dep / missing-component / next.config-peer defects.
+            # scaffold_missing_imports (inside this call) now handles BARE/
+            # side-effect imports too (e.g. a slice's dangling
+            # `import './styles/app.css';`, no `from` clause) and picks
+            # stylesheet-appropriate stub content — the dedicated
+            # `_stub_dangling_stylesheets` this used to also call is retired;
+            # its job is fully subsumed here.
             repairs = self._deterministic_repairs(project_dir, plan)
-            # A slice can import a local stylesheet no slice actually wrote (e.g.
-            # main.jsx -> ./styles/app.css). The improver only REWRITES existing
-            # files, so stub the dangling stylesheet here (empty CSS resolves the
-            # import harmlessly) — the same safety net the monolithic path has.
-            stubbed = self._stub_dangling_stylesheets(project_dir, proof)
 
             # LLM content repair on the flagged gaps, when an improver is present.
             if self._has_capability("code_improve"):
@@ -1478,8 +1769,9 @@ class StudioRunner:
             )
             manifest.extra["proof"] = proof.to_dict()
             manifest.extra[f"fix_attempt_{attempt}"] = {
-                "filled": filled, "stubbed": stubbed, "passed": proof.passed,
-                "repairs": repairs}
+                "filled": filled,
+                "stubbed": len(repairs.get("imports_scaffolded", [])),
+                "passed": proof.passed, "repairs": repairs}
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
                 {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "passed": proof.passed},
@@ -2072,15 +2364,25 @@ class StudioRunner:
                     manifest, plan, project_dir, proof, correlation_id, extra
                 )
 
-            # Final delivery guard: a dangling LOCAL stylesheet can survive the
-            # fix-loop (the per-attempt stub runs against the PRIOR proof, then the
-            # improver rewrites files, so a stylesheet import present only at the
-            # final re-proof is never stubbed — e.g. a slice's redundant
-            # `import './App.css'`). Stub it in the DELIVERED tree and re-verify
-            # ONCE so the shipped app has no boot-breaking stylesheet import. Runs
-            # last, so nothing in the loop can undo it.
+            # Delivery recovery attempt: a dangling LOCAL import (stylesheet or
+            # otherwise) can survive the fix-loop (the per-attempt repair runs
+            # against the PRIOR proof, then the improver rewrites files, so an
+            # import introduced only at the final re-proof — e.g. a slice's
+            # redundant `import './App.css'`, or the LLM repair's own last
+            # edit — is never repaired). Repair the DELIVERED tree and
+            # re-verify ONCE so a recoverable build isn't shipped no_go over
+            # something this fixes. This is a best-effort RECOVERY attempt
+            # (repair -> re-verify -> maybe upgrade the verdict), not the final
+            # safety net — that claim used to be made here and was false:
+            # _headless_gate_pass/game-visual/QA-playtest/liveness all run
+            # AFTER this point and can still introduce a new break.
+            # _final_consistency_check (near the very end of the build) is
+            # what actually runs last and can only ever DOWNGRADE the verdict.
             if not proof.passed and (getattr(proof, "detail", None) or {}).get("unresolved_imports"):
-                if self._stub_dangling_stylesheets(project_dir, proof):
+                recovery_repairs = self._deterministic_repairs(project_dir, plan)
+                if any(recovery_repairs.get(k) for k in
+                       ("npm_deps_added", "next_config_peers",
+                        "imports_scaffolded", "use_client_added")):
                     manifest.files = list_files(project_dir)
                     proof = await asyncio.to_thread(
                         proof_run, project_dir, checklist=plan.checklist,
@@ -2360,58 +2662,13 @@ class StudioRunner:
             # control with a browser — movement, fire, the off-contract barrel-roll
             # (Z/Shift), pause — failing on any uncaught console/page error (the freeze/
             # ReferenceError class the sim gate's contract never triggers), and verify
-            # generated sprites actually render. ADVISORY: recorded + fed to the fix-loop;
-            # NEVER flips the verdict. `gate is not None` selects game stacks.
-            if gate is not None and bool(
-                    getattr(self.settings, "qa_playtest_enabled", False)):
-                try:
-                    from skyn3t.studio.game_visual_loop import select_game_source_files
-                    from skyn3t.studio.qa_playtest import qa_playtest
-
-                    qa_verdict = await qa_playtest(project_dir, settings=self.settings)
-                    manifest.extra["qa_playtest"] = qa_verdict.to_dict()
-                    # Hard-gate: a REAL (non-skipped) QA failure blocks the verdict for
-                    # game stacks. A soft-skip (no Playwright) leaves ok=True.
-                    qa_playtest_ok = self._game_quality_gate_ok(
-                        qa_verdict.ok, qa_verdict.skipped,
-                        bool(getattr(self.settings, "game_quality_gates_verdict", True)))
-                    if not qa_playtest_ok:
-                        manifest.extra["qa_playtest_gate"] = (
-                            "qa playtest failed: "
-                            + ("; ".join(list(qa_verdict.gaps())[:3])
-                               or "console/sprite render failure")
-                        )
-                    gaps = qa_verdict.gaps()
-                    if gaps:
-                        log.info("qa_playtest.flagged",
-                                 console_errors=qa_verdict.console_errors,
-                                 missing_sprite_roles=qa_verdict.missing_sprite_roles)
-                        if self._has_capability("code_improve"):
-                            files = select_game_source_files(project_dir)
-                            payload = {
-                                "brief": manifest.brief, "slug": manifest.slug,
-                                "worktree_dir": project_dir, "project_dir": project_dir,
-                                "stack": plan.stack, "plan": plan.to_dict(),
-                                "gaps": list(gaps), "files": list(files),
-                            }
-                            if extra:
-                                payload["extra"] = extra
-                            task = TaskRequest(
-                                type="code_improver", payload=payload,
-                                capabilities_required=("code_improve",),
-                                correlation_id=correlation_id,
-                                metadata={"stage": "qa_playtest"},
-                            )
-                            try:
-                                await asyncio.wait_for(
-                                    self.orchestrator.submit(task),
-                                    timeout=self.stage_exec_timeout,
-                                )
-                                manifest.files = list_files(project_dir)
-                            except Exception as exc:  # noqa: BLE001
-                                log.warning("qa_playtest.improve_failed", error=str(exc))
-                except Exception as exc:  # noqa: BLE001 - advisory; never break a build
-                    log.warning("qa_playtest.failed", error=str(exc))
+            # generated sprites actually render. Gaps feed a code_improve repair; a
+            # successful repair is RE-VERIFIED once so this CAN flip a genuine fix from
+            # no_go to go (see _run_qa_playtest_gate). `gate is not None` selects game
+            # stacks.
+            qa_playtest_ok = await self._run_qa_playtest_gate(
+                gate, manifest, plan, project_dir, correlation_id, extra
+            )
             verdict = (
                 "go"
                 if (verdict == "go" and proof.passed and delivered_nonempty
@@ -2479,6 +2736,23 @@ class StudioRunner:
             if plan.stack in _WEB_STACKS and getattr(self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
                     manifest, project_dir, plan, proof, final_score, verdict)
+
+            # End-of-build SEO check (web/HTML stacks, ADVISORY): a deterministic static
+            # scan of the delivered pages/metadata for the cheap, unambiguous SEO signals
+            # (title, meta description, one <h1>, html lang, Open Graph, img alt,
+            # robots/sitemap). Like game_visual/qa_playtest it is recorded + fed to the
+            # improver but NEVER flips `verdict` — a static SEO nit must not no_go a
+            # working app. Soft-skips non-HTML stacks + page-less projects. Never raises.
+            if plan.stack in _WEB_STACKS and getattr(self.settings, "seo_check_enabled", True):
+                await self._run_seo_check(
+                    manifest, plan, project_dir, correlation_id, extra)
+
+            # Unconditional final consistency pass — see _final_consistency_check's
+            # docstring: every stage above this point can mutate files with no
+            # re-verification of import resolution against what IT leaves behind.
+            # This is what "runs last" actually means.
+            verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+
             # Verdict is now fully settled (post-liveness): a no_go must not read
             # like a success. Clamp before the score feeds lessons + _finalize.
             final_score = self._clamp_score_to_verdict(final_score, verdict)

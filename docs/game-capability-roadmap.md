@@ -5,6 +5,14 @@ engines, design, designer) + `physics-gameplay-deepdive` (physics sim, gameplay 
 correctness gates). Goal: give skyn3t **legit** 2D-art, game-engineering, and
 game-design/designer capability, then retry games.
 
+> **Status (updated 2026-06-30):** the core of this plan is BUILT and merged. Items
+> 1–7 and 9 of the sequenced plan below are shipped and battle-tested; #8 is partly
+> shipped (gameplay-specialist checks landed as an advisory gate; physics-specialist
+> not built); #10 is partial; #11–12 deferred. The remaining real blocker to a
+> reliably-playable game is **codegen sprite-RENDERING reliability** (sprites get
+> generated + loaded but not always wired into rendering), being worked now — NOT the
+> engine, art, or gate layers. See per-item markers in the sequenced plan.
+
 ## The core finding
 COIN REAPER built `go`/100 but played badly (collision-from-far, dual-state, weak feel)
 because skyn3t **hand-rolls the game loop** and nothing **enforces** correctness. Fix =
@@ -56,20 +64,49 @@ game-design-lenses (Schell) · mda-game-design · game-design-document · phaser
 (pin API) · shadcn-ui-components · game-ui-art. Rewrite existing 2d-game-engineering.md → Phaser.
 
 ## Sequenced plan (quickest win → biggest lift)
-1. **Skills (hours):** rewrite 2d-game-engineering.md → Phaser; split out fixed-timestep +
+Status legend: ✅ shipped · 🟡 partial · ⬜ not started.
+1. ✅ **Skills (hours):** rewrite 2d-game-engineering.md → Phaser; split out fixed-timestep +
    collision-correctness; author phaser-api.md. (Most correctness per hour — retrieval feeds codegen.)
-2. **Static gates (low effort, reuse critic.py regex):** single-state, fixed-timestep, CCD,
+   — Phaser/game-feel skills present in `data/skills/` (`2d-game-engineering.md`, `gh-phaserjs-phaser*.md`, `game-feel-juice.md`).
+2. 🟡 **Static gates (low effort, reuse critic.py regex):** single-state, fixed-timestep, CCD,
    units, WASM-init, broadphase, collision-radius. Catches the COIN REAPER bug class at build.
-3. **Richer design tokens** (pure-Python; lifts ALL UI).
-4. **Phaser game stack:** REAL_BUILDER_STACKS + `_phaser_vite` scaffold + detector keywords + tests.
-5. **Headless invariant gate** (sibling to proof_run; the biggest correctness lever).
-6. **Art tier:** Kenney CC0 + DiceBear offline baseline + resolver; Replicate → premium. + art-director agent.
-7. **game-designer agent** (GDD gate before codegen).
-8. **physics-specialist + gameplay-specialist** review stages.
-9. **qa-playtest agent** (runtime feel/balance scoring → fix-loop). **Then RETRY games.**
-10. **App-UI:** critic.py → visual score→regenerate loop; shadcn/Radix/daisyUI substrate.
-11. Procedural levels (rot.js) + backgrounds; premium AI sprites (pixel-art-xl / Retro Diffusion).
-12. Defer: fluids/soft-body (box2d-wasm+LiquidFun); kaplay secondary stack; 3D art (own project).
+   — behavioral checks landed via `studio/gameplay_checks.py` (run-don't-parse) + the headless gate; the full regex static-lint set is not all present by name.
+3. ✅ **Richer design tokens** (pure-Python; lifts ALL UI). — `skyn3t/studio/design_tokens.py`.
+4. ✅ **Phaser game stack:** REAL_BUILDER_STACKS + `_phaser_vite` scaffold + detector keywords + tests.
+   — MERGED (PR #20, 2026-06-27); `stack_selector.py` lists `phaser`, `_scaffold.py` has `_phaser`.
+5. ✅ **Headless invariant gate** (sibling to proof_run; the biggest correctness lever).
+   — MERGED (PR #22) + SEALED (PR #23); `skyn3t/studio/headless_gate.py`.
+6. ✅ **Art tier:** Kenney CC0 + DiceBear offline baseline + resolver; Replicate → premium. + art-director agent.
+   — MERGED (PR #24/#25); `skyn3t/agents/art_director.py`, role sprites in `_scaffold.py`.
+7. ✅ **game-designer agent** (GDD gate before codegen). — `skyn3t/agents/game_designer.py` (`game_designer_enabled`, default on).
+8. 🟡 **physics-specialist + gameplay-specialist** review stages.
+   — gameplay-specialist shipped as `studio/gameplay_checks.py` (advisory, feeds fix-loop); dedicated physics-specialist agent NOT built.
+9. ✅ **qa-playtest agent** (runtime feel/balance scoring → fix-loop). **Then RETRY games.**
+   — `studio/qa_playtest.py` + `game_visual_check.py` + `game_visual_loop.py` (all default on); games retried live across 3 debugging rounds.
+10. 🟡 **App-UI:** critic.py → visual score→regenerate loop; shadcn/Radix/daisyUI substrate.
+    — visual repair loop shipped (`visual_check.py` / `visual_loop.py` / `game_visual_loop.py`); shadcn substrate adoption partial.
+11. ⬜ Procedural levels (rot.js) + backgrounds; premium AI sprites (pixel-art-xl / Retro Diffusion).
+12. ⬜ Defer: fluids/soft-body (box2d-wasm+LiquidFun); kaplay secondary stack; 3D art (own project).
+
+## 2026-06-30/07-01 session
+Recently completed (verified in code + tests, full suite 1612 green):
+- **Dangling-import codegen bug FIXED** (Workstream 1). Four stacked defects: `scaffold_missing_imports`
+  wrote to the wrong filename for extension-qualified specs (`./PreloadScene.js` → `PreloadScene.js.jsx`);
+  stub content was React-shaped on every stack; `CodeImproverAgent` could only EDIT files, never CREATE
+  the missing one; and the lone "final guard" was CSS-only and ran BEFORE the game gates. Added
+  `_final_consistency_check` — a true end-of-pipeline pass (after liveness) that re-runs deterministic
+  repairs + an unresolved-imports rescan and can only ever DOWNGRADE a verdict. Bonus: fixed a real
+  pre-existing path-traversal / arbitrary-file-write bug (`_confine()` on every stub write). Live-revalidated.
+- **`apply_deterministic_repairs()` extracted** in `proof_run.py` — single source of truth for
+  build-readying repairs, now shared by the build pipeline (`runner`) and the improve engine.
+- **qa_playtest re-verifies after a repair** (`runner._run_qa_playtest_gate`): it was reading the stale
+  pre-repair verdict, so a successful game repair could never flip `no_go → go`; now repair → re-run once.
+
+Still open / next up (honest status):
+- **Game sprite-RENDERING reliability** — cheap-model codegen loads all generated sprites but renders only
+  some, wiring entities to invented texture keys that were never loaded. The real "games still fail" root
+  cause; being worked now. (Distinct from #6, which generates + loads the art fine.)
+- Item #8 physics-specialist agent, #11 procedural levels / premium sprites — not started.
 
 ## Risks / guardrails
 - Hallucination ∝ 1/training-data → Phaser/matter safe; pin APIs for the rest; never default to thin-corpus libs.

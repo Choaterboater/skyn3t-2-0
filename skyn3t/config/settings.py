@@ -272,6 +272,15 @@ class Settings(BaseSettings):
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.
     run_generated_tests: bool = True
     generated_test_timeout: int = 90
+    # Mock-LLM proof seam (research item 42): when the generated project CALLS an
+    # LLM (openai/anthropic client dep or an OPENAI_BASE_URL/OPENROUTER_API_KEY
+    # reference), boot a local deterministic OpenAI/Anthropic-compatible mock
+    # server for the project's OWN test step and inject OPENAI_BASE_URL/
+    # ANTHROPIC_BASE_URL + dummy keys, so an LLM app is provable headlessly with
+    # ZERO API spend. Advisory + degrade-open: never changes the build step, and
+    # if the mock can't start (or a network-isolated sandbox is in use) the tests
+    # run exactly as before. Off restores the pre-seam behavior.
+    mock_llm_proof_enabled: bool = True
     # Compile node/react builds for real in the proof (npm install + npm run
     # build / typecheck), bounded + guarded. Catches type/build errors a static
     # check misses; soft-skips offline (no npm / registry). The build error is

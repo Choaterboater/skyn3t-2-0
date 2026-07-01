@@ -32,6 +32,14 @@ _ALLOWLIST: frozenset[str] = frozenset({
 # Redaction placeholder used everywhere a secret would otherwise appear.
 REDACTED = "***REDACTED***"
 
+# Fixed, non-secret sentinel VALUE the mock-LLM proof seam
+# (:mod:`skyn3t.studio.mock_llm` via ``proof_run``) injects as the dummy
+# OPENAI/ANTHROPIC/OPENROUTER API key so a generated LLM app's OWN tests can
+# construct their client against the local mock. ``filter_env`` lets any var
+# carrying exactly this value cross into the sandbox (see below): high-precision,
+# because a real credential never has this literal value, so nothing leaks.
+MOCK_PROOF_VALUE = "mock-proof-key"
+
 
 def _looks_secret(name: str) -> bool:
     upper = name.upper()
@@ -121,6 +129,12 @@ def filter_env(
         if up in block_upper:
             continue
         if up in keep_upper:
+            clean[name] = value
+            continue
+        # The mock-LLM proof seam's dummy key — a fixed sentinel, never a real
+        # secret — is allowed through so the generated app's tests can build a
+        # client against the local mock (see MOCK_PROOF_VALUE).
+        if value == MOCK_PROOF_VALUE:
             clean[name] = value
             continue
         if _looks_secret(name) or _value_has_credential(value):

@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     # models build coherent full apps. Max tool-call turns bounds it.
     openrouter_agentic: bool = True
     openrouter_agentic_max_turns: int = 60
+    # Verify-on-stop (research item 19, degrade-open): when the agentic model
+    # calls `finish`, run a cheap static scan (unresolved local imports + Python
+    # syntax) and DENY the finish with the real defect list — at most twice,
+    # then accept and let the pipeline fix-loop take over. Kills the
+    # dangling-import class inside codegen, where context is still warm.
+    agentic_verify_on_stop: bool = True
     cli_llm_timeout: int = 300  # generating a substantial file via claude -p needs room
     # Run the headless build CLIs (claude/kimi -p) WITHOUT the host's ambient MCP
     # servers. Otherwise every codegen call boots the user's whole ~/.claude MCP

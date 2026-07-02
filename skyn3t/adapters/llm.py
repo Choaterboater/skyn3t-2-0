@@ -217,6 +217,49 @@ _ANTISTUB_NUDGE = (
 # `_looks_stub()` is ALWAYS true and the nudge would drag the model off-brief into a
 # React marketing site that clobbers the real app. Gate the nudge to these stacks only.
 _ANTISTUB_NUDGE_STACKS = frozenset({"react_vite", "nextjs", "astro", "remix"})
+
+# Doom-loop breaker (research item 49, opencode's DOOM_LOOP_THRESHOLD=3): three
+# consecutive IDENTICAL tool calls (same name + same arguments) mean the model is
+# stuck, not progressing. One corrective nudge; a second trip aborts the loop.
+_DOOM_LOOP_NUDGE = (
+    "You have made the identical tool call 3 times in a row — you are stuck. "
+    "Do NOT repeat it. Take a DIFFERENT action: write the next missing file, "
+    "read a file to re-orient, or call finish if the app is complete."
+)
+
+
+def _agentic_verify_problems(root: Path) -> list[str]:
+    """Cheap verify-on-stop scan (research item 19): unresolved local JS/Python
+    imports (the workstream-1 dangling-import class) + Python syntax errors.
+    Static-only — no builds, no network; milliseconds. Returns [] on any scanner
+    failure (degrade-open: the verifier must never brick a build). The studio
+    import is lazy to keep adapters upstream of studio at module-load time."""
+    problems: list[str] = []
+    try:
+        from skyn3t.studio.proof_run import (
+            _unresolved_local_imports,
+            _unresolved_python_imports,
+        )
+
+        problems += [f"unresolved local import: {s}"
+                     for s in _unresolved_local_imports(root)[:5]]
+        problems += [f"unresolved local import: {s}"
+                     for s in _unresolved_python_imports(root)[:5]]
+    except Exception:  # noqa: BLE001 - degrade-open
+        return []
+    for f in root.rglob("*.py"):
+        if {"node_modules", ".git", ".venv", "__pycache__"} & set(f.parts):
+            continue
+        try:
+            compile(f.read_text(encoding="utf-8", errors="replace"), str(f), "exec")
+        except SyntaxError as e:
+            problems.append(
+                f"python syntax error in {f.relative_to(root)} line {e.lineno}: {e.msg}")
+        except Exception:  # noqa: BLE001 - unreadable file is not this gate's job
+            continue
+    return problems[:8]
+
+
 _AGENTIC_TOOLS = [
     {"type": "function", "function": {
         "name": "write_file", "description": "Create or overwrite a project file with its full content.",
@@ -715,6 +758,10 @@ class LLMClient:
         budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
         wrote, finished, start = 0, False, _t.time()
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
+        verify_on_stop = bool(getattr(self.settings, "agentic_verify_on_stop", True))
+        verify_denials, _MAX_VERIFY_DENIALS = 0, 2
+        doom_recent: list[tuple[str, str]] = []  # last 3 (tool, raw-args) signatures
+        doom_warned = False
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
         # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
@@ -780,10 +827,22 @@ class LLMClient:
                                     # codegen advancing (the agentic phase was silent).
                                     log.info("llm.agentic_wrote",
                                              file=str(args.get("path", ""))[:80], n=wrote)
+                                doom_recent = (doom_recent
+                                               + [(name, fn.get("arguments") or "")])[-3:]
                             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                                              "content": result})
                     else:
                         finished = True  # final text answer -> done
+                    if (not finished and len(doom_recent) == 3
+                            and len(set(doom_recent)) == 1):
+                        # Item 49: the model repeated one identical call 3x — stuck.
+                        if doom_warned:
+                            log.warning("llm.or_agentic_doom_abort", wrote=wrote, turns=turn)
+                            break
+                        doom_warned, doom_recent = True, []
+                        messages.append({"role": "user", "content": _DOOM_LOOP_NUDGE})
+                        log.info("llm.or_agentic_doom_nudge", wrote=wrote)
+                        continue
                     if finished:
                         # Refuse a thin result: push the model to build the real UI instead
                         # of stopping at data/config scaffolding (cheap models do this).
@@ -793,6 +852,21 @@ class LLMClient:
                             messages.append({"role": "user", "content": _ANTISTUB_NUDGE})
                             log.info("llm.or_agentic_antistub", nudge=stub_nudges, wrote=wrote)
                             continue
+                        # Item 19: verify-on-stop. Deny the finish with the REAL
+                        # defect list while codegen context is warm; degrade open
+                        # after 2 denials (the pipeline fix-loop takes over).
+                        if verify_on_stop and verify_denials < _MAX_VERIFY_DENIALS:
+                            problems = _agentic_verify_problems(root)
+                            if problems:
+                                verify_denials += 1
+                                finished = False
+                                messages.append({"role": "user", "content": (
+                                    "VERIFY-ON-STOP: the project has defects that WILL "
+                                    "fail the build. Fix ONLY these, then call finish "
+                                    "again:\n- " + "\n- ".join(problems))})
+                                log.info("llm.or_agentic_verify_denied",
+                                         denial=verify_denials, problems=len(problems))
+                                continue
                         break
         except Exception as exc:  # noqa: BLE001 - never crash the build
             log.warning("llm.or_agentic_failed", error=str(exc)[:200], wrote=wrote)

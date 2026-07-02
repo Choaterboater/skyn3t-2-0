@@ -2681,6 +2681,141 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+# Memory-augmented chat variant of the rag stack (wave-2 §3.10): a "remembers
+# me" brief gets the persistent-memory scaffold. Phrases only — bare "memory"
+# would steal "memory game" / "memory profiler" briefs.
+_MEMORY_CHAT_KEYWORDS = (
+    "remembers me", "remembers our", "assistant with memory",
+    "chat with memory", "chatbot with memory", "stateful chat",
+    "personal assistant with memory",
+)
+
+
+def _implies_memory_chat(brief: str) -> bool:
+    """True when the brief asks for a chat that persists memory across sessions."""
+    low = (brief or "").lower()
+    return any(k in low for k in _MEMORY_CHAT_KEYWORDS)
+
+
+_MEMORY_STORE_PY = (
+    '"""Persistent memory journal: append-only JSONL, replayed at boot.\n\n'
+    "Stdlib only, tolerant of corrupt lines (a torn write must never brick the\n"
+    "app). The journal is the durability layer; retrieval stays in rag_core —\n"
+    "records are re-indexed into the in-memory store on replay.\n"
+    '"""\n'
+    "from __future__ import annotations\n\n"
+    "import json\n"
+    "from pathlib import Path\n\n\n"
+    "def append(path: str | Path, record: dict) -> None:\n"
+    '    """Append one JSON record to the journal (parent dirs created)."""\n'
+    "    p = Path(path)\n"
+    "    p.parent.mkdir(parents=True, exist_ok=True)\n"
+    '    with p.open("a", encoding="utf-8") as fh:\n'
+    '        fh.write(json.dumps(record, ensure_ascii=False) + "\\n")\n\n\n'
+    "def replay(path: str | Path) -> list[dict]:\n"
+    '    """Every intact record in the journal, oldest first. Missing file -> [].\n'
+    "    Corrupt lines are skipped, never fatal.\"\"\"\n"
+    "    p = Path(path)\n"
+    "    if not p.is_file():\n"
+    "        return []\n"
+    "    out: list[dict] = []\n"
+    '    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():\n'
+    "        line = line.strip()\n"
+    "        if not line:\n"
+    "            continue\n"
+    "        try:\n"
+    "            rec = json.loads(line)\n"
+    "        except Exception:  # noqa: BLE001 - torn write; skip, never crash\n"
+    "            continue\n"
+    "        if isinstance(rec, dict):\n"
+    "            out.append(rec)\n"
+    "    return out\n\n\n"
+    "def count(path: str | Path) -> int:\n"
+    '    """How many intact records the journal holds."""\n'
+    "    return len(replay(path))\n"
+)
+
+_TEST_MEMORY_STORE_PY = (
+    '"""Persistence proof: facts stated in chat survive a RESTART (new store,\n'
+    "same journal) and are retrievable — mechanically, before any LLM opinion.\n"
+    '"""\n'
+    "import memory_store\n"
+    "import rag_core\n\n\n"
+    "def test_append_replay_roundtrip(tmp_path):\n"
+    '    journal = tmp_path / "memory.jsonl"\n'
+    '    memory_store.append(journal, {"text": "alpha", "source": "chat-memory"})\n'
+    '    memory_store.append(journal, {"text": "beta", "source": "inline"})\n'
+    "    records = memory_store.replay(journal)\n"
+    '    assert [r["text"] for r in records] == ["alpha", "beta"]\n'
+    "    assert memory_store.count(journal) == 2\n\n\n"
+    "def test_corrupt_lines_are_skipped_not_fatal(tmp_path):\n"
+    '    journal = tmp_path / "memory.jsonl"\n'
+    '    memory_store.append(journal, {"text": "good"})\n'
+    '    with journal.open("a") as fh:\n'
+    '        fh.write("{torn write\\n")\n'
+    '    memory_store.append(journal, {"text": "also good"})\n'
+    "    assert [r[\"text\"] for r in memory_store.replay(journal)] == [\"good\", \"also good\"]\n\n\n"
+    "def test_restart_persists_and_retrieves_a_stated_fact(tmp_path):\n"
+    "    # Session 1: the user states a fact mid-chat; it is journaled.\n"
+    '    journal = tmp_path / "memory.jsonl"\n'
+    '    memory_store.append(journal, {"text": "my name is X-MARKER-73", "source": "chat-memory"})\n'
+    "    # RESTART: a brand-new store replays the same journal...\n"
+    "    store = rag_core.CorpusStore()\n"
+    "    for rec in memory_store.replay(journal):\n"
+    '        store.add(rec.get("text", ""), source=rec.get("source", "memory"))\n'
+    "    # ...and retrieval finds the fact for session 2's question.\n"
+    '    results = store.search("what is my name", k=2)\n'
+    '    assert results and "X-MARKER-73" in results[0]["text"]\n'
+)
+
+
+def _rag_memory_chat(app_name: str, brief: str) -> dict[str, str]:
+    """The memory-augmented variant of the rag scaffold (wave-2 §3.10): every
+    chat turn is journaled to an append-only JSONL file (``MEMORY_FILE`` env,
+    default ``memory.jsonl``) and replayed into the retrieval index at boot —
+    facts stated in conversation persist across RESTARTS and feed later
+    answers. Same routes, same gate contract as rag; derived from the base
+    scaffold by pinned replacements (the variant tests assert each one took)."""
+    files = _rag(app_name, brief)
+    main = files["main.py"]
+    main = main.replace(
+        "import rag_core\n",
+        "import memory_store\nimport rag_core\n", 1)
+    main = main.replace(
+        "app = FastAPI",
+        '# The persistent memory journal (facts survive restarts).\n'
+        'MEMORY_FILE = os.environ.get("MEMORY_FILE", "memory.jsonl")\n\n'
+        "app = FastAPI", 1)
+    main = main.replace(
+        "_seed_corpus()\n",
+        "_seed_corpus()\n"
+        "for _rec in memory_store.replay(MEMORY_FILE):\n"
+        '    STORE.add(_rec.get("text", ""), source=_rec.get("source", "memory"))\n', 1)
+    main = main.replace(
+        "    added = STORE.add(req.text, source=req.source)\n",
+        "    added = STORE.add(req.text, source=req.source)\n"
+        "    if added:\n"
+        '        memory_store.append(MEMORY_FILE, {"text": req.text, "source": req.source})\n', 1)
+    main = main.replace(
+        "    results = STORE.search(req.question, k=req.k)\n",
+        "    results = STORE.search(req.question, k=req.k)\n"
+        "    # Memory (AFTER retrieval — a turn must not retrieve itself): every\n"
+        "    # user turn is journaled + indexed, so facts stated in conversation\n"
+        "    # persist across restarts and feed LATER answers.\n"
+        '    memory_store.append(MEMORY_FILE, {"text": req.question, "source": "chat-memory"})\n'
+        '    STORE.add(req.question, source="chat-memory")\n', 1)
+    main = main.replace(
+        "    return STORE.stats()\n",
+        "    stats = STORE.stats()\n"
+        '    stats["memories"] = memory_store.count(MEMORY_FILE)\n'
+        "    return stats\n", 1)
+    files["main.py"] = main
+    files["memory_store.py"] = _MEMORY_STORE_PY
+    files["test_memory_store.py"] = _TEST_MEMORY_STORE_PY
+    files[".gitignore"] = files.get(".gitignore", "") + "memory.jsonl\n"
+    return files
+
+
 def _workflow(app_name: str, brief: str) -> dict[str, str]:
     """An agent-workflow app (wave-2 §3.2) — a FastAPI multi-step runner with a
     run ledger and dry-run triggers, built FRESH (never cloned from a web
@@ -3503,6 +3638,10 @@ def scaffold_for(
     # stack gets the vendor-seam scaffold instead of the bare hello-API.
     if stack == "fastapi" and _implies_market_data(brief):
         return _fastapi_market_data(safe_name, brief)
+    # Memory-chat variant (wave-2 §3.10): a "remembers me" brief on the rag
+    # stack gets the persistent-memory-journal scaffold.
+    if stack == "rag" and _implies_memory_chat(brief):
+        return _rag_memory_chat(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

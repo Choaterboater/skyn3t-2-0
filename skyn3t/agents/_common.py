@@ -91,6 +91,10 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "chat with my doc", "chat with your doc", "chat with my pdf",
         "chat with my notes", "chat with my files",
         "knowledge base", "document q&a", "doc q&a", "semantic search",
+        # Memory-augmented chat (§3.10) rides rag; phrases only (never bare
+        # "memory" — "memory game"/"memory profiler" are other stacks).
+        "remembers me", "remembers our", "assistant with memory",
+        "chat with memory", "chatbot with memory", "stateful chat",
     )):
         return "rag"
     # Agent team pack (persona ROSTER product) must precede workflow: pack

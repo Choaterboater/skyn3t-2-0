@@ -18,15 +18,43 @@ from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+from skyn3t.core.stacks import CONTENT_STACKS
 
 # Pass threshold — projects scoring at/above this get a "go".
 GO_THRESHOLD = 60.0
 
 
+def _content_file_count(root) -> int:
+    """Non-empty content files (*.md, README excluded) — the PRODUCT of a
+    content stack (agent packs: the personas ARE the deliverable)."""
+    if not root:
+        return 0
+    count = 0
+    try:
+        for f in root.rglob("*.md"):
+            if f.name.lower() == "readme.md" or not f.is_file():
+                continue
+            try:
+                if f.stat().st_size > 0:
+                    count += 1
+            except OSError:
+                continue
+    except OSError:
+        return count
+    return count
+
+
 def heuristic_score(root, payload: dict[str, Any]) -> tuple[float, list[str]]:
-    """Return (score 0-100, gaps). Pure, deterministic, offline."""
+    """Return (score 0-100, gaps). Pure, deterministic, offline.
+
+    Content stacks (``core.stacks.CONTENT_STACKS``) ship structured content
+    files with a catalog manifest, not code + package.json — counting only
+    code suffixes no_go'd a perfect agent pack, so their substance/manifest/
+    config signals read the content shape instead.
+    """
     gaps: list[str] = []
     score = 0.0
+    is_content = str(payload.get("stack") or "").strip().lower() in CONTENT_STACKS
 
     # 1) Entrypoint present (25 pts)
     entrypoints = vc.find_entrypoints(root)
@@ -35,8 +63,11 @@ def heuristic_score(root, payload: dict[str, Any]) -> tuple[float, list[str]]:
     else:
         gaps.append("no recognizable entrypoint (main.py/index.js/app.py/...)")
 
-    # 2) Non-empty source files (35 pts, scaled up to 5 files)
+    # 2) Non-empty source files (35 pts, scaled up to 5 files). For content
+    # stacks the content files count as substance alongside the tooling.
     src = vc.non_empty_source_count(root)
+    if is_content:
+        src += _content_file_count(root)
     if src >= 5:
         score += 35.0
     elif src > 0:
@@ -47,13 +78,16 @@ def heuristic_score(root, payload: dict[str, Any]) -> tuple[float, list[str]]:
 
     # 3) Manifest present (20 pts)
     manifests = vc.find_manifests(root)
+    if is_content and not manifests and root is not None:
+        if vc.file_size(root / "catalog.json") > 0:
+            manifests = ["catalog.json"]
     if manifests:
         score += 20.0
     else:
         gaps.append("no dependency manifest (package.json/pyproject.toml/...)")
 
     # 4) Build config valid / parseable (20 pts)
-    ok, why = _build_config_valid(root)
+    ok, why = _build_config_valid(root, is_content=is_content)
     if ok:
         score += 20.0
     else:
@@ -62,8 +96,9 @@ def heuristic_score(root, payload: dict[str, Any]) -> tuple[float, list[str]]:
     return round(min(score, 100.0), 2), gaps
 
 
-def _build_config_valid(root) -> tuple[bool, str]:
-    """Verify the primary manifest parses (JSON for node, TOML-ish for python)."""
+def _build_config_valid(root, *, is_content: bool = False) -> tuple[bool, str]:
+    """Verify the primary manifest parses (JSON for node, TOML-ish for python,
+    catalog.json for content packs)."""
     if not root:
         return False, "no project directory to inspect"
     pkg = root / "package.json"
@@ -76,6 +111,16 @@ def _build_config_valid(root) -> tuple[bool, str]:
         if not isinstance(data, dict):
             return False, "package.json is not a JSON object"
         return True, ""
+    if is_content:
+        catalog = root / "catalog.json"
+        if catalog.exists():
+            try:
+                data = json.loads(vc.safe_read(catalog))
+            except (json.JSONDecodeError, ValueError):
+                return False, "catalog.json is not valid JSON"
+            if not isinstance(data, dict):
+                return False, "catalog.json is not a JSON object"
+            return True, ""
     for name in ("pyproject.toml", "requirements.txt", "setup.py"):
         f = root / name
         if f.exists() and vc.file_size(f) > 0:

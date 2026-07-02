@@ -64,6 +64,13 @@ RAG_STACKS = frozenset({"rag"})
 # with its own deterministic end-of-build gate.
 WORKFLOW_STACKS = frozenset({"workflow"})
 
+# Stacks whose PRODUCT is structured content files, not executable source
+# (wave-2 §3.8 agent packs: markdown personas + a catalog.json manifest).
+# Consumers that count "substance" by code suffixes or look for
+# package.json/pyproject manifests must treat these differently — the
+# reviewer's heuristic no_go'd a perfect pack before this group existed.
+CONTENT_STACKS = frozenset({"agent_pack"})
+
 GROUPS: dict[str, frozenset[str]] = {
     "game": GAME_STACKS,
     "web": WEB_STACKS,
@@ -72,6 +79,7 @@ GROUPS: dict[str, frozenset[str]] = {
     "mcp": MCP_STACKS,
     "rag": RAG_STACKS,
     "workflow": WORKFLOW_STACKS,
+    "content": CONTENT_STACKS,
 }
 
 

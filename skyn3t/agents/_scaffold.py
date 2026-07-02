@@ -2430,6 +2430,435 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _workflow(app_name: str, brief: str) -> dict[str, str]:
+    """An agent-workflow app (wave-2 §3.2) — a FastAPI multi-step runner with a
+    run ledger and dry-run triggers, built FRESH (never cloned from a web
+    builder, so it never inherits npm / React).
+
+    Structured as a **pure engine + a thin HTTP layer** (the sim-core split,
+    like rag/mcp):
+
+    - ``workflow_core.py`` — steps, tool registry, and the runner as pure
+      stdlib Python (NO fastapi/uvicorn/httpx imports): steps may only call
+      REGISTERED tools, a failing step retries then lands in a TYPED error
+      envelope (never an unhandled exception), and delivery steps honour the
+      dry-run / unconfigured-delivery contract.
+    - ``main.py`` — the FastAPI app: ``POST /trigger`` (dry_run defaults TRUE)
+      returns the ``{run_id, dry_run, status, brief, delivery: {status}}``
+      contract; ``GET /runs`` + ``GET /runs/{id}`` read the append-only ledger;
+      ``/health`` + ``/v1/stats``; ``/`` serves a self-contained runs dashboard.
+
+    Zero keys, zero network to boot: delivery is configured via the
+    ``WEBHOOK_URL`` env var and, when absent, a live trigger yields
+    ``skipped_no_delivery`` — never a crash.
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    server_name = _mcp_server_name(app_name)
+    return {
+        "workflow_core.py": (
+            '"""Pure workflow engine: steps, tool registry, runner, typed errors.\n\n'
+            "Stdlib only — NO web framework here (the FastAPI layer lives in\n"
+            "``main.py``), so the engine is unit-testable without a server (see\n"
+            "``test_workflow_core.py``). Contracts:\n\n"
+            "- steps may only call REGISTERED tools (unregistered -> typed error)\n"
+            "- a failing step retries up to ``Step.retries`` then FAILS the run with\n"
+            "  a typed error envelope — the engine never raises\n"
+            "- a delivery step under ``dry_run`` yields ``{'status': 'dry_run'}``;\n"
+            "  live but unconfigured delivery yields ``{'status': 'skipped_no_delivery'}``\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from dataclasses import dataclass, field\n"
+            "from typing import Any, Callable\n\n\n"
+            "@dataclass(slots=True)\n"
+            "class Step:\n"
+            '    """One workflow step: calls the registered tool named ``tool``."""\n\n'
+            "    name: str\n"
+            "    tool: str\n"
+            "    is_delivery: bool = False\n"
+            "    retries: int = 0\n\n\n"
+            "@dataclass(slots=True)\n"
+            "class Workflow:\n"
+            "    name: str\n"
+            "    description: str\n"
+            "    steps: list[Step] = field(default_factory=list)\n\n\n"
+            "class ToolRegistry:\n"
+            '    """Steps may only call tools registered here (no fabricated APIs)."""\n\n'
+            "    def __init__(self) -> None:\n"
+            "        self._tools: dict[str, Callable[[dict], Any]] = {}\n\n"
+            "    def register(self, name: str, fn: Callable[[dict], Any]) -> None:\n"
+            "        self._tools[str(name)] = fn\n\n"
+            "    def get(self, name: str) -> Callable[[dict], Any] | None:\n"
+            "        return self._tools.get(name)\n\n"
+            "    def names(self) -> list[str]:\n"
+            "        return sorted(self._tools)\n\n\n"
+            "def _typed_error(kind: str, step: Step, message: str, *, retryable: bool,\n"
+            "                 attempts: int = 0) -> dict:\n"
+            "    return {\n"
+            '        "type": kind,\n'
+            '        "step": step.name,\n'
+            '        "tool": step.tool,\n'
+            '        "message": str(message)[:200],\n'
+            '        "retryable": retryable,\n'
+            '        "attempts": attempts,\n'
+            "    }\n\n\n"
+            "def run_workflow(\n"
+            "    workflow: Workflow,\n"
+            "    registry: ToolRegistry,\n"
+            "    params: dict | None = None,\n"
+            "    *,\n"
+            "    dry_run: bool = True,\n"
+            "    deliver_configured: bool = False,\n"
+            ") -> dict:\n"
+            '    """Run every step in order and return a JSON-friendly run record.\n\n'
+            "    Never raises: tool exceptions become typed error envelopes and fail\n"
+            "    the run. Each tool receives the accumulated context dict (params +\n"
+            "    prior step outputs) and its dict output is merged back in.\n"
+            '    """\n'
+            "    ctx: dict = dict(params or {})\n"
+            "    record: dict = {\n"
+            '        "workflow": workflow.name,\n'
+            '        "dry_run": bool(dry_run),\n'
+            '        "status": "done",\n'
+            '        "steps": [],\n'
+            '        "delivery": {"status": "not_applicable"},\n'
+            "    }\n"
+            "    for step in workflow.steps:\n"
+            "        if step.is_delivery and (dry_run or not deliver_configured):\n"
+            '            status = "dry_run" if dry_run else "skipped_no_delivery"\n'
+            '            record["steps"].append(\n'
+            '                {"step": step.name, "status": "skipped", "output": {"status": status}})\n'
+            '            record["delivery"] = {"status": status}\n'
+            "            continue\n"
+            "        fn = registry.get(step.tool)\n"
+            "        if fn is None:\n"
+            '            err = _typed_error("unregistered_tool", step,\n'
+            '                               f"step calls unregistered tool \'{step.tool}\'",\n'
+            "                               retryable=False)\n"
+            '            record["steps"].append({"step": step.name, "status": "failed", "error": err})\n'
+            '            record["status"] = "failed"\n'
+            '            record["error"] = err\n'
+            "            break\n"
+            "        attempts = max(1, int(step.retries) + 1)\n"
+            "        done = False\n"
+            "        for attempt in range(1, attempts + 1):\n"
+            "            try:\n"
+            "                out = fn(ctx)\n"
+            "            except Exception as exc:  # noqa: BLE001 - typed envelope, never raise\n"
+            "                if attempt < attempts:\n"
+            "                    continue\n"
+            '                err = _typed_error("step_failed", step, str(exc),\n'
+            "                                   retryable=False, attempts=attempt)\n"
+            '                record["steps"].append(\n'
+            '                    {"step": step.name, "status": "failed", "error": err})\n'
+            '                record["status"] = "failed"\n'
+            '                record["error"] = err\n'
+            "                break\n"
+            "            else:\n"
+            "                if isinstance(out, dict):\n"
+            "                    ctx.update(out)\n"
+            '                record["steps"].append(\n'
+            '                    {"step": step.name, "status": "done", "output": out,\n'
+            '                     "attempts": attempt})\n'
+            "                if step.is_delivery:\n"
+            '                    record["delivery"] = {"status": "sent"}\n'
+            "                done = True\n"
+            "                break\n"
+            '        if record["status"] == "failed":\n'
+            "            break\n"
+            "        if not done:\n"
+            "            break\n"
+            '    record["context"] = ctx\n'
+            "    return record\n\n\n"
+            "def briefing_workflow(registry: ToolRegistry) -> Workflow:\n"
+            '    """The example workflow: fetch -> summarize -> deliver (delivery step).\n\n'
+            "    Tools are pure/offline fixtures — replace them with your brief's real\n"
+            "    steps, registering each in the ToolRegistry.\n"
+            '    """\n'
+            "    def fetch_items(ctx: dict) -> dict:\n"
+            "        return {\"items\": [\n"
+            '            {"title": "Engine shipped", "detail": "the workflow engine runs"},\n'
+            '            {"title": "Ledger appended", "detail": "every run is recorded"},\n'
+            "        ]}\n\n"
+            "    def summarize(ctx: dict) -> dict:\n"
+            '        items = ctx.get("items") or []\n'
+            '        lines = [f"- {i.get(\'title\')}: {i.get(\'detail\')}" for i in items]\n'
+            '        return {"brief": "Daily briefing:\\n" + "\\n".join(lines)}\n\n'
+            "    def deliver(ctx: dict) -> dict:\n"
+            "        # Only reached when live AND configured; main.py overrides this\n"
+            "        # tool with a real webhook sender.\n"
+            '        return {"channel": "none"}\n\n'
+            '    registry.register("fetch_items", fetch_items)\n'
+            '    registry.register("summarize", summarize)\n'
+            '    registry.register("deliver", deliver)\n'
+            "    return Workflow(\n"
+            '        name="briefing",\n'
+            '        description="Fetch items, summarize them, deliver the brief.",\n'
+            "        steps=[\n"
+            '            Step(name="fetch", tool="fetch_items"),\n'
+            '            Step(name="summarize", tool="summarize"),\n'
+            '            Step(name="deliver", tool="deliver", is_delivery=True),\n'
+            "        ],\n"
+            "    )\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — an agent-workflow app (multi-step runner).\n\n"
+            "Routes: GET / (a built-in runs dashboard), POST /trigger (run a workflow;\n"
+            "dry_run defaults TRUE), GET /runs + GET /runs/{run_id} (the append-only\n"
+            "ledger), GET /health, GET /v1/stats. The engine lives in\n"
+            "``workflow_core.py`` (pure, no web framework); this module is the thin\n"
+            "HTTP layer.\n\n"
+            "Delivery is OPTIONAL: set WEBHOOK_URL to deliver live briefs; without it\n"
+            "a live trigger yields delivery.status='skipped_no_delivery' — never a\n"
+            "crash. Zero keys required.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import json\n"
+            "import os\n"
+            "import urllib.request\n\n"
+            "from fastapi import FastAPI, HTTPException\n"
+            "from fastapi.responses import HTMLResponse\n"
+            "from pydantic import BaseModel, Field\n\n"
+            "import workflow_core\n\n"
+            f'app = FastAPI(title="{server_name}")\n'
+            "REGISTRY = workflow_core.ToolRegistry()\n"
+            "WORKFLOWS = {wf.name: wf for wf in (workflow_core.briefing_workflow(REGISTRY),)}\n"
+            "LEDGER: list[dict] = []  # append-only run history\n\n\n"
+            "def _deliver_webhook(ctx: dict) -> dict:\n"
+            '    """Live delivery tool: POST the brief to WEBHOOK_URL (10s bound)."""\n'
+            '    url = os.environ["WEBHOOK_URL"]\n'
+            '    body = json.dumps({"brief": ctx.get("brief", "")}).encode("utf-8")\n'
+            "    req = urllib.request.Request(\n"
+            '        url, data=body, headers={"Content-Type": "application/json"}, method="POST")\n'
+            "    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310\n"
+            '        return {"http_status": int(resp.status)}\n\n\n'
+            'if os.environ.get("WEBHOOK_URL"):\n'
+            '    REGISTRY.register("deliver", _deliver_webhook)\n\n\n'
+            "class TriggerRequest(BaseModel):\n"
+            '    workflow: str = "briefing"\n'
+            "    params: dict = Field(default_factory=dict)\n"
+            "    dry_run: bool = True  # safe by default — live delivery is opt-in\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "app": "workflow"}\n\n\n'
+            '@app.get("/v1/stats")\n'
+            "def stats() -> dict:\n"
+            "    return {\n"
+            '        "runs": len(LEDGER),\n'
+            '        "failed_runs": sum(1 for r in LEDGER if r.get("status") == "failed"),\n'
+            '        "workflows": sorted(WORKFLOWS),\n'
+            '        "tools": REGISTRY.names(),\n'
+            "    }\n\n\n"
+            '@app.post("/trigger")\n'
+            "def trigger(req: TriggerRequest) -> dict:\n"
+            "    wf = WORKFLOWS.get(req.workflow)\n"
+            "    if wf is None:\n"
+            "        raise HTTPException(status_code=404,\n"
+            "                            detail=f\"unknown workflow '{req.workflow}'\")\n"
+            "    record = workflow_core.run_workflow(\n"
+            "        wf, REGISTRY, req.params, dry_run=req.dry_run,\n"
+            '        deliver_configured=bool(os.environ.get("WEBHOOK_URL")),\n'
+            "    )\n"
+            '    record["run_id"] = len(LEDGER) + 1\n'
+            "    LEDGER.append(record)\n"
+            "    return {\n"
+            '        "run_id": record["run_id"],\n'
+            '        "workflow": record["workflow"],\n'
+            '        "dry_run": record["dry_run"],\n'
+            '        "status": record["status"],\n'
+            '        "brief": record["context"].get("brief", ""),\n'
+            '        "delivery": record["delivery"],\n'
+            "    }\n\n\n"
+            '@app.get("/runs")\n'
+            "def runs() -> dict:\n"
+            "    return {\"runs\": [\n"
+            '        {"run_id": r["run_id"], "workflow": r["workflow"],\n'
+            '         "status": r["status"], "dry_run": r["dry_run"]}\n'
+            "        for r in LEDGER\n"
+            "    ]}\n\n\n"
+            '@app.get("/runs/{run_id}")\n'
+            "def run_detail(run_id: int) -> dict:\n"
+            "    for r in LEDGER:\n"
+            '        if r.get("run_id") == run_id:\n'
+            "            return r\n"
+            '    raise HTTPException(status_code=404, detail=f"no run {run_id}")\n\n\n'
+            "# A minimal, self-contained runs dashboard (vanilla JS, no external assets)\n"
+            "# so the app serves something real in a browser at '/'.\n"
+            '_INDEX_HTML = """<!doctype html>\n'
+            '<html lang="en">\n'
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{server_name}</title>\n"
+            "<style>\n"
+            "  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 44rem; padding: 0 1rem; color: #1a1a2e; }\n"
+            "  h1 { font-size: 1.3rem; }\n"
+            "  button { padding: .45rem 1rem; border: 0; border-radius: 6px; background: #3b5bdb; color: #fff; font: inherit; cursor: pointer; }\n"
+            "  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }\n"
+            "  td, th { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; font-size: .9rem; }\n"
+            "  pre { background: #f1f3f5; border-radius: 8px; padding: .8rem; white-space: pre-wrap; }\n"
+            "</style>\n"
+            "</head>\n"
+            "<body>\n"
+            f"<h1>{server_name}</h1>\n"
+            "<p>Trigger a workflow run (dry run — no delivery) and inspect the ledger.</p>\n"
+            '<button onclick="runNow()">Run briefing (dry run)</button>\n'
+            '<pre id="last" hidden></pre>\n'
+            '<table><thead><tr><th>#</th><th>workflow</th><th>status</th><th>dry run</th></tr></thead>\n'
+            '<tbody id="rows"></tbody></table>\n'
+            "<script>\n"
+            "function refresh() {\n"
+            '  fetch("/runs").then(function (r) { return r.json(); }).then(function (data) {\n'
+            '    var rows = (data.runs || []).map(function (r) {\n'
+            '      return "<tr><td>" + r.run_id + "</td><td>" + r.workflow + "</td><td>" +\n'
+            '             r.status + "</td><td>" + r.dry_run + "</td></tr>";\n'
+            "    });\n"
+            '    document.getElementById("rows").innerHTML = rows.reverse().join("");\n'
+            "  });\n"
+            "}\n"
+            "function runNow() {\n"
+            '  fetch("/trigger", { method: "POST", headers: { "Content-Type": "application/json" },\n'
+            '                      body: JSON.stringify({ workflow: "briefing", dry_run: true }) })\n'
+            "    .then(function (r) { return r.json(); })\n"
+            "    .then(function (data) {\n"
+            '      var el = document.getElementById("last");\n'
+            "      el.hidden = false;\n"
+            "      el.textContent = data.brief + \"\\n\\ndelivery: \" + data.delivery.status;\n"
+            "      refresh();\n"
+            "    });\n"
+            "}\n"
+            "refresh();\n"
+            "</script>\n"
+            "</body>\n"
+            "</html>\n"
+            '"""\n\n\n'
+            '@app.get("/", response_class=HTMLResponse)\n'
+            "def index() -> str:\n"
+            '    """The built-in runs dashboard — usable from a browser as-is."""\n'
+            "    return _INDEX_HTML\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    import uvicorn\n\n"
+            "    # PORT env so tooling (and future gates) can pick a free port.\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_workflow_core.py": (
+            '"""Unit tests for the PURE workflow engine (no server, no third-party deps)."""\n'
+            "import workflow_core\n\n\n"
+            "def _fresh():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            "    wf = workflow_core.briefing_workflow(registry)\n"
+            "    return wf, registry\n\n\n"
+            "def test_dry_run_completes_and_skips_delivery():\n"
+            "    wf, registry = _fresh()\n"
+            "    record = workflow_core.run_workflow(wf, registry, dry_run=True)\n"
+            '    assert record["status"] == "done"\n'
+            '    assert record["delivery"] == {"status": "dry_run"}\n'
+            '    assert record["context"].get("brief"), "summarize must produce a brief"\n'
+            '    assert [s["step"] for s in record["steps"]] == ["fetch", "summarize", "deliver"]\n\n\n'
+            "def test_live_without_delivery_config_is_skipped_not_a_crash():\n"
+            "    wf, registry = _fresh()\n"
+            "    record = workflow_core.run_workflow(\n"
+            "        wf, registry, dry_run=False, deliver_configured=False)\n"
+            '    assert record["status"] == "done"\n'
+            '    assert record["delivery"] == {"status": "skipped_no_delivery"}\n\n\n'
+            "def test_failing_tool_retries_then_fails_typed():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            "    calls = {\"n\": 0}\n\n"
+            "    def flaky(ctx):\n"
+            '        calls["n"] += 1\n'
+            '        raise RuntimeError("boom")\n\n'
+            '    registry.register("flaky", flaky)\n'
+            "    wf = workflow_core.Workflow(\n"
+            '        name="t", description="t",\n'
+            '        steps=[workflow_core.Step(name="s1", tool="flaky", retries=1)])\n'
+            "    record = workflow_core.run_workflow(wf, registry)\n"
+            '    assert calls["n"] == 2, "retries=1 must mean two attempts"\n'
+            '    assert record["status"] == "failed"\n'
+            '    assert record["error"]["type"] == "step_failed"\n'
+            '    assert "boom" in record["error"]["message"]\n\n\n'
+            "def test_unregistered_tool_is_a_typed_error():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            "    wf = workflow_core.Workflow(\n"
+            '        name="t", description="t",\n'
+            '        steps=[workflow_core.Step(name="s1", tool="ghost")])\n'
+            "    record = workflow_core.run_workflow(wf, registry)\n"
+            '    assert record["status"] == "failed"\n'
+            '    assert record["error"]["type"] == "unregistered_tool"\n'
+            '    assert record["error"]["retryable"] is False\n\n\n'
+            "def test_step_outputs_flow_into_context():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            '    registry.register("a", lambda ctx: {"x": 1})\n'
+            '    registry.register("b", lambda ctx: {"y": ctx["x"] + 1})\n'
+            "    wf = workflow_core.Workflow(\n"
+            '        name="t", description="t",\n'
+            "        steps=[\n"
+            '            workflow_core.Step(name="a", tool="a"),\n'
+            '            workflow_core.Step(name="b", tool="b"),\n'
+            "        ])\n"
+            "    record = workflow_core.run_workflow(wf, registry)\n"
+            '    assert record["status"] == "done"\n'
+            '    assert record["context"]["y"] == 2\n'
+        ),
+        "requirements.txt": (
+            f"# Runtime dependencies for {title}.\n"
+            "fastapi>=0.110    # the HTTP layer (routes are thin wrappers over workflow_core)\n"
+            "uvicorn>=0.29     # ASGI server: `python main.py` serves on $PORT\n"
+            "\n"
+            "# Dev/test (optional): `pip install pytest` to run test_workflow_core.py.\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Python agent-workflow app (FastAPI + pure engine)",
+            install=(
+                "Requires Python 3.10+. Install into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (defaults to port 8000; set `PORT` to override):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then trigger runs (dry run by default — safe, no delivery):\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/health\n"
+                "curl -s -X POST localhost:8000/trigger -H 'content-type: application/json' \\\n"
+                "  -d '{\"workflow\": \"briefing\", \"dry_run\": true}'\n"
+                "curl -s localhost:8000/runs\n"
+                "curl -s localhost:8000/v1/stats\n"
+                "```\n\n"
+                "To deliver live briefs, configure the optional webhook and pass\n"
+                "`\"dry_run\": false`:\n\n"
+                "```bash\n"
+                "export WEBHOOK_URL=https://example.com/hook\n"
+                "```\n\n"
+                "Without `WEBHOOK_URL`, a live trigger reports\n"
+                "`delivery.status = \"skipped_no_delivery\"` — it never crashes."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — /trigger, /runs, /health, /v1/stats + dashboard"),
+                ("workflow_core.py", "Pure engine: steps, tool registry, typed errors, dry-run"),
+                ("test_workflow_core.py", "Unit tests for the pure engine (no server needed)"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn"),
+            ],
+            features=[
+                "Built-in browser runs dashboard at / — trigger + inspect, no build step",
+                "Multi-step workflow engine with an append-only run ledger",
+                "Steps may only call registered tools — no fabricated APIs",
+                "Typed error envelopes + per-step retries; the engine never raises",
+                "Dry-run by default; live delivery via the optional WEBHOOK_URL env var",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_workflow_core.py\n```"
+            ),
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
@@ -2438,6 +2867,7 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "swift": _swift,
     "mcp": _mcp,
     "rag": _rag,
+    "workflow": _workflow,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

@@ -40,6 +40,8 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "mcp": ("requirements.txt",),
     # RAG app (FastAPI): requirements.txt declares fastapi/uvicorn/httpx.
     "rag": ("requirements.txt",),
+    # Agent-workflow app (FastAPI): requirements.txt declares fastapi/uvicorn.
+    "workflow": ("requirements.txt",),
 }
 
 

@@ -34,6 +34,7 @@ WEB_STACKS = frozenset({
     "tauri", "desktop",  # Tauri desktop: frontend is a Vite/React web app
     "phaser",  # Phaser 3 game: a Vite-built web app served (canvas) at '/'
     "rag",  # RAG app: a FastAPI HTTP server — liveness applies, like fastapi
+    "workflow",  # agent-workflow app: FastAPI-served runner — liveness applies
 })
 
 # Stacks that warrant design-skill injection but are NOT HTTP-served (so they

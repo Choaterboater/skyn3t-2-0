@@ -406,6 +406,33 @@ _RAG_DIRECTIVE = (
 )
 
 
+_WORKFLOW_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build an agent-WORKFLOW app (a multi-step runner) as a "
+    "Python FastAPI server. This is NOT a React/npm app: NEVER emit package.json, "
+    "index.html files, or JSX. "
+    "LAYOUT: `main.py` (the FastAPI app — the runnable root: `python main.py` serves "
+    "on the PORT env var, default 8000, via `uvicorn.run` under `if __name__ == "
+    "\"__main__\":`), `workflow_core.py` (the engine as PURE stdlib Python), "
+    "`test_workflow_core.py` (pytest over the pure engine), `requirements.txt` "
+    "(fastapi, uvicorn). "
+    "ENGINE CONTRACT (pure core + thin HTTP — the sim-core split): steps run IN "
+    "ORDER and may ONLY call tools registered in a ToolRegistry (never fabricate "
+    "an API); a failing step retries its declared count then lands in a TYPED error "
+    "envelope ({type, step, message, retryable}) and fails the run — the engine "
+    "NEVER raises; every run is appended to a run ledger. "
+    "ROUTES ARE LOAD-BEARING: GET / → a minimal SELF-CONTAINED HTML runs dashboard "
+    "(vanilla JS, inline CSS, NO external assets); GET /health → 200; GET /v1/stats "
+    "→ JSON with integer \"runs\" and the workflow/tool names; POST /trigger "
+    "{\"workflow\", \"params\", \"dry_run\"} with dry_run DEFAULTING TRUE → run the "
+    "workflow and return {\"run_id\", \"dry_run\", \"status\", \"brief\", "
+    "\"delivery\": {\"status\"}}; GET /runs and GET /runs/{id} read the ledger. "
+    "DELIVERY IS OPTIONAL: adapters (webhook/email) are configured via env vars "
+    "(e.g. WEBHOOK_URL) — a dry run yields delivery.status=\"dry_run\", a live run "
+    "with NO config yields \"skipped_no_delivery\", NEVER a crash and NEVER a "
+    "required key. Implement the brief's real steps as registered tools."
+)
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -677,6 +704,7 @@ class CodeAgent(BaseAgent):
             + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
             + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
             + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
+            + (f"{_WORKFLOW_DIRECTIVE}\n\n" if stack == "workflow" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "

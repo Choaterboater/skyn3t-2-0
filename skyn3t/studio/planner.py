@@ -59,6 +59,18 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
              "chat with my doc", "chat with your doc", "chat with my pdf",
              "chat with my notes", "chat with my files",
              "knowledge base", "document q&a", "doc q&a", "semantic search")),
+    # Agent-workflow app (wave-2 §3.2, demand #2): a multi-step runner with a
+    # run ledger and dry-run triggers — a FastAPI app, NOT the generic web/API
+    # scaffold. Placed after rag (no keyword overlap) and before react_native /
+    # react / fastapi: workflow briefs carry "app"/"api"/"service". Keywords are
+    # WORKFLOW-distinctive: bare "workflow" is word-bounded singular only (a
+    # "dashboard for my workflows" is a dashboard — plural doesn't match);
+    # bare "automation"/"pipeline"/"scheduled" are deliberately NOT claimed
+    # (they'd steal CI-dashboard / data-pipeline / calendar briefs).
+    ("workflow", ("agent workflow", "workflow", "team of agents",
+                  "multi-agent", "multi agent", "agent that",
+                  "automation pipeline", "monitor and notify",
+                  "scheduled briefing", "daily briefing")),
     # react_native must precede `react`/`nextjs`: "react native expo app" and
     # "ios app" should resolve to the mobile stack, not the web React scaffold.
     ("react_native", (
@@ -134,6 +146,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # artifact, its chunker/retriever split into a PURE rag_core.py (the sim-core
     # split reapplied), plus the Python manifest. NO package.json / index.html.
     "rag": ("README.md", "main.py", "rag_core.py", "requirements.txt"),
+    # Agent-workflow app: the FastAPI runner is the load-bearing artifact, its
+    # engine split into a PURE workflow_core.py (steps as pure functions, run
+    # ledger, typed errors), plus the Python manifest. NO package.json.
+    "workflow": ("README.md", "main.py", "workflow_core.py", "requirements.txt"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),
@@ -207,6 +223,9 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     # RAG: whole-word so bare "rag" only routes on the standalone token, never as
     # a substring ("storage", "average", "dragging").
     "rag",
+    # Agent-workflow: whole-word SINGULAR so "workflows" (a dashboard/CRUD noun)
+    # and "workflowy" never route here.
+    "workflow",
     # MCP (Model Context Protocol): whole-word so bare "mcp" only routes on the
     # standalone token, never as a substring inside an unrelated word.
     "mcp",

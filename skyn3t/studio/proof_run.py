@@ -2267,6 +2267,25 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 return (True, False, "rag stack: rag_core.py (the pure retrieval core) missing")
             return (True, True, "rag stack: FastAPI main.py + rag_core.py present")
 
+        # ---- workflow (FastAPI agent-workflow runner) ----------------------
+        if low == "workflow":
+            main_py = pdir / "main.py"
+            if not main_py.exists() or main_py.stat().st_size < _NONEMPTY:
+                return (True, False, "workflow stack: main.py missing")
+            try:
+                text = main_py.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                text = ""
+            if "fastapi" not in text:
+                return (True, False, "workflow stack: main.py does not reference fastapi")
+            # The pure engine is the stack's load-bearing split (the sim-core
+            # pattern): its absence means an untestable, tangled runner.
+            core = pdir / "workflow_core.py"
+            if not core.exists() or core.stat().st_size < _NONEMPTY:
+                return (True, False,
+                        "workflow stack: workflow_core.py (the pure engine) missing")
+            return (True, True, "workflow stack: FastAPI main.py + workflow_core.py present")
+
         # ---- react_vite / react -----------------------------------------
         if low in ("react", "react_vite"):
             pkg = pdir / "package.json"
@@ -2365,7 +2384,9 @@ def _entrypoint_check(
         return ([], "")
 
     low = (stack or "").lower()
-    is_python = low in ("cli", "python", "fastapi", "flask", "django", "rag") or any(
+    is_python = low in (
+        "cli", "python", "fastapi", "flask", "django", "rag", "workflow",
+    ) or any(
         e.endswith(".py") for e in entrypoints
     )
     if not is_python:
@@ -2442,7 +2463,7 @@ def _run_generated_tests(
 
     py = _python_executable()
     low = (stack or "").lower()
-    is_python = low in ("cli", "python", "fastapi", "flask", "django", "rag")
+    is_python = low in ("cli", "python", "fastapi", "flask", "django", "rag", "workflow")
     use_container_names = _use_container_command_names(cmd_ctx)
     if py is None and not use_container_names:
         return (False, False, "")

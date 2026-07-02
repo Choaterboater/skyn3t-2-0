@@ -1,8 +1,7 @@
 # Next session — handoff
 
-_Updated 2026-07-02 afternoon. Branch: `main` @ the `worktree-finance-stack`
-merge (`7b0b240`). Suite: **2036 passed / 3 skipped** (full run on the merged
-tree)._
+_Updated 2026-07-02 afternoon. Branch: `main` @ `7cfce2b`. Suite: **2048
+passed / 3 skipped** (full run on the final merged tree)._
 
 ## TL;DR (2026-07-02 afternoon — close-out session)
 
@@ -26,12 +25,17 @@ tree)._
 - **Two-writer git races documented** (memory: parallel-session-git-races): a
   mid-rebase chimera commit + the orphan deletion both came from two live
   sessions sharing refs. One branch/worktree per session, always.
+- **Offline planner routes finance briefs** (`5a63bf7`): strong finance phrases
+  → fastapi in `_STACK_SIGNATURES`, placed before workflow ("a trading agent
+  that…" keeps its ledger); ambiguous phrases stay unclaimed at stack level.
+- **Keyless deploy planner merged** (`933e885`, the other session's Ship pillar
+  slice 1): every stack maps to a deploy kind + one-command plan, offline,
+  10 tests. Its named next slice: token-gated real deploy execution.
 
 **Next up:** (1) finance LLM-analyst tier (report tree + prose signal
-extraction) + offline planner-fallback routing for finance briefs (the variant
-is LLM-planner-only today). (2) Browser extension stack (wave-1 #1). (3)
-Deep-research / generative-UI / voice-RAG app types (§3.11 tier). (4) Godot
-still held. **User actions:** push main (`gh auth switch --user Choaterboater`
+extraction). (2) Ship pillar slice 2 — token-gated deploy execution. (3)
+Browser extension stack (wave-1 #1). (4) Deep-research / generative-UI /
+voice-RAG app types (§3.11 tier). (5) Godot still held. **User actions:** push main (`gh auth switch --user Choaterboater`
 then `git push origin main`), sudo-delete the root-owned com.skyn3t.web
 LaunchAgent (one-liner in the 07-02 session memory), restart the dashboard
 (the stale_code banner will flag it).

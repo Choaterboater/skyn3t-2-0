@@ -5,8 +5,13 @@
 > invisible to the active `gh` login); ship with:
 > `git push -u origin worktree-rag-stack:feat/rag-stack && gh pr create --draft -F .github/PULL_REQUEST_DRAFT.md`
 
-Sixteen commits, four complete workstreams, every commit verified by the full
-suite (1857 → 1930+ tests, all green throughout).
+Twenty-two commits, every one verified by the full suite (1857 → 1953+ tests,
+all green throughout). Eight of the wave-2 deep-dive's ten LLM-era app types
+are delivered: four as full stacks with deterministic gates + acceptance seals
+(§3.1 rag, §3.2 workflow, §3.8 agent packs, plus §3.3 mcp sealed), four as
+scaffold variants (§3.6 terminal copilot, §3.7 llm gateway, §3.9 market-data,
+§3.10 memory-chat — the variant pattern is now documented in
+docs/ADDING_A_STACK.md).
 
 ## 1. The `rag` stack — wave-2 §3.1, demand #1 (chat with your documents)
 
@@ -64,6 +69,22 @@ suite (1857 → 1930+ tests, all green throughout).
   no_go-ing a perfect pack at 46 — fixed with a registry-level
   `CONTENT_STACKS` group the reviewer consults (and the structural rescore now
   threads the stack through). A fifth vocabulary site, found by sealing.
+
+## 2c. Four scaffold variants (§3.6 / §3.7 / §3.9 / §3.10)
+
+- **Market-data API** (fastapi variant): vendor seam via `DATA_VENDOR`, canned
+  deterministic fixtures, typed `404 NO_DATA`/`422` envelopes, pure SMA math.
+- **Memory-augmented chat** (rag variant): append-only JSONL memory journal
+  replayed at boot; turns indexed AFTER retrieval (the live restart proof
+  caught self-retrieval on its first run); spec proof runs live in-suite:
+  fact → kill process → fresh boot → retrievable.
+- **LLM gateway** (fastapi variant): OpenAI-compatible proxy, priority routing
+  + fallback chains (typed 502 when exhausted), cheap-tag routing, exact
+  token-arithmetic usage ledger — keyless via bundled `internal:` stubs.
+- **Terminal copilot** (python_cli variant, zero deps): typed JSONL event
+  stream (`run --format json`), bundled scenario playback that executes tools
+  for real, read-only-by-default permissions with workspace/symlink/size-cap
+  write guards, `doctor --output-format json`.
 
 ## 3. Learning loop — capture, dedupe, seal ("make it learn better")
 

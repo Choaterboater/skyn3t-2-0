@@ -97,9 +97,22 @@ Recently completed (verified in code + tests; full suite 1612 green):
 - **qa_playtest re-verifies after a repair** — it read the stale pre-repair verdict,
   so a game repair could never flip `no_go → go`; now repair → re-run once.
 
-Still open / next up (honest):
+Still open / next up (honest, refreshed 2026-07-02):
 
 - **Game sprite-RENDERING reliability** — sprites load but only some render (entities
-  wired to invented, never-loaded texture keys). Being worked now.
-- **Advisory SEO gate** for web stacks — being built now.
-- **Native macOS (Swift/SwiftUI)** + **Godot** stacks — deferred, not started.
+  wired to invented, never-loaded texture keys). Needs live game builds.
+- **Wave-2 §3.4 finance/trading agent** — heavy (full vendor registry beyond §3.9's
+  canned cut); **§3.5 flow-runtime** — depends on the external `lfx`/langflow runtime
+  (product call: langflow-JSON compatibility is its point). Both deferred pending a
+  user decision.
+- **cli_playtest gate** — the pexpect sibling of qa_playtest, driving the §3.6
+  copilot CLIs (and swift binaries) interactively.
+- **Godot stack** — deferred, not started (needs `brew install godot`).
+
+Shipped since the list above was written (2026-07-01→02, branch worktree-rag-stack):
+SEO gate ✅ · swift stack ✅ · mcp stack ✅ · **wave-2 §3 app types: rag (§3.1,
++gate +SSE), workflow (§3.2, +gate), agent packs (§3.8), market-data (§3.9),
+memory-chat (§3.10), llm gateway (§3.7), terminal copilot (§3.6 core)** ·
+liveness fair to API stacks (405/422 = wired) · toolchain preflight ·
+gate-findings→lessons + lesson dedupe · reviewer content-stack scoring +
+GO_THRESHOLD drift guard · acceptance seals for all four stacks.

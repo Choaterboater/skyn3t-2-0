@@ -58,7 +58,12 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("rag", ("retrieval augmented", "retrieval-augmented", "rag",
              "chat with my doc", "chat with your doc", "chat with my pdf",
              "chat with my notes", "chat with my files",
-             "knowledge base", "document q&a", "doc q&a", "semantic search")),
+             "knowledge base", "document q&a", "doc q&a", "semantic search",
+             # Memory-augmented chat (wave-2 §3.10) rides the rag stack — the
+             # scaffold VARIANT adds a persistent memory journal. Phrases only:
+             # bare "memory" would steal "memory game" / "memory profiler".
+             "remembers me", "remembers our", "assistant with memory",
+             "chat with memory", "chatbot with memory", "stateful chat")),
     # Agent team pack (wave-2 §3.8): a persona ROSTER product — markdown agent
     # definitions + lint/convert tooling, zero runtime deps. NOT the runtime
     # multi-agent app (that's `workflow`, next): pack briefs name the static

@@ -8,7 +8,9 @@ calls (design rule #4).
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 # Canonical stacks the CodeAgent can scaffold offline.
@@ -29,6 +31,21 @@ KNOWN_STACKS = (
 )
 
 DEFAULT_STACK = "react_vite"
+
+
+def confined_path(root: Path | str, rel: str) -> Path | None:
+    """Resolve ``root/rel`` and return it only if it stays inside ``root``
+    (symlink-safe), else ``None``. The shared guard for agent file-write paths —
+    even hardcoded rel paths can escape a GENERATED tree through a symlinked
+    subdirectory. Same idiom as proof_run._confine / code_improver._confined."""
+    base = Path(root).resolve()
+    target = (base / rel).resolve()
+    try:
+        if os.path.commonpath([str(base), str(target)]) != str(base):
+            return None
+    except ValueError:
+        return None
+    return target
 
 
 def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:

@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from skyn3t.agents._common import confined_path
 from skyn3t.agents.env_scanner import EnvScanner, EnvScanResult
 from skyn3t.agents.stack_detector import StackDetector, StackReport
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
@@ -235,7 +236,10 @@ class PackagingAgent(BaseAgent):
         skipped: list[str] = []
 
         def write(rel: str, content: str) -> None:
-            p = root / rel
+            p = confined_path(root, rel)
+            if p is None:  # symlinked subdir pointing outside the project tree
+                skipped.append(f"{rel} (outside project root)")
+                return
             if p.exists() and not overwrite:
                 skipped.append(rel)
                 return

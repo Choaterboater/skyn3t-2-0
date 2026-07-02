@@ -30,8 +30,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install (core + dev)
-        run: pip install -e ".[dev]"
+      - name: Install (core + dev + web + visual)
+        # The suite imports fastapi (web extra) and PIL/Pillow (visual extra) at
+        # module load in a few tests, so [dev] alone fails collection. The heavier
+        # ml/integrations extras stay out on purpose — those tests guard their
+        # imports and skip cleanly, keeping CI fast (no torch/chromadb download).
+        run: pip install -e ".[dev,web,visual]"
 
       - name: Lint (ruff)
         # Non-blocking for now: ~322 pre-existing findings are tracked but not yet

@@ -44,6 +44,67 @@ export function latestRunningSlug(events) {
   return slug;
 }
 
+// The REAL build pipeline, folded from the live event stream — never a hardcoded
+// stage list. `build.started` carries the planner's actual stage names
+// (payload.stages); each `build.stage.started` / `build.stage.completed` carries
+// the agent, status, score, cost, gaps, and duration that are ALREADY on the wire
+// but were previously dropped by the UI. Stages observed but not in the plan
+// (gated/optional/retry sub-stages like `fix#2`) are appended so nothing is
+// hidden. Falls back to `fallback` before the first `build.started` is seen.
+export function pipelineFromEvents(events, fallback = []) {
+  let planned = null;
+  const rec = new Map();
+  const ensure = (name) => {
+    let r = rec.get(name);
+    if (!r) {
+      r = { stage: name, state: "pending" };
+      rec.set(name, r);
+    }
+    return r;
+  };
+  for (const e of events) {
+    const p = e.payload || {};
+    if (e.type === "build.started" && Array.isArray(p.stages) && p.stages.length) {
+      planned = p.stages;
+    }
+    const name = p.stage || p.capability;
+    if (!name) continue;
+    const r = ensure(name);
+    if (p.capability) r.capability = p.capability;
+    if (e.type === "build.stage.started") {
+      if (r.state !== "done" && r.state !== "failed") r.state = "running";
+      if (p.agent_type) r.agentType = p.agent_type;
+    } else if (e.type === "build.stage.completed") {
+      r.state = "done";
+      if (p.status) r.status = p.status;
+      if (p.score != null) r.score = p.score;
+      if (p.cost_usd != null) r.cost = p.cost_usd;
+      if (p.tokens != null) r.tokens = p.tokens;
+      if (p.agent_type) r.agentType = p.agent_type;
+      if (p.agent_name) r.agentName = p.agent_name;
+      if (p.duration_ms != null) r.durationMs = p.duration_ms;
+      if (p.gaps && p.gaps.length) r.gaps = p.gaps;
+    } else if (e.type === "build.failed" || e.type === "task.failed") {
+      r.state = "failed";
+    }
+  }
+  const order = (planned && planned.length ? planned : fallback).slice();
+  order.forEach((n) => ensure(n));
+  const seen = new Set(order);
+  for (const name of rec.keys()) if (!seen.has(name)) order.push(name);
+  return order.map((n) => rec.get(n));
+}
+
+export function stageTone(state) {
+  return state === "running"
+    ? "text-ember"
+    : state === "done"
+    ? "text-plasma"
+    : state === "failed"
+    ? "text-ember"
+    : "text-ash";
+}
+
 export function DebugTimeline({ events }) {
   const rows = useMemo(() => debugRowsFromEvents(events), [events]);
   if (rows.length === 0) {
@@ -119,5 +180,70 @@ export function PreviewPanel({ events }) {
       src={`/api/projects/${slug}/index.html`}
       className="h-72 w-full rounded-md border border-hairline bg-white"
     />
+  );
+}
+
+// The legible per-stage breakdown: which agent ran each stage, its state, score,
+// cost, gaps, and wall-clock — all read from data the backend already emits.
+export function StageLedger({ events, fallback = [] }) {
+  const rows = useMemo(() => pipelineFromEvents(events, fallback), [events, fallback]);
+  const active = rows.some((r) => r.state === "running" || r.state === "done");
+  if (!active) {
+    return (
+      <p className="px-4 py-3 font-mono text-[11px] text-ash/70">
+        No stage activity yet — forge a build to watch the swarm work.
+      </p>
+    );
+  }
+  const fmtCost = (c) => (c != null ? `$${Number(c).toFixed(4)}` : "—");
+  const fmtTime = (ms) => (ms != null ? `${(ms / 1000).toFixed(1)}s` : "—");
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead>
+          <tr className="eyebrow border-b border-hairline text-ash">
+            <th className="px-4 py-2 font-normal">Stage</th>
+            <th className="px-4 py-2 font-normal">Agent</th>
+            <th className="px-4 py-2 font-normal">State</th>
+            <th className="px-4 py-2 font-normal">Score</th>
+            <th className="px-4 py-2 font-normal">Cost</th>
+            <th className="px-4 py-2 font-normal">Time</th>
+            <th className="px-4 py-2 font-normal">Gaps</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-hairline/60">
+          {rows.map((r) => (
+            <tr key={r.stage}>
+              <td className="px-4 py-2 font-mono text-xs text-bone">{r.stage}</td>
+              <td className="px-4 py-2 font-mono text-[11px] text-ash">
+                {r.agentName || r.agentType || "—"}
+                {r.agentName && r.agentType && r.agentName !== r.agentType ? (
+                  <span className="text-ash/50"> · {r.agentType}</span>
+                ) : null}
+              </td>
+              <td className="px-4 py-2">
+                <span className={`eyebrow text-[10px] ${stageTone(r.state)}`}>{r.state}</span>
+              </td>
+              <td className="px-4 py-2 font-mono text-xs text-ash">
+                {r.score != null ? r.score : "—"}
+              </td>
+              <td className="px-4 py-2 font-mono text-xs text-ash">{fmtCost(r.cost)}</td>
+              <td className="px-4 py-2 font-mono text-xs text-ash">{fmtTime(r.durationMs)}</td>
+              <td className="px-4 py-2 font-mono text-[11px]">
+                {r.gaps && r.gaps.length ? (
+                  <span className="text-ember" title={r.gaps.join("\n")}>
+                    {r.gaps.length} ⚑
+                  </span>
+                ) : r.state === "done" ? (
+                  <span className="text-plasma">clean</span>
+                ) : (
+                  <span className="text-ash">—</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

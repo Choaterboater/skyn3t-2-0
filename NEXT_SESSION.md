@@ -1,27 +1,47 @@
 # Next session — handoff
 
-_Updated 2026-06-30/07-01. Branch: `main` @ `e17a2a8` (+ uncommitted session work).
-Suite: **1612 passed / 2 skipped**._
+_Updated 2026-07-01 evening. Branch: `main` (commits `7aa599a`, `f2e6fa3`, + mock-LLM).
+Suite: **1752 passed / 3 skipped**._
 
-## TL;DR (2026-06-30/07-01)
+## TL;DR (2026-07-01)
 
-The **game capability track is built and merged end to end** — Phaser 3 + Vite
-stack, headless invariant gate (sealed), art tier, game-designer GDD gate, and the
-qa-playtest + visual-repair gates are all live and default-on. See
-[docs/game-capability-roadmap.md](docs/game-capability-roadmap.md) for per-item
-status.
+Everything from the previous TL;DR **landed, was adversarially reviewed, and is
+committed**. Today's session (multi-agent):
 
-This session (Workstream 1 + follow-ups) fixed the **dangling-import codegen bug**
-(4 stacked defects + a pre-existing path-traversal write bug), hardened the
-**improve engine** (stack-aware entrypoints, `repo_map` target discovery, stage
-events, shared deterministic repairs), made **qa_playtest re-verify after a
-repair**, and extracted a shared **`apply_deterministic_repairs()`** in
-`proof_run.py`. All TDD'd; full suite 1612 green; live-revalidated.
+- **"Improve under Projects doesn't work" (user report)** = the stale-web-server
+  gotcha's third strike (server booted 9h before the fixes landed). Permanent
+  guard shipped: `/api/health` reports `started_at`/`stale_code` + a UI restart
+  banner on every page. Improve then validated end-to-end through the dashboard
+  API (testimonials section merged, proof passed).
+- **Sprite false-positive fix validated live**; three tower-defence rebuilds each
+  climbed one rung higher (missing-asset crash → fixed by the NEW
+  `asset_reconcile` deterministic repair + directive clause → next build passed
+  qa_playtest/visual and was caught by the headless gate on an `Infinity`
+  sim-state sentinel — the finite-state directive clause + headless
+  repair-then-reverify are in flight).
+- **NEW advisory SEO gate** (`seo_check.py`) — 63-agent adversarial review found
+  17 confirmed issues (worst: post-verdict unvalidated LLM rewrite of index.html);
+  all fixed (snapshot→re-proof→rollback, .html validation, entrypoint
+  preservation, detector corrections).
+- **NEW native Swift/SwiftUI macOS stack** (roadmap #7) — full 10-touchpoint
+  pattern, scaffold genuinely compiles (`swift build`), 17 tests;
+  `docs/ADDING_A_STACK.md` documents the pattern.
+- **NEW mock-LLM proof provider** (`mock_llm.py`) — OpenAI/Anthropic-compatible
+  local server injected into generated-app test steps; key-prompt UI gate. The
+  keystone for proving LLM app types with zero live keys.
+- **Research**: two deep-dive waves over 17 repos →
+  `docs/research/2026-07-01-github-deepdive{,-wave2}.md` with a ranked adoption
+  list + app-type catalog. North star (user): do everything the app-builder
+  products do, but better — "better" = every capability ships with a headless
+  proof story.
 
-**Still open / next up:** (1) game sprite-RENDERING reliability — sprites load but
-only some render (entities wired to invented, never-loaded texture keys); the real
-"games still fail" root cause, being worked now. (2) An advisory SEO gate for web
-stacks, being built now. (3) Deferred native macOS (Swift/SwiftUI) + Godot stacks.
+**Next up:** (1) directive pack + anti-fake gates + headless repair-then-reverify
+(agent in flight at handoff). (2) New app types in demand order: MCP server → RAG
+→ agent-workflow → finance-trading (specs in the wave-2 report §3). (3) Rebuild
+the tower-defence brief again after the finite-state clause lands — expect go.
+(4) Godot still held. NOTE: the user's dashboard server predates tonight's
+commits — the stale-code banner is showing; restart `skyn3t start --web` before
+judging anything through the UI.
 
 ---
 

@@ -30,6 +30,10 @@ import structlog
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
 from skyn3t.agents._scaffold import (
+    _implies_cli_agent,
+    _implies_llm_gateway,
+    _implies_market_data,
+    _implies_memory_chat,
     default_pyproject,
     scaffold_for,
     synthesize_python_entrypoint,
@@ -456,6 +460,53 @@ _AGENT_PACK_DIRECTIVE = (
 )
 
 
+# Variant directives (wave-2 §3.6/3.7/3.9/3.10): compact contracts for briefs
+# that ride an existing stack but carry a variant shape. One good clause here
+# is worth many repairs — without these, a model-generated 'llm gateway' never
+# hears about fallback chains or the keyless internal seam.
+_VARIANT_DIRECTIVES: tuple[tuple[str, Any, str], ...] = (
+    ("fastapi", _implies_market_data,
+     "VARIANT — market-data API: keep the pure vendor registry in `vendors.py` "
+     "(canned deterministic fixtures selected by the DATA_VENDOR env var, default "
+     "canned — zero keys); routes GET /stock/{symbol}, GET /indicators?symbol=&"
+     "window=, GET /news?symbol=; an unknown symbol returns a TYPED 404 "
+     "{\"error\": {\"type\": \"NO_DATA\", ...}}; invalid params are 422 — never a "
+     "bare 500."),
+    ("fastapi", _implies_llm_gateway,
+     "VARIANT — LLM gateway: an OpenAI-compatible POST /v1/chat/completions proxy "
+     "with a model catalog (per-1K costs + tags), PRIORITY routing, FALLBACK to "
+     "the next provider on upstream error (exhausted chains → typed 502 "
+     "ALL_UPSTREAMS_FAILED), cheap-tagged requests → small models, and an EXACT "
+     "usage ledger (tokens × catalog prices) at GET /v1/usage. Ship two bundled "
+     "stub upstreams behind 'internal:' URLs so it boots KEYLESS; real providers "
+     "are env-configured URLs, never hardcoded."),
+    ("rag", _implies_memory_chat,
+     "VARIANT — memory-augmented chat: journal every chat turn to an append-only "
+     "JSONL file (MEMORY_FILE env, default memory.jsonl; corrupt lines skipped, "
+     "never fatal) and REPLAY it into the retrieval index at boot so facts stated "
+     "in conversation survive restarts. Record each turn's memory AFTER its own "
+     "retrieval — a turn must never retrieve itself. Report a \"memories\" count "
+     "in /v1/stats."),
+    ("python_cli", _implies_cli_agent,
+     "VARIANT — terminal copilot: `run '<prompt>' --format json` must emit ONE "
+     "typed JSON event per line (session_start / tool_call / tool_result / answer "
+     "/ denied) and exit 2 when a tool is denied; writes require --mode "
+     "workspace-write (read-only is the DEFAULT) and every file path is confined "
+     "to the workspace (symlink-safe, size-capped); ship offline mock-provider "
+     "scenarios in scenarios.json and `doctor --output-format json`."),
+)
+
+
+def variant_directive(stack: str, brief: str) -> str:
+    """The variant contract for this brief, or '' when the brief is the base
+    stack shape. Pure and deterministic (same triggers as scaffold_for)."""
+    low = (stack or "").strip().lower()
+    for wanted_stack, trigger, directive in _VARIANT_DIRECTIVES:
+        if low == wanted_stack and trigger(brief or ""):
+            return directive
+    return ""
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -729,6 +780,8 @@ class CodeAgent(BaseAgent):
             + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
             + (f"{_WORKFLOW_DIRECTIVE}\n\n" if stack == "workflow" else "")
             + (f"{_AGENT_PACK_DIRECTIVE}\n\n" if stack == "agent_pack" else "")
+            + (f"{variant_directive(stack, brief)}\n\n"
+               if variant_directive(stack, brief) else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "

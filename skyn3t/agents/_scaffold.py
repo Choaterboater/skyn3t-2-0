@@ -2881,6 +2881,356 @@ def _workflow(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _agent_pack_persona(name: str, color: str, description: str, identity: str,
+                        mission: str, rules: list[str]) -> str:
+    """Assemble one persona markdown file (frontmatter + required sections)."""
+    rule_lines = "\n".join(f"- {r}" for r in rules)
+    return (
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        f"color: {color}\n"
+        "---\n\n"
+        "## Identity\n\n"
+        f"{identity}\n\n"
+        "## Core Mission\n\n"
+        f"{mission}\n\n"
+        "## Critical Rules\n\n"
+        f"{rule_lines}\n"
+    )
+
+
+def _agent_pack(app_name: str, brief: str) -> dict[str, str]:
+    """An agent team pack (wave-2 §3.8) — a persona ROSTER product: markdown
+    agent definitions under ``agents/<division>/`` plus deterministic
+    lint/originality/convert tooling. Zero runtime dependencies (stdlib only);
+    the proof story is the pack's OWN pytest (lint gate + pairwise
+    shingle-originality + convert round-trip), fully deterministic.
+
+    Structured as a **pure tools core + a thin CLI** (the sim-core split):
+    ``pack_tools.py`` holds all logic; ``main.py`` is the runnable root
+    (``python main.py lint|convert|summary``).
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    return {
+        "pack_tools.py": (
+            '"""Pure pack tooling: catalog, lint, originality, convert. Stdlib only.\n\n'
+            "Every persona must carry YAML-ish frontmatter (name/description/color)\n"
+            "and the Identity / Core Mission / Critical Rules sections with real\n"
+            "substance — the lint gate and the pairwise shingle-originality check\n"
+            "keep a generated roster honest (distinct personas, not re-skins).\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import json\n"
+            "import re\n"
+            "from pathlib import Path\n\n"
+            '_REQUIRED_FRONTMATTER = ("name", "description", "color")\n'
+            '_REQUIRED_SECTIONS = ("## Identity", "## Core Mission", "## Critical Rules")\n'
+            "_MIN_WORDS = 120\n\n\n"
+            "def load_catalog(root: str | Path) -> dict:\n"
+            '    return json.loads((Path(root) / "catalog.json").read_text(encoding="utf-8"))\n\n\n'
+            "def iter_agents(root: str | Path) -> list[Path]:\n"
+            '    return sorted((Path(root) / "agents").rglob("*.md"))\n\n\n'
+            "def parse_frontmatter(text: str) -> dict:\n"
+            '    """The leading `--- ... ---` block as a flat key: value dict."""\n'
+            "    if not text.startswith(\"---\"):\n"
+            "        return {}\n"
+            '    parts = text.split("---", 2)\n'
+            "    if len(parts) < 3:\n"
+            "        return {}\n"
+            "    out: dict = {}\n"
+            "    for line in parts[1].splitlines():\n"
+            '        if ":" in line:\n'
+            '            key, _, val = line.partition(":")\n'
+            "            out[key.strip()] = val.strip()\n"
+            "    return out\n\n\n"
+            "def lint_agent(path: Path, text: str) -> list[str]:\n"
+            '    """Issues for one persona file; empty means it passes."""\n'
+            "    issues: list[str] = []\n"
+            "    fm = parse_frontmatter(text)\n"
+            "    for field in _REQUIRED_FRONTMATTER:\n"
+            "        if not fm.get(field):\n"
+            "            issues.append(f\"{path.name}: frontmatter missing '{field}'\")\n"
+            "    for section in _REQUIRED_SECTIONS:\n"
+            "        if section not in text:\n"
+            "            issues.append(f\"{path.name}: missing section '{section}'\")\n"
+            '    body = text.split("---", 2)[-1]\n'
+            "    words = len(re.findall(r\"[A-Za-z0-9'-]+\", body))\n"
+            "    if words < _MIN_WORDS:\n"
+            "        issues.append(\n"
+            "            f\"{path.name}: only {words} words (min {_MIN_WORDS}) — a persona\"\n"
+            "            \" needs real substance, not a stub\")\n"
+            "    return issues\n\n\n"
+            "def lint_pack(root: str | Path) -> list[str]:\n"
+            '    """All lint issues across the pack (plus catalog consistency)."""\n'
+            "    issues: list[str] = []\n"
+            "    agents = iter_agents(root)\n"
+            "    if not agents:\n"
+            '        return ["no agents/<division>/*.md files found"]\n'
+            "    names: set[str] = set()\n"
+            "    for path in agents:\n"
+            '        text = path.read_text(encoding="utf-8", errors="replace")\n'
+            "        issues.extend(lint_agent(path, text))\n"
+            '        name = parse_frontmatter(text).get("name", "")\n'
+            "        if name in names:\n"
+            "            issues.append(f\"duplicate agent name '{name}'\")\n"
+            "        names.add(name)\n"
+            "    try:\n"
+            "        catalog = load_catalog(root)\n"
+            "    except Exception as exc:  # noqa: BLE001\n"
+            "        return [*issues, f\"catalog.json unreadable: {exc}\"]\n"
+            '    listed = {a for div in catalog.get("divisions", {}).values() for a in div}\n'
+            "    on_disk = {p.stem for p in agents}\n"
+            "    for missing in sorted(listed - on_disk):\n"
+            "        issues.append(f\"catalog lists '{missing}' but agents/ has no such file\")\n"
+            "    for unlisted in sorted(on_disk - listed):\n"
+            "        issues.append(f\"agents/{unlisted}.md is not in catalog.json\")\n"
+            "    return issues\n\n\n"
+            "def _shingles(text: str, k: int = 5) -> set[tuple[str, ...]]:\n"
+            "    words = re.findall(r\"[a-z0-9'-]+\", text.lower())\n"
+            "    return {tuple(words[i:i + k]) for i in range(max(0, len(words) - k + 1))}\n\n\n"
+            "def shingle_similarity(a: str, b: str, k: int = 5) -> float:\n"
+            '    """Jaccard similarity of word k-shingles — near 0 for distinct prose."""\n'
+            "    sa, sb = _shingles(a, k), _shingles(b, k)\n"
+            "    if not sa or not sb:\n"
+            "        return 0.0\n"
+            "    return len(sa & sb) / len(sa | sb)\n\n\n"
+            "def originality_issues(root: str | Path, max_similarity: float = 0.35) -> list[str]:\n"
+            '    """Pairwise similarity failures — every persona must be genuinely\n'
+            "    distinct, not a re-skin of a sibling.\"\"\"\n"
+            "    agents = iter_agents(root)\n"
+            '    texts = {p: p.read_text(encoding="utf-8", errors="replace") for p in agents}\n'
+            "    issues: list[str] = []\n"
+            "    for i, a in enumerate(agents):\n"
+            "        for b in agents[i + 1:]:\n"
+            "            sim = shingle_similarity(texts[a], texts[b])\n"
+            "            if sim > max_similarity:\n"
+            "                issues.append(\n"
+            "                    f\"{a.name} and {b.name} are {sim:.0%} similar — personas\"\n"
+            "                    \" must be genuinely distinct\")\n"
+            "    return issues\n\n\n"
+            "def convert(root: str | Path, tool: str, dest: str | Path | None = None) -> list[Path]:\n"
+            '    """Emit one well-formed file per agent for ``tool`` (e.g. claude-code:\n'
+            "    name + description frontmatter, body verbatim) at the catalog-declared\n"
+            "    destination. Returns the written paths.\"\"\"\n"
+            "    root = Path(root)\n"
+            "    catalog = load_catalog(root)\n"
+            '    spec = (catalog.get("convert") or {}).get(tool)\n'
+            "    if spec is None:\n"
+            "        raise ValueError(f\"catalog.json declares no convert target '{tool}'\")\n"
+            '    out_dir = Path(dest) if dest is not None else root / spec["dest"]\n'
+            "    out_dir.mkdir(parents=True, exist_ok=True)\n"
+            "    written: list[Path] = []\n"
+            "    for path in iter_agents(root):\n"
+            '        text = path.read_text(encoding="utf-8", errors="replace")\n'
+            "        fm = parse_frontmatter(text)\n"
+            '        body = text.split("---", 2)[-1].strip()\n'
+            "        out = (\n"
+            '            "---\\n"\n'
+            "            f\"name: {fm.get('name', path.stem)}\\n\"\n"
+            "            f\"description: {fm.get('description', '')}\\n\"\n"
+            '            "---\\n\\n"\n'
+            "            f\"{body}\\n\"\n"
+            "        )\n"
+            "        target = out_dir / path.name\n"
+            '        target.write_text(out, encoding="utf-8")\n'
+            "        written.append(target)\n"
+            "    return written\n"
+        ),
+        "main.py": (
+            '"""' + title.replace("\\", " ").replace('"""', "'''") + " — agent team pack CLI.\n\n"
+            "Commands: `python main.py lint` (frontmatter/sections/substance +\n"
+            "catalog consistency + pairwise originality), `python main.py convert\n"
+            "--tool claude-code [--dest DIR]`, `python main.py summary`.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import argparse\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "import pack_tools\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    parser = argparse.ArgumentParser(description=__doc__)\n"
+            '    sub = parser.add_subparsers(dest="command")\n'
+            '    sub.add_parser("lint")\n'
+            '    sub.add_parser("summary")\n'
+            '    conv = sub.add_parser("convert")\n'
+            '    conv.add_argument("--tool", default="claude-code")\n'
+            '    conv.add_argument("--dest", default=None)\n'
+            "    args = parser.parse_args(argv)\n\n"
+            '    if args.command == "lint":\n'
+            "        issues = pack_tools.lint_pack(ROOT) + pack_tools.originality_issues(ROOT)\n"
+            "        for issue in issues:\n"
+            '            print(f"LINT: {issue}")\n'
+            '        print(f"{len(issues)} issue(s)")\n'
+            "        return 1 if issues else 0\n"
+            '    if args.command == "convert":\n'
+            "        written = pack_tools.convert(ROOT, args.tool, args.dest)\n"
+            "        for path in written:\n"
+            "            print(path)\n"
+            "        return 0\n"
+            "    # summary (default): the roster at a glance.\n"
+            "    catalog = pack_tools.load_catalog(ROOT)\n"
+            '    print(f"pack: {catalog.get(\'pack\')}")\n'
+            '    for division, agents in (catalog.get("divisions") or {}).items():\n'
+            '        print(f"  {division}: {\', \'.join(agents)}")\n'
+            "    return 0\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    raise SystemExit(main())\n"
+        ),
+        "agents/research/analyst.md": _agent_pack_persona(
+            "analyst", "blue",
+            "Digs into data and sources; produces evidence-backed findings with citations.",
+            "You are the team's evidence engine. You treat every claim as unverified "
+            "until you can point at a source, a number, or a reproducible observation. "
+            "You are comfortable saying \"the data does not support that\" to anyone, "
+            "and you never dress up speculation as fact. Your working style is "
+            "methodical: define the question, gather primary material, quantify what "
+            "can be quantified, and separate observation from interpretation in "
+            "everything you hand off.",
+            "Turn vague questions into answerable ones, then answer them with "
+            "verifiable evidence. Every deliverable ends with a findings list where "
+            "each finding carries its source and a confidence level, so downstream "
+            "teammates can build on solid ground without re-checking your work.",
+            [
+                "Never state a number without naming where it came from.",
+                "Separate observations from interpretations in every report.",
+                "Flag confidence explicitly: high / medium / low, with the reason.",
+                "When sources conflict, present both and say which you trust and why.",
+                "Prefer primary sources; treat aggregators as leads, not evidence.",
+                "If the data is insufficient, say so — never extrapolate silently.",
+            ],
+        ),
+        "agents/research/writer.md": _agent_pack_persona(
+            "writer", "green",
+            "Turns findings into clear, structured prose tuned to the audience.",
+            "You are the team's translator from raw material to finished narrative. "
+            "You care about the reader's time above all: every paragraph earns its "
+            "place or gets cut. You write in plain language, structure documents so "
+            "a skimmer gets the point from headings alone, and keep terminology "
+            "consistent from title to appendix. You respect the analyst's evidence "
+            "and never alter a finding's meaning to make a sentence flow better.",
+            "Produce documents a busy reader absorbs in one pass: a headline that "
+            "states the conclusion, sections ordered by what the reader needs first, "
+            "and every claim traceable back to the findings you were handed.",
+            [
+                "Lead with the conclusion; background comes after, never first.",
+                "One idea per paragraph; cut anything that does not serve the reader.",
+                "Never change a finding's meaning while editing its wording.",
+                "Define a term once and use it identically everywhere after.",
+                "Match register to audience: exec summary != engineering appendix.",
+                "Every document states what the reader should DO with it.",
+            ],
+        ),
+        "agents/ops/coordinator.md": _agent_pack_persona(
+            "coordinator", "orange",
+            "Routes work between agents, tracks state, and escalates when stuck.",
+            "You are the team's dispatcher and memory. You know who owns what, what "
+            "state every task is in, and what is blocked on whom. You do not do the "
+            "specialists' work — you make sure the right specialist gets it with the "
+            "context they need, and that nothing silently stalls. You keep a visible "
+            "ledger of handoffs and you close every loop: a task is either done, "
+            "reassigned, or escalated with a named reason — never abandoned.",
+            "Keep the whole team's work legible and moving: route each request to "
+            "the best-fit agent with full context, watch for stalls, and escalate "
+            "anything that misses two check-ins with a concrete summary of what was "
+            "tried and where it stuck.",
+            [
+                "Every handoff names the owner, the input, and the expected output.",
+                "Track state transitions in the ledger; no silent drops, ever.",
+                "Escalate after two missed check-ins with a summary of attempts.",
+                "Never rewrite a specialist's output — route it, do not edit it.",
+                "When two agents disagree, surface the disagreement, don't bury it.",
+                "A closed task states its outcome: done, reassigned, or escalated.",
+            ],
+        ),
+        "catalog.json": (
+            "{\n"
+            f'  "pack": "{_mcp_server_name(app_name)}",\n'
+            '  "divisions": {\n'
+            '    "research": ["analyst", "writer"],\n'
+            '    "ops": ["coordinator"]\n'
+            "  },\n"
+            '  "convert": {\n'
+            '    "claude-code": { "dest": ".claude/agents" }\n'
+            "  }\n"
+            "}\n"
+        ),
+        "test_agent_pack.py": (
+            '"""The pack\'s own deterministic proof: lint + originality + convert."""\n'
+            "from pathlib import Path\n\n"
+            "import pack_tools\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def test_shipped_personas_pass_lint():\n"
+            "    assert pack_tools.lint_pack(ROOT) == []\n\n\n"
+            "def test_shipped_personas_are_genuinely_distinct():\n"
+            "    assert pack_tools.originality_issues(ROOT) == []\n\n\n"
+            "def test_lint_catches_a_stub_persona(tmp_path):\n"
+            '    bad = tmp_path / "agents" / "misc" / "stub.md"\n'
+            "    bad.parent.mkdir(parents=True)\n"
+            '    bad.write_text("---\\nname: stub\\n---\\nhi\\n")\n'
+            '    (tmp_path / "catalog.json").write_text(\n'
+            '        \'{"pack": "t", "divisions": {"misc": ["stub"]}, "convert": {}}\')\n'
+            "    issues = pack_tools.lint_pack(tmp_path)\n"
+            "    assert any(\"description\" in i for i in issues)\n"
+            "    assert any(\"words\" in i for i in issues)\n"
+            "    assert any(\"Core Mission\" in i for i in issues)\n\n\n"
+            "def test_convert_emits_wellformed_claude_code_agents(tmp_path):\n"
+            '    written = pack_tools.convert(ROOT, "claude-code", tmp_path)\n'
+            "    assert len(written) == len(pack_tools.iter_agents(ROOT))\n"
+            "    for path in written:\n"
+            "        text = path.read_text()\n"
+            "        fm = pack_tools.parse_frontmatter(text)\n"
+            '        assert fm.get("name") and fm.get("description")\n'
+            '        assert "## Critical Rules" in text\n\n\n'
+            "def test_similarity_is_symmetric_and_bounded():\n"
+            '    a = "the quick brown fox jumps over the lazy dog again and again"\n'
+            "    assert pack_tools.shingle_similarity(a, a) == 1.0\n"
+            '    assert pack_tools.shingle_similarity(a, "entirely different words here that never overlap at all") == 0.0\n'
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.claude/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Agent team pack (markdown personas + Python tooling, zero runtime deps)",
+            install=(
+                "No dependencies to install — Python 3.10+ is all the tooling needs:\n\n"
+                "```bash\npython main.py summary\n```"
+            ),
+            usage=(
+                "Lint the roster (frontmatter, required sections, substance, catalog\n"
+                "consistency, pairwise originality):\n\n"
+                "```bash\npython main.py lint\n```\n\n"
+                "Convert the pack for a tool (destinations declared in catalog.json):\n\n"
+                "```bash\npython main.py convert --tool claude-code\n```\n\n"
+                "This emits one agent file per persona under `.claude/agents/`, ready\n"
+                "for Claude Code to pick up. Add personas as\n"
+                "`agents/<division>/<name>.md` and list them in `catalog.json`."
+            ),
+            structure=[
+                ("agents/research/analyst.md", "Evidence-driven research persona"),
+                ("agents/research/writer.md", "Audience-tuned writing persona"),
+                ("agents/ops/coordinator.md", "Routing/escalation persona"),
+                ("catalog.json", "The pack manifest: divisions + convert targets"),
+                ("pack_tools.py", "Pure tooling: lint, originality, convert"),
+                ("main.py", "CLI: lint | convert | summary"),
+                ("test_agent_pack.py", "The pack's own deterministic proof"),
+            ],
+            features=[
+                "Distinct persona definitions with enforced structure (lint gate)",
+                "Pairwise shingle-originality check — no re-skinned duplicates",
+                "One-command convert to tool-specific agent formats (claude-code)",
+                "Catalog-driven: divisions, rosters, and convert targets in one file",
+                "Zero runtime dependencies — bash/python3 only",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_agent_pack.py\n```"
+            ),
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
@@ -2890,6 +3240,7 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "mcp": _mcp,
     "rag": _rag,
     "workflow": _workflow,
+    "agent_pack": _agent_pack,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

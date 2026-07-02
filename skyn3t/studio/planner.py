@@ -59,6 +59,18 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
              "chat with my doc", "chat with your doc", "chat with my pdf",
              "chat with my notes", "chat with my files",
              "knowledge base", "document q&a", "doc q&a", "semantic search")),
+    # Agent team pack (wave-2 §3.8): a persona ROSTER product — markdown agent
+    # definitions + lint/convert tooling, zero runtime deps. NOT the runtime
+    # multi-agent app (that's `workflow`, next): pack briefs name the static
+    # deliverable ("personas", "pack", "roster", "agents for my X"); workflow
+    # briefs describe runtime behavior ("an agent THAT does Y", "team of
+    # agents"). Placed BEFORE workflow so roster briefs aren't stolen by it;
+    # bare "persona"/"agents" are deliberately NOT claimed ("persona quiz app",
+    # "user agents faq" must not route here).
+    ("agent_pack", ("agent personas", "personas for", "persona pack",
+                    "agent pack", "agents pack", "team pack",
+                    "agent team pack", "subagents", "subagent pack",
+                    "agents for my", "agent roster")),
     # Agent-workflow app (wave-2 §3.2, demand #2): a multi-step runner with a
     # run ledger and dry-run triggers — a FastAPI app, NOT the generic web/API
     # scaffold. Placed after rag (no keyword overlap) and before react_native /
@@ -150,6 +162,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # engine split into a PURE workflow_core.py (steps as pure functions, run
     # ledger, typed errors), plus the Python manifest. NO package.json.
     "workflow": ("README.md", "main.py", "workflow_core.py", "requirements.txt"),
+    # Agent team pack: the catalog is the pack's manifest; personas live in
+    # agents/<division>/*.md; main.py is the lint/convert CLI. Zero runtime
+    # deps — NO requirements.txt demanded.
+    "agent_pack": ("README.md", "main.py", "catalog.json", "pack_tools.py"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),

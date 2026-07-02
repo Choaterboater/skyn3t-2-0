@@ -87,6 +87,49 @@ _EMPTY_RETRIEVAL_SERVER = _GOOD_SERVER.replace(
     'return self._send(200, {"query": q, "results": []})',
 )
 
+# The good server's extractive /chat block (must match _GOOD_SERVER verbatim —
+# the seam-variant fixtures below are built by swapping it out).
+_CHAT_EXTRACTIVE_BLOCK = '''            answer = hits[0] if hits else "nothing relevant found"
+            return self._send(200, {"answer": answer, "sources": [], "llm_used": False})'''
+
+# A properly seam-wired /chat: when OPENAI_BASE_URL is set, POST the retrieved
+# context + question to {base}/chat/completions and surface the completion.
+_CHAT_SEAM_BLOCK = '''            base = os.environ.get("OPENAI_BASE_URL", "")
+            if base:
+                import urllib.request
+                req = urllib.request.Request(
+                    base + "/chat/completions",
+                    data=json.dumps({"model": "m", "messages": [
+                        {"role": "user",
+                         "content": "Context: " + " ".join(hits) + " Question: " + q},
+                    ]}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode())
+                answer = data["choices"][0]["message"]["content"]
+                return self._send(200, {"answer": answer, "sources": [], "llm_used": True})
+            answer = hits[0] if hits else "nothing relevant found"
+            return self._send(200, {"answer": answer, "sources": [], "llm_used": False})'''
+
+_LLM_WIRED_SERVER = _GOOD_SERVER.replace(_CHAT_EXTRACTIVE_BLOCK, _CHAT_SEAM_BLOCK)
+
+# Defect: calls the seam but sends ONLY the question — retrieval never feeds
+# generation (the context is dropped on the floor).
+_LLM_NO_CONTEXT_SERVER = _GOOD_SERVER.replace(
+    _CHAT_EXTRACTIVE_BLOCK,
+    _CHAT_SEAM_BLOCK.replace(
+        '"Context: " + " ".join(hits) + " Question: " + q', '"Question: " + q'),
+)
+
+# Defect: calls the seam (with context) but discards the completion for a
+# canned string.
+_LLM_DISCARD_SERVER = _GOOD_SERVER.replace(
+    _CHAT_EXTRACTIVE_BLOCK,
+    _CHAT_SEAM_BLOCK.replace(
+        'answer = data["choices"][0]["message"]["content"]',
+        'answer = "a canned reply " + str(len(data))'),
+)
+
 # Input validation is broken: a missing "text" 500s instead of 4xx-ing.
 _CRASHY_INGEST_SERVER = _GOOD_SERVER.replace(
     'return self._send(422, {"detail": "text is required"})',
@@ -186,6 +229,40 @@ def test_good_stdlib_server_passes(tmp_path):
     assert v.checked["query"] == "marker_retrieved"
     assert v.checked["chat"] == "ok"
     assert 400 <= v.checked["malformed_ingest_status"] < 500
+    # A pure-extractive /chat never calls the seam — compliant, recorded only.
+    assert v.checked["llm_seam"] == "ok_extractive"
+    assert v.checked["llm_called"] is False
+
+
+def test_seam_wired_server_proves_retrieval_feeds_generation(tmp_path):
+    v = check_rag(_project(tmp_path, _LLM_WIRED_SERVER), stack="rag")
+    assert v.ok, v.to_dict()
+    assert v.checked["llm_called"] is True
+    assert v.checked["llm_seam"] == "ok"
+
+
+def test_llm_call_without_retrieved_context_is_an_issue(tmp_path):
+    v = check_rag(_project(tmp_path, _LLM_NO_CONTEXT_SERVER), stack="rag")
+    assert not v.skipped
+    assert v.checked["llm_called"] is True
+    assert any("retrieval feeds generation" in issue for issue in v.issues), v.issues
+
+
+def test_discarded_completion_is_an_issue(tmp_path):
+    v = check_rag(_project(tmp_path, _LLM_DISCARD_SERVER), stack="rag")
+    assert not v.skipped
+    assert v.checked["llm_called"] is True
+    assert any("never surfaced" in issue for issue in v.issues), v.issues
+    # The prompt DID carry the context, so that half of the contract held.
+    assert not any("retrieval feeds generation" in issue for issue in v.issues)
+
+
+def test_seam_fixtures_are_real_variants():
+    # The .replace()-built fixtures silently no-op if _GOOD_SERVER's chat block
+    # drifts — pin that they genuinely differ (the phaser keyword-drift lesson).
+    assert _LLM_WIRED_SERVER != _GOOD_SERVER
+    assert _LLM_NO_CONTEXT_SERVER != _GOOD_SERVER
+    assert _LLM_DISCARD_SERVER != _GOOD_SERVER
 
 
 def test_boot_crash_is_an_issue_not_a_skip(tmp_path):
@@ -246,5 +323,7 @@ def test_real_rag_scaffold_passes_the_gate(tmp_path):
     assert not v.skipped, v.to_dict()
     assert v.ok, v.to_dict()
     assert v.checked["query"] == "marker_retrieved"
-    # The extractive fallback grounds the answer in the ingested chunk.
-    assert v.checked["chat_answer_grounded"] is True
+    # Phase 2: the scaffold's OPENAI_BASE_URL seam is genuinely wired — it
+    # calls the mock, feeds it the retrieved context, and surfaces the reply.
+    assert v.checked["llm_called"] is True, v.to_dict()
+    assert v.checked["llm_seam"] == "ok", v.to_dict()

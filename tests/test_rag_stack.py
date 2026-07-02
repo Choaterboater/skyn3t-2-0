@@ -170,6 +170,23 @@ def test_scaffold_rag_boots_and_queries_with_zero_keys():
     )
 
 
+def test_scaffold_rag_serves_a_root_chat_page():
+    # The app must be USABLE from a browser as-is: '/' serves a self-contained
+    # HTML chat page (liveness probes '/' on every WEB_STACKS build, and a bare
+    # 404 root reads as a failed delivery even when the API works).
+    files = scaffold_for("rag", "demo", "a rag app")
+    main = files["main.py"]
+    assert '@app.get("/"' in main, "main.py must serve a root page"
+    assert "HTMLResponse" in main
+    low = main.lower()
+    assert "<!doctype html>" in low
+    # The page drives the real API — not a static placeholder.
+    for wired in ("/chat", "/ingest", "/v1/stats"):
+        assert wired in main
+    # Self-contained: no external assets/CDNs in the embedded page.
+    assert "https://" not in low.split("<!doctype html>")[1], "chat page must not load external assets"
+
+
 # ---- 4. proof-run: rag is python-family, NOT node / NOT swift -------------
 def test_rag_is_not_a_node_or_swift_stack_for_proof():
     assert "rag" not in _NODE_STACKS

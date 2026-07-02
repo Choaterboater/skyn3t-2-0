@@ -219,7 +219,14 @@ class ImproveEngine:
         task = TaskRequest(
             type="code_improver",
             payload={"worktree_dir": worktree_dir, "brief": goal, "slug": slug,
-                     "stack": stack, "gaps": [goal], "repo_map": repo_ctx},
+                     "stack": stack, "gaps": [goal], "repo_map": repo_ctx,
+                     # Free-text goals get the whole-project agentic session
+                     # (multi-file, can create pages); the per-file path stays
+                     # the automatic fallback inside the improver.
+                     "agentic": bool(getattr(self.settings, "improve_agentic", True)),
+                     "agentic_timeout": int(getattr(self.settings, "improve_agentic_timeout", 900)),
+                     "agentic_provider": (getattr(self.settings, "codegen_cli_provider", "") or ""),
+                     "agentic_model": (getattr(self.settings, "codegen_cli_model", "") or "")},
             capabilities_required=("code_improve",),
             correlation_id=cid,
         )

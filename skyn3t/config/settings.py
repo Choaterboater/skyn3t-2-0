@@ -136,6 +136,15 @@ class Settings(BaseSettings):
     # events far more often than this, so it never trips on real progress. 0
     # disables the guard (only the hard ``agentic_build_timeout`` ceiling applies).
     agentic_idle_timeout: int = 600
+    # Route dashboard Improve goals through the whole-project agentic tool-loop
+    # (same machinery as builds) so a feature goal can CREATE new pages and touch
+    # multiple files, instead of one entrypoint rewrite. The classic per-file
+    # improver remains the automatic fallback when agentic is unavailable, fails,
+    # or lands no changes — turning this on can't do worse than before it existed.
+    improve_agentic: bool = True
+    # Wall-clock budget (seconds) for one agentic improve session. Improves are
+    # scoped changes to an existing app — far smaller than a full build (1800s).
+    improve_agentic_timeout: int = 900
     # Hermes-style orchestrator-worker codegen: decompose a non-trivial build into
     # parallel scoped sub-agents (frontend / backend / tests / config), each in its
     # own worktree, then merge + let the (error-aware) proof/fix-loop wire them.

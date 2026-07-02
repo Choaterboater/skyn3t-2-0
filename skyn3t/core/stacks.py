@@ -76,6 +76,16 @@ CONTENT_STACKS = frozenset({"agent_pack"})
 # advertised subcommand, invalid-input rejection) — the wave-2 §3.6 tier.
 CLI_STACKS = frozenset({"python", "cli", "python_cli"})
 
+# Stacks whose deploy serves a LIVE HTTP URL (static / node_ssr / container deploy
+# kinds) — the ones the post-deploy `deploy_check` gate can probe. Excludes
+# artifact/mobile stacks (tauri/desktop/mcp/cli/swift/react_native) that have no
+# hosted URL to check.
+DEPLOYABLE_URL_STACKS = frozenset({
+    "react", "react_vite", "nextjs", "next", "astro", "remix",
+    "static", "static_html", "phaser",
+    "fastapi", "node_express", "express", "rag", "workflow",
+})
+
 GROUPS: dict[str, frozenset[str]] = {
     "game": GAME_STACKS,
     "web": WEB_STACKS,
@@ -86,6 +96,7 @@ GROUPS: dict[str, frozenset[str]] = {
     "workflow": WORKFLOW_STACKS,
     "content": CONTENT_STACKS,
     "cli": CLI_STACKS,
+    "deployable_url": DEPLOYABLE_URL_STACKS,
 }
 
 
@@ -129,6 +140,11 @@ GATES: tuple[GateSpec, ...] = (
              "skyn3t.studio.runner:StudioRunner._run_workflow_check"),
     GateSpec("cli_check", CLI_STACKS, "cli_check_enabled",
              "skyn3t.studio.runner:StudioRunner._run_cli_check"),
+    # Ship pillar — after a REAL deploy, re-run the liveness/contract probes
+    # against the LIVE url. Opt-in (deploy_check_enabled defaults False) and runs
+    # POST-deploy (from `skyn3t deploy --now`), not in the in-build gate loop.
+    GateSpec("deploy_check", DEPLOYABLE_URL_STACKS, "deploy_check_enabled",
+             "skyn3t.studio.runner:StudioRunner._run_deploy_check"),
 )
 
 _GATES_BY_NAME = {g.name: g for g in GATES}

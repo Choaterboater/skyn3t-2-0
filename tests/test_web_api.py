@@ -146,6 +146,25 @@ async def test_visual_self_heal_setting_toggle_does_not_persist_in_tests():
     assert st.settings.visual_self_heal is True
 
 
+async def test_settings_payload_surfaces_improve_agentic():
+    st = _state()
+    st.settings.improve_agentic = False
+    payload = await routes.settings_payload(st)
+    assert payload["improve_agentic"] is False
+
+
+async def test_improve_agentic_setting_toggle_does_not_persist_in_tests():
+    st = _state()
+    res = await routes.set_improve_agentic(st, False, persist=False)
+    assert res["improve_agentic"] is False
+    assert res["improve_agentic_timeout"] >= 1
+    assert st.settings.improve_agentic is False
+    # And back on — the default posture.
+    res = await routes.set_improve_agentic(st, True, persist=False)
+    assert res["improve_agentic"] is True
+    assert st.settings.improve_agentic is True
+
+
 async def test_submit_build_requires_brief():
     st = _state()
     with pytest.raises(ValueError):

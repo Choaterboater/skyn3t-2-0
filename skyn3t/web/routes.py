@@ -911,6 +911,9 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         # UI can tell the user real assets won't be generated until it's enabled.
         "asset_gen": bool(getattr(s, "asset_gen", False)),
         "visual_self_heal": bool(getattr(s, "visual_self_heal", False)),
+        # Whole-project agentic improve (multi-file Improve goals) — surfaced so
+        # the Settings UI can toggle it without env editing.
+        "improve_agentic": bool(getattr(s, "improve_agentic", True)),
     }
 
 
@@ -1018,6 +1021,30 @@ async def set_visual_self_heal(
         "visual_self_heal": enabled,
         "visual_self_heal_max_rounds": int(
             getattr(state.settings, "visual_self_heal_max_rounds", 2)
+        ),
+    }
+
+
+async def set_improve_agentic(
+    state: AppState, enabled: bool, persist: bool = True
+) -> dict[str, Any]:
+    """Toggle whole-project agentic improve for future dashboard Improve runs
+    (multi-file goals via the agentic tool-loop; OFF = classic single-file
+    rewrites only). Same live+env+persist idiom as set_visual_self_heal."""
+    import os
+
+    enabled = bool(enabled)
+    try:
+        state.settings.improve_agentic = enabled
+    except Exception:  # noqa: BLE001
+        pass
+    os.environ["SKYN3T_IMPROVE_AGENTIC"] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var("SKYN3T_IMPROVE_AGENTIC", "true" if enabled else "false")
+    return {
+        "improve_agentic": enabled,
+        "improve_agentic_timeout": int(
+            getattr(state.settings, "improve_agentic_timeout", 900)
         ),
     }
 
@@ -1222,7 +1249,8 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
             "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
-            "visual_self_heal", "visual_self_heal_max_rounds")
+            "visual_self_heal", "visual_self_heal_max_rounds",
+            "improve_agentic", "improve_agentic_timeout")
     return {k: getattr(s, k, None) for k in keys}
 
 
@@ -1422,6 +1450,11 @@ def build_router(state: AppState) -> Any:
     @router.post("/settings/visual_self_heal", dependencies=[auth])
     async def _set_visual_self_heal(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_visual_self_heal(
+            state, bool(body.get("enabled", body.get("on", False))))
+
+    @router.post("/settings/improve_agentic", dependencies=[auth])
+    async def _set_improve_agentic(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await set_improve_agentic(
             state, bool(body.get("enabled", body.get("on", False))))
 
     @router.post("/settings/build_metadata", dependencies=[auth])

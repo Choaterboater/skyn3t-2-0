@@ -48,9 +48,10 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# Game stacks this reconciler acts on. A frozenset so extending to another game
-# stack later is a one-token change; anything else is a clean no-op.
-_GAME_STACKS: frozenset[str] = frozenset({"phaser"})
+# Game stacks this reconciler acts on (the registry object — see
+# skyn3t/core/stacks.py + tests/test_stack_registry_drift.py); anything else is
+# a clean no-op.
+from skyn3t.core.stacks import GAME_STACKS as _GAME_STACKS  # noqa: E402
 
 # Phaser loader calls we understand. ``\.load\.`` matches ``this.load.``,
 # ``scene.load.``, ``that.load.`` etc.; the two capture groups are the KEY (first

@@ -77,7 +77,75 @@ def test_gate_applies_answers_the_dispatch_question():
 def test_runner_sets_are_the_registry_objects():
     from skyn3t.studio import runner
 
-    assert runner._WEB_STACKS == stacks.WEB_STACKS
-    assert runner._DESIGN_STACKS == stacks.DESIGN_STACKS
-    assert runner._UI_WEB_STACKS == stacks.UI_WEB_STACKS
-    assert runner._GAME_STACKS == stacks.GAME_STACKS
+    # Identity, not equality — a pasted copy with the same contents must FAIL.
+    assert runner._WEB_STACKS is stacks.WEB_STACKS
+    assert runner._DESIGN_STACKS is stacks.DESIGN_STACKS
+    assert runner._UI_WEB_STACKS is stacks.UI_WEB_STACKS
+    assert runner._GAME_STACKS is stacks.GAME_STACKS
+
+
+def test_satellite_game_stack_copies_are_the_registry_object():
+    """The four historically byte-identical _GAME_STACKS copies (the concrete
+    instance of the vocabulary gotcha) must all be the registry object."""
+    from skyn3t.adapters import llm
+    from skyn3t.agents import architect
+    from skyn3t.studio import asset_reconcile
+
+    assert asset_reconcile._GAME_STACKS is stacks.GAME_STACKS
+    assert architect._GAME_STACKS is stacks.GAME_STACKS
+    assert llm._GAME_STACKS is stacks.GAME_STACKS
+
+
+# ---------------------------------------------------------------------------
+# Section C — cross-vocabulary completeness: a NEW stack fails here loudly if
+# any touchpoint is missed (the item-62 payload; docs/ADDING_A_STACK.md).
+# ---------------------------------------------------------------------------
+
+# Proof families proof_run branches on. Python-family stacks are proved via
+# boot-import/pytest (no dedicated frozenset in proof_run — maintained here).
+_PY_PROOF_FAMILY = frozenset({"fastapi", "python", "mcp"})
+
+
+def test_every_builder_stack_covers_all_vocabularies():
+    """planner keywords -> agent vocab -> scaffold builder -> proof family:
+    every canonical stack must appear in ALL of them (a miss = the stack
+    silently falls back or no-ops at that site)."""
+    from skyn3t.agents import _scaffold
+    from skyn3t.agents._common import KNOWN_STACKS, _normalize_stack
+    from skyn3t.studio import planner, proof_run
+    from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS
+
+    signature_keys = {s for s, _ in planner._STACK_SIGNATURES}
+    for stack in REAL_BUILDER_STACKS:
+        norm = _normalize_stack(stack)
+        assert norm in KNOWN_STACKS, f"{stack}: no agent-vocab mapping"
+        assert norm in _scaffold._BUILDERS, (
+            f"{stack}: no scaffold builder for {norm} (would silently fall back)"
+        )
+        assert stack in signature_keys or stack in planner._STACK_FILE_CHECKLIST, (
+            f"{stack}: planner has no keywords/file checklist"
+        )
+        families = (
+            (stack in proof_run._NODE_STACKS)
+            + (stack in proof_run._SWIFT_STACKS)
+            + (stack in _PY_PROOF_FAMILY)
+        )
+        assert families == 1, f"{stack}: in {families} proof families, expected exactly 1"
+
+
+def test_deliberately_local_sets_keep_their_documented_relationships():
+    """Sets that intentionally diverge from the registry stay local — but their
+    RELATIONSHIP to the registry is pinned so silent drift still fails."""
+    from skyn3t.intelligence import skill_library
+    from skyn3t.studio import seo_check
+
+    # seo_check is documented as "deliberately NARROWER" than the UI-web group:
+    # exactly the UI stacks minus the non-crawlable ones.
+    assert seo_check._SEO_WEB_STACKS == stacks.UI_WEB_STACKS - {
+        "tauri", "desktop", "phaser",
+    }
+    # mcp is a protocol server, never a web/game/design stack.
+    assert [n for n, g in stacks.GROUPS.items() if "mcp" in g] == ["mcp"]
+    # skill recall must bridge every game token to its alias group.
+    for tok in stacks.GAME_STACKS:
+        assert len(skill_library._stack_aliases(tok)) > 1, tok

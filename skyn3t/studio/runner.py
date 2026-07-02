@@ -35,6 +35,18 @@ from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.orchestrator import Orchestrator
+
+# Stack-group membership + gate applicability live in the registry
+# (skyn3t/core/stacks.py — the single source of truth; see
+# tests/test_stack_registry_drift.py). Aliased so every internal read and
+# test import keeps its historical name.
+from skyn3t.core.stacks import (
+    DESIGN_STACKS as _DESIGN_STACKS,
+    GAME_STACKS as _GAME_STACKS,
+    UI_WEB_STACKS as _UI_WEB_STACKS,
+    WEB_STACKS as _WEB_STACKS,  # noqa: F401 - re-exported; tests + drift check read it here
+    gate_applies as _gate_applies,
+)
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.clarification import clarify
@@ -65,31 +77,6 @@ from skyn3t.worktree import (
 
 log = structlog.get_logger(__name__)
 
-# Web/site stacks that should also pull frontend/design skills. `fastapi` is
-# included deliberately: SkyN3t's fastapi builds are web apps that serve a UI
-# and always have API/interface-design concerns; the design skills are advisory.
-_WEB_STACKS = frozenset({
-    "react", "react_vite", "nextjs", "next", "astro", "remix",
-    "static", "static_html", "fastapi", "node_express", "express",
-    "tauri", "desktop",  # Tauri desktop: frontend is a Vite/React web app
-    "phaser",  # Phaser 3 game: a Vite-built web app served (canvas) at '/'
-})
-# Stacks that warrant design-skill injection but are NOT HTTP-served (so they
-# must not trigger the web liveness GET-/ probe). react_native renders UI but
-# boots in a simulator, not a localhost server.
-_DESIGN_STACKS = _WEB_STACKS | frozenset({"react_native"})
-
-# UI web stacks whose root '/' MUST render a page — used for the always-on
-# runtime gate. Excludes API-only stacks (fastapi/express) whose '/' may
-# legitimately 404, so we never falsely no_go a working API.
-_UI_WEB_STACKS = frozenset({
-    "react", "react_vite", "vite", "nextjs", "next",
-    "astro", "remix", "static", "static_html",
-    "tauri", "desktop", "phaser",
-})
-# Stacks whose runtime LOGIC is verified by the headless invariant gate (it runs
-# the pure src/sim.js core in Node). Keep in sync with architect._GAME_STACKS.
-_GAME_STACKS = frozenset({"phaser"})
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 
 # Dir names that hold build output / vendored / preview snapshots — never a SEO
@@ -1285,7 +1272,7 @@ class StudioRunner:
           skip (no node/timeout: applicable=False, reason not about the sim core)
           still degrades open.
         """
-        if gate is None or stack not in _GAME_STACKS:
+        if gate is None or not _gate_applies("headless_gate", stack):
             return False, None
         if gate.applicable:
             if gate.passed:
@@ -1314,7 +1301,7 @@ class StudioRunner:
         Genuine infra problems still degrade open — only real, attributable gaps
         block. Never raises.
         """
-        if plan.stack not in _GAME_STACKS:
+        if not _gate_applies("headless_gate", plan.stack):
             return None
         if not bool(getattr(self.settings, "headless_gate_enabled", True)):
             return None
@@ -2897,7 +2884,8 @@ class StudioRunner:
             # End-of-build liveness (web stacks): serve the delivered app, hit
             # every route/page, repair failures, and dampen the score by how many
             # respond — optionally gating the verdict. Never crashes the build.
-            if plan.stack in _WEB_STACKS and getattr(self.settings, "liveness_check_enabled", True):
+            if _gate_applies("liveness", plan.stack) and getattr(
+                    self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
                     manifest, project_dir, plan, proof, final_score, verdict)
 
@@ -2907,7 +2895,8 @@ class StudioRunner:
             # robots/sitemap). Like game_visual/qa_playtest it is recorded + fed to the
             # improver but NEVER flips `verdict` — a static SEO nit must not no_go a
             # working app. Soft-skips non-HTML stacks + page-less projects. Never raises.
-            if plan.stack in _WEB_STACKS and getattr(self.settings, "seo_check_enabled", True):
+            if _gate_applies("seo_check", plan.stack) and getattr(
+                    self.settings, "seo_check_enabled", True):
                 await self._run_seo_check(
                     manifest, plan, project_dir, correlation_id, extra)
 
@@ -2918,7 +2907,8 @@ class StudioRunner:
             # ONE snapshot/re-proof/rollback repair but NEVER flips `verdict`; it
             # soft-skips when the mcp SDK isn't importable. Runs BEFORE the final
             # consistency pass so a kept repair is re-verified by it.
-            if plan.stack == "mcp" and getattr(self.settings, "mcp_check_enabled", True):
+            if _gate_applies("mcp_check", plan.stack) and getattr(
+                    self.settings, "mcp_check_enabled", True):
                 await self._run_mcp_check(
                     manifest, plan, project_dir, correlation_id, extra)
 

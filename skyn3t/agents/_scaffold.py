@@ -2143,7 +2143,8 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             '"""' + doc_title + " — a RAG (chat with your documents) FastAPI app.\n\n"
             "Routes: GET / (a built-in browser chat page), POST /ingest (add a\n"
             "document), GET /query (retrieve chunks), POST /chat (answer grounded\n"
-            "in retrieved context), GET /health, GET /v1/stats. Retrieval logic\n"
+            "in retrieved context), GET /chat/stream (the same answer over SSE,\n"
+            "word-by-word), GET /health, GET /v1/stats. Retrieval logic\n"
             "lives in ``rag_core.py`` (pure, no web framework); this module is the\n"
             "thin HTTP layer.\n\n"
             "LLM seam: set OPENAI_BASE_URL (and optionally OPENAI_API_KEY /\n"
@@ -2155,7 +2156,7 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             "import os\n"
             "from pathlib import Path\n\n"
             "from fastapi import FastAPI, HTTPException, Query\n"
-            "from fastapi.responses import HTMLResponse\n"
+            "from fastapi.responses import HTMLResponse, StreamingResponse\n"
             "from pydantic import BaseModel, Field\n\n"
             "import rag_core\n\n"
             f'app = FastAPI(title="{_mcp_server_name(app_name)}")\n'
@@ -2209,7 +2210,6 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             '<button onclick="ingest()">Ingest</button>\n'
             '<div id="stats"></div>\n'
             "<script>\n"
-            'function esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }\n'
             "function refreshStats() {\n"
             '  fetch("/v1/stats").then(function (r) { return r.json(); }).then(function (s) {\n'
             '    document.getElementById("stats").textContent =\n'
@@ -2219,15 +2219,16 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             "function ask() {\n"
             '  var q = document.getElementById("q").value.trim();\n'
             "  if (!q) return;\n"
-            '  fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" },\n'
-            "                   body: JSON.stringify({ question: q }) })\n"
-            "    .then(function (r) { return r.json(); })\n"
-            "    .then(function (data) {\n"
-            "      var srcs = (data.sources || []).map(function (s) { return s.source; });\n"
-            '      var html = "<div class=answer>" + esc(data.answer || "(no answer)") +\n'
-            '        (srcs.length ? "<div class=src>sources: " + esc(srcs.join(", ")) + "</div>" : "") + "</div>";\n'
-            '      document.getElementById("answers").insertAdjacentHTML("afterbegin", html);\n'
-            "    });\n"
+            '  var div = document.createElement("div");\n'
+            '  div.className = "answer";\n'
+            '  document.getElementById("answers").prepend(div);\n'
+            "  // Stream the answer word-by-word over SSE (data: [DONE] terminates).\n"
+            '  var es = new EventSource("/chat/stream?question=" + encodeURIComponent(q));\n'
+            "  es.onmessage = function (e) {\n"
+            '    if (e.data === "[DONE]") { es.close(); return; }\n'
+            '    div.textContent += (div.textContent ? " " : "") + e.data;\n'
+            "  };\n"
+            "  es.onerror = function () { es.close(); };\n"
             "}\n"
             "function ingest() {\n"
             '  var text = document.getElementById("doc").value.trim();\n'
@@ -2311,6 +2312,27 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             '        answer = results[0]["text"]\n'
             '        return {"answer": answer, "sources": results, "llm_used": False}\n'
             '    return {"answer": answer, "sources": results, "llm_used": True}\n\n\n'
+            '@app.get("/chat/stream")\n'
+            "def chat_stream(question: str = Query(min_length=1), k: int = 3) -> StreamingResponse:\n"
+            '    """SSE variant of /chat: streams the grounded answer word-by-word.\n\n'
+            "    Same retrieval + LLM-or-extractive path as POST /chat; the answer is\n"
+            "    emitted as `data:` frames and terminated with `data: [DONE]` so\n"
+            "    clients (and gates) know the stream is complete.\n"
+            '    """\n'
+            "    results = STORE.search(question, k=k)\n"
+            "    if not results:\n"
+            "        answer = (\n"
+            '            "I could not find anything relevant in the corpus. "\n'
+            '            "Ingest documents via POST /ingest and ask again."\n'
+            "        )\n"
+            "    else:\n"
+            '        context = "\\n\\n".join(r["text"] for r in results)\n'
+            "        answer = _llm_answer(question, context) or results[0][\"text\"]\n\n"
+            "    def _events():\n"
+            "        for word in answer.split():\n"
+            '            yield f"data: {word}\\n\\n"\n'
+            '        yield "data: [DONE]\\n\\n"\n\n'
+            '    return StreamingResponse(_events(), media_type="text/event-stream")\n\n\n'
             'if __name__ == "__main__":\n'
             "    import uvicorn\n\n"
             "    # PORT env so tooling (and the rag_check gate) can pick a free port.\n"

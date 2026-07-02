@@ -57,6 +57,18 @@ class Handler(BaseHTTPRequestHandler):
             hits = [d for d in DOCS if any(t in d.lower() for t in q.split())]
             results = [{"text": d, "source": "inline", "score": 1.0} for d in hits]
             return self._send(200, {"query": q, "results": results})
+        if url.path == "/chat/stream":
+            q = (parse_qs(url.query).get("question") or [""])[0].lower()
+            hits = [d for d in DOCS if any(t in d.lower() for t in q.split())]
+            answer = hits[0] if hits else "nothing relevant found"
+            frames = "".join("data: " + w + "\\n\\n" for w in answer.split())
+            body = (frames + "data: [DONE]\\n\\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         return self._send(404, {"detail": "not found"})
 
     def do_POST(self):
@@ -120,6 +132,10 @@ _LLM_NO_CONTEXT_SERVER = _GOOD_SERVER.replace(
     _CHAT_SEAM_BLOCK.replace(
         '"Context: " + " ".join(hits) + " Question: " + q', '"Question: " + q'),
 )
+
+# Defect: no SSE endpoint at all (/chat/stream 404s).
+_NO_STREAM_SERVER = _GOOD_SERVER.replace(
+    'url.path == "/chat/stream"', 'url.path == "/chat/stream-disabled"')
 
 # Defect: calls the seam (with context) but discards the completion for a
 # canned string.
@@ -232,6 +248,16 @@ def test_good_stdlib_server_passes(tmp_path):
     # A pure-extractive /chat never calls the seam — compliant, recorded only.
     assert v.checked["llm_seam"] == "ok_extractive"
     assert v.checked["llm_called"] is False
+    # The SSE tier: frames + terminator + grounded content.
+    assert v.checked["chat_stream"] == "ok"
+    assert v.checked["chat_stream_grounded"] is True
+
+
+def test_missing_sse_endpoint_is_an_issue(tmp_path):
+    v = check_rag(_project(tmp_path, _NO_STREAM_SERVER), stack="rag")
+    assert not v.skipped
+    assert v.checked["chat_stream"] == "failed"
+    assert any("/chat/stream" in issue for issue in v.issues), v.issues
 
 
 def test_seam_wired_server_proves_retrieval_feeds_generation(tmp_path):
@@ -323,6 +349,9 @@ def test_real_rag_scaffold_passes_the_gate(tmp_path):
     assert not v.skipped, v.to_dict()
     assert v.ok, v.to_dict()
     assert v.checked["query"] == "marker_retrieved"
+    # The SSE tier streams the grounded answer and terminates.
+    assert v.checked["chat_stream"] == "ok", v.to_dict()
+    assert v.checked["chat_stream_grounded"] is True, v.to_dict()
     # Phase 2: the scaffold's OPENAI_BASE_URL seam is genuinely wired — it
     # calls the mock, feeds it the retrieved context, and surfaces the reply.
     assert v.checked["llm_called"] is True, v.to_dict()

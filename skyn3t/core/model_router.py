@@ -239,5 +239,47 @@ class ModelRouter:
             model = _FREE_DEFAULTS[tier]
         return model
 
+    def fallback_candidates(self, tier: Tier, primary: str | None = None) -> list[str]:
+        """Ordered alternative model ids to try when ``primary`` fails with a
+        model-level error (retired :free id, invalid model, no endpoints) or
+        persistent transient errors.
+
+        Live-catalog picks come first (prefer a currently-valid model), then the
+        static per-tier defaults as an *offline backstop* — so a build always has
+        SOMETHING to fall over to even when the router can't reach OpenRouter (the
+        exact condition under which the original dead-model incident hid). Policy
+        (``free_only`` / ``no_claude``) is applied and ``primary`` is removed.
+        Best-effort: never raises."""
+        cands: list[str] = []
+        try:
+            if self.settings.free_only:
+                live = live_free_model_ids()  # [] when offline -> static backstop only
+                for marker in _FREE_TIER_PREFS.get(tier, ()):  # best-for-tier first
+                    for m in live:
+                        if marker in m.lower() and m not in cands:
+                            cands.append(m)
+                for t in Tier:  # static offline backstop across every tier
+                    d = _FREE_DEFAULTS[t]
+                    if d not in cands:
+                        cands.append(d)
+            else:
+                for fam in _CODER_FAMILIES:  # newest live model per strong-coder family
+                    m = newest_paid_model(fam)
+                    if m and m not in cands:
+                        cands.append(m)
+                for t in Tier:
+                    d = _PAID_DEFAULTS[t]
+                    if d not in cands:
+                        cands.append(d)
+        except Exception as exc:  # noqa: BLE001 - fallback resolution must never raise
+            log.warning("router.fallback_candidates_error", error=str(exc)[:120])
+            cands = list((_FREE_DEFAULTS if self.settings.free_only else _PAID_DEFAULTS).values())
+        out: list[str] = []
+        for m in cands:
+            m2 = self._apply_policy(m, tier)  # honor no_claude / free_only
+            if m2 and m2 != primary and m2 not in out:
+                out.append(m2)
+        return out
+
     def describe(self) -> dict[str, str]:
         return {t.value: self.resolve(t) for t in Tier}

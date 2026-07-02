@@ -179,6 +179,32 @@ class Settings(BaseSettings):
     # this only affects the agentic path.
     slice_tier_models: dict[str, str] = {}
 
+    # ---- LLM call resilience (deep-dive item 2: fallback + retry + ctx-edit) --
+    # Model failover (langchain ModelFallbackMiddleware): when a routed model
+    # fails with a model-level error (retired :free 404, invalid id) or persistent
+    # transient errors, fall over through an ordered candidate list. This is the
+    # guard against the `deepseek-*:free` 404 that once silently degraded every
+    # build. Candidates = this comma-list (tried first) + the router's per-tier
+    # picks. Empty list -> router-derived candidates only.
+    llm_fallback_enabled: bool = True
+    llm_fallback_models: str = ""
+    # Bounded transient retry BEFORE failover (langchain retry w/ backoff+jitter):
+    # 429 / 5xx / timeouts / connection errors are retried on the SAME model with
+    # exponential backoff + jitter; genuine bad requests (400 valid model) and auth
+    # (401/403) fail fast. ``base``/``max`` are the backoff bounds in seconds.
+    llm_retry_enabled: bool = True
+    llm_max_retries: int = Field(default=3, ge=0, le=8)
+    llm_retry_base_delay: float = Field(default=0.5, ge=0.0)
+    llm_retry_max_delay: float = Field(default=8.0, ge=0.0)
+    # Agentic tool-loop context editing (langchain ClearToolUsesEdit): when the
+    # SENT history exceeds this byte budget, OLD tool-result file dumps (read_file/
+    # list_files output) are replaced with a short stub on a COPY of the history —
+    # keeping the system prompt, the user goal, and the most recent K tool results
+    # intact. Kills the read-dump x long-session context blowout on cheap models.
+    agentic_context_editing: bool = True
+    agentic_context_budget_bytes: int = Field(default=200_000, ge=0)
+    agentic_context_keep_last: int = Field(default=6, ge=0)
+
     # GitHub token (env SKYN3T_GITHUB_TOKEN) for RepoScout search + repo ingest.
     # Authenticated search lifts the rate limit so scouting returns real, varied
     # repos instead of degrading to the built-in seed list.

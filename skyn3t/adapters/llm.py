@@ -24,6 +24,7 @@ import base64
 import contextvars
 import json
 import os
+import random
 import shutil
 import signal
 import tempfile
@@ -335,6 +336,87 @@ def _strip_code_fences(text: str) -> str:
     return t
 
 
+# --- LLM call resilience: classify -> retry / failover / fail-fast ----------
+# (deep-dive item 2/3: langchain ModelFallbackMiddleware + retry w/ backoff+jitter)
+#
+# One pure classifier drives both retry and model failover. It maps a raised
+# LLM-call error to a recovery strategy:
+#   "transient" -> retry the SAME model (429/5xx/timeout/connection); once the
+#                  retry budget is spent, fail over to the next candidate model;
+#   "model"     -> the MODEL is the problem (retired / invalid id / no endpoints);
+#                  skip retry and fail over immediately;
+#   "fatal"     -> auth / genuine bad request; a retry or a different model won't
+#                  help, so fail fast and surface it.
+# Status-first + provider-body aware — mirrors orchestrator.classify_error but is
+# keyed on the EXCEPTION (status code + body), so it can tell a retired-model 404
+# from a rate-limit 429 the coarse result-string scan can't.
+_TRANSIENT_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+_MODEL_STATUS = frozenset({404})
+_FATAL_STATUS = frozenset({401, 403})
+# Provider-body markers that turn an ambiguous 400 into a MODEL error (else a 400
+# is a genuine bad request -> fatal). OpenRouter phrases a dead/invalid model a
+# few different ways.
+_MODEL_ERROR_MARKERS = (
+    "not a valid model", "is not a valid model", "no endpoints", "no allowed providers",
+    "model_not_found", "unknown model", "invalid model", "model not found",
+    "does not exist", "no such model",
+)
+# Tool-result messages at or below this size aren't file dumps (they're "OK wrote"
+# / error strings), so context editing leaves them alone.
+_ELIDE_MIN_BYTES = 200
+
+
+def _err_status(exc: BaseException) -> int | None:
+    resp = getattr(exc, "response", None)
+    code = getattr(resp, "status_code", None)
+    return int(code) if isinstance(code, int) else None
+
+
+def _err_body(exc: BaseException) -> str:
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    try:
+        return resp.text or ""
+    except Exception:  # noqa: BLE001 - a body we can't read just isn't a model marker
+        return ""
+
+
+def _err_reason(exc: BaseException | None) -> str:
+    """Short, log-safe reason tag for a failover/retry event."""
+    if exc is None:
+        return "unknown"
+    s = _err_status(exc)
+    return f"http_{s}" if s is not None else type(exc).__name__
+
+
+def classify_llm_error(exc: BaseException) -> str:
+    """Pure recovery-strategy classifier for a failed LLM call.
+
+    Returns ``"transient"`` (retry same model), ``"model"`` (fail over to the next
+    candidate), or ``"fatal"`` (fail fast)."""
+    # Connection resets / timeouts / read errors (all httpx.TransportError) are
+    # transient by nature; a bounded retry usually clears them.
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return "transient"
+    status = _err_status(exc)
+    if status is None:
+        # Opaque, non-HTTP failure (a flaky gateway returning junk we couldn't
+        # parse): retry it — the retry budget caps how long that can go.
+        return "transient"
+    if status in _MODEL_STATUS:
+        return "model"
+    if status == 400:
+        return "model" if any(m in _err_body(exc).lower() for m in _MODEL_ERROR_MARKERS) else "fatal"
+    if status in _FATAL_STATUS:
+        return "fatal"
+    if status in _TRANSIENT_STATUS:
+        return "transient"
+    if 400 <= status < 500:
+        return "fatal"   # other client errors won't self-heal
+    return "transient"    # unknown 5xx / informational -> retry
+
+
 @dataclass
 class LLMResult:
     text: str
@@ -506,6 +588,132 @@ class LLMClient:
                 return f"{prov}_cli"
         return "stub"
 
+    # ---- call resilience: transient retry + ordered model failover ----------
+    def _retry_budget(self) -> int:
+        if not getattr(self.settings, "llm_retry_enabled", True):
+            return 0
+        return max(0, int(getattr(self.settings, "llm_max_retries", 3)))
+
+    def _retry_delay(self, attempt: int) -> float:
+        """Exponential backoff with jitter (jitter staggers concurrent retries off
+        a shared failing endpoint — the same shape as orchestrator._backoff_delay,
+        but tuned for a single LLM call)."""
+        base = float(getattr(self.settings, "llm_retry_base_delay", 0.5))
+        cap = float(getattr(self.settings, "llm_retry_max_delay", 8.0))
+        d = min((2 ** attempt) * base, cap)
+        return d + random.uniform(0.0, d * 0.5)
+
+    def _fallback_models(self, primary: str, tier: Tier) -> list[str]:
+        """Ordered fallback model ids AFTER ``primary``: the operator override
+        (``llm_fallback_models`` comma-list) first, then the router's per-tier
+        candidates. De-duped, ``primary`` removed. ``[]`` when failover is off."""
+        if not getattr(self.settings, "llm_fallback_enabled", True):
+            return []
+        out: list[str] = []
+        for m in str(getattr(self.settings, "llm_fallback_models", "") or "").split(","):
+            m = m.strip()
+            if m and m != primary and m not in out:
+                out.append(m)
+        try:
+            for m in self.router.fallback_candidates(tier, primary=primary):
+                if m and m != primary and m not in out:
+                    out.append(m)
+        except Exception as exc:  # noqa: BLE001 - fallback resolution must never crash a call
+            log.warning("llm.fallback_resolve_error", error=str(exc)[:120])
+        return out
+
+    async def _resilient_call(self, primary: str, tier: Tier, attempt_fn):
+        """Run ``attempt_fn(model)`` with bounded transient retry + ordered model
+        failover. ``attempt_fn`` is an async callable taking a model id and returning
+        the call result or raising.
+
+        Fallback candidates are resolved LAZILY (only once the primary misses) so the
+        happy path never pays the router lookup. A ``fatal`` error short-circuits
+        immediately; on total exhaustion the ORIGINAL (primary) error is re-raised —
+        so the caller sees the real root cause, not a downstream fallback's noise."""
+        max_retries = self._retry_budget()
+        first_exc: BaseException | None = None
+        candidates = [primary]
+        ci = 0
+        while ci < len(candidates):
+            model = candidates[ci]
+            for attempt in range(max_retries + 1):
+                try:
+                    return await attempt_fn(model)
+                except Exception as exc:  # noqa: BLE001 - classified for recovery
+                    if first_exc is None:
+                        first_exc = exc
+                    cat = classify_llm_error(exc)
+                    if cat == "fatal":
+                        raise
+                    if cat == "transient" and attempt < max_retries:
+                        log.info("llm.retry", model=model, attempt=attempt + 1,
+                                 reason=_err_reason(exc))
+                        await asyncio.sleep(self._retry_delay(attempt))
+                        continue
+                    break  # transient budget spent, or a model error -> try a fallback
+            # Resolve fallbacks lazily the first time the primary misses.
+            if ci == 0 and len(candidates) == 1:
+                candidates.extend(self._fallback_models(primary, tier))
+            if ci + 1 < len(candidates):
+                log.info("llm.model_failover",
+                         **{"from": model, "to": candidates[ci + 1],
+                            "tier": getattr(tier, "value", str(tier)),
+                            "reason": _err_reason(first_exc)})
+            ci += 1
+        assert first_exc is not None  # the loop only exits here after a failure
+        raise first_exc
+
+    # ---- agentic context editing (deep-dive item 4: ClearToolUsesEdit) ------
+    @staticmethod
+    def _msg_bytes(m: dict) -> int:
+        try:
+            return len(json.dumps(m, ensure_ascii=False).encode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001
+            return len(str(m).encode("utf-8", "replace"))
+
+    def _edit_context(self, messages: list[dict]) -> list[dict]:
+        """Return a possibly-shrunk COPY of the agentic history for SENDING.
+
+        When the serialized history exceeds ``agentic_context_budget_bytes``, OLD
+        tool-result messages (read_file/list_files file dumps) are replaced with a
+        short stub — oldest first, until back under budget — while preserving the
+        system prompt, the user goal, all assistant/tool-call structure, and the
+        most recent ``agentic_context_keep_last`` (K) tool results intact. The
+        caller's canonical ``messages`` is NEVER mutated. Degrade-open: the feature
+        off, or any error, returns the original list unchanged."""
+        try:
+            if not getattr(self.settings, "agentic_context_editing", True):
+                return messages
+            budget = int(getattr(self.settings, "agentic_context_budget_bytes", 200_000))
+            if budget <= 0:
+                return messages
+            total = sum(self._msg_bytes(m) for m in messages)
+            if total <= budget:
+                return messages
+            keep = max(0, int(getattr(self.settings, "agentic_context_keep_last", 6)))
+            tool_idxs = [i for i, m in enumerate(messages)
+                         if isinstance(m, dict) and m.get("role") == "tool"]
+            protected = set(tool_idxs[-keep:]) if keep else set()
+            edited = [dict(m) for m in messages]  # shallow per-message copy
+            for i in tool_idxs:
+                if i in protected or total <= budget:
+                    continue
+                content = messages[i].get("content")
+                if not isinstance(content, str):
+                    continue
+                n = len(content.encode("utf-8", "replace"))
+                if n <= _ELIDE_MIN_BYTES:
+                    continue  # a short result (error / "OK wrote") isn't a dump
+                before_b = self._msg_bytes(edited[i])
+                edited[i] = {**edited[i],
+                             "content": f"[{n} bytes elided — re-read the file if needed]"}
+                total -= before_b - self._msg_bytes(edited[i])  # consistent w/ `total` units
+            return edited
+        except Exception as exc:  # noqa: BLE001 - context editing must never break a build
+            log.warning("llm.context_edit_error", error=str(exc)[:120])
+            return messages
+
     async def complete(
         self,
         prompt: str,
@@ -536,13 +744,13 @@ class LLMClient:
         if backend == "openrouter" and images:
             model, send_images = self._resolve_vision(model, model_override)
             if send_images:
-                result = await self._openrouter(model, prompt, system, max_tokens, json_mode, images)
+                result = await self._openrouter(model, prompt, system, max_tokens, json_mode, images, tier=tier)
             else:
                 # free_only with no usable free vision model: stay text-only rather
                 # than silently billing a paid model (design rule #5 cheap-by-default).
-                result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
+                result = await self._openrouter(model, prompt, system, max_tokens, json_mode, tier=tier)
         elif backend == "openrouter":
-            result = await self._openrouter(model, prompt, system, max_tokens, json_mode)
+            result = await self._openrouter(model, prompt, system, max_tokens, json_mode, tier=tier)
         elif backend.endswith("_cli"):
             result = await self._cli(backend[:-4], prompt, system, json_mode, images)
         else:
@@ -805,11 +1013,22 @@ class LLMClient:
                     if _t.time() - start > budget:
                         log.warning("llm.or_agentic_timeout", turns=turn, wrote=wrote)
                         break
-                    body = {"model": model, "messages": messages, "tools": _AGENTIC_TOOLS,
-                            "tool_choice": "auto", "max_tokens": 16384}
-                    resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
-                    resp.raise_for_status()
-                    msg = resp.json()["choices"][0]["message"]
+                    # Context editing: send a shrunk COPY when the history blows the
+                    # byte budget (stub OLD read-dumps, keep the last K) — the
+                    # canonical `messages` keeps growing untouched.
+                    sent = self._edit_context(messages)
+
+                    async def _do(m, _sent=sent):
+                        body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
+                                "tool_choice": "auto", "max_tokens": 16384}
+                        resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                        resp.raise_for_status()
+                        return resp.json()["choices"][0]["message"], m
+
+                    # Retry + model failover: a mid-build retired model fails over to
+                    # a live one and PINS it for the rest of the session (`model`),
+                    # instead of the whole agentic build dying.
+                    msg, model = await self._resilient_call(model, Tier.BACKEND, _do)
                     messages.append({"role": "assistant", "content": msg.get("content") or "",
                                      "tool_calls": msg.get("tool_calls") or []})
                     tcs = msg.get("tool_calls") or []
@@ -1088,7 +1307,8 @@ class LLMClient:
 
     # ---- backends --------------------------------------------------------
     async def _openrouter(self, model, prompt, system, max_tokens, json_mode,
-                          images: list[str] | None = None) -> LLMResult:
+                          images: list[str] | None = None,
+                          tier: Tier = Tier.CHEAP) -> LLMResult:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -1105,19 +1325,28 @@ class LLMClient:
             messages.append({"role": "user", "content": content})
         else:
             messages.append({"role": "user", "content": prompt})
-        body = {"model": model, "messages": messages, "max_tokens": max_tokens}
-        if json_mode:
-            body["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {self.settings.openrouter_api_key}",
             "HTTP-Referer": "https://github.com/skyn3t",
             "X-Title": "SkyN3t",
         }
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
-            # HTTP errors (429/5xx) propagate so the orchestrator's transient
-            # retry classification can retry them.
-            resp.raise_for_status()
+
+        async def _do(m):
+            body = {"model": m, "messages": messages, "max_tokens": max_tokens}
+            if json_mode:
+                body["response_format"] = {"type": "json_object"}
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                # HTTP errors (429/5xx retryable, 404/invalid-model -> failover)
+                # raise here; the resilience layer retries or fails over, and a
+                # persistent failure re-raises to the orchestrator's own retries.
+                resp.raise_for_status()
+            return resp, m
+
+        # Transient retry + ordered model failover around the call — survives a
+        # retired default model (the deepseek-*:free 404 incident) instead of
+        # degrading the whole build to the offline stub.
+        resp, model = await self._resilient_call(model, tier, _do)
         # A 200 with a malformed/empty body must degrade, not crash the build —
         # this includes a body that isn't valid JSON (truncation, gateway HTML),
         # so resp.json() is inside the guard too (it raises ValueError/JSONDecodeError).

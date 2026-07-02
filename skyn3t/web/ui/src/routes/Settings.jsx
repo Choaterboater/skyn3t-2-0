@@ -65,6 +65,7 @@ export default function Settings() {
   const [repModel, setRepModel] = useState("");
   const [repMsg, setRepMsg] = useState("");
   const [visualMsg, setVisualMsg] = useState("");
+  const [agenticMsg, setAgenticMsg] = useState("");
   const [gateMsg, setGateMsg] = useState("");
 
   const [appTypeOverride, setAppTypeOverride] = useState("auto");
@@ -167,6 +168,20 @@ export default function Settings() {
       secrets.refetch();
     } catch (e) {
       setVisualMsg(String(e.message));
+    }
+  }
+
+  async function saveImproveAgentic(enabled) {
+    try {
+      const r = await apiPost("/settings/improve_agentic", { enabled });
+      setAgenticMsg(
+        r.improve_agentic
+          ? `agentic improve ON → multi-file goals, up to ${r.improve_agentic_timeout}s per session`
+          : "agentic improve off → classic single-file rewrites only"
+      );
+      settings.refetch();
+    } catch (e) {
+      setAgenticMsg(String(e.message));
     }
   }
 
@@ -504,6 +519,45 @@ export default function Settings() {
             </label>
             {visualMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{visualMsg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            label="Agentic improve"
+            right={
+              <Pill tone={data?.improve_agentic ? "plasma" : "ash"}>
+                {data?.improve_agentic ? "ON" : "off"}
+              </Pill>
+            }
+          />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              When enabled, an Improve goal runs a whole-project agentic session
+              that can create new pages and touch multiple files (like builds
+              do). Broken rewrites are auto-reverted, and the classic
+              single-file improver remains the automatic fallback.
+            </p>
+            <label className="flex items-center gap-2 text-sm text-bone">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-ember"
+                checked={!!data?.improve_agentic}
+                onChange={(e) => saveImproveAgentic(e.target.checked)}
+              />
+              <span>
+                Multi-file Improve{" "}
+                <span className="font-mono text-ash">(improve_agentic)</span>
+                {data?.improve_agentic ? (
+                  <span className="text-plasma"> — ON</span>
+                ) : (
+                  <span className="text-ash"> — off</span>
+                )}
+              </span>
+            </label>
+            {agenticMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{agenticMsg}</p>
             ) : null}
           </div>
         </Panel>

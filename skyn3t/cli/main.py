@@ -490,6 +490,112 @@ def cortex_status() -> None:
     console.print(pt if prompts else "[dim]No prompt overrides applied.[/dim]")
 
 
+def _ratchet_coerce(v: str) -> Any:
+    low = v.strip().lower()
+    if low in ("true", "false"):
+        return low == "true"
+    for cast in (int, float):
+        try:
+            return cast(v)
+        except (TypeError, ValueError):
+            continue
+    return v
+
+
+def _make_ratchet_build_fn():
+    """A bench build_fn that LAZILY assembles a fresh spine + StudioRunner on first
+    use — so a run after a persisted override (with the get_settings cache cleared)
+    picks it up. Each factory call returns a new closure = a fresh runner."""
+    holder: dict[str, Any] = {}
+
+    async def build_fn(case):
+        if "runner" not in holder:
+            from skyn3t.studio.runner import StudioRunner
+
+            spine = await _assemble_spine()
+            settings = spine["settings"]
+            learning, patterns, skills, rag = _build_intelligence(
+                settings, spine["event_bus"], spine["memory"])
+            cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
+            holder["runner"] = StudioRunner(
+                spine["event_bus"], spine["orchestrator"], settings=settings,
+                memory=spine["memory"], learning=learning, patterns=patterns,
+                skills=skills, cost_tracker=cost_tracker, budget_guard=budget_guard, rag=rag)
+            holder["llm"] = spine.get("llm")
+        _reset_bench_budget(holder["llm"])
+        extra = {"stack": case.stack} if case.stack else {}
+        return await holder["runner"].start(case.brief, slug=None, extra=extra)
+
+    return build_fn
+
+
+@cortex_app.command("ratchet")
+def cortex_ratchet(
+    set_kv: list[str] = typer.Option([], "--set", help="A tuning override to test, e.g. --set best_of_n=3 (repeatable)."),
+    cases: str = typer.Option("", "--cases", help="Path to a JSON bench-case list (default: the built-in exam)."),
+    min_score_delta: float = typer.Option(0.0, "--min-score-delta", help="Required go-only mean-score improvement to keep."),
+) -> None:
+    """Keep a proposed tuning change ONLY if a bench run measurably raises the
+    go-rate — no aggregate AND no per-app-type regression — else revert it.
+
+    Opt-in (Settings.reliability_ratchet_enabled). WARNING: runs the bench TWICE
+    (before + after) = real builds, so it costs time + money.
+    """
+    console = _console()
+    from skyn3t.config.settings import get_settings
+    from skyn3t.cortex.ratchet import evaluate_change, restore_overrides, snapshot_overrides
+    from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING, persist_overrides
+    from skyn3t.studio.bench import DEFAULT_CASES
+
+    s = get_settings()
+    if not getattr(s, "reliability_ratchet_enabled", False):
+        console.print("[yellow]Ratchet is off.[/yellow] Enable "
+                      "[cyan]reliability_ratchet_enabled[/cyan] in Settings to run it.")
+        raise typer.Exit(code=1)
+
+    overrides: dict[str, Any] = {}
+    for kv in set_kv:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            overrides[k.strip()] = _ratchet_coerce(v)
+    if not overrides:
+        console.print("[red]Nothing to test[/red] — pass at least one [cyan]--set key=value[/cyan].")
+        raise typer.Exit(code=1)
+    bad = [k for k in overrides if k not in PERSISTABLE_TUNING]
+    if bad:
+        console.print(f"[red]Not a persistable tuning key[/red]: {', '.join(bad)}. "
+                      f"Allowed: {', '.join(sorted(PERSISTABLE_TUNING))}")
+        raise typer.Exit(code=1)
+
+    data_dir = s.data_dir
+    snap = snapshot_overrides(data_dir)
+
+    def apply():
+        persist_overrides(data_dir, overrides)
+        get_settings.cache_clear()
+
+    def revert():
+        restore_overrides(data_dir, snap)
+        get_settings.cache_clear()
+
+    bench_cases = _load_bench_cases(cases) or list(DEFAULT_CASES)
+    console.print(f"[yellow]Ratchet[/yellow] testing {overrides} across "
+                  f"{len(bench_cases)} cases (before + after — real builds)…")
+    res = asyncio.run(evaluate_change(
+        apply_change=apply, revert_change=revert, make_build_fn=_make_ratchet_build_fn,
+        cases=bench_cases, label="ratchet",
+        gate_kwargs={"min_mean_score_delta": min_score_delta},
+    ))
+    b, a = res.get("before", {}), res.get("after", {})
+    console.print(f"go-rate [bold]{b.get('go_rate')}[/bold] → [bold]{a.get('go_rate')}[/bold] "
+                  f"(Δ {res.get('go_rate_delta')})")
+    if res.get("kept"):
+        console.print("[green]KEPT[/green] — measurably better; the override is persisted.")
+    else:
+        console.print("[yellow]REVERTED[/yellow] — "
+                      + "; ".join(res.get("reasons") or ["no improvement"]))
+
+
 def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any, Any, Any, Any]:
     """Construct the self-improvement layer (learning loop, pattern board, skills, rag).
 

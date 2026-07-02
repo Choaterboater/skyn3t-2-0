@@ -65,6 +65,10 @@ def test_gate_applies_answers_the_dispatch_question():
     assert stacks.gate_applies("liveness", "nextjs")
     assert not stacks.gate_applies("liveness", "react_native")  # not HTTP-served
     assert stacks.gate_applies("seo_check", " NEXTJS ")  # normalizes case/space
+    assert stacks.gate_applies("deploy_check", "fastapi")   # URL-serving -> checkable
+    assert stacks.gate_applies("deploy_check", "static")
+    assert not stacks.gate_applies("deploy_check", "mcp")   # stdio, no live URL
+    assert not stacks.gate_applies("deploy_check", "python")  # a CLI artifact
     assert not stacks.gate_applies("not_a_gate", "react")
     assert not stacks.gate_applies("liveness", "")
 

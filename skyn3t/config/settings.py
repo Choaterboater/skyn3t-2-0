@@ -88,6 +88,19 @@ class Settings(BaseSettings):
     replicate_api_token: str = ""
     replicate_model: str = ""
 
+    # ---- Deploy (Ship pillar) -------------------------------------------
+    # Per-provider tokens for a REAL, token-gated deploy. Empty => the keyless
+    # plan / dry-run only (never blocks). Configure via the GUI Settings page —
+    # never hardcoded/env-required (the GUI-first config rule). Each provider CLI
+    # reads its own env var (FLY_API_TOKEN / VERCEL_TOKEN / CLOUDFLARE_API_TOKEN),
+    # which is injected into a SCRUBBED subprocess so ONLY that one token crosses.
+    # ``allow_remote_deploy`` is the master gate: off (default) => plan only, a
+    # real provider deploy is never fired.
+    fly_api_token: str = ""
+    vercel_token: str = ""
+    cloudflare_api_token: str = ""
+    allow_remote_deploy: bool = False
+
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
     # auto picks: openrouter (if key) -> a detected CLI -> stub.
     llm_backend: str = "auto"  # auto|stub|openrouter|claude_cli|kimi_cli|copilot_cli|openai_cli
@@ -313,6 +326,12 @@ class Settings(BaseSettings):
     # + stderr. ADVISORY like its siblings: recorded to
     # manifest.extra["cli_check"], one repair, never flips the verdict.
     cli_check_enabled: bool = True
+    # Deterministic deploy_check gate (Ship pillar): after a REAL deploy, re-run
+    # the liveness/contract probes against the LIVE url (not localhost). Opt-in
+    # (default OFF) — it only applies once something is actually deployed. ADVISORY
+    # like its siblings: recorded to manifest.extra["deploy_check"], never flips
+    # the verdict (a proven build already shipped).
+    deploy_check_enabled: bool = False
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.
@@ -392,6 +411,21 @@ class Settings(BaseSettings):
         """True when a Replicate token is configured — the build then KNOWS it can
         generate real images. The asset-gen step additionally requires asset_gen."""
         return bool(self.replicate_api_token)
+
+    @property
+    def deploy_tokens(self) -> dict[str, str]:
+        """Configured per-provider deploy tokens keyed by provider name. Empty
+        dict => no real deploy is possible (the keyless plan is all you get). Used
+        by DeployAgent to pick + inject the one token for the chosen provider."""
+        return {
+            name: tok
+            for name, tok in (
+                ("fly", self.fly_api_token),
+                ("vercel", self.vercel_token),
+                ("cloudflare", self.cloudflare_api_token),
+            )
+            if tok
+        }
 
     @property
     def has_any_llm(self) -> bool:

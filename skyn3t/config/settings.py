@@ -336,6 +336,11 @@ class Settings(BaseSettings):
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.
     run_generated_tests: bool = True
+    # Reliability flywheel: when a REAL build finishes no_go/failed, append it as a
+    # permanent bench regression case (bench.capture_regression_case) so a future
+    # change must keep it green. Opt-in (default off) — capturing every failure can
+    # be noisy; enable when running the factory as a self-improving loop.
+    bench_capture_failures: bool = False
     generated_test_timeout: int = 90
     # Mock-LLM proof seam (research item 42): when the generated project CALLS an
     # LLM (openai/anthropic client dep or an OPENAI_BASE_URL/OPENROUTER_API_KEY

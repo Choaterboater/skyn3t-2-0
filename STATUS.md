@@ -1,6 +1,15 @@
 # SkyN3t 2.0 — Status
 
-_Last reviewed: 2026-06-30._
+_Last reviewed: 2026-07-01 (suite 1752 passed / 3 skipped)._
+
+**2026-07-01 highlights:** stale-server guard (`stale_code` in /api/health + UI
+restart banner); advisory SEO gate (adversarially reviewed, rollback-safe
+repair); hallucinated-asset reconcile; native **Swift/SwiftUI macOS stack**
+(`swift build` proof — see `docs/ADDING_A_STACK.md`); **mock-LLM proof
+provider** (headless proof for LLM-calling apps, zero live keys) + key-prompt
+UI gate; two research waves over 17 repos (`docs/research/`). North star: do
+everything the app-builder products do, but better — every capability ships
+with a headless proof story.
 
 SkyN3t 2.0 is functional end to end **offline**. The full brief -> app pipeline
 runs with no API keys and no heavy optional dependencies: it plans, executes

@@ -1,37 +1,98 @@
 # SkyN3t 2.0
 
-**An autonomous, multi-agent app factory.** You hand SkyN3t a plain-English
-brief and it plans, builds, verifies, critiques, and *delivers* a working
-project — running entirely offline by default, and reaching for paid models
-only when you opt in.
+**An autonomous, multi-agent app factory.** Hand SkyN3t a plain-English brief
+and it plans, builds, **proves**, critiques, and *ships* a working project —
+any kind of app, not just web — running entirely offline by default and
+reaching for paid models only when you opt in.
 
-SkyN3t is built on an event-sourced spine: an `EventBus`, an `Orchestrator`
-that routes capability-tagged tasks to specialized agents, a memory store that
-captures lessons from every build, and a `Studio` pipeline that turns a brief
-into a delivered project tree. The 2.0 line adds trajectory sampling
-(best-of-N), an adversarial pre-delivery critic, objective proof-runs,
-self-healing, a knowledge/RAG corpus, and an autonomous Cortex.
+The thesis in one line: **others emit code; the Foundry proves it.** Every build
+climbs a ladder of deterministic gates before it's allowed to call itself done.
 
 ---
 
-## Why it's different (2.0 features)
+## What it builds
 
-- **Delivered != empty.** A build only succeeds if real, substantive files
-  land in `Projects/<slug>/`. An objective *proof-run* checks the artifact, not
-  the vibes.
-- **Best-of-N trajectories.** The code stage can sample N independent attempts
-  in isolated worktrees and merge the winner (`--best-of N`).
-- **Adversarial critic gate.** A critic stage tries to break the result before
-  delivery; disable per build with `--no-critic`.
-- **Closed learning loop.** Lessons are injected into stage prompts and graded
-  by build outcome, so the factory gets better over time.
-- **Safe + cheap by default.** Free models on, autonomy gated behind approval,
-  hard per-build/daily USD and token caps, loopback-only web access.
-- **Degrade, don't crash.** Every optional dependency (FastAPI, Docker,
-  ChromaDB, Playwright, embeddings, …) is guarded; missing deps degrade to a
-  deterministic offline path instead of failing.
-- **Everything is an event.** Builds, stages, proposals, lessons, and health
-  are all events on one bus — replayable and snapshot-able (time-travel hook).
+One brief in; a routed, scaffolded, proven app out. The selector picks the stack
+from your words — you don't have to.
+
+| Domain | Stacks |
+| --- | --- |
+| **Web apps / SPAs** | `react` (Vite), `nextjs`, `astro`, `remix`, `static` (HTML/CSS/JS) |
+| **Backends / APIs** | `fastapi`, `flask`, `django`, `express` (Node) |
+| **Mobile** | `react_native` (Expo) |
+| **Desktop** | `tauri`, `swift` (native macOS/SwiftUI) |
+| **Games** | `phaser` (a small corner — most of the factory is non-game) |
+| **AI-native** | `mcp` (Model Context Protocol servers), `rag` (retrieval apps), `workflow` (agent pipelines), `agent_pack` (persona/skill packs) |
+| **CLIs / libraries** | `python`, `cli` |
+
+Plus scaffold **variants** that ride existing stacks (three.js/3D, terminal-copilot,
+LLM-gateway, market-data, memory-chat, a paper-trading finance core). New targets
+follow a documented pattern — see [docs/ADDING_A_STACK.md](docs/ADDING_A_STACK.md).
+
+---
+
+## The Verify Ladder
+
+A build isn't "done" because a model said so. It climbs a ladder of
+**deterministic, stack-selected gates** — the signature capability that separates
+this from prompt-to-code tools:
+
+- **`delivered != empty`** — an objective *proof-run* checks that real, substantive
+  files landed in `Projects/<slug>/` and (for the stack) that it actually builds,
+  boots, and its own tests pass. Not vibes; the artifact.
+- **Stack-specific gates** fire only where they apply — `liveness` + `seo_check`
+  (web), `rag_check` (retrieval), `mcp_check` (MCP servers), `workflow_check`
+  (agent pipelines), `cli_check` (CLIs), and `headless_gate` / `game_visual` /
+  `qa_playtest` (games). The registry is drift-locked so a new stack can never be
+  silently un-gated (`skyn3t/core/stacks.py`, `tests/test_stack_registry_drift.py`).
+- The reviewer score is **blended with the proof result** into a single
+  `go` / `no_go` verdict — a failing proof can't be talked past.
+
+The dashboard renders this live as a molten forge-rail a build climbs, station by
+station.
+
+---
+
+## Ship — the final rung
+
+A proven build shouldn't die on `localhost`. `plan_deploy` emits a **keyless,
+one-command deploy plan** for every stack — the right hosts, the exact command,
+and a ready `Dockerfile` for servers:
+
+| Kind | Stacks | Goes live via |
+| --- | --- | --- |
+| `static` | react/astro/remix-static/phaser/static | Cloudflare Pages / Netlify / Vercel |
+| `node_ssr` | nextjs, remix | Vercel / Railway / Fly |
+| `container` | fastapi, rag, workflow, express | Fly / Railway / Render (Dockerfile emitted) |
+| `artifact` | python/cli, agent_pack, mcp, swift, tauri | PyPI / GitHub Release |
+| `mobile` | react_native | Expo EAS |
+
+```bash
+skyn3t deploy <build>            # show the plan (hosts + one-command deploy)
+skyn3t deploy <build> --write    # also drop the generated Dockerfile
+```
+
+Nothing is deployed without you — it's the honest "…and here's how it ships"
+answer. Token-gated one-command execution is the next slice.
+
+---
+
+## Why it's different
+
+- **Best-of-N trajectories.** The code stage samples N independent attempts in
+  isolated worktrees and merges the winner (`--best-of N`).
+- **Adversarial critic gate.** A critic tries to break the result before delivery.
+- **Closed learning loop.** Lessons are injected into stage prompts and graded by
+  build outcome, so the factory gets measurably better over time.
+- **Reliability as a number.** A per-app-type GO-rate bench + before/after gating
+  keeps a change from lifting the average while silently regressing one stack.
+- **Safe + cheap by default.** Offline stub on, autonomy gated behind approval,
+  hard per-build/daily USD + token caps, loopback-only web access.
+- **Degrade, don't crash.** Every optional dependency (FastAPI, Docker, ChromaDB,
+  Playwright, embeddings, …) is guarded; missing deps degrade to a deterministic
+  offline path.
+- **Everything is an event.** Builds, stages, proposals, lessons, and health are
+  events on one replayable, snapshot-able bus.
 
 ---
 
@@ -42,29 +103,34 @@ self-healing, a knowledge/RAG corpus, and an autonomous Cortex.
 python -m venv .venv
 source .venv/bin/activate
 
-# 2. Install the package (with dev extras for tests).
+# 2. Install the package (dev extras for tests; add web,visual for the dashboard).
 pip install -e ".[dev]"
 
 # 3. Check readiness — what works offline vs. what needs keys.
 skyn3t doctor
 
 # 4. Build something. This runs end to end, fully offline.
-skyn3t studio build "a simple python cli that greets the user"
+skyn3t studio build "a FastAPI service to create and list short notes"
 
-# 5. See what you've built.
+# 5. See what you built, and how it would ship.
 skyn3t project list
+skyn3t deploy <slug>
 ```
 
 The build lands in `../Projects/<slug>/` (sibling of the repo). Add API keys to
-`.env` (see `.env.example`) to unlock real LLM backends; without them SkyN3t
-uses a deterministic stub so the pipeline still runs.
+`.env` (see `.env.example`) to unlock real LLM backends; without them SkyN3t uses
+a deterministic stub so the whole pipeline still runs.
 
-### Optional: web control plane
+### The Foundry — web control plane
 
 ```bash
-pip install fastapi uvicorn      # optional dependency
-skyn3t start --web               # boots the spine + serves the dashboard
+pip install -e ".[web]"          # fastapi + uvicorn
+skyn3t start --web               # boots the spine + serves the "Foundry" dashboard
 ```
+
+The **Foundry** dashboard streams every build live: the Verify Ladder, the real
+stage plan with the agent, score, cost, and gaps per stage, a files-so-far view,
+and a live preview.
 
 ---
 
@@ -72,13 +138,14 @@ skyn3t start --web               # boots the spine + serves the dashboard
 
 | Command | What it does |
 | --- | --- |
-| `skyn3t start [--web] [--host H] [--port P]` | Boot the orchestrator, register every available agent, optionally serve the web UI. |
-| `skyn3t doctor` | Readiness table: python, deps, db init, llm backend, sandbox, projects-dir writability. |
+| `skyn3t start [--web] [--host H] [--port P]` | Boot the orchestrator, register agents, optionally serve the Foundry UI. |
+| `skyn3t doctor` | Readiness table: python, deps, db, llm backend, sandbox, projects-dir. |
 | `skyn3t studio build "<brief>" [--best-of N] [--no-critic] [--slug S]` | Run a build end to end; print result + artifact path. |
-| `skyn3t studio approve <id>` / `reject <id>` | Record an approval/rejection decision for a gated build. |
+| `skyn3t deploy <slug-or-path> [--target H] [--write]` | Show the keyless deploy plan; `--write` drops the Dockerfile. |
+| `skyn3t studio approve <id>` / `reject <id>` | Decide a gated build. |
 | `skyn3t project list [--limit N]` | List recent builds from memory. |
 | `skyn3t snapshot [--out PATH]` | Save the event-history snapshot to JSON. |
-| `skyn3t domain ingest <path-or-url>` | Ingest a file, directory, or URL into the RAG corpus. |
+| `skyn3t domain ingest <path-or-url>` | Ingest a file/dir/URL into the RAG corpus. |
 
 Every command imports its heavy machinery lazily, so the CLI starts fast and
 tolerates missing optional packages.
@@ -90,42 +157,52 @@ tolerates missing optional packages.
 ```mermaid
 flowchart TD
     CLI["skyn3t CLI"] --> SPINE
-    WEB["Web control plane<br/>(optional: fastapi)"] --> SPINE
+    WEB["Foundry dashboard<br/>(optional: fastapi)"] --> SPINE
 
     subgraph SPINE["Spine (core)"]
         BUS["EventBus<br/>everything is an event"]
         ORCH["Orchestrator<br/>capability routing + self-heal"]
-        ROUTER["ModelRouter<br/>tier -> model"]
+        ROUTER["ModelRouter<br/>tier → model"]
     end
 
-    SPINE --> STUDIO["Studio pipeline<br/>plan -> stages -> verify -> critic -> deliver"]
+    SPINE --> PLAN["Select stack + plan stages<br/>(brief → pipeline + file checklist)"]
+    PLAN --> STUDIO["StudioRunner<br/>best-of-N worktrees, merge winner"]
     STUDIO --> AGENTS
 
     subgraph AGENTS["Agents (by capability)"]
-        A1["brainstorm / research / architect / designer"]
-        A2["code / code_improver / reviewer / critic / writer"]
-        A3["verifiers: contract / build / boot / consistency / integration"]
-        A4["test_author / packaging / deploy / browser / github_*"]
+        A1["brainstorm / research / architect / design"]
+        A2["code / reviewer / critic / test_author"]
+        A3["packaging / deploy / browser"]
     end
 
-    STUDIO --> PROOF["Proof-run<br/>(inline | docker sandbox)"]
-    STUDIO --> DELIVER["Projects/&lt;slug&gt;/<br/>delivered != empty"]
+    STUDIO --> LADDER
+
+    subgraph LADDER["The Verify Ladder (deterministic, stack-selected)"]
+        P["proof-run<br/>delivered != empty · builds · boots · tests"]
+        G["gates: liveness · seo · rag · mcp · workflow · cli · game*"]
+    end
+
+    LADDER --> VERDICT{"blend score + proof<br/>→ go / no_go"}
+    VERDICT --> DELIVER["Projects/&lt;slug&gt;/"]
+    VERDICT --> SHIP["plan_deploy → keyless deploy plan<br/>(static · node_ssr · container · artifact · mobile)"]
 
     AGENTS --> LLM["LLMClient<br/>(openrouter | stub) + BudgetTracker"]
     LLM --> ROUTER
-
-    SPINE --> MEM["Memory store<br/>tasks / builds / lessons"]
+    SPINE --> MEM["Memory · lessons · bench"]
     MEM --> LEARN["Learning loop<br/>inject + grade lessons"]
-    DOMAIN["domain ingest"] --> RAG["RAG corpus<br/>(chromadb | in-memory)"]
     CORTEX["Cortex (autonomous)"] --> SPINE
 ```
 
-If you are returning after a disconnect, start with
-[docs/START_HERE.md](docs/START_HERE.md).
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full package map and
-dataflow, [docs/WORKFLOW.md](docs/WORKFLOW.md) for the operating playbook,
-[docs/FILE_MAP.md](docs/FILE_MAP.md) for where code lives,
-[docs/APP_TYPES.md](docs/APP_TYPES.md) for the UI/style defaults by app type,
-[docs/ENGINE_OPTIONS.md](docs/ENGINE_OPTIONS.md) for engine choices, and
-[docs/ROADMAP.md](docs/ROADMAP.md) for the feature backlog. Current state and the
-offline-vs-keys breakdown live in [STATUS.md](STATUS.md).
+---
+
+## Docs
+
+- [docs/START_HERE.md](docs/START_HERE.md) — reconnect after a disconnect
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — package map + build dataflow
+- [docs/ADDING_A_STACK.md](docs/ADDING_A_STACK.md) — add a new build target
+- [docs/APP_TYPES.md](docs/APP_TYPES.md) — UI/style defaults by app type
+- [docs/WORKFLOW.md](docs/WORKFLOW.md) — operating playbook · [docs/FILE_MAP.md](docs/FILE_MAP.md) — where code lives
+- [docs/ROADMAP.md](docs/ROADMAP.md) — feature backlog · [docs/FUTURE_IDEAS.md](docs/FUTURE_IDEAS.md) — where the factory goes next
+- [docs/INDEX.md](docs/INDEX.md) — full docs index · older session ledgers live in [docs/archive/](docs/archive/)
+
+Current state and the offline-vs-keys breakdown live in [STATUS.md](STATUS.md).

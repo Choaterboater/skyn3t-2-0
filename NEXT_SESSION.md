@@ -1,9 +1,42 @@
 # Next session — handoff
 
-_Updated 2026-07-02 morning. Branch: `main` @ the `worktree-rag-stack` merge
-(`b488f75`). Suite: **1976 passed / 3 skipped**._
+_Updated 2026-07-02 afternoon. Branch: `main` @ the `worktree-finance-stack`
+merge (`7b0b240`). Suite: **2036 passed / 3 skipped** (full run on the merged
+tree)._
 
-## TL;DR (2026-07-02)
+## TL;DR (2026-07-02 afternoon — close-out session)
+
+- **Finance/paper-trading app type (wave-2 §3.4 core tier) SHIPPED** — the
+  morning handoff's #1 next-up. A fastapi scaffold variant (`_fastapi_finance`):
+  pure Decimal strategy core (the sim-core split applied to money), dated
+  candles with the as_of cutoff enforced in the data layer, sqlite paper-only
+  ledger (atomic check+insert under a write lock; read paths never create the
+  db file), typed NO_DATA/INSUFFICIENT_FUNDS envelopes, self-contained
+  dashboard at '/'. 53-agent adversarial review → 7 unique defects fixed
+  (worst: unbounded backtest cash = a one-request CPU-pin DoS + bare 500).
+  16-test generated proof suite. Next tiers recorded in docs/ROADMAP.md.
+- **Verify Ladder dashboard hero landed** (both parallel sessions' UI work,
+  reconciled): Overview renders the live gate registry (/api/gates) as a
+  molten climb with event-stream heat; Tailwind-JIT keyframe gotcha fixed
+  (`@apply animate-sweep` — raw `animation:` in CSS never emits keyframes).
+- **rag stack test contract RESTORED** (`b856e5a`): the morning cleanup deleted
+  `tests/test_rag_stack.py` as an "orphan", but the tracked file was the
+  stack's only test home (21 tests) — the untracked twin was the orphan.
+  Green-after-delete proves nothing; `git log --follow` before deleting.
+- **Two-writer git races documented** (memory: parallel-session-git-races): a
+  mid-rebase chimera commit + the orphan deletion both came from two live
+  sessions sharing refs. One branch/worktree per session, always.
+
+**Next up:** (1) finance LLM-analyst tier (report tree + prose signal
+extraction) + offline planner-fallback routing for finance briefs (the variant
+is LLM-planner-only today). (2) Browser extension stack (wave-1 #1). (3)
+Deep-research / generative-UI / voice-RAG app types (§3.11 tier). (4) Godot
+still held. **User actions:** push main (`gh auth switch --user Choaterboater`
+then `git push origin main`), sudo-delete the root-owned com.skyn3t.web
+LaunchAgent (one-liner in the 07-02 session memory), restart the dashboard
+(the stale_code banner will flag it).
+
+## TL;DR (2026-07-02 morning)
 
 Two waves ran in PARALLEL sessions and are now merged on `main`:
 

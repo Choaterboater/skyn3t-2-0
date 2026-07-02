@@ -106,9 +106,10 @@ Still open / next up (honest, refreshed 2026-07-02):
   cutoff, sqlite paper-only ledger, typed NO_DATA/INSUFFICIENT_FUNDS; 53-agent
   adversarial review → 7 unique confirmed defects all fixed (cash-DoS bound, order-race
   lock, connection leak, two-tier trigger, dispatch order, read-path pollution,
-  portfolio mark guard). Open next tiers: the LLM-analyst tier (report tree + signal
-  extraction from prose) and the OFFLINE planner fallback (its keyword map doesn't
-  route finance briefs to fastapi, so the variant is LLM-planner-only today).
+  portfolio mark guard). Offline planner routing landed same day (strong finance
+  phrases → fastapi in _STACK_SIGNATURES, placed before workflow so "a trading agent
+  that…" isn't stolen; ambiguous phrases deliberately unclaimed at stack level).
+  Open next tier: the LLM-analyst tier (report tree + signal extraction from prose).
   **§3.5 flow-runtime** — depends on the external `lfx`/langflow runtime
   (product call: langflow-JSON compatibility is its point). Deferred pending a
   user decision.

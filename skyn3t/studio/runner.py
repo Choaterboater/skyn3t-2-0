@@ -1119,12 +1119,14 @@ class StudioRunner:
     async def _improve_once(
         self, *, work_dir: str, plan, gaps: list[str], correlation_id: str,
         extra: dict | None, label: str, brief: str = "", slug: str = "",
+        files: list[str] | None = None,
     ) -> bool:
         """Run the code-improver once against ``work_dir`` for the flagged gaps.
 
         Returns True if an improver task was dispatched. Best-effort: a missing
         capability or a failed submission returns False and never raises. Used by
-        the per-stage debug pass (``_debug_and_snapshot``).
+        the per-stage debug pass (``_debug_and_snapshot``) and the game-visual
+        repair loop (which passes explicit target ``files``).
         """
         if not self._has_capability("code_improve"):
             return False
@@ -1134,6 +1136,8 @@ class StudioRunner:
             "stack": plan.stack, "plan": plan.to_dict() if hasattr(plan, "to_dict") else {},
             "gaps": list(gaps),
         }
+        if files:
+            payload["files"] = list(files)
         if extra:
             payload["extra"] = extra
         task = TaskRequest(
@@ -1639,7 +1643,10 @@ class StudioRunner:
                 "brief": manifest.brief, "slug": manifest.slug,
                 "worktree_dir": project_dir, "project_dir": project_dir,
                 "stack": plan.stack, "plan": plan.to_dict(),
-                "gaps": list(gaps), "files": list(files),
+                "gaps": format_fix_feedback(
+                    gaps, stage="seo_check", attempt=1,
+                    max_attempts=1, files=list(files)),
+                "files": list(files),
             }
             if extra:
                 payload["extra"] = extra
@@ -1771,7 +1778,10 @@ class StudioRunner:
                 "brief": manifest.brief, "slug": manifest.slug,
                 "worktree_dir": project_dir, "project_dir": project_dir,
                 "stack": plan.stack, "plan": plan.to_dict(),
-                "gaps": list(gaps), "files": list(files),
+                "gaps": format_fix_feedback(
+                    gaps, stage="mcp_check", attempt=1,
+                    max_attempts=1, files=list(files)),
+                "files": list(files),
             }
             if extra:
                 payload["extra"] = extra
@@ -1881,13 +1891,20 @@ class StudioRunner:
                 # not a generic "proof failed" blob. Falls back to the old generic
                 # gap only when no actionable error text was captured.
                 error_gaps = proof.error_gaps()
+                raw_gaps = list(proof.missing or []) + (
+                    error_gaps or [f"proof failed: {proof.detail}"]
+                )
                 payload = {
                     "brief": manifest.brief, "slug": manifest.slug,
                     "worktree_dir": project_dir, "project_dir": project_dir,
                     "stack": plan.stack, "plan": plan.to_dict(),
-                    "gaps": list(proof.missing or []) + (
-                        error_gaps or [f"proof failed: {proof.detail}"]
-                    ),
+                    # item 46: one structured QA-FAIL contract per gap, with the
+                    # loop's real attempt budget threaded into the header. The
+                    # anti-fake gaps (placeholder/missing-feature/scaffold-stub)
+                    # arrive via error_gaps() and get wrapped like the rest.
+                    "gaps": format_fix_feedback(
+                        raw_gaps, stage="proof", attempt=attempt,
+                        max_attempts=max_attempts),
                 }
                 if extra:
                     payload["extra"] = extra
@@ -2734,27 +2751,19 @@ class StudioRunner:
                             and bool(getattr(self.settings,
                                              "game_visual_repair_enabled", False))):
                         async def run_improver(gaps, files):  # noqa: A001
-                            payload = {
-                                "brief": manifest.brief, "slug": manifest.slug,
-                                "worktree_dir": project_dir, "project_dir": project_dir,
-                                "stack": plan.stack, "plan": plan.to_dict(),
-                                "gaps": list(gaps), "files": list(files),
-                            }
-                            if extra:
-                                payload["extra"] = extra
-                            task = TaskRequest(
-                                type="code_improver", payload=payload,
-                                capabilities_required=("code_improve",),
-                                correlation_id=correlation_id,
-                                metadata={"stage": "game_visual"},
+                            # item 46: same structured QA-FAIL contract as the
+                            # other gates; dispatch through the shared seam.
+                            ok = await self._improve_once(
+                                work_dir=project_dir, plan=plan,
+                                gaps=format_fix_feedback(
+                                    gaps, stage="game_visual", attempt=1,
+                                    max_attempts=1, files=list(files)),
+                                files=list(files),
+                                correlation_id=correlation_id, extra=extra,
+                                label="game_visual",
+                                brief=manifest.brief, slug=manifest.slug,
                             )
-                            try:
-                                await asyncio.wait_for(
-                                    self.orchestrator.submit(task),
-                                    timeout=self.stage_exec_timeout,
-                                )
-                            except Exception as exc:  # noqa: BLE001
-                                log.warning("game_visual.improve_failed", error=str(exc))
+                            if not ok:
                                 return False
                             manifest.files = list_files(project_dir)
                             return True

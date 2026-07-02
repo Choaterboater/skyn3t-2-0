@@ -105,6 +105,11 @@ class BenchRun:
             "label": self.label,
             "created_at": self.created_at,
             "summary": self.summary,
+            # Per-app-type breakdown rides along with every serialized run so a
+            # ledger/`--json` consumer (and the ratchet's per-stack regression
+            # guard) can see a change that lifts the aggregate while silently
+            # regressing one stack. Empty for an empty run.
+            "by_stack": summarize_by_stack(self.results),
             "results": [r.to_dict() for r in self.results],
         }
 
@@ -144,6 +149,22 @@ def summarize(results: list[BenchResult]) -> dict[str, Any]:
         "mean_cost_usd": round(total_cost / len(costs), 6) if costs else None,
         "cost_per_go_usd": round(total_cost / go, 6) if go else None,
     }
+
+
+def summarize_by_stack(results: list[BenchResult]) -> dict[str, dict[str, Any]]:
+    """Per-app-type breakdown of a run: the same aggregate `summarize` metrics,
+    grouped by stack. This is the signal that catches a change which lifts the
+    overall go-rate while silently regressing one app-type (e.g. Phaser games).
+
+    Results whose stack is empty are grouped under "unknown" so nothing is
+    silently dropped. Stacks are ordered by descending case count for stable,
+    scan-friendly reporting.
+    """
+    by_stack: dict[str, list[BenchResult]] = {}
+    for r in results:
+        by_stack.setdefault(r.stack or "unknown", []).append(r)
+    ordered = sorted(by_stack.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    return {stack: summarize(group) for stack, group in ordered}
 
 
 BuildFn = Callable[[BenchCase], Awaitable[Any]]

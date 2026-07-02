@@ -47,7 +47,7 @@ exists because of this).
    (the deepseek 85→100 lesson).
 8. **Gate membership — declare it in the registry.** `skyn3t/core/stacks.py` is the
    single source of truth for stack-GROUP membership (`GAME_STACKS`/`WEB_STACKS`/
-   `UI_WEB_STACKS`/`DESIGN_STACKS`/`MCP_STACKS`) and per-gate applicability
+   `UI_WEB_STACKS`/`DESIGN_STACKS`/`MCP_STACKS`/`RAG_STACKS`) and per-gate applicability
    (`GATES` + `gate_applies`); `runner.py` and the satellites import from it, and
    `tests/test_stack_registry_drift.py` FAILS if any vocabulary site is missed
    (planner keywords, scaffold builder, proof family, gate set). Membership is
@@ -60,8 +60,38 @@ exists because of this).
    content-based; a non-servable stack correctly yields "no preview". Only add a
    launch path if a real preview story exists.
 10. **Doctor/toolchain** — if the stack needs a local toolchain (swift, godot,
-    xcodebuild), the proof must soft-skip when it's missing, and (roadmap) the
-    selector should never pick a stack whose toolchain preflight fails.
+    xcodebuild), the proof must soft-skip when it's missing, AND the stack must
+    be listed in `stack_selector._TOOLCHAIN_EXE` (+ a `_TOOLCHAIN_FALLBACK`
+    chain) so the selector never heuristically picks a stack this machine
+    cannot build (explicit pins are never demoted). Test:
+    `tests/test_toolchain_preflight.py`.
+
+## Scaffold VARIANTS (a lighter tool than a new stack)
+
+When a new app type is an existing stack's shape with different content, ship a
+**scaffold variant**, not a stack: a `_implies_<x>(brief)` phrase trigger + a
+`_<stack>_<x>()` builder dispatched inside `scaffold_for`. Zero new vocabulary
+sites — no planner/selector/proof/gate/registry touchpoints, so none of the
+ten-step checklist and none of its drift risk. Precedents: `_react_vite_threejs`
+(3D), `_fastapi_market_data` (§3.9), `_rag_memory_chat` (§3.10),
+`_fastapi_llm_gateway` (§3.7), `_python_cli_agent` (§3.6).
+
+Rules learned shipping those five:
+
+- **Triggers are multi-word phrases only.** Bare "memory"/"proxy"/"cli" steal
+  ordinary briefs; pin non-theft in BOTH directions in the variant's test file.
+- **Deriving a variant from its base via `.replace()` is fine — but pin every
+  replacement in a test** (a drifted anchor silently no-ops and ships the base).
+- **The variant must keep the base's full gate contract** (a rag variant still
+  passes rag_check; a fastapi variant still boots for liveness).
+- **New stack instead of a variant when** the app type needs its own gate,
+  group membership, proof family, or codegen directive — that's the full
+  checklist above.
+- **Non-code-shaped stacks** (content products like agent packs): add them to
+  `core.stacks.CONTENT_STACKS` and check every scorer that counts "source
+  files" or looks for manifests — the reviewer no_go'd a perfect pack before
+  that group existed. The drift test now pins every builder scaffold against
+  the reviewer's GO_THRESHOLD.
 
 ## Worked examples
 

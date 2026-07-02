@@ -289,6 +289,30 @@ class Settings(BaseSettings):
     # and fed to ONE repair (snapshot → improve → re-proof → keep or roll back);
     # it NEVER flips the verdict. Soft-skips when the mcp SDK isn't importable.
     mcp_check_enabled: bool = True
+    # Deterministic RAG-app gate (rag stack, wave-2 §3.1): boot the delivered
+    # FastAPI app and drive the real HTTP contract (/health → /v1/stats → /ingest
+    # a marker doc → /query must retrieve it → /chat answers → one malformed
+    # ingest must yield a structured 4xx). ZERO LLM (the scaffold's /chat degrades
+    # to extractive answers with no key). ADVISORY like mcp_check — findings are
+    # recorded to manifest.extra["rag_check"] and fed to ONE repair (snapshot →
+    # improve → re-proof → keep or roll back); it NEVER flips the verdict.
+    # Soft-skips when fastapi/uvicorn aren't importable in the proof env.
+    rag_check_enabled: bool = True
+    # Deterministic agent-workflow gate (workflow stack, wave-2 §3.2): boot the
+    # delivered runner (WEBHOOK_URL + LLM seams scrubbed) and drive the spec's
+    # /trigger contract (dry-run envelope → live-unconfigured must yield
+    # skipped_no_delivery not a crash → ledger recorded both → unknown workflow
+    # rejected 4xx). ADVISORY like rag_check — recorded to
+    # manifest.extra["workflow_check"], fed to ONE snapshot/re-proof/rollback
+    # repair; NEVER flips the verdict. Soft-skips when deps aren't importable.
+    workflow_check_enabled: bool = True
+    # Deterministic CLI gate (python_cli family, wave-2 §3.6 tier): drive the
+    # delivered main.py's command surface with bounded subprocess calls —
+    # --help must work, every advertised subcommand's --help must work, and
+    # (on subcommand CLIs) invalid input must be rejected with a nonzero exit
+    # + stderr. ADVISORY like its siblings: recorded to
+    # manifest.extra["cli_check"], one repair, never flips the verdict.
+    cli_check_enabled: bool = True
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

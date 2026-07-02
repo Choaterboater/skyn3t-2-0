@@ -28,6 +28,9 @@ KNOWN_STACKS = (
     "phaser",
     "swift",
     "mcp",
+    "rag",
+    "workflow",
+    "agent_pack",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -78,6 +81,41 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
     # unambiguous spelled-out form.
     if "model context protocol" in text or re.search(r"\bmcp\b", text):
         return "mcp"
+    # RAG "chat with your documents" app must precede fastapi/react: a RAG brief
+    # brushes "api"/"app"/"service" but is a retrieval app, not the generic web
+    # scaffold. Bare "rag" is WHOLE-WORD ("storage"/"dragging" never match); the
+    # other keywords are RAG-distinctive multi-word phrases — bare "search" and
+    # "document" are deliberately NOT claimed (the phaser bare-"game" lesson).
+    if re.search(r"\brag\b", text) or any(k in text for k in (
+        "retrieval augmented", "retrieval-augmented",
+        "chat with my doc", "chat with your doc", "chat with my pdf",
+        "chat with my notes", "chat with my files",
+        "knowledge base", "document q&a", "doc q&a", "semantic search",
+        # Memory-augmented chat (§3.10) rides rag; phrases only (never bare
+        # "memory" — "memory game"/"memory profiler" are other stacks).
+        "remembers me", "remembers our", "assistant with memory",
+        "chat with memory", "chatbot with memory", "stateful chat",
+    )):
+        return "rag"
+    # Agent team pack (persona ROSTER product) must precede workflow: pack
+    # briefs name the static deliverable; workflow briefs describe runtime
+    # behavior. Bare "persona"/"agents" deliberately not claimed.
+    if any(k in text for k in (
+        "agent personas", "personas for", "persona pack", "agent pack",
+        "agents pack", "team pack", "agent team pack", "subagents",
+        "subagent pack", "agents for my", "agent roster",
+    )):
+        return "agent_pack"
+    # Agent-workflow app must precede fastapi/react: a workflow brief brushes
+    # "api"/"app"/"service" but is a multi-step runner, not the generic web
+    # scaffold. Bare "workflow" is WHOLE-WORD SINGULAR ("workflows" is a
+    # dashboard noun); bare "automation"/"pipeline"/"scheduled" are not claimed.
+    if re.search(r"\bworkflow\b", text) or any(k in text for k in (
+        "agent workflow", "team of agents", "multi-agent", "multi agent",
+        "agent that", "automation pipeline", "monitor and notify",
+        "scheduled briefing", "daily briefing",
+    )):
+        return "workflow"
     if any(k in text for k in ("fastapi", "uvicorn", "rest api", "http api", "endpoint")):
         return "fastapi"
     if any(k in text for k in ("express", "node server", "node.js server")):
@@ -178,6 +216,33 @@ def _normalize_stack(value: str) -> str:
         "mcpserver": "mcp",
         "model_context_protocol": "mcp",
         "mcp_tool_server": "mcp",
+        # RAG "chat with your documents" app (FastAPI + pure retrieval core). A
+        # real builder stack; only explicit RAG/retrieval signals map here.
+        "rag": "rag",
+        "rag_app": "rag",
+        "ragapp": "rag",
+        "retrieval_augmented_generation": "rag",
+        "knowledge_base": "rag",
+        "chat_with_docs": "rag",
+        "chat_with_documents": "rag",
+        "document_qa": "rag",
+        "doc_qa": "rag",
+        # Agent-workflow app (multi-step runner, FastAPI + pure engine). A real
+        # builder stack; only explicit workflow/agent signals map here.
+        "workflow": "workflow",
+        "workflow_app": "workflow",
+        "agent_workflow": "workflow",
+        "agent_team": "workflow",
+        "multi_agent": "workflow",
+        "automation": "workflow",
+        # Agent team pack (persona roster product, zero runtime deps).
+        "agent_pack": "agent_pack",
+        "agents_pack": "agent_pack",
+        "agent_team_pack": "agent_pack",
+        "persona_pack": "agent_pack",
+        "personas": "agent_pack",
+        "subagents": "agent_pack",
+        "agent_roster": "agent_pack",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

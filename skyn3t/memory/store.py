@@ -258,6 +258,22 @@ class MemoryStore:
             await s.commit()
             return row.id
 
+    async def lesson_exists(self, stack: str, text: str) -> bool:
+        """True when an identical lesson text is already stored for ``stack``.
+
+        Capture-side dedupe: recurring findings (gate issues, repeated gaps)
+        mint the SAME text every build — without this check each occurrence
+        inserted a fresh row, crowding the score-ranked injection top-5 with
+        duplicates and splitting one lesson's helpful/hurt history across rows.
+        """
+        async with self._session() as s:
+            stmt = (
+                select(LessonRow.id)
+                .where(LessonRow.stack == stack, LessonRow.text == text)
+                .limit(1)
+            )
+            return (await s.execute(stmt)).first() is not None
+
     async def relevant_lessons(
         self, stack: str, stage: str = "", limit: int = 5, *, ascending: bool = False
     ) -> list[dict[str, Any]]:

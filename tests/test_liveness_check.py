@@ -9,7 +9,10 @@ from skyn3t.studio.liveness import Route, check_liveness
 def _serve():
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            code = 500 if self.path == "/broken" else 200
+            # An API-stack shape: POST-only and required-param routes answer a
+            # GET probe with 405/422 (routed = alive), /missing 404s (dead).
+            code = {"/broken": 500, "/ingest": 405, "/query": 422,
+                    "/missing": 404}.get(self.path, 200)
             self.send_response(code)
             self.end_headers()
             self.wfile.write(b"ok")
@@ -29,6 +32,20 @@ def test_check_flags_dead_route():
         assert report.total == 2 and report.ok == 1 and report.dead == 1
         assert report.dead_routes == ["/broken"]
         assert report.health == 0.5
+    finally:
+        srv.shutdown()
+
+
+def test_post_only_and_param_routes_count_as_wired():
+    # 405 (method not allowed) / 422 (validation ran) prove the framework ROUTED
+    # the request — an API app (fastapi/rag/express) must not lose health score
+    # because a read-only GET probe can't satisfy its POST/param routes.
+    srv, base = _serve()
+    try:
+        report = asyncio.run(check_liveness(
+            base, [Route("/ingest", "POST"), Route("/query"), Route("/missing")]))
+        assert report.ok == 2 and report.dead == 1
+        assert report.dead_routes == ["/missing"]
     finally:
         srv.shutdown()
 

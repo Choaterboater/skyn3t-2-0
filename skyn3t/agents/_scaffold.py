@@ -146,6 +146,55 @@ def _implies_3d(brief: str) -> bool:
     return any(k in low for k in _THREEJS_KEYWORDS)
 
 
+# Market-data API variant of the fastapi stack (wave-2 §3.9): a data-service
+# brief gets the vendor-registry scaffold (canned fixtures + typed NO_DATA
+# errors) instead of the bare hello-API. Phrases only — bare "data"/"api"/
+# "ticker" would steal ordinary briefs ("sticker shop", "database api").
+_MARKET_DATA_KEYWORDS = (
+    "stock api", "stock price", "stock prices", "stock data",
+    "price feed", "market data", "ticker api", "share prices",
+    "financial data api", "quotes api",
+)
+
+
+def _implies_market_data(brief: str) -> bool:
+    """True when the brief asks for a market/price/quote data service."""
+    low = (brief or "").lower()
+    return any(k in low for k in _MARKET_DATA_KEYWORDS)
+
+
+# LLM-gateway variant of the fastapi stack (wave-2 §3.7): a router/proxy brief
+# gets the two-stub-upstream gateway scaffold. Phrases only — bare "proxy"/
+# "router"/"gateway" would steal network/web briefs.
+_LLM_GATEWAY_KEYWORDS = (
+    "llm gateway", "model router", "openai compatible proxy",
+    "openai-compatible proxy", "llm proxy", "llm cost tracking",
+    "route llm", "ai gateway", "model gateway",
+)
+
+
+def _implies_llm_gateway(brief: str) -> bool:
+    """True when the brief asks for an LLM gateway / model-router service."""
+    low = (brief or "").lower()
+    return any(k in low for k in _LLM_GATEWAY_KEYWORDS)
+
+
+# Terminal-copilot variant of the python_cli stack (wave-2 §3.6): an agent CLI
+# brief gets the event-stream scaffold. Phrases only — bare "cli"/"assistant"/
+# "copilot" alone would steal ordinary tool briefs.
+_CLI_AGENT_KEYWORDS = (
+    "cli agent", "agent cli", "terminal assistant", "terminal copilot",
+    "copilot for", "command line tool that uses ai", "cli that uses ai",
+    "command-line assistant", "command line assistant",
+)
+
+
+def _implies_cli_agent(brief: str) -> bool:
+    """True when the brief asks for a terminal agent / domain copilot CLI."""
+    low = (brief or "").lower()
+    return any(k in low for k in _CLI_AGENT_KEYWORDS)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -1848,6 +1897,857 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
+    """The market-data variant of the fastapi scaffold (wave-2 §3.9): a data
+    API with a VENDOR SEAM (``DATA_VENDOR`` env, default ``canned`` — fixtures,
+    zero keys, fully deterministic) and TYPED error envelopes (404 ``NO_DATA``
+    for unknown symbols, 422 for invalid params). The pure vendor/indicator
+    logic lives in ``vendors.py`` (no web framework), the sim-core split."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "vendors.py": (
+            '"""Pure vendor registry + indicator math. Stdlib only, no web framework.\n\n'
+            "The CANNED vendor ships deterministic fixtures so every endpoint works\n"
+            "with ZERO keys (and the proof story stays offline). Add a real vendor by\n"
+            "implementing the same three methods and registering it in VENDORS; keys\n"
+            "stay OPTIONAL env config — a missing key must select canned, not crash.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import os\n\n\n"
+            "class NoData(Exception):\n"
+            '    """Raised when a vendor has no data for a symbol (-> 404 NO_DATA)."""\n\n'
+            "    def __init__(self, symbol: str) -> None:\n"
+            "        super().__init__(f\"no data for symbol '{symbol}'\")\n"
+            "        self.symbol = symbol\n\n\n"
+            "CANNED_QUOTES: dict[str, float] = {\n"
+            '    "AAPL": 187.32, "MSFT": 411.65, "NVDA": 118.11, "DEMO": 100.0,\n'
+            "}\n"
+            "CANNED_SERIES: dict[str, list[float]] = {\n"
+            '    "AAPL": [180.1, 182.4, 181.9, 184.2, 186.0, 185.5, 187.3],\n'
+            '    "MSFT": [402.0, 405.3, 404.1, 407.8, 409.2, 410.6, 411.7],\n'
+            '    "NVDA": [110.2, 112.8, 111.5, 114.9, 116.3, 117.0, 118.1],\n'
+            '    "DEMO": [96.0, 97.5, 98.2, 99.0, 99.6, 99.9, 100.0],\n'
+            "}\n"
+            "CANNED_NEWS: dict[str, list[str]] = {\n"
+            '    "AAPL": ["AAPL ships a new device", "Analysts revise AAPL targets"],\n'
+            '    "MSFT": ["MSFT expands cloud regions", "MSFT earnings beat estimates"],\n'
+            '    "NVDA": ["NVDA unveils next-gen chips", "Data-center demand lifts NVDA"],\n'
+            '    "DEMO": ["DEMO fixture headline one", "DEMO fixture headline two"],\n'
+            "}\n\n\n"
+            "def sma(series: list[float], window: int) -> list[float]:\n"
+            '    """Simple moving average; [] when the window exceeds the series."""\n'
+            "    if window < 1 or window > len(series):\n"
+            "        return []\n"
+            "    return [\n"
+            "        round(sum(series[i:i + window]) / window, 4)\n"
+            "        for i in range(len(series) - window + 1)\n"
+            "    ]\n\n\n"
+            "class CannedVendor:\n"
+            '    """Deterministic fixtures — the default vendor and the proof seam."""\n\n'
+            '    name = "canned"\n\n'
+            "    def get_quote(self, symbol: str) -> dict:\n"
+            "        sym = symbol.upper()\n"
+            "        if sym not in CANNED_QUOTES:\n"
+            "            raise NoData(sym)\n"
+            '        return {"symbol": sym, "price": CANNED_QUOTES[sym],\n'
+            '                "currency": "USD", "as_of": "canned"}\n\n'
+            "    def get_series(self, symbol: str) -> list[float]:\n"
+            "        sym = symbol.upper()\n"
+            "        if sym not in CANNED_SERIES:\n"
+            "            raise NoData(sym)\n"
+            "        return list(CANNED_SERIES[sym])\n\n"
+            "    def get_news(self, symbol: str) -> list[str]:\n"
+            "        sym = symbol.upper()\n"
+            "        if sym not in CANNED_NEWS:\n"
+            "            raise NoData(sym)\n"
+            "        return list(CANNED_NEWS[sym])\n\n\n"
+            "VENDORS = {\"canned\": CannedVendor}\n\n\n"
+            "def select_vendor() -> CannedVendor:\n"
+            '    """The vendor named by DATA_VENDOR (default canned). Unknown names\n'
+            "    fall back to canned — a misconfigured vendor must never crash the\n"
+            "    service.\"\"\"\n"
+            '    name = os.environ.get("DATA_VENDOR", "canned").strip().lower()\n'
+            "    return VENDORS.get(name, CannedVendor)()\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — a market-data API (FastAPI + vendor seam).\n\n"
+            "Routes: GET /stock/{symbol}, GET /indicators?symbol=&window=,\n"
+            "GET /news?symbol=, GET /health. Data comes from the vendor selected by\n"
+            "the DATA_VENDOR env var (default: canned fixtures — zero keys needed).\n"
+            "Unknown symbols yield a TYPED 404 {'error': {'type': 'NO_DATA', ...}};\n"
+            "invalid params yield 422 via validation — never a bare 500.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from fastapi import FastAPI, Query\n"
+            "from fastapi.responses import JSONResponse\n\n"
+            "import vendors\n\n"
+            f'app = FastAPI(title="{_json_escape(title)}")\n'
+            "VENDOR = vendors.select_vendor()\n\n\n"
+            "def _no_data(symbol: str) -> JSONResponse:\n"
+            "    return JSONResponse(\n"
+            "        status_code=404,\n"
+            '        content={"error": {"type": "NO_DATA", "symbol": symbol.upper()}},\n'
+            "    )\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "vendor": VENDOR.name}\n\n\n'
+            '@app.get("/stock/{symbol}")\n'
+            "def stock(symbol: str):\n"
+            "    try:\n"
+            "        return VENDOR.get_quote(symbol)\n"
+            "    except vendors.NoData:\n"
+            "        return _no_data(symbol)\n\n\n"
+            '@app.get("/indicators")\n'
+            "def indicators(symbol: str = Query(min_length=1), window: int = Query(default=3, ge=1)):\n"
+            "    try:\n"
+            "        series = VENDOR.get_series(symbol)\n"
+            "    except vendors.NoData:\n"
+            "        return _no_data(symbol)\n"
+            "    return {\n"
+            '        "symbol": symbol.upper(), "indicator": "sma", "window": window,\n'
+            '        "values": vendors.sma(series, window),\n'
+            "    }\n\n\n"
+            '@app.get("/news")\n'
+            "def news(symbol: str = Query(min_length=1)):\n"
+            "    try:\n"
+            '        return {"symbol": symbol.upper(), "items": VENDOR.get_news(symbol)}\n'
+            "    except vendors.NoData:\n"
+            "        return _no_data(symbol)\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    import os\n\n"
+            "    import uvicorn\n\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_main.py": (
+            '"""The API\'s own deterministic proof against the canned vendor."""\n'
+            "from fastapi.testclient import TestClient\n\n"
+            "import vendors\n"
+            "from main import app\n\n"
+            "client = TestClient(app)\n\n\n"
+            "def test_health_names_the_vendor():\n"
+            '    resp = client.get("/health")\n'
+            "    assert resp.status_code == 200\n"
+            '    assert resp.json()["vendor"] == "canned"\n\n\n'
+            "def test_stock_quote_matches_fixture():\n"
+            '    resp = client.get("/stock/AAPL")\n'
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["price"] == vendors.CANNED_QUOTES["AAPL"]\n'
+            '    assert body["currency"] == "USD"\n\n\n'
+            "def test_unknown_symbol_is_typed_no_data():\n"
+            '    resp = client.get("/stock/ZZZZ")\n'
+            "    assert resp.status_code == 404\n"
+            '    assert resp.json()["error"]["type"] == "NO_DATA"\n\n\n'
+            "def test_indicators_sma_values():\n"
+            '    resp = client.get("/indicators", params={"symbol": "DEMO", "window": 3})\n'
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["values"] == vendors.sma(vendors.CANNED_SERIES["DEMO"], 3)\n'
+            '    assert body["values"], "a 3-window over 7 points must yield values"\n\n\n'
+            "def test_invalid_window_is_422():\n"
+            '    resp = client.get("/indicators", params={"symbol": "DEMO", "window": 0})\n'
+            "    assert resp.status_code == 422\n\n\n"
+            "def test_news_returns_fixture_items():\n"
+            '    resp = client.get("/news", params={"symbol": "MSFT"})\n'
+            "    assert resp.status_code == 200\n"
+            '    assert resp.json()["items"]\n\n\n'
+            "def test_sma_is_pure_and_bounded():\n"
+            "    assert vendors.sma([1.0, 2.0, 3.0], 2) == [1.5, 2.5]\n"
+            "    assert vendors.sma([1.0], 5) == []\n"
+        ),
+        "requirements.txt": (
+            f"# Runtime + test dependencies for {title}.\n"
+            "fastapi>=0.110        # web framework\n"
+            "uvicorn[standard]>=0.27  # ASGI server (run with `python main.py`)\n"
+            "httpx>=0.27           # used by fastapi.testclient for the test suite\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="FastAPI market-data API (vendor seam + canned fixtures)",
+            install=(
+                "Requires Python 3.10+. Install dependencies into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (canned fixtures by default — zero keys needed):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then query it:\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/stock/AAPL\n"
+                "curl -s 'localhost:8000/indicators?symbol=AAPL&window=3'\n"
+                "curl -s 'localhost:8000/news?symbol=AAPL'\n"
+                "```\n\n"
+                "Unknown symbols return a typed 404:\n"
+                "`{\"error\": {\"type\": \"NO_DATA\", \"symbol\": \"ZZZZ\"}}`.\n\n"
+                "To add a real vendor, implement the three-method interface in\n"
+                "`vendors.py`, register it in `VENDORS`, and select it with\n"
+                "`DATA_VENDOR=<name>` — vendor keys stay optional env config."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — /stock, /indicators, /news, /health"),
+                ("vendors.py", "Pure vendor registry + fixtures + indicator math"),
+                ("test_main.py", "Deterministic proof against the canned vendor"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
+            ],
+            features=[
+                "Quote, indicator (SMA), and news endpoints with canned fixtures",
+                "Vendor seam via DATA_VENDOR env — real vendors plug in, keys optional",
+                "Typed error envelopes: 404 NO_DATA, 422 validation — never a bare 500",
+                "Pure indicator math in vendors.py — testable without a server",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_main.py\n```"
+            ),
+        ),
+    }
+
+
+def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
+    """The LLM-gateway variant of the fastapi scaffold (wave-2 §3.7): an
+    OpenAI-compatible ``/v1/chat/completions`` proxy with a model catalog,
+    priority routing + fallback chains, cheap-task routing, and an exact
+    usage ledger (tokens × catalog prices). Ships TWO BUNDLED STUB upstreams
+    reachable via the ``internal:`` scheme, so it boots keyless and its whole
+    proof is deterministic HTTP; real providers plug in by setting real URLs.
+    The pure routing/pricing logic lives in ``router_core.py``."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "router_core.py": (
+            '"""Pure routing + pricing core: catalog, model picking, fallback\n'
+            "chains, and the usage ledger. Stdlib only — no web framework, no HTTP.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "# models.dev-shaped catalog: cost per 1K tokens + capability tags.\n"
+            "CATALOG: dict[str, dict] = {\n"
+            '    "big-model": {\n'
+            '        "providers": ["stub-a", "stub-b"],  # priority order\n'
+            '        "cost": {"input": 0.005, "output": 0.015},\n'
+            '        "tags": [],\n'
+            "    },\n"
+            '    "small-model": {\n'
+            '        "providers": ["stub-b"],\n'
+            '        "cost": {"input": 0.0005, "output": 0.0015},\n'
+            '        "tags": ["cheap"],\n'
+            "    },\n"
+            "}\n"
+            'DEFAULT_MODEL = "big-model"\n\n\n'
+            "def pick_model(requested: str | None, tags: list[str] | None) -> str:\n"
+            '    """Explicit model wins; a "cheap"-tagged request routes to the first\n'
+            "    cheap-tagged catalog model; else the default.\"\"\"\n"
+            "    if requested and requested in CATALOG:\n"
+            "        return requested\n"
+            '    if tags and "cheap" in tags:\n'
+            "        for name, spec in CATALOG.items():\n"
+            '            if "cheap" in spec.get("tags", []):\n'
+            "                return name\n"
+            "    return DEFAULT_MODEL\n\n\n"
+            "def provider_chain(model: str) -> list[str]:\n"
+            '    """The model\'s providers in priority order (fallback = next in list)."""\n'
+            '    return list(CATALOG.get(model, {}).get("providers", []))\n\n\n'
+            "def price(model: str, prompt_tokens: int, completion_tokens: int) -> float:\n"
+            '    """Exact cost: tokens x catalog per-1K prices, rounded to 6 places."""\n'
+            '    cost = CATALOG.get(model, {}).get("cost", {"input": 0.0, "output": 0.0})\n'
+            "    usd = (prompt_tokens / 1000.0) * cost[\"input\"] \\\n"
+            "        + (completion_tokens / 1000.0) * cost[\"output\"]\n"
+            "    return round(usd, 6)\n\n\n"
+            "class Ledger:\n"
+            '    """Append-only usage ledger; totals are derived, never stored."""\n\n'
+            "    def __init__(self) -> None:\n"
+            "        self.entries: list[dict] = []\n\n"
+            "    def add(self, *, model: str, provider: str,\n"
+            "            prompt_tokens: int, completion_tokens: int) -> dict:\n"
+            "        entry = {\n"
+            '            "model": model, "provider": provider,\n'
+            '            "prompt_tokens": prompt_tokens,\n'
+            '            "completion_tokens": completion_tokens,\n'
+            '            "cost_usd": price(model, prompt_tokens, completion_tokens),\n'
+            "        }\n"
+            "        self.entries.append(entry)\n"
+            "        return entry\n\n"
+            "    def totals(self) -> dict:\n"
+            "        per_model: dict[str, dict] = {}\n"
+            "        for e in self.entries:\n"
+            '            agg = per_model.setdefault(e["model"], {\n'
+            '                "requests": 0, "prompt_tokens": 0,\n'
+            '                "completion_tokens": 0, "cost_usd": 0.0,\n'
+            "            })\n"
+            '            agg["requests"] += 1\n'
+            '            agg["prompt_tokens"] += e["prompt_tokens"]\n'
+            '            agg["completion_tokens"] += e["completion_tokens"]\n'
+            '            agg["cost_usd"] = round(agg["cost_usd"] + e["cost_usd"], 6)\n'
+            "        return {\n"
+            '            "requests": len(self.entries),\n'
+            '            "cost_usd": round(sum(e["cost_usd"] for e in self.entries), 6),\n'
+            '            "per_model": per_model,\n'
+            "        }\n"
+        ),
+        "providers.py": (
+            '"""The two BUNDLED stub upstreams + the upstream call seam.\n\n'
+            "Upstream URLs are config: a real deployment sets real OpenAI-compatible\n"
+            "endpoints; the shipped default uses the ``internal:`` scheme, which\n"
+            "dispatches to the deterministic in-process stubs below — so the gateway\n"
+            "boots KEYLESS and its proof needs no network. Stub failure is toggleable\n"
+            "(the fallback-chain proof kills stub A mid-run).\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import os\n\n"
+            "# provider name -> upstream chat-completions URL ('internal:<stub>' or real).\n"
+            "UPSTREAMS: dict[str, str] = {\n"
+            '    "stub-a": os.environ.get("UPSTREAM_STUB_A", "internal:stub-a"),\n'
+            '    "stub-b": os.environ.get("UPSTREAM_STUB_B", "internal:stub-b"),\n'
+            "}\n\n"
+            "# Names currently failing (toggled by the admin route; the fallback proof).\n"
+            "FAILING: set[str] = set()\n\n\n"
+            "class UpstreamError(Exception):\n"
+            "    pass\n\n\n"
+            "def _stub_complete(name: str, payload: dict) -> dict:\n"
+            "    if name in FAILING:\n"
+            '        raise UpstreamError(f"{name} is down")\n'
+            '    messages = payload.get("messages") or []\n'
+            '    text = " ".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))\n'
+            "    prompt_tokens = max(1, len(text) // 4)\n"
+            f'    content = f"[{{name}}] ok: {{text[:60]}}"\n'
+            "    return {\n"
+            '        "id": f"chatcmpl-{name}",\n'
+            '        "object": "chat.completion",\n'
+            '        "model": payload.get("model", ""),\n'
+            '        "choices": [{"index": 0, "finish_reason": "stop",\n'
+            '                     "message": {"role": "assistant", "content": content}}],\n'
+            '        "usage": {"prompt_tokens": prompt_tokens,\n'
+            '                  "completion_tokens": max(1, len(content) // 4),\n'
+            '                  "total_tokens": 0},\n'
+            "    }\n\n\n"
+            "def call_upstream(name: str, payload: dict) -> dict:\n"
+            '    """Call one upstream; raises UpstreamError so the gateway can walk\n'
+            "    the fallback chain. The internal: scheme never touches the network.\"\"\"\n"
+            "    url = UPSTREAMS.get(name)\n"
+            "    if url is None:\n"
+            '        raise UpstreamError(f"unknown provider \'{name}\'")\n'
+            '    if url.startswith("internal:"):\n'
+            '        return _stub_complete(url.split(":", 1)[1], payload)\n'
+            "    try:\n"
+            "        import httpx\n\n"
+            "        resp = httpx.post(f\"{url.rstrip('/')}/chat/completions\",\n"
+            "                          json=payload, timeout=30.0)\n"
+            "        resp.raise_for_status()\n"
+            "        return resp.json()\n"
+            "    except Exception as exc:  # noqa: BLE001 - any failure -> fallback\n"
+            "        raise UpstreamError(str(exc)) from exc\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — an OpenAI-compatible LLM gateway / model router.\n\n"
+            "POST /v1/chat/completions routes by explicit model, cheap-task tags, or\n"
+            "the default, walking each model's provider fallback chain on upstream\n"
+            "failure; every completed call lands in the usage ledger (exact tokens x\n"
+            "catalog prices). GET /v1/models (the catalog), GET /v1/usage (the\n"
+            "ledger), GET /health. Bundled internal stubs make it fully keyless;\n"
+            "POST /_stubs/{name}/fail toggles a stub for fallback drills.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from fastapi import FastAPI, HTTPException\n"
+            "from pydantic import BaseModel, Field\n\n"
+            "import providers\n"
+            "import router_core\n\n"
+            f'app = FastAPI(title="{_json_escape(title)}")\n'
+            "LEDGER = router_core.Ledger()\n\n\n"
+            "class ChatRequest(BaseModel):\n"
+            "    messages: list[dict] = Field(min_length=1)\n"
+            "    model: str | None = None\n"
+            "    tags: list[str] = Field(default_factory=list)\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "providers": sorted(providers.UPSTREAMS)}\n\n\n'
+            '@app.get("/v1/models")\n'
+            "def models() -> dict:\n"
+            '    return {"models": router_core.CATALOG}\n\n\n'
+            '@app.post("/v1/chat/completions")\n'
+            "def chat_completions(req: ChatRequest) -> dict:\n"
+            "    model = router_core.pick_model(req.model, req.tags)\n"
+            "    chain = router_core.provider_chain(model)\n"
+            "    if not chain:\n"
+            '        raise HTTPException(status_code=404, detail=f"no providers for model \'{model}\'")\n'
+            "    errors: list[str] = []\n"
+            "    for provider in chain:\n"
+            "        try:\n"
+            '            payload = {"model": model, "messages": req.messages}\n'
+            "            result = providers.call_upstream(provider, payload)\n"
+            "        except providers.UpstreamError as exc:\n"
+            '            errors.append(f"{provider}: {exc}")\n'
+            "            continue\n"
+            '        usage = result.get("usage") or {}\n'
+            "        entry = LEDGER.add(\n"
+            "            model=model, provider=provider,\n"
+            '            prompt_tokens=int(usage.get("prompt_tokens", 0)),\n'
+            '            completion_tokens=int(usage.get("completion_tokens", 0)),\n'
+            "        )\n"
+            '        result["gateway"] = {"provider": provider, "model": model,\n'
+            '                             "cost_usd": entry["cost_usd"]}\n'
+            "        return result\n"
+            "    raise HTTPException(\n"
+            "        status_code=502,\n"
+            '        detail={"type": "ALL_UPSTREAMS_FAILED", "errors": errors},\n'
+            "    )\n\n\n"
+            '@app.get("/v1/usage")\n'
+            "def usage() -> dict:\n"
+            '    return {"entries": LEDGER.entries, "totals": LEDGER.totals()}\n\n\n'
+            '@app.post("/_stubs/{name}/fail")\n'
+            "def toggle_fail(name: str) -> dict:\n"
+            '    """Drill switch for the bundled stubs (the fallback-chain proof)."""\n'
+            "    if name in providers.FAILING:\n"
+            "        providers.FAILING.discard(name)\n"
+            "    else:\n"
+            "        providers.FAILING.add(name)\n"
+            '    return {"failing": sorted(providers.FAILING)}\n\n\n'
+            'if __name__ == "__main__":\n'
+            "    import os\n\n"
+            "    import uvicorn\n\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_main.py": (
+            '"""The gateway\'s own deterministic proof over the bundled stubs."""\n'
+            "from fastapi.testclient import TestClient\n\n"
+            "import providers\n"
+            "import router_core\n"
+            "from main import app\n\n"
+            "client = TestClient(app)\n\n\n"
+            "def setup_function(_fn):\n"
+            "    providers.FAILING.clear()\n\n\n"
+            "def _chat(**kw):\n"
+            '    body = {"messages": [{"role": "user", "content": "hello gateway"}], **kw}\n'
+            '    return client.post("/v1/chat/completions", json=body)\n\n\n'
+            "def test_normal_request_routes_to_priority_provider():\n"
+            "    resp = _chat()\n"
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["gateway"]["provider"] == "stub-a"  # first in the chain\n'
+            '    assert "[stub-a] ok" in body["choices"][0]["message"]["content"]\n\n\n'
+            "def test_failing_priority_provider_falls_back():\n"
+            '    client.post("/_stubs/stub-a/fail")\n'
+            "    resp = _chat()\n"
+            "    assert resp.status_code == 200\n"
+            '    assert resp.json()["gateway"]["provider"] == "stub-b"\n\n\n'
+            "def test_all_upstreams_failing_is_a_typed_502():\n"
+            '    client.post("/_stubs/stub-a/fail")\n'
+            '    client.post("/_stubs/stub-b/fail")\n'
+            "    resp = _chat()\n"
+            "    assert resp.status_code == 502\n"
+            '    assert resp.json()["detail"]["type"] == "ALL_UPSTREAMS_FAILED"\n\n\n'
+            "def test_cheap_tag_routes_to_the_small_model():\n"
+            '    resp = _chat(tags=["cheap"])\n'
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["gateway"]["model"] == "small-model"\n'
+            '    assert body["gateway"]["provider"] == "stub-b"\n\n\n'
+            "def test_usage_ledger_is_exact_token_math():\n"
+            "    before = len(client.get(\"/v1/usage\").json()[\"entries\"])\n"
+            "    resp = _chat()\n"
+            "    usage = resp.json()[\"usage\"]\n"
+            '    entries = client.get("/v1/usage").json()["entries"]\n'
+            "    assert len(entries) == before + 1\n"
+            "    last = entries[-1]\n"
+            "    assert last[\"cost_usd\"] == router_core.price(\n"
+            '        last["model"], usage["prompt_tokens"], usage["completion_tokens"])\n\n\n'
+            "def test_price_is_pure_and_exact():\n"
+            '    assert router_core.price("big-model", 1000, 1000) == 0.02\n'
+            '    assert router_core.price("small-model", 2000, 0) == 0.001\n'
+        ),
+        "requirements.txt": (
+            f"# Runtime + test dependencies for {title}.\n"
+            "fastapi>=0.110        # web framework\n"
+            "uvicorn[standard]>=0.27  # ASGI server (run with `python main.py`)\n"
+            "httpx>=0.27           # real upstream calls + fastapi.testclient\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="FastAPI LLM gateway (OpenAI-compatible router + usage ledger)",
+            install=(
+                "Requires Python 3.10+. Install dependencies into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the gateway (bundled internal stubs — zero keys needed):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then route requests:\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \\\n"
+                "  -d '{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}'\n"
+                "curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \\\n"
+                "  -d '{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"tags\": [\"cheap\"]}'\n"
+                "curl -s localhost:8000/v1/usage\n"
+                "```\n\n"
+                "Point a provider at a REAL OpenAI-compatible endpoint via env\n"
+                "(`UPSTREAM_STUB_A=https://api.example.com/v1`) — the `internal:`\n"
+                "defaults keep everything keyless until you do. Drill the fallback\n"
+                "chain with `POST /_stubs/stub-a/fail` and watch requests route to\n"
+                "the next provider."
+            ),
+            structure=[
+                ("main.py", "FastAPI gateway — /v1/chat/completions, /v1/usage, /v1/models"),
+                ("router_core.py", "Pure catalog, routing policy, pricing, ledger"),
+                ("providers.py", "Bundled stub upstreams + the URL-configurable call seam"),
+                ("test_main.py", "Deterministic proof: routing, fallback, exact costs"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
+            ],
+            features=[
+                "OpenAI-compatible /v1/chat/completions proxy with priority routing",
+                "Fallback chains: a failing upstream routes to the next provider",
+                "Cheap-task routing to small models via request tags",
+                "Exact usage ledger — tokens × catalog prices, per model and total",
+                "Boots keyless against two bundled stub upstreams (internal: scheme)",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_main.py\n```"
+            ),
+        ),
+    }
+
+
+def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
+    """The terminal-copilot variant of the python_cli stack (wave-2 §3.6): an
+    agent CLI whose ``run`` command emits a TYPED JSONL EVENT STREAM (the
+    contract IS the proof hook), driven by a bundled mock-provider
+    ``scenarios.json`` so everything is offline + deterministic. Permission
+    modes (read-only default / workspace-write) guard the write tool with the
+    workspace-boundary + symlink-escape idiom (the recorded path-traversal
+    lesson, systematized). Pure logic in ``cli_core.py``; zero runtime deps."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "cli_core.py": (
+            '"""Pure copilot core: typed events, scenario playback, guarded tools.\n\n'
+            "Stdlib only. The EVENT SCHEMA is the CLI's contract: every line the\n"
+            "``run`` command prints in ``--format json`` mode is one of these events,\n"
+            "so a harness can verify behavior mechanically. Tools are executed for\n"
+            "real (scenarios script WHICH tools run, not their results), and the\n"
+            "write tool enforces the permission mode + workspace boundary.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import json\n"
+            "import os\n"
+            "from pathlib import Path\n\n"
+            'EVENT_TYPES = ("session_start", "tool_call", "tool_result", "answer",\n'
+            '               "denied", "error")\n'
+            "_WRITE_CAP_BYTES = 64 * 1024\n\n\n"
+            "def make_event(event_type: str, **fields) -> dict:\n"
+            '    return {"type": event_type, **fields}\n\n\n'
+            "def validate_event(obj: object) -> list[str]:\n"
+            '    """Schema issues for one event; empty means it conforms."""\n'
+            "    if not isinstance(obj, dict):\n"
+            '        return ["event is not an object"]\n'
+            '    etype = obj.get("type")\n'
+            "    issues: list[str] = []\n"
+            "    if etype not in EVENT_TYPES:\n"
+            "        issues.append(f\"unknown event type {etype!r}\")\n"
+            '    if etype == "answer" and not str(obj.get("text", "")).strip():\n'
+            '        issues.append("answer event needs non-empty text")\n'
+            '    if etype == "tool_call" and not obj.get("tool"):\n'
+            '        issues.append("tool_call event needs a tool name")\n'
+            "    return issues\n\n\n"
+            "def load_scenarios(path: str | Path) -> list[dict]:\n"
+            '    data = json.loads(Path(path).read_text(encoding="utf-8"))\n'
+            '    scenarios = data.get("scenarios")\n'
+            "    return scenarios if isinstance(scenarios, list) else []\n\n\n"
+            "def pick_scenario(scenarios: list[dict], prompt: str) -> dict | None:\n"
+            '    """First scenario whose match phrase appears in the prompt; the\n'
+            "    empty-match scenario is the fallback.\"\"\"\n"
+            "    low = (prompt or \"\").lower()\n"
+            "    fallback = None\n"
+            "    for scenario in scenarios:\n"
+            '        match = str(scenario.get("match", ""))\n'
+            "        if not match:\n"
+            "            fallback = fallback or scenario\n"
+            "        elif match in low:\n"
+            "            return scenario\n"
+            "    return fallback\n\n\n"
+            "def confined(workspace: str | Path, rel: str) -> Path | None:\n"
+            '    """Resolve workspace/rel and return it ONLY if it stays inside the\n'
+            "    workspace (symlink-safe) — the path-traversal guard.\"\"\"\n"
+            "    try:\n"
+            "        base = Path(workspace).resolve()\n"
+            "        target = (base / rel).resolve()\n"
+            "        if os.path.commonpath([str(base), str(target)]) != str(base):\n"
+            "            return None\n"
+            "    except (ValueError, OSError):\n"
+            "        return None\n"
+            "    return target\n\n\n"
+            "def run_tool(tool: str, args: dict, workspace: str | Path, mode: str) -> dict:\n"
+            '    """Execute one guarded tool; returns the tool_result/denied event."""\n'
+            '    if tool == "read_file":\n'
+            '        target = confined(workspace, str(args.get("path", "")))\n'
+            "        if target is None:\n"
+            '            return make_event("denied", tool=tool,\n'
+            '                              reason="path escapes the workspace")\n'
+            "        try:\n"
+            '            return make_event("tool_result", tool=tool,\n'
+            '                              content=target.read_text(encoding="utf-8")[:4000])\n'
+            "        except OSError as exc:\n"
+            '            return make_event("tool_result", tool=tool, error=str(exc))\n'
+            '    if tool == "list_dir":\n'
+            '        target = confined(workspace, str(args.get("path", ".")))\n'
+            "        if target is None or not target.is_dir():\n"
+            '            return make_event("tool_result", tool=tool, entries=[])\n'
+            '        return make_event("tool_result", tool=tool,\n'
+            "                          entries=sorted(p.name for p in target.iterdir())[:200])\n"
+            '    if tool == "write_file":\n'
+            '        if mode != "workspace-write":\n'
+            '            return make_event("denied", tool=tool,\n'
+            '                              reason="write_file requires --mode workspace-write "\n'
+            '                                     "(read-only is the default)")\n'
+            '        content = str(args.get("content", ""))\n'
+            "        if len(content.encode()) > _WRITE_CAP_BYTES:\n"
+            '            return make_event("denied", tool=tool, reason="content exceeds the size cap")\n'
+            '        target = confined(workspace, str(args.get("path", "")))\n'
+            "        if target is None:\n"
+            '            return make_event("denied", tool=tool,\n'
+            '                              reason="path escapes the workspace")\n'
+            "        target.parent.mkdir(parents=True, exist_ok=True)\n"
+            '        target.write_text(content, encoding="utf-8")\n'
+            '        return make_event("tool_result", tool=tool, written=str(target))\n'
+            '    return make_event("denied", tool=tool, reason=f"unregistered tool \'{tool}\'")\n\n\n'
+            "def run_scenario(scenario: dict, workspace: str | Path, mode: str) -> tuple[list[dict], int]:\n"
+            '    """Play one scripted scenario, executing its tool calls for real.\n\n'
+            "    Returns (events, exit_code): 0 on success, 2 when anything was\n"
+            "    denied (the caller surfaces it on stderr + exit code). Never raises.\n"
+            '    """\n'
+            '    events: list[dict] = [make_event("session_start", mode=mode)]\n'
+            "    exit_code = 0\n"
+            '    for step in scenario.get("events", []):\n'
+            "        if not isinstance(step, dict):\n"
+            "            continue\n"
+            '        if step.get("type") == "tool_call":\n'
+            '            tool = str(step.get("tool", ""))\n'
+            '            args = step.get("args") if isinstance(step.get("args"), dict) else {}\n'
+            '            events.append(make_event("tool_call", tool=tool, args=args))\n'
+            "            result = run_tool(tool, args, workspace, mode)\n"
+            "            events.append(result)\n"
+            '            if result.get("type") == "denied":\n'
+            "                exit_code = 2\n"
+            "        else:\n"
+            "            events.append(dict(step))\n"
+            "    return events, exit_code\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — a terminal copilot with a typed event-stream contract.\n\n"
+            "Commands:\n"
+            "  python main.py run '<prompt>' [--format json|text] [--mode read-only|workspace-write]\n"
+            "  python main.py doctor --output-format json\n\n"
+            "``run --format json`` prints ONE JSON EVENT PER LINE (session_start,\n"
+            "tool_call, tool_result, answer, denied) — a mechanical contract any\n"
+            "harness can assert on. Scenarios come from the bundled mock-provider\n"
+            "scenarios.json, so everything works offline with zero keys; a denied\n"
+            "tool exits 2. The write tool needs --mode workspace-write.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import argparse\n"
+            "import json\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "import cli_core\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def _cmd_run(args) -> int:\n"
+            "    scenarios = cli_core.load_scenarios(ROOT / \"scenarios.json\")\n"
+            "    scenario = cli_core.pick_scenario(scenarios, args.prompt)\n"
+            "    if scenario is None:\n"
+            '        print("no scenario matched and no fallback exists", file=sys.stderr)\n'
+            "        return 1\n"
+            "    events, exit_code = cli_core.run_scenario(scenario, args.workspace, args.mode)\n"
+            "    for event in events:\n"
+            '        if args.format == "json":\n'
+            "            print(json.dumps(event, ensure_ascii=False))\n"
+            "        else:\n"
+            '            print(f"[{event.get(\'type\')}] " + json.dumps(\n'
+            '                {k: v for k, v in event.items() if k != "type"}, ensure_ascii=False))\n'
+            "    if exit_code:\n"
+            '        print("one or more tool calls were denied", file=sys.stderr)\n'
+            "    return exit_code\n\n\n"
+            "def _cmd_doctor(args) -> int:\n"
+            "    checks: list[dict] = []\n"
+            "    ok = True\n"
+            "    try:\n"
+            '        scenarios = cli_core.load_scenarios(ROOT / "scenarios.json")\n'
+            '        checks.append({"check": "scenarios", "ok": bool(scenarios),\n'
+            '                       "count": len(scenarios)})\n'
+            "        ok = ok and bool(scenarios)\n"
+            "    except Exception as exc:  # noqa: BLE001\n"
+            '        checks.append({"check": "scenarios", "ok": False, "error": str(exc)})\n'
+            "        ok = False\n"
+            '    checks.append({"check": "python", "ok": sys.version_info >= (3, 10),\n'
+            '                   "version": sys.version.split()[0]})\n'
+            "    ok = ok and sys.version_info >= (3, 10)\n"
+            '    report = {"ok": ok, "checks": checks}\n'
+            '    if args.output_format == "json":\n'
+            "        print(json.dumps(report, ensure_ascii=False))\n"
+            "    else:\n"
+            "        for c in checks:\n"
+            "            print(c)\n"
+            "    return 0 if ok else 1\n\n\n"
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    parser = argparse.ArgumentParser(description=__doc__)\n"
+            '    sub = parser.add_subparsers(dest="command", required=True)\n'
+            '    run_p = sub.add_parser("run")\n'
+            '    run_p.add_argument("prompt")\n'
+            '    run_p.add_argument("--format", choices=("json", "text"), default="text")\n'
+            '    run_p.add_argument("--mode", choices=("read-only", "workspace-write"),\n'
+            '                       default="read-only")\n'
+            '    run_p.add_argument("--workspace", default=".")\n'
+            '    doc_p = sub.add_parser("doctor")\n'
+            '    doc_p.add_argument("--output-format", choices=("json", "text"),\n'
+            '                       default="text")\n'
+            "    args = parser.parse_args(argv)\n"
+            '    if args.command == "run":\n'
+            "        return _cmd_run(args)\n"
+            "    return _cmd_doctor(args)\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    raise SystemExit(main())\n"
+        ),
+        "scenarios.json": (
+            "{\n"
+            '  "scenarios": [\n'
+            "    {\n"
+            '      "match": "summarize",\n'
+            '      "events": [\n'
+            '        {"type": "tool_call", "tool": "read_file", "args": {"path": "notes.txt"}},\n'
+            '        {"type": "answer", "text": "Here is a summary of notes.txt."}\n'
+            "      ]\n"
+            "    },\n"
+            "    {\n"
+            '      "match": "write",\n'
+            '      "events": [\n'
+            '        {"type": "tool_call", "tool": "write_file",\n'
+            '         "args": {"path": "out.txt", "content": "hello from the copilot"}},\n'
+            '        {"type": "answer", "text": "Wrote out.txt into the workspace."}\n'
+            "      ]\n"
+            "    },\n"
+            "    {\n"
+            '      "match": "",\n'
+            '      "events": [\n'
+            '        {"type": "answer",\n'
+            '         "text": "I can read files, list directories, and (in workspace-write mode) write files."}\n'
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        ),
+        "test_cli_agent.py": (
+            '"""The copilot\'s own deterministic proof: event contract + permissions."""\n'
+            "import json\n"
+            "import subprocess\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "import cli_core\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def _run(prompt, *extra, cwd=None):\n"
+            "    return subprocess.run(\n"
+            '        [sys.executable, "-B", str(ROOT / "main.py"), "run", prompt,\n'
+            '         "--format", "json", *extra],\n'
+            "        capture_output=True, text=True, timeout=60, cwd=cwd or ROOT)\n\n\n"
+            "def test_run_emits_a_valid_event_stream():\n"
+            '    proc = _run("hello there")\n'
+            "    assert proc.returncode == 0, proc.stderr\n"
+            "    events = [json.loads(line) for line in proc.stdout.splitlines() if line]\n"
+            "    assert events, \"run must emit events\"\n"
+            "    for event in events:\n"
+            "        assert cli_core.validate_event(event) == [], event\n"
+            '    assert events[0]["type"] == "session_start"\n'
+            '    assert events[-1]["type"] == "answer"\n\n\n'
+            "def test_write_is_denied_in_read_only_mode(tmp_path):\n"
+            '    proc = _run("please write the file", "--workspace", str(tmp_path))\n'
+            "    assert proc.returncode == 2, proc.stdout + proc.stderr\n"
+            "    events = [json.loads(line) for line in proc.stdout.splitlines() if line]\n"
+            '    assert any(e["type"] == "denied" for e in events)\n'
+            '    assert not (tmp_path / "out.txt").exists(), "read-only must not write"\n\n\n'
+            "def test_write_succeeds_in_workspace_write_mode(tmp_path):\n"
+            '    proc = _run("please write the file", "--mode", "workspace-write",\n'
+            '                "--workspace", str(tmp_path))\n'
+            "    assert proc.returncode == 0, proc.stdout + proc.stderr\n"
+            '    assert (tmp_path / "out.txt").read_text() == "hello from the copilot"\n\n\n'
+            "def test_path_escape_is_denied_even_in_write_mode(tmp_path):\n"
+            "    result = cli_core.run_tool(\n"
+            '        "write_file", {"path": "../evil.txt", "content": "x"},\n'
+            '        tmp_path, "workspace-write")\n'
+            '    assert result["type"] == "denied"\n'
+            '    assert not (tmp_path.parent / "evil.txt").exists()\n\n\n'
+            "def test_doctor_reports_ok_json():\n"
+            "    proc = subprocess.run(\n"
+            '        [sys.executable, "-B", str(ROOT / "main.py"), "doctor",\n'
+            '         "--output-format", "json"],\n'
+            "        capture_output=True, text=True, timeout=60)\n"
+            "    assert proc.returncode == 0, proc.stdout + proc.stderr\n"
+            "    report = json.loads(proc.stdout)\n"
+            '    assert report["ok"] is True and report["checks"]\n\n\n'
+            "def test_validate_event_rejects_junk():\n"
+            '    assert cli_core.validate_event({"type": "nonsense"})\n'
+            '    assert cli_core.validate_event({"type": "answer", "text": " "})\n'
+            "    assert cli_core.validate_event(42)\n"
+        ),
+        "pyproject.toml": (
+            "[project]\n"
+            f'name = "{_mcp_server_name(app_name)}"\n'
+            'version = "0.1.0"\n'
+            f'description = "{_json_escape(title)}"\n'
+            'requires-python = ">=3.10"\n'
+            "dependencies = []  # stdlib only — the bundled scenarios need no provider\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Terminal copilot CLI (typed event stream, zero runtime deps)",
+            install=(
+                "No dependencies to install — Python 3.10+ is all it needs:\n\n"
+                "```bash\npython main.py doctor --output-format json\n```"
+            ),
+            usage=(
+                "Run a prompt (the bundled scenarios answer offline, zero keys):\n\n"
+                "```bash\n"
+                "python main.py run 'summarize my notes' --format json\n"
+                "```\n\n"
+                "Every stdout line is one typed JSON event (`session_start`,\n"
+                "`tool_call`, `tool_result`, `answer`, `denied`) — a mechanical\n"
+                "contract for harnesses and CI. Writes are opt-in:\n\n"
+                "```bash\n"
+                "python main.py run 'write the file' --mode workspace-write --workspace ./work\n"
+                "```\n\n"
+                "In the default read-only mode a write tool call is DENIED (exit 2),\n"
+                "and paths that escape the workspace are always denied — in every\n"
+                "mode. Extend `scenarios.json` (or wire a real provider) to grow the\n"
+                "copilot's behavior."
+            ),
+            structure=[
+                ("main.py", "The CLI: run | doctor (argparse, stdlib only)"),
+                ("cli_core.py", "Pure core: event schema, scenario playback, guarded tools"),
+                ("scenarios.json", "Bundled mock-provider scenarios (offline answers)"),
+                ("test_cli_agent.py", "Deterministic proof: contract + permissions"),
+            ],
+            features=[
+                "Typed JSONL event stream — run output is mechanically verifiable",
+                "Permission modes: read-only by default, writes are opt-in",
+                "Workspace boundary + symlink-escape + size-cap write guards",
+                "Bundled scenario playback — works offline with zero keys",
+                "doctor --output-format json for one-command health checks",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_cli_agent.py\n```"
+            ),
+        ),
+    }
+
+
 def _mcp_server_name(app_name: str) -> str:
     """A kebab identifier for the MCP server (clients show this name)."""
     ident = _re.sub(r"[^a-z0-9-]+", "-", app_name.strip().lower()).strip("-")
@@ -2011,6 +2911,1361 @@ def _mcp(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _rag(app_name: str, brief: str) -> dict[str, str]:
+    """A RAG "chat with your documents" app (wave-2 §3.1) — a FastAPI HTTP server
+    with ``/ingest`` + ``/query`` + ``/chat`` + ``/health`` + ``/v1/stats``, built
+    FRESH (never cloned from a web builder, so it never inherits npm / React).
+
+    Structured as a **pure logic core + a thin HTTP layer**, the sim-core split
+    reapplied (Phaser/Swift/MCP precedent):
+
+    - ``rag_core.py`` — chunking + retrieval as pure stdlib Python (NO fastapi /
+      uvicorn / httpx imports), so ``test_rag_core.py`` proves the retrieval
+      logic headlessly with zero third-party deps.
+    - ``main.py`` — the FastAPI app: routes are thin wrappers over the core. The
+      LLM seam is the ``OPENAI_BASE_URL`` env var (never a hardcoded provider or
+      key); with no seam configured ``/chat`` degrades to an EXTRACTIVE answer
+      (the top retrieved chunk), so every route works with ZERO API keys.
+
+    The proof story is deterministic: rag_check.py boots this server and drives
+    the real HTTP contract (ingest a marker doc → query must retrieve it), and
+    the shipped ``corpus/seed.md`` carries a planted marker fact ("41.7") so
+    retrieval is provable out of the box.
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "rag_core.py": (
+            '"""Pure retrieval core: chunking + scoring + an in-memory corpus store.\n\n'
+            "Stdlib only — NO web framework here (the FastAPI layer lives in\n"
+            "``main.py``), so this logic is unit-testable without a server or any\n"
+            "third-party install (see ``test_rag_core.py``). Deterministic: same\n"
+            "corpus + same query -> same ranking (ties break by insertion order).\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import math\n"
+            "import re\n"
+            "from dataclasses import dataclass\n\n"
+            '_WORD_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")\n\n\n'
+            "def tokenize(text: str) -> list[str]:\n"
+            '    """Lowercase word tokens (keeps digits/dots so facts like 41.7 survive)."""\n'
+            '    return _WORD_RE.findall((text or "").lower())\n\n\n'
+            "def chunk_text(text: str, max_words: int = 120, overlap: int = 20) -> list[str]:\n"
+            '    """Split ``text`` into overlapping word-window chunks.\n\n'
+            "    Blank input -> []. Any non-blank input yields at least one chunk. The\n"
+            "    overlap keeps a fact that straddles a boundary retrievable from both\n"
+            "    sides.\n"
+            '    """\n'
+            "    words = (text or \"\").split()\n"
+            "    if not words:\n"
+            "        return []\n"
+            "    max_words = max(1, int(max_words))\n"
+            "    overlap = min(max(0, int(overlap)), max_words - 1)\n"
+            "    step = max_words - overlap\n"
+            "    chunks: list[str] = []\n"
+            "    for start in range(0, len(words), step):\n"
+            "        window = words[start:start + max_words]\n"
+            "        if not window:\n"
+            "            break\n"
+            '        chunks.append(" ".join(window))\n'
+            "        if start + max_words >= len(words):\n"
+            "            break\n"
+            "    return chunks\n\n\n"
+            "@dataclass(slots=True)\n"
+            "class Chunk:\n"
+            '    """One retrievable unit: the chunk text + where it came from."""\n\n'
+            "    text: str\n"
+            "    source: str\n\n\n"
+            "class CorpusStore:\n"
+            '    """In-memory corpus: add documents, search chunks, report stats.\n\n'
+            "    Scoring is rarity-weighted token overlap: each query token shared with\n"
+            "    a chunk contributes ``log(1 + total_chunks / chunks_containing_it)``,\n"
+            "    normalised by chunk length so long chunks don't win by volume. Simple,\n"
+            "    deterministic, and dependency-free — swap in embeddings later without\n"
+            "    touching the HTTP layer.\n"
+            '    """\n\n'
+            "    def __init__(self) -> None:\n"
+            "        self._chunks: list[Chunk] = []\n"
+            "        self._doc_freq: dict[str, int] = {}\n"
+            "        self._documents = 0\n\n"
+            '    def add(self, text: str, source: str = "inline") -> int:\n'
+            '        """Chunk + index ``text``; returns how many chunks were added."""\n'
+            "        pieces = chunk_text(text)\n"
+            "        if not pieces:\n"
+            "            return 0\n"
+            "        self._documents += 1\n"
+            "        for piece in pieces:\n"
+            "            self._chunks.append(Chunk(text=piece, source=source))\n"
+            "            for tok in set(tokenize(piece)):\n"
+            "                self._doc_freq[tok] = self._doc_freq.get(tok, 0) + 1\n"
+            "        return len(pieces)\n\n"
+            "    def search(self, query: str, k: int = 3) -> list[dict]:\n"
+            '        """Top-``k`` chunks for ``query`` as ``{text, source, score}`` dicts.\n\n'
+            "        Empty query, empty corpus, or no overlapping tokens -> []. Ranking is\n"
+            "        stable: equal scores keep insertion order.\n"
+            '        """\n'
+            "        q_tokens = set(tokenize(query))\n"
+            "        if not q_tokens or not self._chunks:\n"
+            "            return []\n"
+            "        total = len(self._chunks)\n"
+            "        scored: list[tuple[float, int]] = []\n"
+            "        for idx, chunk in enumerate(self._chunks):\n"
+            "            c_tokens = tokenize(chunk.text)\n"
+            "            if not c_tokens:\n"
+            "                continue\n"
+            "            shared = q_tokens.intersection(c_tokens)\n"
+            "            if not shared:\n"
+            "                continue\n"
+            "            weight = sum(\n"
+            "                math.log(1.0 + total / self._doc_freq.get(tok, 1))\n"
+            "                for tok in shared\n"
+            "            )\n"
+            "            scored.append((weight / math.sqrt(len(c_tokens)), idx))\n"
+            "        scored.sort(key=lambda pair: (-pair[0], pair[1]))\n"
+            "        out: list[dict] = []\n"
+            "        for score, idx in scored[: max(1, int(k))]:\n"
+            "            chunk = self._chunks[idx]\n"
+            "            out.append({\n"
+            '                "text": chunk.text,\n'
+            '                "source": chunk.source,\n'
+            '                "score": round(score, 4),\n'
+            "            })\n"
+            "        return out\n\n"
+            "    def stats(self) -> dict:\n"
+            '        """The /v1/stats health contract: corpus size at a glance."""\n'
+            "        return {\n"
+            '            "documents": self._documents,\n'
+            '            "chunks": len(self._chunks),\n'
+            '            "sources": sorted({c.source for c in self._chunks}),\n'
+            "        }\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — a RAG (chat with your documents) FastAPI app.\n\n"
+            "Routes: GET / (a built-in browser chat page), POST /ingest (add a\n"
+            "document), GET /query (retrieve chunks), POST /chat (answer grounded\n"
+            "in retrieved context), GET /chat/stream (the same answer over SSE,\n"
+            "word-by-word), GET /health, GET /v1/stats. Retrieval logic\n"
+            "lives in ``rag_core.py`` (pure, no web framework); this module is the\n"
+            "thin HTTP layer.\n\n"
+            "LLM seam: set OPENAI_BASE_URL (and optionally OPENAI_API_KEY /\n"
+            "OPENAI_MODEL) to answer /chat with an OpenAI-compatible LLM over the\n"
+            "retrieved context. With no seam configured, /chat still works — it\n"
+            "returns an extractive answer (the top retrieved chunk). No key required.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import os\n"
+            "from pathlib import Path\n\n"
+            "from fastapi import FastAPI, HTTPException, Query\n"
+            "from fastapi.responses import HTMLResponse, StreamingResponse\n"
+            "from pydantic import BaseModel, Field\n\n"
+            "import rag_core\n\n"
+            f'app = FastAPI(title="{_mcp_server_name(app_name)}")\n'
+            "STORE = rag_core.CorpusStore()\n\n"
+            "# Seed the corpus from ./corpus at boot so /query works out of the box.\n"
+            '_CORPUS_DIR = Path(__file__).resolve().parent / "corpus"\n\n\n'
+            "def _seed_corpus() -> None:\n"
+            "    if not _CORPUS_DIR.is_dir():\n"
+            "        return\n"
+            '    for path in sorted(_CORPUS_DIR.glob("*")):\n'
+            '        if path.suffix.lower() not in (".md", ".txt"):\n'
+            "            continue\n"
+            "        try:\n"
+            '            STORE.add(path.read_text(encoding="utf-8", errors="replace"),\n'
+            "                      source=path.name)\n"
+            "        except OSError:\n"
+            "            continue\n\n\n"
+            "_seed_corpus()\n\n\n"
+            "class IngestRequest(BaseModel):\n"
+            "    text: str = Field(min_length=1, description=\"The document text to index\")\n"
+            '    source: str = "inline"\n\n\n'
+            "class ChatRequest(BaseModel):\n"
+            "    question: str = Field(min_length=1)\n"
+            "    k: int = 3\n\n\n"
+            "# A minimal, self-contained chat page (vanilla JS, no external assets, no\n"
+            "# build step) so the app serves something real in a browser at '/'.\n"
+            '_INDEX_HTML = """<!doctype html>\n'
+            '<html lang="en">\n'
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{_mcp_server_name(app_name)}</title>\n"
+            "<style>\n"
+            "  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 44rem; padding: 0 1rem; color: #1a1a2e; }\n"
+            "  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.6rem; }\n"
+            "  textarea, input[type=text] { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid #bbb; border-radius: 6px; font: inherit; }\n"
+            "  button { margin-top: .4rem; padding: .45rem 1rem; border: 0; border-radius: 6px; background: #3b5bdb; color: #fff; font: inherit; cursor: pointer; }\n"
+            "  .answer { background: #f1f3f5; border-radius: 8px; padding: .8rem; margin: .8rem 0; white-space: pre-wrap; }\n"
+            "  .src { color: #666; font-size: .85rem; margin-top: .4rem; }\n"
+            "  #stats { color: #666; font-size: .85rem; margin-top: 1.2rem; }\n"
+            "</style>\n"
+            "</head>\n"
+            "<body>\n"
+            f"<h1>{_mcp_server_name(app_name)}</h1>\n"
+            "<p>Ask a question about the ingested documents, or add your own below.</p>\n"
+            '<input id="q" type="text" placeholder="Ask your documents anything...">\n'
+            '<button onclick="ask()">Ask</button>\n'
+            '<div id="answers"></div>\n'
+            "<h2>Add a document</h2>\n"
+            '<textarea id="doc" rows="4" placeholder="Paste text to ingest..."></textarea>\n'
+            '<button onclick="ingest()">Ingest</button>\n'
+            '<div id="stats"></div>\n'
+            "<script>\n"
+            "function refreshStats() {\n"
+            '  fetch("/v1/stats").then(function (r) { return r.json(); }).then(function (s) {\n'
+            '    document.getElementById("stats").textContent =\n'
+            '      s.documents + " document(s), " + s.chunks + " chunk(s) indexed";\n'
+            "  });\n"
+            "}\n"
+            "function ask() {\n"
+            '  var q = document.getElementById("q").value.trim();\n'
+            "  if (!q) return;\n"
+            '  var div = document.createElement("div");\n'
+            '  div.className = "answer";\n'
+            '  document.getElementById("answers").prepend(div);\n'
+            "  // Stream the answer word-by-word over SSE (data: [DONE] terminates).\n"
+            '  var es = new EventSource("/chat/stream?question=" + encodeURIComponent(q));\n'
+            "  es.onmessage = function (e) {\n"
+            '    if (e.data === "[DONE]") { es.close(); return; }\n'
+            '    div.textContent += (div.textContent ? " " : "") + e.data;\n'
+            "  };\n"
+            "  es.onerror = function () { es.close(); };\n"
+            "}\n"
+            "function ingest() {\n"
+            '  var text = document.getElementById("doc").value.trim();\n'
+            "  if (!text) return;\n"
+            '  fetch("/ingest", { method: "POST", headers: { "Content-Type": "application/json" },\n'
+            '                     body: JSON.stringify({ text: text, source: "browser" }) })\n'
+            '    .then(function () { document.getElementById("doc").value = ""; refreshStats(); });\n'
+            "}\n"
+            'document.getElementById("q").addEventListener("keydown", function (e) { if (e.key === "Enter") ask(); });\n'
+            "refreshStats();\n"
+            "</script>\n"
+            "</body>\n"
+            "</html>\n"
+            '"""\n\n\n'
+            '@app.get("/", response_class=HTMLResponse)\n'
+            "def index() -> str:\n"
+            '    """The built-in chat page — the app is usable from a browser as-is."""\n'
+            "    return _INDEX_HTML\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "app": "rag"}\n\n\n'
+            '@app.get("/v1/stats")\n'
+            "def stats() -> dict:\n"
+            "    return STORE.stats()\n\n\n"
+            '@app.post("/ingest")\n'
+            "def ingest(req: IngestRequest) -> dict:\n"
+            "    added = STORE.add(req.text, source=req.source)\n"
+            "    if added == 0:\n"
+            '        raise HTTPException(status_code=400, detail="text contained no indexable words")\n'
+            '    return {"ingested_chunks": added, **STORE.stats()}\n\n\n'
+            '@app.get("/query")\n'
+            "def query(q: str = Query(min_length=1), k: int = 3) -> dict:\n"
+            '    return {"query": q, "results": STORE.search(q, k=k)}\n\n\n'
+            "def _llm_answer(question: str, context: str) -> str | None:\n"
+            '    """Answer via the OPENAI_BASE_URL seam; None -> caller falls back.\n\n'
+            "    httpx is imported lazily so the app (and every non-/chat route) runs\n"
+            "    even when it isn't installed. Any failure degrades to the extractive\n"
+            "    fallback — /chat never 500s because an LLM was unreachable.\n"
+            '    """\n'
+            '    base = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")\n'
+            "    if not base:\n"
+            "        return None\n"
+            "    try:\n"
+            "        import httpx\n\n"
+            "        resp = httpx.post(\n"
+            '            f"{base}/chat/completions",\n'
+            "            json={\n"
+            '                "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),\n'
+            '                "messages": [\n'
+            '                    {"role": "system", "content": (\n'
+            '                        "Answer using ONLY the provided context. "\n'
+            '                        "If the context is insufficient, say so."\n'
+            "                    )},\n"
+            '                    {"role": "user", "content": f"Context:\\n{context}\\n\\nQuestion: {question}"},\n'
+            "                ],\n"
+            "            },\n"
+            "            headers={\n"
+            '                "Authorization": f"Bearer {os.environ.get(\'OPENAI_API_KEY\', \'sk-no-key\')}",\n'
+            "            },\n"
+            "            timeout=30.0,\n"
+            "        )\n"
+            "        data = resp.json()\n"
+            '        answer = data["choices"][0]["message"]["content"]\n'
+            "        return answer if isinstance(answer, str) and answer.strip() else None\n"
+            "    except Exception:  # noqa: BLE001 - degrade to extractive, never 500\n"
+            "        return None\n\n\n"
+            '@app.post("/chat")\n'
+            "def chat(req: ChatRequest) -> dict:\n"
+            "    results = STORE.search(req.question, k=req.k)\n"
+            "    if not results:\n"
+            "        return {\n"
+            '            "answer": "I could not find anything relevant in the corpus. "\n'
+            '                      "Ingest documents via POST /ingest and ask again.",\n'
+            '            "sources": [],\n'
+            '            "llm_used": False,\n'
+            "        }\n"
+            '    context = "\\n\\n".join(r["text"] for r in results)\n'
+            "    answer = _llm_answer(req.question, context)\n"
+            "    if answer is None:\n"
+            "        # Extractive fallback: the best-matching chunk IS the answer.\n"
+            '        answer = results[0]["text"]\n'
+            '        return {"answer": answer, "sources": results, "llm_used": False}\n'
+            '    return {"answer": answer, "sources": results, "llm_used": True}\n\n\n'
+            '@app.get("/chat/stream")\n'
+            "def chat_stream(question: str = Query(min_length=1), k: int = 3) -> StreamingResponse:\n"
+            '    """SSE variant of /chat: streams the grounded answer word-by-word.\n\n'
+            "    Same retrieval + LLM-or-extractive path as POST /chat; the answer is\n"
+            "    emitted as `data:` frames and terminated with `data: [DONE]` so\n"
+            "    clients (and gates) know the stream is complete.\n"
+            '    """\n'
+            "    results = STORE.search(question, k=k)\n"
+            "    if not results:\n"
+            "        answer = (\n"
+            '            "I could not find anything relevant in the corpus. "\n'
+            '            "Ingest documents via POST /ingest and ask again."\n'
+            "        )\n"
+            "    else:\n"
+            '        context = "\\n\\n".join(r["text"] for r in results)\n'
+            "        answer = _llm_answer(question, context) or results[0][\"text\"]\n\n"
+            "    def _events():\n"
+            "        for word in answer.split():\n"
+            '            yield f"data: {word}\\n\\n"\n'
+            '        yield "data: [DONE]\\n\\n"\n\n'
+            '    return StreamingResponse(_events(), media_type="text/event-stream")\n\n\n'
+            'if __name__ == "__main__":\n'
+            "    import uvicorn\n\n"
+            "    # PORT env so tooling (and the rag_check gate) can pick a free port.\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_rag_core.py": (
+            '"""Unit tests for the PURE retrieval core (no server, no third-party deps)."""\n'
+            "import rag_core\n\n\n"
+            "def test_chunk_text_blank_and_short():\n"
+            "    assert rag_core.chunk_text(\"\") == []\n"
+            '    assert rag_core.chunk_text("just a few words") == ["just a few words"]\n\n\n'
+            "def test_chunk_text_windows_cover_all_words():\n"
+            '    words = " ".join(f"w{i}" for i in range(300))\n'
+            "    chunks = rag_core.chunk_text(words, max_words=120, overlap=20)\n"
+            "    assert len(chunks) > 1\n"
+            '    assert "w0" in chunks[0] and "w299" in chunks[-1]\n\n\n'
+            "def test_store_add_and_stats():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    added = store.add("alpha beta gamma", source="a.md")\n'
+            "    assert added == 1\n"
+            "    stats = store.stats()\n"
+            '    assert stats["documents"] == 1\n'
+            '    assert stats["chunks"] == 1\n'
+            '    assert stats["sources"] == ["a.md"]\n\n\n'
+            "def test_search_finds_planted_fact():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    store.add("The melting point of silicon is 1414 degrees Celsius.", source="facts.md")\n'
+            '    store.add("Bananas are yellow and rich in potassium.", source="fruit.md")\n'
+            '    results = store.search("what is the melting point of silicon", k=2)\n'
+            "    assert results, \"expected at least one result\"\n"
+            '    assert "1414" in results[0]["text"]\n'
+            '    assert results[0]["source"] == "facts.md"\n\n\n'
+            "def test_search_empty_query_and_empty_corpus():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    assert store.search("anything") == []\n'
+            '    store.add("some text here", source="x")\n'
+            '    assert store.search("") == []\n\n\n'
+            "def test_search_ranks_relevant_above_irrelevant():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    store.add("Quarterly revenue grew 12 percent year over year.", source="finance.md")\n'
+            '    store.add("The office plant needs watering twice a week.", source="plants.md")\n'
+            '    results = store.search("revenue growth quarterly", k=2)\n'
+            '    assert results and results[0]["source"] == "finance.md"\n'
+        ),
+        "corpus/seed.md": (
+            "# Seed corpus\n\n"
+            "This starter document proves ingestion + retrieval end-to-end. Replace or\n"
+            "extend it via `POST /ingest`.\n\n"
+            "## Reference facts\n\n"
+            "- The baseline ingestion benchmark completes in 41.7 seconds on the seed corpus.\n"
+            "- Retrieval is rarity-weighted token overlap over word-window chunks.\n"
+            "- The `/chat` route answers with retrieved context, with or without an LLM.\n"
+        ),
+        "requirements.txt": (
+            f"# Runtime dependencies for {title}.\n"
+            "fastapi>=0.110    # the HTTP layer (routes are thin wrappers over rag_core)\n"
+            "uvicorn>=0.29     # ASGI server: `python main.py` serves on $PORT\n"
+            "httpx>=0.27       # only used when OPENAI_BASE_URL is set (the LLM seam)\n"
+            "\n"
+            "# Dev/test (optional): `pip install pytest` to run test_rag_core.py.\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Python RAG app (FastAPI + pure retrieval core)",
+            install=(
+                "Requires Python 3.10+. Install into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (defaults to port 8000; set `PORT` to override):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then talk to it:\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/health\n"
+                "curl -s localhost:8000/v1/stats\n"
+                "curl -s -X POST localhost:8000/ingest -H 'content-type: application/json' \\\n"
+                "  -d '{\"text\": \"Your document text here\", \"source\": \"notes.md\"}'\n"
+                "curl -s 'localhost:8000/query?q=your+question&k=3'\n"
+                "curl -s -X POST localhost:8000/chat -H 'content-type: application/json' \\\n"
+                "  -d '{\"question\": \"What do my documents say about X?\"}'\n"
+                "```\n\n"
+                "To answer `/chat` with a real LLM, point the seam at any OpenAI-compatible\n"
+                "endpoint — no code change:\n\n"
+                "```bash\n"
+                "export OPENAI_BASE_URL=https://openrouter.ai/api/v1\n"
+                "export OPENAI_API_KEY=sk-...\n"
+                "```\n\n"
+                "Without the seam, `/chat` returns an extractive answer (the top retrieved\n"
+                "chunk) — every route works with zero API keys."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — /ingest, /query, /chat, /health, /v1/stats"),
+                ("rag_core.py", "Pure retrieval core (chunking + scoring) — the testable logic"),
+                ("corpus/seed.md", "Starter document indexed at boot"),
+                ("test_rag_core.py", "Unit tests for the pure core (no server needed)"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
+            ],
+            features=[
+                "Built-in browser chat page at / — usable immediately, no build step",
+                "Ingest any text via POST /ingest — chunked + indexed in memory",
+                "Semantic-ish retrieval: rarity-weighted token overlap, deterministic ranking",
+                "Grounded /chat answers with sources; extractive fallback needs no API key",
+                "OpenAI-compatible LLM seam via OPENAI_BASE_URL (OpenRouter, Ollama, …)",
+                "Health + corpus stats endpoints (/health, /v1/stats)",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_rag_core.py\n```"
+            ),
+        ),
+    }
+
+
+# Memory-augmented chat variant of the rag stack (wave-2 §3.10): a "remembers
+# me" brief gets the persistent-memory scaffold. Phrases only — bare "memory"
+# would steal "memory game" / "memory profiler" briefs.
+_MEMORY_CHAT_KEYWORDS = (
+    "remembers me", "remembers our", "assistant with memory",
+    "chat with memory", "chatbot with memory", "stateful chat",
+    "personal assistant with memory",
+)
+
+
+def _implies_memory_chat(brief: str) -> bool:
+    """True when the brief asks for a chat that persists memory across sessions."""
+    low = (brief or "").lower()
+    return any(k in low for k in _MEMORY_CHAT_KEYWORDS)
+
+
+_MEMORY_STORE_PY = (
+    '"""Persistent memory journal: append-only JSONL, replayed at boot.\n\n'
+    "Stdlib only, tolerant of corrupt lines (a torn write must never brick the\n"
+    "app). The journal is the durability layer; retrieval stays in rag_core —\n"
+    "records are re-indexed into the in-memory store on replay.\n"
+    '"""\n'
+    "from __future__ import annotations\n\n"
+    "import json\n"
+    "from pathlib import Path\n\n\n"
+    "def append(path: str | Path, record: dict) -> None:\n"
+    '    """Append one JSON record to the journal (parent dirs created)."""\n'
+    "    p = Path(path)\n"
+    "    p.parent.mkdir(parents=True, exist_ok=True)\n"
+    '    with p.open("a", encoding="utf-8") as fh:\n'
+    '        fh.write(json.dumps(record, ensure_ascii=False) + "\\n")\n\n\n'
+    "def replay(path: str | Path) -> list[dict]:\n"
+    '    """Every intact record in the journal, oldest first. Missing file -> [].\n'
+    "    Corrupt lines are skipped, never fatal.\"\"\"\n"
+    "    p = Path(path)\n"
+    "    if not p.is_file():\n"
+    "        return []\n"
+    "    out: list[dict] = []\n"
+    '    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():\n'
+    "        line = line.strip()\n"
+    "        if not line:\n"
+    "            continue\n"
+    "        try:\n"
+    "            rec = json.loads(line)\n"
+    "        except Exception:  # noqa: BLE001 - torn write; skip, never crash\n"
+    "            continue\n"
+    "        if isinstance(rec, dict):\n"
+    "            out.append(rec)\n"
+    "    return out\n\n\n"
+    "def count(path: str | Path) -> int:\n"
+    '    """How many intact records the journal holds."""\n'
+    "    return len(replay(path))\n"
+)
+
+_TEST_MEMORY_STORE_PY = (
+    '"""Persistence proof: facts stated in chat survive a RESTART (new store,\n'
+    "same journal) and are retrievable — mechanically, before any LLM opinion.\n"
+    '"""\n'
+    "import memory_store\n"
+    "import rag_core\n\n\n"
+    "def test_append_replay_roundtrip(tmp_path):\n"
+    '    journal = tmp_path / "memory.jsonl"\n'
+    '    memory_store.append(journal, {"text": "alpha", "source": "chat-memory"})\n'
+    '    memory_store.append(journal, {"text": "beta", "source": "inline"})\n'
+    "    records = memory_store.replay(journal)\n"
+    '    assert [r["text"] for r in records] == ["alpha", "beta"]\n'
+    "    assert memory_store.count(journal) == 2\n\n\n"
+    "def test_corrupt_lines_are_skipped_not_fatal(tmp_path):\n"
+    '    journal = tmp_path / "memory.jsonl"\n'
+    '    memory_store.append(journal, {"text": "good"})\n'
+    '    with journal.open("a") as fh:\n'
+    '        fh.write("{torn write\\n")\n'
+    '    memory_store.append(journal, {"text": "also good"})\n'
+    "    assert [r[\"text\"] for r in memory_store.replay(journal)] == [\"good\", \"also good\"]\n\n\n"
+    "def test_restart_persists_and_retrieves_a_stated_fact(tmp_path):\n"
+    "    # Session 1: the user states a fact mid-chat; it is journaled.\n"
+    '    journal = tmp_path / "memory.jsonl"\n'
+    '    memory_store.append(journal, {"text": "my name is X-MARKER-73", "source": "chat-memory"})\n'
+    "    # RESTART: a brand-new store replays the same journal...\n"
+    "    store = rag_core.CorpusStore()\n"
+    "    for rec in memory_store.replay(journal):\n"
+    '        store.add(rec.get("text", ""), source=rec.get("source", "memory"))\n'
+    "    # ...and retrieval finds the fact for session 2's question.\n"
+    '    results = store.search("what is my name", k=2)\n'
+    '    assert results and "X-MARKER-73" in results[0]["text"]\n'
+)
+
+
+def _rag_memory_chat(app_name: str, brief: str) -> dict[str, str]:
+    """The memory-augmented variant of the rag scaffold (wave-2 §3.10): every
+    chat turn is journaled to an append-only JSONL file (``MEMORY_FILE`` env,
+    default ``memory.jsonl``) and replayed into the retrieval index at boot —
+    facts stated in conversation persist across RESTARTS and feed later
+    answers. Same routes, same gate contract as rag; derived from the base
+    scaffold by pinned replacements (the variant tests assert each one took)."""
+    files = _rag(app_name, brief)
+    main = files["main.py"]
+    main = main.replace(
+        "import rag_core\n",
+        "import memory_store\nimport rag_core\n", 1)
+    main = main.replace(
+        "app = FastAPI",
+        '# The persistent memory journal (facts survive restarts).\n'
+        'MEMORY_FILE = os.environ.get("MEMORY_FILE", "memory.jsonl")\n\n'
+        "app = FastAPI", 1)
+    main = main.replace(
+        "_seed_corpus()\n",
+        "_seed_corpus()\n"
+        "for _rec in memory_store.replay(MEMORY_FILE):\n"
+        '    STORE.add(_rec.get("text", ""), source=_rec.get("source", "memory"))\n', 1)
+    main = main.replace(
+        "    added = STORE.add(req.text, source=req.source)\n",
+        "    added = STORE.add(req.text, source=req.source)\n"
+        "    if added:\n"
+        '        memory_store.append(MEMORY_FILE, {"text": req.text, "source": req.source})\n', 1)
+    main = main.replace(
+        "    results = STORE.search(req.question, k=req.k)\n",
+        "    results = STORE.search(req.question, k=req.k)\n"
+        "    # Memory (AFTER retrieval — a turn must not retrieve itself): every\n"
+        "    # user turn is journaled + indexed, so facts stated in conversation\n"
+        "    # persist across restarts and feed LATER answers.\n"
+        '    memory_store.append(MEMORY_FILE, {"text": req.question, "source": "chat-memory"})\n'
+        '    STORE.add(req.question, source="chat-memory")\n', 1)
+    main = main.replace(
+        "    return STORE.stats()\n",
+        "    stats = STORE.stats()\n"
+        '    stats["memories"] = memory_store.count(MEMORY_FILE)\n'
+        "    return stats\n", 1)
+    files["main.py"] = main
+    files["memory_store.py"] = _MEMORY_STORE_PY
+    files["test_memory_store.py"] = _TEST_MEMORY_STORE_PY
+    files[".gitignore"] = files.get(".gitignore", "") + "memory.jsonl\n"
+    return files
+
+
+def _workflow(app_name: str, brief: str) -> dict[str, str]:
+    """An agent-workflow app (wave-2 §3.2) — a FastAPI multi-step runner with a
+    run ledger and dry-run triggers, built FRESH (never cloned from a web
+    builder, so it never inherits npm / React).
+
+    Structured as a **pure engine + a thin HTTP layer** (the sim-core split,
+    like rag/mcp):
+
+    - ``workflow_core.py`` — steps, tool registry, and the runner as pure
+      stdlib Python (NO fastapi/uvicorn/httpx imports): steps may only call
+      REGISTERED tools, a failing step retries then lands in a TYPED error
+      envelope (never an unhandled exception), and delivery steps honour the
+      dry-run / unconfigured-delivery contract.
+    - ``main.py`` — the FastAPI app: ``POST /trigger`` (dry_run defaults TRUE)
+      returns the ``{run_id, dry_run, status, brief, delivery: {status}}``
+      contract; ``GET /runs`` + ``GET /runs/{id}`` read the append-only ledger;
+      ``/health`` + ``/v1/stats``; ``/`` serves a self-contained runs dashboard.
+
+    Zero keys, zero network to boot: delivery is configured via the
+    ``WEBHOOK_URL`` env var and, when absent, a live trigger yields
+    ``skipped_no_delivery`` — never a crash.
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    server_name = _mcp_server_name(app_name)
+    return {
+        "workflow_core.py": (
+            '"""Pure workflow engine: steps, tool registry, runner, typed errors.\n\n'
+            "Stdlib only — NO web framework here (the FastAPI layer lives in\n"
+            "``main.py``), so the engine is unit-testable without a server (see\n"
+            "``test_workflow_core.py``). Contracts:\n\n"
+            "- steps may only call REGISTERED tools (unregistered -> typed error)\n"
+            "- a failing step retries up to ``Step.retries`` then FAILS the run with\n"
+            "  a typed error envelope — the engine never raises\n"
+            "- a delivery step under ``dry_run`` yields ``{'status': 'dry_run'}``;\n"
+            "  live but unconfigured delivery yields ``{'status': 'skipped_no_delivery'}``\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from dataclasses import dataclass, field\n"
+            "from typing import Any, Callable\n\n\n"
+            "@dataclass(slots=True)\n"
+            "class Step:\n"
+            '    """One workflow step: calls the registered tool named ``tool``."""\n\n'
+            "    name: str\n"
+            "    tool: str\n"
+            "    is_delivery: bool = False\n"
+            "    retries: int = 0\n\n\n"
+            "@dataclass(slots=True)\n"
+            "class Workflow:\n"
+            "    name: str\n"
+            "    description: str\n"
+            "    steps: list[Step] = field(default_factory=list)\n\n\n"
+            "class ToolRegistry:\n"
+            '    """Steps may only call tools registered here (no fabricated APIs)."""\n\n'
+            "    def __init__(self) -> None:\n"
+            "        self._tools: dict[str, Callable[[dict], Any]] = {}\n\n"
+            "    def register(self, name: str, fn: Callable[[dict], Any]) -> None:\n"
+            "        self._tools[str(name)] = fn\n\n"
+            "    def get(self, name: str) -> Callable[[dict], Any] | None:\n"
+            "        return self._tools.get(name)\n\n"
+            "    def names(self) -> list[str]:\n"
+            "        return sorted(self._tools)\n\n\n"
+            "def _typed_error(kind: str, step: Step, message: str, *, retryable: bool,\n"
+            "                 attempts: int = 0) -> dict:\n"
+            "    return {\n"
+            '        "type": kind,\n'
+            '        "step": step.name,\n'
+            '        "tool": step.tool,\n'
+            '        "message": str(message)[:200],\n'
+            '        "retryable": retryable,\n'
+            '        "attempts": attempts,\n'
+            "    }\n\n\n"
+            "def run_workflow(\n"
+            "    workflow: Workflow,\n"
+            "    registry: ToolRegistry,\n"
+            "    params: dict | None = None,\n"
+            "    *,\n"
+            "    dry_run: bool = True,\n"
+            "    deliver_configured: bool = False,\n"
+            ") -> dict:\n"
+            '    """Run every step in order and return a JSON-friendly run record.\n\n'
+            "    Never raises: tool exceptions become typed error envelopes and fail\n"
+            "    the run. Each tool receives the accumulated context dict (params +\n"
+            "    prior step outputs) and its dict output is merged back in.\n"
+            '    """\n'
+            "    ctx: dict = dict(params or {})\n"
+            "    record: dict = {\n"
+            '        "workflow": workflow.name,\n'
+            '        "dry_run": bool(dry_run),\n'
+            '        "status": "done",\n'
+            '        "steps": [],\n'
+            '        "delivery": {"status": "not_applicable"},\n'
+            "    }\n"
+            "    for step in workflow.steps:\n"
+            "        if step.is_delivery and (dry_run or not deliver_configured):\n"
+            '            status = "dry_run" if dry_run else "skipped_no_delivery"\n'
+            '            record["steps"].append(\n'
+            '                {"step": step.name, "status": "skipped", "output": {"status": status}})\n'
+            '            record["delivery"] = {"status": status}\n'
+            "            continue\n"
+            "        fn = registry.get(step.tool)\n"
+            "        if fn is None:\n"
+            '            err = _typed_error("unregistered_tool", step,\n'
+            '                               f"step calls unregistered tool \'{step.tool}\'",\n'
+            "                               retryable=False)\n"
+            '            record["steps"].append({"step": step.name, "status": "failed", "error": err})\n'
+            '            record["status"] = "failed"\n'
+            '            record["error"] = err\n'
+            "            break\n"
+            "        attempts = max(1, int(step.retries) + 1)\n"
+            "        done = False\n"
+            "        for attempt in range(1, attempts + 1):\n"
+            "            try:\n"
+            "                out = fn(ctx)\n"
+            "            except Exception as exc:  # noqa: BLE001 - typed envelope, never raise\n"
+            "                if attempt < attempts:\n"
+            "                    continue\n"
+            '                err = _typed_error("step_failed", step, str(exc),\n'
+            "                                   retryable=False, attempts=attempt)\n"
+            '                record["steps"].append(\n'
+            '                    {"step": step.name, "status": "failed", "error": err})\n'
+            '                record["status"] = "failed"\n'
+            '                record["error"] = err\n'
+            "                break\n"
+            "            else:\n"
+            "                if isinstance(out, dict):\n"
+            "                    ctx.update(out)\n"
+            '                record["steps"].append(\n'
+            '                    {"step": step.name, "status": "done", "output": out,\n'
+            '                     "attempts": attempt})\n'
+            "                if step.is_delivery:\n"
+            '                    record["delivery"] = {"status": "sent"}\n'
+            "                done = True\n"
+            "                break\n"
+            '        if record["status"] == "failed":\n'
+            "            break\n"
+            "        if not done:\n"
+            "            break\n"
+            '    record["context"] = ctx\n'
+            "    return record\n\n\n"
+            "def briefing_workflow(registry: ToolRegistry) -> Workflow:\n"
+            '    """The example workflow: fetch -> summarize -> deliver (delivery step).\n\n'
+            "    Tools are pure/offline fixtures — replace them with your brief's real\n"
+            "    steps, registering each in the ToolRegistry.\n"
+            '    """\n'
+            "    def fetch_items(ctx: dict) -> dict:\n"
+            "        return {\"items\": [\n"
+            '            {"title": "Engine shipped", "detail": "the workflow engine runs"},\n'
+            '            {"title": "Ledger appended", "detail": "every run is recorded"},\n'
+            "        ]}\n\n"
+            "    def summarize(ctx: dict) -> dict:\n"
+            '        items = ctx.get("items") or []\n'
+            '        lines = [f"- {i.get(\'title\')}: {i.get(\'detail\')}" for i in items]\n'
+            '        return {"brief": "Daily briefing:\\n" + "\\n".join(lines)}\n\n'
+            "    def deliver(ctx: dict) -> dict:\n"
+            "        # Only reached when live AND configured; main.py overrides this\n"
+            "        # tool with a real webhook sender.\n"
+            '        return {"channel": "none"}\n\n'
+            '    registry.register("fetch_items", fetch_items)\n'
+            '    registry.register("summarize", summarize)\n'
+            '    registry.register("deliver", deliver)\n'
+            "    return Workflow(\n"
+            '        name="briefing",\n'
+            '        description="Fetch items, summarize them, deliver the brief.",\n'
+            "        steps=[\n"
+            '            Step(name="fetch", tool="fetch_items"),\n'
+            '            Step(name="summarize", tool="summarize"),\n'
+            '            Step(name="deliver", tool="deliver", is_delivery=True),\n'
+            "        ],\n"
+            "    )\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — an agent-workflow app (multi-step runner).\n\n"
+            "Routes: GET / (a built-in runs dashboard), POST /trigger (run a workflow;\n"
+            "dry_run defaults TRUE), GET /runs + GET /runs/{run_id} (the append-only\n"
+            "ledger), GET /health, GET /v1/stats. The engine lives in\n"
+            "``workflow_core.py`` (pure, no web framework); this module is the thin\n"
+            "HTTP layer.\n\n"
+            "Delivery is OPTIONAL: set WEBHOOK_URL to deliver live briefs; without it\n"
+            "a live trigger yields delivery.status='skipped_no_delivery' — never a\n"
+            "crash. Zero keys required.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import json\n"
+            "import os\n"
+            "import urllib.request\n\n"
+            "from fastapi import FastAPI, HTTPException\n"
+            "from fastapi.responses import HTMLResponse\n"
+            "from pydantic import BaseModel, Field\n\n"
+            "import workflow_core\n\n"
+            f'app = FastAPI(title="{server_name}")\n'
+            "REGISTRY = workflow_core.ToolRegistry()\n"
+            "WORKFLOWS = {wf.name: wf for wf in (workflow_core.briefing_workflow(REGISTRY),)}\n"
+            "LEDGER: list[dict] = []  # append-only run history\n\n\n"
+            "def _deliver_webhook(ctx: dict) -> dict:\n"
+            '    """Live delivery tool: POST the brief to WEBHOOK_URL (10s bound)."""\n'
+            '    url = os.environ["WEBHOOK_URL"]\n'
+            '    body = json.dumps({"brief": ctx.get("brief", "")}).encode("utf-8")\n'
+            "    req = urllib.request.Request(\n"
+            '        url, data=body, headers={"Content-Type": "application/json"}, method="POST")\n'
+            "    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310\n"
+            '        return {"http_status": int(resp.status)}\n\n\n'
+            'if os.environ.get("WEBHOOK_URL"):\n'
+            '    REGISTRY.register("deliver", _deliver_webhook)\n\n\n'
+            "class TriggerRequest(BaseModel):\n"
+            '    workflow: str = "briefing"\n'
+            "    params: dict = Field(default_factory=dict)\n"
+            "    dry_run: bool = True  # safe by default — live delivery is opt-in\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "app": "workflow"}\n\n\n'
+            '@app.get("/v1/stats")\n'
+            "def stats() -> dict:\n"
+            "    return {\n"
+            '        "runs": len(LEDGER),\n'
+            '        "failed_runs": sum(1 for r in LEDGER if r.get("status") == "failed"),\n'
+            '        "workflows": sorted(WORKFLOWS),\n'
+            '        "tools": REGISTRY.names(),\n'
+            "    }\n\n\n"
+            '@app.post("/trigger")\n'
+            "def trigger(req: TriggerRequest) -> dict:\n"
+            "    wf = WORKFLOWS.get(req.workflow)\n"
+            "    if wf is None:\n"
+            "        raise HTTPException(status_code=404,\n"
+            "                            detail=f\"unknown workflow '{req.workflow}'\")\n"
+            "    record = workflow_core.run_workflow(\n"
+            "        wf, REGISTRY, req.params, dry_run=req.dry_run,\n"
+            '        deliver_configured=bool(os.environ.get("WEBHOOK_URL")),\n'
+            "    )\n"
+            '    record["run_id"] = len(LEDGER) + 1\n'
+            "    LEDGER.append(record)\n"
+            "    return {\n"
+            '        "run_id": record["run_id"],\n'
+            '        "workflow": record["workflow"],\n'
+            '        "dry_run": record["dry_run"],\n'
+            '        "status": record["status"],\n'
+            '        "brief": record["context"].get("brief", ""),\n'
+            '        "delivery": record["delivery"],\n'
+            "    }\n\n\n"
+            '@app.get("/runs")\n'
+            "def runs() -> dict:\n"
+            "    return {\"runs\": [\n"
+            '        {"run_id": r["run_id"], "workflow": r["workflow"],\n'
+            '         "status": r["status"], "dry_run": r["dry_run"]}\n'
+            "        for r in LEDGER\n"
+            "    ]}\n\n\n"
+            '@app.get("/runs/{run_id}")\n'
+            "def run_detail(run_id: int) -> dict:\n"
+            "    for r in LEDGER:\n"
+            '        if r.get("run_id") == run_id:\n'
+            "            return r\n"
+            '    raise HTTPException(status_code=404, detail=f"no run {run_id}")\n\n\n'
+            "# A minimal, self-contained runs dashboard (vanilla JS, no external assets)\n"
+            "# so the app serves something real in a browser at '/'.\n"
+            '_INDEX_HTML = """<!doctype html>\n'
+            '<html lang="en">\n'
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{server_name}</title>\n"
+            "<style>\n"
+            "  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 44rem; padding: 0 1rem; color: #1a1a2e; }\n"
+            "  h1 { font-size: 1.3rem; }\n"
+            "  button { padding: .45rem 1rem; border: 0; border-radius: 6px; background: #3b5bdb; color: #fff; font: inherit; cursor: pointer; }\n"
+            "  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }\n"
+            "  td, th { border-bottom: 1px solid #ddd; padding: .4rem .6rem; text-align: left; font-size: .9rem; }\n"
+            "  pre { background: #f1f3f5; border-radius: 8px; padding: .8rem; white-space: pre-wrap; }\n"
+            "</style>\n"
+            "</head>\n"
+            "<body>\n"
+            f"<h1>{server_name}</h1>\n"
+            "<p>Trigger a workflow run (dry run — no delivery) and inspect the ledger.</p>\n"
+            '<button onclick="runNow()">Run briefing (dry run)</button>\n'
+            '<pre id="last" hidden></pre>\n'
+            '<table><thead><tr><th>#</th><th>workflow</th><th>status</th><th>dry run</th></tr></thead>\n'
+            '<tbody id="rows"></tbody></table>\n'
+            "<script>\n"
+            "function refresh() {\n"
+            '  fetch("/runs").then(function (r) { return r.json(); }).then(function (data) {\n'
+            '    var rows = (data.runs || []).map(function (r) {\n'
+            '      return "<tr><td>" + r.run_id + "</td><td>" + r.workflow + "</td><td>" +\n'
+            '             r.status + "</td><td>" + r.dry_run + "</td></tr>";\n'
+            "    });\n"
+            '    document.getElementById("rows").innerHTML = rows.reverse().join("");\n'
+            "  });\n"
+            "}\n"
+            "function runNow() {\n"
+            '  fetch("/trigger", { method: "POST", headers: { "Content-Type": "application/json" },\n'
+            '                      body: JSON.stringify({ workflow: "briefing", dry_run: true }) })\n'
+            "    .then(function (r) { return r.json(); })\n"
+            "    .then(function (data) {\n"
+            '      var el = document.getElementById("last");\n'
+            "      el.hidden = false;\n"
+            "      el.textContent = data.brief + \"\\n\\ndelivery: \" + data.delivery.status;\n"
+            "      refresh();\n"
+            "    });\n"
+            "}\n"
+            "refresh();\n"
+            "</script>\n"
+            "</body>\n"
+            "</html>\n"
+            '"""\n\n\n'
+            '@app.get("/", response_class=HTMLResponse)\n'
+            "def index() -> str:\n"
+            '    """The built-in runs dashboard — usable from a browser as-is."""\n'
+            "    return _INDEX_HTML\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    import uvicorn\n\n"
+            "    # PORT env so tooling (and future gates) can pick a free port.\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_workflow_core.py": (
+            '"""Unit tests for the PURE workflow engine (no server, no third-party deps)."""\n'
+            "import workflow_core\n\n\n"
+            "def _fresh():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            "    wf = workflow_core.briefing_workflow(registry)\n"
+            "    return wf, registry\n\n\n"
+            "def test_dry_run_completes_and_skips_delivery():\n"
+            "    wf, registry = _fresh()\n"
+            "    record = workflow_core.run_workflow(wf, registry, dry_run=True)\n"
+            '    assert record["status"] == "done"\n'
+            '    assert record["delivery"] == {"status": "dry_run"}\n'
+            '    assert record["context"].get("brief"), "summarize must produce a brief"\n'
+            '    assert [s["step"] for s in record["steps"]] == ["fetch", "summarize", "deliver"]\n\n\n'
+            "def test_live_without_delivery_config_is_skipped_not_a_crash():\n"
+            "    wf, registry = _fresh()\n"
+            "    record = workflow_core.run_workflow(\n"
+            "        wf, registry, dry_run=False, deliver_configured=False)\n"
+            '    assert record["status"] == "done"\n'
+            '    assert record["delivery"] == {"status": "skipped_no_delivery"}\n\n\n'
+            "def test_failing_tool_retries_then_fails_typed():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            "    calls = {\"n\": 0}\n\n"
+            "    def flaky(ctx):\n"
+            '        calls["n"] += 1\n'
+            '        raise RuntimeError("boom")\n\n'
+            '    registry.register("flaky", flaky)\n'
+            "    wf = workflow_core.Workflow(\n"
+            '        name="t", description="t",\n'
+            '        steps=[workflow_core.Step(name="s1", tool="flaky", retries=1)])\n'
+            "    record = workflow_core.run_workflow(wf, registry)\n"
+            '    assert calls["n"] == 2, "retries=1 must mean two attempts"\n'
+            '    assert record["status"] == "failed"\n'
+            '    assert record["error"]["type"] == "step_failed"\n'
+            '    assert "boom" in record["error"]["message"]\n\n\n'
+            "def test_unregistered_tool_is_a_typed_error():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            "    wf = workflow_core.Workflow(\n"
+            '        name="t", description="t",\n'
+            '        steps=[workflow_core.Step(name="s1", tool="ghost")])\n'
+            "    record = workflow_core.run_workflow(wf, registry)\n"
+            '    assert record["status"] == "failed"\n'
+            '    assert record["error"]["type"] == "unregistered_tool"\n'
+            '    assert record["error"]["retryable"] is False\n\n\n'
+            "def test_step_outputs_flow_into_context():\n"
+            "    registry = workflow_core.ToolRegistry()\n"
+            '    registry.register("a", lambda ctx: {"x": 1})\n'
+            '    registry.register("b", lambda ctx: {"y": ctx["x"] + 1})\n'
+            "    wf = workflow_core.Workflow(\n"
+            '        name="t", description="t",\n'
+            "        steps=[\n"
+            '            workflow_core.Step(name="a", tool="a"),\n'
+            '            workflow_core.Step(name="b", tool="b"),\n'
+            "        ])\n"
+            "    record = workflow_core.run_workflow(wf, registry)\n"
+            '    assert record["status"] == "done"\n'
+            '    assert record["context"]["y"] == 2\n'
+        ),
+        "requirements.txt": (
+            f"# Runtime dependencies for {title}.\n"
+            "fastapi>=0.110    # the HTTP layer (routes are thin wrappers over workflow_core)\n"
+            "uvicorn>=0.29     # ASGI server: `python main.py` serves on $PORT\n"
+            "\n"
+            "# Dev/test (optional): `pip install pytest` to run test_workflow_core.py.\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Python agent-workflow app (FastAPI + pure engine)",
+            install=(
+                "Requires Python 3.10+. Install into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (defaults to port 8000; set `PORT` to override):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then trigger runs (dry run by default — safe, no delivery):\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/health\n"
+                "curl -s -X POST localhost:8000/trigger -H 'content-type: application/json' \\\n"
+                "  -d '{\"workflow\": \"briefing\", \"dry_run\": true}'\n"
+                "curl -s localhost:8000/runs\n"
+                "curl -s localhost:8000/v1/stats\n"
+                "```\n\n"
+                "To deliver live briefs, configure the optional webhook and pass\n"
+                "`\"dry_run\": false`:\n\n"
+                "```bash\n"
+                "export WEBHOOK_URL=https://example.com/hook\n"
+                "```\n\n"
+                "Without `WEBHOOK_URL`, a live trigger reports\n"
+                "`delivery.status = \"skipped_no_delivery\"` — it never crashes."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — /trigger, /runs, /health, /v1/stats + dashboard"),
+                ("workflow_core.py", "Pure engine: steps, tool registry, typed errors, dry-run"),
+                ("test_workflow_core.py", "Unit tests for the pure engine (no server needed)"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn"),
+            ],
+            features=[
+                "Built-in browser runs dashboard at / — trigger + inspect, no build step",
+                "Multi-step workflow engine with an append-only run ledger",
+                "Steps may only call registered tools — no fabricated APIs",
+                "Typed error envelopes + per-step retries; the engine never raises",
+                "Dry-run by default; live delivery via the optional WEBHOOK_URL env var",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_workflow_core.py\n```"
+            ),
+        ),
+    }
+
+
+def _agent_pack_persona(name: str, color: str, description: str, identity: str,
+                        mission: str, rules: list[str]) -> str:
+    """Assemble one persona markdown file (frontmatter + required sections)."""
+    rule_lines = "\n".join(f"- {r}" for r in rules)
+    return (
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        f"color: {color}\n"
+        "---\n\n"
+        "## Identity\n\n"
+        f"{identity}\n\n"
+        "## Core Mission\n\n"
+        f"{mission}\n\n"
+        "## Critical Rules\n\n"
+        f"{rule_lines}\n"
+    )
+
+
+def _agent_pack(app_name: str, brief: str) -> dict[str, str]:
+    """An agent team pack (wave-2 §3.8) — a persona ROSTER product: markdown
+    agent definitions under ``agents/<division>/`` plus deterministic
+    lint/originality/convert tooling. Zero runtime dependencies (stdlib only);
+    the proof story is the pack's OWN pytest (lint gate + pairwise
+    shingle-originality + convert round-trip), fully deterministic.
+
+    Structured as a **pure tools core + a thin CLI** (the sim-core split):
+    ``pack_tools.py`` holds all logic; ``main.py`` is the runnable root
+    (``python main.py lint|convert|summary``).
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    return {
+        "pack_tools.py": (
+            '"""Pure pack tooling: catalog, lint, originality, convert. Stdlib only.\n\n'
+            "Every persona must carry YAML-ish frontmatter (name/description/color)\n"
+            "and the Identity / Core Mission / Critical Rules sections with real\n"
+            "substance — the lint gate and the pairwise shingle-originality check\n"
+            "keep a generated roster honest (distinct personas, not re-skins).\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import json\n"
+            "import re\n"
+            "from pathlib import Path\n\n"
+            '_REQUIRED_FRONTMATTER = ("name", "description", "color")\n'
+            '_REQUIRED_SECTIONS = ("## Identity", "## Core Mission", "## Critical Rules")\n'
+            "_MIN_WORDS = 120\n\n\n"
+            "def load_catalog(root: str | Path) -> dict:\n"
+            '    return json.loads((Path(root) / "catalog.json").read_text(encoding="utf-8"))\n\n\n'
+            "def iter_agents(root: str | Path) -> list[Path]:\n"
+            '    return sorted((Path(root) / "agents").rglob("*.md"))\n\n\n'
+            "def parse_frontmatter(text: str) -> dict:\n"
+            '    """The leading `--- ... ---` block as a flat key: value dict."""\n'
+            "    if not text.startswith(\"---\"):\n"
+            "        return {}\n"
+            '    parts = text.split("---", 2)\n'
+            "    if len(parts) < 3:\n"
+            "        return {}\n"
+            "    out: dict = {}\n"
+            "    for line in parts[1].splitlines():\n"
+            '        if ":" in line:\n'
+            '            key, _, val = line.partition(":")\n'
+            "            out[key.strip()] = val.strip()\n"
+            "    return out\n\n\n"
+            "def lint_agent(path: Path, text: str) -> list[str]:\n"
+            '    """Issues for one persona file; empty means it passes."""\n'
+            "    issues: list[str] = []\n"
+            "    fm = parse_frontmatter(text)\n"
+            "    for field in _REQUIRED_FRONTMATTER:\n"
+            "        if not fm.get(field):\n"
+            "            issues.append(f\"{path.name}: frontmatter missing '{field}'\")\n"
+            "    for section in _REQUIRED_SECTIONS:\n"
+            "        if section not in text:\n"
+            "            issues.append(f\"{path.name}: missing section '{section}'\")\n"
+            '    body = text.split("---", 2)[-1]\n'
+            "    words = len(re.findall(r\"[A-Za-z0-9'-]+\", body))\n"
+            "    if words < _MIN_WORDS:\n"
+            "        issues.append(\n"
+            "            f\"{path.name}: only {words} words (min {_MIN_WORDS}) — a persona\"\n"
+            "            \" needs real substance, not a stub\")\n"
+            "    return issues\n\n\n"
+            "def lint_pack(root: str | Path) -> list[str]:\n"
+            '    """All lint issues across the pack (plus catalog consistency)."""\n'
+            "    issues: list[str] = []\n"
+            "    agents = iter_agents(root)\n"
+            "    if not agents:\n"
+            '        return ["no agents/<division>/*.md files found"]\n'
+            "    names: set[str] = set()\n"
+            "    for path in agents:\n"
+            '        text = path.read_text(encoding="utf-8", errors="replace")\n'
+            "        issues.extend(lint_agent(path, text))\n"
+            '        name = parse_frontmatter(text).get("name", "")\n'
+            "        if name in names:\n"
+            "            issues.append(f\"duplicate agent name '{name}'\")\n"
+            "        names.add(name)\n"
+            "    try:\n"
+            "        catalog = load_catalog(root)\n"
+            "    except Exception as exc:  # noqa: BLE001\n"
+            "        return [*issues, f\"catalog.json unreadable: {exc}\"]\n"
+            '    listed = {a for div in catalog.get("divisions", {}).values() for a in div}\n'
+            "    on_disk = {p.stem for p in agents}\n"
+            "    for missing in sorted(listed - on_disk):\n"
+            "        issues.append(f\"catalog lists '{missing}' but agents/ has no such file\")\n"
+            "    for unlisted in sorted(on_disk - listed):\n"
+            "        issues.append(f\"agents/{unlisted}.md is not in catalog.json\")\n"
+            "    return issues\n\n\n"
+            "def _shingles(text: str, k: int = 5) -> set[tuple[str, ...]]:\n"
+            "    words = re.findall(r\"[a-z0-9'-]+\", text.lower())\n"
+            "    return {tuple(words[i:i + k]) for i in range(max(0, len(words) - k + 1))}\n\n\n"
+            "def shingle_similarity(a: str, b: str, k: int = 5) -> float:\n"
+            '    """Jaccard similarity of word k-shingles — near 0 for distinct prose."""\n'
+            "    sa, sb = _shingles(a, k), _shingles(b, k)\n"
+            "    if not sa or not sb:\n"
+            "        return 0.0\n"
+            "    return len(sa & sb) / len(sa | sb)\n\n\n"
+            "def originality_issues(root: str | Path, max_similarity: float = 0.35) -> list[str]:\n"
+            '    """Pairwise similarity failures — every persona must be genuinely\n'
+            "    distinct, not a re-skin of a sibling.\"\"\"\n"
+            "    agents = iter_agents(root)\n"
+            '    texts = {p: p.read_text(encoding="utf-8", errors="replace") for p in agents}\n'
+            "    issues: list[str] = []\n"
+            "    for i, a in enumerate(agents):\n"
+            "        for b in agents[i + 1:]:\n"
+            "            sim = shingle_similarity(texts[a], texts[b])\n"
+            "            if sim > max_similarity:\n"
+            "                issues.append(\n"
+            "                    f\"{a.name} and {b.name} are {sim:.0%} similar — personas\"\n"
+            "                    \" must be genuinely distinct\")\n"
+            "    return issues\n\n\n"
+            "def convert(root: str | Path, tool: str, dest: str | Path | None = None) -> list[Path]:\n"
+            '    """Emit one well-formed file per agent for ``tool`` (e.g. claude-code:\n'
+            "    name + description frontmatter, body verbatim) at the catalog-declared\n"
+            "    destination. Returns the written paths.\"\"\"\n"
+            "    root = Path(root)\n"
+            "    catalog = load_catalog(root)\n"
+            '    spec = (catalog.get("convert") or {}).get(tool)\n'
+            "    if spec is None:\n"
+            "        raise ValueError(f\"catalog.json declares no convert target '{tool}'\")\n"
+            '    out_dir = Path(dest) if dest is not None else root / spec["dest"]\n'
+            "    out_dir.mkdir(parents=True, exist_ok=True)\n"
+            "    written: list[Path] = []\n"
+            "    for path in iter_agents(root):\n"
+            '        text = path.read_text(encoding="utf-8", errors="replace")\n'
+            "        fm = parse_frontmatter(text)\n"
+            '        body = text.split("---", 2)[-1].strip()\n'
+            "        out = (\n"
+            '            "---\\n"\n'
+            "            f\"name: {fm.get('name', path.stem)}\\n\"\n"
+            "            f\"description: {fm.get('description', '')}\\n\"\n"
+            '            "---\\n\\n"\n'
+            "            f\"{body}\\n\"\n"
+            "        )\n"
+            "        target = out_dir / path.name\n"
+            '        target.write_text(out, encoding="utf-8")\n'
+            "        written.append(target)\n"
+            "    return written\n"
+        ),
+        "main.py": (
+            '"""' + title.replace("\\", " ").replace('"""', "'''") + " — agent team pack CLI.\n\n"
+            "Commands: `python main.py lint` (frontmatter/sections/substance +\n"
+            "catalog consistency + pairwise originality), `python main.py convert\n"
+            "--tool claude-code [--dest DIR]`, `python main.py summary`.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import argparse\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "import pack_tools\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    parser = argparse.ArgumentParser(description=__doc__)\n"
+            '    sub = parser.add_subparsers(dest="command")\n'
+            '    sub.add_parser("lint")\n'
+            '    sub.add_parser("summary")\n'
+            '    conv = sub.add_parser("convert")\n'
+            '    conv.add_argument("--tool", default="claude-code")\n'
+            '    conv.add_argument("--dest", default=None)\n'
+            "    args = parser.parse_args(argv)\n\n"
+            '    if args.command == "lint":\n'
+            "        issues = pack_tools.lint_pack(ROOT) + pack_tools.originality_issues(ROOT)\n"
+            "        for issue in issues:\n"
+            '            print(f"LINT: {issue}")\n'
+            '        print(f"{len(issues)} issue(s)")\n'
+            "        return 1 if issues else 0\n"
+            '    if args.command == "convert":\n'
+            "        written = pack_tools.convert(ROOT, args.tool, args.dest)\n"
+            "        for path in written:\n"
+            "            print(path)\n"
+            "        return 0\n"
+            "    # summary (default): the roster at a glance.\n"
+            "    catalog = pack_tools.load_catalog(ROOT)\n"
+            '    print(f"pack: {catalog.get(\'pack\')}")\n'
+            '    for division, agents in (catalog.get("divisions") or {}).items():\n'
+            '        print(f"  {division}: {\', \'.join(agents)}")\n'
+            "    return 0\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    raise SystemExit(main())\n"
+        ),
+        "agents/research/analyst.md": _agent_pack_persona(
+            "analyst", "blue",
+            "Digs into data and sources; produces evidence-backed findings with citations.",
+            "You are the team's evidence engine. You treat every claim as unverified "
+            "until you can point at a source, a number, or a reproducible observation. "
+            "You are comfortable saying \"the data does not support that\" to anyone, "
+            "and you never dress up speculation as fact. Your working style is "
+            "methodical: define the question, gather primary material, quantify what "
+            "can be quantified, and separate observation from interpretation in "
+            "everything you hand off.",
+            "Turn vague questions into answerable ones, then answer them with "
+            "verifiable evidence. Every deliverable ends with a findings list where "
+            "each finding carries its source and a confidence level, so downstream "
+            "teammates can build on solid ground without re-checking your work.",
+            [
+                "Never state a number without naming where it came from.",
+                "Separate observations from interpretations in every report.",
+                "Flag confidence explicitly: high / medium / low, with the reason.",
+                "When sources conflict, present both and say which you trust and why.",
+                "Prefer primary sources; treat aggregators as leads, not evidence.",
+                "If the data is insufficient, say so — never extrapolate silently.",
+            ],
+        ),
+        "agents/research/writer.md": _agent_pack_persona(
+            "writer", "green",
+            "Turns findings into clear, structured prose tuned to the audience.",
+            "You are the team's translator from raw material to finished narrative. "
+            "You care about the reader's time above all: every paragraph earns its "
+            "place or gets cut. You write in plain language, structure documents so "
+            "a skimmer gets the point from headings alone, and keep terminology "
+            "consistent from title to appendix. You respect the analyst's evidence "
+            "and never alter a finding's meaning to make a sentence flow better.",
+            "Produce documents a busy reader absorbs in one pass: a headline that "
+            "states the conclusion, sections ordered by what the reader needs first, "
+            "and every claim traceable back to the findings you were handed.",
+            [
+                "Lead with the conclusion; background comes after, never first.",
+                "One idea per paragraph; cut anything that does not serve the reader.",
+                "Never change a finding's meaning while editing its wording.",
+                "Define a term once and use it identically everywhere after.",
+                "Match register to audience: exec summary != engineering appendix.",
+                "Every document states what the reader should DO with it.",
+            ],
+        ),
+        "agents/ops/coordinator.md": _agent_pack_persona(
+            "coordinator", "orange",
+            "Routes work between agents, tracks state, and escalates when stuck.",
+            "You are the team's dispatcher and memory. You know who owns what, what "
+            "state every task is in, and what is blocked on whom. You do not do the "
+            "specialists' work — you make sure the right specialist gets it with the "
+            "context they need, and that nothing silently stalls. You keep a visible "
+            "ledger of handoffs and you close every loop: a task is either done, "
+            "reassigned, or escalated with a named reason — never abandoned.",
+            "Keep the whole team's work legible and moving: route each request to "
+            "the best-fit agent with full context, watch for stalls, and escalate "
+            "anything that misses two check-ins with a concrete summary of what was "
+            "tried and where it stuck.",
+            [
+                "Every handoff names the owner, the input, and the expected output.",
+                "Track state transitions in the ledger; no silent drops, ever.",
+                "Escalate after two missed check-ins with a summary of attempts.",
+                "Never rewrite a specialist's output — route it, do not edit it.",
+                "When two agents disagree, surface the disagreement, don't bury it.",
+                "A closed task states its outcome: done, reassigned, or escalated.",
+            ],
+        ),
+        "catalog.json": (
+            "{\n"
+            f'  "pack": "{_mcp_server_name(app_name)}",\n'
+            '  "divisions": {\n'
+            '    "research": ["analyst", "writer"],\n'
+            '    "ops": ["coordinator"]\n'
+            "  },\n"
+            '  "convert": {\n'
+            '    "claude-code": { "dest": ".claude/agents" }\n'
+            "  }\n"
+            "}\n"
+        ),
+        "test_agent_pack.py": (
+            '"""The pack\'s own deterministic proof: lint + originality + convert."""\n'
+            "from pathlib import Path\n\n"
+            "import pack_tools\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def test_shipped_personas_pass_lint():\n"
+            "    assert pack_tools.lint_pack(ROOT) == []\n\n\n"
+            "def test_shipped_personas_are_genuinely_distinct():\n"
+            "    assert pack_tools.originality_issues(ROOT) == []\n\n\n"
+            "def test_lint_catches_a_stub_persona(tmp_path):\n"
+            '    bad = tmp_path / "agents" / "misc" / "stub.md"\n'
+            "    bad.parent.mkdir(parents=True)\n"
+            '    bad.write_text("---\\nname: stub\\n---\\nhi\\n")\n'
+            '    (tmp_path / "catalog.json").write_text(\n'
+            '        \'{"pack": "t", "divisions": {"misc": ["stub"]}, "convert": {}}\')\n'
+            "    issues = pack_tools.lint_pack(tmp_path)\n"
+            "    assert any(\"description\" in i for i in issues)\n"
+            "    assert any(\"words\" in i for i in issues)\n"
+            "    assert any(\"Core Mission\" in i for i in issues)\n\n\n"
+            "def test_convert_emits_wellformed_claude_code_agents(tmp_path):\n"
+            '    written = pack_tools.convert(ROOT, "claude-code", tmp_path)\n'
+            "    assert len(written) == len(pack_tools.iter_agents(ROOT))\n"
+            "    for path in written:\n"
+            "        text = path.read_text()\n"
+            "        fm = pack_tools.parse_frontmatter(text)\n"
+            '        assert fm.get("name") and fm.get("description")\n'
+            '        assert "## Critical Rules" in text\n\n\n'
+            "def test_similarity_is_symmetric_and_bounded():\n"
+            '    a = "the quick brown fox jumps over the lazy dog again and again"\n'
+            "    assert pack_tools.shingle_similarity(a, a) == 1.0\n"
+            '    assert pack_tools.shingle_similarity(a, "entirely different words here that never overlap at all") == 0.0\n'
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.claude/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Agent team pack (markdown personas + Python tooling, zero runtime deps)",
+            install=(
+                "No dependencies to install — Python 3.10+ is all the tooling needs:\n\n"
+                "```bash\npython main.py summary\n```"
+            ),
+            usage=(
+                "Lint the roster (frontmatter, required sections, substance, catalog\n"
+                "consistency, pairwise originality):\n\n"
+                "```bash\npython main.py lint\n```\n\n"
+                "Convert the pack for a tool (destinations declared in catalog.json):\n\n"
+                "```bash\npython main.py convert --tool claude-code\n```\n\n"
+                "This emits one agent file per persona under `.claude/agents/`, ready\n"
+                "for Claude Code to pick up. Add personas as\n"
+                "`agents/<division>/<name>.md` and list them in `catalog.json`."
+            ),
+            structure=[
+                ("agents/research/analyst.md", "Evidence-driven research persona"),
+                ("agents/research/writer.md", "Audience-tuned writing persona"),
+                ("agents/ops/coordinator.md", "Routing/escalation persona"),
+                ("catalog.json", "The pack manifest: divisions + convert targets"),
+                ("pack_tools.py", "Pure tooling: lint, originality, convert"),
+                ("main.py", "CLI: lint | convert | summary"),
+                ("test_agent_pack.py", "The pack's own deterministic proof"),
+            ],
+            features=[
+                "Distinct persona definitions with enforced structure (lint gate)",
+                "Pairwise shingle-originality check — no re-skinned duplicates",
+                "One-command convert to tool-specific agent formats (claude-code)",
+                "Catalog-driven: divisions, rosters, and convert targets in one file",
+                "Zero runtime dependencies — bash/python3 only",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_agent_pack.py\n```"
+            ),
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
@@ -2018,6 +4273,9 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "phaser": _phaser,
     "swift": _swift,
     "mcp": _mcp,
+    "rag": _rag,
+    "workflow": _workflow,
+    "agent_pack": _agent_pack,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,
@@ -2047,6 +4305,22 @@ def scaffold_for(
             return _react_vite_threejs(safe_name, brief)
         if stack == "static_html":
             return _static_threejs(safe_name, brief)
+    # Market-data variant (wave-2 §3.9): a data-service brief on the fastapi
+    # stack gets the vendor-seam scaffold instead of the bare hello-API.
+    if stack == "fastapi" and _implies_market_data(brief):
+        return _fastapi_market_data(safe_name, brief)
+    # Memory-chat variant (wave-2 §3.10): a "remembers me" brief on the rag
+    # stack gets the persistent-memory-journal scaffold.
+    if stack == "rag" and _implies_memory_chat(brief):
+        return _rag_memory_chat(safe_name, brief)
+    # LLM-gateway variant (wave-2 §3.7): a router/proxy brief on the fastapi
+    # stack gets the two-stub-upstream gateway scaffold.
+    if stack == "fastapi" and _implies_llm_gateway(brief):
+        return _fastapi_llm_gateway(safe_name, brief)
+    # Terminal-copilot variant (wave-2 §3.6): an agent-CLI brief on the
+    # python_cli stack gets the typed-event-stream scaffold.
+    if stack == "python_cli" and _implies_cli_agent(brief):
+        return _python_cli_agent(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

@@ -30,6 +30,10 @@ import structlog
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
 from skyn3t.agents._scaffold import (
+    _implies_cli_agent,
+    _implies_llm_gateway,
+    _implies_market_data,
+    _implies_memory_chat,
     default_pyproject,
     scaffold_for,
     synthesize_python_entrypoint,
@@ -377,6 +381,132 @@ _MCP_DIRECTIVE = (
 )
 
 
+_RAG_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a RAG (retrieval-augmented) 'chat with your "
+    "documents' app as a Python FastAPI server. This is NOT a React/npm app: NEVER "
+    "emit package.json, index.html, or JSX. "
+    "LAYOUT: `main.py` (the FastAPI app — the runnable root: `python main.py` serves "
+    "on the PORT env var, default 8000, via `uvicorn.run` under `if __name__ == "
+    "\"__main__\":`), `rag_core.py` (chunking + retrieval as PURE stdlib Python), "
+    "`corpus/` (seed documents indexed at boot), `test_rag_core.py` (pytest over the "
+    "pure core), `requirements.txt` (fastapi, uvicorn, httpx). "
+    "ROUTES ARE LOAD-BEARING (a deterministic gate drives them): GET / → a minimal "
+    "SELF-CONTAINED HTML chat page (vanilla JS fetch to /chat and /ingest, inline "
+    "CSS, NO external assets or CDNs); GET /health → 200; "
+    "GET /v1/stats → JSON with integer \"documents\" and \"chunks\" counts; "
+    "POST /ingest {\"text\", \"source\"} → chunk + index the text (validate: missing/"
+    "empty text is a 4xx, never a 500) and grow the stats; GET /query?q=...&k=3 → "
+    "{\"results\": [{\"text\", \"source\", \"score\"}]} ranked by relevance — a "
+    "just-ingested fact MUST be retrievable; POST /chat {\"question\"} → 200 with a "
+    "non-empty \"answer\" grounded in the retrieved chunks plus a \"sources\" list; "
+    "GET /chat/stream?question=...&k=3 → the same grounded answer as an SSE stream "
+    "(Content-Type text/event-stream, `data:` frames, terminated by `data: [DONE]` — "
+    "the stream must CLOSE, never stay open forever). "
+    "ARCHITECTURE (pure core + thin HTTP — the sim-core split): ALL retrieval logic "
+    "lives in `rag_core.py` with NO fastapi/uvicorn/httpx imports so it is "
+    "unit-testable without a server; routes in `main.py` are THIN wrappers. "
+    "LLM SEAM: `/chat` may call an OpenAI-compatible endpoint ONLY via the "
+    "OPENAI_BASE_URL env var (model from OPENAI_MODEL, key from OPENAI_API_KEY) — "
+    "NEVER hardcode a provider URL, model, or key, NEVER import a provider SDK. "
+    "When the seam is unset or the call fails, `/chat` MUST still return 200 with an "
+    "extractive answer (the top retrieved chunk) — every route works with ZERO keys."
+)
+
+
+_WORKFLOW_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build an agent-WORKFLOW app (a multi-step runner) as a "
+    "Python FastAPI server. This is NOT a React/npm app: NEVER emit package.json, "
+    "index.html files, or JSX. "
+    "LAYOUT: `main.py` (the FastAPI app — the runnable root: `python main.py` serves "
+    "on the PORT env var, default 8000, via `uvicorn.run` under `if __name__ == "
+    "\"__main__\":`), `workflow_core.py` (the engine as PURE stdlib Python), "
+    "`test_workflow_core.py` (pytest over the pure engine), `requirements.txt` "
+    "(fastapi, uvicorn). "
+    "ENGINE CONTRACT (pure core + thin HTTP — the sim-core split): steps run IN "
+    "ORDER and may ONLY call tools registered in a ToolRegistry (never fabricate "
+    "an API); a failing step retries its declared count then lands in a TYPED error "
+    "envelope ({type, step, message, retryable}) and fails the run — the engine "
+    "NEVER raises; every run is appended to a run ledger. "
+    "ROUTES ARE LOAD-BEARING: GET / → a minimal SELF-CONTAINED HTML runs dashboard "
+    "(vanilla JS, inline CSS, NO external assets); GET /health → 200; GET /v1/stats "
+    "→ JSON with integer \"runs\" and the workflow/tool names; POST /trigger "
+    "{\"workflow\", \"params\", \"dry_run\"} with dry_run DEFAULTING TRUE → run the "
+    "workflow and return {\"run_id\", \"dry_run\", \"status\", \"brief\", "
+    "\"delivery\": {\"status\"}}; GET /runs and GET /runs/{id} read the ledger. "
+    "DELIVERY IS OPTIONAL: adapters (webhook/email) are configured via env vars "
+    "(e.g. WEBHOOK_URL) — a dry run yields delivery.status=\"dry_run\", a live run "
+    "with NO config yields \"skipped_no_delivery\", NEVER a crash and NEVER a "
+    "required key. Implement the brief's real steps as registered tools."
+)
+
+
+_AGENT_PACK_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build an agent TEAM PACK — a persona ROSTER product, "
+    "NOT a running app: NEVER emit package.json, index.html, FastAPI, or servers. "
+    "LAYOUT: `agents/<division>/<name>.md` persona files, `catalog.json` (the pack "
+    "manifest: {\"pack\", \"divisions\": {division: [names]}, \"convert\": "
+    "{\"claude-code\": {\"dest\": \".claude/agents\"}}}), `pack_tools.py` (PURE "
+    "stdlib lint/originality/convert tooling), `main.py` (the CLI: lint | convert "
+    "--tool X | summary; `python main.py lint` exits non-zero on issues), and the "
+    "pack's own `test_agent_pack.py`. ZERO runtime dependencies. "
+    "EVERY PERSONA (a deterministic lint gate enforces this): YAML frontmatter with "
+    "name, description, color; sections `## Identity`, `## Core Mission`, "
+    "`## Critical Rules` (5+ concrete, DOMAIN-SPECIFIC rules drawn from the brief); "
+    "at least 120 words of real substance. PERSONAS MUST BE GENUINELY DISTINCT — a "
+    "pairwise shingle-originality check fails re-skinned duplicates, so give each "
+    "persona its own voice, vocabulary, and responsibilities. Build the divisions "
+    "and personas the BRIEF asks for (a law-firm pack gets legal roles, not "
+    "generic ones), and keep every agent listed in catalog.json."
+)
+
+
+# Variant directives (wave-2 §3.6/3.7/3.9/3.10): compact contracts for briefs
+# that ride an existing stack but carry a variant shape. One good clause here
+# is worth many repairs — without these, a model-generated 'llm gateway' never
+# hears about fallback chains or the keyless internal seam.
+_VARIANT_DIRECTIVES: tuple[tuple[str, Any, str], ...] = (
+    ("fastapi", _implies_market_data,
+     "VARIANT — market-data API: keep the pure vendor registry in `vendors.py` "
+     "(canned deterministic fixtures selected by the DATA_VENDOR env var, default "
+     "canned — zero keys); routes GET /stock/{symbol}, GET /indicators?symbol=&"
+     "window=, GET /news?symbol=; an unknown symbol returns a TYPED 404 "
+     "{\"error\": {\"type\": \"NO_DATA\", ...}}; invalid params are 422 — never a "
+     "bare 500."),
+    ("fastapi", _implies_llm_gateway,
+     "VARIANT — LLM gateway: an OpenAI-compatible POST /v1/chat/completions proxy "
+     "with a model catalog (per-1K costs + tags), PRIORITY routing, FALLBACK to "
+     "the next provider on upstream error (exhausted chains → typed 502 "
+     "ALL_UPSTREAMS_FAILED), cheap-tagged requests → small models, and an EXACT "
+     "usage ledger (tokens × catalog prices) at GET /v1/usage. Ship two bundled "
+     "stub upstreams behind 'internal:' URLs so it boots KEYLESS; real providers "
+     "are env-configured URLs, never hardcoded."),
+    ("rag", _implies_memory_chat,
+     "VARIANT — memory-augmented chat: journal every chat turn to an append-only "
+     "JSONL file (MEMORY_FILE env, default memory.jsonl; corrupt lines skipped, "
+     "never fatal) and REPLAY it into the retrieval index at boot so facts stated "
+     "in conversation survive restarts. Record each turn's memory AFTER its own "
+     "retrieval — a turn must never retrieve itself. Report a \"memories\" count "
+     "in /v1/stats."),
+    ("python_cli", _implies_cli_agent,
+     "VARIANT — terminal copilot: `run '<prompt>' --format json` must emit ONE "
+     "typed JSON event per line (session_start / tool_call / tool_result / answer "
+     "/ denied) and exit 2 when a tool is denied; writes require --mode "
+     "workspace-write (read-only is the DEFAULT) and every file path is confined "
+     "to the workspace (symlink-safe, size-capped); ship offline mock-provider "
+     "scenarios in scenarios.json and `doctor --output-format json`."),
+)
+
+
+def variant_directive(stack: str, brief: str) -> str:
+    """The variant contract for this brief, or '' when the brief is the base
+    stack shape. Pure and deterministic (same triggers as scaffold_for)."""
+    low = (stack or "").strip().lower()
+    for wanted_stack, trigger, directive in _VARIANT_DIRECTIVES:
+        if low == wanted_stack and trigger(brief or ""):
+            return directive
+    return ""
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -647,6 +777,11 @@ class CodeAgent(BaseAgent):
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
             + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
+            + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
+            + (f"{_WORKFLOW_DIRECTIVE}\n\n" if stack == "workflow" else "")
+            + (f"{_AGENT_PACK_DIRECTIVE}\n\n" if stack == "agent_pack" else "")
+            + (f"{variant_directive(stack, brief)}\n\n"
+               if variant_directive(stack, brief) else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "

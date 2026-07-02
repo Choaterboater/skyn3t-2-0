@@ -2247,6 +2247,66 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 return (True, False, "mcp stack: server.py does not reference the mcp SDK")
             return (True, True, "mcp stack: server.py present and references the mcp SDK")
 
+        # ---- rag (FastAPI chat-with-your-documents app) -------------------
+        if low == "rag":
+            main_py = pdir / "main.py"
+            if not main_py.exists() or main_py.stat().st_size < _NONEMPTY:
+                return (True, False, "rag stack: main.py missing")
+            try:
+                text = main_py.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                text = ""
+            # The app must actually be a FastAPI server — a bare main.py that
+            # isn't an HTTP app does NOT satisfy this stack.
+            if "fastapi" not in text:
+                return (True, False, "rag stack: main.py does not reference fastapi")
+            # The pure retrieval core is the stack's load-bearing split (the
+            # sim-core pattern): its absence means untestable, tangled retrieval.
+            core = pdir / "rag_core.py"
+            if not core.exists() or core.stat().st_size < _NONEMPTY:
+                return (True, False, "rag stack: rag_core.py (the pure retrieval core) missing")
+            return (True, True, "rag stack: FastAPI main.py + rag_core.py present")
+
+        # ---- workflow (FastAPI agent-workflow runner) ----------------------
+        if low == "workflow":
+            main_py = pdir / "main.py"
+            if not main_py.exists() or main_py.stat().st_size < _NONEMPTY:
+                return (True, False, "workflow stack: main.py missing")
+            try:
+                text = main_py.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                text = ""
+            if "fastapi" not in text:
+                return (True, False, "workflow stack: main.py does not reference fastapi")
+            # The pure engine is the stack's load-bearing split (the sim-core
+            # pattern): its absence means an untestable, tangled runner.
+            core = pdir / "workflow_core.py"
+            if not core.exists() or core.stat().st_size < _NONEMPTY:
+                return (True, False,
+                        "workflow stack: workflow_core.py (the pure engine) missing")
+            return (True, True, "workflow stack: FastAPI main.py + workflow_core.py present")
+
+        # ---- agent_pack (persona roster: markdown + python tooling) --------
+        if low == "agent_pack":
+            catalog = pdir / "catalog.json"
+            if not catalog.exists() or catalog.stat().st_size < _NONEMPTY:
+                return (True, False, "agent_pack stack: catalog.json missing")
+            personas = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".md"
+                and "agents" in f.relative_to(pdir).parts
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not personas:
+                return (True, False,
+                        "agent_pack stack: no agents/<division>/*.md persona files")
+            tools = pdir / "pack_tools.py"
+            if not tools.exists() or tools.stat().st_size < _NONEMPTY:
+                return (True, False,
+                        "agent_pack stack: pack_tools.py (lint/convert tooling) missing")
+            return (True, True,
+                    f"agent_pack stack: catalog + {len(personas)} persona(s) + tooling present")
+
         # ---- react_vite / react -----------------------------------------
         if low in ("react", "react_vite"):
             pkg = pdir / "package.json"
@@ -2345,7 +2405,10 @@ def _entrypoint_check(
         return ([], "")
 
     low = (stack or "").lower()
-    is_python = low in ("cli", "python", "fastapi", "flask", "django") or any(
+    is_python = low in (
+        "cli", "python", "fastapi", "flask", "django", "rag", "workflow",
+        "agent_pack",
+    ) or any(
         e.endswith(".py") for e in entrypoints
     )
     if not is_python:
@@ -2422,7 +2485,8 @@ def _run_generated_tests(
 
     py = _python_executable()
     low = (stack or "").lower()
-    is_python = low in ("cli", "python", "fastapi", "flask", "django")
+    is_python = low in (
+        "cli", "python", "fastapi", "flask", "django", "rag", "workflow", "agent_pack")
     use_container_names = _use_container_command_names(cmd_ctx)
     if py is None and not use_container_names:
         return (False, False, "")

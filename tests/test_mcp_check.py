@@ -164,6 +164,17 @@ _MISSING_LIB_SERVER = (
 )
 
 
+# The real scaffold's shape: server.py imports a SIBLING module for its logic
+# (`import tools`). Regression for the `python -I` gotcha — since 3.11 isolated
+# mode implies -P (safe path), which drops the script dir from sys.path, so the
+# sibling import crashed at boot and the gate filed a FALSE "crashed on boot"
+# issue whenever the SDK was importable. The gate must boot split-file servers.
+_SIBLING_HELPERS = "def upper_text(text):\n    return str(text).upper()\n"
+_SIBLING_IMPORT_SERVER = _GOOD_SERVER.replace(
+    "import sys, json\n", "import sys, json\nimport helpers\n", 1,
+).replace('str(args["text"]).upper()', 'helpers.upper_text(args["text"])')
+
+
 def _write_server(tmp_path: Path, source: str) -> Path:
     (tmp_path / "server.py").write_text(source)
     return tmp_path
@@ -179,6 +190,17 @@ def test_good_server_passes(tmp_path):
     assert v.issues == []
     assert set(v.tools) == {"add", "shout"}
     assert v.gaps() == []
+
+
+def test_server_importing_a_sibling_module_boots(tmp_path):
+    # The scaffold's own layout (`server.py` + `import tools`) must be provable:
+    # the spawn must keep the script's directory on sys.path (no `-I`).
+    _write_server(tmp_path, _SIBLING_IMPORT_SERVER)
+    (tmp_path / "helpers.py").write_text(_SIBLING_HELPERS)
+    v = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
+    assert not v.skipped, v.to_dict()
+    assert v.ok, v.to_dict()
+    assert set(v.tools) == {"add", "shout"}
 
 
 def test_raising_tool_is_an_issue(tmp_path):

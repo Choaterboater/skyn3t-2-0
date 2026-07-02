@@ -66,6 +66,33 @@ exists because of this).
     cannot build (explicit pins are never demoted). Test:
     `tests/test_toolchain_preflight.py`.
 
+## Scaffold VARIANTS (a lighter tool than a new stack)
+
+When a new app type is an existing stack's shape with different content, ship a
+**scaffold variant**, not a stack: a `_implies_<x>(brief)` phrase trigger + a
+`_<stack>_<x>()` builder dispatched inside `scaffold_for`. Zero new vocabulary
+sites — no planner/selector/proof/gate/registry touchpoints, so none of the
+ten-step checklist and none of its drift risk. Precedents: `_react_vite_threejs`
+(3D), `_fastapi_market_data` (§3.9), `_rag_memory_chat` (§3.10),
+`_fastapi_llm_gateway` (§3.7), `_python_cli_agent` (§3.6).
+
+Rules learned shipping those five:
+
+- **Triggers are multi-word phrases only.** Bare "memory"/"proxy"/"cli" steal
+  ordinary briefs; pin non-theft in BOTH directions in the variant's test file.
+- **Deriving a variant from its base via `.replace()` is fine — but pin every
+  replacement in a test** (a drifted anchor silently no-ops and ships the base).
+- **The variant must keep the base's full gate contract** (a rag variant still
+  passes rag_check; a fastapi variant still boots for liveness).
+- **New stack instead of a variant when** the app type needs its own gate,
+  group membership, proof family, or codegen directive — that's the full
+  checklist above.
+- **Non-code-shaped stacks** (content products like agent packs): add them to
+  `core.stacks.CONTENT_STACKS` and check every scorer that counts "source
+  files" or looks for manifests — the reviewer no_go'd a perfect pack before
+  that group existed. The drift test now pins every builder scaffold against
+  the reviewer's GO_THRESHOLD.
+
 ## Worked examples
 
 - `swift` (2026-07-01): all ten steps, TDD, 17 tests in `tests/test_swift_stack.py`,

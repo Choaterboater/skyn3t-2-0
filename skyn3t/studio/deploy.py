@@ -15,6 +15,7 @@ foundation and it is fully offline-provable.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -129,7 +130,7 @@ def _detect_kind(project_dir: Path, stack: str) -> str:
     if spec.kind == "static":
         return "static"
     if spec.kind == "node":
-        return "node_ssr" if (project_dir / "next.config.js").exists() else "static"
+        return "node_ssr" if _is_ssr_node(project_dir) else "static"
     return "none"
 
 
@@ -144,68 +145,135 @@ def _has_build_script(project_dir: Path) -> bool:
     return "build" in scripts
 
 
+def _is_ssr_node(project_dir: Path) -> bool:
+    """True when a Node project is a server-rendered framework (Next.js/Remix)
+    rather than a plain static SPA (Vite/CRA). Modern Next uses
+    ``next.config.mjs``/``.ts`` or *no* config at all, so checking only
+    ``next.config.js`` (the old code) misclassifies most current Next apps as
+    static and would route them to a static host — breaking SSR/API routes. We
+    check config files AND package.json deps/scripts."""
+    for name in ("next.config.js", "next.config.mjs", "next.config.ts",
+                 "next.config.cjs", "remix.config.js"):
+        if (project_dir / name).exists():
+            return True
+    pkg = project_dir / "package.json"
+    if not pkg.exists():
+        return False
+    try:
+        data = json.loads(pkg.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return False
+    deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+    if "next" in deps or any(k.startswith("@remix-run/") for k in deps):
+        return True
+    scripts = " ".join(str(v) for v in (data.get("scripts") or {}).values())
+    return bool(re.search(r"\b(next|remix)\b", scripts))
+
+
+def _apply_target(requested: str | None, pairs: list[tuple[str, str]]) -> tuple[list[str], str, str]:
+    """Honor a user's ``--target`` preference. ``pairs`` is an ordered list of
+    ``(host, deploy-command)``; the first is the default. Returns
+    ``(ordered_targets, command, note_suffix)``: when ``requested`` is a valid
+    host for this kind it is moved to the front and its command is chosen; when
+    it is given but unavailable, the default is kept and a note explains why;
+    when it is empty, the default order/command is returned unchanged."""
+    names = [p[0] for p in pairs]
+    cmds = dict(pairs)
+    if requested and requested in cmds:
+        ordered = [requested] + [n for n in names if n != requested]
+        return ordered, cmds[requested], ""
+    note = ""
+    if requested and requested not in cmds:
+        note = (f" (requested target '{requested}' isn't available for this build; "
+                f"using {names[0]})")
+    return names, cmds[names[0]], note
+
+
 def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None = None) -> DeployPlan:
     """Classify ``project_dir`` and return a keyless :class:`DeployPlan`. Never
-    raises; a missing dir or unknown stack still yields a sane plan."""
+    raises; a missing dir or unknown stack still yields a sane plan.
+
+    ``target`` is an optional preferred host (e.g. ``"vercel"``, ``"fly"``):
+    when it is a valid host for the detected kind it is moved to the front of
+    ``targets`` and its host-specific ``command`` is chosen; an unavailable
+    target keeps the default and is explained in ``notes``."""
     try:
         pdir = Path(project_dir)
         kind = _detect_kind(pdir, stack)
 
         if kind == "static":
             built = _has_build_script(pdir)
+            out = "dist" if built else "."
+            targets, command, note = _apply_target(target, [
+                ("cloudflare-pages", f"npx wrangler pages deploy {out}"),
+                ("netlify", f"npx netlify deploy --prod --dir {out}"),
+                ("vercel", "npx vercel deploy --prod"),
+            ])
             return DeployPlan(
                 deployable=True, kind="static", serves_url=True,
-                targets=["cloudflare-pages", "netlify", "vercel"],
-                output_dir="dist" if built else ".",
+                targets=targets, output_dir=out,
                 build_command="npm run build" if built else "",
-                command="npx wrangler pages deploy " + ("dist" if built else "."),
-                notes="A static bundle — deploy the built output to any static host.",
+                command=command,
+                notes="A static bundle — deploy the built output to any static host." + note,
             )
 
         if kind == "node_ssr":
+            targets, command, note = _apply_target(target, [
+                ("vercel", "npx vercel deploy --prebuilt"),
+                ("railway", "railway up"),
+                ("fly", "fly launch --now"),
+            ])
             return DeployPlan(
                 deployable=True, kind="node_ssr", serves_url=True,
-                targets=["vercel", "railway", "fly"],
-                output_dir=".", build_command="npm run build",
-                command="npx vercel deploy --prebuilt",
-                notes="A full-stack Node app — Vercel is zero-config; Railway/Fly work via a Node container.",
+                targets=targets, output_dir=".", build_command="npm run build",
+                command=command,
+                notes="A full-stack Node app — Vercel is zero-config; Railway/Fly work via a Node container." + note,
             )
 
         if kind == "container":
             norm = _normalize(stack)
             dockerfile = _NODE_DOCKERFILE if norm in ("node_express", "express") else _PY_DOCKERFILE
+            targets, command, note = _apply_target(target, [
+                ("fly", "fly launch --dockerfile Dockerfile --now"),
+                ("railway", "railway up"),
+                ("render", "render blueprint launch"),
+            ])
             return DeployPlan(
                 deployable=True, kind="container", serves_url=True,
-                targets=["fly", "railway", "render"],
-                output_dir=".", build_command="",
-                command="fly launch --dockerfile Dockerfile --now",
+                targets=targets, output_dir=".", build_command="",
+                command=command,
                 artifacts={"Dockerfile": dockerfile},
-                notes="An HTTP server — ships as a container. Set any keys as platform secrets.",
+                notes="An HTTP server — ships as a container. Set any keys as platform secrets." + note,
             )
 
         if kind == "mobile":
+            targets, command, note = _apply_target(target, [
+                ("expo-eas", "eas build --platform all"),
+            ])
             return DeployPlan(
                 deployable=True, kind="mobile", serves_url=False,
-                targets=["expo-eas"], output_dir=".", build_command="",
-                command="eas build --platform all",
-                notes="A mobile app — build stores/installable binaries via Expo EAS.",
+                targets=targets, output_dir=".", build_command="",
+                command=command,
+                notes="A mobile app — build stores/installable binaries via Expo EAS." + note,
             )
 
         if kind == "artifact":
             norm = _normalize(stack)
             if norm in ("python_cli", "python", "cli", "mcp"):
-                targets = ["pypi", "github-release"]
-                command = "python -m build && python -m twine upload dist/*"
+                pairs = [
+                    ("pypi", "python -m build && python -m twine upload dist/*"),
+                    ("github-release", "gh release create v0.1.0 dist/*"),
+                ]
                 output = "dist"
             else:  # agent_pack, swift, tauri, desktop
-                targets = ["github-release"]
-                command = "gh release create v0.1.0 <built-artifact>"
+                pairs = [("github-release", "gh release create v0.1.0 <built-artifact>")]
                 output = "."
+            targets, command, note = _apply_target(target, pairs)
             return DeployPlan(
                 deployable=True, kind="artifact", serves_url=False,
                 targets=targets, output_dir=output, build_command="",
                 command=command,
-                notes="Not a hosted URL — a distributable package/binary. Publish, don't serve.",
+                notes="Not a hosted URL — a distributable package/binary. Publish, don't serve." + note,
             )
 
         return DeployPlan(deployable=False, kind="none",

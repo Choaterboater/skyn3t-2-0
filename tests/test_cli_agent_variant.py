@@ -80,3 +80,21 @@ def test_copilot_scaffold_own_proof_passes_with_zero_deps():
         events = [json.loads(line) for line in run.stdout.splitlines() if line]
         assert events[0]["type"] == "session_start"
         assert events[-1]["type"] == "answer"
+
+
+def test_proof_run_passes_the_variant_cleanly(tmp_path):
+    # Structural proof with NO checklist gaps — a variant whose test file name
+    # misses the stack checklist dampens the score and nudges the fix-loop
+    # into stub-filling (found by auditing proof_run over the variants).
+    from skyn3t.studio.planner import file_checklist
+    from skyn3t.studio.proof_run import proof_run
+
+    files = scaffold_for("python_cli", "pilot", "a terminal assistant for my notes")
+    for rel, contents in files.items():
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(contents)
+    res = proof_run(tmp_path, checklist=file_checklist('python'), stack='python_cli',
+                    run_tests=True, enable_mock_llm=False)
+    assert res.passed, res.to_dict()
+    assert res.missing == [], res.missing

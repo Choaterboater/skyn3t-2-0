@@ -2019,7 +2019,7 @@ def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
             "    import uvicorn\n\n"
             '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
         ),
-        "test_market_api.py": (
+        "test_main.py": (
             '"""The API\'s own deterministic proof against the canned vendor."""\n'
             "from fastapi.testclient import TestClient\n\n"
             "import vendors\n"
@@ -2092,7 +2092,7 @@ def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
             structure=[
                 ("main.py", "FastAPI app — /stock, /indicators, /news, /health"),
                 ("vendors.py", "Pure vendor registry + fixtures + indicator math"),
-                ("test_market_api.py", "Deterministic proof against the canned vendor"),
+                ("test_main.py", "Deterministic proof against the canned vendor"),
                 ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
             ],
             features=[
@@ -2103,7 +2103,7 @@ def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
             ],
             extra=(
                 "### Tests\n\n"
-                "```bash\npytest test_market_api.py\n```"
+                "```bash\npytest test_main.py\n```"
             ),
         ),
     }
@@ -2311,7 +2311,7 @@ def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
             "    import uvicorn\n\n"
             '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
         ),
-        "test_gateway.py": (
+        "test_main.py": (
             '"""The gateway\'s own deterministic proof over the bundled stubs."""\n'
             "from fastapi.testclient import TestClient\n\n"
             "import providers\n"
@@ -2398,7 +2398,7 @@ def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
                 ("main.py", "FastAPI gateway — /v1/chat/completions, /v1/usage, /v1/models"),
                 ("router_core.py", "Pure catalog, routing policy, pricing, ledger"),
                 ("providers.py", "Bundled stub upstreams + the URL-configurable call seam"),
-                ("test_gateway.py", "Deterministic proof: routing, fallback, exact costs"),
+                ("test_main.py", "Deterministic proof: routing, fallback, exact costs"),
                 ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
             ],
             features=[
@@ -2410,7 +2410,7 @@ def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
             ],
             extra=(
                 "### Tests\n\n"
-                "```bash\npytest test_gateway.py\n```"
+                "```bash\npytest test_main.py\n```"
             ),
         ),
     }

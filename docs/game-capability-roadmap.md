@@ -103,10 +103,24 @@ Recently completed (verified in code + tests, full suite 1612 green):
   pre-repair verdict, so a successful game repair could never flip `no_go → go`; now repair → re-run once.
 
 Still open / next up (honest status):
-- **Game sprite-RENDERING reliability** — cheap-model codegen loads all generated sprites but renders only
-  some, wiring entities to invented texture keys that were never loaded. The real "games still fail" root
-  cause; being worked now. (Distinct from #6, which generates + loads the art fine.)
 - Item #8 physics-specialist agent, #11 procedural levels / premium sprites — not started.
+
+## 2026-07-01 evening — the retry ladder (each rung caught a REAL, DIFFERENT defect)
+- **Sprite-rendering false positive FIXED + live-validated**: `_VAR_KEYED_TEXTURE` recognizes computed
+  texture keys; a real rebuild reported `sprites_rendered=true, missing=[]`. The previous "games still
+  fail" item is closed.
+- **tower-defence-retry-2** (no_go/49): qa_playtest correctly caught an uncaught runtime error — codegen
+  loaded `/assets/sprites/gold.png` that the art tier never delivered (GDD said gold = currency, model
+  invented an asset). FIXED at root: `asset_reconcile.reconcile_asset_refs` (deterministic placeholder
+  PNG for any referenced-but-missing image, wired into `apply_deterministic_repairs`) + a directive
+  clause forbidding invented `/assets/` paths.
+- **tower-defence-retry-3** (no_go/49): asset guard clean (5/5 refs valid), qa_playtest + visual PASS —
+  the headless gate caught `Infinity in state.hazard.cooldownRemaining` (model used Infinity as a
+  "no hazard" sentinel; the gate requires JSON-serializable finite state BY DESIGN). Fix in flight:
+  finite-state directive clause + headless-gate repair-then-reverify (it currently records a gap but
+  dispatches NO repair, unlike qa_playtest).
+- Pattern worth keeping: score 49 has now meant three DIFFERENT correct catches. Never assume a repeat
+  verdict is a repeat cause — read the manifest.
 
 ## Risks / guardrails
 - Hallucination ∝ 1/training-data → Phaser/matter safe; pin APIs for the rest; never default to thin-corpus libs.

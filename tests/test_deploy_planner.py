@@ -98,6 +98,42 @@ def test_write_deploy_artifacts_emits_the_dockerfile(tmp_path):
     assert (tmp_path / "Dockerfile").read_text() == "# mine\n"
 
 
+def test_target_selects_the_host_specific_command(tmp_path):
+    # --target is honored: the requested host moves to the front AND its own
+    # deploy command is chosen (not a silently-ignored no-op).
+    _write(tmp_path, {"index.html": "<h1>x</h1>"})
+    default = plan_deploy(tmp_path, "static")
+    picked = plan_deploy(tmp_path, "static", target="netlify")
+    assert default.to_dict() != picked.to_dict(), "target must change the plan"
+    assert picked.targets[0] == "netlify"
+    assert "netlify deploy" in picked.command
+    assert "wrangler" not in picked.command  # the default command was replaced
+
+
+def test_unavailable_target_keeps_default_and_explains(tmp_path):
+    # A container can't deploy to vercel — keep the default host and say why.
+    _write(tmp_path, {"main.py": "x", "requirements.txt": "fastapi"})
+    plan = plan_deploy(tmp_path, "fastapi", target="vercel")
+    assert plan.targets[0] == "fly"          # default host kept
+    assert "fly launch" in plan.command
+    assert "vercel" in plan.notes            # the ignored preference is explained
+
+
+def test_content_detection_classifies_nextjs_as_ssr_not_static(tmp_path):
+    # No stack passed → the content-detection fallback. A modern Next app uses
+    # next.config.mjs / a `next` dependency; the old next.config.js-only check
+    # misrouted such apps to a static host (breaking SSR/API routes).
+    _write(tmp_path, {
+        "package.json": '{"dependencies":{"next":"14.0.0"},'
+                        '"scripts":{"dev":"next dev","build":"next build","start":"next start"}}',
+        "next.config.mjs": "export default {}",
+        "app/page.jsx": "export default function Page(){return null}",
+    })
+    plan = plan_deploy(tmp_path, "")  # empty stack → content-detect
+    assert plan.kind == "node_ssr", "a Next.js app must not be planned as a static drop"
+    assert plan.serves_url
+
+
 def test_plan_is_json_serializable(tmp_path):
     _write(tmp_path, {"index.html": "<h1>x</h1>"})
     d = plan_deploy(tmp_path, "static").to_dict()

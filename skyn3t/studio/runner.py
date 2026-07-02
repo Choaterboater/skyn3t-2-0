@@ -55,6 +55,7 @@ from skyn3t.intelligence.learning_loop import (
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.liveness import liveness_self_improve
+from skyn3t.studio.deploy import plan_deploy
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.planner import BuildPlan, Planner
@@ -3738,6 +3739,14 @@ class StudioRunner:
             "build_id": build_id, "stage": record.name, "capability": record.capability,
             "status": record.status, "score": record.score,
         }
+        # Agent identity + wall-clock make the live build legible in the UI
+        # ("which agent ran each stage, and how long"). Both are recorded on the
+        # StageRecord by the time this chokepoint fires; surface them live too so
+        # the dashboard doesn't have to wait for the end-of-build manifest.
+        if record.agent_name:
+            payload["agent_name"] = record.agent_name
+        if record.duration_ms:
+            payload["duration_ms"] = record.duration_ms
         if isinstance(stage_cost, dict):
             payload["cost_usd"] = stage_cost.get("cost_usd")
             payload["tokens"] = stage_cost.get("tokens")
@@ -3771,6 +3780,15 @@ class StudioRunner:
         self, manifest: BuildManifest, plan: BuildPlan, correlation_id: str, final_score: float
     ) -> BuildOutcome:
         project_dir = manifest.artifact_dir or str(self.settings.projects_dir / manifest.slug)
+        # Ship pillar: record a keyless deploy plan so every build carries an
+        # honest "…and here's how it goes live" answer — persisted to the on-disk
+        # manifest, the DB row (via _save_build), and BuildOutcome.manifest, and
+        # already served through GET /preview/{slug}. plan_deploy never raises,
+        # but we still guard: deploy planning must never break delivery.
+        try:
+            manifest.extra["deploy_plan"] = plan_deploy(project_dir, plan.stack).to_dict()
+        except Exception as exc:  # noqa: BLE001 - planning must not break delivery
+            log.warning("studio.deploy_plan_failed", error=str(exc))
         manifest.save(project_dir)
         await self._save_build(manifest)
         await self.event_bus.emit(

@@ -112,6 +112,14 @@ def compose_readme(
         lines += ["", extra.rstrip()]
     lines += [
         "",
+        "## Configuration",
+        "",
+        "Configuration is read once at startup from environment variables. Any required "
+        "variables are listed in `.env.example`; if a required variable is missing the "
+        "app fails fast with a single clear error at startup, rather than silently "
+        "falling back to broken behaviour. Copy `.env.example` to `.env`, fill in your "
+        "values, and never commit real secrets.",
+        "",
         "## Development",
         "",
         "This project ships with a test suite. Run it after making changes to keep "

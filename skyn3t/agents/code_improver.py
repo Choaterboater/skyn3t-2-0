@@ -17,6 +17,7 @@ from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents._common import detect_stack, extract_code
+from skyn3t.agents.code_agent import _FULL_FILE_CONTRACT
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
@@ -201,7 +202,8 @@ class CodeImproverAgent(BaseAgent):
             tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
             prompt = (
                 f"Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
-                f"Current contents:\n{original}\n\nRewrite the file."
+                f"Current contents:\n{original}\n\nRewrite the file. "
+                f"{_FULL_FILE_CONTRACT}"
             )
             try:
                 result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),

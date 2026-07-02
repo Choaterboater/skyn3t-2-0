@@ -78,7 +78,16 @@ _DESIGN_DIRECTIVE = (
     "scale, spacing, alignment and a cohesive color palette; add depth and interaction "
     "states (hover / focus / active / empty states); style EVERYTHING with CSS. Do NOT "
     "use emoji as icons or primary UI elements — use inline SVG or CSS shapes for icons. "
-    "Avoid the unstyled create-react-app look."
+    "Avoid the unstyled create-react-app look. "
+    "NUMERIC DESIGN BUDGET (keep it disciplined, not a rainbow): use a restrained type "
+    "scale of 3-5 distinct font sizes and at most 2 font weights; ONE accent color plus "
+    "a small neutral ramp (background / surface / border / text) — not a spread of "
+    "unrelated hues; and a consistent 4/8px spacing scale (every margin/padding a "
+    "multiple of 4). "
+    "BANNED AI-DEFAULT LOOK (do NOT ship these unless the brief explicitly asks for "
+    "them — they read as a generic AI template): a generic purple/violet gradient hero "
+    "band on a white page, and emoji-bullet feature grids (an emoji next to each "
+    "feature card). Pick a palette that fits THIS product instead."
 )
 # Config hygiene — keeps codegen from hardcoding API keys/endpoints. Reading
 # config through env/an accessor lets the post-build config surfacer detect it and
@@ -125,6 +134,76 @@ _LLM_DIRECTIVE = (
     "FastAPI/Flask — an `@app.post('/api/llm')` handler. The route is the ONLY place "
     "the key and OpenRouter client live; keep key and model in env, never hardcoded."
 )
+# Bolt full-file / no-placeholder contract (research item 44). Every generated OR
+# rewritten file must be COMPLETE — the "// rest of the code remains the same"
+# elision is the dangling-import bug class. Shared verbatim by the code-improver's
+# rewrite prompt (imported there) so a REPAIR can't reintroduce an elided stub.
+_FULL_FILE_CONTRACT = (
+    "FULL-FILE CONTRACT: output the COMPLETE file every time — the entire contents as "
+    "they should appear on disk. NEVER abbreviate with placeholder comments such as "
+    "`// rest of code...`, `/* unchanged */`, `// ... existing code ...`, "
+    "`# rest of the file is unchanged`, or `TODO: implement`. There is no pre-existing "
+    "version to be 'unchanged' from — an elided body ships a non-functional stub."
+)
+
+# Real-data / no-fakes contract (research item 45) for product/web app stacks: the
+# generated app must model data honestly instead of faking persistence, auth, or the
+# network. Injected for data-bearing product stacks (web apps + JS/py backends), NOT
+# for games (no product-data/auth surface).
+_DATA_DIRECTIVE = (
+    "DATA & AUTH (real data flow, never fakes): persist real product / multi-user data "
+    "in a real backend store — NEVER use localStorage / sessionStorage as a DATABASE "
+    "for multi-user or product data (it is per-browser and trivially forgeable). NEVER "
+    "hardcode fake authentication: no `password123`, no client-side-only credential "
+    "checks, no hardcoded user list standing in for real auth. Do NOT fake API calls "
+    "with setTimeout + hardcoded responses — call the real backend. If the chosen stack "
+    "has NO backend, model the data honestly (in-memory or a local file) AND SAY SO "
+    "explicitly in the README (state the limitation) — never pretend ephemeral state is "
+    "persisted."
+)
+
+# Agent / automation app safety contract (research item 50): an app that acts on the
+# user's behalf must default destructive/outward actions to a dry run. Injected only
+# when the brief implies an agent/automation app (see _implies_agent_app).
+_AGENT_APP_DIRECTIVE = (
+    "AGENT / AUTOMATION SAFETY (this app performs actions on the user's behalf): every "
+    "DESTRUCTIVE or OUTWARD action (sending email / messages, posting, deleting, "
+    "executing trades, calling a side-effecting external API) MUST default to a dry run "
+    "— `dry_run=true` — and return a STRUCTURED report `{action, target, wouldDo}` "
+    "describing what it WOULD do, WITHOUT doing it. A real send/execute happens ONLY "
+    "when an explicit flag is passed (`dry_run=false` / `--execute` / `live=true`). "
+    "Missing delivery or credential config must yield a structured skipped status "
+    "(e.g. `{status: 'skipped_no_delivery'}`), never a crash."
+)
+
+# Word-bound tokens/phrases that mark an agent/automation app brief. Single tokens are
+# matched on word boundaries (the phaser keyword-stealing lesson — never substring-match
+# a short ambiguous word); multi-word phrases are matched as substrings.
+_AGENT_APP_TOKENS = frozenset({
+    "agent", "agents", "automation", "automate", "autonomous", "workflow",
+    "webhook", "webhooks", "scheduled", "cronjob", "crawler", "scraper",
+    "bot", "bots",  # discord/telegram/slack bots are agent apps (research §3.2)
+})
+_AGENT_APP_PHRASES = (
+    "team of agents", "send email", "sends email", "send emails", "post to",
+    "posts to", "monitor and", "monitors and", "notify me", "auto-reply",
+    "briefing", "always-on", "on a schedule",
+)
+_AGENT_APP_TOKEN_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(_AGENT_APP_TOKENS, key=len, reverse=True)) + r")\b"
+)
+
+
+def _implies_agent_app(brief: str) -> bool:
+    """True when the brief implies an app that autonomously performs actions —
+    an agent / automation / workflow / scheduled bot. Word-bound so a stray
+    substring (e.g. 'management') never steals a non-agent brief."""
+    low = (brief or "").lower()
+    if _AGENT_APP_TOKEN_RE.search(low):
+        return True
+    return any(phrase in low for phrase in _AGENT_APP_PHRASES)
+
+
 _GAME_STACK_DIRECTIVE = (
     "STACK — NON-NEGOTIABLE: build a GAME, not a website. This is a Phaser 3 + Vite "
     "browser game in VANILLA JavaScript. The entry is src/main.js (a Phaser Scene "
@@ -158,6 +237,13 @@ _GAME_STACK_DIRECTIVE = (
     "NUMERIC SAFETY: initialize EVERY numeric state field to a concrete FINITE number "
     "in createState, and never let an undefined value reach arithmetic (an "
     "`undefined * number` is NaN and FAILS the runtime gate). "
+    "FINITE STATE (non-negotiable): the headless gate serializes state to JSON to check "
+    "determinism, so EVERY number anywhere in state must stay FINITE — BOTH NaN AND "
+    "Infinity are violations. Encode 'inactive / never fires / no cooldown' as `null`, a "
+    "boolean flag, or a LARGE FINITE constant (e.g. a big number of seconds) — NEVER "
+    "`Infinity` or `-Infinity`. A cooldown/timer/duration set to Infinity (e.g. "
+    "`cooldownRemaining = Infinity`) fails the gate; use null or a finite sentinel "
+    "instead. "
     "PRESENTATION — FILL THE SCREEN: render entities at a GENEROUS, clearly-visible "
     "size. The player and each enemy/obstacle should be a substantial fraction of the "
     "play area — roughly 48-80px on the standard ~800x600 canvas, NEVER tiny specks "
@@ -230,6 +316,11 @@ _WEB_STACKS = frozenset({
     "static", "html", "node", "node_express", "express", "vue", "svelte",
     "phaser",  # a Phaser game has real HUD/menu visual-design concerns
 })
+
+# Stacks that carry product/multi-user DATA (so the real-data/no-fake-auth
+# contract applies): every web product stack EXCEPT games, plus the common
+# Python backends. A Phaser game has no auth/persistence surface.
+_DATA_STACKS = (_WEB_STACKS - {"phaser"}) | frozenset({"fastapi", "flask", "django"})
 
 # Swift / SwiftUI native macOS (Swift Package Manager). NOT a web app — the model
 # must never emit package.json / npm / index.html / JS. Mirrors the sim-core split:
@@ -551,6 +642,9 @@ class CodeAgent(BaseAgent):
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
             + (f"{self._game_art_directive(brief, art_plan)}\n" if self._game_art_on(stack) else "")
+            + (f"{_DATA_DIRECTIVE}\n" if (stack or "").lower() in _DATA_STACKS else "")
+            + (f"{_AGENT_APP_DIRECTIVE}\n" if _implies_agent_app(brief) else "")
+            + f"{_FULL_FILE_CONTRACT}\n"
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."

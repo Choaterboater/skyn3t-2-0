@@ -41,6 +41,7 @@ from skyn3t.studio.clarification import clarify
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
+from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
     _unresolved_local_imports,
@@ -1348,13 +1349,27 @@ class StudioRunner:
                 {"build_id": manifest.build_id, "stage": f"headless_gate#{n}", "agent_type": "fix"},
                 correlation_id=correlation_id,
             )
+            # Target the SIM CORE (src/sim.js) directly — mirrors qa_playtest's
+            # file-targeting so a violation whose text names no file (e.g. "Infinity
+            # in state.hazard.cooldownRemaining") still routes the improver to the
+            # sim, not a guessed entrypoint. Empty list -> the improver falls back to
+            # gap-text targeting (the missing-core case, where sim.js must be CREATED
+            # and the gap already names it).
+            from skyn3t.studio.game_visual_loop import select_game_source_files
+
+            target_files = select_game_source_files(project_dir)
+            # Feed the EXACT invariant violations (or the sim-core extraction
+            # instruction) back, like compile errors — wrapped in the structured
+            # QA-FAIL contract (item 46) so the improver gets a consistent handoff.
+            raw_gaps = self._headless_gate_gaps(gate) + ([wiring_gap] if wiring_gap else [])
             payload = {
                 "brief": manifest.brief, "slug": manifest.slug,
                 "worktree_dir": project_dir, "project_dir": project_dir,
                 "stack": plan.stack, "plan": plan.to_dict(),
-                # Feed the EXACT invariant violations (or the sim-core extraction
-                # instruction) back, like compile errors.
-                "gaps": self._headless_gate_gaps(gate) + ([wiring_gap] if wiring_gap else []),
+                "gaps": format_fix_feedback(
+                    raw_gaps, stage="headless_gate", attempt=n,
+                    max_attempts=attempts, files=target_files),
+                "files": target_files,
             }
             if extra:
                 payload["extra"] = extra
@@ -1464,7 +1479,12 @@ class StudioRunner:
                         "brief": manifest.brief, "slug": manifest.slug,
                         "worktree_dir": project_dir, "project_dir": project_dir,
                         "stack": plan.stack, "plan": plan.to_dict(),
-                        "gaps": list(gaps), "files": list(files),
+                        # Structured QA-FAIL handoff (item 46) — one re-verify pass,
+                        # so attempt 1 of 1.
+                        "gaps": format_fix_feedback(
+                            list(gaps), stage="qa_playtest", attempt=1,
+                            max_attempts=1, files=list(files)),
+                        "files": list(files),
                     }
                     if extra:
                         payload["extra"] = extra
@@ -1781,6 +1801,7 @@ class StudioRunner:
                 test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
                 run_build=bool(getattr(self.settings, "run_generated_build", True)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                brief=manifest.brief,
             )
             manifest.extra["proof"] = proof.to_dict()
             manifest.extra[f"fix_attempt_{attempt}"] = {
@@ -2368,6 +2389,7 @@ class StudioRunner:
                 test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
                 run_build=bool(getattr(self.settings, "run_generated_build", True)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                brief=manifest.brief,
             )
             manifest.extra["proof"] = proof.to_dict()
 

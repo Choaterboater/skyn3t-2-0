@@ -175,6 +175,21 @@ class CodeImproverAgent(BaseAgent):
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
         gaps = p.get("gaps") or review.get("gaps") or []
+
+        if p.get("agentic"):
+            # Whole-project agentic improve: the model explores the tree itself
+            # and can CREATE files, so a feature goal isn't squeezed into one
+            # entrypoint rewrite. Falls through to the classic per-file path
+            # whenever the session is unavailable, fails, or lands nothing —
+            # this branch can only ever ADD capability, never remove it.
+            improved, skipped, ran = await self._agentic_improve(worktree, brief, gaps, stack, p)
+            if ran and improved:
+                return TaskResult(task_id=task.task_id, success=True,
+                                  output={"files_improved": len(improved),
+                                          "files": sorted(improved), "skipped": skipped,
+                                          "worktree_dir": str(worktree), "agentic": True,
+                                          "backend": self.llm.backend})
+
         target_files = p.get("files") or self._targets_from_gaps(gaps, worktree)
         if not target_files:
             # Neither an explicit "files" list nor the error-shaped gap parser
@@ -227,6 +242,95 @@ class CodeImproverAgent(BaseAgent):
                           output={"files_improved": len(improved), "files": sorted(improved),
                                   "skipped": skipped,
                                   "worktree_dir": str(worktree), "backend": self.llm.backend})
+
+    # Directories that are never part of an improve diff: build artifacts,
+    # dependencies, VCS state. Mirrors the agentic loop's own list_files pruning.
+    _SNAPSHOT_PRUNE = {"node_modules", ".git", ".next", "dist", "__pycache__",
+                       ".venv", "venv", "build", ".cache"}
+    _SNAPSHOT_MAX_BYTES = 1_000_000  # diffing a >1MB file is a lockfile, not code
+
+    def _snapshot(self, worktree: Path) -> dict[str, str]:
+        """rel -> text content for every trackable file. The before/after pair
+        of these is how agentic changes are detected: the tool-loop writes
+        directly to disk and reports only ok/error, not a file list."""
+        snap: dict[str, str] = {}
+        for f in sorted(worktree.rglob("*")):
+            if not f.is_file() or self._SNAPSHOT_PRUNE & set(f.parts):
+                continue
+            try:
+                if f.stat().st_size > self._SNAPSHOT_MAX_BYTES:
+                    continue
+                snap[str(f.relative_to(worktree))] = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue  # binary/unreadable — not an improve target
+        return snap
+
+    @staticmethod
+    def _agentic_improve_prompt(brief: str, gaps: list[Any], stack: str) -> str:
+        goals = "\n".join(f"- {str(g).strip()}" for g in gaps if str(g).strip()) or f"- {brief}"
+        return (
+            "You are IMPROVING an existing, working application — not building "
+            "a new one. The project's current files are on disk.\n"
+            f"Stack: {stack or 'detect from the files'}\n"
+            f"Goal(s):\n{goals}\n\n"
+            "Start with list_files, read_file the files relevant to the goal, "
+            "then implement the goal(s) COMPLETELY: call write_file for every "
+            "file you change AND for any NEW files the goal needs (pages, "
+            "routes, components, styles, wiring). Rules:\n"
+            "- Change only what the goal requires; never rewrite unrelated files.\n"
+            "- write_file takes the COMPLETE file contents — never elide with "
+            "placeholder comments like '// rest unchanged'.\n"
+            "- Keep the app building and running: update imports/navigation so "
+            "new files are actually reachable.\n"
+            "- When the goal is fully implemented, call finish."
+        )
+
+    async def _agentic_improve(self, worktree: Path, brief: str, gaps: list[Any],
+                               stack: str, payload: dict[str, Any],
+                               ) -> tuple[list[str], dict[str, str], bool]:
+        """Run one whole-project agentic session toward the goal. Returns
+        (improved_rels, skipped_reasons, ran). ran=False means the session
+        never usably executed (unsupported backend / hard failure) and the
+        caller should use the classic path with no signal lost."""
+        from skyn3t.agents.validate import validate_source
+
+        before = self._snapshot(worktree)
+        prompt = self._agentic_improve_prompt(brief, gaps, stack)
+        try:
+            res = await self.llm.agentic_build(
+                prompt, str(worktree),
+                timeout=int(payload.get("agentic_timeout") or 900),
+                provider=(payload.get("agentic_provider") or None),
+                model=(payload.get("agentic_model") or None),
+                stack=stack)
+        except Exception as exc:  # noqa: BLE001 - agentic must never sink improve
+            _log.warning("code_improver.agentic_failed", error=str(exc))
+            return [], {}, False
+        if not (res or {}).get("ok"):
+            return [], {}, False
+        after = self._snapshot(worktree)
+        improved: list[str] = []
+        skipped: dict[str, str] = {}
+        for rel, content in after.items():
+            original = before.get(rel)
+            if original is not None and content == original:
+                continue
+            ok, _ = validate_source(rel, content)
+            if ok and self._preserves_html_entrypoints(rel, original or "", content):
+                improved.append(rel)
+                continue
+            # Do-no-harm: unwind a broken write — restore the original, or
+            # delete a broken brand-new file — and say so.
+            target = worktree / rel
+            try:
+                if original is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.write_text(original, encoding="utf-8")
+            except OSError:
+                pass
+            skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
+        return improved, skipped, True
 
     async def _improve_one(self, rel: str, original: str, brief: str,
                            gaps: list[Any], stack: str) -> tuple[str, str]:

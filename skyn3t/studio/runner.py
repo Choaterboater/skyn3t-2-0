@@ -2075,6 +2075,104 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - advisory; never break a build
             log.warning("workflow_check.failed", error=str(exc))
 
+    async def _run_cli_check(
+        self, manifest, plan, project_dir, correlation_id, extra
+    ) -> None:
+        """Deterministic CLI gate (python_cli family, ADVISORY): drive the
+        delivered main.py's command surface (--help → each advertised
+        subcommand's --help → invalid-input rejection on subcommand CLIs) with
+        bounded subprocess calls, zero side effects. RECORD the verdict to
+        ``manifest.extra["cli_check"]``; real issues get ONE repair with the
+        same snapshot → improve → re-proof → keep-or-rollback shape as its
+        siblings. NEVER touches ``verdict``. Best-effort; never raises."""
+        try:
+            from skyn3t.studio.cli_check import check_cli
+
+            verdict = await asyncio.to_thread(check_cli, project_dir, plan.stack)
+            manifest.extra["cli_check"] = verdict.to_dict()
+            log.info("cli_check.done", skipped=verdict.skipped, ok=verdict.ok,
+                     issues=len(verdict.issues))
+
+            gaps = verdict.gaps()
+            if not gaps or not self._has_capability("code_improve"):
+                return
+            files = self._select_root_py_files(project_dir, ("main.py",))
+            if not files:
+                return
+
+            before_files = set(self._safe_list_files(project_dir))
+            snapshots = self._snapshot_seo_targets(project_dir, files)
+
+            payload = {
+                "brief": manifest.brief, "slug": manifest.slug,
+                "worktree_dir": project_dir, "project_dir": project_dir,
+                "stack": plan.stack, "plan": plan.to_dict(),
+                "gaps": format_fix_feedback(
+                    gaps, stage="cli_check", attempt=1,
+                    max_attempts=1, files=list(files)),
+                "files": list(files),
+            }
+            if extra:
+                payload["extra"] = extra
+            task = TaskRequest(
+                type="code_improver", payload=payload,
+                capabilities_required=("code_improve",),
+                correlation_id=correlation_id,
+                metadata={"stage": "cli_check"},
+            )
+            dispatched_ok = True
+            try:
+                await asyncio.wait_for(
+                    self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
+            except Exception as exc:  # noqa: BLE001 - a timeout can leave partial writes
+                dispatched_ok = False
+                log.warning("cli_check.improve_failed", error=str(exc))
+
+            changed = self._seo_changed_targets(project_dir, snapshots)
+            new_files = sorted(
+                f for f in set(self._safe_list_files(project_dir)) if f not in before_files)
+            if not changed and not new_files:
+                return
+            touched = sorted(set(changed) | set(new_files))
+
+            if not dispatched_ok:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["cli_repair"] = {
+                    "kept": False,
+                    "reason": "improver dispatch failed/timed out; rolled back partial writes",
+                    "changed_files": touched,
+                }
+                return
+
+            proof = await asyncio.to_thread(
+                proof_run,
+                project_dir,
+                checklist=plan.checklist,
+                execution_backend=self.settings.execution_backend,
+                stack=plan.stack,
+                run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+            )
+            if proof.passed:
+                manifest.files = self._safe_list_files(project_dir)
+                verdict = await asyncio.to_thread(check_cli, project_dir, plan.stack)
+                manifest.extra["cli_check"] = verdict.to_dict()
+                manifest.extra["cli_repair"] = {"kept": True, "changed_files": touched}
+            else:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["cli_repair"] = {
+                    "kept": False,
+                    "reason": "advisory CLI repair broke the build proof; rolled back",
+                    "changed_files": touched,
+                }
+                log.warning("cli_check.repair_rolled_back", changed=touched)
+        except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+            log.warning("cli_check.failed", error=str(exc))
+
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
         improver, and retry until the proof passes or the budget is spent.
@@ -3180,6 +3278,15 @@ class StudioRunner:
             if _gate_applies("workflow_check", plan.stack) and getattr(
                     self.settings, "workflow_check_enabled", True):
                 await self._run_workflow_check(
+                    manifest, plan, project_dir, correlation_id, extra)
+
+            # End-of-build CLI gate (python_cli family, ADVISORY, zero side
+            # effects): drive the delivered command surface with bounded
+            # subprocess calls. Same shape as its siblings: recorded to
+            # manifest.extra["cli_check"], one repair, never flips `verdict`.
+            if _gate_applies("cli_check", plan.stack) and getattr(
+                    self.settings, "cli_check_enabled", True):
+                await self._run_cli_check(
                     manifest, plan, project_dir, correlation_id, extra)
 
             # Unconditional final consistency pass — see _final_consistency_check's

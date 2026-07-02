@@ -57,7 +57,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import deque
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -107,43 +106,12 @@ def _missing_local_module(err: str, root: Path) -> str | None:
     return None
 
 
-@dataclass(slots=True)
-class RagVerdict:
-    """The outcome of the deterministic RAG gate.
+# The gate-agnostic verdict shape, shared by every deterministic gate since the
+# third one arrived (see gate_verdict.py). The alias keeps every existing
+# import, test, and manifest reader unchanged.
+from skyn3t.studio.gate_verdict import GateVerdict
 
-    ``ok`` is a property (not a gate): True when the gate RAN and found no issues.
-    ``skipped`` marks a degrade-open (non-rag stack, no main.py, no runtime, or
-    missing third-party deps): a skipped verdict is ``ok=False`` yet produces NO
-    gaps, so it can never false-flag a build. Advisory only — the runner never
-    flips the verdict from this.
-    """
-
-    skipped: bool = False
-    issues: list[str] = field(default_factory=list)
-    checked: dict[str, Any] = field(default_factory=dict)
-    reason: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return (not self.skipped) and (not self.issues)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "skipped": self.skipped,
-            "issues": list(self.issues),
-            "checked": dict(self.checked),
-            "reason": self.reason,
-            "gaps": self.gaps(),
-        }
-
-    def gaps(self) -> list[str]:
-        """Actionable repair strings for the improve loop. Empty when the verdict
-        is ok or a soft-skip (a could-not-run gate must never false-flag). The
-        issues are authored to be directly actionable, so they ARE the gaps."""
-        if self.skipped or self.ok:
-            return []
-        return list(self.issues)
+RagVerdict = GateVerdict
 
 
 class _PipeDrain:

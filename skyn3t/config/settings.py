@@ -306,6 +306,13 @@ class Settings(BaseSettings):
     # manifest.extra["workflow_check"], fed to ONE snapshot/re-proof/rollback
     # repair; NEVER flips the verdict. Soft-skips when deps aren't importable.
     workflow_check_enabled: bool = True
+    # Deterministic CLI gate (python_cli family, wave-2 §3.6 tier): drive the
+    # delivered main.py's command surface with bounded subprocess calls —
+    # --help must work, every advertised subcommand's --help must work, and
+    # (on subcommand CLIs) invalid input must be rejected with a nonzero exit
+    # + stderr. ADVISORY like its siblings: recorded to
+    # manifest.extra["cli_check"], one repair, never flips the verdict.
+    cli_check_enabled: bool = True
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

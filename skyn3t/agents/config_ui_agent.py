@@ -23,6 +23,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from skyn3t.agents._common import confined_path
 from skyn3t.agents.config_detector import detect_from_brief, detect_from_code
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
@@ -255,7 +256,9 @@ def generate_config_ui(project_dir: str | Path, stack: str, spec: ConfigSpec,
     written: list[str] = []
 
     def write(rel: str, content: str) -> None:
-        p = root / rel
+        p = confined_path(root, rel)
+        if p is None:  # symlinked subdir pointing outside the project tree
+            return
         if p.exists() and not overwrite:
             return
         try:

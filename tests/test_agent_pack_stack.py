@@ -167,8 +167,12 @@ def test_pack_is_not_a_web_ui_or_game_stack():
     assert "agent_pack" not in _runner._WEB_STACKS  # no HTTP server → no liveness
     assert "agent_pack" not in _runner._UI_WEB_STACKS
     assert "agent_pack" not in _runner._GAME_STACKS
+    # The ONLY group membership is "content" — a CLASSIFICATION consumed by the
+    # reviewer's substance/manifest signals (a pack's product is markdown +
+    # catalog.json), never a gate group. No end-of-build gate applies.
     groups = [n for n, g in stacks.GROUPS.items() if "agent_pack" in g]
-    assert groups == [], f"a roster product belongs to no gate group: {groups}"
+    assert groups == ["content"], groups
+    assert not any(spec.name for spec in stacks.GATES if "agent_pack" in spec.stacks)
 
 
 # ---- 7. reconciliation across vocabularies ---------------------------------

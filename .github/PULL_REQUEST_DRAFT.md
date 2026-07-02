@@ -5,8 +5,8 @@
 > invisible to the active `gh` login); ship with:
 > `git push -u origin worktree-rag-stack:feat/rag-stack && gh pr create --draft -F .github/PULL_REQUEST_DRAFT.md`
 
-Thirteen commits, three complete workstreams, every commit verified by the full
-suite (1857 → 1913 tests, all green throughout).
+Sixteen commits, four complete workstreams, every commit verified by the full
+suite (1857 → 1930+ tests, all green throughout).
 
 ## 1. The `rag` stack — wave-2 §3.1, demand #1 (chat with your documents)
 
@@ -51,6 +51,19 @@ suite (1857 → 1913 tests, all green throughout).
   rejection and ledger growth. Reuses `rag_check`'s hardened plumbing by
   import (shared-module extraction deferred until a third HTTP gate).
 - **Acceptance seal** mirroring rag's; `mcp` also gained its missing seal.
+
+## 2b. The `agent_pack` stack — wave-2 §3.8 (agent team packs)
+
+- A persona ROSTER product (markdown agents + catalog.json + pure
+  lint/originality/convert tooling, zero runtime deps) with the most
+  deterministic proof of all: a lint gate (structure + substance + catalog
+  consistency), pairwise shingle-originality (re-skins fail), and a
+  catalog-driven claude-code convert. Pack-vs-workflow keyword split pinned in
+  both directions. Its acceptance seal CAUGHT a real composition bug: the
+  reviewer heuristic scored only code suffixes + package.json-style manifests,
+  no_go-ing a perfect pack at 46 — fixed with a registry-level
+  `CONTENT_STACKS` group the reviewer consults (and the structural rescore now
+  threads the stack through). A fifth vocabulary site, found by sealing.
 
 ## 3. Learning loop — capture, dedupe, seal ("make it learn better")
 

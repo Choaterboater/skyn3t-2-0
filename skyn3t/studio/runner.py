@@ -998,11 +998,15 @@ class StudioRunner:
         except Exception:  # noqa: BLE001
             return False
 
-    def _rescore_delivered(self, project_dir: str) -> tuple[str, float, list[str]]:
+    def _rescore_delivered(
+        self, project_dir: str, stack: str = ""
+    ) -> tuple[str, float, list[str]]:
         """Run the reviewer heuristic against the delivered tree (post-fix).
 
         Returns (verdict, score, gaps). Pure/offline — works even when no
-        reviewer agent is registered. Never raises.
+        reviewer agent is registered. Never raises. ``stack`` matters: the
+        heuristic scores content stacks (agent packs) by their content shape —
+        omitting it no_go'd a perfect pack on code-suffix counting.
         """
         from pathlib import Path
 
@@ -1011,7 +1015,8 @@ class StudioRunner:
             from skyn3t.agents.reviewer import GO_THRESHOLD, heuristic_score
 
             root = Path(project_dir)
-            score, gaps = heuristic_score(root, {"project_dir": project_dir})
+            score, gaps = heuristic_score(
+                root, {"project_dir": project_dir, "stack": stack})
             no_source = vc.non_empty_source_count(root) == 0
             verdict = "go" if (score >= GO_THRESHOLD and not no_source) else "no_go"
             return verdict, float(score), list(gaps)
@@ -2804,7 +2809,8 @@ class StudioRunner:
             # verdict. Previously `verdict = re_verdict` discarded the only
             # brief-aware signal, so a hollow build (e.g. a Hello-world CLI for a
             # "website" brief) ratcheted up to a structural "go".
-            re_verdict, re_score, re_gaps = self._rescore_delivered(project_dir)
+            re_verdict, re_score, re_gaps = self._rescore_delivered(
+                project_dir, plan.stack)
             manifest.extra["rescore"] = {"verdict": re_verdict, "score": re_score, "gaps": re_gaps}
             if reviewer_ran:
                 # Honour the brief-aware verdict. AND-combine: a "go" needs BOTH

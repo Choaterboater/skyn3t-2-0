@@ -146,6 +146,23 @@ def _implies_3d(brief: str) -> bool:
     return any(k in low for k in _THREEJS_KEYWORDS)
 
 
+# Market-data API variant of the fastapi stack (wave-2 §3.9): a data-service
+# brief gets the vendor-registry scaffold (canned fixtures + typed NO_DATA
+# errors) instead of the bare hello-API. Phrases only — bare "data"/"api"/
+# "ticker" would steal ordinary briefs ("sticker shop", "database api").
+_MARKET_DATA_KEYWORDS = (
+    "stock api", "stock price", "stock prices", "stock data",
+    "price feed", "market data", "ticker api", "share prices",
+    "financial data api", "quotes api",
+)
+
+
+def _implies_market_data(brief: str) -> bool:
+    """True when the brief asks for a market/price/quote data service."""
+    low = (brief or "").lower()
+    return any(k in low for k in _MARKET_DATA_KEYWORDS)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -1848,6 +1865,218 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
+    """The market-data variant of the fastapi scaffold (wave-2 §3.9): a data
+    API with a VENDOR SEAM (``DATA_VENDOR`` env, default ``canned`` — fixtures,
+    zero keys, fully deterministic) and TYPED error envelopes (404 ``NO_DATA``
+    for unknown symbols, 422 for invalid params). The pure vendor/indicator
+    logic lives in ``vendors.py`` (no web framework), the sim-core split."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "vendors.py": (
+            '"""Pure vendor registry + indicator math. Stdlib only, no web framework.\n\n'
+            "The CANNED vendor ships deterministic fixtures so every endpoint works\n"
+            "with ZERO keys (and the proof story stays offline). Add a real vendor by\n"
+            "implementing the same three methods and registering it in VENDORS; keys\n"
+            "stay OPTIONAL env config — a missing key must select canned, not crash.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import os\n\n\n"
+            "class NoData(Exception):\n"
+            '    """Raised when a vendor has no data for a symbol (-> 404 NO_DATA)."""\n\n'
+            "    def __init__(self, symbol: str) -> None:\n"
+            "        super().__init__(f\"no data for symbol '{symbol}'\")\n"
+            "        self.symbol = symbol\n\n\n"
+            "CANNED_QUOTES: dict[str, float] = {\n"
+            '    "AAPL": 187.32, "MSFT": 411.65, "NVDA": 118.11, "DEMO": 100.0,\n'
+            "}\n"
+            "CANNED_SERIES: dict[str, list[float]] = {\n"
+            '    "AAPL": [180.1, 182.4, 181.9, 184.2, 186.0, 185.5, 187.3],\n'
+            '    "MSFT": [402.0, 405.3, 404.1, 407.8, 409.2, 410.6, 411.7],\n'
+            '    "NVDA": [110.2, 112.8, 111.5, 114.9, 116.3, 117.0, 118.1],\n'
+            '    "DEMO": [96.0, 97.5, 98.2, 99.0, 99.6, 99.9, 100.0],\n'
+            "}\n"
+            "CANNED_NEWS: dict[str, list[str]] = {\n"
+            '    "AAPL": ["AAPL ships a new device", "Analysts revise AAPL targets"],\n'
+            '    "MSFT": ["MSFT expands cloud regions", "MSFT earnings beat estimates"],\n'
+            '    "NVDA": ["NVDA unveils next-gen chips", "Data-center demand lifts NVDA"],\n'
+            '    "DEMO": ["DEMO fixture headline one", "DEMO fixture headline two"],\n'
+            "}\n\n\n"
+            "def sma(series: list[float], window: int) -> list[float]:\n"
+            '    """Simple moving average; [] when the window exceeds the series."""\n'
+            "    if window < 1 or window > len(series):\n"
+            "        return []\n"
+            "    return [\n"
+            "        round(sum(series[i:i + window]) / window, 4)\n"
+            "        for i in range(len(series) - window + 1)\n"
+            "    ]\n\n\n"
+            "class CannedVendor:\n"
+            '    """Deterministic fixtures — the default vendor and the proof seam."""\n\n'
+            '    name = "canned"\n\n'
+            "    def get_quote(self, symbol: str) -> dict:\n"
+            "        sym = symbol.upper()\n"
+            "        if sym not in CANNED_QUOTES:\n"
+            "            raise NoData(sym)\n"
+            '        return {"symbol": sym, "price": CANNED_QUOTES[sym],\n'
+            '                "currency": "USD", "as_of": "canned"}\n\n'
+            "    def get_series(self, symbol: str) -> list[float]:\n"
+            "        sym = symbol.upper()\n"
+            "        if sym not in CANNED_SERIES:\n"
+            "            raise NoData(sym)\n"
+            "        return list(CANNED_SERIES[sym])\n\n"
+            "    def get_news(self, symbol: str) -> list[str]:\n"
+            "        sym = symbol.upper()\n"
+            "        if sym not in CANNED_NEWS:\n"
+            "            raise NoData(sym)\n"
+            "        return list(CANNED_NEWS[sym])\n\n\n"
+            "VENDORS = {\"canned\": CannedVendor}\n\n\n"
+            "def select_vendor() -> CannedVendor:\n"
+            '    """The vendor named by DATA_VENDOR (default canned). Unknown names\n'
+            "    fall back to canned — a misconfigured vendor must never crash the\n"
+            "    service.\"\"\"\n"
+            '    name = os.environ.get("DATA_VENDOR", "canned").strip().lower()\n'
+            "    return VENDORS.get(name, CannedVendor)()\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — a market-data API (FastAPI + vendor seam).\n\n"
+            "Routes: GET /stock/{symbol}, GET /indicators?symbol=&window=,\n"
+            "GET /news?symbol=, GET /health. Data comes from the vendor selected by\n"
+            "the DATA_VENDOR env var (default: canned fixtures — zero keys needed).\n"
+            "Unknown symbols yield a TYPED 404 {'error': {'type': 'NO_DATA', ...}};\n"
+            "invalid params yield 422 via validation — never a bare 500.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from fastapi import FastAPI, Query\n"
+            "from fastapi.responses import JSONResponse\n\n"
+            "import vendors\n\n"
+            f'app = FastAPI(title="{_json_escape(title)}")\n'
+            "VENDOR = vendors.select_vendor()\n\n\n"
+            "def _no_data(symbol: str) -> JSONResponse:\n"
+            "    return JSONResponse(\n"
+            "        status_code=404,\n"
+            '        content={"error": {"type": "NO_DATA", "symbol": symbol.upper()}},\n'
+            "    )\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "vendor": VENDOR.name}\n\n\n'
+            '@app.get("/stock/{symbol}")\n'
+            "def stock(symbol: str):\n"
+            "    try:\n"
+            "        return VENDOR.get_quote(symbol)\n"
+            "    except vendors.NoData:\n"
+            "        return _no_data(symbol)\n\n\n"
+            '@app.get("/indicators")\n'
+            "def indicators(symbol: str = Query(min_length=1), window: int = Query(default=3, ge=1)):\n"
+            "    try:\n"
+            "        series = VENDOR.get_series(symbol)\n"
+            "    except vendors.NoData:\n"
+            "        return _no_data(symbol)\n"
+            "    return {\n"
+            '        "symbol": symbol.upper(), "indicator": "sma", "window": window,\n'
+            '        "values": vendors.sma(series, window),\n'
+            "    }\n\n\n"
+            '@app.get("/news")\n'
+            "def news(symbol: str = Query(min_length=1)):\n"
+            "    try:\n"
+            '        return {"symbol": symbol.upper(), "items": VENDOR.get_news(symbol)}\n'
+            "    except vendors.NoData:\n"
+            "        return _no_data(symbol)\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    import os\n\n"
+            "    import uvicorn\n\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_market_api.py": (
+            '"""The API\'s own deterministic proof against the canned vendor."""\n'
+            "from fastapi.testclient import TestClient\n\n"
+            "import vendors\n"
+            "from main import app\n\n"
+            "client = TestClient(app)\n\n\n"
+            "def test_health_names_the_vendor():\n"
+            '    resp = client.get("/health")\n'
+            "    assert resp.status_code == 200\n"
+            '    assert resp.json()["vendor"] == "canned"\n\n\n'
+            "def test_stock_quote_matches_fixture():\n"
+            '    resp = client.get("/stock/AAPL")\n'
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["price"] == vendors.CANNED_QUOTES["AAPL"]\n'
+            '    assert body["currency"] == "USD"\n\n\n'
+            "def test_unknown_symbol_is_typed_no_data():\n"
+            '    resp = client.get("/stock/ZZZZ")\n'
+            "    assert resp.status_code == 404\n"
+            '    assert resp.json()["error"]["type"] == "NO_DATA"\n\n\n'
+            "def test_indicators_sma_values():\n"
+            '    resp = client.get("/indicators", params={"symbol": "DEMO", "window": 3})\n'
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["values"] == vendors.sma(vendors.CANNED_SERIES["DEMO"], 3)\n'
+            '    assert body["values"], "a 3-window over 7 points must yield values"\n\n\n'
+            "def test_invalid_window_is_422():\n"
+            '    resp = client.get("/indicators", params={"symbol": "DEMO", "window": 0})\n'
+            "    assert resp.status_code == 422\n\n\n"
+            "def test_news_returns_fixture_items():\n"
+            '    resp = client.get("/news", params={"symbol": "MSFT"})\n'
+            "    assert resp.status_code == 200\n"
+            '    assert resp.json()["items"]\n\n\n'
+            "def test_sma_is_pure_and_bounded():\n"
+            "    assert vendors.sma([1.0, 2.0, 3.0], 2) == [1.5, 2.5]\n"
+            "    assert vendors.sma([1.0], 5) == []\n"
+        ),
+        "requirements.txt": (
+            f"# Runtime + test dependencies for {title}.\n"
+            "fastapi>=0.110        # web framework\n"
+            "uvicorn[standard]>=0.27  # ASGI server (run with `python main.py`)\n"
+            "httpx>=0.27           # used by fastapi.testclient for the test suite\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="FastAPI market-data API (vendor seam + canned fixtures)",
+            install=(
+                "Requires Python 3.10+. Install dependencies into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (canned fixtures by default — zero keys needed):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then query it:\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/stock/AAPL\n"
+                "curl -s 'localhost:8000/indicators?symbol=AAPL&window=3'\n"
+                "curl -s 'localhost:8000/news?symbol=AAPL'\n"
+                "```\n\n"
+                "Unknown symbols return a typed 404:\n"
+                "`{\"error\": {\"type\": \"NO_DATA\", \"symbol\": \"ZZZZ\"}}`.\n\n"
+                "To add a real vendor, implement the three-method interface in\n"
+                "`vendors.py`, register it in `VENDORS`, and select it with\n"
+                "`DATA_VENDOR=<name>` — vendor keys stay optional env config."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — /stock, /indicators, /news, /health"),
+                ("vendors.py", "Pure vendor registry + fixtures + indicator math"),
+                ("test_market_api.py", "Deterministic proof against the canned vendor"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
+            ],
+            features=[
+                "Quote, indicator (SMA), and news endpoints with canned fixtures",
+                "Vendor seam via DATA_VENDOR env — real vendors plug in, keys optional",
+                "Typed error envelopes: 404 NO_DATA, 422 validation — never a bare 500",
+                "Pure indicator math in vendors.py — testable without a server",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_market_api.py\n```"
+            ),
+        ),
+    }
+
+
 def _mcp_server_name(app_name: str) -> str:
     """A kebab identifier for the MCP server (clients show this name)."""
     ident = _re.sub(r"[^a-z0-9-]+", "-", app_name.strip().lower()).strip("-")
@@ -3270,6 +3499,10 @@ def scaffold_for(
             return _react_vite_threejs(safe_name, brief)
         if stack == "static_html":
             return _static_threejs(safe_name, brief)
+    # Market-data variant (wave-2 §3.9): a data-service brief on the fastapi
+    # stack gets the vendor-seam scaffold instead of the bare hello-API.
+    if stack == "fastapi" and _implies_market_data(brief):
+        return _fastapi_market_data(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

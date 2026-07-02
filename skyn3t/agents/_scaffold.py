@@ -2141,10 +2141,11 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
         ),
         "main.py": (
             '"""' + doc_title + " — a RAG (chat with your documents) FastAPI app.\n\n"
-            "Routes: POST /ingest (add a document), GET /query (retrieve chunks),\n"
-            "POST /chat (answer grounded in retrieved context), GET /health,\n"
-            "GET /v1/stats. Retrieval logic lives in ``rag_core.py`` (pure, no web\n"
-            "framework); this module is the thin HTTP layer.\n\n"
+            "Routes: GET / (a built-in browser chat page), POST /ingest (add a\n"
+            "document), GET /query (retrieve chunks), POST /chat (answer grounded\n"
+            "in retrieved context), GET /health, GET /v1/stats. Retrieval logic\n"
+            "lives in ``rag_core.py`` (pure, no web framework); this module is the\n"
+            "thin HTTP layer.\n\n"
             "LLM seam: set OPENAI_BASE_URL (and optionally OPENAI_API_KEY /\n"
             "OPENAI_MODEL) to answer /chat with an OpenAI-compatible LLM over the\n"
             "retrieved context. With no seam configured, /chat still works — it\n"
@@ -2154,6 +2155,7 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             "import os\n"
             "from pathlib import Path\n\n"
             "from fastapi import FastAPI, HTTPException, Query\n"
+            "from fastapi.responses import HTMLResponse\n"
             "from pydantic import BaseModel, Field\n\n"
             "import rag_core\n\n"
             f'app = FastAPI(title="{_mcp_server_name(app_name)}")\n'
@@ -2178,6 +2180,72 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
             "class ChatRequest(BaseModel):\n"
             "    question: str = Field(min_length=1)\n"
             "    k: int = 3\n\n\n"
+            "# A minimal, self-contained chat page (vanilla JS, no external assets, no\n"
+            "# build step) so the app serves something real in a browser at '/'.\n"
+            '_INDEX_HTML = """<!doctype html>\n'
+            '<html lang="en">\n'
+            "<head>\n"
+            '<meta charset="utf-8">\n'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+            f"<title>{_mcp_server_name(app_name)}</title>\n"
+            "<style>\n"
+            "  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 44rem; padding: 0 1rem; color: #1a1a2e; }\n"
+            "  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.6rem; }\n"
+            "  textarea, input[type=text] { width: 100%; box-sizing: border-box; padding: .5rem; border: 1px solid #bbb; border-radius: 6px; font: inherit; }\n"
+            "  button { margin-top: .4rem; padding: .45rem 1rem; border: 0; border-radius: 6px; background: #3b5bdb; color: #fff; font: inherit; cursor: pointer; }\n"
+            "  .answer { background: #f1f3f5; border-radius: 8px; padding: .8rem; margin: .8rem 0; white-space: pre-wrap; }\n"
+            "  .src { color: #666; font-size: .85rem; margin-top: .4rem; }\n"
+            "  #stats { color: #666; font-size: .85rem; margin-top: 1.2rem; }\n"
+            "</style>\n"
+            "</head>\n"
+            "<body>\n"
+            f"<h1>{_mcp_server_name(app_name)}</h1>\n"
+            "<p>Ask a question about the ingested documents, or add your own below.</p>\n"
+            '<input id="q" type="text" placeholder="Ask your documents anything...">\n'
+            '<button onclick="ask()">Ask</button>\n'
+            '<div id="answers"></div>\n'
+            "<h2>Add a document</h2>\n"
+            '<textarea id="doc" rows="4" placeholder="Paste text to ingest..."></textarea>\n'
+            '<button onclick="ingest()">Ingest</button>\n'
+            '<div id="stats"></div>\n'
+            "<script>\n"
+            'function esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }\n'
+            "function refreshStats() {\n"
+            '  fetch("/v1/stats").then(function (r) { return r.json(); }).then(function (s) {\n'
+            '    document.getElementById("stats").textContent =\n'
+            '      s.documents + " document(s), " + s.chunks + " chunk(s) indexed";\n'
+            "  });\n"
+            "}\n"
+            "function ask() {\n"
+            '  var q = document.getElementById("q").value.trim();\n'
+            "  if (!q) return;\n"
+            '  fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" },\n'
+            "                   body: JSON.stringify({ question: q }) })\n"
+            "    .then(function (r) { return r.json(); })\n"
+            "    .then(function (data) {\n"
+            "      var srcs = (data.sources || []).map(function (s) { return s.source; });\n"
+            '      var html = "<div class=answer>" + esc(data.answer || "(no answer)") +\n'
+            '        (srcs.length ? "<div class=src>sources: " + esc(srcs.join(", ")) + "</div>" : "") + "</div>";\n'
+            '      document.getElementById("answers").insertAdjacentHTML("afterbegin", html);\n'
+            "    });\n"
+            "}\n"
+            "function ingest() {\n"
+            '  var text = document.getElementById("doc").value.trim();\n'
+            "  if (!text) return;\n"
+            '  fetch("/ingest", { method: "POST", headers: { "Content-Type": "application/json" },\n'
+            '                     body: JSON.stringify({ text: text, source: "browser" }) })\n'
+            '    .then(function () { document.getElementById("doc").value = ""; refreshStats(); });\n'
+            "}\n"
+            'document.getElementById("q").addEventListener("keydown", function (e) { if (e.key === "Enter") ask(); });\n'
+            "refreshStats();\n"
+            "</script>\n"
+            "</body>\n"
+            "</html>\n"
+            '"""\n\n\n'
+            '@app.get("/", response_class=HTMLResponse)\n'
+            "def index() -> str:\n"
+            '    """The built-in chat page — the app is usable from a browser as-is."""\n'
+            "    return _INDEX_HTML\n\n\n"
             '@app.get("/health")\n'
             "def health() -> dict:\n"
             '    return {"status": "ok", "app": "rag"}\n\n\n'
@@ -2347,6 +2415,7 @@ def _rag(app_name: str, brief: str) -> dict[str, str]:
                 ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
             ],
             features=[
+                "Built-in browser chat page at / — usable immediately, no build step",
                 "Ingest any text via POST /ingest — chunked + indexed in memory",
                 "Semantic-ish retrieval: rarity-weighted token overlap, deterministic ranking",
                 "Grounded /chat answers with sources; extractive fallback needs no API key",

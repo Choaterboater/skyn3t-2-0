@@ -175,6 +175,17 @@ def _hit(url: str, method: str) -> int:
         return 0
 
 
+def _wired(status: int) -> bool:
+    """A route counts as ALIVE when the server ROUTED the request: 2xx/3xx, or
+    405/422 — the framework matched the path but our read-only GET probe can't
+    satisfy a POST-only endpoint (405) or required params (422). Modern
+    frameworks (FastAPI, Express) answer those instead of "GET routing", so the
+    old 200–399 test falsely marked every API app's POST/param routes dead and
+    tanked its health score. 404 = unrouted, 5xx = handler crashed, 0 =
+    unreachable — still dead."""
+    return (200 <= status < 400) or status in (405, 422)
+
+
 async def check_liveness(base_url: str, routes: list[Route], *,
                          vision_fn=None, screenshot_dir: str | None = None) -> LivenessReport:
     """Hit every route over HTTP (thread-offloaded). ok = 200<=status<400. When a
@@ -184,7 +195,7 @@ async def check_liveness(base_url: str, routes: list[Route], *,
     results: list[RouteResult] = []
     for route in routes:
         status = await asyncio.to_thread(_hit, base + route.path, route.method)
-        ok = 200 <= status < 400
+        ok = _wired(status)
         visual = None
         if ok and route.kind == "page" and vision_fn is not None and screenshot_dir:
             visual = await _judge_page(base + route.path, route.path, vision_fn, screenshot_dir)

@@ -1743,6 +1743,13 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # files only, never edits code (do-no-harm).
     from skyn3t.studio.asset_reconcile import reconcile_asset_refs
     assets = reconcile_asset_refs(project_dir, stack=stack)
+    # Game stacks: the complement of asset_reconcile — guarantee every texture key
+    # a render call USES is actually LOADED, synthesizing a placeholder + injecting
+    # the loader for any invented/never-loaded key. This is the deterministic,
+    # model-INDEPENDENT fix for the "sprites load but render as green boxes" bug
+    # (happens on frontier models too), instead of only advising the fix-loop.
+    from skyn3t.studio.texture_reconcile import reconcile_texture_keys
+    textures = reconcile_texture_keys(project_dir, stack=stack)
     return {
         "npm_deps_added": added,
         "next_config_peers": peers,
@@ -1754,6 +1761,8 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "tauri_cargo_fixed": tauri_cargo,
         "assets_reconciled": assets.get("images_created", []),
         "assets_missing_audio": assets.get("missing_audio", []),
+        "textures_loaded_added": textures.get("textures_loaded_added", []),
+        "texture_placeholders_created": textures.get("placeholders_created", []),
     }
 
 

@@ -89,6 +89,46 @@ body {
   .field:focus {
     @apply border-ember/60 shadow-ember;
   }
+
+  /* The Verify Ladder's molten rail — the signature. A build climbs left→right
+     through the gate stations seated on it. Threads the node centers at a fixed
+     4rem offset (label block h-9 + gap-2 + half of the h-10 node), so it stays
+     aligned at every breakpoint. Cold at rest, molten + a traveling spark while
+     a build forges, ember→plasma once the climb is sealed. */
+  .forge-rail {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 4rem;
+    height: 2px;
+    transform: translateY(-50%);
+    border-radius: 9999px;
+    overflow: hidden;
+    background: linear-gradient(90deg, #c2410c, #ff6a3d 45%, #3dd9c4);
+  }
+  .forge-rail.is-cold {
+    background: linear-gradient(90deg, #222c3c, #2b3648);
+    opacity: 0.55;
+  }
+  .forge-rail.is-proven {
+    background: linear-gradient(90deg, #ff6a3d, #3dd9c4 70%);
+  }
+  /* the molten spark that sweeps the rail while a build is live */
+  .forge-rail::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 35%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+    transform: translateX(-140%);
+    opacity: 0;
+  }
+  .forge-rail.is-live::after {
+    opacity: 1;
+    /* @apply (not raw `animation: sweep`): JIT only emits @keyframes for
+       utilities it can see, and this file isn't scanned content. */
+    @apply animate-sweep;
+  }
 }
 
 @layer utilities {

@@ -1,7 +1,20 @@
 import React, { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
-import { PageHeader, Panel, PanelHead, Stat, Empty } from "../components/ui.jsx";
+import { PageHeader, Panel, PanelHead, Empty } from "../components/ui.jsx";
+import GateLadder from "../components/GateLadder.jsx";
+
+// A quiet telemetry reading — demoted from the old 4-up hero grid so the boldness
+// lives in the Verify Ladder above. Label + mono number, inline.
+function Telem({ label, value, tone = "bone" }) {
+  const cls = tone === "ember" ? "heat-hot" : tone === "plasma" ? "heat-cool" : "text-bone";
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="eyebrow">{label}</span>
+      <span className={`font-mono text-lg font-semibold tabular-nums ${cls}`}>{value}</span>
+    </div>
+  );
+}
 
 // Derive which agents are "hot" (mid-task) from the live event stream.
 function useHeat(events) {
@@ -69,7 +82,7 @@ export default function Overview({ stream }) {
       <PageHeader
         eyebrow="Foundry · Mission Control"
         title="Overview"
-        sub="A swarm of agents forging briefs into running software. Heat is work."
+        sub="An autonomous factory that builds any kind of app from a brief — and proves each one before it ships."
         actions={
           <span className="badge border-hairline text-ash">
             backend · <span className="ml-1 text-ember">{d.backend || d.llm_backend || "stub"}</span>
@@ -83,12 +96,18 @@ export default function Overview({ stream }) {
         </Panel>
       ) : null}
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-        <Stat label="Agents" value={d.agents ?? d.agent_count ?? agents.length} />
-        <Stat label="Forging now" value={forging} tone={forging ? "ember" : "plasma"} hint={forging ? "agents hot" : "all idle"} />
-        <Stat label="Active builds" value={d.active_builds ?? 0} tone={d.active_builds ? "ember" : "bone"} />
-        <Stat label="Events" value={events.length} hint="this session" />
-      </div>
+      {/* the signature: every build climbs the verify ladder before it ships */}
+      <GateLadder stream={stream} />
+
+      {/* demoted telemetry — quiet strip, not the hero */}
+      <Panel className="mb-6">
+        <div className="flex flex-wrap items-center gap-x-10 gap-y-3 px-4 py-3">
+          <Telem label="Agents" value={d.agents ?? d.agent_count ?? agents.length} />
+          <Telem label="Forging" value={forging} tone={forging ? "ember" : "plasma"} />
+          <Telem label="Active builds" value={d.active_builds ?? 0} tone={d.active_builds ? "ember" : "bone"} />
+          <Telem label="Events" value={events.length} />
+        </div>
+      </Panel>
 
       <Panel className="mb-6 overflow-hidden">
         <PanelHead

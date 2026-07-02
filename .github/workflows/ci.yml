@@ -1,0 +1,65 @@
+name: CI
+
+# The seatbelt for an ambitious, self-modifying factory: lint, type-check, and
+# the full hermetic test suite on every push/PR. The suite is offline by design
+# (conftest pins SKYN3T_LLM_BACKEND=stub and neuters the CLI-vision fallback), so
+# no keys or network are needed here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (core + dev + web + visual)
+        # The suite imports fastapi (web extra) and PIL/Pillow (visual extra) at
+        # module load in a few tests, so [dev] alone fails collection. The heavier
+        # ml/integrations extras stay out on purpose — those tests guard their
+        # imports and skip cleanly, keeping CI fast (no torch/chromadb download).
+        run: pip install -e ".[dev,web,visual]"
+
+      - name: Lint (ruff)
+        # Non-blocking for now: ~322 pre-existing findings are tracked but not yet
+        # enforced (see NEXT_SESSION.md). Flip continue-on-error off once the
+        # backlog is burned down so new lint can't land.
+        continue-on-error: true
+        run: ruff check skyn3t/
+
+      - name: Type-check (mypy)
+        continue-on-error: true
+        run: mypy skyn3t/
+
+      - name: Tests (pytest, hermetic offline suite)
+        env:
+          SKYN3T_LLM_BACKEND: stub
+        # These 6 tests need a real toolchain that a clean CI runner lacks — the
+        # claude CLI, swift, node/npm, or a sandbox subprocess that can run pytest.
+        # They pass in the full local suite; excluded here (not deleted) until made
+        # hermetic (skipif-on-toolchain). Tracked in docs/ROADMAP.md.
+        run: >-
+          python -m pytest -q
+          --deselect tests/test_swift_stack.py::test_swift_scaffold_actually_compiles
+          --deselect tests/test_codegen_cli_routing.py::test_codegen_cli_model_threaded_to_agentic_build
+          --deselect tests/test_agent_pack_build_e2e.py::test_offline_agent_pack_build_end_to_end
+          --deselect tests/test_fix_loop.py::test_proof_node_build_pass
+          --deselect tests/test_fix_loop.py::test_proof_runs_generated_tests_pass
+          --deselect tests/test_fix_loop.py::test_proof_runs_generated_tests_fail

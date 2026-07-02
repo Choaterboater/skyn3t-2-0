@@ -23,10 +23,31 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
 
 _SYSTEM = (
-    "You are a senior engineer fixing code. Given a file and a list of issues, "
-    "rewrite the file to resolve them. Output ONLY the corrected file contents, "
-    "no commentary, no markdown fences."
+    "You are a senior engineer improving code. Given a file and a list of issues "
+    "or goals, rewrite the file so every one of them is addressed. A goal may be "
+    "a defect to fix OR new functionality to add — implementing it is mandatory "
+    "either way; returning the file unchanged does not address a goal. "
+    "If (and ONLY if) everything asked for is already fully implemented in the "
+    "file, output exactly ALREADY_SATISFIED and nothing else. Otherwise output "
+    "ONLY the complete corrected file contents, no commentary, no markdown fences."
 )
+
+# The one-token honest no-op: the model's way to say "this goal is already done",
+# distinguishable from an echo (model dodged the work) or a truncated rewrite.
+_ALREADY_SATISFIED = "ALREADY_SATISFIED"
+
+
+def _output_budget(original: str) -> int:
+    """Output-token budget for a FULL-FILE rewrite of `original`.
+
+    The flat legacy 4096 silently capped improves once a file grew past ~3.5k
+    tokens: an honest rewrite (echo + addition) truncated mid-stream, failed
+    the balance check, and was discarded while the run still reported success
+    (8 consecutive silent no-ops on the Apple-SEO homepage, 2026-07-02).
+    ~4 chars/token, so len//3 buys ~33% headroom over a pure echo, plus 2048
+    for the addition itself; the 16384 ceiling matches the agentic codegen
+    loop's proven cap."""
+    return min(16384, max(4096, len(original) // 3 + 2048))
 
 _CREATE_SYSTEM = (
     "You are a senior engineer completing a codebase. A file is imported by "
@@ -165,13 +186,20 @@ class CodeImproverAgent(BaseAgent):
                 p.get("repo_map"), brief, worktree)
 
         improved: list[str] = []
+        # rel -> why nothing was written ("already_satisfied" | "unchanged" |
+        # "invalid_rewrite" | "entrypoint_regression"). Rides up through the
+        # TaskResult so ImproveEngine/the UI can tell the user the truth
+        # instead of a zero-change run reading as a green success.
+        skipped: dict[str, str] = {}
         for rel in target_files:
             target = (worktree / rel).resolve()
             if not self._confined(worktree, target):
                 continue
+            skip_reason = ""
             if target.is_file():
                 original = target.read_text(encoding="utf-8")
-                new_content = await self._improve_one(rel, original, brief, gaps, stack)
+                new_content, skip_reason = await self._improve_one(
+                    rel, original, brief, gaps, stack)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -188,15 +216,24 @@ class CodeImproverAgent(BaseAgent):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(new_content, encoding="utf-8")
                     improved.append(rel)
-                # else keep original (broke syntax OR an .html rewrite dropped a
-                # <script src> entrypoint) — never regress a working file.
+                else:
+                    # Keep original (broke syntax OR an .html rewrite dropped a
+                    # <script src> entrypoint) — never regress a working file.
+                    skipped[rel] = "invalid_rewrite" if ok is False else "entrypoint_regression"
+            else:
+                skipped[rel] = skip_reason or "unchanged"
 
         return TaskResult(task_id=task.task_id, success=True,
                           output={"files_improved": len(improved), "files": sorted(improved),
+                                  "skipped": skipped,
                                   "worktree_dir": str(worktree), "backend": self.llm.backend})
 
     async def _improve_one(self, rel: str, original: str, brief: str,
-                           gaps: list[Any], stack: str) -> str:
+                           gaps: list[Any], stack: str) -> tuple[str, str]:
+        """Rewrite one file toward the gaps/goal. Returns (content, skip_reason):
+        content == original with a reason means the file was deliberately left
+        alone (e.g. "already_satisfied") — the caller records the reason instead
+        of silently dropping the write."""
         if self.llm.backend != "stub":
             ext = Path(rel).suffix.lower()
             tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
@@ -205,17 +242,39 @@ class CodeImproverAgent(BaseAgent):
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
-            try:
-                result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
-                                                 file_hint=rel, max_tokens=4096, task_type=self.agent_type)
+            budget = _output_budget(original)
+            # One escalation retry: a rewrite that fails the balance check is
+            # overwhelmingly a truncated stream (the model tried to comply but
+            # ran out of output tokens) — give it double the room once before
+            # giving up, instead of silently discarding the attempt.
+            from skyn3t.agents.validate import validate_source
+            got_real_response = False
+            for attempt_budget in (budget, min(16384, budget * 2)):
+                try:
+                    result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
+                                                     file_hint=rel, max_tokens=attempt_budget,
+                                                     task_type=self.agent_type)
+                except Exception:  # noqa: BLE001 - fall through to deterministic touch-up
+                    break
                 # Degraded-to-stub result must not clobber a working file.
-                if result.backend != "stub":
-                    fixed = extract_code(result.text)
-                    if fixed and fixed.strip():
-                        return fixed
-            except Exception:  # noqa: BLE001 - fall through to deterministic touch-up
-                pass
-        return self._deterministic_fix(rel, original, stack)
+                if result.backend == "stub":
+                    break
+                text = (result.text or "").strip()
+                if _ALREADY_SATISFIED in text and len(text) <= 80:
+                    return original, "already_satisfied"
+                fixed = extract_code(result.text)
+                if fixed and fixed.strip():
+                    ok, _ = validate_source(rel, fixed)
+                    if ok:
+                        return fixed, ""
+                got_real_response = True
+                if attempt_budget >= 16384:
+                    break  # no more room to escalate into
+            if got_real_response:
+                # The model answered but never produced a valid full file even
+                # with escalated room — report it rather than silently no-op.
+                return original, "invalid_rewrite"
+        return self._deterministic_fix(rel, original, stack), ""
 
     async def _create_one(self, rel: str, brief: str, gaps: list[Any], stack: str,
                           worktree: Path) -> str:
@@ -252,8 +311,11 @@ class CodeImproverAgent(BaseAgent):
             f"and the {stack} stack."
         )
         try:
+            # 8192, not 4096: a brand-new file has no original to size a budget
+            # from, and a real page/component regularly needs >4k output tokens
+            # (the same cliff that silently no-op'd large-file improves).
             result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_CREATE_SYSTEM),
-                                             file_hint=rel, max_tokens=4096, task_type=self.agent_type)
+                                             file_hint=rel, max_tokens=8192, task_type=self.agent_type)
             if result.backend != "stub":
                 created = extract_code(result.text)
                 if created and created.strip():

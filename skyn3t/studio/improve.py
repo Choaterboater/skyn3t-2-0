@@ -100,7 +100,7 @@ class ImproveEngine:
 
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "generating"}, cid)
-            files_changed, improver_ok, improver_err = await self._run_improver(
+            files_changed, improver_ok, improver_err, skipped = await self._run_improver(
                 wt.dir, slug, stack, goal, repo_ctx, cid)
 
             # Same deterministic, build-readying repairs the main build pipeline
@@ -173,7 +173,8 @@ class ImproveEngine:
             # relabel a successful deliver as 'failed' (no partial-result lie).
             try:
                 self._record_history(manifest, project_dir, goal, delivered, proof,
-                                     stack, slug, config_summary)
+                                     stack, slug, config_summary,
+                                     files_changed=files_changed)
             except Exception as rec_exc:  # noqa: BLE001
                 _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
 
@@ -181,13 +182,20 @@ class ImproveEngine:
                 "delivered": len(delivered), "proof": proof.to_dict(),
                 "improver_success": improver_ok, "improver_error": improver_err,
             }
+            if skipped:
+                detail["skipped"] = skipped
             # An honest signal for the dashboard: 0 files touched must not read
             # like a quiet success just because proof_run/merge_back didn't
             # error — surface it explicitly so the UI can tell the user their
-            # goal wasn't actually acted on (see code_improver's target-discovery
-            # fallback, which can still legitimately come up empty).
+            # goal wasn't actually acted on. Two distinct cases: the improver
+            # found target files but declined/failed every rewrite (skipped
+            # carries per-file reasons), vs. target discovery itself came up
+            # empty (see code_improver's discovery fallback).
             if not files_changed:
-                detail["no_targets_found"] = True
+                if skipped:
+                    detail["no_files_changed"] = True
+                else:
+                    detail["no_targets_found"] = True
             outcome = ImproveOutcome(
                 project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
                 files_changed=sorted(files_changed), proof_passed=bool(proof.passed),
@@ -206,7 +214,8 @@ class ImproveEngine:
                 cleanup_worktree(wt)
 
     async def _run_improver(self, worktree_dir: str, slug: str, stack: str,
-                            goal: str, repo_ctx: str, cid: str) -> tuple[list[str], bool, str]:
+                            goal: str, repo_ctx: str, cid: str,
+                            ) -> tuple[list[str], bool, str, dict[str, str]]:
         task = TaskRequest(
             type="code_improver",
             payload={"worktree_dir": worktree_dir, "brief": goal, "slug": slug,
@@ -216,9 +225,14 @@ class ImproveEngine:
         )
         result = await self.orchestrator.submit(task)
         ok = bool(result and getattr(result, "success", False))
-        files = list((getattr(result, "output", None) or {}).get("files", [])) if ok else []
+        output = (getattr(result, "output", None) or {}) if ok else {}
+        files = list(output.get("files", []))
+        # rel -> reason the improver declined the file ("already_satisfied",
+        # "unchanged", "invalid_rewrite", ...) — the difference between "your
+        # goal was already done" and "the rewrite failed" for the cockpit.
+        skipped = dict(output.get("skipped", {}) or {})
         err = "" if ok else str(getattr(result, "error", "") or "improver did not succeed")
-        return files, ok, err
+        return files, ok, err, skipped
 
     async def _surface_config(self, project_dir: Path, goal: str, stack: str,
                               slug: str, cid: str) -> dict[str, Any]:
@@ -237,10 +251,18 @@ class ImproveEngine:
     def _record_history(self, manifest: BuildManifest | None, project_dir: Path,
                         goal: str, delivered: list[str], proof: Any,
                         stack: str, slug: str,
-                        config_summary: dict[str, Any] | None = None) -> None:
+                        config_summary: dict[str, Any] | None = None,
+                        files_changed: list[str] | None = None) -> None:
+        from datetime import datetime, timezone
+
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
         hist = man.extra.setdefault("improve_history", [])
+        # `files` is the TOTAL delivered to the project dir (kept for compat);
+        # `files_changed` is the honest signal — it stayed at "files: 261" while
+        # 8 consecutive improves changed nothing, hiding the silent no-op.
         hist.append({"goal": goal, "files": len(delivered),
+                     "files_changed": len(files_changed or []),
+                     "at": datetime.now(timezone.utc).isoformat(),
                      "proof_passed": bool(proof.passed), "score": float(proof.score)})
         if config_summary:
             man.extra["config_spec"] = config_summary.get("config_spec", {})

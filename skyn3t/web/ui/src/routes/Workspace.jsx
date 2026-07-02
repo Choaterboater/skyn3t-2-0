@@ -23,6 +23,19 @@ function eventLine(e) {
       return { glyph: "·", tone: "text-ash", text: `${p.stage || "stage"}…` };
     case "improve.completed": {
       const files = (p.files_changed || []).length;
+      // A zero-change run must never render as a green success: score/proof
+      // describe the UNCHANGED tree, not the goal (8 silent no-ops shipped as
+      // "done · score 100 · go" before this). Say what happened instead.
+      if (files === 0) {
+        const d = p.detail || {};
+        const reasons = Object.values(d.skipped || {});
+        const why = reasons.includes("already_satisfied")
+          ? "the model says this is already implemented"
+          : d.no_targets_found
+            ? "no files matched the goal"
+            : "the model did not produce a usable change — try a more specific goal";
+        return { glyph: "△", tone: "text-ember", text: `finished, but NO files were changed — ${why}` };
+      }
       const ok = p.proof_passed ? "go" : "no_go";
       return {
         glyph: p.proof_passed ? "✔" : "✕",

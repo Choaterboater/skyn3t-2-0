@@ -309,10 +309,13 @@ def _spawn_server(
     }
     # The gate must observe the app's contract against a KNOWN seam state (none,
     # or the local mock), not whatever happens to be exported in this shell —
-    # and it must never let a delivered app make a REAL, paid LLM call mid-proof.
+    # and it must never let a delivered app make a REAL, paid LLM call or a real
+    # delivery mid-proof. (WEBHOOK_URL: the workflow gate reuses this spawn and
+    # needs unconfigured-delivery to be deterministic; harmless for rag apps.)
     for seam in (
         "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
         "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
+        "WEBHOOK_URL",
     ):
         env.pop(seam, None)
     if seam_env:

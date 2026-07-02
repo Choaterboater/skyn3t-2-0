@@ -59,6 +59,11 @@ MCP_STACKS = frozenset({"mcp"})
 # fastapi treatment), and it gets its own deterministic end-of-build gate.
 RAG_STACKS = frozenset({"rag"})
 
+# Agent-workflow app (wave-2 §3.2): a FastAPI multi-step runner. Same shape as
+# rag — in WEB_STACKS (HTTP-served, liveness applies), NOT in UI_WEB_STACKS,
+# with its own deterministic end-of-build gate.
+WORKFLOW_STACKS = frozenset({"workflow"})
+
 GROUPS: dict[str, frozenset[str]] = {
     "game": GAME_STACKS,
     "web": WEB_STACKS,
@@ -66,6 +71,7 @@ GROUPS: dict[str, frozenset[str]] = {
     "ui_web": UI_WEB_STACKS,
     "mcp": MCP_STACKS,
     "rag": RAG_STACKS,
+    "workflow": WORKFLOW_STACKS,
 }
 
 
@@ -105,6 +111,8 @@ GATES: tuple[GateSpec, ...] = (
              "skyn3t.studio.runner:StudioRunner._run_mcp_check"),
     GateSpec("rag_check", RAG_STACKS, "rag_check_enabled",
              "skyn3t.studio.runner:StudioRunner._run_rag_check"),
+    GateSpec("workflow_check", WORKFLOW_STACKS, "workflow_check_enabled",
+             "skyn3t.studio.runner:StudioRunner._run_workflow_check"),
 )
 
 _GATES_BY_NAME = {g.name: g for g in GATES}

@@ -1,5 +1,5 @@
 """Offline tests for the platform package (security/observability/persistence/
-registry/self_healing). No network, no heavy deps required."""
+self_healing). No network, no heavy deps required."""
 
 from __future__ import annotations
 
@@ -211,27 +211,6 @@ def test_recovery_missing_checkpoint(tmp_path):
     mgr._dir = tmp_path / "empty"
     res = RecoveryManager(mgr).restore(event_bus=EventBus())
     assert res.restored is False
-
-
-# ---- registry: connector catalog ----------------------------------------
-def test_catalog_match_brief():
-    from skyn3t.registry.catalog import CATALOG
-
-    plan = CATALOG.wiring_plan("build a Stripe store with Postgres and an API")
-    assert "stripe" in plan["connectors"]
-    assert "postgres" in plan["connectors"]
-    assert "fastapi" in plan["connectors"]
-    assert "STRIPE_API_KEY" in plan["env_vars"]
-    assert any("stripe" in p for p in plan["packages"])
-
-
-def test_catalog_lookup():
-    from skyn3t.registry.catalog import ConnectorCatalog
-
-    cat = ConnectorCatalog()
-    assert cat.get("redis").category == "database"
-    assert "database" in cat.categories()
-    assert cat.match_brief("totally unrelated text") == []
 
 
 # ---- self_healing: budget guard -----------------------------------------

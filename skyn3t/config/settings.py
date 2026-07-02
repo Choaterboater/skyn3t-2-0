@@ -335,7 +335,6 @@ class Settings(BaseSettings):
     sandbox_drop_caps: bool = True
 
     # ---- Learning corpus -------------------------------------------------
-    learnings_dir: Path | None = None
     skills_hub_paths: str = ""
 
     def __init__(self, **kwargs):

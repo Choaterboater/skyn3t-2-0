@@ -7,6 +7,8 @@ from __future__ import annotations
 import base64
 from types import SimpleNamespace
 
+import pytest
+
 from skyn3t.studio.visual_check import (
     _image_data_url,
     _vision_messages,
@@ -14,6 +16,7 @@ from skyn3t.studio.visual_check import (
 )
 
 
+@pytest.mark.real_cli_vision
 def test_make_vision_fn_is_none_without_a_key(monkeypatch):
     # None only when there's NO vision backend at all: no OpenRouter key AND no
     # vision-capable CLI on PATH. (With a CLI present, make_vision_fn returns a

@@ -21,6 +21,7 @@ def test_cli_fn_when_no_key_but_cli_present(monkeypatch):
     assert fn is not None
 
 
+@pytest.mark.real_cli_vision
 def test_none_when_no_key_and_no_cli(monkeypatch):
     monkeypatch.setattr(vc.shutil, "which", lambda p: None)
     fn = vc.make_vision_fn(SimpleNamespace(
@@ -60,6 +61,7 @@ def test_click_vision_falls_back_to_openrouter_when_no_cli(monkeypatch):
     assert fn is not None  # the OpenRouter fn (no CLI on PATH)
 
 
+@pytest.mark.real_cli_vision
 def test_click_vision_none_when_no_key_and_no_cli(monkeypatch):
     monkeypatch.setattr(vc.shutil, "which", lambda p: None)
     fn = vc.make_click_vision_fn(SimpleNamespace(

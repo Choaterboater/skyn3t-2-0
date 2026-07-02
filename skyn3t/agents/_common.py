@@ -29,6 +29,7 @@ KNOWN_STACKS = (
     "swift",
     "mcp",
     "rag",
+    "workflow",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -91,6 +92,16 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "knowledge base", "document q&a", "doc q&a", "semantic search",
     )):
         return "rag"
+    # Agent-workflow app must precede fastapi/react: a workflow brief brushes
+    # "api"/"app"/"service" but is a multi-step runner, not the generic web
+    # scaffold. Bare "workflow" is WHOLE-WORD SINGULAR ("workflows" is a
+    # dashboard noun); bare "automation"/"pipeline"/"scheduled" are not claimed.
+    if re.search(r"\bworkflow\b", text) or any(k in text for k in (
+        "agent workflow", "team of agents", "multi-agent", "multi agent",
+        "agent that", "automation pipeline", "monitor and notify",
+        "scheduled briefing", "daily briefing",
+    )):
+        return "workflow"
     if any(k in text for k in ("fastapi", "uvicorn", "rest api", "http api", "endpoint")):
         return "fastapi"
     if any(k in text for k in ("express", "node server", "node.js server")):
@@ -202,6 +213,14 @@ def _normalize_stack(value: str) -> str:
         "chat_with_documents": "rag",
         "document_qa": "rag",
         "doc_qa": "rag",
+        # Agent-workflow app (multi-step runner, FastAPI + pure engine). A real
+        # builder stack; only explicit workflow/agent signals map here.
+        "workflow": "workflow",
+        "workflow_app": "workflow",
+        "agent_workflow": "workflow",
+        "agent_team": "workflow",
+        "multi_agent": "workflow",
+        "automation": "workflow",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

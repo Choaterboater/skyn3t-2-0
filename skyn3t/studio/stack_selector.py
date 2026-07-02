@@ -26,6 +26,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "swift": "a native macOS SwiftUI desktop app (Swift Package Manager)",
     "mcp": "an MCP server exposing tools to AI assistants (Model Context Protocol, Python stdio)",
     "rag": "a chat-with-your-documents RAG app — ingest docs, semantic /query, grounded /chat (FastAPI, Python)",
+    "workflow": "an agent/automation workflow app — multi-step runner, run ledger, dry-run triggers (FastAPI, Python)",
 }
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.
@@ -123,6 +124,10 @@ def _infer_app_type(low: str, stack: str) -> str:
     # (api_service territory), so the stack-driven classification must win.
     if stack == "rag":
         return "rag_app"
+    # Workflow next, same reason: an "agent that ..." brief contains "api"/
+    # "server"-adjacent words, so the stack-driven classification must win.
+    if stack == "workflow":
+        return "agent_workflow"
     if stack == "phaser" or any(k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")):
         return "game"
     if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):
@@ -151,6 +156,8 @@ def _infer_engine(low: str, stack: str) -> str:
         return "mcp"
     if stack == "rag":
         return "rag"
+    if stack == "workflow":
+        return "workflow"
     if stack == "phaser":
         return "phaser"
     if stack in ("react", "nextjs", "remix", "astro", "static"):

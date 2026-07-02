@@ -25,10 +25,10 @@ Two waves ran in PARALLEL sessions and are now merged on `main`:
 
 **Next up (2026-07-02):** (1) finance/trading agent app type (wave-2 §3.4) —
 the notable remaining full stack; reuses the proven sim-core gate pattern on a
-pure strategy engine + the temporal-integrity gate (item 70). (2) Model
-fallback chain (wave-1 item 2) — `fallback_candidates` was IN FLIGHT
-uncommitted when this handoff was written; check `git status` before starting
-it. (3) Browser extension stack (wave-1 #1, demoted-not-dropped). (4)
+pure strategy engine + the temporal-integrity gate (item 70). (2) ~~Model
+fallback chain~~ DONE (2771555): the full resilience trio landed — call-level
+failover/retry/context-editing, default-on, 31 tests, suite 2007 green. (3)
+Browser extension stack (wave-1 #1, demoted-not-dropped). (4)
 Deep-research + generative-UI + voice-RAG app types (§3.11, deferred tier).
 (5) Godot still held. Two sessions sharing one checkout worked but was hairy —
 prefer worktrees for parallel stack work.

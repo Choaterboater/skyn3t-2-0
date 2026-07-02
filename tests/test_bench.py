@@ -130,6 +130,16 @@ def test_save_and_load_run_roundtrip(tmp_path):
     assert loaded.summary["n"] == 2
 
 
+def test_to_dict_carries_per_stack_breakdown():
+    run = BenchRun(label="r", results=[
+        _stacked("cli1", "python", verdict="go"),
+        _stacked("game1", "phaser", verdict="no_go", score=20),
+    ])
+    d = run.to_dict()
+    assert d["by_stack"]["python"]["go_rate"] == 1.0
+    assert d["by_stack"]["phaser"]["go_rate"] == 0.0
+
+
 # --------------------------------------------------------------------------
 # diff + gate
 # --------------------------------------------------------------------------

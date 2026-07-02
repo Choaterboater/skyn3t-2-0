@@ -105,6 +105,11 @@ class BenchRun:
             "label": self.label,
             "created_at": self.created_at,
             "summary": self.summary,
+            # Per-app-type breakdown rides along with every serialized run so a
+            # ledger/`--json` consumer (and the ratchet's per-stack regression
+            # guard) can see a change that lifts the aggregate while silently
+            # regressing one stack. Empty for an empty run.
+            "by_stack": summarize_by_stack(self.results),
             "results": [r.to_dict() for r in self.results],
         }
 

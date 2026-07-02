@@ -1,0 +1,50 @@
+name: CI
+
+# The seatbelt for an ambitious, self-modifying factory: lint, type-check, and
+# the full hermetic test suite on every push/PR. The suite is offline by design
+# (conftest pins SKYN3T_LLM_BACKEND=stub and neuters the CLI-vision fallback), so
+# no keys or network are needed here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (core + dev)
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        # Non-blocking for now: ~322 pre-existing findings are tracked but not yet
+        # enforced (see NEXT_SESSION.md). Flip continue-on-error off once the
+        # backlog is burned down so new lint can't land.
+        continue-on-error: true
+        run: ruff check skyn3t/
+
+      - name: Type-check (mypy)
+        continue-on-error: true
+        run: mypy skyn3t/
+
+      - name: Tests (pytest, hermetic offline suite)
+        env:
+          SKYN3T_LLM_BACKEND: stub
+        run: python -m pytest -q

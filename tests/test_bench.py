@@ -19,7 +19,14 @@ from skyn3t.studio.bench import (
     run_bench,
     save_run,
     summarize,
+    summarize_by_stack,
 )
+
+
+def _stacked(case_id, stack, verdict="go", score=90.0):
+    return BenchResult(case_id=case_id, brief="b", slug="s", verdict=verdict,
+                       score=score, intent_score=80.0, proof_passed=True,
+                       status="completed", stack=stack, cost_usd=0.05)
 
 
 def _outcome(verdict="go", score=90.0, intent=88.0, proof_passed=True,
@@ -54,6 +61,27 @@ def test_summarize_computes_go_rate_and_means():
     assert s["mean_intent"] == 45.0
     # go-only mean is the shippable-quality signal (excludes the no_go's 40)
     assert s["mean_score_go"] == 80.0
+
+
+def test_summarize_by_stack_isolates_per_app_type_go_rate():
+    # phaser fully failing while python ships — the aggregate would hide it.
+    results = [
+        _stacked("cli1", "python", verdict="go", score=90),
+        _stacked("cli2", "python", verdict="go", score=80),
+        _stacked("game1", "phaser", verdict="no_go", score=30),
+    ]
+    # aggregate go-rate is a rosy 2/3, but the per-stack view exposes the games gap.
+    assert summarize(results)["go_rate"] == round(2 / 3, 4)
+    by_stack = summarize_by_stack(results)
+    assert by_stack["python"]["go_rate"] == 1.0
+    assert by_stack["phaser"]["go_rate"] == 0.0
+    # ordered by descending case count → python (2) before phaser (1).
+    assert list(by_stack) == ["python", "phaser"]
+
+
+def test_summarize_by_stack_groups_empty_stack_as_unknown():
+    by_stack = summarize_by_stack([_stacked("c", "", verdict="go")])
+    assert "unknown" in by_stack and by_stack["unknown"]["n"] == 1
 
 
 def test_run_bench_uses_injected_build_fn_and_orders_results():

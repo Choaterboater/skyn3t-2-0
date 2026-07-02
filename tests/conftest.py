@@ -58,8 +58,14 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     # token, …) otherwise bleeds in and breaks tests that assert on the DEFAULT
     # ("not configured"). Tests get config from explicit kwargs + os.environ only.
     monkeypatch.setitem(settings_mod.Settings.model_config, "env_file", None)
+    # LLM keys included: a shell-exported SKYN3T_OPENROUTER_API_KEY would flip
+    # every test's LLMClient from "stub" to a REAL paid backend (the vision-CLI
+    # cousin of this leak is fenced by _no_cli_vision above). Tests that need a
+    # key set it explicitly via monkeypatch/kwargs.
     for _var in ("SKYN3T_REPLICATE_API_TOKEN", "SKYN3T_REPLICATE_MODEL",
-                 "SKYN3T_GITHUB_TOKEN"):
+                 "SKYN3T_GITHUB_TOKEN",
+                 "SKYN3T_OPENROUTER_API_KEY", "SKYN3T_ANTHROPIC_API_KEY",
+                 "SKYN3T_OPENAI_API_KEY", "SKYN3T_KIMI_API_KEY"):
         monkeypatch.delenv(_var, raising=False)
     settings_mod.get_settings.cache_clear()
     yield

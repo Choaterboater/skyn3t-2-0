@@ -323,6 +323,28 @@ def test_malformed_ingest_500_is_an_issue(tmp_path):
     assert v.checked["query"] == "marker_retrieved"
 
 
+@pytest.mark.skipif(
+    not _fastapi_stack_available(),
+    reason="fastapi/uvicorn not importable in this env",
+)
+def test_gate_does_not_pollute_a_memory_chat_delivery(tmp_path):
+    # The §3.10 variant journals chat turns to MEMORY_FILE — the gate's own
+    # probes must not ship fixture memories inside the delivered app (the
+    # proof-must-not-pollute rule; the spawn env points the journal at devnull).
+    from skyn3t.agents._scaffold import scaffold_for
+
+    files = scaffold_for("rag", "membot", "a chatbot that remembers me")
+    assert "memory_store.py" in files  # the variant, not the base
+    for rel, contents in files.items():
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(contents, encoding="utf-8")
+    v = check_rag(tmp_path, stack="rag", python_exec=sys.executable)
+    assert v.ok, v.to_dict()
+    assert not (tmp_path / "memory.jsonl").exists(), (
+        "the gate's fixture questions leaked into the delivered app's memory")
+
+
 def test_check_rag_never_raises_on_garbage_input():
     v = check_rag(12345, stack="rag")  # type: ignore[arg-type]
     assert v.skipped and v.gaps() == []

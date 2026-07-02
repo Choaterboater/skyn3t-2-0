@@ -301,6 +301,11 @@ def _spawn_server(
         "WEBHOOK_URL",
     ):
         env.pop(seam, None)
+    # The proof must not pollute what it proves: a memory-chat variant journals
+    # every /chat turn to MEMORY_FILE — without this, the gate's own fixture
+    # questions ship INSIDE the delivered app's memory. os.devnull discards the
+    # appends and replays as empty; stacks without the seam ignore it.
+    env["MEMORY_FILE"] = os.devnull
     if seam_env:
         env.update(seam_env)
     try:

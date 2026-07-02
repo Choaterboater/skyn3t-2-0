@@ -812,6 +812,20 @@ def extract_error_gaps(
     # Python syntax errors — each entry is "<file>: <SyntaxError>".
     for se in (syntax_errors or []):
         gaps.append(f"SYNTAX ERROR — fix: {se}")
+    # Anti-fake gap producers (never flip the verdict; enrich the fix-loop).
+    for pm in (d.get("placeholder_markers") or []):
+        gaps.append(
+            "PLACEHOLDER MARKER — remove the incomplete-code placeholder and write "
+            f"the COMPLETE file: {pm}"
+        )
+    for feat in (d.get("missing_features") or []):
+        gaps.append(
+            f"BRIEF FEATURE MISSING — the brief asks for '{feat}' but no trace of it "
+            "appears in the delivered code or README; implement it (or the brief's "
+            "wording for it)."
+        )
+    if d.get("scaffold_stub"):
+        gaps.append(f"SCAFFOLD STUB — {d['scaffold_stub']}")
     return gaps
 
 
@@ -872,6 +886,226 @@ def _checklist_status(project_dir: Path, checklist: list[str]) -> tuple[int, lis
         else:
             missing.append(rel)
     return present, missing
+
+
+# --- anti-fake gap producers (wave-2 items 44/47/48) -------------------------
+# Three deterministic, offline checks that ADD repair hints for the fix-loop.
+# House rules: NONE flips ``passed`` on its own, NONE mutates or deletes code.
+# proof_run() records their output into ``detail`` and ``extract_error_gaps``
+# surfaces them as gap strings the code-improver can act on.
+
+# Source/markup files worth scanning for authored defects (never build output).
+_ANTIFAKE_SUFFIXES = (
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte",
+    ".html", ".css", ".astro", ".swift", ".go", ".rs", ".md",
+)
+# Code-only suffixes (README/markup excluded) for the originality comparison.
+_ANTIFAKE_CODE_SUFFIXES = (
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte",
+    ".astro", ".swift", ".go", ".rs",
+)
+
+# Banned incomplete-code / placeholder idioms (Bolt full-file contract). Matched
+# case-insensitively as literal substrings — each is precise enough that a bare
+# "TODO" or the word "unchanged" alone never trips it.
+_PLACEHOLDER_MARKERS = (
+    "rest of code",
+    "rest of the code",
+    "unchanged */",
+    "... existing code",
+    "existing code ...",
+    "todo: implement",
+    "lorem ipsum",
+)
+
+
+def scan_placeholder_markers(root: str | Path) -> list[str]:
+    """Flag delivered source that ships an incomplete-code placeholder.
+
+    Returns ``"<relpath>: <marker>"`` strings (deduped, capped). Never mutates or
+    deletes anything — gaps only. The elided-file idioms it catches are the
+    dangling-import bug class the Bolt full-file contract forbids at prompt time.
+    """
+    root = Path(root)
+    out: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for f in _iter_files(root):
+        if f.suffix.lower() not in _ANTIFAKE_SUFFIXES:
+            continue
+        try:
+            if f.stat().st_size > 500_000:
+                continue
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        low = text.lower()
+        rel = str(f.relative_to(root)).replace("\\", "/")
+        for marker in _PLACEHOLDER_MARKERS:
+            if marker in low and (rel, marker) not in seen:
+                seen.add((rel, marker))
+                out.append(f"{rel}: {marker}")
+        if len(out) >= 40:
+            break
+    return out
+
+
+# Generic scaffolding vocabulary that is never a distinguishing FEATURE — the
+# reality-checker stoplist (precision over recall).
+_FEATURE_STOPWORDS = frozenset({
+    "app", "apps", "application", "website", "webapp", "site", "page", "pages",
+    "make", "build", "builds", "create", "creates", "creating", "generate",
+    "using", "with", "that", "this", "then", "your", "user", "users",
+    "simple", "basic", "clean", "nice", "modern", "cool", "great", "good",
+    "feature", "features", "support", "supports", "allow", "allows", "able",
+    "data", "list", "lists", "thing", "things", "stuff", "some", "each",
+    "should", "would", "will", "into", "from", "have", "which", "where",
+    "when", "what", "they", "them", "also", "like", "want", "need", "must",
+    "project", "system", "tool", "tools", "platform", "dashboard", "interface",
+    "frontend", "backend", "fullstack", "responsive", "beautiful", "minimal",
+    "html", "css", "javascript", "typescript", "python", "react", "node",
+    "vite", "phaser", "nextjs", "express", "fastapi", "swift", "game",
+})
+
+
+def _feature_tokens(brief: str) -> list[str]:
+    """Concrete content words from the brief (deduped, order-preserved, capped).
+
+    Multi-char words only, stoplisted against generic scaffolding vocabulary — so
+    only distinguishing feature nouns/verbs remain (precision over recall)."""
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for w in re.findall(r"[a-zA-Z][a-zA-Z0-9+#-]{3,}", (brief or "").lower()):
+        if w in _FEATURE_STOPWORDS or w in seen:
+            continue
+        seen.add(w)
+        tokens.append(w)
+        if len(tokens) >= 15:
+            break
+    return tokens
+
+
+def _feature_present(token: str, corpus: str) -> bool:
+    """Is the feature word (or its obvious singular) present in the corpus?"""
+    if token in corpus:
+        return True
+    # Cheap de-pluralization so 'recipes'->'recip(e)', 'priorities'->'priority'.
+    for suf in ("ies", "es", "s"):
+        if token.endswith(suf) and len(token) - len(suf) >= 3:
+            stem = token[: -len(suf)] + ("y" if suf == "ies" else "")
+            if stem in corpus:
+                return True
+    return False
+
+
+def missing_brief_features(root: str | Path, brief: str) -> list[str]:
+    """Brief feature words with NO trace in the delivered source/README.
+
+    Deterministic reality check (agency-agents): the concrete nouns/verbs the
+    brief promised should appear SOMEWHERE in what was built. Missing ones are
+    strong 'codegen silently dropped a requirement' signals. Precision-first:
+    only distinguishing content words, de-pluralized substring match, capped."""
+    tokens = _feature_tokens(brief)
+    if not tokens:
+        return []
+    root = Path(root)
+    parts: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix.lower() not in _ANTIFAKE_SUFFIXES:
+            continue
+        try:
+            if f.stat().st_size > 500_000:
+                continue
+            parts.append(f.read_text(encoding="utf-8", errors="ignore").lower())
+        except OSError:
+            continue
+    corpus = "\n".join(parts)
+    if not corpus:
+        return []
+    missing = [t for t in tokens if not _feature_present(t, corpus)]
+    return missing[:8]
+
+
+def _shingles(text: str, n: int = 8) -> set[tuple[str, ...]]:
+    words = re.findall(r"\S+", text)
+    if len(words) < n:
+        return {tuple(words)} if words else set()
+    return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
+
+
+def _shingle_overlap(a: str, b: str, n: int = 8) -> float:
+    """Jaccard overlap of the two texts' n-word shingle sets (0..1)."""
+    sa, sb = _shingles(a, n), _shingles(b, n)
+    if not sa or not sb:
+        return 0.0
+    union = len(sa | sb)
+    return (len(sa & sb) / union) if union else 0.0
+
+
+def detect_scaffold_stub(
+    root: str | Path, stack: str, brief: str = "", *, threshold: float = 0.7
+) -> str | None:
+    """Return a gap note when the delivered tree is essentially the pristine
+    stack scaffold (the documented 'shipped the stub' class), else None.
+
+    Compares the delivered CODE files against a freshly generated
+    ``scaffold_for(stack, ...)`` via 8-word-shingle overlap. Fires ONLY when the
+    delivery adds NO substantial code beyond the scaffold AND its shared code
+    files are near-identical to the scaffold — so a real app (which replaces or
+    adds code) is never flagged. Never mutates anything; None on any error."""
+    try:
+        from skyn3t.agents._common import slugify
+        from skyn3t.agents._scaffold import scaffold_for
+    except Exception:  # noqa: BLE001
+        return None
+    root = Path(root)
+    app_name = slugify(brief or "app", "app")
+    try:
+        pristine = scaffold_for(stack, app_name, brief or app_name)
+    except Exception:  # noqa: BLE001 - unknown stack / scaffold error: skip
+        return None
+    scaffold_code = {
+        rel.replace("\\", "/"): content
+        for rel, content in pristine.items()
+        if Path(rel).suffix.lower() in _ANTIFAKE_CODE_SUFFIXES
+    }
+    if not scaffold_code:
+        return None
+    delivered: dict[str, str] = {}
+    for f in _iter_files(root):
+        if f.suffix.lower() not in _ANTIFAKE_CODE_SUFFIXES:
+            continue
+        try:
+            if f.stat().st_size > 500_000:
+                continue
+            delivered[str(f.relative_to(root)).replace("\\", "/")] = f.read_text(
+                encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+    if not delivered:
+        return None
+    # A real app adds its OWN code files beyond the scaffold's set.
+    extra = [
+        rel for rel, content in delivered.items()
+        if rel not in scaffold_code and len(content.strip()) >= 40
+    ]
+    if extra:
+        return None
+    overlaps = [
+        _shingle_overlap(delivered[rel], content)
+        for rel, content in scaffold_code.items()
+        if rel in delivered
+    ]
+    if not overlaps:
+        return None
+    mean = sum(overlaps) / len(overlaps)
+    if mean >= threshold:
+        return (
+            f"delivered tree is essentially the pristine {stack} scaffold "
+            f"(mean 8-word-shingle overlap {mean:.2f} across {len(overlaps)} "
+            "source file(s), no app code added) — the build shipped the stub "
+            "instead of implementing the brief"
+        )
+    return None
 
 
 # A bare (npm) specifier: `from "pkg"`, `import "pkg"`, `require("pkg")` — NOT
@@ -1659,6 +1893,7 @@ def proof_run(
     run_build: bool = False,
     build_timeout: int = 300,
     enable_mock_llm: bool | None = None,
+    brief: str = "",
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
@@ -1868,6 +2103,31 @@ def proof_run(
             mode = "sandbox"
         elif cmd_ctx.warnings:
             detail["sandbox_warning"] = cmd_ctx.warnings[-1]
+
+    # Anti-fake gap producers (advisory, wave-2 items 44/47/48): record
+    # incomplete-code placeholders, brief features with no trace in the delivery,
+    # and a shipped-scaffold-stub. NONE flips `passed` — they only add gaps the
+    # fix-loop consumes + observability. Each is defensive; never breaks the proof.
+    if total > 0:
+        try:
+            markers = scan_placeholder_markers(pdir)
+            if markers:
+                detail["placeholder_markers"] = markers[:20]
+        except Exception:  # noqa: BLE001 - advisory, never break the proof
+            pass
+        if brief:
+            try:
+                feats = missing_brief_features(pdir, brief)
+                if feats:
+                    detail["missing_features"] = feats
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            stub_note = detect_scaffold_stub(pdir, stack, brief)
+            if stub_note:
+                detail["scaffold_stub"] = stub_note
+        except Exception:  # noqa: BLE001
+            pass
 
     return ProofResult(
         passed=passed,

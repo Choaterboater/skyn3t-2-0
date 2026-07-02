@@ -896,3 +896,45 @@ async def test_controllable_game_records_ok_and_needs_no_wiring_repair(tmp_path,
     await runner._headless_gate_pass(m, _phaser_plan(), str(tmp_path), "cid", {})
     assert n["submits"] == 0, "a wired game + passing gate triggers no repair"
     assert m.extra["input_wiring"]["ok"] is True
+
+
+async def test_invariant_violation_repair_targets_sim_js(tmp_path, monkeypatch):
+    # Item C: a real invariant violation (e.g. Infinity in a cooldown) dispatches a
+    # repair whose payload TARGETS src/sim.js (mirroring qa_playtest file-targeting)
+    # and feeds the violation text verbatim — so the improver edits the SIM CORE,
+    # not a guessed entrypoint — then re-verifies once.
+    _write(tmp_path, {"src/sim.js": _GOODISH})  # a real sim core exists on disk
+    runner = _runner()
+    monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
+    bad = HeadlessGateResult(
+        applicable=True, passed=False,
+        violations=["Infinity in state.hazard.cooldownRemaining after 3 ticks"],
+        detail={"sim": "src/sim.js"},
+        report={"inputResponsive": True, "inputControls": ["left"]},
+    )
+    good = HeadlessGateResult(
+        applicable=True, passed=True, detail={"sim": "src/sim.js"},
+        report={"inputResponsive": True, "inputControls": ["left"]},
+    )
+    state = {"fixed": False}
+    monkeypatch.setattr(
+        "skyn3t.studio.headless_gate.run_headless_gate",
+        lambda *a, **k: good if state["fixed"] else bad,
+    )
+    seen = {"files": None, "gaps": None, "n": 0}
+
+    async def fake_submit(task):
+        seen["n"] += 1
+        seen["files"] = task.payload.get("files")
+        seen["gaps"] = task.payload.get("gaps")
+        state["fixed"] = True  # the improver fixes the sim core
+        return None
+
+    monkeypatch.setattr(runner.orchestrator, "submit", fake_submit)
+    gate = await runner._headless_gate_pass(_M(), _phaser_plan(), str(tmp_path), "cid", {})
+    assert seen["n"] >= 1, "an invariant violation must dispatch a repair"
+    assert seen["files"] and "src/sim.js" in seen["files"], seen["files"]
+    assert seen["gaps"] and any("Infinity" in g for g in seen["gaps"]), seen["gaps"]
+    # item 46: the gap is wrapped in the structured QA-FAIL contract.
+    assert any("EXPECTED" in g and "attempt" in g for g in seen["gaps"]), seen["gaps"]
+    assert gate.passed is True, "the gate is re-verified after a successful repair"

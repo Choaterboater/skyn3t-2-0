@@ -3739,6 +3739,14 @@ class StudioRunner:
             "build_id": build_id, "stage": record.name, "capability": record.capability,
             "status": record.status, "score": record.score,
         }
+        # Agent identity + wall-clock make the live build legible in the UI
+        # ("which agent ran each stage, and how long"). Both are recorded on the
+        # StageRecord by the time this chokepoint fires; surface them live too so
+        # the dashboard doesn't have to wait for the end-of-build manifest.
+        if record.agent_name:
+            payload["agent_name"] = record.agent_name
+        if record.duration_ms:
+            payload["duration_ms"] = record.duration_ms
         if isinstance(stage_cost, dict):
             payload["cost_usd"] = stage_cost.get("cost_usd")
             payload["tokens"] = stage_cost.get("tokens")

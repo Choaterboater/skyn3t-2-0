@@ -10,9 +10,17 @@ import {
   Empty,
   verdictTone,
 } from "../components/ui.jsx";
-import { DebugTimeline, FilesSoFar, PreviewPanel } from "../components/cockpit.jsx";
+import {
+  DebugTimeline,
+  FilesSoFar,
+  PreviewPanel,
+  StageLedger,
+  pipelineFromEvents,
+} from "../components/cockpit.jsx";
 
-// Canonical pipeline stages (mirrors the stage vocabulary in the backend).
+// Fallback rail shown before the first `build.started` arrives. Once a build is
+// live, the rail is driven off the REAL emitted plan (build.started.stages) — so
+// it always matches the backend pipeline instead of this fixed guess.
 const STAGES = [
   "brainstorm",
   "research",
@@ -50,27 +58,16 @@ const FALLBACK_STACKS = [
 // Today's default fan-out selection — keeps behavior unchanged if left untouched.
 const DEFAULT_STACK_SELECTION = ["react", "static", "fastapi"];
 
-function stageState(stage, events) {
-  // Derive a stage's state from BUILD_STAGE_* events in the stream.
-  let state = "pending";
-  events.forEach((e) => {
-    const s = (e.payload && (e.payload.stage || e.payload.capability)) || "";
-    if (s !== stage) return;
-    // EventType.value is lowercase-dotted on the wire (events.py), not the enum NAME.
-    if (e.type === "build.stage.started") state = "running";
-    if (e.type === "build.stage.completed") state = "done";
-    if (e.type === "task.failed" || e.type === "build.failed") state = "failed";
-  });
-  return state;
-}
-
 // The forge line. Each stage is a node on a horizontal rail: it ignites EMBER
 // while running, cools to PLASMA when done, sits ASH while pending, flares the
-// hot ember on failure.
-function ForgeStage({ stage, state }) {
+// hot ember on failure. It also shows WHICH agent ran the stage and its score —
+// data the backend already emits — so the line is legible, not just decorative.
+function ForgeStage({ s }) {
+  const state = s.state;
   const hot = state === "running";
   const done = state === "done";
   const failed = state === "failed";
+  const agent = s.agentName || s.agentType;
 
   const nodeCls = hot
     ? "border-ember/60 bg-ember/10 ring-heat animate-emberflare"
@@ -96,18 +93,27 @@ function ForgeStage({ stage, state }) {
     ? "text-ember"
     : "text-ash";
 
+  const title =
+    `${s.stage}${agent ? " · " + agent : ""} · ${failed ? "failed" : state}` +
+    (s.score != null ? ` · score ${s.score}` : "");
+
   return (
     <div
-      title={`${stage} · ${state}`}
+      title={title}
       className={`flex min-w-[7.5rem] flex-col gap-2 rounded-md border px-3 py-2.5 transition-all duration-300 ${nodeCls}`}
     >
       <div className="flex items-center gap-2">
         <span className={`h-1.5 w-1.5 rounded-full ${dotCls}`} />
-        <span className={`font-mono text-[11px] ${labelCls}`}>{stage}</span>
+        <span className={`font-mono text-[11px] ${labelCls}`}>{s.stage}</span>
       </div>
-      <span className="eyebrow text-[9px] text-ash/70">
-        {failed ? "failed" : state}
-      </span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="eyebrow truncate text-[9px] text-ash/70">
+          {failed ? "failed" : agent || state}
+        </span>
+        {done && s.score != null ? (
+          <span className="font-mono text-[9px] text-plasma">{s.score}</span>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -207,10 +213,9 @@ export default function Studio({ stream }) {
   });
 
   const events = stream?.events || [];
-  const pipeline = useMemo(
-    () => STAGES.map((s) => ({ stage: s, state: stageState(s, events) })),
-    [events]
-  );
+  // Driven off the REAL emitted plan (build.started.stages) + the per-stage
+  // agent/score/cost/gaps the backend already streams — not a hardcoded list.
+  const pipeline = useMemo(() => pipelineFromEvents(events, STAGES), [events]);
 
   const fanout = useMemo(() => {
     const cands = {};
@@ -443,7 +448,7 @@ export default function Studio({ stream }) {
               {running ? (
                 <span className="text-ember">{running} igniting</span>
               ) : (
-                <span className="text-plasma">{done}/{STAGES.length} cooled</span>
+                <span className="text-plasma">{done}/{pipeline.length} cooled</span>
               )}
             </span>
           }
@@ -451,7 +456,7 @@ export default function Studio({ stream }) {
         <div className="flex items-stretch gap-1 overflow-x-auto p-4">
           {pipeline.map((p, i) => (
             <React.Fragment key={p.stage}>
-              <ForgeStage stage={p.stage} state={p.state} />
+              <ForgeStage s={p} />
               {i < pipeline.length - 1 ? (
                 <span
                   className={`mx-0.5 flex-shrink-0 self-center font-mono text-sm ${
@@ -464,6 +469,20 @@ export default function Studio({ stream }) {
             </React.Fragment>
           ))}
         </div>
+      </Panel>
+
+      {/* The legible per-stage breakdown: agent, state, score, cost, gaps, time —
+          all read from data the backend already emits on the event stream. */}
+      <Panel className="mb-6 overflow-hidden">
+        <PanelHead
+          label="Stage ledger"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              agent · score · cost · gaps
+            </span>
+          }
+        />
+        <StageLedger events={events} fallback={STAGES} />
       </Panel>
 
       {/* Cockpit: per-stage debug timeline + live artifact (Phase A) */}

@@ -163,6 +163,22 @@ def _implies_market_data(brief: str) -> bool:
     return any(k in low for k in _MARKET_DATA_KEYWORDS)
 
 
+# LLM-gateway variant of the fastapi stack (wave-2 §3.7): a router/proxy brief
+# gets the two-stub-upstream gateway scaffold. Phrases only — bare "proxy"/
+# "router"/"gateway" would steal network/web briefs.
+_LLM_GATEWAY_KEYWORDS = (
+    "llm gateway", "model router", "openai compatible proxy",
+    "openai-compatible proxy", "llm proxy", "llm cost tracking",
+    "route llm", "ai gateway", "model gateway",
+)
+
+
+def _implies_llm_gateway(brief: str) -> bool:
+    """True when the brief asks for an LLM gateway / model-router service."""
+    low = (brief or "").lower()
+    return any(k in low for k in _LLM_GATEWAY_KEYWORDS)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -2077,6 +2093,313 @@ def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
+    """The LLM-gateway variant of the fastapi scaffold (wave-2 §3.7): an
+    OpenAI-compatible ``/v1/chat/completions`` proxy with a model catalog,
+    priority routing + fallback chains, cheap-task routing, and an exact
+    usage ledger (tokens × catalog prices). Ships TWO BUNDLED STUB upstreams
+    reachable via the ``internal:`` scheme, so it boots keyless and its whole
+    proof is deterministic HTTP; real providers plug in by setting real URLs.
+    The pure routing/pricing logic lives in ``router_core.py``."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "router_core.py": (
+            '"""Pure routing + pricing core: catalog, model picking, fallback\n'
+            "chains, and the usage ledger. Stdlib only — no web framework, no HTTP.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "# models.dev-shaped catalog: cost per 1K tokens + capability tags.\n"
+            "CATALOG: dict[str, dict] = {\n"
+            '    "big-model": {\n'
+            '        "providers": ["stub-a", "stub-b"],  # priority order\n'
+            '        "cost": {"input": 0.005, "output": 0.015},\n'
+            '        "tags": [],\n'
+            "    },\n"
+            '    "small-model": {\n'
+            '        "providers": ["stub-b"],\n'
+            '        "cost": {"input": 0.0005, "output": 0.0015},\n'
+            '        "tags": ["cheap"],\n'
+            "    },\n"
+            "}\n"
+            'DEFAULT_MODEL = "big-model"\n\n\n'
+            "def pick_model(requested: str | None, tags: list[str] | None) -> str:\n"
+            '    """Explicit model wins; a "cheap"-tagged request routes to the first\n'
+            "    cheap-tagged catalog model; else the default.\"\"\"\n"
+            "    if requested and requested in CATALOG:\n"
+            "        return requested\n"
+            '    if tags and "cheap" in tags:\n'
+            "        for name, spec in CATALOG.items():\n"
+            '            if "cheap" in spec.get("tags", []):\n'
+            "                return name\n"
+            "    return DEFAULT_MODEL\n\n\n"
+            "def provider_chain(model: str) -> list[str]:\n"
+            '    """The model\'s providers in priority order (fallback = next in list)."""\n'
+            '    return list(CATALOG.get(model, {}).get("providers", []))\n\n\n'
+            "def price(model: str, prompt_tokens: int, completion_tokens: int) -> float:\n"
+            '    """Exact cost: tokens x catalog per-1K prices, rounded to 6 places."""\n'
+            '    cost = CATALOG.get(model, {}).get("cost", {"input": 0.0, "output": 0.0})\n'
+            "    usd = (prompt_tokens / 1000.0) * cost[\"input\"] \\\n"
+            "        + (completion_tokens / 1000.0) * cost[\"output\"]\n"
+            "    return round(usd, 6)\n\n\n"
+            "class Ledger:\n"
+            '    """Append-only usage ledger; totals are derived, never stored."""\n\n'
+            "    def __init__(self) -> None:\n"
+            "        self.entries: list[dict] = []\n\n"
+            "    def add(self, *, model: str, provider: str,\n"
+            "            prompt_tokens: int, completion_tokens: int) -> dict:\n"
+            "        entry = {\n"
+            '            "model": model, "provider": provider,\n'
+            '            "prompt_tokens": prompt_tokens,\n'
+            '            "completion_tokens": completion_tokens,\n'
+            '            "cost_usd": price(model, prompt_tokens, completion_tokens),\n'
+            "        }\n"
+            "        self.entries.append(entry)\n"
+            "        return entry\n\n"
+            "    def totals(self) -> dict:\n"
+            "        per_model: dict[str, dict] = {}\n"
+            "        for e in self.entries:\n"
+            '            agg = per_model.setdefault(e["model"], {\n'
+            '                "requests": 0, "prompt_tokens": 0,\n'
+            '                "completion_tokens": 0, "cost_usd": 0.0,\n'
+            "            })\n"
+            '            agg["requests"] += 1\n'
+            '            agg["prompt_tokens"] += e["prompt_tokens"]\n'
+            '            agg["completion_tokens"] += e["completion_tokens"]\n'
+            '            agg["cost_usd"] = round(agg["cost_usd"] + e["cost_usd"], 6)\n'
+            "        return {\n"
+            '            "requests": len(self.entries),\n'
+            '            "cost_usd": round(sum(e["cost_usd"] for e in self.entries), 6),\n'
+            '            "per_model": per_model,\n'
+            "        }\n"
+        ),
+        "providers.py": (
+            '"""The two BUNDLED stub upstreams + the upstream call seam.\n\n'
+            "Upstream URLs are config: a real deployment sets real OpenAI-compatible\n"
+            "endpoints; the shipped default uses the ``internal:`` scheme, which\n"
+            "dispatches to the deterministic in-process stubs below — so the gateway\n"
+            "boots KEYLESS and its proof needs no network. Stub failure is toggleable\n"
+            "(the fallback-chain proof kills stub A mid-run).\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import os\n\n"
+            "# provider name -> upstream chat-completions URL ('internal:<stub>' or real).\n"
+            "UPSTREAMS: dict[str, str] = {\n"
+            '    "stub-a": os.environ.get("UPSTREAM_STUB_A", "internal:stub-a"),\n'
+            '    "stub-b": os.environ.get("UPSTREAM_STUB_B", "internal:stub-b"),\n'
+            "}\n\n"
+            "# Names currently failing (toggled by the admin route; the fallback proof).\n"
+            "FAILING: set[str] = set()\n\n\n"
+            "class UpstreamError(Exception):\n"
+            "    pass\n\n\n"
+            "def _stub_complete(name: str, payload: dict) -> dict:\n"
+            "    if name in FAILING:\n"
+            '        raise UpstreamError(f"{name} is down")\n'
+            '    messages = payload.get("messages") or []\n'
+            '    text = " ".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))\n'
+            "    prompt_tokens = max(1, len(text) // 4)\n"
+            f'    content = f"[{{name}}] ok: {{text[:60]}}"\n'
+            "    return {\n"
+            '        "id": f"chatcmpl-{name}",\n'
+            '        "object": "chat.completion",\n'
+            '        "model": payload.get("model", ""),\n'
+            '        "choices": [{"index": 0, "finish_reason": "stop",\n'
+            '                     "message": {"role": "assistant", "content": content}}],\n'
+            '        "usage": {"prompt_tokens": prompt_tokens,\n'
+            '                  "completion_tokens": max(1, len(content) // 4),\n'
+            '                  "total_tokens": 0},\n'
+            "    }\n\n\n"
+            "def call_upstream(name: str, payload: dict) -> dict:\n"
+            '    """Call one upstream; raises UpstreamError so the gateway can walk\n'
+            "    the fallback chain. The internal: scheme never touches the network.\"\"\"\n"
+            "    url = UPSTREAMS.get(name)\n"
+            "    if url is None:\n"
+            '        raise UpstreamError(f"unknown provider \'{name}\'")\n'
+            '    if url.startswith("internal:"):\n'
+            '        return _stub_complete(url.split(":", 1)[1], payload)\n'
+            "    try:\n"
+            "        import httpx\n\n"
+            "        resp = httpx.post(f\"{url.rstrip('/')}/chat/completions\",\n"
+            "                          json=payload, timeout=30.0)\n"
+            "        resp.raise_for_status()\n"
+            "        return resp.json()\n"
+            "    except Exception as exc:  # noqa: BLE001 - any failure -> fallback\n"
+            "        raise UpstreamError(str(exc)) from exc\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — an OpenAI-compatible LLM gateway / model router.\n\n"
+            "POST /v1/chat/completions routes by explicit model, cheap-task tags, or\n"
+            "the default, walking each model's provider fallback chain on upstream\n"
+            "failure; every completed call lands in the usage ledger (exact tokens x\n"
+            "catalog prices). GET /v1/models (the catalog), GET /v1/usage (the\n"
+            "ledger), GET /health. Bundled internal stubs make it fully keyless;\n"
+            "POST /_stubs/{name}/fail toggles a stub for fallback drills.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from fastapi import FastAPI, HTTPException\n"
+            "from pydantic import BaseModel, Field\n\n"
+            "import providers\n"
+            "import router_core\n\n"
+            f'app = FastAPI(title="{_json_escape(title)}")\n'
+            "LEDGER = router_core.Ledger()\n\n\n"
+            "class ChatRequest(BaseModel):\n"
+            "    messages: list[dict] = Field(min_length=1)\n"
+            "    model: str | None = None\n"
+            "    tags: list[str] = Field(default_factory=list)\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "providers": sorted(providers.UPSTREAMS)}\n\n\n'
+            '@app.get("/v1/models")\n'
+            "def models() -> dict:\n"
+            '    return {"models": router_core.CATALOG}\n\n\n'
+            '@app.post("/v1/chat/completions")\n'
+            "def chat_completions(req: ChatRequest) -> dict:\n"
+            "    model = router_core.pick_model(req.model, req.tags)\n"
+            "    chain = router_core.provider_chain(model)\n"
+            "    if not chain:\n"
+            '        raise HTTPException(status_code=404, detail=f"no providers for model \'{model}\'")\n'
+            "    errors: list[str] = []\n"
+            "    for provider in chain:\n"
+            "        try:\n"
+            '            payload = {"model": model, "messages": req.messages}\n'
+            "            result = providers.call_upstream(provider, payload)\n"
+            "        except providers.UpstreamError as exc:\n"
+            '            errors.append(f"{provider}: {exc}")\n'
+            "            continue\n"
+            '        usage = result.get("usage") or {}\n'
+            "        entry = LEDGER.add(\n"
+            "            model=model, provider=provider,\n"
+            '            prompt_tokens=int(usage.get("prompt_tokens", 0)),\n'
+            '            completion_tokens=int(usage.get("completion_tokens", 0)),\n'
+            "        )\n"
+            '        result["gateway"] = {"provider": provider, "model": model,\n'
+            '                             "cost_usd": entry["cost_usd"]}\n'
+            "        return result\n"
+            "    raise HTTPException(\n"
+            "        status_code=502,\n"
+            '        detail={"type": "ALL_UPSTREAMS_FAILED", "errors": errors},\n'
+            "    )\n\n\n"
+            '@app.get("/v1/usage")\n'
+            "def usage() -> dict:\n"
+            '    return {"entries": LEDGER.entries, "totals": LEDGER.totals()}\n\n\n'
+            '@app.post("/_stubs/{name}/fail")\n'
+            "def toggle_fail(name: str) -> dict:\n"
+            '    """Drill switch for the bundled stubs (the fallback-chain proof)."""\n'
+            "    if name in providers.FAILING:\n"
+            "        providers.FAILING.discard(name)\n"
+            "    else:\n"
+            "        providers.FAILING.add(name)\n"
+            '    return {"failing": sorted(providers.FAILING)}\n\n\n'
+            'if __name__ == "__main__":\n'
+            "    import os\n\n"
+            "    import uvicorn\n\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_gateway.py": (
+            '"""The gateway\'s own deterministic proof over the bundled stubs."""\n'
+            "from fastapi.testclient import TestClient\n\n"
+            "import providers\n"
+            "import router_core\n"
+            "from main import app\n\n"
+            "client = TestClient(app)\n\n\n"
+            "def setup_function(_fn):\n"
+            "    providers.FAILING.clear()\n\n\n"
+            "def _chat(**kw):\n"
+            '    body = {"messages": [{"role": "user", "content": "hello gateway"}], **kw}\n'
+            '    return client.post("/v1/chat/completions", json=body)\n\n\n'
+            "def test_normal_request_routes_to_priority_provider():\n"
+            "    resp = _chat()\n"
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["gateway"]["provider"] == "stub-a"  # first in the chain\n'
+            '    assert "[stub-a] ok" in body["choices"][0]["message"]["content"]\n\n\n'
+            "def test_failing_priority_provider_falls_back():\n"
+            '    client.post("/_stubs/stub-a/fail")\n'
+            "    resp = _chat()\n"
+            "    assert resp.status_code == 200\n"
+            '    assert resp.json()["gateway"]["provider"] == "stub-b"\n\n\n'
+            "def test_all_upstreams_failing_is_a_typed_502():\n"
+            '    client.post("/_stubs/stub-a/fail")\n'
+            '    client.post("/_stubs/stub-b/fail")\n'
+            "    resp = _chat()\n"
+            "    assert resp.status_code == 502\n"
+            '    assert resp.json()["detail"]["type"] == "ALL_UPSTREAMS_FAILED"\n\n\n'
+            "def test_cheap_tag_routes_to_the_small_model():\n"
+            '    resp = _chat(tags=["cheap"])\n'
+            "    assert resp.status_code == 200\n"
+            "    body = resp.json()\n"
+            '    assert body["gateway"]["model"] == "small-model"\n'
+            '    assert body["gateway"]["provider"] == "stub-b"\n\n\n'
+            "def test_usage_ledger_is_exact_token_math():\n"
+            "    before = len(client.get(\"/v1/usage\").json()[\"entries\"])\n"
+            "    resp = _chat()\n"
+            "    usage = resp.json()[\"usage\"]\n"
+            '    entries = client.get("/v1/usage").json()["entries"]\n'
+            "    assert len(entries) == before + 1\n"
+            "    last = entries[-1]\n"
+            "    assert last[\"cost_usd\"] == router_core.price(\n"
+            '        last["model"], usage["prompt_tokens"], usage["completion_tokens"])\n\n\n'
+            "def test_price_is_pure_and_exact():\n"
+            '    assert router_core.price("big-model", 1000, 1000) == 0.02\n'
+            '    assert router_core.price("small-model", 2000, 0) == 0.001\n'
+        ),
+        "requirements.txt": (
+            f"# Runtime + test dependencies for {title}.\n"
+            "fastapi>=0.110        # web framework\n"
+            "uvicorn[standard]>=0.27  # ASGI server (run with `python main.py`)\n"
+            "httpx>=0.27           # real upstream calls + fastapi.testclient\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="FastAPI LLM gateway (OpenAI-compatible router + usage ledger)",
+            install=(
+                "Requires Python 3.10+. Install dependencies into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the gateway (bundled internal stubs — zero keys needed):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then route requests:\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \\\n"
+                "  -d '{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}'\n"
+                "curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \\\n"
+                "  -d '{\"messages\": [{\"role\": \"user\", \"content\": \"hi\"}], \"tags\": [\"cheap\"]}'\n"
+                "curl -s localhost:8000/v1/usage\n"
+                "```\n\n"
+                "Point a provider at a REAL OpenAI-compatible endpoint via env\n"
+                "(`UPSTREAM_STUB_A=https://api.example.com/v1`) — the `internal:`\n"
+                "defaults keep everything keyless until you do. Drill the fallback\n"
+                "chain with `POST /_stubs/stub-a/fail` and watch requests route to\n"
+                "the next provider."
+            ),
+            structure=[
+                ("main.py", "FastAPI gateway — /v1/chat/completions, /v1/usage, /v1/models"),
+                ("router_core.py", "Pure catalog, routing policy, pricing, ledger"),
+                ("providers.py", "Bundled stub upstreams + the URL-configurable call seam"),
+                ("test_gateway.py", "Deterministic proof: routing, fallback, exact costs"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
+            ],
+            features=[
+                "OpenAI-compatible /v1/chat/completions proxy with priority routing",
+                "Fallback chains: a failing upstream routes to the next provider",
+                "Cheap-task routing to small models via request tags",
+                "Exact usage ledger — tokens × catalog prices, per model and total",
+                "Boots keyless against two bundled stub upstreams (internal: scheme)",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_gateway.py\n```"
+            ),
+        ),
+    }
+
+
 def _mcp_server_name(app_name: str) -> str:
     """A kebab identifier for the MCP server (clients show this name)."""
     ident = _re.sub(r"[^a-z0-9-]+", "-", app_name.strip().lower()).strip("-")
@@ -3642,6 +3965,10 @@ def scaffold_for(
     # stack gets the persistent-memory-journal scaffold.
     if stack == "rag" and _implies_memory_chat(brief):
         return _rag_memory_chat(safe_name, brief)
+    # LLM-gateway variant (wave-2 §3.7): a router/proxy brief on the fastapi
+    # stack gets the two-stub-upstream gateway scaffold.
+    if stack == "fastapi" and _implies_llm_gateway(brief):
+        return _fastapi_llm_gateway(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

@@ -1416,13 +1416,16 @@ def deploy(
     target: str = typer.Option("", "--target", help="Preferred deploy target (e.g. fly, vercel, cloudflare-pages)."),
     stack: str = typer.Option("", "--stack", help="Override the stack (default: read from the build manifest)."),
     write: bool = typer.Option(False, "--write", help="Write generated deploy artifacts (e.g. a Dockerfile) into the project."),
+    now: bool = typer.Option(False, "--now", help="Actually deploy it live (token-gated). Default: just show the plan."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when using --now."),
 ) -> None:
     """Show the keyless deploy plan for a build — the right hosts, the exact
     one-command deploy, and (for server stacks) a ready Dockerfile.
 
-    Nothing is deployed and no token is needed: this is the honest
-    "…and here's how it ships" answer for a proven build. Use ``--write`` to
-    drop generated artifacts (like a Dockerfile) into the project.
+    By default nothing is deployed and no token is needed: this is the honest
+    "…and here's how it ships" answer for a proven build. Use ``--write`` to drop
+    generated artifacts (like a Dockerfile) into the project, or ``--now`` to fire
+    a real, token-gated deploy (needs a provider token configured in Settings).
     """
     from pathlib import Path as _Path
 
@@ -1484,8 +1487,54 @@ def deploy(
             console.print(f"[green]Wrote[/green] {', '.join(written)} into {pdir}.")
         else:
             console.print("[dim]No artifacts written (already present).[/dim]")
-    console.print("[dim]Keyless plan — run the deploy command yourself; "
-                  "token-gated one-command deploy is coming.[/dim]")
+
+    if not now:
+        console.print("[dim]Keyless plan — run the deploy command yourself, or add "
+                      "[cyan]--now[/cyan] to deploy it live (needs a provider token in Settings).[/dim]")
+        return
+
+    # --now: fire a real, token-gated deploy.
+    if not plan.serves_url:
+        console.print(f"[yellow]Nothing to serve live[/yellow] — {plan.kind} is a "
+                      "package/binary, not a hosted URL. Publish it with: "
+                      f"[cyan]{plan.command}[/cyan]")
+        raise typer.Exit(code=0)
+    provider = (target or (plan.targets[0] if plan.targets else "")).strip()
+    if not provider:
+        console.print("[red]No deploy target[/red] to deploy to.")
+        raise typer.Exit(code=1)
+    if not yes and not typer.confirm(f"Deploy {pdir.name} live to {provider}?", default=False):
+        console.print("[dim]Aborted — nothing deployed.[/dim]")
+        raise typer.Exit(code=0)
+    # A container needs its Dockerfile on disk to build the image.
+    if plan.artifacts:
+        write_deploy_artifacts(plan, pdir)
+
+    from skyn3t.agents.deploy_agent import DeployAgent
+
+    console.print(f"[yellow]Deploying[/yellow] {pdir.name} to [cyan]{provider}[/cyan]…")
+    result = DeployAgent().deploy(str(pdir), target=provider, plan=plan)
+    if not (result.get("ok") and result.get("url")):
+        console.print(f"[red]Deploy did not complete[/red]: "
+                      f"{result.get('error') or 'unknown error'}")
+        raise typer.Exit(code=1)
+    url = result["url"]
+    console.print(f"[green]Live[/green] at [cyan]{url}[/cyan]")
+
+    # Ship pillar's final rung: verify the LIVE url (opt-in via deploy_check_enabled).
+    if getattr(s, "deploy_check_enabled", False):
+        import asyncio as _asyncio
+
+        from skyn3t.studio.deploy_check import check_deploy
+
+        verdict = _asyncio.run(check_deploy(url, resolved_stack))
+        if verdict.skipped:
+            console.print(f"[dim]deploy check skipped — {verdict.reason}[/dim]")
+        elif verdict.ok:
+            console.print("[green]deploy check[/green] — live url verified ✓")
+        else:
+            console.print(f"[yellow]deploy check[/yellow] — {verdict.reason}: "
+                          + "; ".join(verdict.issues[:5]))
 
 
 @domain_app.command("ingest")

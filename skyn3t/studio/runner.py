@@ -3776,6 +3776,23 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - persistence must not break delivery
             log.warning("studio.save_build_failed", error=str(exc))
 
+    async def _run_deploy_check(self, manifest: BuildManifest, url: str,
+                                correlation_id: str = "") -> "GateVerdict":
+        """Ship-pillar gate: probe a build at its LIVE url after a real deploy and
+        record the verdict to ``manifest.extra['deploy_check']``. Advisory — a
+        proven build already shipped, so this reports live health and never flips
+        the verdict. Registered in ``core.stacks.GATES``; invoked post-deploy
+        (e.g. from ``skyn3t deploy --now``), not the in-build gate loop. Never
+        raises."""
+        from skyn3t.studio.deploy_check import check_deploy
+
+        verdict = await check_deploy(url, getattr(manifest, "stack", ""))
+        try:
+            manifest.extra["deploy_check"] = verdict.to_dict()
+        except Exception:  # noqa: BLE001 - recording must not break the caller
+            pass
+        return verdict
+
     async def _finalize(
         self, manifest: BuildManifest, plan: BuildPlan, correlation_id: str, final_score: float
     ) -> BuildOutcome:

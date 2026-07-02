@@ -298,6 +298,14 @@ class Settings(BaseSettings):
     # improve → re-proof → keep or roll back); it NEVER flips the verdict.
     # Soft-skips when fastapi/uvicorn aren't importable in the proof env.
     rag_check_enabled: bool = True
+    # Deterministic agent-workflow gate (workflow stack, wave-2 §3.2): boot the
+    # delivered runner (WEBHOOK_URL + LLM seams scrubbed) and drive the spec's
+    # /trigger contract (dry-run envelope → live-unconfigured must yield
+    # skipped_no_delivery not a crash → ledger recorded both → unknown workflow
+    # rejected 4xx). ADVISORY like rag_check — recorded to
+    # manifest.extra["workflow_check"], fed to ONE snapshot/re-proof/rollback
+    # repair; NEVER flips the verdict. Soft-skips when deps aren't importable.
+    workflow_check_enabled: bool = True
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

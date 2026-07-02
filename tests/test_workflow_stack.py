@@ -204,11 +204,13 @@ def test_workflow_serves_http_but_is_not_a_ui_web_stack():
     from skyn3t.studio.seo_check import _SEO_WEB_STACKS
 
     assert "workflow" in _runner._WEB_STACKS
+    assert "workflow" in stacks.WORKFLOW_STACKS
     assert "workflow" not in _runner._UI_WEB_STACKS
     assert "workflow" not in _runner._GAME_STACKS
     assert "workflow" not in _SEO_WEB_STACKS
-    # No dedicated end-of-build gate yet (that's the next tier — the proof
-    # story today is the pure-engine pytest run inside proof_run).
+    # The dedicated end-of-build gate is registered for THIS stack only.
+    assert stacks.gate_applies("workflow_check", "workflow")
+    assert not stacks.gate_applies("workflow_check", "fastapi")
     assert not stacks.gate_applies("rag_check", "workflow")
     assert not stacks.gate_applies("mcp_check", "workflow")
 

@@ -1756,6 +1756,13 @@ class StudioRunner:
         return StudioRunner._select_root_py_files(
             project_dir, ("main.py", "rag_core.py"))
 
+    @staticmethod
+    def _select_workflow_source_files(project_dir) -> list[str]:
+        """Workflow repair targets: main.py (the FastAPI layer) + workflow_core.py
+        (the pure engine) + other root-level modules. See _select_root_py_files."""
+        return StudioRunner._select_root_py_files(
+            project_dir, ("main.py", "workflow_core.py"))
+
     async def _run_mcp_check(
         self, manifest, plan, project_dir, correlation_id, extra
     ) -> None:
@@ -1962,6 +1969,106 @@ class StudioRunner:
                 log.warning("rag_check.repair_rolled_back", changed=touched)
         except Exception as exc:  # noqa: BLE001 - advisory; never break a build
             log.warning("rag_check.failed", error=str(exc))
+
+    async def _run_workflow_check(
+        self, manifest, plan, project_dir, correlation_id, extra
+    ) -> None:
+        """Deterministic agent-workflow gate (workflow stack, ADVISORY): boot the
+        delivered main.py (WEBHOOK_URL + LLM seams scrubbed) and drive the spec's
+        /trigger contract (dry-run envelope → live-unconfigured yields
+        skipped_no_delivery → ledger recorded both → unknown workflow 4xx), with
+        ZERO LLM and ZERO live delivery. RECORD the verdict to
+        ``manifest.extra["workflow_check"]``; when there are real issues and a
+        ``code_improve`` capability is present, dispatch ONE repair with the same
+        snapshot → improve → re-proof → keep-or-rollback shape as _run_rag_check.
+        Strictly ADVISORY: it NEVER touches ``verdict``. Best-effort; never raises."""
+        try:
+            from skyn3t.studio.workflow_check import check_workflow
+
+            verdict = await asyncio.to_thread(check_workflow, project_dir, plan.stack)
+            manifest.extra["workflow_check"] = verdict.to_dict()
+            log.info("workflow_check.done", skipped=verdict.skipped, ok=verdict.ok,
+                     issues=len(verdict.issues))
+
+            gaps = verdict.gaps()
+            if not gaps or not self._has_capability("code_improve"):
+                return
+            files = self._select_workflow_source_files(project_dir)
+            if not files:
+                return
+
+            before_files = set(self._safe_list_files(project_dir))
+            snapshots = self._snapshot_seo_targets(project_dir, files)
+
+            payload = {
+                "brief": manifest.brief, "slug": manifest.slug,
+                "worktree_dir": project_dir, "project_dir": project_dir,
+                "stack": plan.stack, "plan": plan.to_dict(),
+                "gaps": format_fix_feedback(
+                    gaps, stage="workflow_check", attempt=1,
+                    max_attempts=1, files=list(files)),
+                "files": list(files),
+            }
+            if extra:
+                payload["extra"] = extra
+            task = TaskRequest(
+                type="code_improver", payload=payload,
+                capabilities_required=("code_improve",),
+                correlation_id=correlation_id,
+                metadata={"stage": "workflow_check"},
+            )
+            dispatched_ok = True
+            try:
+                await asyncio.wait_for(
+                    self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
+            except Exception as exc:  # noqa: BLE001 - a timeout can leave partial writes
+                dispatched_ok = False
+                log.warning("workflow_check.improve_failed", error=str(exc))
+
+            changed = self._seo_changed_targets(project_dir, snapshots)
+            new_files = sorted(
+                f for f in set(self._safe_list_files(project_dir)) if f not in before_files)
+            if not changed and not new_files:
+                return
+            touched = sorted(set(changed) | set(new_files))
+
+            if not dispatched_ok:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["workflow_repair"] = {
+                    "kept": False,
+                    "reason": "improver dispatch failed/timed out; rolled back partial writes",
+                    "changed_files": touched,
+                }
+                return
+
+            proof = await asyncio.to_thread(
+                proof_run,
+                project_dir,
+                checklist=plan.checklist,
+                execution_backend=self.settings.execution_backend,
+                stack=plan.stack,
+                run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+            )
+            if proof.passed:
+                manifest.files = self._safe_list_files(project_dir)
+                verdict = await asyncio.to_thread(check_workflow, project_dir, plan.stack)
+                manifest.extra["workflow_check"] = verdict.to_dict()
+                manifest.extra["workflow_repair"] = {"kept": True, "changed_files": touched}
+            else:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["workflow_repair"] = {
+                    "kept": False,
+                    "reason": "advisory workflow repair broke the build proof; rolled back",
+                    "changed_files": touched,
+                }
+                log.warning("workflow_check.repair_rolled_back", changed=touched)
+        except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+            log.warning("workflow_check.failed", error=str(exc))
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
@@ -3056,6 +3163,17 @@ class StudioRunner:
             if _gate_applies("rag_check", plan.stack) and getattr(
                     self.settings, "rag_check_enabled", True):
                 await self._run_rag_check(
+                    manifest, plan, project_dir, correlation_id, extra)
+
+            # End-of-build agent-workflow gate (workflow stack, ADVISORY, zero
+            # LLM, zero live delivery): boot the delivered main.py and drive the
+            # spec's /trigger contract. Same shape as rag_check: recorded to
+            # manifest.extra["workflow_check"], ONE snapshot/re-proof/rollback
+            # repair, NEVER flips `verdict`. Runs BEFORE the final consistency
+            # pass so a kept repair is re-verified by it.
+            if _gate_applies("workflow_check", plan.stack) and getattr(
+                    self.settings, "workflow_check_enabled", True):
+                await self._run_workflow_check(
                     manifest, plan, project_dir, correlation_id, extra)
 
             # Unconditional final consistency pass — see _final_consistency_check's

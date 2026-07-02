@@ -377,6 +377,33 @@ _MCP_DIRECTIVE = (
 )
 
 
+_RAG_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a RAG (retrieval-augmented) 'chat with your "
+    "documents' app as a Python FastAPI server. This is NOT a React/npm app: NEVER "
+    "emit package.json, index.html, or JSX. "
+    "LAYOUT: `main.py` (the FastAPI app — the runnable root: `python main.py` serves "
+    "on the PORT env var, default 8000, via `uvicorn.run` under `if __name__ == "
+    "\"__main__\":`), `rag_core.py` (chunking + retrieval as PURE stdlib Python), "
+    "`corpus/` (seed documents indexed at boot), `test_rag_core.py` (pytest over the "
+    "pure core), `requirements.txt` (fastapi, uvicorn, httpx). "
+    "ROUTES ARE LOAD-BEARING (a deterministic gate drives them): GET /health → 200; "
+    "GET /v1/stats → JSON with integer \"documents\" and \"chunks\" counts; "
+    "POST /ingest {\"text\", \"source\"} → chunk + index the text (validate: missing/"
+    "empty text is a 4xx, never a 500) and grow the stats; GET /query?q=...&k=3 → "
+    "{\"results\": [{\"text\", \"source\", \"score\"}]} ranked by relevance — a "
+    "just-ingested fact MUST be retrievable; POST /chat {\"question\"} → 200 with a "
+    "non-empty \"answer\" grounded in the retrieved chunks plus a \"sources\" list. "
+    "ARCHITECTURE (pure core + thin HTTP — the sim-core split): ALL retrieval logic "
+    "lives in `rag_core.py` with NO fastapi/uvicorn/httpx imports so it is "
+    "unit-testable without a server; routes in `main.py` are THIN wrappers. "
+    "LLM SEAM: `/chat` may call an OpenAI-compatible endpoint ONLY via the "
+    "OPENAI_BASE_URL env var (model from OPENAI_MODEL, key from OPENAI_API_KEY) — "
+    "NEVER hardcode a provider URL, model, or key, NEVER import a provider SDK. "
+    "When the seam is unset or the call fails, `/chat` MUST still return 200 with an "
+    "extractive answer (the top retrieved chunk) — every route works with ZERO keys."
+)
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -647,6 +674,7 @@ class CodeAgent(BaseAgent):
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
             + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
+            + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "

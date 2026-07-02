@@ -47,7 +47,7 @@ exists because of this).
    (the deepseek 85→100 lesson).
 8. **Gate membership — declare it in the registry.** `skyn3t/core/stacks.py` is the
    single source of truth for stack-GROUP membership (`GAME_STACKS`/`WEB_STACKS`/
-   `UI_WEB_STACKS`/`DESIGN_STACKS`/`MCP_STACKS`) and per-gate applicability
+   `UI_WEB_STACKS`/`DESIGN_STACKS`/`MCP_STACKS`/`RAG_STACKS`) and per-gate applicability
    (`GATES` + `gate_applies`); `runner.py` and the satellites import from it, and
    `tests/test_stack_registry_drift.py` FAILS if any vocabulary site is missed
    (planner keywords, scaffold builder, proof family, gate set). Membership is

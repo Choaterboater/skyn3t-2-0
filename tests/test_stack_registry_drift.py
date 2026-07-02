@@ -103,7 +103,7 @@ def test_satellite_game_stack_copies_are_the_registry_object():
 
 # Proof families proof_run branches on. Python-family stacks are proved via
 # boot-import/pytest (no dedicated frozenset in proof_run — maintained here).
-_PY_PROOF_FAMILY = frozenset({"fastapi", "python", "mcp"})
+_PY_PROOF_FAMILY = frozenset({"fastapi", "python", "mcp", "rag"})
 
 
 def test_every_builder_stack_covers_all_vocabularies():

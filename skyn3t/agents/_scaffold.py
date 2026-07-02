@@ -2011,6 +2011,356 @@ def _mcp(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _rag(app_name: str, brief: str) -> dict[str, str]:
+    """A RAG "chat with your documents" app (wave-2 §3.1) — a FastAPI HTTP server
+    with ``/ingest`` + ``/query`` + ``/chat`` + ``/health`` + ``/v1/stats``, built
+    FRESH (never cloned from a web builder, so it never inherits npm / React).
+
+    Structured as a **pure logic core + a thin HTTP layer**, the sim-core split
+    reapplied (Phaser/Swift/MCP precedent):
+
+    - ``rag_core.py`` — chunking + retrieval as pure stdlib Python (NO fastapi /
+      uvicorn / httpx imports), so ``test_rag_core.py`` proves the retrieval
+      logic headlessly with zero third-party deps.
+    - ``main.py`` — the FastAPI app: routes are thin wrappers over the core. The
+      LLM seam is the ``OPENAI_BASE_URL`` env var (never a hardcoded provider or
+      key); with no seam configured ``/chat`` degrades to an EXTRACTIVE answer
+      (the top retrieved chunk), so every route works with ZERO API keys.
+
+    The proof story is deterministic: rag_check.py boots this server and drives
+    the real HTTP contract (ingest a marker doc → query must retrieve it), and
+    the shipped ``corpus/seed.md`` carries a planted marker fact ("41.7") so
+    retrieval is provable out of the box.
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "rag_core.py": (
+            '"""Pure retrieval core: chunking + scoring + an in-memory corpus store.\n\n'
+            "Stdlib only — NO web framework here (the FastAPI layer lives in\n"
+            "``main.py``), so this logic is unit-testable without a server or any\n"
+            "third-party install (see ``test_rag_core.py``). Deterministic: same\n"
+            "corpus + same query -> same ranking (ties break by insertion order).\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import math\n"
+            "import re\n"
+            "from dataclasses import dataclass\n\n"
+            '_WORD_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")\n\n\n'
+            "def tokenize(text: str) -> list[str]:\n"
+            '    """Lowercase word tokens (keeps digits/dots so facts like 41.7 survive)."""\n'
+            '    return _WORD_RE.findall((text or "").lower())\n\n\n'
+            "def chunk_text(text: str, max_words: int = 120, overlap: int = 20) -> list[str]:\n"
+            '    """Split ``text`` into overlapping word-window chunks.\n\n'
+            "    Blank input -> []. Any non-blank input yields at least one chunk. The\n"
+            "    overlap keeps a fact that straddles a boundary retrievable from both\n"
+            "    sides.\n"
+            '    """\n'
+            "    words = (text or \"\").split()\n"
+            "    if not words:\n"
+            "        return []\n"
+            "    max_words = max(1, int(max_words))\n"
+            "    overlap = min(max(0, int(overlap)), max_words - 1)\n"
+            "    step = max_words - overlap\n"
+            "    chunks: list[str] = []\n"
+            "    for start in range(0, len(words), step):\n"
+            "        window = words[start:start + max_words]\n"
+            "        if not window:\n"
+            "            break\n"
+            '        chunks.append(" ".join(window))\n'
+            "        if start + max_words >= len(words):\n"
+            "            break\n"
+            "    return chunks\n\n\n"
+            "@dataclass(slots=True)\n"
+            "class Chunk:\n"
+            '    """One retrievable unit: the chunk text + where it came from."""\n\n'
+            "    text: str\n"
+            "    source: str\n\n\n"
+            "class CorpusStore:\n"
+            '    """In-memory corpus: add documents, search chunks, report stats.\n\n'
+            "    Scoring is rarity-weighted token overlap: each query token shared with\n"
+            "    a chunk contributes ``log(1 + total_chunks / chunks_containing_it)``,\n"
+            "    normalised by chunk length so long chunks don't win by volume. Simple,\n"
+            "    deterministic, and dependency-free — swap in embeddings later without\n"
+            "    touching the HTTP layer.\n"
+            '    """\n\n'
+            "    def __init__(self) -> None:\n"
+            "        self._chunks: list[Chunk] = []\n"
+            "        self._doc_freq: dict[str, int] = {}\n"
+            "        self._documents = 0\n\n"
+            '    def add(self, text: str, source: str = "inline") -> int:\n'
+            '        """Chunk + index ``text``; returns how many chunks were added."""\n'
+            "        pieces = chunk_text(text)\n"
+            "        if not pieces:\n"
+            "            return 0\n"
+            "        self._documents += 1\n"
+            "        for piece in pieces:\n"
+            "            self._chunks.append(Chunk(text=piece, source=source))\n"
+            "            for tok in set(tokenize(piece)):\n"
+            "                self._doc_freq[tok] = self._doc_freq.get(tok, 0) + 1\n"
+            "        return len(pieces)\n\n"
+            "    def search(self, query: str, k: int = 3) -> list[dict]:\n"
+            '        """Top-``k`` chunks for ``query`` as ``{text, source, score}`` dicts.\n\n'
+            "        Empty query, empty corpus, or no overlapping tokens -> []. Ranking is\n"
+            "        stable: equal scores keep insertion order.\n"
+            '        """\n'
+            "        q_tokens = set(tokenize(query))\n"
+            "        if not q_tokens or not self._chunks:\n"
+            "            return []\n"
+            "        total = len(self._chunks)\n"
+            "        scored: list[tuple[float, int]] = []\n"
+            "        for idx, chunk in enumerate(self._chunks):\n"
+            "            c_tokens = tokenize(chunk.text)\n"
+            "            if not c_tokens:\n"
+            "                continue\n"
+            "            shared = q_tokens.intersection(c_tokens)\n"
+            "            if not shared:\n"
+            "                continue\n"
+            "            weight = sum(\n"
+            "                math.log(1.0 + total / self._doc_freq.get(tok, 1))\n"
+            "                for tok in shared\n"
+            "            )\n"
+            "            scored.append((weight / math.sqrt(len(c_tokens)), idx))\n"
+            "        scored.sort(key=lambda pair: (-pair[0], pair[1]))\n"
+            "        out: list[dict] = []\n"
+            "        for score, idx in scored[: max(1, int(k))]:\n"
+            "            chunk = self._chunks[idx]\n"
+            "            out.append({\n"
+            '                "text": chunk.text,\n'
+            '                "source": chunk.source,\n'
+            '                "score": round(score, 4),\n'
+            "            })\n"
+            "        return out\n\n"
+            "    def stats(self) -> dict:\n"
+            '        """The /v1/stats health contract: corpus size at a glance."""\n'
+            "        return {\n"
+            '            "documents": self._documents,\n'
+            '            "chunks": len(self._chunks),\n'
+            '            "sources": sorted({c.source for c in self._chunks}),\n'
+            "        }\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — a RAG (chat with your documents) FastAPI app.\n\n"
+            "Routes: POST /ingest (add a document), GET /query (retrieve chunks),\n"
+            "POST /chat (answer grounded in retrieved context), GET /health,\n"
+            "GET /v1/stats. Retrieval logic lives in ``rag_core.py`` (pure, no web\n"
+            "framework); this module is the thin HTTP layer.\n\n"
+            "LLM seam: set OPENAI_BASE_URL (and optionally OPENAI_API_KEY /\n"
+            "OPENAI_MODEL) to answer /chat with an OpenAI-compatible LLM over the\n"
+            "retrieved context. With no seam configured, /chat still works — it\n"
+            "returns an extractive answer (the top retrieved chunk). No key required.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import os\n"
+            "from pathlib import Path\n\n"
+            "from fastapi import FastAPI, HTTPException, Query\n"
+            "from pydantic import BaseModel, Field\n\n"
+            "import rag_core\n\n"
+            f'app = FastAPI(title="{_mcp_server_name(app_name)}")\n'
+            "STORE = rag_core.CorpusStore()\n\n"
+            "# Seed the corpus from ./corpus at boot so /query works out of the box.\n"
+            '_CORPUS_DIR = Path(__file__).resolve().parent / "corpus"\n\n\n'
+            "def _seed_corpus() -> None:\n"
+            "    if not _CORPUS_DIR.is_dir():\n"
+            "        return\n"
+            '    for path in sorted(_CORPUS_DIR.glob("*")):\n'
+            '        if path.suffix.lower() not in (".md", ".txt"):\n'
+            "            continue\n"
+            "        try:\n"
+            '            STORE.add(path.read_text(encoding="utf-8", errors="replace"),\n'
+            "                      source=path.name)\n"
+            "        except OSError:\n"
+            "            continue\n\n\n"
+            "_seed_corpus()\n\n\n"
+            "class IngestRequest(BaseModel):\n"
+            "    text: str = Field(min_length=1, description=\"The document text to index\")\n"
+            '    source: str = "inline"\n\n\n'
+            "class ChatRequest(BaseModel):\n"
+            "    question: str = Field(min_length=1)\n"
+            "    k: int = 3\n\n\n"
+            '@app.get("/health")\n'
+            "def health() -> dict:\n"
+            '    return {"status": "ok", "app": "rag"}\n\n\n'
+            '@app.get("/v1/stats")\n'
+            "def stats() -> dict:\n"
+            "    return STORE.stats()\n\n\n"
+            '@app.post("/ingest")\n'
+            "def ingest(req: IngestRequest) -> dict:\n"
+            "    added = STORE.add(req.text, source=req.source)\n"
+            "    if added == 0:\n"
+            '        raise HTTPException(status_code=400, detail="text contained no indexable words")\n'
+            '    return {"ingested_chunks": added, **STORE.stats()}\n\n\n'
+            '@app.get("/query")\n'
+            "def query(q: str = Query(min_length=1), k: int = 3) -> dict:\n"
+            '    return {"query": q, "results": STORE.search(q, k=k)}\n\n\n'
+            "def _llm_answer(question: str, context: str) -> str | None:\n"
+            '    """Answer via the OPENAI_BASE_URL seam; None -> caller falls back.\n\n'
+            "    httpx is imported lazily so the app (and every non-/chat route) runs\n"
+            "    even when it isn't installed. Any failure degrades to the extractive\n"
+            "    fallback — /chat never 500s because an LLM was unreachable.\n"
+            '    """\n'
+            '    base = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")\n'
+            "    if not base:\n"
+            "        return None\n"
+            "    try:\n"
+            "        import httpx\n\n"
+            "        resp = httpx.post(\n"
+            '            f"{base}/chat/completions",\n'
+            "            json={\n"
+            '                "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),\n'
+            '                "messages": [\n'
+            '                    {"role": "system", "content": (\n'
+            '                        "Answer using ONLY the provided context. "\n'
+            '                        "If the context is insufficient, say so."\n'
+            "                    )},\n"
+            '                    {"role": "user", "content": f"Context:\\n{context}\\n\\nQuestion: {question}"},\n'
+            "                ],\n"
+            "            },\n"
+            "            headers={\n"
+            '                "Authorization": f"Bearer {os.environ.get(\'OPENAI_API_KEY\', \'sk-no-key\')}",\n'
+            "            },\n"
+            "            timeout=30.0,\n"
+            "        )\n"
+            "        data = resp.json()\n"
+            '        answer = data["choices"][0]["message"]["content"]\n'
+            "        return answer if isinstance(answer, str) and answer.strip() else None\n"
+            "    except Exception:  # noqa: BLE001 - degrade to extractive, never 500\n"
+            "        return None\n\n\n"
+            '@app.post("/chat")\n'
+            "def chat(req: ChatRequest) -> dict:\n"
+            "    results = STORE.search(req.question, k=req.k)\n"
+            "    if not results:\n"
+            "        return {\n"
+            '            "answer": "I could not find anything relevant in the corpus. "\n'
+            '                      "Ingest documents via POST /ingest and ask again.",\n'
+            '            "sources": [],\n'
+            '            "llm_used": False,\n'
+            "        }\n"
+            '    context = "\\n\\n".join(r["text"] for r in results)\n'
+            "    answer = _llm_answer(req.question, context)\n"
+            "    if answer is None:\n"
+            "        # Extractive fallback: the best-matching chunk IS the answer.\n"
+            '        answer = results[0]["text"]\n'
+            '        return {"answer": answer, "sources": results, "llm_used": False}\n'
+            '    return {"answer": answer, "sources": results, "llm_used": True}\n\n\n'
+            'if __name__ == "__main__":\n'
+            "    import uvicorn\n\n"
+            "    # PORT env so tooling (and the rag_check gate) can pick a free port.\n"
+            '    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))\n'
+        ),
+        "test_rag_core.py": (
+            '"""Unit tests for the PURE retrieval core (no server, no third-party deps)."""\n'
+            "import rag_core\n\n\n"
+            "def test_chunk_text_blank_and_short():\n"
+            "    assert rag_core.chunk_text(\"\") == []\n"
+            '    assert rag_core.chunk_text("just a few words") == ["just a few words"]\n\n\n'
+            "def test_chunk_text_windows_cover_all_words():\n"
+            '    words = " ".join(f"w{i}" for i in range(300))\n'
+            "    chunks = rag_core.chunk_text(words, max_words=120, overlap=20)\n"
+            "    assert len(chunks) > 1\n"
+            '    assert "w0" in chunks[0] and "w299" in chunks[-1]\n\n\n'
+            "def test_store_add_and_stats():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    added = store.add("alpha beta gamma", source="a.md")\n'
+            "    assert added == 1\n"
+            "    stats = store.stats()\n"
+            '    assert stats["documents"] == 1\n'
+            '    assert stats["chunks"] == 1\n'
+            '    assert stats["sources"] == ["a.md"]\n\n\n'
+            "def test_search_finds_planted_fact():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    store.add("The melting point of silicon is 1414 degrees Celsius.", source="facts.md")\n'
+            '    store.add("Bananas are yellow and rich in potassium.", source="fruit.md")\n'
+            '    results = store.search("what is the melting point of silicon", k=2)\n'
+            "    assert results, \"expected at least one result\"\n"
+            '    assert "1414" in results[0]["text"]\n'
+            '    assert results[0]["source"] == "facts.md"\n\n\n'
+            "def test_search_empty_query_and_empty_corpus():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    assert store.search("anything") == []\n'
+            '    store.add("some text here", source="x")\n'
+            '    assert store.search("") == []\n\n\n'
+            "def test_search_ranks_relevant_above_irrelevant():\n"
+            "    store = rag_core.CorpusStore()\n"
+            '    store.add("Quarterly revenue grew 12 percent year over year.", source="finance.md")\n'
+            '    store.add("The office plant needs watering twice a week.", source="plants.md")\n'
+            '    results = store.search("revenue growth quarterly", k=2)\n'
+            '    assert results and results[0]["source"] == "finance.md"\n'
+        ),
+        "corpus/seed.md": (
+            "# Seed corpus\n\n"
+            "This starter document proves ingestion + retrieval end-to-end. Replace or\n"
+            "extend it via `POST /ingest`.\n\n"
+            "## Reference facts\n\n"
+            "- The baseline ingestion benchmark completes in 41.7 seconds on the seed corpus.\n"
+            "- Retrieval is rarity-weighted token overlap over word-window chunks.\n"
+            "- The `/chat` route answers with retrieved context, with or without an LLM.\n"
+        ),
+        "requirements.txt": (
+            f"# Runtime dependencies for {title}.\n"
+            "fastapi>=0.110    # the HTTP layer (routes are thin wrappers over rag_core)\n"
+            "uvicorn>=0.29     # ASGI server: `python main.py` serves on $PORT\n"
+            "httpx>=0.27       # only used when OPENAI_BASE_URL is set (the LLM seam)\n"
+            "\n"
+            "# Dev/test (optional): `pip install pytest` to run test_rag_core.py.\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Python RAG app (FastAPI + pure retrieval core)",
+            install=(
+                "Requires Python 3.10+. Install into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (defaults to port 8000; set `PORT` to override):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Then talk to it:\n\n"
+                "```bash\n"
+                "curl -s localhost:8000/health\n"
+                "curl -s localhost:8000/v1/stats\n"
+                "curl -s -X POST localhost:8000/ingest -H 'content-type: application/json' \\\n"
+                "  -d '{\"text\": \"Your document text here\", \"source\": \"notes.md\"}'\n"
+                "curl -s 'localhost:8000/query?q=your+question&k=3'\n"
+                "curl -s -X POST localhost:8000/chat -H 'content-type: application/json' \\\n"
+                "  -d '{\"question\": \"What do my documents say about X?\"}'\n"
+                "```\n\n"
+                "To answer `/chat` with a real LLM, point the seam at any OpenAI-compatible\n"
+                "endpoint — no code change:\n\n"
+                "```bash\n"
+                "export OPENAI_BASE_URL=https://openrouter.ai/api/v1\n"
+                "export OPENAI_API_KEY=sk-...\n"
+                "```\n\n"
+                "Without the seam, `/chat` returns an extractive answer (the top retrieved\n"
+                "chunk) — every route works with zero API keys."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — /ingest, /query, /chat, /health, /v1/stats"),
+                ("rag_core.py", "Pure retrieval core (chunking + scoring) — the testable logic"),
+                ("corpus/seed.md", "Starter document indexed at boot"),
+                ("test_rag_core.py", "Unit tests for the pure core (no server needed)"),
+                ("requirements.txt", "Runtime deps: fastapi, uvicorn, httpx"),
+            ],
+            features=[
+                "Ingest any text via POST /ingest — chunked + indexed in memory",
+                "Semantic-ish retrieval: rarity-weighted token overlap, deterministic ranking",
+                "Grounded /chat answers with sources; extractive fallback needs no API key",
+                "OpenAI-compatible LLM seam via OPENAI_BASE_URL (OpenRouter, Ollama, …)",
+                "Health + corpus stats endpoints (/health, /v1/stats)",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_rag_core.py\n```"
+            ),
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
@@ -2018,6 +2368,7 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "phaser": _phaser,
     "swift": _swift,
     "mcp": _mcp,
+    "rag": _rag,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

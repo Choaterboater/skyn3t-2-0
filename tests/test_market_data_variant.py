@@ -37,7 +37,7 @@ def test_trigger_ignores_ordinary_briefs():
 
 def test_market_brief_gets_the_vendor_scaffold():
     files = scaffold_for("fastapi", "quotes", "a stock api with price history")
-    assert "vendors.py" in files and "test_market_api.py" in files
+    assert "vendors.py" in files and "test_main.py" in files
     main = files["main.py"]
     for route in ("/stock/{symbol}", "/indicators", "/news", "/health"):
         assert route in main, f"missing {route}"
@@ -68,8 +68,26 @@ def test_market_scaffold_own_proof_passes():
             dst.write_text(contents)
         proc = subprocess.run(
             [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
-             "-o", "addopts=", "test_market_api.py"],
+             "-o", "addopts=", "test_main.py"],
             cwd=str(root), capture_output=True, text=True, timeout=120,
         )
     assert proc.returncode == 0, (
         f"market scaffold proof failed:\n{proc.stdout}\n{proc.stderr}")
+
+
+def test_proof_run_passes_the_variant_cleanly(tmp_path):
+    # Structural proof with NO checklist gaps — a variant whose test file name
+    # misses the stack checklist dampens the score and nudges the fix-loop
+    # into stub-filling (found by auditing proof_run over the variants).
+    from skyn3t.studio.planner import file_checklist
+    from skyn3t.studio.proof_run import proof_run
+
+    files = scaffold_for("fastapi", "quotes", "a stock api with price history")
+    for rel, contents in files.items():
+        dst = tmp_path / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(contents)
+    res = proof_run(tmp_path, checklist=file_checklist('fastapi'), stack='fastapi',
+                    run_tests=True, enable_mock_llm=False)
+    assert res.passed, res.to_dict()
+    assert res.missing == [], res.missing

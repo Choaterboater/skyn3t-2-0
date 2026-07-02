@@ -275,3 +275,97 @@ def test_default_cases_use_valid_pin_keys():
     for c in DEFAULT_CASES:
         if c.stack:  # a pinned stack must be one the selector actually accepts
             assert _validate_pin(c.stack), f"{c.id}: {c.stack!r} is not a valid pin"
+
+
+# --------------------------------------------------------------------------
+# coverage + regression cases (the flywheel's memory)
+# --------------------------------------------------------------------------
+
+def test_bench_covers_every_builder_stack():
+    # Every real builder stack must have at least one exam case, so a per-app-type
+    # GO-rate can never go blind on a stack.
+    from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS, _validate_pin
+
+    covered = {_validate_pin(c.stack) for c in DEFAULT_CASES if c.stack}
+    missing = set(REAL_BUILDER_STACKS) - covered
+    assert not missing, f"bench has no case for: {sorted(missing)}"
+
+
+def test_capture_regression_case_appends_dedupes_and_loads(tmp_path):
+    from skyn3t.studio.bench import (
+        all_cases,
+        capture_regression_case,
+        load_regression_cases,
+    )
+
+    assert load_regression_cases(tmp_path) == []
+    assert capture_regression_case(tmp_path, "broken build #1", "a thing that failed", "react")
+    cases = load_regression_cases(tmp_path)
+    assert len(cases) == 1
+    assert cases[0].id == "broken-build-1"  # slugified + dash-collapsed
+    assert cases[0].brief == "a thing that failed" and cases[0].stack == "react"
+    # Deduped by id — a second capture of the same id is a no-op.
+    assert capture_regression_case(tmp_path, "broken build #1", "again", "react") is False
+    assert len(load_regression_cases(tmp_path)) == 1
+    # all_cases merges the defaults + the captured case.
+    assert len(all_cases(tmp_path)) == len(DEFAULT_CASES) + 1
+
+
+def test_capture_regression_case_ignores_empties_and_default_ids(tmp_path):
+    from skyn3t.studio.bench import capture_regression_case, load_regression_cases
+
+    assert capture_regression_case(tmp_path, "", "a brief") is False   # no id
+    assert capture_regression_case(tmp_path, "x", "") is False         # no brief
+    # An id colliding with a built-in case must not be re-added.
+    assert capture_regression_case(tmp_path, "notes-api", "dup of a default") is False
+    assert load_regression_cases(tmp_path) == []
+
+
+def test_capture_regression_case_is_capped(tmp_path):
+    from skyn3t.studio.bench import capture_regression_case, load_regression_cases
+
+    for i in range(5):
+        capture_regression_case(tmp_path, f"c{i}", f"brief {i}", "python", cap=3)
+    cases = load_regression_cases(tmp_path)
+    assert [c.id for c in cases] == ["c2", "c3", "c4"]  # only the most recent `cap`
+
+
+def test_finalize_captures_only_failed_builds_when_enabled(tmp_path):
+    # The flywheel wiring: with bench_capture_failures on, a no_go build becomes a
+    # regression case; a go build does not.
+    import asyncio
+
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.bench import load_regression_cases
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.studio.planner import Planner
+    from skyn3t.studio.runner import StudioRunner
+
+    class _FakeMemory:
+        async def save_build(self, **fields):
+            return None
+
+    async def run():
+        settings = Settings(projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data",
+                            logs_dir=tmp_path / "logs", bench_capture_failures=True)
+        bus = EventBus()
+        runner = StudioRunner(bus, Orchestrator(bus), settings=settings, memory=_FakeMemory())
+        plan = Planner(settings).plan("a python thing", "s")
+
+        bad = BuildManifest(slug="flywheel-fail", brief="a thing that failed review", stack="python")
+        bad.verdict = "no_go"
+        bad.artifact_dir = str(tmp_path / "bad")
+        await runner._finalize(bad, plan, "cid", 20.0)
+
+        good = BuildManifest(slug="flywheel-pass", brief="a good thing", stack="python")
+        good.verdict = "go"
+        good.artifact_dir = str(tmp_path / "good")
+        await runner._finalize(good, plan, "cid", 90.0)
+
+        ids = {c.id for c in load_regression_cases(settings.data_dir)}
+        assert "flywheel-fail" in ids     # the failure was captured
+        assert "flywheel-pass" not in ids  # the passing build was not
+
+    asyncio.run(run())

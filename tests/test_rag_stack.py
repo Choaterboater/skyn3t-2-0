@@ -187,6 +187,17 @@ def test_scaffold_rag_serves_a_root_chat_page():
     assert "https://" not in low.split("<!doctype html>")[1], "chat page must not load external assets"
 
 
+def test_scaffold_rag_streams_chat_over_sse():
+    # Wave-2 §3.1 streaming tier: the same grounded answer over SSE, and the
+    # chat page consumes it progressively via EventSource.
+    files = scaffold_for("rag", "demo", "a rag app")
+    main = files["main.py"]
+    assert '@app.get("/chat/stream")' in main
+    assert "text/event-stream" in main
+    assert "[DONE]" in main, "the stream must terminate with data: [DONE]"
+    assert "EventSource" in main, "the chat page must consume the SSE stream"
+
+
 # ---- 4. proof-run: rag is python-family, NOT node / NOT swift -------------
 def test_rag_is_not_a_node_or_swift_stack_for_proof():
     assert "rag" not in _NODE_STACKS

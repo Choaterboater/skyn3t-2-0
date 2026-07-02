@@ -224,6 +224,21 @@ def _http(
         return -1, str(exc)
 
 
+def _sse_get(url: str, timeout: float) -> tuple[int, str, str]:
+    """One bounded GET returning ``(status, content_type, body)``. The socket
+    timeout bounds every read, so a stream that never terminates surfaces as a
+    transport failure ``(-1, "", reason)`` instead of a hang."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 - loopback only
+            ctype = str(resp.headers.get("Content-Type") or "")
+            return int(resp.status), ctype, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as err:
+        return int(err.code), str(err.headers.get("Content-Type") or ""), ""
+    except Exception as exc:  # noqa: BLE001 - refused / timeout / mid-read stall
+        return -1, "", str(exc)
+
+
 def _json_dict(text: str) -> dict | None:
     try:
         parsed = json.loads(text)
@@ -491,6 +506,33 @@ def _probe_server(
         else:
             checked["chat"] = "ok"
             checked["chat_answer_grounded"] = _MARKER_TOKEN in answer
+
+        # 5b. /chat/stream — the SSE contract (wave-2 §3.1 streaming tier): a
+        # 200 text/event-stream that emits `data:` frames, carries the grounded
+        # answer, and TERMINATES with `data: [DONE]` (a never-ending stream
+        # surfaces as a bounded transport failure, never a hang).
+        if ingested:
+            q = urllib.parse.quote(_MARKER_QUERY)
+            status, ctype, body = _sse_get(
+                f"{base}/chat/stream?question={q}&k=3", timeout=http_timeout)
+            if status != 200:
+                issues.append(
+                    f"GET /chat/stream?question=...&k=3 must return 200 with an SSE "
+                    f"stream of the grounded answer; got status {status}")
+                checked["chat_stream"] = "failed"
+            elif not ctype.lower().startswith("text/event-stream"):
+                issues.append(
+                    f"/chat/stream must set Content-Type: text/event-stream "
+                    f"(got {ctype!r}) so browsers can consume it via EventSource")
+                checked["chat_stream"] = "wrong_content_type"
+            elif "data:" not in body or "[DONE]" not in body:
+                issues.append(
+                    "/chat/stream must emit SSE `data:` frames and terminate with "
+                    "a final `data: [DONE]` frame so clients know the answer ended")
+                checked["chat_stream"] = "malformed_frames"
+            else:
+                checked["chat_stream"] = "ok"
+                checked["chat_stream_grounded"] = _MARKER_TOKEN in body
 
         # 6. one malformed call — an ingest with no text must yield a structured
         # 4xx (validation), never a 5xx crash and never a silent 2xx accept.

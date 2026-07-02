@@ -3789,6 +3789,15 @@ class StudioRunner:
             manifest.extra["deploy_plan"] = plan_deploy(project_dir, plan.stack).to_dict()
         except Exception as exc:  # noqa: BLE001 - planning must not break delivery
             log.warning("studio.deploy_plan_failed", error=str(exc))
+        # Reliability flywheel (opt-in): a real no_go/failed build becomes a
+        # permanent bench regression case so a future change must keep it green.
+        if getattr(self.settings, "bench_capture_failures", False) and manifest.verdict != "go":
+            try:
+                from skyn3t.studio.bench import capture_regression_case
+                capture_regression_case(self.settings.data_dir, manifest.slug,
+                                        manifest.brief, manifest.stack)
+            except Exception as exc:  # noqa: BLE001 - capture must not break delivery
+                log.warning("studio.bench_capture_failed", error=str(exc))
         manifest.save(project_dir)
         await self._save_build(manifest)
         await self.event_bus.emit(

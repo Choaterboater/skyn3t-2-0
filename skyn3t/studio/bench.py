@@ -15,12 +15,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-# A small, stack-diverse default brief-set. Intentionally concrete so intent
-# scoring + stack selection have real signal to measure.
-# Stacks MUST be valid selector pin keys (studio.stack_selector._validate_pin):
-# static/python/fastapi/react/express/react_native/phaser + collapses
-# (flask->fastapi, cli->python). 'python_cli'/'react_vite' are NOT pin keys and
-# silently drop.
+# The factory's exam: one concrete case per REAL builder stack, so a per-app-type
+# GO-rate (summarize_by_stack) can never go blind on a stack. Briefs are concrete
+# so intent scoring has real signal. A case's `stack` must be a valid selector pin
+# (studio.stack_selector._validate_pin = the REAL_BUILDER_STACKS set, with the
+# flask->fastapi / cli->python collapses); an invalid pin silently drops to
+# selector choice. `test_bench_covers_every_builder_stack` locks the coverage.
 DEFAULT_CASES_RAW = [
     ("coloring-site", "a website with printable coloring pages for kids", "static"),
     ("todo-cli", "a python command-line to-do list that saves tasks to a file", "python"),
@@ -28,6 +28,18 @@ DEFAULT_CASES_RAW = [
     ("weather-spa", "a React app that shows a 5-day weather forecast for a city", "react"),
     ("expense-tracker", "a Flask web app to track monthly expenses by category", "flask"),
     ("dino-runner", "a phaser browser game where a dino jumps over cacti to score points", "phaser"),
+    # Breadth coverage — the remaining registry stacks so no app-type is invisible.
+    ("blog-ssr", "a Next.js blog with server-rendered post pages and a home index", "nextjs"),
+    ("docs-astro", "an Astro static documentation site with a sidebar and code blocks", "astro"),
+    ("shop-remix", "a Remix storefront with a product list page and a cart page", "remix"),
+    ("shortener-express", "a Node Express URL shortener API with an in-memory store", "express"),
+    ("habit-mobile", "an Expo mobile app: a habit tracker with daily streaks", "react_native"),
+    ("timer-macos", "a native macOS SwiftUI menu-bar countdown timer app", "swift"),
+    ("notes-desktop", "a Tauri desktop markdown notes app that saves to a local file", "tauri"),
+    ("sqlite-mcp", "an MCP server exposing a tool to run read-only queries on a sqlite database", "mcp"),
+    ("docs-rag", "a RAG app to ingest and chat with your uploaded text documents", "rag"),
+    ("digest-workflow", "an agent workflow that fetches a URL, summarizes it, and posts the summary to a webhook", "workflow"),
+    ("marketing-pack", "an agent persona pack for a startup marketing team with a catalog", "agent_pack"),
 ]
 
 
@@ -218,6 +230,73 @@ def load_run(path) -> BenchRun:
     return BenchRun(label=data.get("label", ""), results=results,
                     summary=data.get("summary", {}),
                     created_at=float(data.get("created_at", 0.0)))
+
+
+# ---------------------------------------------------------------------------
+# regression cases — the flywheel's memory: a failed REAL build becomes a
+# permanent exam case, so any future change must keep it green (deduped, capped).
+# ---------------------------------------------------------------------------
+
+_REGRESSION_FILENAME = "regression_cases.json"
+
+
+def _slug(text: str) -> str:
+    out = "".join(c if (c.isalnum() or c in "-_") else "-" for c in (text or "").lower())
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-")[:80]
+
+
+def regression_cases_path(data_dir) -> Path:
+    return Path(data_dir) / "bench" / _REGRESSION_FILENAME
+
+
+def load_regression_cases(data_dir) -> list[BenchCase]:
+    """Cases captured from real failed builds. Never raises; missing/corrupt => []."""
+    path = regression_cases_path(data_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[BenchCase] = []
+    for d in data if isinstance(data, list) else []:
+        cid = _slug(str((d or {}).get("id", "")))
+        brief = str((d or {}).get("brief", "")).strip()
+        if cid and brief:
+            out.append(BenchCase(id=cid, brief=brief, stack=str((d or {}).get("stack", "")).strip()))
+    return out
+
+
+def capture_regression_case(data_dir, case_id: str, brief: str, stack: str = "",
+                            *, cap: int = 200) -> bool:
+    """Append a (failed real build) as a permanent regression case — deduped by id
+    against BOTH the defaults and prior captures, capped to the most recent ``cap``.
+    Returns True when a NEW case was added. Never raises."""
+    try:
+        cid = _slug(case_id)
+        brief = (brief or "").strip()
+        if not cid or not brief:
+            return False
+        existing = load_regression_cases(data_dir)
+        seen = {c.id for c in existing} | {c.id for c in DEFAULT_CASES}
+        if cid in seen:
+            return False
+        existing.append(BenchCase(id=cid, brief=brief, stack=(stack or "").strip()))
+        existing = existing[-cap:]
+        path = regression_cases_path(data_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from skyn3t.atomic_io import atomic_write_text
+        atomic_write_text(path, json.dumps([c.to_dict() for c in existing], indent=2))
+        return True
+    except Exception:  # noqa: BLE001 - capturing a case must never break a build
+        return False
+
+
+def all_cases(data_dir) -> list[BenchCase]:
+    """The full exam: the built-in DEFAULT_CASES plus captured regression cases."""
+    return list(DEFAULT_CASES) + load_regression_cases(data_dir)
 
 
 # ---------------------------------------------------------------------------

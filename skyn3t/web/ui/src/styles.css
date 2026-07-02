@@ -125,7 +125,9 @@ body {
   }
   .forge-rail.is-live::after {
     opacity: 1;
-    animation: sweep 2.4s ease-in-out infinite;
+    /* @apply (not raw `animation: sweep`): JIT only emits @keyframes for
+       utilities it can see, and this file isn't scanned content. */
+    @apply animate-sweep;
   }
 }
 

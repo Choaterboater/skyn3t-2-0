@@ -163,6 +163,39 @@ def _implies_market_data(brief: str) -> bool:
     return any(k in low for k in _MARKET_DATA_KEYWORDS)
 
 
+# Finance / paper-trading variant of the fastapi stack (wave-2 §3.4): a
+# strategy/portfolio brief gets the paper-trading scaffold (pure Decimal
+# strategy core + dated candles + sqlite paper ledger). Two tiers (the
+# adversarial review caught the one-tier version stealing marketing-research,
+# creative-portfolio, and item-trading briefs): STRONG phrases fire alone;
+# AMBIGUOUS ones ("portfolio dashboard" could be a photographer's) need a
+# finance co-signal elsewhere in the brief.
+_FINANCE_STRONG_KEYWORDS = (
+    "paper trading", "paper-trading", "trading strategy", "trading simulator",
+    "backtest", "backtesting", "stock research", "investment research",
+    "investment agent", "stock screener", "buy/sell signals",
+    "stock portfolio", "investment portfolio", "manages my portfolio",
+    "day trading", "algorithmic trading", "stock trading", "crypto trading",
+)
+_FINANCE_AMBIGUOUS_KEYWORDS = (
+    "trading agent", "trading bot", "trading dashboard", "portfolio tracker",
+    "portfolio dashboard", "portfolio manager", "market analysis",
+)
+_FINANCE_CONTEXT_WORDS = (
+    "stock", "invest", "crypto", "equit", "dividend", "etf", "ticker",
+    "shares", "financial", "candles", "ohlcv", "nasdaq", "wall street",
+)
+
+
+def _implies_finance(brief: str) -> bool:
+    """True when the brief asks for a trading/portfolio/backtesting app."""
+    low = (brief or "").lower()
+    if any(k in low for k in _FINANCE_STRONG_KEYWORDS):
+        return True
+    return (any(k in low for k in _FINANCE_AMBIGUOUS_KEYWORDS)
+            and any(w in low for w in _FINANCE_CONTEXT_WORDS))
+
+
 # LLM-gateway variant of the fastapi stack (wave-2 §3.7): a router/proxy brief
 # gets the two-stub-upstream gateway scaffold. Phrases only — bare "proxy"/
 # "router"/"gateway" would steal network/web briefs.
@@ -2100,6 +2133,774 @@ def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
                 "Vendor seam via DATA_VENDOR env — real vendors plug in, keys optional",
                 "Typed error envelopes: 404 NO_DATA, 422 validation — never a bare 500",
                 "Pure indicator math in vendors.py — testable without a server",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_main.py\n```"
+            ),
+        ),
+    }
+
+
+# ---- finance / paper-trading variant (wave-2 §3.4) -------------------------
+# Generated sources live in column-0 triple-quoted constants: 400 lines of
+# per-line concatenation is where escaping bugs breed, and the content must
+# not inherit function indentation anyway.
+
+_FIN_MARKET_PY = '''"""Pure market-data layer: dated canned OHLCV + news. Stdlib only.
+
+The CANNED vendor ships deterministic DATED candles so every endpoint works
+with ZERO keys (the proof story stays offline). The as_of cutoff lives HERE
+(candles_until) so no caller can read data from the future — the temporal
+invariant is structural, not a convention. Add a real vendor by implementing
+the same methods and registering it in VENDORS; a missing key must select
+canned, not crash.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+class NoData(Exception):
+    """Raised when a vendor has no data for a symbol (-> 404 NO_DATA)."""
+
+    def __init__(self, symbol: str) -> None:
+        super().__init__(f"no data for symbol '{symbol}'")
+        self.symbol = symbol
+
+
+@dataclass(frozen=True)
+class Candle:
+    """One daily bar. Dates are ISO YYYY-MM-DD (string order == date order);
+    money stays str here — Decimal conversion is the strategy core's job."""
+
+    date: str
+    open: str
+    high: str
+    low: str
+    close: str
+
+
+def _rows(spec) -> list[Candle]:
+    return [Candle(*row) for row in spec]
+
+
+# AAPL is shaped to produce one golden cross and one death cross under the
+# SMA(3)/SMA(5) strategy, so backtests exercise both trade sides.
+CANNED_CANDLES: dict[str, list[Candle]] = {
+    "AAPL": _rows([
+        ("2024-01-01", "179.50", "181.00", "178.50", "180.00"),
+        ("2024-01-02", "180.00", "182.00", "179.00", "181.00"),
+        ("2024-01-03", "181.00", "183.00", "180.00", "182.00"),
+        ("2024-01-04", "182.00", "184.00", "181.00", "183.00"),
+        ("2024-01-05", "183.00", "185.00", "182.00", "184.00"),
+        ("2024-01-06", "184.00", "184.50", "178.00", "179.00"),
+        ("2024-01-07", "179.00", "179.50", "174.00", "175.00"),
+        ("2024-01-08", "175.00", "175.50", "171.00", "172.00"),
+        ("2024-01-09", "172.00", "177.00", "171.50", "176.00"),
+        ("2024-01-10", "176.00", "182.00", "175.50", "181.00"),
+        ("2024-01-11", "181.00", "187.00", "180.50", "186.00"),
+        ("2024-01-12", "186.00", "191.00", "185.50", "190.00"),
+        ("2024-01-13", "190.00", "190.50", "182.00", "183.00"),
+        ("2024-01-14", "183.00", "183.50", "175.00", "176.00"),
+        ("2024-01-15", "176.00", "176.50", "170.00", "171.00"),
+    ]),
+    "MSFT": _rows([
+        ("2024-01-01", "399.00", "401.00", "398.00", "400.00"),
+        ("2024-01-02", "400.00", "403.00", "399.50", "402.00"),
+        ("2024-01-03", "402.00", "402.50", "400.00", "401.00"),
+        ("2024-01-04", "401.00", "405.00", "400.50", "404.00"),
+        ("2024-01-05", "404.00", "407.00", "403.00", "406.00"),
+        ("2024-01-06", "406.00", "406.50", "404.00", "405.00"),
+        ("2024-01-07", "405.00", "409.00", "404.50", "408.00"),
+    ]),
+    "DEMO": _rows([
+        ("2024-01-01", "94.50", "96.00", "94.00", "95.00"),
+        ("2024-01-02", "95.00", "97.00", "94.50", "96.00"),
+        ("2024-01-03", "96.00", "98.00", "95.50", "97.00"),
+        ("2024-01-04", "97.00", "99.00", "96.50", "98.00"),
+        ("2024-01-05", "98.00", "100.00", "97.50", "99.00"),
+        ("2024-01-06", "99.00", "101.00", "98.50", "100.00"),
+        ("2024-01-07", "100.00", "102.00", "99.50", "101.00"),
+    ]),
+}
+
+CANNED_NEWS: dict[str, list[str]] = {
+    "AAPL": ["AAPL ships a new device", "Analysts revise AAPL targets"],
+    "MSFT": ["MSFT expands cloud regions", "MSFT earnings beat estimates"],
+    "DEMO": ["DEMO fixture headline one", "DEMO fixture headline two"],
+}
+
+
+class CannedVendor:
+    """Deterministic dated fixtures — the default vendor and the proof seam."""
+
+    name = "canned"
+
+    def candles(self, symbol: str) -> list[Candle]:
+        sym = symbol.upper()
+        if sym not in CANNED_CANDLES:
+            raise NoData(sym)
+        return list(CANNED_CANDLES[sym])
+
+    def candles_until(self, symbol: str, as_of: str | None = None) -> list[Candle]:
+        """All candles dated <= as_of (None = everything). The temporal gate:
+        analysis at 2024-01-05 must never see a 2024-01-06 row."""
+        rows = self.candles(symbol)
+        if as_of:
+            rows = [c for c in rows if c.date <= as_of]
+        if not rows:
+            raise NoData(symbol.upper())
+        return rows
+
+    def latest_close(self, symbol: str) -> str:
+        return self.candles(symbol)[-1].close
+
+    def get_news(self, symbol: str) -> list[str]:
+        sym = symbol.upper()
+        if sym not in CANNED_NEWS:
+            raise NoData(sym)
+        return list(CANNED_NEWS[sym])
+
+
+VENDORS = {"canned": CannedVendor}
+
+
+def select_vendor() -> CannedVendor:
+    """The vendor named by DATA_VENDOR (default canned). Unknown names fall
+    back to canned — a misconfigured vendor must never crash the service."""
+    name = os.environ.get("DATA_VENDOR", "canned").strip().lower()
+    return VENDORS.get(name, CannedVendor)()
+'''
+
+_FIN_STRATEGY_PY = '''"""Pure strategy core — stdlib only, Decimal money math (the sim-core split).
+
+Deterministic by construction: same candles -> identical signal and identical
+trade list. No wall clock, no randomness, no I/O, no web framework. All money
+is Decimal (float never touches it); a non-finite value is an invariant break
+and raises rather than propagating NaN/Infinity into a report.
+"""
+from __future__ import annotations
+
+from decimal import ROUND_FLOOR, Decimal
+
+FAST, SLOW = 3, 5
+
+# Hard ceiling on backtest cash: beyond it, int(cash/price) is a multi-
+# thousand-digit integer that pins the CPU for minutes and then fails JSON
+# serialization (Python's 4300-digit str limit) — one request could DoS a
+# worker. The API also bounds cash, but the PURE core must be safe alone.
+MAX_CASH = Decimal("1e15")
+
+
+def sma(values: list[Decimal], window: int) -> list[Decimal]:
+    """Simple moving average; [] when the window exceeds the series."""
+    if window < 1 or window > len(values):
+        return []
+    return [sum(values[i:i + window], Decimal("0")) / window
+            for i in range(len(values) - window + 1)]
+
+
+def _closes(candles) -> list[Decimal]:
+    return [Decimal(str(c.close)) for c in candles]
+
+
+def _finite(value: Decimal) -> Decimal:
+    if not value.is_finite():
+        raise ValueError("non-finite money value — strategy invariant broken")
+    return value
+
+
+def decide(candles) -> dict:
+    """BUY on a fresh golden cross, SELL on a fresh death cross, else HOLD."""
+    closes = _closes(candles)
+    if len(closes) < SLOW + 1:
+        return {"signal": "HOLD",
+                "reason": f"need {SLOW + 1}+ candles, have {len(closes)}"}
+    fast, slow = sma(closes, FAST), sma(closes, SLOW)
+    above_now = fast[-1] > slow[-1]
+    above_prev = fast[-2] > slow[-2]
+    if above_now and not above_prev:
+        return {"signal": "BUY", "reason": f"SMA{FAST} crossed above SMA{SLOW}"}
+    if not above_now and above_prev:
+        return {"signal": "SELL", "reason": f"SMA{FAST} crossed below SMA{SLOW}"}
+    return {"signal": "HOLD", "reason": "no fresh crossover"}
+
+
+def run_backtest(candles, cash: Decimal = Decimal("10000")) -> dict:
+    """Long-only all-in replay: a fresh BUY cross buys max whole shares, a
+    fresh SELL cross flattens. Conservation is recomputed FROM THE TRADE LIST
+    (initial - buys + sells == final cash, net qty == position) rather than
+    asserted by construction."""
+    initial = _finite(Decimal(cash))
+    if not Decimal("0") < initial <= MAX_CASH:
+        raise ValueError(f"cash must be in (0, {MAX_CASH}]")
+    closes = _closes(candles)
+    cash_now = initial
+    position = 0
+    trades: list[dict] = []
+    for i in range(SLOW, len(closes)):
+        sig = decide(candles[:i + 1])["signal"]
+        price = closes[i]
+        if sig == "BUY" and position == 0:
+            # ROUND_FLOOR, not bare int(): Decimal division rounds to context
+            # precision first, and a rounded-UP quotient buys one share more
+            # than the cash covers while "conserved" stays True.
+            qty = int((cash_now / price).to_integral_value(rounding=ROUND_FLOOR))
+            if qty > 0:
+                position = qty
+                cash_now -= qty * price
+                trades.append({"date": candles[i].date, "side": "BUY",
+                               "qty": qty, "price": str(price)})
+        elif sig == "SELL" and position > 0:
+            cash_now += position * price
+            trades.append({"date": candles[i].date, "side": "SELL",
+                           "qty": position, "price": str(price)})
+            position = 0
+    equity = _finite(cash_now + position * closes[-1])
+    spent = sum((Decimal(t["price"]) * t["qty"]
+                 for t in trades if t["side"] == "BUY"), Decimal("0"))
+    earned = sum((Decimal(t["price"]) * t["qty"]
+                  for t in trades if t["side"] == "SELL"), Decimal("0"))
+    net_qty = sum(t["qty"] if t["side"] == "BUY" else -t["qty"] for t in trades)
+    return {
+        "trades": trades,
+        "final_cash": str(cash_now),
+        "position": position,
+        "equity": str(equity),
+        "pnl": str(equity - initial),
+        "data_through": candles[-1].date,
+        "conserved": (initial - spent + earned == cash_now
+                      and net_qty == position),
+    }
+'''
+
+_FIN_LEDGER_PY = '''"""Paper-trading ledger — stdlib sqlite3, money as Decimal via integer cents.
+
+PAPER-ONLY by design: there is no broker adapter, so a live order cannot
+exist. The db path is env config (LEDGER_FILE, default ledger.db) — tests and
+gates neutralize the persistence seam by pointing it at a temp path, so
+probes never ship inside a delivery. Read paths (cash/positions/portfolio)
+NEVER create the db file — a liveness prober GETting /api/portfolio must not
+write a ledger.db into the delivery. Float never touches money. Writes are
+serialized under a process-wide lock so the overdraft check and the insert
+are atomic (FastAPI runs sync routes in a threadpool — concurrent orders are
+real).
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+import threading
+from contextlib import closing
+from decimal import Decimal
+
+STARTING_CASH = Decimal("100000")
+_WRITE_LOCK = threading.Lock()
+
+
+class InsufficientFunds(Exception):
+    """Order would overdraw cash (BUY) or exceed the position (SELL)."""
+
+
+def _db_path() -> str:
+    return os.environ.get("LEDGER_FILE", "ledger.db")
+
+
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path())
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS orders ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " symbol TEXT NOT NULL, side TEXT NOT NULL,"
+        " qty INTEGER NOT NULL, price_cents INTEGER NOT NULL)")
+    return conn
+
+
+def _cents(price: Decimal) -> int:
+    return int((price * 100).to_integral_value())
+
+
+def cash() -> Decimal:
+    if not os.path.exists(_db_path()):  # read paths never create the db
+        return STARTING_CASH
+    with closing(_connect()) as conn:
+        rows = conn.execute("SELECT side, qty, price_cents FROM orders").fetchall()
+    out = STARTING_CASH
+    for side, qty, cents in rows:
+        delta = Decimal(cents) * qty / 100
+        out = out - delta if side == "BUY" else out + delta
+    return out
+
+
+def positions() -> dict[str, int]:
+    if not os.path.exists(_db_path()):  # read paths never create the db
+        return {}
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT symbol, SUM(CASE side WHEN 'BUY' THEN qty ELSE -qty END)"
+            " FROM orders GROUP BY symbol").fetchall()
+    return {sym: int(qty) for sym, qty in rows if qty}
+
+
+def record_order(symbol: str, side: str, qty: int, price: Decimal) -> dict:
+    """Validate against the CURRENT ledger, then append — atomically. The
+    lock spans check+insert; without it two threadpool requests both pass the
+    overdraft check and 'Never overdrafts' silently breaks."""
+    with _WRITE_LOCK:
+        if side == "BUY" and qty * price > cash():
+            raise InsufficientFunds(
+                f"BUY {qty} {symbol} costs more than available cash")
+        if side == "SELL" and qty > positions().get(symbol, 0):
+            raise InsufficientFunds(
+                f"SELL {qty} {symbol} exceeds the held position")
+        with closing(_connect()) as conn, conn:
+            cur = conn.execute(
+                "INSERT INTO orders (symbol, side, qty, price_cents)"
+                " VALUES (?, ?, ?, ?)", (symbol, side, qty, _cents(price)))
+            order_id = cur.lastrowid
+    return {"order_id": order_id, "symbol": symbol, "side": side,
+            "qty": qty, "price": str(price), "mode": "paper"}
+
+
+def portfolio(price_of) -> dict:
+    """Cash, positions, and marked-to-market equity. ``price_of(symbol)``
+    supplies the mark price as a Decimal."""
+    held = positions()
+    cash_now = cash()
+    equity = cash_now + sum(
+        (price_of(sym) * qty for sym, qty in held.items()), Decimal("0"))
+    return {"cash": str(cash_now), "positions": held,
+            "equity": str(equity), "mode": "paper"}
+'''
+
+# Raw string: the as_of regex must reach the generated file unmangled.
+_FIN_MAIN_BODY = r'''from __future__ import annotations
+
+from decimal import Decimal
+
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
+
+import ledger
+import market
+import strategy
+
+_DATE = r"^\d{4}-\d{2}-\d{2}$"
+'''
+
+_FIN_MAIN_ROUTES = r'''VENDOR = market.select_vendor()
+
+
+def _no_data(symbol: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={"error": {"type": "NO_DATA", "symbol": symbol.upper()}},
+    )
+
+
+def _insufficient(detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"type": "INSUFFICIENT_FUNDS", "detail": detail}},
+    )
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "vendor": VENDOR.name, "mode": "paper"}
+
+
+@app.get("/api/signal")
+def signal(symbol: str = Query(min_length=1),
+           as_of: str | None = Query(default=None, pattern=_DATE)):
+    try:
+        candles = VENDOR.candles_until(symbol, as_of)
+    except market.NoData:
+        return _no_data(symbol)
+    verdict = strategy.decide(candles)
+    return {"symbol": symbol.upper(), **verdict,
+            "as_of": as_of, "data_through": candles[-1].date}
+
+
+class BacktestReq(BaseModel):
+    symbol: str = Field(min_length=1)
+    # Bounded above as well as below: an unbounded Decimal accepts "1e999999",
+    # which pins the CPU in int(cash/price) for minutes and then 500s on
+    # JSON's 4300-digit integer limit — a one-request DoS.
+    cash: Decimal = Field(default=Decimal("10000"), gt=0,
+                          le=Decimal("1000000000"))
+    as_of: str | None = Field(default=None, pattern=_DATE)
+
+
+@app.post("/api/backtest")
+def backtest(req: BacktestReq):
+    try:
+        candles = VENDOR.candles_until(req.symbol, req.as_of)
+    except market.NoData:
+        return _no_data(req.symbol)
+    try:
+        result = strategy.run_backtest(candles, req.cash)
+    except ValueError as exc:  # the pure core's own MAX_CASH guard
+        return JSONResponse(status_code=422, content={
+            "error": {"type": "INVALID_PARAMS", "detail": str(exc)}})
+    return {"symbol": req.symbol.upper(), **result}
+
+
+class OrderReq(BaseModel):
+    symbol: str = Field(min_length=1)
+    side: str = Field(pattern="^(BUY|SELL)$")
+    qty: int = Field(ge=1)
+
+
+@app.post("/api/orders")
+def orders(req: OrderReq):
+    try:
+        price = Decimal(VENDOR.latest_close(req.symbol))
+    except market.NoData:
+        return _no_data(req.symbol)
+    try:
+        return ledger.record_order(req.symbol.upper(), req.side, req.qty, price)
+    except ledger.InsufficientFunds as exc:
+        return _insufficient(str(exc))
+
+
+def _mark_price(sym: str) -> Decimal:
+    """Mark price for portfolio valuation; a symbol the ACTIVE vendor no
+    longer knows (e.g. after a DATA_VENDOR switch) marks at 0 rather than
+    500ing the whole portfolio forever."""
+    try:
+        return Decimal(VENDOR.latest_close(sym))
+    except market.NoData:
+        return Decimal("0")
+
+
+@app.get("/api/portfolio")
+def portfolio():
+    return ledger.portfolio(_mark_price)
+
+
+@app.get("/api/news")
+def news(symbol: str = Query(min_length=1)):
+    try:
+        return {"symbol": symbol.upper(), "items": VENDOR.get_news(symbol)}
+    except market.NoData:
+        return _no_data(symbol)
+
+
+_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Paper Trading Desk</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0b0f17;color:#e8e6e1;
+     max-width:720px;margin:2rem auto;padding:0 1rem}
+h1{font-size:1.3rem} .row{margin:.6rem 0} input,select,button{
+padding:.45rem .6rem;border-radius:6px;border:1px solid #333;background:#141a26;
+color:#e8e6e1} button{cursor:pointer;background:#c2410c;border:none}
+pre{background:#141a26;padding:1rem;border-radius:8px;overflow:auto}
+small{color:#8a8f98}
+</style></head><body>
+<h1>Paper Trading Desk <small>(paper mode — no real orders)</small></h1>
+<div class="row">
+  <input id="sym" value="AAPL" size="6">
+  <button onclick="signal()">Signal</button>
+  <button onclick="backtest()">Backtest</button>
+  <select id="side"><option>BUY</option><option>SELL</option></select>
+  <input id="qty" type="number" value="5" min="1" style="width:5rem">
+  <button onclick="order()">Paper order</button>
+</div>
+<pre id="out">ready</pre>
+<h2 style="font-size:1.05rem">Portfolio</h2>
+<pre id="port">loading…</pre>
+<script>
+const out=document.getElementById('out'),port=document.getElementById('port');
+const show=(el,d)=>el.textContent=JSON.stringify(d,null,2);
+const sym=()=>document.getElementById('sym').value.trim();
+async function refresh(){show(port,await (await fetch('/api/portfolio')).json())}
+async function signal(){show(out,await (await fetch(
+  '/api/signal?symbol='+encodeURIComponent(sym()))).json())}
+async function backtest(){show(out,await (await fetch('/api/backtest',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({symbol:sym(),cash:10000})})).json())}
+async function order(){show(out,await (await fetch('/api/orders',{method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({symbol:sym(),side:document.getElementById('side').value,
+  qty:Number(document.getElementById('qty').value)})})).json());refresh()}
+refresh();
+</script></body></html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    return _PAGE
+
+
+if __name__ == "__main__":
+    import os
+
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))
+'''
+
+_FIN_TEST_MAIN_PY = '''"""The app's own deterministic proof: strategy invariants + API contract."""
+import os
+import tempfile
+
+# Neutralize the persistence seam BEFORE main imports the ledger: test orders
+# must never land in a real ledger.db beside the app.
+os.environ["LEDGER_FILE"] = os.path.join(tempfile.mkdtemp(), "ledger.db")
+
+from decimal import Decimal
+
+from fastapi.testclient import TestClient
+
+import ledger
+import market
+import strategy
+from main import app
+
+client = TestClient(app)
+
+
+def test_health_is_paper_mode_with_canned_vendor():
+    body = client.get("/health").json()
+    assert body["mode"] == "paper" and body["vendor"] == "canned"
+
+
+def test_signal_is_deterministic_and_typed():
+    a = client.get("/api/signal", params={"symbol": "AAPL"}).json()
+    b = client.get("/api/signal", params={"symbol": "AAPL"}).json()
+    assert a == b
+    assert a["signal"] in {"BUY", "SELL", "HOLD"}
+
+
+def test_signal_respects_the_as_of_cutoff():
+    resp = client.get("/api/signal",
+                      params={"symbol": "AAPL", "as_of": "2024-01-05"})
+    assert resp.status_code == 200
+    assert resp.json()["data_through"] <= "2024-01-05"
+
+
+def test_backtest_replay_is_identical_twice():
+    payload = {"symbol": "AAPL", "cash": 10000}
+    a = client.post("/api/backtest", json=payload).json()
+    b = client.post("/api/backtest", json=payload).json()
+    assert a == b
+    assert a["trades"], "the fixture path must produce at least one trade"
+
+
+def test_backtest_never_reads_past_as_of():
+    cut = "2024-01-12"
+    res = client.post("/api/backtest",
+                      json={"symbol": "AAPL", "cash": 10000, "as_of": cut}).json()
+    assert res["data_through"] <= cut
+    assert all(t["date"] <= cut for t in res["trades"])
+    core = strategy.run_backtest(
+        market.select_vendor().candles_until("AAPL", cut), Decimal("10000"))
+    assert res["trades"] == core["trades"]
+
+
+def test_ledger_conservation_and_finiteness():
+    res = strategy.run_backtest(
+        market.select_vendor().candles("AAPL"), Decimal("10000"))
+    assert res["conserved"] is True
+    assert len(res["trades"]) >= 2, "fixture must exercise both trade sides"
+    for key in ("final_cash", "equity", "pnl"):
+        assert Decimal(res[key]).is_finite()
+
+
+def test_gap_down_candle_does_not_crash_the_core():
+    base = market.select_vendor().candles("AAPL")
+    crash = market.Candle("2024-02-01", "50.00", "50.00", "5.00", "18.61")
+    res = strategy.run_backtest(base + [crash], Decimal("10000"))
+    assert Decimal(res["equity"]).is_finite()
+
+
+def test_unknown_symbol_is_typed_no_data():
+    resp = client.get("/api/signal", params={"symbol": "ZZZZ"})
+    assert resp.status_code == 404
+    assert resp.json()["error"]["type"] == "NO_DATA"
+    resp = client.post("/api/orders",
+                       json={"symbol": "ZZZZ", "side": "BUY", "qty": 1})
+    assert resp.status_code == 404
+
+
+def test_paper_order_lands_in_the_portfolio():
+    resp = client.post("/api/orders",
+                       json={"symbol": "AAPL", "side": "BUY", "qty": 5})
+    assert resp.status_code == 200 and resp.json()["mode"] == "paper"
+    port = client.get("/api/portfolio").json()
+    assert port["positions"].get("AAPL") == 5
+    assert Decimal(port["cash"]) < ledger.STARTING_CASH
+
+
+def test_overdraft_and_oversell_are_rejected_typed():
+    resp = client.post("/api/orders",
+                       json={"symbol": "AAPL", "side": "BUY", "qty": 10000000})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["type"] == "INSUFFICIENT_FUNDS"
+    resp = client.post("/api/orders",
+                       json={"symbol": "MSFT", "side": "SELL", "qty": 3})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["type"] == "INSUFFICIENT_FUNDS"
+
+
+def test_invalid_order_params_are_422():
+    bad_side = {"symbol": "AAPL", "side": "HOLD", "qty": 1}
+    assert client.post("/api/orders", json=bad_side).status_code == 422
+    bad_qty = {"symbol": "AAPL", "side": "BUY", "qty": 0}
+    assert client.post("/api/orders", json=bad_qty).status_code == 422
+
+
+def test_absurd_cash_is_422_never_500_or_cpu_pin():
+    # "1e5000" passes gt=0 but must be rejected by the upper bound — the
+    # unbounded version pinned a CPU core for minutes and then 500ed on
+    # JSON's 4300-digit integer limit.
+    resp = client.post("/api/backtest",
+                       json={"symbol": "AAPL", "cash": "1e5000"})
+    assert resp.status_code == 422
+
+
+def test_pure_core_rejects_cash_beyond_its_own_ceiling():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        strategy.run_backtest(
+            market.select_vendor().candles("AAPL"), Decimal("1e16"))
+
+
+def test_concurrent_orders_never_overdraft():
+    # The overdraft check and the insert are atomic under the write lock;
+    # without it, N threadpool requests all pass the check and cash goes
+    # negative (reproduced through real uvicorn in review).
+    import threading
+
+    before = ledger.cash()
+    price = Decimal(market.select_vendor().latest_close("AAPL"))
+    qty = int(before / (price * 2)) + 1  # affordable exactly once
+    barrier = threading.Barrier(6)
+    outcomes = []
+
+    def fire():
+        barrier.wait()
+        try:
+            ledger.record_order("AAPL", "BUY", qty, price)
+            outcomes.append("ok")
+        except ledger.InsufficientFunds:
+            outcomes.append("rejected")
+
+    threads = [threading.Thread(target=fire) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert outcomes.count("ok") == 1, outcomes
+    assert ledger.cash() >= Decimal("0")
+
+
+def test_portfolio_read_never_creates_the_ledger_file():
+    # The liveness prober GETs /api/portfolio on every delivered app — a read
+    # must not write a ledger.db into the delivery (proof-pollution class).
+    fresh = os.path.join(tempfile.mkdtemp(), "probe.db")
+    saved = os.environ["LEDGER_FILE"]
+    os.environ["LEDGER_FILE"] = fresh
+    try:
+        resp = client.get("/api/portfolio")
+        assert resp.status_code == 200
+        assert resp.json()["cash"] == str(ledger.STARTING_CASH)
+        assert not os.path.exists(fresh)
+    finally:
+        os.environ["LEDGER_FILE"] = saved
+
+
+def test_dashboard_is_self_contained():
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "https://" not in resp.text and "http://" not in resp.text
+'''
+
+
+def _fastapi_finance(app_name: str, brief: str) -> dict[str, str]:
+    """The finance/paper-trading variant of the fastapi scaffold (wave-2
+    §3.4): a PURE Decimal strategy core over dated canned candles (DATA_VENDOR
+    seam), an as_of cutoff enforced in the data layer (no future data, ever),
+    a sqlite paper-only ledger that refuses overdrafts, and typed NO_DATA /
+    INSUFFICIENT_FUNDS envelopes. The sim-core split reapplied to money."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "market.py": _FIN_MARKET_PY,
+        "strategy.py": _FIN_STRATEGY_PY,
+        "ledger.py": _FIN_LEDGER_PY,
+        "main.py": (
+            '"""' + doc_title + " — paper-trading finance app (FastAPI + pure core).\n\n"
+            "Routes: GET / (self-contained dashboard), GET /health,\n"
+            "GET /api/signal?symbol=&as_of=, POST /api/backtest,\n"
+            "POST /api/orders (PAPER-ONLY), GET /api/portfolio, GET /api/news.\n"
+            "Unknown symbols -> typed 404 {'error': {'type': 'NO_DATA', ...}};\n"
+            "an order the ledger can't cover -> typed 400 INSUFFICIENT_FUNDS;\n"
+            "invalid params -> 422 — never a bare 500. Data: dated canned candles\n"
+            "(DATA_VENDOR env, default canned — zero keys); analysis at as_of\n"
+            "never reads a candle dated later (the temporal invariant).\n"
+            '"""\n'
+            + _FIN_MAIN_BODY
+            + f'\napp = FastAPI(title="{_json_escape(title)}")\n'
+            + _FIN_MAIN_ROUTES
+        ),
+        "test_main.py": _FIN_TEST_MAIN_PY,
+        "requirements.txt": (
+            f"# Runtime + test dependencies for {title}.\n"
+            "fastapi>=0.110        # web framework\n"
+            "uvicorn[standard]>=0.27  # ASGI server (run with `python main.py`)\n"
+            "httpx>=0.27           # used by fastapi.testclient for the test suite\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="FastAPI paper-trading finance app (pure strategy core + canned candles)",
+            install=(
+                "Requires Python 3.10+. Install dependencies into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server (canned dated candles by default — zero keys needed):\n\n"
+                "```bash\npython main.py\n```\n\n"
+                "Open http://localhost:8000/ for the paper-trading dashboard, or:\n\n"
+                "```bash\n"
+                "curl -s 'localhost:8000/api/signal?symbol=AAPL'\n"
+                "curl -s -X POST localhost:8000/api/backtest \\\n"
+                "  -H 'Content-Type: application/json' \\\n"
+                "  -d '{\"symbol\": \"AAPL\", \"cash\": 10000}'\n"
+                "curl -s localhost:8000/api/portfolio\n"
+                "```\n\n"
+                "Orders are PAPER-ONLY (a sqlite ledger at `LEDGER_FILE`, default\n"
+                "`ledger.db`) and an overdraft/oversell is rejected with a typed 400\n"
+                "`INSUFFICIENT_FUNDS`; unknown symbols return a typed 404 `NO_DATA`.\n"
+                "Backtests honor `as_of` — analysis never reads a candle dated later.\n"
+                "To add a real data vendor, implement the CannedVendor interface in\n"
+                "`market.py`, register it in `VENDORS`, and select it with\n"
+                "`DATA_VENDOR=<name>` — vendor keys stay optional env config."
+            ),
+            structure=[
+                ("main.py", "FastAPI app — signal/backtest/orders/portfolio + dashboard"),
+                ("strategy.py", "PURE Decimal strategy core — deterministic, finite"),
+                ("market.py", "Dated canned candles + as_of cutoff (DATA_VENDOR seam)"),
+                ("ledger.py", "sqlite paper ledger — overdrafts refused, paper-only"),
+                ("test_main.py", "Deterministic proof: replay, conservation, cutoff"),
+            ],
+            features=[
+                "SMA-crossover signals + backtests over dated, committed fixtures",
+                "Temporal invariant: as_of cutoff enforced in the data layer",
+                "Deterministic replay: same candles -> identical trade list",
+                "Ledger conservation recomputed from the trade list, Decimal-exact",
+                "Paper-only orders with typed INSUFFICIENT_FUNDS / NO_DATA envelopes",
             ],
             extra=(
                 "### Tests\n\n"
@@ -4305,6 +5106,14 @@ def scaffold_for(
             return _react_vite_threejs(safe_name, brief)
         if stack == "static_html":
             return _static_threejs(safe_name, brief)
+    # Finance/paper-trading variant (wave-2 §3.4): a strategy/portfolio brief
+    # on the fastapi stack gets the paper-trading scaffold. Checked BEFORE
+    # market-data: the finance trigger is the higher-precision one (strong
+    # phrases / context-gated), so a trading brief that names its data source
+    # ("… using live market data") still gets strategy+ledger, while a pure
+    # data-API brief ("a quotes api for my trading bot") never fires finance.
+    if stack == "fastapi" and _implies_finance(brief):
+        return _fastapi_finance(safe_name, brief)
     # Market-data variant (wave-2 §3.9): a data-service brief on the fastapi
     # stack gets the vendor-seam scaffold instead of the bare hello-API.
     if stack == "fastapi" and _implies_market_data(brief):

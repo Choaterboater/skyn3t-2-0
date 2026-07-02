@@ -74,9 +74,11 @@ When a new app type is an existing stack's shape with different content, ship a
 sites — no planner/selector/proof/gate/registry touchpoints, so none of the
 ten-step checklist and none of its drift risk. Precedents: `_react_vite_threejs`
 (3D), `_fastapi_market_data` (§3.9), `_rag_memory_chat` (§3.10),
-`_fastapi_llm_gateway` (§3.7), `_python_cli_agent` (§3.6).
+`_fastapi_llm_gateway` (§3.7), `_python_cli_agent` (§3.6),
+`_fastapi_finance` (§3.4 — paper trading; dispatched AFTER market-data so a
+data-API brief that mentions a trading bot stays §3.9).
 
-Rules learned shipping those five:
+Rules learned shipping those six:
 
 - **Triggers are multi-word phrases only.** Bare "memory"/"proxy"/"cli" steal
   ordinary briefs; pin non-theft in BOTH directions in the variant's test file.

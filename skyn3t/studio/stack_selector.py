@@ -5,6 +5,7 @@ raises; degrades to keyword/default."""
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,12 +26,63 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "phaser": "a 2D browser game — arcade / platformer / shooter (Phaser 3 + Vite, canvas)",
     "swift": "a native macOS SwiftUI desktop app (Swift Package Manager)",
     "mcp": "an MCP server exposing tools to AI assistants (Model Context Protocol, Python stdio)",
+    "rag": "a chat-with-your-documents RAG app — ingest docs, semantic /query, grounded /chat (FastAPI, Python)",
+    "workflow": "an agent/automation workflow app — multi-step runner, run ledger, dry-run triggers (FastAPI, Python)",
+    "agent_pack": "an agent team pack — a roster of distinct persona definitions with lint/convert tooling (markdown + Python, zero runtime deps)",
 }
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.
 # "cli" MUST map to python (not the react default below) — a command-line brief
 # is a python_cli, never a React app. (nextjs/astro/remix are real builders now.)
 _COLLAPSE = {"flask": "fastapi", "django": "fastapi", "cli": "python"}
+
+# ---- toolchain preflight (ADDING_A_STACK step 10) --------------------------
+# Stack -> the executable its REAL build/proof needs on THIS machine. Python-
+# family stacks (fastapi/python/mcp/rag/workflow) are deliberately absent — the
+# interpreter running skyn3t always exists; "static" is absent too (plain HTML
+# needs no toolchain). The SYSTEM still chooses the stack — it just chooses
+# among stacks it can actually BUILD here, instead of shipping a soft-skipped,
+# unverified delivery from a missing toolchain.
+_TOOLCHAIN_EXE = {
+    "react": "npm", "nextjs": "npm", "astro": "npm", "remix": "npm",
+    "express": "npm", "tauri": "npm", "phaser": "npm", "react_native": "npm",
+    "swift": "swift",
+}
+
+# Where an unbuildable HEURISTIC/LLM choice degrades to (first AVAILABLE
+# candidate wins; "python" is the terminal fallback). Chosen for nearest
+# intent: node web stacks -> the toolchain-free static site; express -> the
+# python API equivalent; swift keeps its desktop intent via tauri when npm
+# exists. Explicit PINS are never demoted — a pin is user intent.
+_TOOLCHAIN_FALLBACK = {
+    "react": ("static",), "nextjs": ("static",), "astro": ("static",),
+    "remix": ("static",), "express": ("fastapi",), "tauri": ("static",),
+    "phaser": ("static",), "react_native": ("static",),
+    "swift": ("tauri", "python"),
+}
+
+
+def toolchain_available(stack: str) -> bool:
+    """Can this machine actually build ``stack``? (True for toolchain-free stacks.)"""
+    exe = _TOOLCHAIN_EXE.get(stack)
+    return exe is None or shutil.which(exe) is not None
+
+
+def _demote_unbuildable(choice: StackChoice) -> StackChoice:
+    """Swap an unbuildable heuristic/LLM choice for the nearest buildable stack,
+    recording why in the rationale. Keeps the original when nothing better is
+    available (the proof's soft-skip story then logs the degrade)."""
+    if toolchain_available(choice.stack):
+        return choice
+    exe = _TOOLCHAIN_EXE[choice.stack]
+    for cand in (*_TOOLCHAIN_FALLBACK.get(choice.stack, ()), "python"):
+        if cand in REAL_BUILDER_STACKS and toolchain_available(cand):
+            return StackChoice(
+                cand, choice.method, min(choice.confidence, 0.5),
+                (f"{choice.stack} needs '{exe}' (not installed) — demoted to "
+                 f"{cand}. {choice.rationale}")[:300],
+            )
+    return choice
 
 
 @dataclass(slots=True)
@@ -118,6 +170,16 @@ def _infer_app_type(low: str, stack: str) -> str:
     # so the stack-driven classification must win before the api/server heuristic.
     if stack == "mcp":
         return "mcp_server"
+    # RAG next, same reason: a "document q&a service" brief contains "service"
+    # (api_service territory), so the stack-driven classification must win.
+    if stack == "rag":
+        return "rag_app"
+    # Workflow next, same reason: an "agent that ..." brief contains "api"/
+    # "server"-adjacent words, so the stack-driven classification must win.
+    if stack == "workflow":
+        return "agent_workflow"
+    if stack == "agent_pack":
+        return "agent_pack"
     if stack == "phaser" or any(k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")):
         return "game"
     if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):
@@ -144,6 +206,10 @@ def _infer_app_type(low: str, stack: str) -> str:
 def _infer_engine(low: str, stack: str) -> str:
     if stack == "mcp":
         return "mcp"
+    if stack == "rag":
+        return "rag"
+    if stack == "workflow":
+        return "workflow"
     if stack == "phaser":
         return "phaser"
     if stack in ("react", "nextjs", "remix", "astro", "static"):
@@ -215,9 +281,11 @@ async def select_stack(
     # `attended` is reserved for the deferred clarify-on-low-confidence gate; currently unused.
     norm = _validate_pin(pin)
     if norm:
+        # A pin is explicit user intent — never demoted; a missing toolchain
+        # surfaces through the proof's logged soft-skip instead.
         return StackChoice(norm, "pin", 1.0, "explicit pin")
     if llm is not None:
         choice = await _llm_choice(brief, llm)
         if choice is not None:
-            return choice
-    return keyword_choice(brief)
+            return _demote_unbuildable(choice)
+    return _demote_unbuildable(keyword_choice(brief))

@@ -1244,6 +1244,53 @@ async def brain_payload(state: AppState) -> dict[str, Any]:
     }
 
 
+async def gates_payload(state: AppState) -> dict[str, Any]:
+    """Every end-of-build gate with its enable flag and stack set — driven by
+    the registry (core.stacks.GATES), so a NEW gate surfaces in the GUI with
+    zero route changes (the settings_payload curated-list drift, avoided)."""
+    from skyn3t.core.stacks import GATES
+
+    return {"gates": [
+        {
+            "gate": spec.name,
+            "flag": spec.settings_flag,
+            "enabled": bool(getattr(state.settings, spec.settings_flag, True)),
+            "stacks": sorted(spec.stacks),
+            "via_headless_gate": spec.via_headless_gate,
+        }
+        for spec in GATES
+    ]}
+
+
+async def set_gate_enabled(
+    state: AppState, gate: str, enabled: bool, persist: bool = True
+) -> dict[str, Any]:
+    """Toggle one gate's enable flag by gate NAME or settings flag — GUI-first
+    config (the user rule), allowlisted against the registry so this can never
+    setattr an arbitrary settings field. Persists via the same env idiom as the
+    other toggles (SKYN3T_<FLAG>)."""
+    import os
+
+    from skyn3t.core.stacks import GATES
+
+    wanted = (gate or "").strip().lower()
+    spec = next(
+        (s for s in GATES if s.name == wanted or s.settings_flag == wanted), None)
+    if spec is None:
+        known = sorted({s.name for s in GATES})
+        raise ValueError(f"unknown gate {gate!r}; known gates: {', '.join(known)}")
+    enabled = bool(enabled)
+    try:
+        setattr(state.settings, spec.settings_flag, enabled)
+    except Exception:  # noqa: BLE001 - a frozen/validated model must not 500 the route
+        pass
+    env_key = f"SKYN3T_{spec.settings_flag.upper()}"
+    os.environ[env_key] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var(env_key, "true" if enabled else "false")
+    return await gates_payload(state)
+
+
 async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
@@ -1456,6 +1503,21 @@ def build_router(state: AppState) -> Any:
     async def _set_improve_agentic(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_improve_agentic(
             state, bool(body.get("enabled", body.get("on", False))))
+
+    @router.get("/gates", dependencies=[auth])
+    async def _gates() -> dict[str, Any]:
+        return await gates_payload(state)
+
+    @router.post("/settings/gate", dependencies=[auth])
+    async def _set_gate(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            return await set_gate_enabled(
+                state,
+                str(body.get("gate", body.get("flag", ""))),
+                bool(body.get("enabled", body.get("on", False))),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/settings/build_metadata", dependencies=[auth])
     async def _set_build_metadata(body: dict[str, Any] = empty_body) -> dict[str, Any]:

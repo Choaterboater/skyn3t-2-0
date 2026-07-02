@@ -38,6 +38,13 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "swift": ("Package.swift",),
     # MCP server (Python stdio): requirements.txt declares the mcp SDK.
     "mcp": ("requirements.txt",),
+    # RAG app (FastAPI): requirements.txt declares fastapi/uvicorn/httpx.
+    "rag": ("requirements.txt",),
+    # Agent-workflow app (FastAPI): requirements.txt declares fastapi/uvicorn.
+    "workflow": ("requirements.txt",),
+    # Agent team pack: zero runtime deps — catalog.json IS the pack manifest
+    # (divisions, rosters, convert targets).
+    "agent_pack": ("catalog.json",),
 }
 
 

@@ -39,6 +39,14 @@ export default function Settings() {
     retry: 0,
   });
 
+  // Every end-of-build verification gate, straight from the registry — a new
+  // gate shows up here with zero UI changes.
+  const gates = useQuery({
+    queryKey: ["gates"],
+    queryFn: queryFn("/gates"),
+    retry: 0,
+  });
+
   const [token, setToken] = useState(
     typeof localStorage !== "undefined"
       ? localStorage.getItem("skyn3t_token") || ""
@@ -58,6 +66,7 @@ export default function Settings() {
   const [repMsg, setRepMsg] = useState("");
   const [visualMsg, setVisualMsg] = useState("");
   const [agenticMsg, setAgenticMsg] = useState("");
+  const [gateMsg, setGateMsg] = useState("");
 
   const [appTypeOverride, setAppTypeOverride] = useState("auto");
   const [engineOverride, setEngineOverride] = useState("auto");
@@ -134,6 +143,16 @@ export default function Settings() {
       secrets.refetch();
     } catch (e) {
       setRepMsg(String(e.message));
+    }
+  }
+
+  async function saveGate(gate, enabled) {
+    try {
+      await apiPost("/settings/gate", { gate, enabled });
+      setGateMsg(`${gate} ${enabled ? "enabled" : "disabled"} for future builds`);
+      gates.refetch();
+    } catch (e) {
+      setGateMsg(String(e?.message || e));
     }
   }
 
@@ -539,6 +558,57 @@ export default function Settings() {
             </label>
             {agenticMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{agenticMsg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            label="Verification gates"
+            right={
+              gates.error ? (
+                <Pill tone="ember">unreachable</Pill>
+              ) : (
+                <Pill tone="plasma">
+                  {(gates.data?.gates || []).filter((g) => g.enabled).length}/
+                  {(gates.data?.gates || []).length} on
+                </Pill>
+              )
+            }
+          />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              End-of-build gates that verify a delivery before it ships —
+              headless sim, playtest, liveness, SEO, and the MCP / RAG /
+              workflow / CLI contract checks. Advisory gates feed the repair
+              loop; disabling one skips that verification for future builds.
+            </p>
+            <div className="grid gap-2">
+              {(gates.data?.gates || []).map((g) => (
+                <label
+                  key={g.gate}
+                  className="flex items-center gap-2 text-sm text-bone"
+                >
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-ember"
+                    checked={!!g.enabled}
+                    onChange={(e) => saveGate(g.gate, e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-mono">{g.gate}</span>{" "}
+                    <span className="text-ash">
+                      ({(g.stacks || []).join(", ")})
+                    </span>
+                    {g.via_headless_gate ? (
+                      <span className="text-ash"> · rides the headless gate</span>
+                    ) : null}
+                  </span>
+                </label>
+              ))}
+            </div>
+            {gateMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{gateMsg}</p>
             ) : null}
           </div>
         </Panel>

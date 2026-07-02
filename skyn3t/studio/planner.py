@@ -45,6 +45,49 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # before react_native etc. is safe: no genuine mobile/desktop/game/web brief
     # contains "mcp" or "model context protocol".
     ("mcp", ("model context protocol", "mcp")),
+    # RAG "chat with your documents" app (wave-2 §3.1): a FastAPI retrieval app —
+    # NOT the generic web/API scaffold. Placed HIGH (right after mcp, before
+    # react_native / react / fastapi / static): a RAG brief almost always carries
+    # "app"/"service"/"ai" (react/fastapi/static territory), so without an earlier
+    # RAG-SPECIFIC signature it collapses to a web scaffold with no retrieval.
+    # Keywords are RAG-distinctive multi-word phrases; bare "rag" is word-bounded
+    # (via _WORD_BOUNDED_KEYWORDS) so "storage"/"dragging" never route here. Bare
+    # "search"/"document" are deliberately NOT keywords (the phaser bare-"game"
+    # lesson: "a search bar for my store" / "document my api" must not be stolen);
+    # only "semantic search" / "document q&a" — phrases that NAME retrieval — match.
+    ("rag", ("retrieval augmented", "retrieval-augmented", "rag",
+             "chat with my doc", "chat with your doc", "chat with my pdf",
+             "chat with my notes", "chat with my files",
+             "knowledge base", "document q&a", "doc q&a", "semantic search",
+             # Memory-augmented chat (wave-2 §3.10) rides the rag stack — the
+             # scaffold VARIANT adds a persistent memory journal. Phrases only:
+             # bare "memory" would steal "memory game" / "memory profiler".
+             "remembers me", "remembers our", "assistant with memory",
+             "chat with memory", "chatbot with memory", "stateful chat")),
+    # Agent team pack (wave-2 §3.8): a persona ROSTER product — markdown agent
+    # definitions + lint/convert tooling, zero runtime deps. NOT the runtime
+    # multi-agent app (that's `workflow`, next): pack briefs name the static
+    # deliverable ("personas", "pack", "roster", "agents for my X"); workflow
+    # briefs describe runtime behavior ("an agent THAT does Y", "team of
+    # agents"). Placed BEFORE workflow so roster briefs aren't stolen by it;
+    # bare "persona"/"agents" are deliberately NOT claimed ("persona quiz app",
+    # "user agents faq" must not route here).
+    ("agent_pack", ("agent personas", "personas for", "persona pack",
+                    "agent pack", "agents pack", "team pack",
+                    "agent team pack", "subagents", "subagent pack",
+                    "agents for my", "agent roster")),
+    # Agent-workflow app (wave-2 §3.2, demand #2): a multi-step runner with a
+    # run ledger and dry-run triggers — a FastAPI app, NOT the generic web/API
+    # scaffold. Placed after rag (no keyword overlap) and before react_native /
+    # react / fastapi: workflow briefs carry "app"/"api"/"service". Keywords are
+    # WORKFLOW-distinctive: bare "workflow" is word-bounded singular only (a
+    # "dashboard for my workflows" is a dashboard — plural doesn't match);
+    # bare "automation"/"pipeline"/"scheduled" are deliberately NOT claimed
+    # (they'd steal CI-dashboard / data-pipeline / calendar briefs).
+    ("workflow", ("agent workflow", "workflow", "team of agents",
+                  "multi-agent", "multi agent", "agent that",
+                  "automation pipeline", "monitor and notify",
+                  "scheduled briefing", "daily briefing")),
     # react_native must precede `react`/`nextjs`: "react native expo app" and
     # "ios app" should resolve to the mobile stack, not the web React scaffold.
     ("react_native", (
@@ -116,6 +159,18 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # load-bearing artifact, its tools split into a pure tools.py, plus the SDK
     # manifest. NO package.json / index.html — this stack is a stdio program.
     "mcp": ("README.md", "server.py", "tools.py", "requirements.txt"),
+    # RAG "chat with your documents" app: the FastAPI server is the load-bearing
+    # artifact, its chunker/retriever split into a PURE rag_core.py (the sim-core
+    # split reapplied), plus the Python manifest. NO package.json / index.html.
+    "rag": ("README.md", "main.py", "rag_core.py", "requirements.txt"),
+    # Agent-workflow app: the FastAPI runner is the load-bearing artifact, its
+    # engine split into a PURE workflow_core.py (steps as pure functions, run
+    # ledger, typed errors), plus the Python manifest. NO package.json.
+    "workflow": ("README.md", "main.py", "workflow_core.py", "requirements.txt"),
+    # Agent team pack: the catalog is the pack's manifest; personas live in
+    # agents/<division>/*.md; main.py is the lint/convert CLI. Zero runtime
+    # deps — NO requirements.txt demanded.
+    "agent_pack": ("README.md", "main.py", "catalog.json", "pack_tools.py"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),
@@ -186,6 +241,12 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     # SwiftPM abbreviation: whole-word so it only fires on the standalone token,
     # never as a substring buried in an unrelated word.
     "spm",
+    # RAG: whole-word so bare "rag" only routes on the standalone token, never as
+    # a substring ("storage", "average", "dragging").
+    "rag",
+    # Agent-workflow: whole-word SINGULAR so "workflows" (a dashboard/CRUD noun)
+    # and "workflowy" never route here.
+    "workflow",
     # MCP (Model Context Protocol): whole-word so bare "mcp" only routes on the
     # standalone token, never as a substring inside an unrelated word.
     "mcp",

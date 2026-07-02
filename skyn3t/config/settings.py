@@ -391,6 +391,11 @@ class Settings(BaseSettings):
     # and redundant with RepoScout (which scouts real, named repos). Off by
     # default so it stops nagging for approvals; enable for periodic curiosity.
     curiosity_loop_enabled: bool = False
+    # Reliability ratchet (the flywheel's decision brain): keep a proposed
+    # tuning/prompt change only if a bench run measurably raises the go-rate (no
+    # aggregate OR per-app-type regression), else revert. Opt-in (default off) —
+    # running it does real builds (cost/time); it's a manual `cortex ratchet`.
+    reliability_ratchet_enabled: bool = False
 
     # ---- Sandbox ---------------------------------------------------------
     execution_backend: str = "auto"  # auto | docker | inline

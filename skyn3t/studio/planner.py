@@ -64,6 +64,21 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
              # bare "memory" would steal "memory game" / "memory profiler".
              "remembers me", "remembers our", "assistant with memory",
              "chat with memory", "chatbot with memory", "stateful chat")),
+    # Finance / paper-trading app (wave-2 §3.4): rides the fastapi stack — the
+    # scaffold VARIANT (_fastapi_finance) supplies the strategy core + paper
+    # ledger. Placed BEFORE agent_pack/workflow: "a trading agent that
+    # rebalances…" contains "agent that" (workflow territory), so without an
+    # earlier FINANCE-specific signature a strategy brief becomes a generic
+    # workflow app with no ledger. STRONG phrases only — the ambiguous ones
+    # ("portfolio dashboard" could be a photographer's, "market analysis" a
+    # startup's) are deliberately NOT claimed at the stack level; the variant
+    # trigger handles those with a finance co-signal once fastapi is chosen.
+    ("fastapi", ("paper trading", "paper-trading", "trading strategy",
+                 "trading simulator", "backtest", "backtesting",
+                 "stock research", "investment research", "investment agent",
+                 "stock screener", "buy/sell signals", "stock portfolio",
+                 "investment portfolio", "manages my portfolio", "day trading",
+                 "algorithmic trading", "stock trading", "crypto trading")),
     # Agent team pack (wave-2 §3.8): a persona ROSTER product — markdown agent
     # definitions + lint/convert tooling, zero runtime deps. NOT the runtime
     # multi-agent app (that's `workflow`, next): pack briefs name the static

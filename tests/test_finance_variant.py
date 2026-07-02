@@ -73,6 +73,35 @@ def test_data_api_briefs_stay_market_data():
     assert "strategy.py" not in files
 
 
+def test_offline_planner_routes_finance_briefs_to_fastapi():
+    # The 53-agent review's finding H: without this signature the offline
+    # keyword fallback dropped every finance brief into the generic python
+    # scaffold, so the variant was reachable only through the LLM planner.
+    from skyn3t.studio.planner import detect_stack as plan_detect_stack
+
+    for brief in (
+        "a paper trading simulator with a portfolio dashboard",
+        "backtest a moving-average trading strategy on daily candles",
+        "an investment research agent for tech stocks",
+        "a stock screener with buy/sell signals",
+        "a trading agent that rebalances my stock portfolio",
+    ):
+        assert plan_detect_stack(brief) == "fastapi", brief
+
+
+def test_offline_planner_does_not_steal_non_finance_briefs():
+    from skyn3t.studio.planner import detect_stack as plan_detect_stack
+
+    # Creative-portfolio and business-research briefs keep their old routes —
+    # only STRONG finance phrases are claimed at the stack level.
+    assert plan_detect_stack("a portfolio dashboard for my photography work") != "fastapi"
+    assert plan_detect_stack("market analysis for my startup's expansion plan") != "fastapi"
+    # Neighbouring LLM-era signatures keep their briefs.
+    assert plan_detect_stack("an agent workflow that sends daily briefings") == "workflow"
+    assert plan_detect_stack("agent personas for my law firm") == "agent_pack"
+    assert plan_detect_stack("a rag app to chat with my documents") == "rag"
+
+
 def test_trading_briefs_mentioning_market_data_stay_finance():
     # The review caught the reverse theft: a genuine paper-trading brief that
     # names its data source must NOT collapse into the quotes-API scaffold —

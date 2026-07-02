@@ -20,6 +20,26 @@ except Exception:  # pragma: no cover
 
 
 @pytest.fixture(autouse=True)
+def _no_cli_vision(request, monkeypatch):
+    """Neuter the CLI vision fallback for the whole suite.
+
+    ``visual_check._make_cli_vision_fn`` spawns a REAL ``claude -p`` whenever the
+    CLI is on PATH and no OpenRouter key is set — so any test path reaching an
+    actual screenshot+judge (qa_playtest / game_visual / liveness) silently burns
+    CLI quota on a dev machine with claude installed. Tests that exercise the CLI
+    path itself opt out with ``@pytest.mark.real_cli_vision`` — those stub
+    ``shutil.which``/``subprocess`` themselves, so nothing real is ever spawned.
+    """
+    if request.node.get_closest_marker("real_cli_vision"):
+        yield
+        return
+    from skyn3t.studio import visual_check
+
+    monkeypatch.setattr(visual_check, "_make_cli_vision_fn", lambda settings: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_data_dir(tmp_path, monkeypatch):
     """Point every test's ``data_dir`` at a unique temp dir.
 

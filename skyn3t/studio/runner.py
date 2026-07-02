@@ -49,6 +49,9 @@ from skyn3t.core.stacks import (
 )
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.intelligence.learning_loop import (
+    extract_gate_findings as _extract_gate_findings,
+)
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.liveness import liveness_self_improve
@@ -2173,6 +2176,11 @@ class StudioRunner:
                 ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("detail"),
                 ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("syntax_errors"),
             ),
+            # Advisory-gate findings (seo/mcp_check/rag_check/liveness) become
+            # lessons even on a 'go' — these gates never flip the verdict, so
+            # this is the only path from a caught-but-advisory defect to a
+            # durable avoid-rule for the NEXT build.
+            "gate_findings": _extract_gate_findings(getattr(manifest, "extra", None)),
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:

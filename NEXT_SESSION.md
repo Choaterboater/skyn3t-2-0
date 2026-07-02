@@ -35,13 +35,25 @@ committed**. Today's session (multi-agent):
   products do, but better — "better" = every capability ships with a headless
   proof story.
 
-**Next up:** (1) directive pack + anti-fake gates + headless repair-then-reverify
-(agent in flight at handoff). (2) New app types in demand order: MCP server → RAG
-→ agent-workflow → finance-trading (specs in the wave-2 report §3). (3) Rebuild
-the tower-defence brief again after the finite-state clause lands — expect go.
-(4) Godot still held. NOTE: the user's dashboard server predates tonight's
-commits — the stale-code banner is showing; restart `skyn3t start --web` before
-judging anything through the UI.
+**Session finale (suite 1803 passed / 3 skipped, 6 commits, tree clean):**
+- **Directive pack + anti-fake gates LANDED** (b55d36d): numeric design budget,
+  full-file contract, data/agent-app directives, finite-state sim clause,
+  placeholder/reality/scaffold-stub gap producers, file-targeted headless
+  repairs, structured QA-FAIL feedback (fix_feedback.py).
+- **tower-defence-retry-4 = GO/100** — the user's originally-failing brief is a
+  delivered, playable game; every gate genuinely green. The three prior no_go/49s
+  were three DIFFERENT correct catches (see game-capability-roadmap.md).
+- **MCP-server app type LANDED** (425e1b2): deterministic stdio JSON-RPC gate
+  (mcp_check.py), FastMCP scaffold with pure tools.py core, hardened
+  snapshot→repair→re-proof→rollback runner wiring. First LLM-era app type.
+
+**Next up:** (1) RAG → agent-workflow → finance-trading app types (specs: wave-2
+report §3; the mock-LLM provider is the proof keystone, already landed). (2)
+Per-app-type gate registry (wave-1 item 20). (3) QA-FAIL formatter adoption at
+fix-loop/seo/visual sites. (4) Verify-on-stop inside codegen (wave-1 item 3).
+(5) Stub the liveness `claude -p` vision call in tests — the suite currently
+makes a real quota-burning CLI call. (6) Godot still held.
+User note: watch token spend — deliver visible outcomes before broad fan-outs.
 
 ---
 

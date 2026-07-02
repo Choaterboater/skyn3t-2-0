@@ -116,9 +116,11 @@ Still open / next up (honest status):
   clause forbidding invented `/assets/` paths.
 - **tower-defence-retry-3** (no_go/49): asset guard clean (5/5 refs valid), qa_playtest + visual PASS —
   the headless gate caught `Infinity in state.hazard.cooldownRemaining` (model used Infinity as a
-  "no hazard" sentinel; the gate requires JSON-serializable finite state BY DESIGN). Fix in flight:
-  finite-state directive clause + headless-gate repair-then-reverify (it currently records a gap but
-  dispatches NO repair, unlike qa_playtest).
+  "no hazard" sentinel; the gate requires JSON-serializable finite state BY DESIGN). FIXED same
+  night (b55d36d): finite-state directive clause + file-targeted headless repairs.
+- **tower-defence-retry-4 = GO/100** (2026-07-01 22:40): all fixes in — qa_playtest 0 console errors,
+  all sprites rendered, headless 0 violations, visual clean, real vite build passed. The brief that
+  opened this ladder is a delivered, playable game.
 - Pattern worth keeping: score 49 has now meant three DIFFERENT correct catches. Never assume a repeat
   verdict is a repeat cause — read the manifest.
 

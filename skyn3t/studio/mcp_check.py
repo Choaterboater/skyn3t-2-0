@@ -361,8 +361,13 @@ def _probe_server(
 ) -> McpVerdict:
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     try:
+        # NOT `-I`: since Python 3.11 isolated mode implies -P (safe path), which
+        # drops the script's directory from sys.path — the scaffold's own
+        # `import tools` would crash at boot and the gate would file a FALSE
+        # "crashed on boot" issue whenever the mcp SDK is installed. `-B` keeps
+        # the proof from polluting the artifact with __pycache__ instead.
         proc = subprocess.Popen(
-            [py, "-I", server_name],
+            [py, "-B", server_name],
             cwd=str(root),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

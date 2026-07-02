@@ -28,6 +28,7 @@ KNOWN_STACKS = (
     "phaser",
     "swift",
     "mcp",
+    "rag",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -78,6 +79,18 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
     # unambiguous spelled-out form.
     if "model context protocol" in text or re.search(r"\bmcp\b", text):
         return "mcp"
+    # RAG "chat with your documents" app must precede fastapi/react: a RAG brief
+    # brushes "api"/"app"/"service" but is a retrieval app, not the generic web
+    # scaffold. Bare "rag" is WHOLE-WORD ("storage"/"dragging" never match); the
+    # other keywords are RAG-distinctive multi-word phrases — bare "search" and
+    # "document" are deliberately NOT claimed (the phaser bare-"game" lesson).
+    if re.search(r"\brag\b", text) or any(k in text for k in (
+        "retrieval augmented", "retrieval-augmented",
+        "chat with my doc", "chat with your doc", "chat with my pdf",
+        "chat with my notes", "chat with my files",
+        "knowledge base", "document q&a", "doc q&a", "semantic search",
+    )):
+        return "rag"
     if any(k in text for k in ("fastapi", "uvicorn", "rest api", "http api", "endpoint")):
         return "fastapi"
     if any(k in text for k in ("express", "node server", "node.js server")):
@@ -178,6 +191,17 @@ def _normalize_stack(value: str) -> str:
         "mcpserver": "mcp",
         "model_context_protocol": "mcp",
         "mcp_tool_server": "mcp",
+        # RAG "chat with your documents" app (FastAPI + pure retrieval core). A
+        # real builder stack; only explicit RAG/retrieval signals map here.
+        "rag": "rag",
+        "rag_app": "rag",
+        "ragapp": "rag",
+        "retrieval_augmented_generation": "rag",
+        "knowledge_base": "rag",
+        "chat_with_docs": "rag",
+        "chat_with_documents": "rag",
+        "document_qa": "rag",
+        "doc_qa": "rag",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

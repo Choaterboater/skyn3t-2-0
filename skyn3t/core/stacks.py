@@ -33,6 +33,7 @@ WEB_STACKS = frozenset({
     "static", "static_html", "fastapi", "node_express", "express",
     "tauri", "desktop",  # Tauri desktop: frontend is a Vite/React web app
     "phaser",  # Phaser 3 game: a Vite-built web app served (canvas) at '/'
+    "rag",  # RAG app: a FastAPI HTTP server — liveness applies, like fastapi
 })
 
 # Stacks that warrant design-skill injection but are NOT HTTP-served (so they
@@ -51,12 +52,19 @@ UI_WEB_STACKS = frozenset({
 
 MCP_STACKS = frozenset({"mcp"})
 
+# RAG ("chat with your documents", wave-2 §3.1): a FastAPI app with /ingest +
+# /query + /chat. In WEB_STACKS (HTTP-served, liveness applies) but NOT in
+# UI_WEB_STACKS (an API+chat app whose '/' contract we don't hard-gate — the
+# fastapi treatment), and it gets its own deterministic end-of-build gate.
+RAG_STACKS = frozenset({"rag"})
+
 GROUPS: dict[str, frozenset[str]] = {
     "game": GAME_STACKS,
     "web": WEB_STACKS,
     "design": DESIGN_STACKS,
     "ui_web": UI_WEB_STACKS,
     "mcp": MCP_STACKS,
+    "rag": RAG_STACKS,
 }
 
 
@@ -94,6 +102,8 @@ GATES: tuple[GateSpec, ...] = (
              "skyn3t.studio.runner:StudioRunner._run_seo_check"),
     GateSpec("mcp_check", MCP_STACKS, "mcp_check_enabled",
              "skyn3t.studio.runner:StudioRunner._run_mcp_check"),
+    GateSpec("rag_check", RAG_STACKS, "rag_check_enabled",
+             "skyn3t.studio.runner:StudioRunner._run_rag_check"),
 )
 
 _GATES_BY_NAME = {g.name: g for g in GATES}

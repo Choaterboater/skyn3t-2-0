@@ -2286,6 +2286,27 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                         "workflow stack: workflow_core.py (the pure engine) missing")
             return (True, True, "workflow stack: FastAPI main.py + workflow_core.py present")
 
+        # ---- agent_pack (persona roster: markdown + python tooling) --------
+        if low == "agent_pack":
+            catalog = pdir / "catalog.json"
+            if not catalog.exists() or catalog.stat().st_size < _NONEMPTY:
+                return (True, False, "agent_pack stack: catalog.json missing")
+            personas = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".md"
+                and "agents" in f.relative_to(pdir).parts
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not personas:
+                return (True, False,
+                        "agent_pack stack: no agents/<division>/*.md persona files")
+            tools = pdir / "pack_tools.py"
+            if not tools.exists() or tools.stat().st_size < _NONEMPTY:
+                return (True, False,
+                        "agent_pack stack: pack_tools.py (lint/convert tooling) missing")
+            return (True, True,
+                    f"agent_pack stack: catalog + {len(personas)} persona(s) + tooling present")
+
         # ---- react_vite / react -----------------------------------------
         if low in ("react", "react_vite"):
             pkg = pdir / "package.json"
@@ -2386,6 +2407,7 @@ def _entrypoint_check(
     low = (stack or "").lower()
     is_python = low in (
         "cli", "python", "fastapi", "flask", "django", "rag", "workflow",
+        "agent_pack",
     ) or any(
         e.endswith(".py") for e in entrypoints
     )
@@ -2463,7 +2485,8 @@ def _run_generated_tests(
 
     py = _python_executable()
     low = (stack or "").lower()
-    is_python = low in ("cli", "python", "fastapi", "flask", "django", "rag", "workflow")
+    is_python = low in (
+        "cli", "python", "fastapi", "flask", "django", "rag", "workflow", "agent_pack")
     use_container_names = _use_container_command_names(cmd_ctx)
     if py is None and not use_container_names:
         return (False, False, "")

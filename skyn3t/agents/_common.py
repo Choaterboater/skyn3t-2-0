@@ -30,6 +30,7 @@ KNOWN_STACKS = (
     "mcp",
     "rag",
     "workflow",
+    "agent_pack",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -92,6 +93,15 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "knowledge base", "document q&a", "doc q&a", "semantic search",
     )):
         return "rag"
+    # Agent team pack (persona ROSTER product) must precede workflow: pack
+    # briefs name the static deliverable; workflow briefs describe runtime
+    # behavior. Bare "persona"/"agents" deliberately not claimed.
+    if any(k in text for k in (
+        "agent personas", "personas for", "persona pack", "agent pack",
+        "agents pack", "team pack", "agent team pack", "subagents",
+        "subagent pack", "agents for my", "agent roster",
+    )):
+        return "agent_pack"
     # Agent-workflow app must precede fastapi/react: a workflow brief brushes
     # "api"/"app"/"service" but is a multi-step runner, not the generic web
     # scaffold. Bare "workflow" is WHOLE-WORD SINGULAR ("workflows" is a
@@ -221,6 +231,14 @@ def _normalize_stack(value: str) -> str:
         "agent_team": "workflow",
         "multi_agent": "workflow",
         "automation": "workflow",
+        # Agent team pack (persona roster product, zero runtime deps).
+        "agent_pack": "agent_pack",
+        "agents_pack": "agent_pack",
+        "agent_team_pack": "agent_pack",
+        "persona_pack": "agent_pack",
+        "personas": "agent_pack",
+        "subagents": "agent_pack",
+        "agent_roster": "agent_pack",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

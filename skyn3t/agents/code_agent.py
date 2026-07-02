@@ -436,6 +436,26 @@ _WORKFLOW_DIRECTIVE = (
 )
 
 
+_AGENT_PACK_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build an agent TEAM PACK — a persona ROSTER product, "
+    "NOT a running app: NEVER emit package.json, index.html, FastAPI, or servers. "
+    "LAYOUT: `agents/<division>/<name>.md` persona files, `catalog.json` (the pack "
+    "manifest: {\"pack\", \"divisions\": {division: [names]}, \"convert\": "
+    "{\"claude-code\": {\"dest\": \".claude/agents\"}}}), `pack_tools.py` (PURE "
+    "stdlib lint/originality/convert tooling), `main.py` (the CLI: lint | convert "
+    "--tool X | summary; `python main.py lint` exits non-zero on issues), and the "
+    "pack's own `test_agent_pack.py`. ZERO runtime dependencies. "
+    "EVERY PERSONA (a deterministic lint gate enforces this): YAML frontmatter with "
+    "name, description, color; sections `## Identity`, `## Core Mission`, "
+    "`## Critical Rules` (5+ concrete, DOMAIN-SPECIFIC rules drawn from the brief); "
+    "at least 120 words of real substance. PERSONAS MUST BE GENUINELY DISTINCT — a "
+    "pairwise shingle-originality check fails re-skinned duplicates, so give each "
+    "persona its own voice, vocabulary, and responsibilities. Build the divisions "
+    "and personas the BRIEF asks for (a law-firm pack gets legal roles, not "
+    "generic ones), and keep every agent listed in catalog.json."
+)
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -708,6 +728,7 @@ class CodeAgent(BaseAgent):
             + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
             + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
             + (f"{_WORKFLOW_DIRECTIVE}\n\n" if stack == "workflow" else "")
+            + (f"{_AGENT_PACK_DIRECTIVE}\n\n" if stack == "agent_pack" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "

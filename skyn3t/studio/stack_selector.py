@@ -28,6 +28,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "mcp": "an MCP server exposing tools to AI assistants (Model Context Protocol, Python stdio)",
     "rag": "a chat-with-your-documents RAG app — ingest docs, semantic /query, grounded /chat (FastAPI, Python)",
     "workflow": "an agent/automation workflow app — multi-step runner, run ledger, dry-run triggers (FastAPI, Python)",
+    "agent_pack": "an agent team pack — a roster of distinct persona definitions with lint/convert tooling (markdown + Python, zero runtime deps)",
 }
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.
@@ -177,6 +178,8 @@ def _infer_app_type(low: str, stack: str) -> str:
     # "server"-adjacent words, so the stack-driven classification must win.
     if stack == "workflow":
         return "agent_workflow"
+    if stack == "agent_pack":
+        return "agent_pack"
     if stack == "phaser" or any(k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")):
         return "game"
     if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):

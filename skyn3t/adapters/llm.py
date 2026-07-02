@@ -169,7 +169,9 @@ _MOBILE_STACKS = frozenset({"react_native"})
 _DESKTOP_STACKS = frozenset({"tauri"})
 _API_STACKS = frozenset({"fastapi", "node_express"})
 _CLI_STACKS = frozenset({"python_cli"})
-_GAME_STACKS = frozenset({"phaser"})
+# The registry object (skyn3t/core/stacks.py; core is upstream of adapters — no
+# cycle). The other sets above are AGENT-vocab prompt routing and stay local.
+from skyn3t.core.stacks import GAME_STACKS as _GAME_STACKS  # noqa: E402
 
 
 def _agentic_system_for(stack: str) -> str:

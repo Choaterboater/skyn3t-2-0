@@ -45,11 +45,17 @@ exists because of this).
    injected in `_agentic_prompt` when the stack matches (layout contract, framework
    idioms, what NOT to emit). One good clause here is worth many repairs
    (the deepseek 85→100 lesson).
-8. **Gate membership — mostly EXCLUSION.** `runner.py` `_GAME_STACKS`/`_WEB_STACKS`/
-   `_UI_WEB_STACKS`/`_DESIGN_STACKS`, `seo_check._SEO_WEB_STACKS`: decide explicitly
-   which apply. A native/desktop/server stack usually needs ZERO runner edits —
-   being absent from every set is the correct wiring (swift: no `swift` token in
-   runner.py at all). Verify absence with a test, not by assumption.
+8. **Gate membership — declare it in the registry.** `skyn3t/core/stacks.py` is the
+   single source of truth for stack-GROUP membership (`GAME_STACKS`/`WEB_STACKS`/
+   `UI_WEB_STACKS`/`DESIGN_STACKS`/`MCP_STACKS`) and per-gate applicability
+   (`GATES` + `gate_applies`); `runner.py` and the satellites import from it, and
+   `tests/test_stack_registry_drift.py` FAILS if any vocabulary site is missed
+   (planner keywords, scaffold builder, proof family, gate set). Membership is
+   still mostly EXCLUSION: a native/desktop/server stack usually belongs to ZERO
+   groups (swift: absent everywhere — the correct wiring). A stack with its own
+   end-of-build gate adds a `GateSpec` (stacks, settings flag, handler) — the
+   mcp_check entry is the template. `seo_check._SEO_WEB_STACKS` stays local but
+   its relationship to `UI_WEB_STACKS` is pinned by the drift test.
 9. **Serving/preview** — `skyn3t/studio/app_runner.py` `build_run_spec` is
    content-based; a non-servable stack correctly yields "no preview". Only add a
    launch path if a real preview story exists.

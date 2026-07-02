@@ -45,7 +45,8 @@ _NEXT_STACKS = frozenset({"nextjs", "next"})
 # the .js scaffold entry rendering the starter stub. Plan plain .js + Phaser
 # Scenes, never React/.tsx. Kept OUT of _JSX_STACKS so the React directive +
 # .tsx->.jsx rewrite (both wrong for a non-React game) never fire.
-_GAME_STACKS = frozenset({"phaser"})
+# (The registry object — see skyn3t/core/stacks.py + the drift test.)
+from skyn3t.core.stacks import GAME_STACKS as _GAME_STACKS  # noqa: E402
 
 # Swift / SwiftUI native macOS (Swift Package Manager): plan a SwiftPM package
 # (Package.swift + Sources/App + a pure Sources/AppCore + Tests), never web files.

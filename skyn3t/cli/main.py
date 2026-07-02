@@ -1410,6 +1410,84 @@ def snapshot(
     console.print(f"Snapshot written to [cyan]{target}[/cyan] ({n_events} events).")
 
 
+@app.command()
+def deploy(
+    project: str = typer.Argument(..., help="A build slug or a path to a delivered project."),
+    target: str = typer.Option("", "--target", help="Preferred deploy target (e.g. fly, vercel, cloudflare-pages)."),
+    stack: str = typer.Option("", "--stack", help="Override the stack (default: read from the build manifest)."),
+    write: bool = typer.Option(False, "--write", help="Write generated deploy artifacts (e.g. a Dockerfile) into the project."),
+) -> None:
+    """Show the keyless deploy plan for a build — the right hosts, the exact
+    one-command deploy, and (for server stacks) a ready Dockerfile.
+
+    Nothing is deployed and no token is needed: this is the honest
+    "…and here's how it ships" answer for a proven build. Use ``--write`` to
+    drop generated artifacts (like a Dockerfile) into the project.
+    """
+    from pathlib import Path as _Path
+
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.deploy import plan_deploy, write_deploy_artifacts
+
+    console = _console()
+    s = get_settings()
+    cand = _Path(project)
+    pdir = cand if cand.is_absolute() else (s.projects_dir / project)
+    if not pdir.exists():
+        console.print(f"[red]No such build[/red]: {pdir} — pass a slug under "
+                      f"[cyan]{s.projects_dir}[/cyan] or an absolute path.")
+        raise typer.Exit(code=1)
+
+    # Stack precedence: explicit --stack > the build manifest > content detection
+    # (plan_deploy content-detects when the stack is empty/unknown).
+    resolved_stack = stack
+    if not resolved_stack:
+        try:
+            from skyn3t.studio.manifest import BuildManifest
+            man = BuildManifest.load(pdir)
+            resolved_stack = man.stack if man else ""
+        except Exception:  # noqa: BLE001 - a missing/corrupt manifest is fine
+            resolved_stack = ""
+
+    plan = plan_deploy(pdir, resolved_stack, target=target or None)
+
+    if not plan.deployable:
+        console.print(f"[yellow]No hosted deploy path[/yellow] for "
+                      f"[cyan]{pdir.name}[/cyan] (kind: {plan.kind}). {plan.notes}")
+        raise typer.Exit(code=0)
+
+    try:
+        from rich.table import Table
+
+        table = Table(title=f"Deploy plan — {pdir.name}", show_header=False)
+        table.add_row("kind", plan.kind)
+        table.add_row("hosts", ", ".join(plan.targets))
+        if plan.build_command:
+            table.add_row("build", plan.build_command)
+        table.add_row("deploy", plan.command)
+        table.add_row("output", plan.output_dir)
+        table.add_row("serves URL", "yes" if plan.serves_url else "no (a package/binary)")
+        if plan.artifacts:
+            table.add_row("artifacts", ", ".join(plan.artifacts))
+        console.print(table)
+    except Exception:  # noqa: BLE001 - rich optional; fall back to plain lines
+        console.print(f"kind:   {plan.kind}")
+        console.print(f"hosts:  {', '.join(plan.targets)}")
+        if plan.build_command:
+            console.print(f"build:  {plan.build_command}")
+        console.print(f"deploy: {plan.command}")
+    console.print(f"[dim]{plan.notes}[/dim]")
+
+    if write and plan.artifacts:
+        written = write_deploy_artifacts(plan, pdir)
+        if written:
+            console.print(f"[green]Wrote[/green] {', '.join(written)} into {pdir}.")
+        else:
+            console.print("[dim]No artifacts written (already present).[/dim]")
+    console.print("[dim]Keyless plan — run the deploy command yourself; "
+                  "token-gated one-command deploy is coming.[/dim]")
+
+
 @domain_app.command("ingest")
 def domain_ingest(
     source: str = typer.Argument(..., help="Local path (file/dir) or http(s):// URL."),

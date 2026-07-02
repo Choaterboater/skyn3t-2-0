@@ -32,6 +32,9 @@ ENTRYPOINT_NAMES = {
     "index.js", "index.ts", "index.tsx", "main.js", "main.ts", "main.tsx",
     "server.js", "server.ts", "index.html", "App.tsx", "App.jsx",
     "cli.py", "run.py",
+    # MCP server (Python stdio): server.py is the runnable root (run with
+    # `python server.py`). Mirrors server.js/server.ts above for the Node stacks.
+    "server.py",
     # Next.js (App Router): the route page/layout and the config are entry
     # markers. Astro: pages/*.astro. Remix: the root document + index route.
     "page.jsx", "page.tsx", "layout.jsx", "layout.tsx",

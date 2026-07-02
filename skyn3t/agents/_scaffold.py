@@ -1848,12 +1848,176 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _mcp_server_name(app_name: str) -> str:
+    """A kebab identifier for the MCP server (clients show this name)."""
+    ident = _re.sub(r"[^a-z0-9-]+", "-", app_name.strip().lower()).strip("-")
+    return ident or "mcp-server"
+
+
+def _mcp(app_name: str, brief: str) -> dict[str, str]:
+    """A Model Context Protocol (MCP) server — a Python stdio program that exposes
+    TOOLS to AI assistants (Claude Desktop, Cursor, …), built FRESH (never cloned
+    from a web builder, so it never inherits npm / package.json / index.html).
+
+    Structured as a **pure logic core + a thin registration layer**, mirroring the
+    Phaser/Swift sim-core split:
+
+    - ``tools.py`` — the tool IMPLEMENTATIONS as ordinary Python functions with NO
+      dependency on the ``mcp`` SDK, so ``tests/test_tools.py`` exercises them
+      headlessly (and the mcp_check gate soft-skips a missing SDK cleanly).
+    - ``server.py`` — registers thin wrappers around ``tools.py`` as MCP tools via
+      the official Python SDK (``mcp.server.fastmcp.FastMCP``) and runs the stdio
+      loop. Tool docstrings are load-bearing: clients pick tools by name +
+      description.
+
+    The proof story is fully DETERMINISTIC (zero LLM): mcp_check.py spawns this
+    server and speaks the JSON-RPC protocol to it.
+
+    NOTE ON THE SDK API: written to the documented stable ``FastMCP`` API (part of
+    the official ``mcp`` package). FastMCP derives each tool's JSON Schema from the
+    Python type hints, so tools ship typed params for free; it's markedly more
+    stable across SDK releases than the low-level ``Server`` + ``InitializationOptions``
+    API. The gate speaks the raw protocol, so it is SDK-version-agnostic regardless.
+    """
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    server_name = _mcp_server_name(app_name)
+    # Titles land inside triple-quoted docstrings AND a normal string literal —
+    # neutralise the sequences that would break each context.
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    str_title = title.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+    return {
+        "server.py": (
+            '"""' + doc_title + " — a Model Context Protocol (MCP) server.\n\n"
+            "Exposes tools to MCP-compatible AI assistants (Claude Desktop, Cursor, …)\n"
+            "over the stdio transport. The tool IMPLEMENTATIONS live in ``tools.py`` as\n"
+            "pure functions (unit-tested without the MCP runtime); this module only\n"
+            "registers thin wrappers with the server and runs the stdio loop.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "from mcp.server.fastmcp import FastMCP\n\n"
+            "import tools\n\n"
+            f'mcp = FastMCP("{server_name}")\n\n\n'
+            "@mcp.tool()\n"
+            "def add(a: float, b: float) -> float:\n"
+            '    """Add two numbers and return their sum."""\n'
+            "    return tools.add(a, b)\n\n\n"
+            "@mcp.tool()\n"
+            "def word_count(text: str) -> int:\n"
+            '    """Count the whitespace-separated words in ``text``."""\n'
+            "    return tools.word_count(text)\n\n\n"
+            "@mcp.tool()\n"
+            "def reverse_text(text: str) -> str:\n"
+            '    """Return ``text`` reversed character-by-character."""\n'
+            "    return tools.reverse_text(text)\n\n\n"
+            '@mcp.resource("info://server")\n'
+            "def server_info() -> str:\n"
+            '    """A human-readable description of this server and its tools."""\n'
+            "    return tools.server_info()\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    # stdio transport: read JSON-RPC from stdin, write it to stdout.\n"
+            '    mcp.run()\n'
+        ),
+        "tools.py": (
+            '"""Pure tool implementations for the MCP server.\n\n'
+            "These are ordinary Python functions with NO dependency on the ``mcp`` SDK,\n"
+            "so they can be unit-tested directly (see ``tests/test_tools.py``) and the\n"
+            "proof gate can exercise the server even when the SDK is not installed.\n"
+            "``server.py`` registers thin wrappers around them as MCP tools.\n\n"
+            "Replace these example tools with the ones your brief needs — keep them\n"
+            "PURE and TOTAL (never raise on well-typed input) so they stay testable.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n\n"
+            "def add(a: float, b: float) -> float:\n"
+            '    """Return the sum of two numbers."""\n'
+            "    return a + b\n\n\n"
+            "def word_count(text: str) -> int:\n"
+            '    """Count whitespace-separated words in ``text`` (0 for blank input)."""\n'
+            "    return len((text or \"\").split())\n\n\n"
+            "def reverse_text(text: str) -> str:\n"
+            '    """Return ``text`` reversed character-by-character."""\n'
+            "    return (text or \"\")[::-1]\n\n\n"
+            "def server_info() -> str:\n"
+            '    """A short description of the server and its available tools."""\n'
+            '    return (\n'
+            f'        "{str_title}\\n"\n'
+            '        "Tools: add(a, b), word_count(text), reverse_text(text)."\n'
+            "    )\n"
+        ),
+        "tests/test_tools.py": (
+            '"""Unit tests for the PURE tool logic (no MCP runtime needed)."""\n'
+            "import tools\n\n\n"
+            "def test_add():\n"
+            "    assert tools.add(2, 3) == 5\n\n\n"
+            "def test_word_count():\n"
+            '    assert tools.word_count("hello world") == 2\n'
+            '    assert tools.word_count("") == 0\n\n\n'
+            "def test_reverse_text():\n"
+            '    assert tools.reverse_text("abc") == "cba"\n\n\n'
+            "def test_server_info_lists_tools():\n"
+            "    info = tools.server_info()\n"
+            '    assert "add" in info and "word_count" in info\n'
+        ),
+        "requirements.txt": (
+            f"# Runtime dependencies for {str_title}.\n"
+            "mcp>=1.2         # official Model Context Protocol Python SDK (FastMCP + stdio)\n"
+            "\n"
+            "# Dev/test (optional): `pip install pytest` to run tests/test_tools.py.\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Python MCP server (Model Context Protocol, stdio)",
+            install=(
+                "Requires Python 3.10+. Install the MCP SDK into a virtual env:\n\n"
+                "```bash\n"
+                "python -m venv .venv\n"
+                "source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
+                "pip install -r requirements.txt\n"
+                "```"
+            ),
+            usage=(
+                "Run the server over stdio (this is how an MCP client launches it):\n\n"
+                "```bash\npython server.py\n```\n\n"
+                "Register it with an MCP client (e.g. Claude Desktop's "
+                "`claude_desktop_config.json`):\n\n"
+                "```json\n"
+                '{\n'
+                '  "mcpServers": {\n'
+                f'    "{server_name}": {{ "command": "python", "args": ["server.py"] }}\n'
+                '  }\n'
+                '}\n'
+                "```\n\n"
+                "The client then lists the server's tools and calls them over the "
+                "Model Context Protocol."
+            ),
+            structure=[
+                ("server.py", "MCP server — registers the tools + runs the stdio loop"),
+                ("tools.py", "Pure tool implementations (no SDK) — the testable logic core"),
+                ("tests/test_tools.py", "Unit tests for the pure tools"),
+                ("requirements.txt", "Runtime dependency: the mcp SDK"),
+            ],
+            features=[
+                "stdio Model Context Protocol server (works with Claude Desktop, Cursor, …)",
+                "Tools exposed with typed JSON-Schema parameters",
+                "Pure tool logic split from the SDK registration — easily unit-tested",
+                "A resource (info://server) describing the server",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest\n```"
+            ),
+        ),
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
     "tauri": _tauri,
     "desktop": _tauri,
     "phaser": _phaser,
     "swift": _swift,
+    "mcp": _mcp,
     "react_native": _react_native_expo,
     "nextjs": _nextjs,
     "astro": _astro,

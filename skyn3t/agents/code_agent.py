@@ -351,6 +351,32 @@ _SWIFT_DIRECTIVE = (
 )
 
 
+_MCP_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a Model Context Protocol (MCP) SERVER in Python "
+    "that exposes TOOLS to AI assistants over the stdio transport. This is NOT a web "
+    "app and NOT an HTTP/REST API: NEVER emit package.json, npm, index.html, Flask/"
+    "FastAPI, or a web server. "
+    "LAYOUT: `server.py` (the runnable root — `python server.py` starts the stdio "
+    "server), `tools.py` (the tool IMPLEMENTATIONS as pure functions), "
+    "`tests/test_tools.py` (pytest over the pure functions), and `requirements.txt` "
+    "listing `mcp`. "
+    "SDK: use the official Python SDK — `from mcp.server.fastmcp import FastMCP`; "
+    "create `mcp = FastMCP(\"<server-name>\")`, register each tool with an `@mcp.tool()` "
+    "decorator, and end with `if __name__ == \"__main__\": mcp.run()` (stdio). "
+    "ARCHITECTURE (pure core + thin registration — the sim-core split): put ALL tool "
+    "LOGIC in `tools.py` as ordinary, PURE, TOTAL functions (no `mcp` import, never "
+    "raise on well-typed input) so they are unit-testable without the SDK; the "
+    "`@mcp.tool()` functions in `server.py` are THIN wrappers that call `tools.py`. "
+    "TOOLS ARE LOAD-BEARING: give every tool a descriptive snake_case name, a "
+    "one-line docstring (clients pick tools by name + description), and TYPED "
+    "parameters (real type hints → FastMCP derives the JSON Schema). Implement the "
+    "brief's real tools — 2+ genuinely useful ones, not a stub. Handle bad input by "
+    "returning a structured result, never by crashing the process. Add at least one "
+    "`@mcp.resource(...)`. Keep upstream API keys OPTIONAL (read from the env with a "
+    "safe fallback) so the server boots and lists its tools with no secrets."
+)
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -620,6 +646,7 @@ class CodeAgent(BaseAgent):
             + (f"{_GAME_FEEL_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
+            + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
             + f"Architecture summary: {plan.get('summary', '')}\n"
             + (f"Planned files:\n{manifest}\n\n" if manifest else "\n")
             + "Write ALL files into the CURRENT directory (create subfolders as needed). "

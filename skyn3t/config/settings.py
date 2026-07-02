@@ -267,6 +267,13 @@ class Settings(BaseSettings):
     # ON. ADVISORY only: findings are recorded to manifest.extra["seo"] and fed to the
     # improver; it NEVER flips the verdict (a static SEO nit must not no_go a working app).
     seo_check_enabled: bool = True
+    # Deterministic MCP-server gate (mcp stack, wave-2 §3.3): spawn the delivered
+    # server.py and drive the real Model Context Protocol over stdio (initialize →
+    # tools/list → tools/call each tool → one malformed call). ZERO LLM. Like the
+    # SEO check it is ADVISORY — findings are recorded to manifest.extra["mcp_check"]
+    # and fed to ONE repair (snapshot → improve → re-proof → keep or roll back);
+    # it NEVER flips the verdict. Soft-skips when the mcp SDK isn't importable.
+    mcp_check_enabled: bool = True
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.

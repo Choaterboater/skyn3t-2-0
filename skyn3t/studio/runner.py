@@ -1720,6 +1720,133 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - advisory; never break a build
             log.warning("seo_check.failed", error=str(exc))
 
+    @staticmethod
+    def _select_mcp_source_files(project_dir) -> list[str]:
+        """The delivered MCP source files (relative POSIX paths) to hand the improver
+        — server.py (the SDK registration) + tools.py (the tool logic), plus any other
+        root-level *.py the server splits into. Excludes tests + vendored dirs. Deduped
+        + capped at 6. Empty -> the caller must NOT dispatch. Never raises."""
+        try:
+            files = list_files(project_dir)
+        except Exception:  # noqa: BLE001 - selection must never raise
+            return []
+        preferred = ("server.py", "tools.py")
+        out: list[str] = []
+        for name in preferred:
+            if name in files and name not in out:
+                out.append(name)
+        for f in files:
+            posix = f.replace("\\", "/")
+            if "/" in posix or not posix.endswith(".py"):
+                continue  # root-level modules only
+            if posix.startswith("test_") or posix in out:
+                continue
+            out.append(posix)
+            if len(out) >= 6:
+                break
+        return out[:6]
+
+    async def _run_mcp_check(
+        self, manifest, plan, project_dir, correlation_id, extra
+    ) -> None:
+        """Deterministic MCP-server gate (mcp stack, ADVISORY): spawn the delivered
+        server.py and drive the real Model Context Protocol over stdio (initialize →
+        tools/list → tools/call each tool → one malformed call), with ZERO LLM. RECORD
+        the verdict to ``manifest.extra["mcp_check"]``. When there are real issues and a
+        ``code_improve`` capability is present, dispatch ONE repair.
+
+        Do-no-harm (mirrors ``_run_seo_check``): the improver rewrites server.py/tools.py
+        AFTER proof_run + the verdict have run, and nothing downstream except the final
+        consistency pass re-verifies them — so a broken rewrite would otherwise ship as
+        ``verdict=go``. This snapshots the ≤6 targets and, after the repair, re-runs the
+        REAL proof: the repair is KEPT only if the proof still passes, else every mutation
+        is ROLLED BACK. A failed/timed-out dispatch is rolled back unconditionally.
+        Strictly ADVISORY: it NEVER touches ``verdict``. Best-effort; never raises."""
+        try:
+            from skyn3t.studio.mcp_check import check_mcp
+
+            verdict = await asyncio.to_thread(check_mcp, project_dir, plan.stack)
+            manifest.extra["mcp_check"] = verdict.to_dict()
+            log.info("mcp_check.done", skipped=verdict.skipped, ok=verdict.ok,
+                     tools=len(verdict.tools), issues=len(verdict.issues))
+
+            gaps = verdict.gaps()
+            if not gaps or not self._has_capability("code_improve"):
+                return
+            files = self._select_mcp_source_files(project_dir)
+            if not files:
+                return
+
+            before_files = set(self._safe_list_files(project_dir))
+            snapshots = self._snapshot_seo_targets(project_dir, files)
+
+            payload = {
+                "brief": manifest.brief, "slug": manifest.slug,
+                "worktree_dir": project_dir, "project_dir": project_dir,
+                "stack": plan.stack, "plan": plan.to_dict(),
+                "gaps": list(gaps), "files": list(files),
+            }
+            if extra:
+                payload["extra"] = extra
+            task = TaskRequest(
+                type="code_improver", payload=payload,
+                capabilities_required=("code_improve",),
+                correlation_id=correlation_id,
+                metadata={"stage": "mcp_check"},
+            )
+            dispatched_ok = True
+            try:
+                await asyncio.wait_for(
+                    self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
+            except Exception as exc:  # noqa: BLE001 - a timeout can leave partial writes
+                dispatched_ok = False
+                log.warning("mcp_check.improve_failed", error=str(exc))
+
+            changed = self._seo_changed_targets(project_dir, snapshots)
+            new_files = sorted(
+                f for f in set(self._safe_list_files(project_dir)) if f not in before_files)
+            if not changed and not new_files:
+                return
+            touched = sorted(set(changed) | set(new_files))
+
+            if not dispatched_ok:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["mcp_repair"] = {
+                    "kept": False,
+                    "reason": "improver dispatch failed/timed out; rolled back partial writes",
+                    "changed_files": touched,
+                }
+                return
+
+            proof = await asyncio.to_thread(
+                proof_run,
+                project_dir,
+                checklist=plan.checklist,
+                execution_backend=self.settings.execution_backend,
+                stack=plan.stack,
+                run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+            )
+            if proof.passed:
+                manifest.files = self._safe_list_files(project_dir)
+                verdict = await asyncio.to_thread(check_mcp, project_dir, plan.stack)
+                manifest.extra["mcp_check"] = verdict.to_dict()
+                manifest.extra["mcp_repair"] = {"kept": True, "changed_files": touched}
+            else:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["mcp_repair"] = {
+                    "kept": False,
+                    "reason": "advisory MCP repair broke the build proof; rolled back",
+                    "changed_files": touched,
+                }
+                log.warning("mcp_check.repair_rolled_back", changed=touched)
+        except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+            log.warning("mcp_check.failed", error=str(exc))
+
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
         improver, and retry until the proof passes or the budget is spent.
@@ -2782,6 +2909,17 @@ class StudioRunner:
             # working app. Soft-skips non-HTML stacks + page-less projects. Never raises.
             if plan.stack in _WEB_STACKS and getattr(self.settings, "seo_check_enabled", True):
                 await self._run_seo_check(
+                    manifest, plan, project_dir, correlation_id, extra)
+
+            # End-of-build MCP-server gate (mcp stack, ADVISORY, zero LLM): spawn the
+            # delivered server.py and drive the real Model Context Protocol over stdio
+            # (initialize → tools/list → tools/call each tool → one malformed call).
+            # Like the SEO check it is recorded to manifest.extra["mcp_check"] + fed to
+            # ONE snapshot/re-proof/rollback repair but NEVER flips `verdict`; it
+            # soft-skips when the mcp SDK isn't importable. Runs BEFORE the final
+            # consistency pass so a kept repair is re-verified by it.
+            if plan.stack == "mcp" and getattr(self.settings, "mcp_check_enabled", True):
+                await self._run_mcp_check(
                     manifest, plan, project_dir, correlation_id, extra)
 
             # Unconditional final consistency pass — see _final_consistency_check's

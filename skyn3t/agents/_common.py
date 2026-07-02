@@ -25,6 +25,7 @@ KNOWN_STACKS = (
     "tauri",
     "phaser",
     "swift",
+    "mcp",
 )
 
 DEFAULT_STACK = "react_vite"
@@ -51,6 +52,13 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
 
     text = f"{brief} {_plan_text(plan)}".lower()
     # Order matters: more specific signals first.
+    # MCP server (Model Context Protocol) must precede fastapi/express/react: an
+    # "mcp server" brief contains "server"/"tool" (which brush those stacks) but is
+    # a Python stdio tool server, not a web/HTTP app. Bare "mcp" is matched
+    # WHOLE-WORD so it never fires as a substring; "model context protocol" is the
+    # unambiguous spelled-out form.
+    if "model context protocol" in text or re.search(r"\bmcp\b", text):
+        return "mcp"
     if any(k in text for k in ("fastapi", "uvicorn", "rest api", "http api", "endpoint")):
         return "fastapi"
     if any(k in text for k in ("express", "node server", "node.js server")):
@@ -144,6 +152,13 @@ def _normalize_stack(value: str) -> str:
         "macos_native": "swift",
         "swift_macos": "swift",
         "swift_native": "swift",
+        # MCP server (Model Context Protocol) — Python stdio tool server. A real
+        # builder stack; only explicit mcp/model-context-protocol signals map here.
+        "mcp": "mcp",
+        "mcp_server": "mcp",
+        "mcpserver": "mcp",
+        "model_context_protocol": "mcp",
+        "mcp_tool_server": "mcp",
         "mobile": "react_native",
         "expo": "react_native",
         "react_native": "react_native",

@@ -36,6 +36,8 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "phaser": ("package.json",),
     # Swift / SwiftUI native macOS: the SwiftPM manifest is the dependency manifest.
     "swift": ("Package.swift",),
+    # MCP server (Python stdio): requirements.txt declares the mcp SDK.
+    "mcp": ("requirements.txt",),
 }
 
 

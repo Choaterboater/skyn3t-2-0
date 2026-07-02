@@ -2232,6 +2232,21 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 return (True, False, "swift stack: no Sources/**/*.swift found")
             return (True, True, "swift stack: Package.swift + Sources present")
 
+        # ---- mcp (Python stdio Model Context Protocol server) -----------
+        if low == "mcp":
+            server = pdir / "server.py"
+            if not server.exists() or server.stat().st_size < _NONEMPTY:
+                return (True, False, "mcp stack: server.py missing")
+            try:
+                text = server.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                text = ""
+            # The server must actually speak MCP (reference the SDK) — a bare
+            # server.py that isn't an MCP server does NOT satisfy this stack.
+            if "mcp" not in text:
+                return (True, False, "mcp stack: server.py does not reference the mcp SDK")
+            return (True, True, "mcp stack: server.py present and references the mcp SDK")
+
         # ---- react_vite / react -----------------------------------------
         if low in ("react", "react_vite"):
             pkg = pdir / "package.json"

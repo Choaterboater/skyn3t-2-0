@@ -1,6 +1,29 @@
 # SkyN3t 2.0 — Status
 
-_Last reviewed: 2026-07-01 (suite 1752 passed / 3 skipped)._
+_Last reviewed: 2026-07-02 (suite 1976 passed / 3 skipped)._
+
+**2026-07-02 highlights — two parallel waves, merged:**
+
+*Hardening wave:* stack-group + gate-set **registry** (`skyn3t/core/stacks.py`,
+single source of truth; `tests/test_stack_registry_drift.py` fails loudly on
+any missed vocabulary site); the structured **QA-FAIL feedback contract** at
+every improver dispatch site; **doom-loop breaker + verify-on-stop** inside the
+agentic codegen loop (finish denied with real defect text, degrade-open);
+test-suite quota leaks sealed (CLI-vision fallback + shell-exported LLM keys);
+symlink-escape confinement on the last unguarded write paths; an 18-agent
+adversarial review of the wave (2 confirmed findings, both fixed, one proven by
+mutation testing).
+
+*App-type expansion wave (merged from `worktree-rag-stack`):* **8 of the
+wave-2 deep-dive's 10 LLM-era app types delivered** — `rag` (§3.1), `workflow`
+(§3.2) and `agent_pack` (§3.8) as full stacks with deterministic HTTP/content
+gates and whole-build acceptance seals, plus mcp (§3.3, sealed earlier);
+terminal-copilot (§3.6), LLM gateway (§3.7), market-data API (§3.9) and
+memory-chat (§3.10) as scaffold **variants** (the lighter pattern, documented
+in `docs/ADDING_A_STACK.md`); `cli_check`/`rag_check`/`workflow_check` gates;
+toolchain preflight; registry-driven gate kill-switches (API + Settings UI);
+advisory-gate findings now become deduped lessons. North star holds: every
+capability ships with a headless proof story.
 
 **2026-07-01 highlights:** stale-server guard (`stale_code` in /api/health + UI
 restart banner); advisory SEO gate (adversarially reviewed, rollback-safe

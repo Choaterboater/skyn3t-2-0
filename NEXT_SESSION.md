@@ -1,7 +1,39 @@
 # Next session — handoff
 
-_Updated 2026-07-01 evening. Branch: `main` (commits `7aa599a`, `f2e6fa3`, + mock-LLM).
-Suite: **1752 passed / 3 skipped**._
+_Updated 2026-07-02 morning. Branch: `main` @ the `worktree-rag-stack` merge
+(`b488f75`). Suite: **1976 passed / 3 skipped**._
+
+## TL;DR (2026-07-02)
+
+Two waves ran in PARALLEL sessions and are now merged on `main`:
+
+- **Hardening wave** (10 commits): `core/stacks.py` registry + drift check
+  (the 3-stack-vocabulary gotcha is now structurally impossible to repeat),
+  QA-FAIL contract at every improver dispatch site, doom-loop breaker +
+  verify-on-stop in `_openrouter_agentic` (item 49 + 19), quota-leak seals
+  (CLI-vision + LLM-key fencing in conftest), confinement guards, and an
+  18-agent adversarial review (2 confirmed findings fixed, one proven by
+  mutation testing; 5 refuted).
+- **App-type expansion wave** (28 commits, merged): 8/10 wave-2 app types —
+  full stacks `rag`/`workflow`/`agent_pack` (+ mcp) with deterministic gates
+  and acceptance seals; variants for terminal-copilot / llm-gateway /
+  market-data / memory-chat; `cli_check` gate; toolchain preflight;
+  registry-driven gate kill-switches in API + Settings UI. PR body ready at
+  `.github/PULL_REQUEST_DRAFT.md`.
+- Improve engine: silent no-op fixed + **agentic improve** shipped
+  (`improve_agentic`, default ON, multi-file goals, auto-revert).
+
+**Next up (2026-07-02):** (1) finance/trading agent app type (wave-2 §3.4) —
+the notable remaining full stack; reuses the proven sim-core gate pattern on a
+pure strategy engine + the temporal-integrity gate (item 70). (2) Model
+fallback chain (wave-1 item 2) — `fallback_candidates` was IN FLIGHT
+uncommitted when this handoff was written; check `git status` before starting
+it. (3) Browser extension stack (wave-1 #1, demoted-not-dropped). (4)
+Deep-research + generative-UI + voice-RAG app types (§3.11, deferred tier).
+(5) Godot still held. Two sessions sharing one checkout worked but was hairy —
+prefer worktrees for parallel stack work.
+
+---
 
 ## TL;DR (2026-07-01)
 

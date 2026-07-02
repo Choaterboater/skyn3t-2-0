@@ -239,7 +239,7 @@ class LearningLoop:
         stack = str(build.get("stack") or "generic")
         stage = str(build.get("stage") or "")
         source_build = build.get("build_id") or build.get("slug")
-        texts = _summarize_outcome(build)
+        texts = await self._drop_known(stack, _summarize_outcome(build))
         ids: list[int] = []
         for text in texts:
             lid = await self._add_lesson(stack, stage, text, source_build)
@@ -248,6 +248,33 @@ class LearningLoop:
             await self._emit_captured(stack, stage, texts, ids, source_build)
         _info("learning.captured", stack=stack, stage=stage, count=len(ids))
         return ids
+
+    async def _drop_known(self, stack: str, texts: list[str]) -> list[str]:
+        """Capture-side dedupe: a lesson text already stored for this stack is
+        NOT re-inserted — duplicates crowd the score-ranked injection top-5 with
+        identical advice and split one lesson's helpful/hurt grading history
+        across rows. Degrades open (keeps the text) when the store lacks
+        ``lesson_exists`` (duck-typed stores) or the check errors."""
+        if not texts:
+            return []
+        if self.store is None:
+            mem = {m["text"] for m in self._mem if m.get("stack") == stack}
+            return [t for t in texts if t not in mem]
+        exists = getattr(self.store, "lesson_exists", None)
+        if exists is None:
+            return texts
+        out: list[str] = []
+        for text in texts:
+            try:
+                known = bool(await exists(stack, text))
+            except Exception as exc:  # noqa: BLE001 - degrade open
+                _info("learning.dedupe_check_failed", error=str(exc))
+                known = False
+            if not known:
+                out.append(text)
+        if len(out) < len(texts):
+            _info("learning.dedupe_skipped", stack=stack, skipped=len(texts) - len(out))
+        return out
 
     async def _add_lesson(
         self, stack: str, stage: str, text: str, source_build: Any

@@ -60,8 +60,11 @@ exists because of this).
    content-based; a non-servable stack correctly yields "no preview". Only add a
    launch path if a real preview story exists.
 10. **Doctor/toolchain** — if the stack needs a local toolchain (swift, godot,
-    xcodebuild), the proof must soft-skip when it's missing, and (roadmap) the
-    selector should never pick a stack whose toolchain preflight fails.
+    xcodebuild), the proof must soft-skip when it's missing, AND the stack must
+    be listed in `stack_selector._TOOLCHAIN_EXE` (+ a `_TOOLCHAIN_FALLBACK`
+    chain) so the selector never heuristically picks a stack this machine
+    cannot build (explicit pins are never demoted). Test:
+    `tests/test_toolchain_preflight.py`.
 
 ## Worked examples
 

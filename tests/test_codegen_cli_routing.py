@@ -4,6 +4,9 @@ whole-app build on that CLI (e.g. claude) even when the global backend is cheap
 from __future__ import annotations
 
 import pathlib
+import shutil
+
+import pytest
 
 from skyn3t.adapters.llm import _CLI_COMMANDS, LLMClient
 from skyn3t.agents.code_agent import CodeAgent
@@ -43,6 +46,7 @@ def test_codegen_cli_model_setting_default_empty():
     assert Settings().codegen_cli_model == ""
 
 
+@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not installed")
 async def test_codegen_cli_model_threaded_to_agentic_build(tmp_path, monkeypatch):
     # A configured codegen_cli_model (e.g. "sonnet") must reach the agentic
     # `--model` flag on the SAME call that routes codegen to codegen_cli_provider —

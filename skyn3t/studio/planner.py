@@ -30,6 +30,21 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # briefs don't collapse to the Vite or plain-HTML scaffold.
     ("astro", ("astro",)),
     ("remix", ("remix",)),
+    # MCP server (Model Context Protocol, wave-2 §3.3): a Python stdio tool server
+    # exposing tools to AI assistants — NOT a web/HTTP app. Placed HIGH (before
+    # react_native / swift / tauri / phaser / react / fastapi / static): an "mcp
+    # server that exposes X" brief contains "server" (fastapi/express territory),
+    # "tool" (generic), AND "exposes" (whose prefix "expo" the react_native
+    # signature substring-matches) — so without an earlier MCP-SPECIFIC signature
+    # it collapses to a web/API/mobile scaffold. Keywords are MCP-distinctive: bare
+    # "mcp" is word-bounded (via _WORD_BOUNDED_KEYWORDS) so it only fires on the
+    # standalone token, never buried in another word; the spelled-out "model
+    # context protocol" needs no bounding. We deliberately do NOT claim the
+    # ambiguous bare "tool server" phrase (it would steal "a tool for my server") —
+    # an MCP brief always carries "mcp" or "model context protocol". Placing mcp
+    # before react_native etc. is safe: no genuine mobile/desktop/game/web brief
+    # contains "mcp" or "model context protocol".
+    ("mcp", ("model context protocol", "mcp")),
     # react_native must precede `react`/`nextjs`: "react native expo app" and
     # "ios app" should resolve to the mobile stack, not the web React scaffold.
     ("react_native", (
@@ -97,6 +112,10 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # the load-bearing artifact (it declares the executable + test targets). NO
     # package.json / index.html — this stack has no npm and no DOM.
     "swift": ("README.md", "Package.swift"),
+    # MCP server (Python stdio Model Context Protocol): the runnable server is the
+    # load-bearing artifact, its tools split into a pure tools.py, plus the SDK
+    # manifest. NO package.json / index.html — this stack is a stdio program.
+    "mcp": ("README.md", "server.py", "tools.py", "requirements.txt"),
     # Next.js App Router: the offline scaffold ships plain JSX (no TypeScript
     # toolchain), so the runnable root page/layout are .jsx, plus the config.
     "nextjs": ("README.md", "package.json", "app/page.jsx", "app/layout.jsx", "next.config.js"),
@@ -167,6 +186,9 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     # SwiftPM abbreviation: whole-word so it only fires on the standalone token,
     # never as a substring buried in an unrelated word.
     "spm",
+    # MCP (Model Context Protocol): whole-word so bare "mcp" only routes on the
+    # standalone token, never as a substring inside an unrelated word.
+    "mcp",
     # Swift phrases that END in "swift": whole-word so the trailing token can't be
     # "swiftly"/"swiftness" (which are NOT the Swift language).
     "macos swift", "written in swift", "built with swift",

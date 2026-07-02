@@ -24,6 +24,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "tauri": "a cross-platform desktop app for Mac/Windows (Vite + React frontend + Tauri Rust shell)",
     "phaser": "a 2D browser game — arcade / platformer / shooter (Phaser 3 + Vite, canvas)",
     "swift": "a native macOS SwiftUI desktop app (Swift Package Manager)",
+    "mcp": "an MCP server exposing tools to AI assistants (Model Context Protocol, Python stdio)",
 }
 
 # Planner stacks that have NO builder of their own -> collapse to a real one.
@@ -113,6 +114,10 @@ def _normalize_override(value: str) -> str:
 
 
 def _infer_app_type(low: str, stack: str) -> str:
+    # MCP first: an "mcp server" brief contains "server" (api_service territory),
+    # so the stack-driven classification must win before the api/server heuristic.
+    if stack == "mcp":
+        return "mcp_server"
     if stack == "phaser" or any(k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")):
         return "game"
     if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):
@@ -137,6 +142,8 @@ def _infer_app_type(low: str, stack: str) -> str:
 
 
 def _infer_engine(low: str, stack: str) -> str:
+    if stack == "mcp":
+        return "mcp"
     if stack == "phaser":
         return "phaser"
     if stack in ("react", "nextjs", "remix", "astro", "static"):

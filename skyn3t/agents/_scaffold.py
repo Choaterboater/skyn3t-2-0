@@ -179,6 +179,22 @@ def _implies_llm_gateway(brief: str) -> bool:
     return any(k in low for k in _LLM_GATEWAY_KEYWORDS)
 
 
+# Terminal-copilot variant of the python_cli stack (wave-2 §3.6): an agent CLI
+# brief gets the event-stream scaffold. Phrases only — bare "cli"/"assistant"/
+# "copilot" alone would steal ordinary tool briefs.
+_CLI_AGENT_KEYWORDS = (
+    "cli agent", "agent cli", "terminal assistant", "terminal copilot",
+    "copilot for", "command line tool that uses ai", "cli that uses ai",
+    "command-line assistant", "command line assistant",
+)
+
+
+def _implies_cli_agent(brief: str) -> bool:
+    """True when the brief asks for a terminal agent / domain copilot CLI."""
+    low = (brief or "").lower()
+    return any(k in low for k in _CLI_AGENT_KEYWORDS)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -2400,6 +2416,338 @@ def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
+    """The terminal-copilot variant of the python_cli stack (wave-2 §3.6): an
+    agent CLI whose ``run`` command emits a TYPED JSONL EVENT STREAM (the
+    contract IS the proof hook), driven by a bundled mock-provider
+    ``scenarios.json`` so everything is offline + deterministic. Permission
+    modes (read-only default / workspace-write) guard the write tool with the
+    workspace-boundary + symlink-escape idiom (the recorded path-traversal
+    lesson, systematized). Pure logic in ``cli_core.py``; zero runtime deps."""
+    title = (brief.strip() or app_name).split("\n")[0][:120]
+    doc_title = title.replace("\\", " ").replace('"""', "'''")
+    return {
+        "cli_core.py": (
+            '"""Pure copilot core: typed events, scenario playback, guarded tools.\n\n'
+            "Stdlib only. The EVENT SCHEMA is the CLI's contract: every line the\n"
+            "``run`` command prints in ``--format json`` mode is one of these events,\n"
+            "so a harness can verify behavior mechanically. Tools are executed for\n"
+            "real (scenarios script WHICH tools run, not their results), and the\n"
+            "write tool enforces the permission mode + workspace boundary.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import json\n"
+            "import os\n"
+            "from pathlib import Path\n\n"
+            'EVENT_TYPES = ("session_start", "tool_call", "tool_result", "answer",\n'
+            '               "denied", "error")\n'
+            "_WRITE_CAP_BYTES = 64 * 1024\n\n\n"
+            "def make_event(event_type: str, **fields) -> dict:\n"
+            '    return {"type": event_type, **fields}\n\n\n'
+            "def validate_event(obj: object) -> list[str]:\n"
+            '    """Schema issues for one event; empty means it conforms."""\n'
+            "    if not isinstance(obj, dict):\n"
+            '        return ["event is not an object"]\n'
+            '    etype = obj.get("type")\n'
+            "    issues: list[str] = []\n"
+            "    if etype not in EVENT_TYPES:\n"
+            "        issues.append(f\"unknown event type {etype!r}\")\n"
+            '    if etype == "answer" and not str(obj.get("text", "")).strip():\n'
+            '        issues.append("answer event needs non-empty text")\n'
+            '    if etype == "tool_call" and not obj.get("tool"):\n'
+            '        issues.append("tool_call event needs a tool name")\n'
+            "    return issues\n\n\n"
+            "def load_scenarios(path: str | Path) -> list[dict]:\n"
+            '    data = json.loads(Path(path).read_text(encoding="utf-8"))\n'
+            '    scenarios = data.get("scenarios")\n'
+            "    return scenarios if isinstance(scenarios, list) else []\n\n\n"
+            "def pick_scenario(scenarios: list[dict], prompt: str) -> dict | None:\n"
+            '    """First scenario whose match phrase appears in the prompt; the\n'
+            "    empty-match scenario is the fallback.\"\"\"\n"
+            "    low = (prompt or \"\").lower()\n"
+            "    fallback = None\n"
+            "    for scenario in scenarios:\n"
+            '        match = str(scenario.get("match", ""))\n'
+            "        if not match:\n"
+            "            fallback = fallback or scenario\n"
+            "        elif match in low:\n"
+            "            return scenario\n"
+            "    return fallback\n\n\n"
+            "def confined(workspace: str | Path, rel: str) -> Path | None:\n"
+            '    """Resolve workspace/rel and return it ONLY if it stays inside the\n'
+            "    workspace (symlink-safe) — the path-traversal guard.\"\"\"\n"
+            "    try:\n"
+            "        base = Path(workspace).resolve()\n"
+            "        target = (base / rel).resolve()\n"
+            "        if os.path.commonpath([str(base), str(target)]) != str(base):\n"
+            "            return None\n"
+            "    except (ValueError, OSError):\n"
+            "        return None\n"
+            "    return target\n\n\n"
+            "def run_tool(tool: str, args: dict, workspace: str | Path, mode: str) -> dict:\n"
+            '    """Execute one guarded tool; returns the tool_result/denied event."""\n'
+            '    if tool == "read_file":\n'
+            '        target = confined(workspace, str(args.get("path", "")))\n'
+            "        if target is None:\n"
+            '            return make_event("denied", tool=tool,\n'
+            '                              reason="path escapes the workspace")\n'
+            "        try:\n"
+            '            return make_event("tool_result", tool=tool,\n'
+            '                              content=target.read_text(encoding="utf-8")[:4000])\n'
+            "        except OSError as exc:\n"
+            '            return make_event("tool_result", tool=tool, error=str(exc))\n'
+            '    if tool == "list_dir":\n'
+            '        target = confined(workspace, str(args.get("path", ".")))\n'
+            "        if target is None or not target.is_dir():\n"
+            '            return make_event("tool_result", tool=tool, entries=[])\n'
+            '        return make_event("tool_result", tool=tool,\n'
+            "                          entries=sorted(p.name for p in target.iterdir())[:200])\n"
+            '    if tool == "write_file":\n'
+            '        if mode != "workspace-write":\n'
+            '            return make_event("denied", tool=tool,\n'
+            '                              reason="write_file requires --mode workspace-write "\n'
+            '                                     "(read-only is the default)")\n'
+            '        content = str(args.get("content", ""))\n'
+            "        if len(content.encode()) > _WRITE_CAP_BYTES:\n"
+            '            return make_event("denied", tool=tool, reason="content exceeds the size cap")\n'
+            '        target = confined(workspace, str(args.get("path", "")))\n'
+            "        if target is None:\n"
+            '            return make_event("denied", tool=tool,\n'
+            '                              reason="path escapes the workspace")\n'
+            "        target.parent.mkdir(parents=True, exist_ok=True)\n"
+            '        target.write_text(content, encoding="utf-8")\n'
+            '        return make_event("tool_result", tool=tool, written=str(target))\n'
+            '    return make_event("denied", tool=tool, reason=f"unregistered tool \'{tool}\'")\n\n\n'
+            "def run_scenario(scenario: dict, workspace: str | Path, mode: str) -> tuple[list[dict], int]:\n"
+            '    """Play one scripted scenario, executing its tool calls for real.\n\n'
+            "    Returns (events, exit_code): 0 on success, 2 when anything was\n"
+            "    denied (the caller surfaces it on stderr + exit code). Never raises.\n"
+            '    """\n'
+            '    events: list[dict] = [make_event("session_start", mode=mode)]\n'
+            "    exit_code = 0\n"
+            '    for step in scenario.get("events", []):\n'
+            "        if not isinstance(step, dict):\n"
+            "            continue\n"
+            '        if step.get("type") == "tool_call":\n'
+            '            tool = str(step.get("tool", ""))\n'
+            '            args = step.get("args") if isinstance(step.get("args"), dict) else {}\n'
+            '            events.append(make_event("tool_call", tool=tool, args=args))\n'
+            "            result = run_tool(tool, args, workspace, mode)\n"
+            "            events.append(result)\n"
+            '            if result.get("type") == "denied":\n'
+            "                exit_code = 2\n"
+            "        else:\n"
+            "            events.append(dict(step))\n"
+            "    return events, exit_code\n"
+        ),
+        "main.py": (
+            '"""' + doc_title + " — a terminal copilot with a typed event-stream contract.\n\n"
+            "Commands:\n"
+            "  python main.py run '<prompt>' [--format json|text] [--mode read-only|workspace-write]\n"
+            "  python main.py doctor --output-format json\n\n"
+            "``run --format json`` prints ONE JSON EVENT PER LINE (session_start,\n"
+            "tool_call, tool_result, answer, denied) — a mechanical contract any\n"
+            "harness can assert on. Scenarios come from the bundled mock-provider\n"
+            "scenarios.json, so everything works offline with zero keys; a denied\n"
+            "tool exits 2. The write tool needs --mode workspace-write.\n"
+            '"""\n'
+            "from __future__ import annotations\n\n"
+            "import argparse\n"
+            "import json\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "import cli_core\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def _cmd_run(args) -> int:\n"
+            "    scenarios = cli_core.load_scenarios(ROOT / \"scenarios.json\")\n"
+            "    scenario = cli_core.pick_scenario(scenarios, args.prompt)\n"
+            "    if scenario is None:\n"
+            '        print("no scenario matched and no fallback exists", file=sys.stderr)\n'
+            "        return 1\n"
+            "    events, exit_code = cli_core.run_scenario(scenario, args.workspace, args.mode)\n"
+            "    for event in events:\n"
+            '        if args.format == "json":\n'
+            "            print(json.dumps(event, ensure_ascii=False))\n"
+            "        else:\n"
+            '            print(f"[{event.get(\'type\')}] " + json.dumps(\n'
+            '                {k: v for k, v in event.items() if k != "type"}, ensure_ascii=False))\n'
+            "    if exit_code:\n"
+            '        print("one or more tool calls were denied", file=sys.stderr)\n'
+            "    return exit_code\n\n\n"
+            "def _cmd_doctor(args) -> int:\n"
+            "    checks: list[dict] = []\n"
+            "    ok = True\n"
+            "    try:\n"
+            '        scenarios = cli_core.load_scenarios(ROOT / "scenarios.json")\n'
+            '        checks.append({"check": "scenarios", "ok": bool(scenarios),\n'
+            '                       "count": len(scenarios)})\n'
+            "        ok = ok and bool(scenarios)\n"
+            "    except Exception as exc:  # noqa: BLE001\n"
+            '        checks.append({"check": "scenarios", "ok": False, "error": str(exc)})\n'
+            "        ok = False\n"
+            '    checks.append({"check": "python", "ok": sys.version_info >= (3, 10),\n'
+            '                   "version": sys.version.split()[0]})\n'
+            "    ok = ok and sys.version_info >= (3, 10)\n"
+            '    report = {"ok": ok, "checks": checks}\n'
+            '    if args.output_format == "json":\n'
+            "        print(json.dumps(report, ensure_ascii=False))\n"
+            "    else:\n"
+            "        for c in checks:\n"
+            "            print(c)\n"
+            "    return 0 if ok else 1\n\n\n"
+            "def main(argv: list[str] | None = None) -> int:\n"
+            "    parser = argparse.ArgumentParser(description=__doc__)\n"
+            '    sub = parser.add_subparsers(dest="command", required=True)\n'
+            '    run_p = sub.add_parser("run")\n'
+            '    run_p.add_argument("prompt")\n'
+            '    run_p.add_argument("--format", choices=("json", "text"), default="text")\n'
+            '    run_p.add_argument("--mode", choices=("read-only", "workspace-write"),\n'
+            '                       default="read-only")\n'
+            '    run_p.add_argument("--workspace", default=".")\n'
+            '    doc_p = sub.add_parser("doctor")\n'
+            '    doc_p.add_argument("--output-format", choices=("json", "text"),\n'
+            '                       default="text")\n'
+            "    args = parser.parse_args(argv)\n"
+            '    if args.command == "run":\n'
+            "        return _cmd_run(args)\n"
+            "    return _cmd_doctor(args)\n\n\n"
+            'if __name__ == "__main__":\n'
+            "    raise SystemExit(main())\n"
+        ),
+        "scenarios.json": (
+            "{\n"
+            '  "scenarios": [\n'
+            "    {\n"
+            '      "match": "summarize",\n'
+            '      "events": [\n'
+            '        {"type": "tool_call", "tool": "read_file", "args": {"path": "notes.txt"}},\n'
+            '        {"type": "answer", "text": "Here is a summary of notes.txt."}\n'
+            "      ]\n"
+            "    },\n"
+            "    {\n"
+            '      "match": "write",\n'
+            '      "events": [\n'
+            '        {"type": "tool_call", "tool": "write_file",\n'
+            '         "args": {"path": "out.txt", "content": "hello from the copilot"}},\n'
+            '        {"type": "answer", "text": "Wrote out.txt into the workspace."}\n'
+            "      ]\n"
+            "    },\n"
+            "    {\n"
+            '      "match": "",\n'
+            '      "events": [\n'
+            '        {"type": "answer",\n'
+            '         "text": "I can read files, list directories, and (in workspace-write mode) write files."}\n'
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        ),
+        "test_cli_agent.py": (
+            '"""The copilot\'s own deterministic proof: event contract + permissions."""\n'
+            "import json\n"
+            "import subprocess\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "import cli_core\n\n"
+            "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def _run(prompt, *extra, cwd=None):\n"
+            "    return subprocess.run(\n"
+            '        [sys.executable, "-B", str(ROOT / "main.py"), "run", prompt,\n'
+            '         "--format", "json", *extra],\n'
+            "        capture_output=True, text=True, timeout=60, cwd=cwd or ROOT)\n\n\n"
+            "def test_run_emits_a_valid_event_stream():\n"
+            '    proc = _run("hello there")\n'
+            "    assert proc.returncode == 0, proc.stderr\n"
+            "    events = [json.loads(line) for line in proc.stdout.splitlines() if line]\n"
+            "    assert events, \"run must emit events\"\n"
+            "    for event in events:\n"
+            "        assert cli_core.validate_event(event) == [], event\n"
+            '    assert events[0]["type"] == "session_start"\n'
+            '    assert events[-1]["type"] == "answer"\n\n\n'
+            "def test_write_is_denied_in_read_only_mode(tmp_path):\n"
+            '    proc = _run("please write the file", "--workspace", str(tmp_path))\n'
+            "    assert proc.returncode == 2, proc.stdout + proc.stderr\n"
+            "    events = [json.loads(line) for line in proc.stdout.splitlines() if line]\n"
+            '    assert any(e["type"] == "denied" for e in events)\n'
+            '    assert not (tmp_path / "out.txt").exists(), "read-only must not write"\n\n\n'
+            "def test_write_succeeds_in_workspace_write_mode(tmp_path):\n"
+            '    proc = _run("please write the file", "--mode", "workspace-write",\n'
+            '                "--workspace", str(tmp_path))\n'
+            "    assert proc.returncode == 0, proc.stdout + proc.stderr\n"
+            '    assert (tmp_path / "out.txt").read_text() == "hello from the copilot"\n\n\n'
+            "def test_path_escape_is_denied_even_in_write_mode(tmp_path):\n"
+            "    result = cli_core.run_tool(\n"
+            '        "write_file", {"path": "../evil.txt", "content": "x"},\n'
+            '        tmp_path, "workspace-write")\n'
+            '    assert result["type"] == "denied"\n'
+            '    assert not (tmp_path.parent / "evil.txt").exists()\n\n\n'
+            "def test_doctor_reports_ok_json():\n"
+            "    proc = subprocess.run(\n"
+            '        [sys.executable, "-B", str(ROOT / "main.py"), "doctor",\n'
+            '         "--output-format", "json"],\n'
+            "        capture_output=True, text=True, timeout=60)\n"
+            "    assert proc.returncode == 0, proc.stdout + proc.stderr\n"
+            "    report = json.loads(proc.stdout)\n"
+            '    assert report["ok"] is True and report["checks"]\n\n\n'
+            "def test_validate_event_rejects_junk():\n"
+            '    assert cli_core.validate_event({"type": "nonsense"})\n'
+            '    assert cli_core.validate_event({"type": "answer", "text": " "})\n'
+            "    assert cli_core.validate_event(42)\n"
+        ),
+        "pyproject.toml": (
+            "[project]\n"
+            f'name = "{_mcp_server_name(app_name)}"\n'
+            'version = "0.1.0"\n'
+            f'description = "{_json_escape(title)}"\n'
+            'requires-python = ">=3.10"\n'
+            "dependencies = []  # stdlib only — the bundled scenarios need no provider\n"
+        ),
+        ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Terminal copilot CLI (typed event stream, zero runtime deps)",
+            install=(
+                "No dependencies to install — Python 3.10+ is all it needs:\n\n"
+                "```bash\npython main.py doctor --output-format json\n```"
+            ),
+            usage=(
+                "Run a prompt (the bundled scenarios answer offline, zero keys):\n\n"
+                "```bash\n"
+                "python main.py run 'summarize my notes' --format json\n"
+                "```\n\n"
+                "Every stdout line is one typed JSON event (`session_start`,\n"
+                "`tool_call`, `tool_result`, `answer`, `denied`) — a mechanical\n"
+                "contract for harnesses and CI. Writes are opt-in:\n\n"
+                "```bash\n"
+                "python main.py run 'write the file' --mode workspace-write --workspace ./work\n"
+                "```\n\n"
+                "In the default read-only mode a write tool call is DENIED (exit 2),\n"
+                "and paths that escape the workspace are always denied — in every\n"
+                "mode. Extend `scenarios.json` (or wire a real provider) to grow the\n"
+                "copilot's behavior."
+            ),
+            structure=[
+                ("main.py", "The CLI: run | doctor (argparse, stdlib only)"),
+                ("cli_core.py", "Pure core: event schema, scenario playback, guarded tools"),
+                ("scenarios.json", "Bundled mock-provider scenarios (offline answers)"),
+                ("test_cli_agent.py", "Deterministic proof: contract + permissions"),
+            ],
+            features=[
+                "Typed JSONL event stream — run output is mechanically verifiable",
+                "Permission modes: read-only by default, writes are opt-in",
+                "Workspace boundary + symlink-escape + size-cap write guards",
+                "Bundled scenario playback — works offline with zero keys",
+                "doctor --output-format json for one-command health checks",
+            ],
+            extra=(
+                "### Tests\n\n"
+                "```bash\npytest test_cli_agent.py\n```"
+            ),
+        ),
+    }
+
+
 def _mcp_server_name(app_name: str) -> str:
     """A kebab identifier for the MCP server (clients show this name)."""
     ident = _re.sub(r"[^a-z0-9-]+", "-", app_name.strip().lower()).strip("-")
@@ -3969,6 +4317,10 @@ def scaffold_for(
     # stack gets the two-stub-upstream gateway scaffold.
     if stack == "fastapi" and _implies_llm_gateway(brief):
         return _fastapi_llm_gateway(safe_name, brief)
+    # Terminal-copilot variant (wave-2 §3.6): an agent-CLI brief on the
+    # python_cli stack gets the typed-event-stream scaffold.
+    if stack == "python_cli" and _implies_cli_agent(brief):
+        return _python_cli_agent(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

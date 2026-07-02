@@ -134,6 +134,31 @@ def test_every_builder_stack_covers_all_vocabularies():
         assert families == 1, f"{stack}: in {families} proof families, expected exactly 1"
 
 
+def test_every_builder_stack_scaffold_clears_the_reviewer(tmp_path):
+    """The reviewer's structural heuristic is a DE-FACTO vocabulary site: a
+    stack whose own pristine scaffold cannot clear GO_THRESHOLD will no_go
+    every perfect build of that stack (the agent_pack 46/100 incident — its
+    substance was markdown and its manifest catalog.json, which the heuristic
+    didn't count). Every real builder's scaffold must score a structural go."""
+    from skyn3t.agents._common import _normalize_stack
+    from skyn3t.agents._scaffold import scaffold_for
+    from skyn3t.agents.reviewer import GO_THRESHOLD, heuristic_score
+    from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS
+
+    for stack in sorted(REAL_BUILDER_STACKS):
+        norm = _normalize_stack(stack)
+        root = tmp_path / stack
+        for rel, contents in scaffold_for(norm, "demo", "a demo app").items():
+            dst = root / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(contents)
+        score, gaps = heuristic_score(root, {"stack": norm})
+        assert score >= GO_THRESHOLD, (
+            f"{stack}: pristine scaffold scores {score} < {GO_THRESHOLD} — "
+            f"the reviewer would no_go every perfect {stack} build: {gaps}"
+        )
+
+
 def test_deliberately_local_sets_keep_their_documented_relationships():
     """Sets that intentionally diverge from the registry stay local — but their
     RELATIONSHIP to the registry is pinned so silent drift still fails."""

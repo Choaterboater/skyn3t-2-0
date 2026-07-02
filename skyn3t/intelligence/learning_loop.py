@@ -151,6 +151,16 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         if notes:
             lessons.append(f"{stack}: successful build — {str(notes)[:120]}")
 
+    # Advisory-gate findings become lessons REGARDLESS of verdict: the
+    # end-of-build gates (seo/mcp_check/rag_check/liveness) record findings and
+    # feed ONE repair but never flip a build to no_go — so without this, a 'go'
+    # build's caught defect (an SEO hole, an unwired LLM seam, a dead route)
+    # taught the system nothing and the same class recurred build after build.
+    for finding in (build.get("gate_findings") or [])[:4]:
+        flat = " ".join(str(finding).split())[:160]
+        if flat:
+            lessons.append(f"{stack}: gate flagged — {flat}")
+
     # Fold in any auto-mined best practices.
     lessons.extend(
         mine_best_practices(build.get("accepted"), build.get("rejected"))
@@ -162,6 +172,41 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         if ls and ls not in seen:
             seen.add(ls)
             out.append(ls)
+    return out
+
+
+# The advisory end-of-build gates whose verdicts share the same to_dict shape
+# ({"skipped": bool, "issues": [str, ...], ...}) under these manifest.extra keys.
+_GATE_VERDICT_KEYS = ("seo", "mcp_check", "rag_check")
+
+
+def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
+    """Flatten advisory-gate findings out of a build manifest's ``extra`` into
+    short ``"<gate>: <issue>"`` strings for lesson capture.
+
+    A skipped gate (could-not-run) contributes nothing — a degrade-open skip
+    must never mint an avoid-rule. Capped per gate so one noisy verdict can't
+    flood the lesson store. Never raises; any unexpected shape yields ``[]``.
+    """
+    out: list[str] = []
+    if not isinstance(extra, dict):
+        return out
+    for key in _GATE_VERDICT_KEYS:
+        verdict = extra.get(key)
+        if not isinstance(verdict, dict) or verdict.get("skipped"):
+            continue
+        issues = verdict.get("issues")
+        if not isinstance(issues, list):
+            continue
+        for issue in issues[:3]:
+            flat = " ".join(str(issue).split())[:160]
+            if flat:
+                out.append(f"{key}: {flat}")
+    live = extra.get("liveness")
+    if isinstance(live, dict) and not live.get("skipped"):
+        dead = [str(d) for d in (live.get("dead_routes") or [])[:5] if str(d)]
+        if dead:
+            out.append(f"liveness: route(s) dead after repair — {', '.join(dead)}")
     return out
 
 

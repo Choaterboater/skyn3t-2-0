@@ -71,6 +71,11 @@ WORKFLOW_STACKS = frozenset({"workflow"})
 # reviewer's heuristic no_go'd a perfect pack before this group existed.
 CONTENT_STACKS = frozenset({"agent_pack"})
 
+# CLI-family stacks (dual vocab: planner "python"/"cli", agent "python_cli").
+# Their end-of-build gate drives the delivered command surface (--help, each
+# advertised subcommand, invalid-input rejection) — the wave-2 §3.6 tier.
+CLI_STACKS = frozenset({"python", "cli", "python_cli"})
+
 GROUPS: dict[str, frozenset[str]] = {
     "game": GAME_STACKS,
     "web": WEB_STACKS,
@@ -80,6 +85,7 @@ GROUPS: dict[str, frozenset[str]] = {
     "rag": RAG_STACKS,
     "workflow": WORKFLOW_STACKS,
     "content": CONTENT_STACKS,
+    "cli": CLI_STACKS,
 }
 
 
@@ -121,6 +127,8 @@ GATES: tuple[GateSpec, ...] = (
              "skyn3t.studio.runner:StudioRunner._run_rag_check"),
     GateSpec("workflow_check", WORKFLOW_STACKS, "workflow_check_enabled",
              "skyn3t.studio.runner:StudioRunner._run_workflow_check"),
+    GateSpec("cli_check", CLI_STACKS, "cli_check_enabled",
+             "skyn3t.studio.runner:StudioRunner._run_cli_check"),
 )
 
 _GATES_BY_NAME = {g.name: g for g in GATES}

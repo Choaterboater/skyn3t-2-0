@@ -101,9 +101,16 @@ Still open / next up (honest, refreshed 2026-07-02):
 
 - **Game sprite-RENDERING reliability** — sprites load but only some render (entities
   wired to invented, never-loaded texture keys). Needs live game builds.
-- **Wave-2 §3.4 finance/trading agent** — heavy (full vendor registry beyond §3.9's
-  canned cut); **§3.5 flow-runtime** — depends on the external `lfx`/langflow runtime
-  (product call: langflow-JSON compatibility is its point). Both deferred pending a
+- **Wave-2 §3.4 finance/trading agent** — ✅ core tier SHIPPED 2026-07-02 as a fastapi
+  variant (`_fastapi_finance`): pure Decimal strategy core, dated candles + as_of
+  cutoff, sqlite paper-only ledger, typed NO_DATA/INSUFFICIENT_FUNDS; 53-agent
+  adversarial review → 7 unique confirmed defects all fixed (cash-DoS bound, order-race
+  lock, connection leak, two-tier trigger, dispatch order, read-path pollution,
+  portfolio mark guard). Open next tiers: the LLM-analyst tier (report tree + signal
+  extraction from prose) and the OFFLINE planner fallback (its keyword map doesn't
+  route finance briefs to fastapi, so the variant is LLM-planner-only today).
+  **§3.5 flow-runtime** — depends on the external `lfx`/langflow runtime
+  (product call: langflow-JSON compatibility is its point). Deferred pending a
   user decision.
 - **cli_playtest gate** — the pexpect sibling of qa_playtest, driving the §3.6
   copilot CLIs (and swift binaries) interactively.

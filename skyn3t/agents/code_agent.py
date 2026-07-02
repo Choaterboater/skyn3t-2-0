@@ -31,6 +31,7 @@ from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
 from skyn3t.agents._scaffold import (
     _implies_cli_agent,
+    _implies_finance,
     _implies_llm_gateway,
     _implies_market_data,
     _implies_memory_chat,
@@ -465,6 +466,16 @@ _AGENT_PACK_DIRECTIVE = (
 # is worth many repairs — without these, a model-generated 'llm gateway' never
 # hears about fallback chains or the keyless internal seam.
 _VARIANT_DIRECTIVES: tuple[tuple[str, Any, str], ...] = (
+    ("fastapi", _implies_finance,
+     "VARIANT — paper-trading finance app: keep the strategy engine a PURE "
+     "module (`strategy.py`, stdlib-only, Decimal money math — float never "
+     "touches money) over DATED candles from `market.py` (DATA_VENDOR env, "
+     "default canned fixtures — zero keys); every analysis honors the as_of "
+     "cutoff (NEVER read a candle dated after as_of); same candles → an "
+     "IDENTICAL trade list, every value finite; unknown symbols → typed 404 "
+     "{\"error\": {\"type\": \"NO_DATA\"}}; orders are PAPER-ONLY into the "
+     "sqlite ledger (LEDGER_FILE env) and an overdraft/oversell → typed 400 "
+     "INSUFFICIENT_FUNDS — never a bare 500 and never a real broker call."),
     ("fastapi", _implies_market_data,
      "VARIANT — market-data API: keep the pure vendor registry in `vendors.py` "
      "(canned deterministic fixtures selected by the DATA_VENDOR env var, default "

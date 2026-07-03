@@ -350,14 +350,44 @@ def studio_build(
     best_of: int = typer.Option(0, "--best-of", "-n", help="Best-of-N code trajectories."),
     no_critic: bool = typer.Option(False, "--no-critic", help="Disable the adversarial critic gate."),
     slug: str = typer.Option("", "--slug", help="Override the project slug."),
-    stack: str = typer.Option("", "--stack", help="Pin the stack: react|react_native|fastapi|static|python|express|phaser."),
+    stack: str = typer.Option("", "--stack", help="Pin the stack: react|nextjs|fastapi|static|python|express|phaser|…"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the plan confirmation and build immediately."),
 ) -> None:
-    """Run a build end to end and print the result + artifact path."""
+    """Show the plan (what + which stack), confirm, then run the build end to end.
+
+    The plan preview catches a wrong guess — e.g. a python CLI when you meant a web
+    app — BEFORE a full build. Auto-confirmed with --yes or when non-interactive (CI).
+    """
     console = _console()
-    outcome = asyncio.run(_run_build(brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack))
+    import sys as _sys
+
+    def _confirm_plan(plan: dict) -> bool:
+        conf = float(plan.get("confidence") or 0.0)
+        low = conf < 0.6 or plan.get("ambiguous")
+        console.print(
+            f"\n[bold]Plan[/bold] — a [cyan]{plan.get('app_type', 'app')}[/cyan] built as "
+            f"[bold]{plan.get('stack')}[/bold] ([dim]{plan.get('engine')}[/dim]), "
+            f"ships as [dim]{plan.get('deploy_kind', '—')}[/dim].")
+        tone = "yellow" if low else "green"
+        console.print(f"  confidence [{tone}]{conf:.0%}[/{tone}] — {plan.get('rationale', '')}")
+        qs = plan.get("questions") or []
+        if qs:
+            console.print("  [yellow]I had to assume:[/yellow] " + " · ".join(qs[:3]))
+        if low:
+            console.print("  [yellow]⚠ not fully sure of the shape[/yellow] — if this is wrong, "
+                          "answer no and re-run with [cyan]--stack <react|nextjs|fastapi|python|…>[/cyan].")
+        return typer.confirm("Build this?", default=True)
+
+    interactive = _sys.stdin.isatty() and not yes
+    outcome = asyncio.run(_run_build(
+        brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack,
+        confirm=(_confirm_plan if interactive else None)))
     if outcome is None:
         console.print("[red]Build pipeline unavailable (studio package missing).[/red]")
         raise typer.Exit(code=1)
+    if outcome.get("aborted"):
+        console.print("[dim]Aborted — nothing built. Refine the brief or pass --stack.[/dim]")
+        raise typer.Exit(code=0)
 
     verdict_color = "green" if outcome.get("verdict") == "go" else "red"
     table = _table("Build result", ["field", "value"])
@@ -673,7 +703,33 @@ def _trash_fanout_losers(settings: Any, base: str, cands: list, winner_id: str |
     return trashed
 
 
-async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, stack: str = "") -> dict[str, Any] | None:
+async def _plan_preview(brief: str, stack: str, llm: Any) -> dict[str, Any]:
+    """Classify a brief WITHOUT building — the same stack the build will use, its
+    confidence + rationale, the app-type/engine, how it ships, and any clarifying
+    questions. This is the 'here's what I'll build — confirm?' data, so a wrong
+    guess is caught in one glance instead of after a full build."""
+    from skyn3t.studio.clarification import analyze
+    from skyn3t.studio.stack_selector import classify_build, select_stack
+
+    choice = await select_stack(brief, pin=stack, llm=llm, attended=True)
+    cls = classify_build(brief, choice.stack)
+    clar = analyze(brief)
+    try:
+        from skyn3t.studio.deploy import DEPLOY_KIND
+        deploy_kind = DEPLOY_KIND.get(choice.stack, "—")
+    except Exception:  # noqa: BLE001
+        deploy_kind = "—"
+    return {
+        "stack": choice.stack, "method": choice.method,
+        "confidence": choice.confidence, "rationale": choice.rationale,
+        "app_type": cls.app_type, "engine": cls.engine, "deploy_kind": deploy_kind,
+        "questions": [q.question for q in getattr(clar, "questions", [])],
+        "ambiguous": bool(getattr(clar, "ambiguous", False)),
+    }
+
+
+async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, stack: str = "",
+                     confirm: Any = None) -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
     except Exception:  # noqa: BLE001
@@ -738,6 +794,15 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
         extra["best_of_n"] = best_of
     if stack:
         extra["stack"] = stack
+    # Plan preview + confirm: classify BEFORE building so a wrong guess (e.g. a
+    # python CLI when you meant a web app) is caught in one glance, not after a
+    # full build. Skipped when confirm is None (unattended / --yes / non-TTY). The
+    # confirmed stack is pinned so the build matches exactly what was previewed.
+    if confirm is not None:
+        plan = await _plan_preview(brief, stack, spine.get("llm"))
+        if not confirm(plan):
+            return {"aborted": True, "stack": plan.get("stack", "")}
+        extra["stack"] = plan["stack"]
     outcome = await runner.start(brief, slug=slug or None, extra=extra)
 
     # --- C: one bounded, gated learning tick (no loop, no autonomous builds) ---

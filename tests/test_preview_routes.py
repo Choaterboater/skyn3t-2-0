@@ -31,6 +31,36 @@ def test_project_file_serves_content(tmp_path):
     assert "<h1>hi</h1>" in res.text
 
 
+def test_project_file_scopes_absolute_asset_urls(tmp_path):
+    state = AppState(settings=Settings(projects_dir=tmp_path))
+    proj = tmp_path / "demo" / ".preview"
+    assets = proj / "assets"
+    assets.mkdir(parents=True)
+    (proj / "index.html").write_text(
+        '<img src="/assets/golf.svg">'
+        '<script src="/assets/app.js"></script>'
+        "<style>.hero{background:url('/assets/bg.svg')}</style>"
+    )
+    (assets / "golf.svg").write_text("<svg />")
+    (assets / "app.js").write_text('const img = "/assets/golf.svg";')
+    app = create_app(state=state)
+    client = TestClient(app)
+
+    html = client.get("/api/projects/demo/index.html")
+    assert html.status_code == 200
+    assert 'src="/api/projects/demo/assets/golf.svg"' in html.text
+    assert 'src="/api/projects/demo/assets/app.js"' in html.text
+    assert "url('/api/projects/demo/assets/bg.svg')" in html.text
+
+    js = client.get("/api/projects/demo/assets/app.js")
+    assert js.status_code == 200
+    assert '"/api/projects/demo/assets/golf.svg"' in js.text
+
+    image = client.get("/api/projects/demo/assets/golf.svg")
+    assert image.status_code == 200
+    assert "<svg" in image.text
+
+
 def test_project_file_traversal_rejected(tmp_path):
     client = _client(tmp_path)
     # Encode the slashes so the client does NOT normalize the `..` away before

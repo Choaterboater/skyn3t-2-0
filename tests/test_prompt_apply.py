@@ -146,6 +146,34 @@ def test_agent_sends_override_in_system_prompt():
     assert "ALWAYS BE CONCISE" in captured["system"]
 
 
+def test_code_agent_agentic_prompts_include_prompt_override():
+    """Cortex prompt overrides must reach CodeAgent's whole-app agentic path.
+
+    File-level completions already pass a system prompt separately; the agentic
+    builders are plain prompt strings, so they must call ``system_prompt()`` too.
+    """
+    from skyn3t.agents.code_agent import CodeAgent
+
+    agent = CodeAgent(event_bus=EventBus())
+    agent.config["prompt_override"] = "Use the Cortex-approved layout contract."
+    plan = {"files": [{"path": "src/App.jsx", "purpose": "main UI"}]}
+
+    initial = agent._agentic_prompt("a dashboard", "react", plan, "K ")
+    retry = agent._agentic_retry_prompt("a dashboard", "react", plan, "K ", 12)
+    slice_prompt = agent._agentic_slice_prompt(
+        "a dashboard",
+        "react",
+        "frontend",
+        ["src/App.jsx"],
+        "  api/main.py - backend",
+        "K ",
+    )
+
+    for prompt in (initial, retry, slice_prompt):
+        assert "Additional guidance (learned):" in prompt
+        assert "Use the Cortex-approved layout contract." in prompt
+
+
 # ---------------------------------------------------------------------------
 # End-to-end through Cortex: an approved PROMPT proposal ends APPLIED
 # ---------------------------------------------------------------------------

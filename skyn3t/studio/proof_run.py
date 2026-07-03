@@ -1143,6 +1143,12 @@ _KNOWN_NPM_VERSIONS = {
     # `@hookform/resolvers/yup` subpath broke `next build`; resolvers ^3 + yup ^1
     # + react-hook-form ^7 is the standard working set.
     "@hookform/resolvers": "^3.3.4", "yup": "^1.4.0",
+    # Frequent generated app imports. Pin the common, stable majors instead of
+    # falling to nondeterministic "latest".
+    "next-auth": "^4.24.7", "react-dnd": "^16.0.1",
+    "react-dnd-html5-backend": "^16.0.1", "@tanstack/react-query": "^5.51.1",
+    "jose": "^5.6.3", "monaco-editor": "^0.50.0", "react-redux": "^9.1.2",
+    "redux": "^5.0.1",
 }
 
 
@@ -1150,6 +1156,8 @@ def _pkg_name(spec: str) -> str:
     """Bare specifier -> npm package name ('react-dom/client'->'react-dom',
     '@scope/pkg/sub'->'@scope/pkg')."""
     if spec.startswith("@/"):
+        return ""
+    if ":" in spec:
         return ""
     if spec.startswith("@"):
         parts = spec.split("/")
@@ -1180,7 +1188,7 @@ def _invalid_npm_package_names(pkg: dict[str, Any]) -> list[str]:
                 or re.search(r"\s", name)
                 # …and any other non-URL-safe char: a template-literal fragment
                 # like `${r}` scraped from minified code must never be a dep.
-                or re.search(r"[${}()<>\[\]'\"`!*~,;]", name)
+                or re.search(r"[${}()<>\[\]'\"`!*~,;:]", name)
             ):
                 invalid.append(name)
     return sorted(set(invalid))
@@ -1303,7 +1311,7 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
         except OSError:
             continue
         for spec in _BARE_IMPORT_RE.findall(text):
-            if spec.startswith("node:"):
+            if spec.startswith(("node:", "virtual:")):
                 continue
             name = _pkg_name(spec)
             if name and name not in _NODE_BUILTINS:

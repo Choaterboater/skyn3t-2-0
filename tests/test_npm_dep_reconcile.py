@@ -173,6 +173,22 @@ def test_path_alias_imports_are_not_npm_dependencies(tmp_path):
     assert "@/hooks" not in deps
 
 
+def test_virtual_imports_are_not_npm_dependencies(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "x", "dependencies": {"vite-plugin-pwa": "^0.20.5"}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "main.jsx").write_text(
+        "import { registerSW } from 'virtual:pwa-register'\n",
+        encoding="utf-8",
+    )
+
+    assert reconcile_npm_deps(tmp_path) == []
+    deps = json.load(open(tmp_path / "package.json"))["dependencies"]
+    assert "virtual:pwa-register" not in deps
+    assert deps["vite-plugin-pwa"] == "^0.20.5"
+
+
 @pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
 def test_invalid_npm_dependency_names_fail_proof(tmp_path):
     (tmp_path / "package.json").write_text(
@@ -220,6 +236,13 @@ def test_invalid_npm_names_catches_whitespace():
     assert "@react-three/fiber" not in flagged
 
 
+def test_invalid_npm_names_catches_protocol_specifiers():
+    from skyn3t.studio.proof_run import _invalid_npm_package_names
+
+    pkg = {"dependencies": {"virtual:pwa-register": "latest", "react": "^18.2.0"}}
+    assert _invalid_npm_package_names(pkg) == ["virtual:pwa-register"]
+
+
 def test_sanitize_package_json_deps_removes_unfixable_names(tmp_path):
     (tmp_path / "package.json").write_text(
         json.dumps({
@@ -242,6 +265,30 @@ def test_sanitize_package_json_deps_removes_unfixable_names(tmp_path):
     assert "@/components" not in deps
     assert "slick-carousel" in deps
     assert deps["react"] == "^18.2.0"
+
+
+def test_common_missing_deps_get_pinned_versions(tmp_path):
+    (tmp_path / "package.json").write_text('{"name":"x","dependencies":{}}', encoding="utf-8")
+    (tmp_path / "App.jsx").write_text(
+        "import { DndProvider } from 'react-dnd'\n"
+        "import { HTML5Backend } from 'react-dnd-html5-backend'\n"
+        "import { QueryClient } from '@tanstack/react-query'\n"
+        "import { nanoid } from 'nanoid'\n",
+        encoding="utf-8",
+    )
+    added = reconcile_npm_deps(tmp_path)
+    deps = json.load(open(tmp_path / "package.json"))["dependencies"]
+
+    assert set(added) == {
+        "@tanstack/react-query",
+        "nanoid",
+        "react-dnd",
+        "react-dnd-html5-backend",
+    }
+    assert deps["react-dnd"] == "^16.0.1"
+    assert deps["react-dnd-html5-backend"] == "^16.0.1"
+    assert deps["@tanstack/react-query"] == "^5.51.1"
+    assert deps["nanoid"] == "^5.0.4"
 
 
 def test_unknown_package_gets_latest(tmp_path):

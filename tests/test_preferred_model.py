@@ -32,13 +32,55 @@ async def test_explicit_override_still_beats_the_pin():
     assert res.model == "anthropic/claude-sonnet"
 
 
-async def test_list_models_needs_a_key():
+async def test_list_models_needs_a_key(monkeypatch):
     from skyn3t.web.routes import list_openrouter_models
 
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     state = SimpleNamespace(settings=SimpleNamespace(openrouter_api_key=""))
     res = await list_openrouter_models(state)
     assert res["models"] == []
     assert "note" in res
+
+
+async def test_list_models_uses_plain_openrouter_env_key(monkeypatch):
+    import httpx
+
+    from skyn3t.web import routes
+
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    routes._MODELS_CACHE.update(ts=0.0, models=None)
+    seen = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "provider/model-b"}, {"id": "provider/model-a"}]}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, url, headers=None):
+            seen["authorization"] = (headers or {}).get("Authorization")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    state = SimpleNamespace(settings=SimpleNamespace(openrouter_api_key=""))
+
+    res = await routes.list_openrouter_models(state)
+
+    assert res["models"] == ["provider/model-a", "provider/model-b"]
+    assert seen["authorization"] == "Bearer sk-or-env"
 
 
 async def test_set_preferred_model_updates_settings(monkeypatch):

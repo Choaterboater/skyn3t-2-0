@@ -42,10 +42,31 @@ async def test_set_key_flips_backend_to_openrouter():
     assert r["backend"] == "openrouter"
 
 
+async def test_set_key_persist_false_does_not_mutate_env(monkeypatch):
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    st = _state(llm_backend="auto")
+
+    r = await set_llm_key(st, "openrouter", "sk-or-x", persist=False)
+
+    import os
+    assert r["configured"] is True
+    assert st.settings.openrouter_api_key == "sk-or-x"
+    assert "SKYN3T_OPENROUTER_API_KEY" not in os.environ
+
+
 async def test_secrets_payload_reports_openrouter_env_key(monkeypatch):
     monkeypatch.setenv("SKYN3T_OPENROUTER_API_KEY", "sk-or-env")
     p = await llm_secrets_payload(_state(llm_backend="auto"))
     assert p["providers"]["openrouter"] is True
+
+
+async def test_secrets_payload_routes_plain_openrouter_env_key(monkeypatch):
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    p = await llm_secrets_payload(_state(llm_backend="auto"))
+    assert p["providers"]["openrouter"] is True
+    assert p["backend"] == "openrouter"
+    assert p["routing"]["openrouter_configured"] is True
 
 
 async def test_clear_key():
@@ -83,6 +104,25 @@ async def test_set_llm_routing_updates_codegen_and_model_pins():
     p = await llm_secrets_payload(st)
     assert p["openrouter_codegen_model"] == "provider/codegen"
     assert p["model_pins"]["ui"] == "provider/ui"
+
+
+async def test_set_llm_routing_persist_false_does_not_mutate_env(monkeypatch):
+    monkeypatch.delenv("SKYN3T_OPENROUTER_CODEGEN_MODEL", raising=False)
+    monkeypatch.delenv("SKYN3T_MODEL_UI", raising=False)
+    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x")
+
+    await set_llm_routing(
+        st,
+        openrouter_codegen_model="provider/codegen",
+        model_pins={"ui": "provider/ui"},
+        persist=False,
+    )
+
+    import os
+    assert "SKYN3T_OPENROUTER_CODEGEN_MODEL" not in os.environ
+    assert "SKYN3T_MODEL_UI" not in os.environ
+    assert st.settings.openrouter_codegen_model == "provider/codegen"
+    assert st.settings.model_ui == "provider/ui"
 
 
 async def test_unknown_provider_rejected():

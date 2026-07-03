@@ -11,6 +11,7 @@ execution_backend="inline" flag so no daemon probe occurs.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -200,6 +201,36 @@ def test_proof_run_does_not_claim_sandbox_for_local_checks(tmp_path, monkeypatch
     assert res.passed is True
     assert res.mode == "local"
     assert res.detail.get("sandbox_available") is True
+
+
+def test_docker_daemon_probe_is_cached_and_bounded(monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    calls = []
+
+    class _Client:
+        def ping(self):
+            calls.append("ping")
+
+        def close(self):
+            calls.append("close")
+
+    class _Docker:
+        @staticmethod
+        def from_env(timeout=None):
+            calls.append(("timeout", timeout))
+            return _Client()
+
+    monkeypatch.setattr(proof_mod, "_DOCKER_IMPORTABLE", True)
+    monkeypatch.setitem(sys.modules, "docker", _Docker)
+    proof_mod._docker_daemon_ok.cache_clear()
+    try:
+        assert proof_mod._docker_daemon_ok() is True
+        assert proof_mod._docker_daemon_ok() is True
+    finally:
+        proof_mod._docker_daemon_ok.cache_clear()
+
+    assert calls == [("timeout", 5), "ping", "close"]
 
 
 def test_proof_run_routes_boot_command_through_sandbox(tmp_path, monkeypatch):

@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -2845,6 +2846,7 @@ def _run_swift_tests(
     return (True, res.returncode == 0, out[-500:])
 
 
+@lru_cache(maxsize=1)
 def _docker_daemon_ok() -> bool:
     """Best-effort docker daemon ping. Never raises."""
     if not _DOCKER_IMPORTABLE:
@@ -2853,7 +2855,7 @@ def _docker_daemon_ok() -> bool:
     try:  # pragma: no cover - environment dependent
         import docker  # type: ignore
 
-        client = docker.from_env()
+        client = docker.from_env(timeout=5)
         client.ping()
         return True
     except Exception:  # noqa: BLE001 - any docker error -> degrade

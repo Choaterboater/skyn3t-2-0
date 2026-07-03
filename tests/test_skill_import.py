@@ -44,3 +44,36 @@ def test_import_directory_one_skill_per_file(tmp_path):
 def test_import_directory_missing_path_is_safe(tmp_path):
     lib = SkillLibrary(skills_dir=tmp_path / "lib")
     assert lib.import_directory(tmp_path / "does-not-exist") == 0
+
+
+def test_relevant_matches_new_factory_stack_aliases(tmp_path):
+    lib = SkillLibrary(skills_dir=tmp_path / "lib")
+    lib.add(
+        "Role pack format",
+        "Keep agent roles structured and tool-targeted.",
+        stack="agent_pack",
+        tags=["agents"],
+    )
+    lib.add(
+        "Workflow repair",
+        "Validate orchestration edges and retry policy.",
+        stack="workflow",
+        tags=["orchestration"],
+    )
+    lib.add(
+        "RAG grounding",
+        "Ground generated answers in indexed source documents.",
+        stack="rag",
+        tags=["retrieval"],
+    )
+    lib.add(
+        "MCP tool contract",
+        "Document every tool schema and error path.",
+        stack="mcp",
+        tags=["tools"],
+    )
+
+    assert [s.title for s in lib.relevant("role-pack")]
+    assert [s.title for s in lib.relevant("automation")]
+    assert [s.title for s in lib.relevant("knowledge-base")]
+    assert [s.title for s in lib.relevant("mcp-server")]

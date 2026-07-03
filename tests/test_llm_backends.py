@@ -21,6 +21,15 @@ def test_openrouter_requires_key():
     assert _client("openrouter", openrouter_api_key="sk-or-test").backend == "openrouter"
 
 
+def test_openrouter_plain_env_key_is_routable(monkeypatch):
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
+    assert _client("openrouter").backend == "openrouter"
+    status = _client("auto").backend_status()
+    assert status["active"] == "openrouter"
+    assert status["openrouter_configured"] is True
+
+
 def test_explicit_openrouter_missing_key_is_reported():
     c = _client("openrouter")
     status = c.backend_status()

@@ -1184,7 +1184,9 @@ async def list_openrouter_models(state: AppState) -> dict[str, Any]:
     a note otherwise. Cached 5 min so opening Settings doesn't re-hit OpenRouter."""
     import time
 
-    key = (getattr(state.settings, "openrouter_api_key", "") or "").strip()
+    from skyn3t.adapters.llm import openrouter_key
+
+    key = openrouter_key(state.settings)
     if not key:
         return {"models": [], "note": "set an OpenRouter key to load the model list"}
     now = time.time()
@@ -1271,16 +1273,16 @@ async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = 
     key = (key or "").strip()
     setattr(state.settings, field, key)
     env_name = f"SKYN3T_{field.upper()}"
-    if key:
-        os.environ[env_name] = key
-    else:
-        os.environ.pop(env_name, None)
     if state.llm_client is not None:
         try:
             state.llm_client.settings = state.settings  # same singleton, kept explicit
         except Exception:  # noqa: BLE001
             pass
     if persist:
+        if key:
+            os.environ[env_name] = key
+        else:
+            os.environ.pop(env_name, None)
         _persist_env_var(env_name, key)
     backend = state.llm_client.backend if state.llm_client is not None else "n/a"
     routing = (
@@ -1424,11 +1426,11 @@ async def set_llm_routing(
         except Exception:  # noqa: BLE001
             pass
         env_key = f"SKYN3T_{field.upper()}"
-        if value:
-            os.environ[env_key] = value
-        else:
-            os.environ.pop(env_key, None)
         if persist:
+            if value:
+                os.environ[env_key] = value
+            else:
+                os.environ.pop(env_key, None)
             _persist_env_var(env_key, value)
 
     if state.llm_client is not None:

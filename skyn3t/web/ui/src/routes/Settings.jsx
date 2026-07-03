@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiPost } from "../api.js";
 import { PageHeader, Panel, PanelHead, Pill, Empty } from "../components/ui.jsx";
 
@@ -21,6 +21,7 @@ const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app
 const ENGINES = ["auto", "dom", "browser_native", "phaser", "godot", "bevy", "raylib", "expo", "tauri", "server", "python", "none"];
 
 export default function Settings() {
+  const queryClient = useQueryClient();
   const settings = useQuery({
     queryKey: ["settings"],
     queryFn: queryFn("/settings"),
@@ -149,6 +150,15 @@ export default function Settings() {
       const r = await apiPost("/llm/key", { provider, key });
       setKey("");
       setMsg(`${provider}: ${r.configured ? "saved" : "cleared"} → backend ${r.backend}`);
+      queryClient.setQueryData(["llm-secrets"], (old) => ({
+        ...(old || {}),
+        providers: {
+          ...((old && old.providers) || {}),
+          [provider]: !!r.configured,
+        },
+        backend: r.backend || (old && old.backend),
+        routing: r.routing || (old && old.routing),
+      }));
       secrets.refetch();
       if (provider === "openrouter") models.refetch();
     } catch (e) {

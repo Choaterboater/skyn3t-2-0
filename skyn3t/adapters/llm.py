@@ -74,6 +74,15 @@ _CLI_COMMANDS: dict[str, list[str]] = {
 }
 _KNOWN_CLI_PROVIDERS = ("claude", "kimi", "copilot")
 
+
+def openrouter_key(settings: Settings) -> str:
+    """Resolve the OpenRouter key from live settings or supported env aliases."""
+    return (
+        str(getattr(settings, "openrouter_api_key", "") or "").strip()
+        or os.environ.get("SKYN3T_OPENROUTER_API_KEY", "").strip()
+        or os.environ.get("OPENROUTER_API_KEY", "").strip()
+    )
+
 # Whole-project agentic codegen over the OpenRouter API: the model authors the
 # entire app itself via tool-calls (the way bolt/v0/Aider build coherent apps with
 # cheap models), instead of skyn3t's weak per-file generation.
@@ -575,12 +584,12 @@ class LLMClient:
         if pref == "stub":
             return "stub"
         if pref == "openrouter":
-            return "openrouter" if self.settings.openrouter_api_key else "stub"
+            return "openrouter" if openrouter_key(self.settings) else "stub"
         if pref.endswith("_cli"):
             prov = pref[:-4]
             return f"{prov}_cli" if self._cli_available(prov) else "stub"
         # auto: OpenRouter key wins, else a detected CLI, else stub.
-        if self.settings.openrouter_api_key:
+        if openrouter_key(self.settings):
             return "openrouter"
         preferred = (self.settings.cli_llm_provider or "claude").lower()
         for prov in (preferred, *_KNOWN_CLI_PROVIDERS):
@@ -598,12 +607,12 @@ class LLMClient:
         """
         pref = (self.settings.llm_backend or "auto").lower()
         active = self.backend
-        openrouter_key = bool(str(getattr(self.settings, "openrouter_api_key", "") or "").strip())
+        openrouter_configured = bool(openrouter_key(self.settings))
         preferred_cli = (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
         cli_available = {p: self._cli_available(p) for p in _KNOWN_CLI_PROVIDERS}
         state = "ready"
         reason = ""
-        if pref == "openrouter" and not openrouter_key:
+        if pref == "openrouter" and not openrouter_configured:
             state = "missing_key"
             reason = "OpenRouter was selected but SKYN3T_OPENROUTER_API_KEY is not configured."
         elif pref.endswith("_cli") and active == "stub":
@@ -642,7 +651,7 @@ class LLMClient:
             "active": active,
             "state": state,
             "reason": reason,
-            "openrouter_configured": openrouter_key,
+            "openrouter_configured": openrouter_configured,
             "preferred_cli": preferred_cli,
             "cli_available": cli_available,
             "free_only": bool(getattr(self.settings, "free_only", False)),
@@ -1033,7 +1042,7 @@ class LLMClient:
 
         messages = [{"role": "system", "content": _agentic_system_for(stack)},
                     {"role": "user", "content": prompt}]
-        headers = {"Authorization": f"Bearer {self.settings.openrouter_api_key}",
+        headers = {"Authorization": f"Bearer {openrouter_key(self.settings)}",
                    "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
         max_turns = max(4, int(getattr(self.settings, "openrouter_agentic_max_turns", 60)))
         budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
@@ -1406,7 +1415,7 @@ class LLMClient:
         else:
             messages.append({"role": "user", "content": prompt})
         headers = {
-            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+            "Authorization": f"Bearer {openrouter_key(self.settings)}",
             "HTTP-Referer": "https://github.com/skyn3t",
             "X-Title": "SkyN3t",
         }

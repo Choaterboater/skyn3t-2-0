@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     # the CLI's own default model applies. Only used when codegen_cli_provider
     # (or the global CLI backend) is set; ignored otherwise.
     codegen_cli_model: str = ""
+    # Pin the OpenRouter model skyn3t uses (any id from the live /models list, e.g.
+    # "openai/gpt-4o" or "deepseek/deepseek-chat"). Empty = AUTO: the learned router
+    # picks per tier/task (today's behaviour). Set = that model for every OpenRouter
+    # completion (vision still resolves its own model for image calls). Chosen in
+    # Settings via the model dropdown; overridable per-call by model_override.
+    preferred_model: str = ""
     # Give OpenRouter (cheap) models a whole-project AGENTIC codegen loop — the
     # model writes files itself via tool-calls with full context (like bolt/v0/
     # Aider), instead of the weak per-file generation. This is what lets cheap

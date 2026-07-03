@@ -17,6 +17,7 @@ from skyn3t.studio.proof_run import (
     proof_run,
     reconcile_next_config_peers,
     reconcile_npm_deps,
+    sanitize_package_json_deps,
 )
 
 
@@ -92,7 +93,10 @@ def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
 
     class _CP:
-        def __init__(self, rc, out): self.returncode = rc; self.stdout = out; self.stderr = ""
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = ""
     monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(
         1, "npm error code ETARGET\nnpm error notarget No matching version found for @react-three/fiber@8.15.21"))
 
@@ -109,7 +113,10 @@ def test_run_node_build_offline_soft_skips(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
 
     class _CP:
-        def __init__(self, rc, out): self.returncode = rc; self.stdout = out; self.stderr = ""
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self.stdout = out
+            self.stderr = ""
     monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(
         1, "npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND"))
 
@@ -213,6 +220,30 @@ def test_invalid_npm_names_catches_whitespace():
     assert "@react-three/fiber" not in flagged
 
 
+def test_sanitize_package_json_deps_removes_unfixable_names(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({
+            "name": "x",
+            "dependencies": {
+                "react": "^18.2.0",
+                "Never Played": "latest",
+                "@/components": "latest",
+                " slick-carousel": "^1.8.1",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    changed = sanitize_package_json_deps(tmp_path)
+
+    deps = json.load(open(tmp_path / "package.json"))["dependencies"]
+    assert set(changed) == {"Never Played", "@/components", " slick-carousel"}
+    assert "Never Played" not in deps
+    assert "@/components" not in deps
+    assert "slick-carousel" in deps
+    assert deps["react"] == "^18.2.0"
+
+
 def test_unknown_package_gets_latest(tmp_path):
     (tmp_path / "package.json").write_text('{"name":"x","dependencies":{}}', encoding="utf-8")
     (tmp_path / "a.jsx").write_text("import x from 'some-rare-pkg'\n", encoding="utf-8")
@@ -247,7 +278,10 @@ def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
 
     class _CP:
-        def __init__(self, rc): self.returncode = rc; self.stdout = "2 failed"; self.stderr = ""
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = "2 failed"
+            self.stderr = ""
     monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(1))
     ran, ok, _ = pr._run_node_tests(tmp_path, 60)
     assert ran is True and ok is False

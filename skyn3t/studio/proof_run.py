@@ -1220,6 +1220,55 @@ def _project_invalid_npm_package_names(root: Path) -> list[str]:
     return _invalid_npm_package_names(pkg)
 
 
+def sanitize_package_json_deps(root: str | Path) -> list[str]:
+    """Remove dependency keys npm will reject.
+
+    Trims fixable leading/trailing whitespace and drops unfixable names such as
+    path aliases or prose fragments. Returns the removed/renamed keys.
+    """
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    import json as _json
+
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+
+    changed: list[str] = []
+    for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        deps = pkg.get(section)
+        if not isinstance(deps, dict):
+            continue
+        rebuilt: dict[str, Any] = {}
+        for name, version in deps.items():
+            if not isinstance(name, str):
+                changed.append(str(name))
+                continue
+            trimmed = name.strip()
+            candidate = {section: {trimmed: version}}
+            if trimmed and not _invalid_npm_package_names(candidate):
+                rebuilt[trimmed] = version
+                if trimmed != name:
+                    changed.append(name)
+                continue
+            changed.append(name)
+        if rebuilt != deps:
+            pkg[section] = rebuilt
+
+    if not changed:
+        return []
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return sorted(set(changed))
+
+
 def reconcile_npm_deps(root: str | Path) -> list[str]:
     """Add every imported-but-undeclared npm package to package.json.dependencies.
 
@@ -1640,6 +1689,21 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
 
 
 _LUCIDE_IMPORT_RE = re.compile(r"import\s*\{([^}]*)\}\s*from\s*['\"]lucide-react['\"]")
+_COMMON_LUCIDE_EXPORTS = frozenset({
+    "Activity", "AlertCircle", "ArrowLeft", "ArrowRight", "ArrowUpRight", "Award",
+    "BarChart", "Bell", "BookOpen", "Bot", "Box", "Calendar", "Check", "CheckCircle",
+    "ChevronDown", "Circle", "Clock", "Code", "Download", "ExternalLink", "Eye",
+    "FileText", "Flag", "Folder", "Gauge", "Heart", "Home", "Image", "Info",
+    "Loader2", "Mail", "MapPin", "Menu", "MessageCircle", "MessageSquare", "Minus",
+    "Plus", "Quote", "Search", "Send", "Settings", "Shield", "Sparkles", "Square",
+    "Star", "Sun", "Target", "Trophy", "Upload", "User", "Users", "Wrench", "X",
+    "Zap",
+})
+_LUCIDE_ICON_ALIASES = {
+    "GolfIcon": "Flag",
+    "GeneratorIcon": "Zap",
+    "PipeIcon": "Circle",
+}
 
 
 def _lucide_real_exports(root: Path) -> set[str]:
@@ -1650,7 +1714,9 @@ def _lucide_real_exports(root: Path) -> set[str]:
         text = dts.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return set()
-    return set(re.findall(r"declare const ([A-Z][A-Za-z0-9]+)\b", text))
+    names = set(re.findall(r"declare const ([A-Z][A-Za-z0-9]*)\b", text))
+    names.update(re.findall(r"\bas\s+([A-Z][A-Za-z0-9]*)\b", text))
+    return names
 
 
 def reconcile_lucide_icons(root: str | Path) -> list[str]:
@@ -1662,7 +1728,7 @@ def reconcile_lucide_icons(root: str | Path) -> list[str]:
     root = Path(root)
     real = _lucide_real_exports(root)
     if not real:
-        return []
+        real = set(_COMMON_LUCIDE_EXPORTS)
     fallback = next((c for c in ("Circle", "Square", "Star", "Box") if c in real), "")
     if not fallback:
         return []
@@ -1681,8 +1747,9 @@ def reconcile_lucide_icons(root: str | Path) -> list[str]:
             for raw in m.group(1).split(","):
                 src = raw.split(" as ")[0].strip()
                 if src and src not in real and src not in repls:
+                    alias = _LUCIDE_ICON_ALIASES.get(src)
                     base = src[:-4] if (src.endswith("Icon") and src[:-4] in real) else None
-                    repls[src] = base or fallback
+                    repls[src] = alias if alias in real else (base or fallback)
         if not repls:
             continue
         new_text = text
@@ -1729,6 +1796,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     same pass — making the whole repair converge in one call. Safe to call
     repeatedly (a complete tree is a no-op). Never raises on an individual
     repair's expected filesystem errors (each function is already defensive)."""
+    sanitized = sanitize_package_json_deps(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
     added = reconcile_npm_deps(project_dir)
     peers = reconcile_next_config_peers(project_dir)
@@ -1760,6 +1828,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     textures = reconcile_texture_keys(project_dir, stack=stack)
     return {
         "npm_deps_added": added,
+        "npm_deps_sanitized": sanitized,
         "next_config_peers": peers,
         "imports_scaffolded": stubbed,
         "use_client_added": use_client,

@@ -6,6 +6,7 @@ import json
 import socket
 import urllib.request
 
+from skyn3t.npm_utils import npm_install_current
 from skyn3t.studio import app_runner as _app_runner
 from skyn3t.studio.app_runner import AppRunner, build_run_spec, ensure_node_deps, free_port
 
@@ -117,6 +118,7 @@ def test_ensure_node_deps_installs_when_node_modules_missing(tmp_path):
 
     def fake(cmd, cwd):
         calls.append((cmd, cwd))
+        (tmp_path / "node_modules").mkdir(exist_ok=True)
         return True, {"ran": True}
 
     ok, info = ensure_node_deps(tmp_path, runner=fake)
@@ -126,6 +128,7 @@ def test_ensure_node_deps_installs_when_node_modules_missing(tmp_path):
     assert cmd[1] in ("install", "ci")  # npm install (or ci with a lockfile)
     assert "--prefer-offline" in cmd and "--no-progress" in cmd
     assert cwd == str(tmp_path)
+    assert npm_install_current(tmp_path) is True
 
 
 def test_ensure_node_deps_prefers_ci_with_lockfile(tmp_path):
@@ -149,6 +152,7 @@ def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path):
         calls.append(cmd[1])
         if cmd[1] == "ci":
             return False, {"error": "npm ci requires package.json and lock in sync"}
+        (tmp_path / "node_modules").mkdir(exist_ok=True)
         return True, {"ran": True}
 
     ok, info = ensure_node_deps(tmp_path, runner=fake)
@@ -160,8 +164,15 @@ def test_ensure_node_deps_ci_success_does_not_fall_back(tmp_path):
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
     (tmp_path / "package-lock.json").write_text("{}")
     calls = []
-    ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd[1]) or (True, {}))
+
+    def fake(cmd, cwd):
+        calls.append(cmd[1])
+        (tmp_path / "node_modules").mkdir(exist_ok=True)
+        return True, {}
+
+    ensure_node_deps(tmp_path, runner=fake)
     assert calls == ["ci"]  # ci worked -> no fallback
+    assert npm_install_current(tmp_path) is True
 
 
 def test_ensure_node_deps_noop_without_package_json(tmp_path):

@@ -28,7 +28,7 @@ from skyn3t.agents import _verify_common as vc
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-from skyn3t.npm_utils import npm_install_args
+from skyn3t.npm_utils import mark_npm_install_current, npm_install_args, npm_install_current
 
 # --- reward-hacking heuristics ------------------------------------------------
 
@@ -236,7 +236,12 @@ class BuildVerifierAgent(BaseAgent):
         # ran (hallucinated versions + app/pages route conflicts slipped through
         # as a false "pass"). package.json presence is the honest signal.
         if (root / "package.json").is_file() and allow_real and shutil.which("npm"):
-            ok, out = await self._run(npm_install_args("npm", "install"), root, timeout=300)
+            if npm_install_current(root):
+                ok, out = True, "install skipped (dependencies current)"
+            else:
+                ok, out = await self._run(npm_install_args("npm", "install"), root, timeout=300)
+                if ok:
+                    mark_npm_install_current(root)
             if ok:
                 # build script optional — try it but don't hard-fail if absent
                 pkg = json.loads(vc.safe_read(root / "package.json") or "{}")

@@ -71,7 +71,10 @@ include = ["skyn3t*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore:Exception in thread .*_connection_worker_thread:pytest.PytestUnhandledThreadExceptionWarning",
+]
 markers = [
     "real_cli_vision: opt out of the suite-wide CLI-vision neutering (test stubs which/subprocess itself)",
     "requires_loopback: test binds a local 127.0.0.1 socket and is skipped when loopback bind is unavailable",

@@ -49,6 +49,25 @@ def test_openrouter_codegen_model_pin_used_for_agentic(monkeypatch, tmp_path):
     assert captured["model"] == "provider/custom-code-model"
 
 
+def test_preferred_model_used_for_openrouter_agentic_codegen(monkeypatch, tmp_path):
+    c = _client(
+        "openrouter",
+        openrouter_api_key="sk-or-test",
+        preferred_model="provider/selected-in-ui",
+    )
+    captured = {}
+
+    async def _fake(prompt, workdir, model, timeout=None, stack=""):
+        captured["model"] = model
+        return {"ok": True, "backend": "openrouter"}
+
+    monkeypatch.setattr(c, "_openrouter_agentic", _fake)
+    import asyncio
+
+    asyncio.run(c.agentic_build("build", str(tmp_path), stack="react_vite"))
+    assert captured["model"] == "provider/selected-in-ui"
+
+
 def test_auto_prefers_cli_when_available(monkeypatch):
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
     monkeypatch.setattr(llm_mod.shutil, "which", lambda b: f"/usr/bin/{b}")

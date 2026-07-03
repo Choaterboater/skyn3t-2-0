@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from skyn3t.npm_utils import npm_env, npm_install_args
+
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
 # NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
 # look "unresolved" — those resolve via sys.path, not the project tree.
@@ -2660,8 +2662,7 @@ _BUILD_PLACEHOLDER_KEYS = (
 def _node_build_env() -> dict:
     """Build-time env for npm: CI flags + placeholder provider keys so a top-level
     SDK client init doesn't crash the build on a missing key (real key set at serve)."""
-    import os
-    env = {**os.environ, "CI": "1", "npm_config_audit": "false", "npm_config_fund": "false"}
+    env = npm_env()
     for k in _BUILD_PLACEHOLDER_KEYS:
         env.setdefault(k, "sk-build-placeholder")
     return env
@@ -2716,7 +2717,7 @@ def _run_node_build(
     install_budget = max(120, int(timeout * 0.6))
     inst = _run_proof_command(
         cmd_ctx,
-        [npm_cmd, "install", "--no-audit", "--no-fund", "--no-progress"],
+        npm_install_args(npm_cmd, "install"),
         cwd=pdir,
         timeout=install_budget,
         env=env,

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.agents.config_detector import detect_from_code
+from skyn3t.npm_utils import npm_env, npm_install_args
 from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name
 
 _PY_ENTRYPOINTS = ("main.py", "app.py", "server.py")
@@ -332,6 +333,7 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
             cmd, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, text=True, timeout=timeout,
+            env=npm_env(),
         )
     except subprocess.TimeoutExpired:
         return False, {"error": f"npm install timed out after {timeout:.0f}s"}
@@ -359,15 +361,15 @@ def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dic
         return False, {"error": "npm not found on PATH"}
     run = runner or _default_npm_run
     if (pdir / "package-lock.json").exists():
-        ok, detail = run([npm, "ci"], str(pdir))
+        ok, detail = run(npm_install_args(npm, "ci"), str(pdir))
         if ok:
             return ok, detail
         # A generated/edited project often has a lockfile out of sync with
         # package.json, which `npm ci` rejects outright. Fall back to `npm install`
         # (which reconciles the lockfile) so a buildable project is still
         # previewable — matching the build verifier, which uses `npm install`.
-        return run([npm, "install"], str(pdir))
-    return run([npm, "install"], str(pdir))
+        return run(npm_install_args(npm, "install"), str(pdir))
+    return run(npm_install_args(npm, "install"), str(pdir))
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,12 @@ async def test_set_key_flips_backend_to_openrouter():
     assert r["backend"] == "openrouter"
 
 
+async def test_secrets_payload_reports_openrouter_env_key(monkeypatch):
+    monkeypatch.setenv("SKYN3T_OPENROUTER_API_KEY", "sk-or-env")
+    p = await llm_secrets_payload(_state(llm_backend="auto"))
+    assert p["providers"]["openrouter"] is True
+
+
 async def test_clear_key():
     st = _state(llm_backend="auto", openrouter_api_key="sk-or-x")
     r = await set_llm_key(st, "openrouter", "", persist=False)

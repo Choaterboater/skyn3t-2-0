@@ -6,6 +6,8 @@ tests stay fast, hermetic, and reproducible regardless of what's on the host.
 """
 
 import os
+import socket
+from functools import cache, lru_cache
 
 import pytest
 
@@ -17,6 +19,48 @@ try:  # settings may have been imported+cached already
     get_settings.cache_clear()
 except Exception:  # pragma: no cover
     pass
+
+
+_LOOPBACK_BIND_PATTERNS = (
+    'HTTPServer(("127.0.0.1"',
+    'ThreadingHTTPServer(("127.0.0.1"',
+    'socket.bind(("127.0.0.1"',
+    's.bind(("127.0.0.1"',
+    "MockLLMServer()",
+    "AppRunner()",
+)
+
+
+@lru_cache(maxsize=1)
+def _loopback_bind_available() -> bool:
+    try:
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", 0))
+            return True
+        finally:
+            s.close()
+    except OSError:
+        return False
+
+
+@cache
+def _test_file_needs_loopback(path: str) -> bool:
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return False
+    return any(pattern in text for pattern in _LOOPBACK_BIND_PATTERNS)
+
+
+def pytest_collection_modifyitems(config, items):
+    if _loopback_bind_available():
+        return
+    skip = pytest.mark.skip(reason="loopback socket bind is not available in this environment")
+    for item in items:
+        path = str(getattr(item, "path", "") or "")
+        if item.get_closest_marker("requires_loopback") or _test_file_needs_loopback(path):
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)

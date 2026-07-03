@@ -80,6 +80,17 @@ def test_deterministic_repairs_declares_deps_peers_and_stubs(tmp_path):
         and again["imports_scaffolded"] == []
 
 
+def test_contrast_issues_are_recorded_and_cleared_from_manifest():
+    manifest = BuildManifest(slug="ui", brief="a dashboard")
+    issue = {"file": "styles.css", "text": "--text", "bg": "--bg", "ratio": 1.2}
+
+    StudioRunner._record_contrast_issues(manifest, {"contrast_issues": [issue]})
+    assert manifest.extra["contrast_issues"] == [issue]
+
+    StudioRunner._record_contrast_issues(manifest, {"contrast_issues": []})
+    assert "contrast_issues" not in manifest.extra
+
+
 def test_stub_for_known_files():
     runner = _runner()
     plan = Planner(Settings()).plan("x", "x")

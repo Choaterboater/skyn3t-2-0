@@ -1209,6 +1209,14 @@ class StudioRunner:
                         worst=min(i["ratio"] for i in contrast_issues))
         return {**repairs, "contrast_issues": contrast_issues}
 
+    @staticmethod
+    def _record_contrast_issues(manifest, repairs: dict) -> None:
+        issues = (repairs or {}).get("contrast_issues") or []
+        if issues:
+            manifest.extra["contrast_issues"] = issues[:20]
+            return
+        manifest.extra.pop("contrast_issues", None)
+
     def _final_consistency_check(self, project_dir, plan, manifest, verdict: str) -> str:
         """Unconditional final pass, run ONCE after every post-proof stage
         (_headless_gate_pass, the game-visual loop, qa_playtest's repair,
@@ -1242,6 +1250,7 @@ class StudioRunner:
             }
             log.info("runner.final_consistency_repaired",
                      **manifest.extra["final_consistency_repairs"])
+        self._record_contrast_issues(manifest, final_repairs)
         try:
             pdir = Path(project_dir)
             final_unresolved = _unresolved_local_imports(pdir) + _unresolved_python_imports(pdir)
@@ -2873,6 +2882,7 @@ class StudioRunner:
             if repairs["use_client_added"]:
                 manifest.extra["use_client_added"] = repairs["use_client_added"]
                 log.info("runner.use_client_added", files=repairs["use_client_added"])
+            self._record_contrast_issues(manifest, repairs)
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous

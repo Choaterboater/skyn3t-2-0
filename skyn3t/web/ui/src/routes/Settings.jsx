@@ -407,8 +407,9 @@ export default function Settings() {
               <p className="mb-2 text-sm text-ash">
                 Primary OpenRouter model.{" "}
                 <span className="font-mono text-bone">auto</span> lets the router
-                pick per task; pin one here when you want every OpenRouter call to
-                use the selected model.
+                pick per task; pin one here for OpenRouter calls that are not using
+                a more specific override. The OpenRouter codegen model below wins for
+                whole-app builds when it is set.
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <select
@@ -460,7 +461,7 @@ export default function Settings() {
               <input
                 type="text"
                 className="field min-w-[14rem] flex-1"
-                placeholder="OpenRouter codegen model"
+                placeholder="OpenRouter codegen model (overrides primary for builds)"
                 value={openrouterCodegenModel}
                 onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
               />

@@ -129,6 +129,13 @@ def test_settings_wires_visual_self_heal_toggle() -> None:
     assert "Drive rendered UI" in settings
 
 
+def test_settings_explains_model_precedence() -> None:
+    settings = (ROUTES / "Settings.jsx").read_text()
+    assert "OpenRouter calls that are not using" in settings
+    assert "OpenRouter codegen model below wins" in settings
+    assert "overrides primary for builds" in settings
+
+
 def test_studio_wires_build_profiles_and_manual_model() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "Cheap + learned" in studio

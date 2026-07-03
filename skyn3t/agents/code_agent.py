@@ -655,14 +655,17 @@ class CodeAgent(BaseAgent):
                 # files so they don't count as "delivered" and never ship.
                 disk, prose_files = self._clean_agentic_files(disk, scaffold)
                 code_bytes = self._code_bytes(disk)
-                under_delivered = not (disk and code_bytes >= threshold)
+                contract_gap = self._agentic_contract_gap(stack, disk)
+                under_delivered = not (disk and code_bytes >= threshold) or bool(contract_gap)
                 # Stop as soon as a real app is on disk — even if the call did NOT
                 # exit cleanly (a TIMEOUT mid-build still produced real code; do not
-                # throw it away to retry). Retry ONLY on genuine under-delivery.
+                # throw it away to retry). Retry ONLY on genuine under-delivery or
+                # a stack contract miss such as a Phaser game without src/sim.js.
                 if not under_delivered or attempt >= max_retries:
                     break
                 log.warning("code_agent.agentic_retry", attempt=attempt + 1,
-                            code_bytes=code_bytes, threshold=threshold, ok=agentic_ok)
+                            code_bytes=code_bytes, threshold=threshold, ok=agentic_ok,
+                            contract_gap=contract_gap)
                 attempt += 1
 
             if prose_files:
@@ -673,13 +676,19 @@ class CodeAgent(BaseAgent):
                 # (proof/build/liveness already verify the app actually runs).
                 log.warning("code_agent.agentic_prose_rejected", files=prose_files)
                 self.metadata["prose_rejected"] = list(prose_files)
-            under_delivered = not (disk and code_bytes >= threshold)
+            contract_gap = self._agentic_contract_gap(stack, disk)
+            under_delivered = not (disk and code_bytes >= threshold) or bool(contract_gap)
             if under_delivered:
                 # Genuine under-delivery: no-op'd / left a stub, or a prose-revert
                 # dropped the real code below threshold.
                 if not agentic_ok:
                     degraded_reason = (f"agentic build failed: {agentic_error}"
                                        if agentic_error else "agentic build returned ok=False")
+                elif contract_gap:
+                    degraded_reason = (
+                        f"agentic build missed required {stack} contract after {attempt} retr"
+                        f"{'y' if attempt == 1 else 'ies'}: {contract_gap}"
+                    )
                 elif prose_files:
                     degraded_reason = (f"prose (not code) in {prose_files} left only "
                                        f"{code_bytes} code bytes (threshold {threshold})")
@@ -701,7 +710,7 @@ class CodeAgent(BaseAgent):
                 # app is far better than reverting to the scaffold stub.
                 log.warning("code_agent.agentic_timeout_kept", code_bytes=code_bytes,
                             files_on_disk=len(disk), error=agentic_error or "(timeout)")
-            if disk and code_bytes >= threshold:
+            if disk and code_bytes >= threshold and not contract_gap:
                 files = disk  # the agent's real app becomes the delivery
                 # Insurance against the entrypoint-clobber bug: a weak model can
                 # ship an index.html that never imports the app (a standalone inline
@@ -1173,6 +1182,19 @@ class CodeAgent(BaseAgent):
             len(c) for f, c in files.items()
             if f.rsplit(".", 1)[-1] in cls._CODE_EXTS
         )
+
+    @staticmethod
+    def _agentic_contract_gap(stack: str, files: dict[str, str]) -> str:
+        """Stack-specific must-have checks for substantial agentic output.
+
+        These are retry triggers, not proof substitutes. In particular, Phaser's
+        headless invariant gate can only verify a generated game when the model
+        preserves the pure simulation split; a large scene-only game is still
+        unverifiable and should get another codegen attempt before fallback.
+        """
+        if (stack or "").lower() == "phaser" and "src/sim.js" not in files:
+            return "missing pure src/sim.js simulation core"
+        return ""
 
     def _agentic_retry_prompt(
         self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,

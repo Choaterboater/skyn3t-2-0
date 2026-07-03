@@ -144,7 +144,7 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         for e in (build.get("proof_errors") or [])[:3]:
             flat = " ".join(str(e).split())[:160]
             lessons.append(f"{stack}: avoid — {flat}")
-        if not gaps and not build.get("proof_errors"):
+        if not gaps and not build.get("proof_errors") and not build.get("gate_findings"):
             lessons.append(f"{stack}: build failed verification — re-check the plan.")
     elif "go" in verdict or "complete" in verdict or "success" in str(verdict):
         notes = build.get("notes") or build.get("brief")
@@ -156,7 +156,7 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
     # feed ONE repair but never flip a build to no_go — so without this, a 'go'
     # build's caught defect (an SEO hole, an unwired LLM seam, a dead route)
     # taught the system nothing and the same class recurred build after build.
-    for finding in (build.get("gate_findings") or [])[:4]:
+    for finding in (build.get("gate_findings") or [])[:12]:
         flat = " ".join(str(finding).split())[:160]
         if flat:
             lessons.append(f"{stack}: gate flagged — {flat}")
@@ -178,6 +178,19 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
 # The advisory end-of-build gates whose verdicts share the same to_dict shape
 # ({"skipped": bool, "issues": [str, ...], ...}) under these manifest.extra keys.
 _GATE_VERDICT_KEYS = ("seo", "mcp_check", "rag_check")
+_HARD_GATE_KEYS = (
+    "verifier_gate",
+    "critic_gate",
+    "intent_gate",
+    "headless_gate_gate",
+    "game_visual_gate",
+    "qa_playtest_gate",
+)
+_DETAIL_GATE_KEYS = ("headless_gate", "game_visual", "qa_playtest")
+
+
+def _flat_finding(text: Any, limit: int = 160) -> str:
+    return " ".join(str(text).split())[:limit]
 
 
 def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
@@ -186,11 +199,19 @@ def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
 
     A skipped gate (could-not-run) contributes nothing — a degrade-open skip
     must never mint an avoid-rule. Capped per gate so one noisy verdict can't
-    flood the lesson store. Never raises; any unexpected shape yields ``[]``.
+    flood the lesson store. Includes hard verdict gates (verifier/critic/intent/
+    headless/game visual/QA) so no_go builds teach concrete avoid-rules instead
+    of only "re-check the plan". Never raises; unexpected shapes yield ``[]``.
     """
     out: list[str] = []
     if not isinstance(extra, dict):
         return out
+
+    def add(gate: str, detail: Any) -> None:
+        flat = _flat_finding(detail)
+        if flat:
+            out.append(f"{gate}: {flat}")
+
     for key in _GATE_VERDICT_KEYS:
         verdict = extra.get(key)
         if not isinstance(verdict, dict) or verdict.get("skipped"):
@@ -199,15 +220,42 @@ def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
         if not isinstance(issues, list):
             continue
         for issue in issues[:3]:
-            flat = " ".join(str(issue).split())[:160]
-            if flat:
-                out.append(f"{key}: {flat}")
+            add(key, issue)
+
+    for key in _HARD_GATE_KEYS:
+        finding = extra.get(key)
+        if isinstance(finding, str) and finding.strip():
+            add(key, finding)
+
+    for key in _DETAIL_GATE_KEYS:
+        verdict = extra.get(key)
+        if not isinstance(verdict, dict) or verdict.get("skipped"):
+            continue
+        gap = verdict.get("gap")
+        if gap:
+            add(key, gap)
+        for detail_field in ("issues", "gaps", "console_errors"):
+            values = verdict.get(detail_field)
+            if isinstance(values, list):
+                for item in values[:3]:
+                    add(key, item)
+        roles = verdict.get("missing_sprite_roles")
+        if isinstance(roles, list) and roles:
+            add(key, "missing sprite role(s) not rendered — " + ", ".join(map(str, roles[:8])))
+
     live = extra.get("liveness")
     if isinstance(live, dict) and not live.get("skipped"):
         dead = [str(d) for d in (live.get("dead_routes") or [])[:5] if str(d)]
         if dead:
             out.append(f"liveness: route(s) dead after repair — {', '.join(dead)}")
-    return out
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for finding in out:
+        if finding not in seen:
+            seen.add(finding)
+            deduped.append(finding)
+    return deduped
 
 
 class LearningLoop:

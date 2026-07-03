@@ -32,6 +32,28 @@ _EXTRA = {
     "liveness": {"skipped": False, "dead_routes": ["/about", "/pricing"]},
 }
 
+_HARD_EXTRA = {
+    "verifier_gate": "verify_build failed: npm run build exited 1",
+    "critic_gate": "critic blocked: browser-exposed API key",
+    "intent_gate": "intent match 22 < 34 floor",
+    "headless_gate_gate": "headless gate failed after repair: no pure src/sim.js core",
+    "game_visual_gate": "visual check failed: empty play field",
+    "qa_playtest_gate": "qa playtest failed: sprites never rendered",
+    "game_visual": {
+        "ok": False,
+        "skipped": False,
+        "issues": ["empty play field", "sprites too small"],
+        "gap": "the running game does not look right: empty board",
+    },
+    "qa_playtest": {
+        "ok": False,
+        "skipped": False,
+        "console_errors": ["ReferenceError: dist is not defined"],
+        "missing_sprite_roles": ["player", "enemy"],
+        "gaps": ["generated sprites exist but are never rendered on screen"],
+    },
+}
+
 
 def test_extract_flattens_and_prefixes_gate_issues():
     findings = extract_gate_findings(_EXTRA)
@@ -43,11 +65,29 @@ def test_extract_flattens_and_prefixes_gate_issues():
     assert all("\n" not in f and len(f) <= 180 for f in findings)
 
 
+def test_extract_hard_quality_gate_failures():
+    findings = extract_gate_findings(_HARD_EXTRA)
+    joined = "\n".join(findings)
+    assert "verifier_gate: verify_build failed" in joined
+    assert "critic_gate: critic blocked" in joined
+    assert "intent_gate: intent match 22" in joined
+    assert "headless_gate_gate: headless gate failed" in joined
+    assert "game_visual_gate: visual check failed: empty play field" in joined
+    assert "qa_playtest_gate: qa playtest failed: sprites never rendered" in joined
+    assert "game_visual: the running game does not look right" in joined
+    assert "game_visual: empty play field" in joined
+    assert "qa_playtest: ReferenceError: dist is not defined" in joined
+    assert "qa_playtest: missing sprite role(s) not rendered" in joined
+    assert all("\n" not in f and len(f) <= 190 for f in findings)
+
+
 def test_skipped_gate_contributes_nothing():
     # A degrade-open skip (gate could not run) must never mint an avoid-rule.
     findings = extract_gate_findings(_EXTRA)
     assert not any(f.startswith("mcp_check:") for f in findings)
     only_skips = {"rag_check": {"skipped": True, "issues": ["ghost"]},
+                  "game_visual": {"skipped": True, "issues": ["empty"]},
+                  "qa_playtest": {"skipped": True, "gaps": ["error"]},
                   "liveness": {"skipped": True, "dead_routes": ["/x"]}}
     assert extract_gate_findings(only_skips) == []
 
@@ -70,6 +110,23 @@ def test_gate_findings_become_lessons_on_a_go_build():
     joined = "\n".join(lessons)
     assert "rag: gate flagged — rag_check: the app called the LLM seam" in joined
     assert all(len(ls) <= 200 for ls in lessons)
+
+
+def test_hard_gate_findings_replace_generic_no_go_lesson():
+    build = {
+        "stack": "phaser",
+        "verdict": "no_go",
+        "score": 49,
+        "gaps": [],
+        "proof_errors": [],
+        "gate_findings": extract_gate_findings(_HARD_EXTRA),
+    }
+    lessons = _summarize_outcome(build)
+    joined = "\n".join(lessons)
+    assert "phaser: gate flagged — game_visual_gate: visual check failed" in joined
+    assert "phaser: gate flagged — qa_playtest_gate: qa playtest failed" in joined
+    assert "phaser: gate flagged — qa_playtest: ReferenceError: dist is not defined" in joined
+    assert not any("re-check the plan" in lesson for lesson in lessons)
 
 
 def test_no_gate_findings_changes_nothing():

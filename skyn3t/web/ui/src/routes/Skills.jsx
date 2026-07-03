@@ -1,9 +1,31 @@
-import React from "react";
-import { useQuery } from "@tanstack/react-query";
-import { queryFn } from "../api.js";
+import React, { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiFetch, apiPost, queryFn } from "../api.js";
 import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/ui.jsx";
 
+function SummaryChips({ title, items }) {
+  const entries = Object.entries(items || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (!entries.length) return null;
+  return (
+    <div>
+      <div className="eyebrow mb-2">{title}</div>
+      <div className="flex flex-wrap gap-1.5">
+        {entries.map(([name, count]) => (
+          <Pill key={name} tone={title === "Risk" && name === "medium" ? "ember" : "plasma"}>
+            {name} · {count}
+          </Pill>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Skills() {
+  const queryClient = useQueryClient();
+  const [catalogPath, setCatalogPath] = useState("");
+  const [catalogResult, setCatalogResult] = useState(null);
+  const [catalogError, setCatalogError] = useState("");
+
   const { data, isLoading, error } = useQuery({
     queryKey: ["skills"],
     queryFn: queryFn("/skills"),
@@ -11,6 +33,39 @@ export default function Skills() {
 
   const skills = Array.isArray(data) ? data : data?.skills || [];
   const patterns = Array.isArray(data?.patterns) ? data.patterns : [];
+  const summary = catalogResult?.summary || {};
+  const catalogEntries = Array.isArray(catalogResult?.entries) ? catalogResult.entries : [];
+
+  const previewCatalog = useMutation({
+    mutationFn: async () => {
+      const path = catalogPath.trim();
+      if (!path) throw new Error("Catalog path is required");
+      return apiFetch(`/agent-catalog?path=${encodeURIComponent(path)}&limit=100`);
+    },
+    onSuccess: (res) => {
+      setCatalogError("");
+      setCatalogResult(res);
+    },
+    onError: (err) => {
+      setCatalogError(String(err.message || err));
+    },
+  });
+
+  const importCatalog = useMutation({
+    mutationFn: async () => {
+      const path = catalogPath.trim();
+      if (!path) throw new Error("Catalog path is required");
+      return apiPost("/agent-catalog/import", { path, limit: 100 });
+    },
+    onSuccess: async (res) => {
+      setCatalogError("");
+      setCatalogResult((current) => ({ ...(current || {}), ...res }));
+      await queryClient.invalidateQueries({ queryKey: ["skills"] });
+    },
+    onError: (err) => {
+      setCatalogError(String(err.message || err));
+    },
+  });
 
   return (
     <div>
@@ -31,7 +86,7 @@ export default function Skills() {
         </Panel>
       ) : null}
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3">
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
         <Stat label="Registered" value={skills.length} tone="plasma" hint="capabilities" />
         <Stat
           label="Tagged"
@@ -49,7 +104,94 @@ export default function Skills() {
           tone={patterns.length ? "ember" : "bone"}
           hint="build shapes"
         />
+        <Stat
+          label="Catalog"
+          value={summary.entries ?? 0}
+          tone={summary.entries ? "plasma" : "bone"}
+          hint="previewed roles"
+        />
       </div>
+
+      <Panel className="mb-6">
+        <PanelHead
+          label="Agent catalog"
+          right={<span className="font-mono text-[11px] text-ash">/agent-catalog</span>}
+        />
+        <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+          <input
+            className="field"
+            placeholder="/path/to/agents-or-skills"
+            value={catalogPath}
+            onChange={(event) => setCatalogPath(event.target.value)}
+          />
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={previewCatalog.isPending}
+            onClick={() => previewCatalog.mutate()}
+          >
+            Preview
+          </button>
+          <button
+            type="button"
+            className="btn-ember"
+            disabled={importCatalog.isPending}
+            onClick={() => importCatalog.mutate()}
+          >
+            Import
+          </button>
+        </div>
+        {catalogError ? (
+          <div className="border-t border-hairline px-4 py-3 font-mono text-xs text-ember">
+            {catalogError}
+          </div>
+        ) : null}
+        {catalogResult ? (
+          <div className="grid grid-cols-1 gap-4 border-t border-hairline p-4 lg:grid-cols-4">
+            <div>
+              <div className="eyebrow mb-2">Path</div>
+              <div className="truncate font-mono text-xs text-ash">{catalogResult.path}</div>
+              {catalogResult.imported != null ? (
+                <div className="mt-2 font-mono text-xs text-plasma">
+                  imported {catalogResult.imported}
+                </div>
+              ) : null}
+            </div>
+            <SummaryChips title="Stacks" items={summary.by_stack} />
+            <SummaryChips title="Stages" items={summary.by_stage} />
+            <SummaryChips title="Risk" items={summary.by_risk} />
+          </div>
+        ) : null}
+        {catalogEntries.length ? (
+          <div className="max-h-72 overflow-auto border-t border-hairline">
+            <table className="w-full text-left font-mono text-xs">
+              <thead>
+                <tr className="border-b border-hairline">
+                  <th className="eyebrow px-4 py-3 font-normal">Role</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Stages</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Stacks</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Risk</th>
+                </tr>
+              </thead>
+              <tbody>
+                {catalogEntries.slice(0, 40).map((entry) => (
+                  <tr key={entry.id} className="border-b border-hairline/60">
+                    <td className="px-4 py-2 text-bone">
+                      <div>{entry.title}</div>
+                      <div className="truncate text-ash/70">{entry.source_path}</div>
+                    </td>
+                    <td className="px-4 py-2 text-ash">{(entry.stages || []).join(", ")}</td>
+                    <td className="px-4 py-2 text-ash">{(entry.stacks || []).join(", ")}</td>
+                    <td className="px-4 py-2">
+                      <Pill tone={entry.risk === "medium" ? "ember" : "plasma"}>{entry.risk}</Pill>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </Panel>
 
       <Panel>
         <PanelHead

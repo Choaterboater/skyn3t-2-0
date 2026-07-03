@@ -853,6 +853,63 @@ async def list_skills(state: AppState) -> dict[str, Any]:
     return {"skills": [], "patterns": patterns, "hub_paths": paths}
 
 
+def _catalog_entry_payload(entry: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(entry, "id", ""),
+        "title": getattr(entry, "title", ""),
+        "description": getattr(entry, "description", ""),
+        "source_path": getattr(entry, "source_path", ""),
+        "source_kind": getattr(entry, "source_kind", ""),
+        "stages": list(getattr(entry, "stages", []) or []),
+        "stacks": list(getattr(entry, "stacks", []) or []),
+        "tags": list(getattr(entry, "tags", []) or []),
+        "risk": getattr(entry, "risk", "low"),
+    }
+
+
+async def agent_catalog_preview(
+    state: AppState, path: str, limit: int = 100
+) -> dict[str, Any]:
+    """Preview a local external agent catalog without executing or importing it."""
+    raw = (path or "").strip()
+    if not raw:
+        return {"path": "", "summary": {"entries": 0, "by_stack": {}, "by_stage": {}, "by_risk": {}}, "entries": []}
+    catalog_path = Path(raw).expanduser()
+    if not catalog_path.is_absolute():
+        catalog_path = (Path.cwd() / catalog_path).resolve()
+    if not catalog_path.is_dir():
+        raise ValueError("catalog path must be a readable directory")
+    from skyn3t.intelligence.agent_catalog import catalog_summary, discover_catalog_entries
+
+    entries = discover_catalog_entries(catalog_path, limit=max(1, min(int(limit or 100), 500)))
+    return {
+        "path": str(catalog_path),
+        "summary": catalog_summary(entries),
+        "entries": [_catalog_entry_payload(e) for e in entries[:100]],
+    }
+
+
+async def import_agent_catalog(
+    state: AppState, path: str, limit: int = 100
+) -> dict[str, Any]:
+    """Import a local external agent catalog as compact advisory skills."""
+    if state.skills is None or not hasattr(state.skills, "add"):
+        raise ValueError("a writable skill library is required to import catalogs")
+    preview = await agent_catalog_preview(state, path, limit=limit)
+    from skyn3t.intelligence.agent_catalog import import_catalog_as_skills
+
+    imported = import_catalog_as_skills(
+        preview["path"],
+        state.skills,
+        limit=max(1, min(int(limit or 100), 500)),
+    )
+    return {
+        "path": preview["path"],
+        "imported": imported,
+        "summary": preview["summary"],
+    }
+
+
 async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str, Any]:
     knowledge = state.knowledge
     if knowledge is not None and hasattr(knowledge, "search"):
@@ -1951,6 +2008,27 @@ def build_router(state: AppState) -> Any:
     @router.get("/skills", dependencies=[auth])
     async def _skills() -> dict[str, Any]:
         return await list_skills(state)
+
+    @router.get("/agent-catalog", dependencies=[auth])
+    async def _agent_catalog(
+        path: str = Query(default=""),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        try:
+            return await agent_catalog_preview(state, path, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/agent-catalog/import", dependencies=[auth])
+    async def _agent_catalog_import(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            return await import_agent_catalog(
+                state,
+                str(body.get("path", "")),
+                limit=int(body.get("limit", 100) or 100),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/knowledge/search", dependencies=[auth])
     async def _knowledge(

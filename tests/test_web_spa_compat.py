@@ -12,12 +12,13 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from skyn3t.config.settings import Settings  # noqa: E402
+from skyn3t.intelligence.skill_library import SkillLibrary  # noqa: E402
 from skyn3t.web.app import create_app  # noqa: E402
 from skyn3t.web.deps import AppState  # noqa: E402
 
 SPA_GETS = [
     "/api/health", "/api/brain", "/api/settings", "/api/builds", "/api/agents",
-    "/api/skills", "/api/cortex/proposals", "/api/llm/secrets", "/api/status",
+    "/api/skills", "/api/agent-catalog", "/api/cortex/proposals", "/api/llm/secrets", "/api/status",
 ]
 
 
@@ -44,3 +45,24 @@ def test_spa_cortex_decide_alias(client):
 def test_health_has_fields_overview_reads(client):
     d = client.get("/api/health").json()
     assert "backend" in d and "active_builds" in d and "agents" in d
+
+
+def test_agent_catalog_import_endpoint(tmp_path):
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "ui.md").write_text(
+        "---\nname: UI Builder\ndescription: Builds accessible React UI.\n---\nbody\n",
+        encoding="utf-8",
+    )
+    skills = SkillLibrary(tmp_path / "skills")
+    app = create_app(state=AppState(settings=Settings(llm_backend="stub"), skills=skills))
+    local_client = TestClient(app)
+
+    preview = local_client.get("/api/agent-catalog", params={"path": str(catalog)})
+    assert preview.status_code == 200
+    assert preview.json()["summary"]["entries"] == 1
+
+    imported = local_client.post("/api/agent-catalog/import", json={"path": str(catalog)})
+    assert imported.status_code == 200
+    assert imported.json()["imported"] == 1
+    assert local_client.get("/api/skills").json()["skills"][0]["title"] == "UI Builder"

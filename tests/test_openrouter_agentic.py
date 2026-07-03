@@ -59,7 +59,22 @@ def test_agentic_loop_writes_files(tmp_path, monkeypatch):
     monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
     res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "deepseek/deepseek-v3.2"))
     assert res["ok"] is True
+    assert res["model"] == "deepseek/deepseek-v3.2"
+    assert _client().last_model is None
     assert (tmp_path / "app" / "page.jsx").read_text().startswith("export default")
+
+
+def test_agentic_loop_records_effective_model(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_file", {"path": "app/page.jsx", "content": "export default function P(){return null}"}),
+        _tool_turn("finish", {"summary": "done"}, "t2"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    client = _client()
+    res = asyncio.run(client._openrouter_agentic("build", str(tmp_path), "openrouter/selected"))
+    assert res["model"] == "openrouter/selected"
+    assert client.last_model == "openrouter/selected"
+    assert client.routes[-1] == ("backend", "codegen", "openrouter/selected")
 
 
 def test_agentic_loop_confines_paths(tmp_path, monkeypatch):

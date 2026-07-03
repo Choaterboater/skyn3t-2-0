@@ -17,6 +17,7 @@ from skyn3t.web.routes import (  # noqa: E402
     set_asset_gen,
     set_llm_backend,
     set_llm_key,
+    set_llm_routing,
     set_replicate_token,
 )
 
@@ -31,6 +32,8 @@ async def test_secrets_payload_shape():
     assert set(p["providers"]) == {"openrouter", "anthropic", "openai", "kimi"}
     assert p["backend"] == "stub"
     assert p["backend_pref"] == "stub"
+    assert "routing" in p
+    assert "model_pins" in p
 
 
 async def test_set_key_flips_backend_to_openrouter():
@@ -48,6 +51,32 @@ async def test_clear_key():
 async def test_switch_backend():
     r = await set_llm_backend(_state(llm_backend="auto"), "stub", persist=False)
     assert r["active"] == "stub"
+    assert r["routing"]["requested"] == "stub"
+
+
+async def test_explicit_openrouter_missing_key_surfaces_routing_state():
+    p = await llm_secrets_payload(_state(llm_backend="openrouter"))
+    assert p["backend"] == "stub"
+    assert p["routing"]["requested"] == "openrouter"
+    assert p["routing"]["state"] == "missing_key"
+
+
+async def test_set_llm_routing_updates_codegen_and_model_pins():
+    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x")
+    r = await set_llm_routing(
+        st,
+        codegen_cli_provider="",
+        codegen_cli_model="",
+        openrouter_codegen_model="provider/codegen",
+        model_pins={"backend": "provider/backend", "ui": "provider/ui"},
+        persist=False,
+    )
+    assert st.settings.openrouter_codegen_model == "provider/codegen"
+    assert st.settings.model_backend == "provider/backend"
+    assert r["tiers"]["backend"] == "provider/backend"
+    p = await llm_secrets_payload(st)
+    assert p["openrouter_codegen_model"] == "provider/codegen"
+    assert p["model_pins"]["ui"] == "provider/ui"
 
 
 async def test_unknown_provider_rejected():

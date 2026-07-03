@@ -552,6 +552,10 @@ class CodeAgent(BaseAgent):
         _game_design = _extra.get("game_design") if isinstance(_extra, dict) else None
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+        raw_prior = p.get("prior")
+        prior = raw_prior if isinstance(raw_prior, dict) else {}
+        raw_design = prior.get("design")
+        design = raw_design if isinstance(raw_design, dict) else None
         stack = detect_stack(
             brief=brief, plan=plan,
             explicit=p.get("stack", "") or (plan.get("stack", "") if plan else ""),
@@ -585,10 +589,11 @@ class CodeAgent(BaseAgent):
         # "claude") runs the agentic whole-app build on that CLI even when the
         # global backend is cheap (OpenRouter) — high-quality codegen without
         # paying for the CLI on every other stage.
-        from skyn3t.config.settings import get_settings as _gs
-        _codegen_prov = (getattr(_gs(), "codegen_cli_provider", "") or "").lower()
-        _codegen_model = (getattr(_gs(), "codegen_cli_model", "") or None)
+        live_settings = getattr(self.llm, "settings", None)
+        _codegen_prov = (getattr(live_settings, "codegen_cli_provider", "") or "").lower()
+        _codegen_model = (getattr(live_settings, "codegen_cli_model", "") or None)
         _codegen_cli_ok = bool(_codegen_prov) and self.llm._cli_available(_codegen_prov)
+        model_override = p.get("model_override")
         if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
@@ -616,11 +621,13 @@ class CodeAgent(BaseAgent):
                 prompt = (
                     self._agentic_prompt(
                         brief, stack, plan, knowledge,
-                        art_plan=_art_plan, game_design=_game_design)
+                        art_plan=_art_plan, game_design=_game_design,
+                        design=design)
                     if attempt == 0
                     else self._agentic_retry_prompt(
                         brief, stack, plan, knowledge, code_bytes,
-                        art_plan=_art_plan, game_design=_game_design)
+                        art_plan=_art_plan, game_design=_game_design,
+                        design=design)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
@@ -632,11 +639,14 @@ class CodeAgent(BaseAgent):
                 })
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov,
-                                           model=_codegen_model, stack=stack)
-                    if _codegen_prov
-                    else self.llm.agentic_build(prompt, str(worktree), stack=stack)
+                                           model=(model_override or _codegen_model), stack=stack)
+                    if _codegen_cli_ok
+                    else self.llm.agentic_build(prompt, str(worktree),
+                                                model=model_override, stack=stack)
                 )
                 self.metadata["agentic"] = res
+                if _codegen_prov and not _codegen_cli_ok:
+                    self.metadata["codegen_override_unavailable"] = _codegen_prov
                 agentic_ok = bool(res.get("ok", True))
                 agentic_error = res.get("error", "")
                 disk = self._read_files(worktree)
@@ -717,15 +727,12 @@ class CodeAgent(BaseAgent):
             planned = self._planned_paths(plan, scaffold)
             sem = asyncio.Semaphore(self._gen_concurrency)
 
-            # Cross-model best-of-N pins this trajectory to a specific model.
-            model_override = p.get("model_override")
-
             async def _one(rel_path: str) -> tuple[str, str | None]:
                 async with sem:
                     try:
                         return rel_path, await self._generate_file(
                             rel_path, brief, stack, plan, knowledge,
-                            model_override=model_override)
+                            model_override=model_override, design=design)
                     except Exception:  # noqa: BLE001 - keep scaffold fallback for this file
                         return rel_path, None
 
@@ -783,7 +790,8 @@ class CodeAgent(BaseAgent):
 
     def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
                         *, art_plan: dict[str, Any] | None = None,
-                        game_design: dict[str, Any] | None = None) -> str:
+                        game_design: dict[str, Any] | None = None,
+                        design: dict[str, Any] | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -825,6 +833,11 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
+            + (
+                f"Follow this design direction: {self._design_summary(design)}\n"
+                if self._design_summary(design) and (stack or "").lower() in _WEB_STACKS
+                else ""
+            )
             + (f"{self._game_art_directive(brief, art_plan)}\n" if self._game_art_on(stack) else "")
             + (f"{_DATA_DIRECTIVE}\n" if (stack or "").lower() in _DATA_STACKS else "")
             + (f"{_AGENT_APP_DIRECTIVE}\n" if _implies_agent_app(brief) else "")
@@ -1163,6 +1176,7 @@ class CodeAgent(BaseAgent):
         self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
         code_bytes: int, *, art_plan: dict[str, Any] | None = None,
         game_design: dict[str, Any] | None = None,
+        design: dict[str, Any] | None = None,
     ) -> str:
         """Corrective prompt for a retry after the agent under-delivered. Threads the
         SAME art_plan + game_design so the retry's art/depth directives still match
@@ -1177,7 +1191,8 @@ class CodeAgent(BaseAgent):
             "counter, NO 'starter' text, NO TODOs or stubs. Get as close to a "
             "fully-working app as possible.\n\n"
             + self._agentic_prompt(
-                brief, stack, plan, knowledge, art_plan=art_plan, game_design=game_design)
+                brief, stack, plan, knowledge, art_plan=art_plan,
+                game_design=game_design, design=design)
         )
 
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps
@@ -1545,7 +1560,8 @@ class CodeAgent(BaseAgent):
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
                              plan: dict[str, Any], knowledge: str = "",
                              model_override: str | None = None,
-                             manifest: str = "") -> str | None:
+                             manifest: str = "",
+                             design: dict[str, Any] | None = None) -> str | None:
         ext = Path(rel_path).suffix.lower()
         base = Path(rel_path).name.lower()
         is_readme = base in _README_NAMES
@@ -1570,6 +1586,12 @@ class CodeAgent(BaseAgent):
         # Prefer the full cross-slice manifest (so a sliced file knows the sibling
         # paths it must import from); fall back to the (slice-local) plan files.
         file_list = manifest.strip() or "\n".join(manifest_lines) or "(see scaffold)"
+        design_summary = self._design_summary(design)
+        design_block = ""
+        if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}:
+            design_block = f"\n{_DESIGN_DIRECTIVE}"
+            if design_summary:
+                design_block += f"\nFollow this design direction: {design_summary}"
         prompt = (
             f"{knowledge}"
             f"Project brief: {brief}\n"
@@ -1585,6 +1607,7 @@ class CodeAgent(BaseAgent):
             "This is a brand-new file with no pre-existing version — write it IN FULL "
             "and NEVER elide code with an edit-style placeholder like "
             "'/* ... unchanged ... */' or '// rest of the file is unchanged'."
+            + design_block
             + (f"\n{_README_INSTR}" if is_readme else "")
             + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )

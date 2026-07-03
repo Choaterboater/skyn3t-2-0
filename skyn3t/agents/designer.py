@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, parse_json
+from skyn3t.agents._common import detect_stack, knowledge_block, parse_json
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
@@ -53,7 +53,15 @@ class DesignerAgent(BaseAgent):
         # vision OR the claude/kimi CLI, which reads the image file). On the stub
         # backend we say nothing and behave exactly as today.
         ref = p.get("reference_image")
-        prompt = f"Brief: {brief}\nStack: {stack}\n\nPropose the design system as JSON."
+        knowledge = knowledge_block(p)
+        prompt = "\n\n".join(
+            part for part in (
+                f"Brief: {brief}\nStack: {stack}",
+                knowledge,
+                "Propose the design system as JSON.",
+            )
+            if part
+        )
         images = None
         if ref and getattr(self.llm, "supports_image_input", False):
             prompt += ("\n\nA reference image is attached — match its layout, "

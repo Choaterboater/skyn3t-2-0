@@ -588,6 +588,75 @@ class LLMClient:
                 return f"{prov}_cli"
         return "stub"
 
+    def backend_status(self) -> dict:
+        """Explain backend resolution without exposing secret values.
+
+        ``backend`` remains execution-oriented for compatibility: explicit
+        OpenRouter without a key still executes through the stub. This status
+        object is the operator-facing truth: it records the requested backend,
+        active backend, and why a fallback happened.
+        """
+        pref = (self.settings.llm_backend or "auto").lower()
+        active = self.backend
+        openrouter_key = bool(str(getattr(self.settings, "openrouter_api_key", "") or "").strip())
+        preferred_cli = (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
+        cli_available = {p: self._cli_available(p) for p in _KNOWN_CLI_PROVIDERS}
+        state = "ready"
+        reason = ""
+        if pref == "openrouter" and not openrouter_key:
+            state = "missing_key"
+            reason = "OpenRouter was selected but SKYN3T_OPENROUTER_API_KEY is not configured."
+        elif pref.endswith("_cli") and active == "stub":
+            state = "cli_missing"
+            reason = f"{pref[:-4]} CLI was selected but is not available on PATH."
+        elif pref == "auto" and active == "stub":
+            state = "auto_stub"
+            reason = "Auto found no OpenRouter key and no supported local CLI."
+
+        codegen_provider = str(getattr(self.settings, "codegen_cli_provider", "") or "").strip().lower()
+        codegen_model = str(getattr(self.settings, "codegen_cli_model", "") or "").strip()
+        openrouter_codegen_model = str(
+            getattr(self.settings, "openrouter_codegen_model", "") or ""
+        ).strip()
+        codegen_provider_available = (
+            self._cli_available(codegen_provider) if codegen_provider else False
+        )
+        if codegen_provider and codegen_provider_available:
+            codegen_backend = f"{codegen_provider}_cli"
+            codegen_reason = "codegen_cli_provider overrides the global backend for codegen."
+        elif codegen_provider:
+            codegen_backend = active
+            codegen_reason = (
+                f"codegen_cli_provider={codegen_provider!r} is set but unavailable; "
+                "codegen follows the active backend."
+            )
+        elif active == "openrouter":
+            codegen_backend = "openrouter"
+            codegen_reason = "codegen follows the global OpenRouter backend."
+        else:
+            codegen_backend = active
+            codegen_reason = "codegen follows the active backend."
+
+        return {
+            "requested": pref,
+            "active": active,
+            "state": state,
+            "reason": reason,
+            "openrouter_configured": openrouter_key,
+            "preferred_cli": preferred_cli,
+            "cli_available": cli_available,
+            "free_only": bool(getattr(self.settings, "free_only", False)),
+            "no_claude": bool(getattr(self.settings, "no_claude", False)),
+            "codegen": {
+                "backend": codegen_backend,
+                "reason": codegen_reason,
+                "cli_provider": codegen_provider,
+                "cli_provider_available": codegen_provider_available,
+                "cli_model": codegen_model,
+                "openrouter_model": openrouter_codegen_model,
+            },
+        }
+
     # ---- call resilience: transient retry + ordered model failover ----------
     def _retry_budget(self) -> int:
         if not getattr(self.settings, "llm_retry_enabled", True):
@@ -1094,7 +1163,9 @@ class LLMClient:
         except Exception as exc:  # noqa: BLE001 - never crash the build
             log.warning("llm.or_agentic_failed", error=str(exc)[:200], wrote=wrote)
         log.info("llm.or_agentic_done", model=model, files_written=wrote, finished=finished)
+        self._record_completion("backend", "codegen", model)
         return {"ok": wrote > 0, "backend": "openrouter",
+                "model": model,
                 "error": "" if wrote > 0 else "agentic loop wrote no files"}
 
     @property
@@ -1121,11 +1192,17 @@ class LLMClient:
         """
         backend = self.backend
         provider = (provider or (backend[:-4] if backend.endswith("_cli") else "")).lower()
+        if provider and not model:
+            model = str(getattr(self.settings, "codegen_cli_model", "") or "").strip() or None
         if not provider:
             # No CLI agent: OpenRouter models get the agentic tool-loop (cheap,
             # whole-project codegen) instead of the weak per-file path.
             if backend == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)):
-                m = model or self.router.resolve(Tier.BACKEND)
+                m = (
+                    model
+                    or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
+                    or self.router.resolve(Tier.BACKEND)
+                )
                 return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout,
                                                       stack=stack)
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
@@ -1201,7 +1278,9 @@ class LLMClient:
             await self._terminate(proc)
             log.warning("llm.agentic_failed", provider=provider, error=str(exc)[:160])
             return {"ok": False, "backend": backend, "error": str(exc)[:160]}
-        return {"ok": ok, "backend": backend}
+        effective_model = model or f"{provider}-cli"
+        self._record_completion(f"{provider}_cli", "codegen", effective_model)
+        return {"ok": ok, "backend": f"{provider}_cli", "model": effective_model}
 
     async def _consume_agentic_stream(self, proc, provider: str, idle_timeout: int) -> bool:
         """Drive a stream-json agentic CLI to completion and report success.

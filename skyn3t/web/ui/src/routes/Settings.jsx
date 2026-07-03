@@ -14,6 +14,8 @@ function Row({ label, value }) {
 
 const BACKENDS = ["auto", "stub", "claude_cli", "kimi_cli", "copilot_cli", "openrouter"];
 const PROVIDERS = ["openrouter", "anthropic", "openai", "kimi"];
+const CODEGEN_PROVIDERS = ["", "claude", "kimi", "copilot"];
+const MODEL_TIERS = ["cheap", "ui", "backend", "strong", "docs"];
 const CHANNELS = ["telegram", "discord", "slack"];
 const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app", "saas_product", "game", "api_service", "developer_tool", "data_viz", "mobile_app", "desktop_app"];
 const ENGINES = ["auto", "dom", "browser_native", "phaser", "godot", "bevy", "raylib", "expo", "tauri", "server", "python", "none"];
@@ -57,6 +59,17 @@ export default function Settings() {
   const [provider, setProvider] = useState("openrouter");
   const [key, setKey] = useState("");
   const [msg, setMsg] = useState("");
+  const [routingMsg, setRoutingMsg] = useState("");
+  const [codegenCliProvider, setCodegenCliProvider] = useState("");
+  const [codegenCliModel, setCodegenCliModel] = useState("");
+  const [openrouterCodegenModel, setOpenrouterCodegenModel] = useState("");
+  const [modelPins, setModelPins] = useState({
+    cheap: "",
+    ui: "",
+    backend: "",
+    strong: "",
+    docs: "",
+  });
 
   const [ghToken, setGhToken] = useState("");
   const [ghMsg, setGhMsg] = useState("");
@@ -106,6 +119,21 @@ export default function Settings() {
     setAppTypeOverride(data.app_type_override || "auto");
     setEngineOverride(data.engine_override || "auto");
   }, [data]);
+
+  useEffect(() => {
+    const d = secrets.data;
+    if (!d) return;
+    setCodegenCliProvider(d.codegen_cli_provider || "");
+    setCodegenCliModel(d.codegen_cli_model || "");
+    setOpenrouterCodegenModel(d.openrouter_codegen_model || "");
+    setModelPins({
+      cheap: d.model_pins?.cheap || "",
+      ui: d.model_pins?.ui || "",
+      backend: d.model_pins?.backend || "",
+      strong: d.model_pins?.strong || "",
+      docs: d.model_pins?.docs || "",
+    });
+  }, [secrets.data]);
 
   function saveToken() {
     if (typeof localStorage !== "undefined") {
@@ -231,6 +259,21 @@ export default function Settings() {
     }
   }
 
+  async function saveRouting() {
+    try {
+      const r = await apiPost("/llm/routing", {
+        codegen_cli_provider: codegenCliProvider,
+        codegen_cli_model: codegenCliModel,
+        openrouter_codegen_model: openrouterCodegenModel,
+        model_pins: modelPins,
+      });
+      setRoutingMsg(`saved → codegen ${r.routing?.codegen?.backend || "active backend"}`);
+      secrets.refetch();
+    } catch (e) {
+      setRoutingMsg(String(e.message));
+    }
+  }
+
   async function saveChannel() {
     try {
       const r = await apiPost("/integrations/credential", {
@@ -274,6 +317,8 @@ export default function Settings() {
     : null;
 
   const active = secrets.data?.backend;
+  const routing = secrets.data?.routing || {};
+  const codegen = routing.codegen || {};
   const chData = integrations.data?.channels || {};
 
   return (
@@ -323,6 +368,72 @@ export default function Settings() {
             </div>
             {msg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{msg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead
+            label="Model routing"
+            right={
+              <Pill tone={routing.state === "ready" ? "plasma" : "ash"}>
+                {routing.state || "unknown"}
+              </Pill>
+            }
+          />
+          <div className="p-4">
+            <div className="mb-4 overflow-hidden rounded border border-hairline/60">
+              <Row label="requested" value={routing.requested || "auto"} />
+              <Row label="active" value={routing.active || active || "stub"} />
+              <Row label="reason" value={routing.reason || "ready"} />
+              <Row label="codegen" value={codegen.reason || "follows active backend"} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <select
+                value={codegenCliProvider}
+                onChange={(e) => setCodegenCliProvider(e.target.value)}
+                className="field max-w-[12rem]"
+              >
+                {CODEGEN_PROVIDERS.map((p) => (
+                  <option key={p || "none"} value={p}>
+                    codegen · {p || "none"}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                className="field min-w-[10rem] flex-1"
+                placeholder="CLI codegen model"
+                value={codegenCliModel}
+                onChange={(e) => setCodegenCliModel(e.target.value)}
+              />
+              <input
+                type="text"
+                className="field min-w-[14rem] flex-1"
+                placeholder="OpenRouter codegen model"
+                value={openrouterCodegenModel}
+                onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
+              />
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-5">
+              {MODEL_TIERS.map((tier) => (
+                <input
+                  key={tier}
+                  type="text"
+                  className="field min-w-0"
+                  placeholder={`${tier} model`}
+                  value={modelPins[tier] || ""}
+                  onChange={(e) =>
+                    setModelPins((prev) => ({ ...prev, [tier]: e.target.value }))
+                  }
+                />
+              ))}
+            </div>
+            <button onClick={saveRouting} className="btn-ember mt-3">
+              Save routing
+            </button>
+            {routingMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{routingMsg}</p>
             ) : null}
           </div>
         </Panel>

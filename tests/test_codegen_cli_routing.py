@@ -78,3 +78,68 @@ async def test_codegen_cli_model_threaded_to_agentic_build(tmp_path, monkeypatch
         assert captured.get("model") == "sonnet"
     finally:
         get_settings.cache_clear()
+
+
+async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp_path, monkeypatch):
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        codegen_cli_provider="claude",
+        codegen_cli_model="sonnet",
+    )
+    llm = LLMClient(settings)
+    monkeypatch.setattr(llm, "_cli_available", lambda _provider: False)
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+    captured = {}
+
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
+        captured.update(kwargs)
+        pathlib.Path(workdir, "App.jsx").write_text(
+            "// a real openrouter app\n" + ("const x = 1;\n" * 300),
+            encoding="utf-8",
+        )
+        return {"ok": True, "backend": "openrouter"}
+
+    agent.llm.agentic_build = fake_agentic_build  # type: ignore[method-assign]
+    task = TaskRequest(
+        type="codegen",
+        payload={"brief": "a react counter app", "slug": "counter", "worktree_dir": str(tmp_path)},
+        capabilities_required=("codegen",),
+    )
+    await agent.run(task)
+    assert "provider" not in captured
+    assert agent.metadata["codegen_override_unavailable"] == "claude"
+
+
+async def test_model_override_reaches_monolithic_agentic_build(tmp_path):
+    settings = Settings(llm_backend="openrouter", openrouter_api_key="x", openrouter_agentic=True)
+    llm = LLMClient(settings)
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+    captured = {}
+
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
+        captured.update(kwargs)
+        pathlib.Path(workdir, "App.jsx").write_text(
+            "// selected model app\n" + ("const x = 1;\n" * 300),
+            encoding="utf-8",
+        )
+        return {"ok": True, "backend": "openrouter", "model": kwargs.get("model")}
+
+    agent.llm.agentic_build = fake_agentic_build  # type: ignore[method-assign]
+    task = TaskRequest(
+        type="codegen",
+        payload={
+            "brief": "a react trading dashboard",
+            "slug": "trading",
+            "worktree_dir": str(tmp_path),
+            "model_override": "openrouter/custom-selected",
+        },
+        capabilities_required=("codegen",),
+    )
+    await agent.run(task)
+    assert captured.get("model") == "openrouter/custom-selected"
+    assert captured.get("stack") == "react_vite"

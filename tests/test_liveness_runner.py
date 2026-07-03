@@ -28,6 +28,15 @@ def _half_dead():
         total=2, ok=1, dead=1, dead_routes=["/x"], health=0.5))
 
 
+def _visually_broken():
+    return LivenessOutcome(passed=False, report=LivenessReport(
+        results=[RouteResult("/", "GET", 200, True, "page",
+                             {"matches": False, "issues": ["loading"]})],
+        total=1, ok=1, dead=0, dead_routes=[], health=1.0,
+        visual_total=1, visual_failed=1, visual_failed_routes=["/"],
+        visual_health=0.0))
+
+
 def test_liveness_dampens_score_by_health(tmp_path, monkeypatch):
     async def fake(*a, **k):
         return _half_dead()
@@ -56,6 +65,21 @@ def test_liveness_opt_in_gate_flips_to_no_go(tmp_path, monkeypatch):
                         SimpleNamespace(passed=True), 80.0, "go"))
     assert verdict == "no_go"
     assert "liveness_gate" in man.extra
+
+
+def test_liveness_visual_failure_gates_ui_stack(tmp_path, monkeypatch):
+    async def fake(*a, **k):
+        return _visually_broken()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+    score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 80.0, "go"))
+    assert score == 40.0
+    assert verdict == "no_go"
+    assert man.extra["liveness_visual_health"] == 0.0
+    assert "visual liveness" in man.extra["liveness_gate"]
 
 
 def test_liveness_skipped_leaves_score_and_verdict(tmp_path, monkeypatch):

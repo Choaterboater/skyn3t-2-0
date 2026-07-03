@@ -69,3 +69,30 @@ def test_report_to_dict_roundtrip():
         assert d["total"] == 1 and d["results"][0]["path"] == "/" and d["results"][0]["ok"] is True
     finally:
         srv.shutdown()
+
+
+def test_visual_failures_are_reported_in_health(tmp_path, monkeypatch):
+    from skyn3t.studio import visual_check
+
+    monkeypatch.setattr(visual_check, "screenshot", lambda _url, path: path)
+    monkeypatch.setattr(
+        visual_check,
+        "inspect",
+        lambda *a, **k: type("Verdict", (), {
+            "skipped": False,
+            "matches": False,
+            "issues": ["stuck loading"],
+        })(),
+    )
+    srv, base = _serve()
+    try:
+        report = asyncio.run(check_liveness(
+            base, [Route("/")], vision_fn=lambda *_a, **_k: None,
+            screenshot_dir=str(tmp_path)))
+        assert report.health == 1.0
+        assert report.visual_health == 0.0
+        assert report.visual_failed_routes == ["/"]
+        d = report.to_dict()
+        assert d["visual_failed"] == 1
+    finally:
+        srv.shutdown()

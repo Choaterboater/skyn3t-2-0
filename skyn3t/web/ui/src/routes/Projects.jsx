@@ -114,10 +114,21 @@ function improveStatusFor(stream, slug, cid) {
       return { tone: "text-ember", text: "improving…" };
     case "improve.stage":
       return { tone: "text-ash", text: `${p.stage || "working"}…` };
-    case "improve.completed":
+    case "improve.completed": {
+      // The backend is honest about no-ops (files_changed + no_targets_found /
+      // no_files_changed); surface it so "improved" can't mean "changed nothing".
+      const n = (p.files_changed || []).length;
+      if (n === 0) {
+        const why = p.detail?.no_targets_found
+          ? "no matching files found"
+          : "no edits applied";
+        return { tone: "text-ember", text: `no changes — ${why}` };
+      }
+      const files = `${n} file${n === 1 ? "" : "s"}`;
       return p.proof_passed
-        ? { tone: "text-plasma", text: `improved · score ${p.score ?? "—"}` }
-        : { tone: "text-ember", text: "no_go" };
+        ? { tone: "text-plasma", text: `improved · ${files} · score ${p.score ?? "—"}` }
+        : { tone: "text-ember", text: `${files} changed · no_go` };
+    }
     case "improve.failed":
       return { tone: "text-ember", text: `failed: ${p.error || "unknown"}` };
     default:
@@ -323,6 +334,53 @@ function ImproveInline({ slug, stream }) {
   );
 }
 
+// Inline "the exact prompt(s) this build sent the model", shown as an expanded
+// sub-row. Loaded lazily (prompts run 10-50 KB each) from the manifest via
+// GET /projects/{slug}/prompts. Answers "what did skyn3t actually ask the model?"
+function PromptsInline({ slug }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["project-prompts", slug],
+    queryFn: queryFn(`/projects/${slug}/prompts`),
+  });
+  const prompts = data?.prompts || [];
+  return (
+    <div className="bg-ink/30 px-4 py-3">
+      {isLoading ? (
+        <span className="font-mono text-[11px] text-ash/60">loading prompts…</span>
+      ) : error ? (
+        <span className="font-mono text-[11px] text-ember">
+          {String(error.message || error)}
+        </span>
+      ) : prompts.length === 0 ? (
+        <span className="font-mono text-[11px] text-ash/60">
+          No prompts recorded (older build, or the offline scaffold path).
+        </span>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <span className="font-mono text-[11px] text-ash/60">
+            The exact prompt{prompts.length === 1 ? "" : "s"} this build sent the
+            model — brief + injected directives + recalled knowledge.
+          </span>
+          {prompts.map((pr, i) => (
+            <details key={i} className="rounded border border-hairline bg-ink/60">
+              <summary className="cursor-pointer px-3 py-2 font-mono text-xs text-bone">
+                {pr.stage || `prompt ${i + 1}`}
+                <span className="text-ash/60">
+                  {" "}
+                  · {(pr.chars ?? (pr.text || "").length).toLocaleString()} chars
+                </span>
+              </summary>
+              <pre className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-hairline px-3 py-2 font-mono text-[11px] text-ash">
+                {pr.text || ""}
+              </pre>
+            </details>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServeCell({ slug, served, busy, err, onServe, onStop }) {
   const running = !!served && (served.status === "running" || !!served.url);
   return (
@@ -374,6 +432,7 @@ export default function Projects({ stream }) {
   const qc = useQueryClient();
   const [confirmSlug, setConfirmSlug] = useState(null);
   const [improveSlug, setImproveSlug] = useState(null);
+  const [promptsSlug, setPromptsSlug] = useState(null);
   const [busy, setBusy] = useState({}); // slug -> "serving" | "stopping"
   const [serveErr, setServeErr] = useState({}); // slug -> message
   const [sort, setSort] = useState({ key: "updated_at", dir: "desc" });
@@ -516,6 +575,7 @@ export default function Projects({ stream }) {
                 {sorted.map((p) => {
                   const isConfirming = confirmSlug === p.slug;
                   const isImproving = improveSlug === p.slug;
+                  const isShowingPrompts = promptsSlug === p.slug;
                   return (
                     <React.Fragment key={p.slug}>
                       <tr>
@@ -616,6 +676,23 @@ export default function Projects({ stream }) {
                             </div>
                           ) : (
                             <div className="flex items-center justify-end gap-2">
+                              {p.prompt_count > 0 ? (
+                                <button
+                                  onClick={() =>
+                                    setPromptsSlug(
+                                      isShowingPrompts ? null : p.slug
+                                    )
+                                  }
+                                  title="The exact prompts this build sent the model"
+                                  className={`btn-ghost ${
+                                    isShowingPrompts
+                                      ? "text-ember"
+                                      : "text-ember/70 hover:text-ember"
+                                  }`}
+                                >
+                                  Prompts
+                                </button>
+                              ) : null}
                               <button
                                 onClick={() =>
                                   setImproveSlug(isImproving ? null : p.slug)
@@ -642,6 +719,13 @@ export default function Projects({ stream }) {
                         <tr>
                           <td colSpan={10} className="p-0">
                             <ImproveInline slug={p.slug} stream={stream} />
+                          </td>
+                        </tr>
+                      ) : null}
+                      {isShowingPrompts ? (
+                        <tr>
+                          <td colSpan={10} className="p-0">
+                            <PromptsInline slug={p.slug} />
                           </td>
                         </tr>
                       ) : null}

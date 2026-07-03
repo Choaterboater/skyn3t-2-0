@@ -611,6 +611,14 @@ class CodeAgent(BaseAgent):
                         brief, stack, plan, knowledge, code_bytes,
                         art_plan=_art_plan, game_design=_game_design)
                 )
+                # Capture the exact prompt this build sends the model so it's
+                # inspectable per-build in the dashboard. Built, sent, and — until
+                # now — discarded. One entry per attempt (initial + any retry).
+                self.metadata.setdefault("prompts", []).append({
+                    "stage": "codegen" if attempt == 0 else f"codegen_retry_{attempt}",
+                    "chars": len(prompt),
+                    "text": prompt,
+                })
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov,
                                            model=_codegen_model, stack=stack)
@@ -724,6 +732,9 @@ class CodeAgent(BaseAgent):
             "stack": stack,
             "files": written,
             "backend": self.llm.backend,
+            # The exact prompt(s) this stage sent the model (empty on the offline
+            # scaffold path). The runner lifts these into manifest.extra["prompts"].
+            "prompts": self.metadata.get("prompts", []),
         }
         # Propagate degradation signal from the agentic path so downstream
         # scoring/verdict can see it. Never set on the stub or completion paths.

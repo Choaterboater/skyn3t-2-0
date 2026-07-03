@@ -84,6 +84,31 @@ def test_designer_prompt_includes_injected_knowledge():
     assert "dense financial dashboard" in captured["prompt"]
 
 
+def test_designer_prompt_requests_concrete_states_and_neutral_fallback():
+    from skyn3t.agents.designer import DesignerAgent
+    from skyn3t.core.agent import TaskRequest
+
+    captured = {}
+
+    class _LLM:
+        backend = "stub"
+
+        async def complete(self, prompt, *a, system=None, **k):
+            captured["prompt"] = prompt
+            captured["system"] = system or ""
+            return SimpleNamespace(text="", model="stub", backend="stub")
+
+    agent = DesignerAgent(event_bus=EventBus(), llm=_LLM())
+    task = TaskRequest(type="design", payload={"brief": "a build dashboard"}, capabilities_required=("design",))
+    res = asyncio.run(agent.execute(task))
+    design = res.output["design"]
+
+    assert "interaction states" in captured["prompt"]
+    assert "states" in captured["system"]
+    assert design["palette"]["accent"] != "#6750f2"
+    assert "loading" in design["states"]
+
+
 def test_code_agent_agentic_prompt_includes_design_direction():
     from skyn3t.agents.code_agent import CodeAgent
 

@@ -15,6 +15,8 @@ _DESIGN = {
     "palette": {"bg": "#0e1116", "fg": "#e6edf3", "accent": "#6750f2"},
     "typography": "Inter",
     "layout": "card grid",
+    "components": ["filter bar", "metric cards"],
+    "states": ["empty", "loading", "error"],
 }
 
 
@@ -48,4 +50,7 @@ def test_design_summary_handles_missing_gracefully():
     a = _agent()
     assert a._design_summary(None) == ""
     assert a._design_summary({}) == ""
-    assert "accent:#6750f2" in a._design_summary(_DESIGN)
+    summary = a._design_summary(_DESIGN)
+    assert "accent:#6750f2" in summary
+    assert "metric cards" in summary
+    assert "loading" in summary

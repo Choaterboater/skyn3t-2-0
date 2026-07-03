@@ -1135,11 +1135,11 @@ class CodeAgent(BaseAgent):
         pal = design.get("palette")
         if isinstance(pal, dict) and pal:
             bits.append("palette(" + ", ".join(f"{k}:{v}" for k, v in pal.items()) + ")")
-        for key in ("typography", "layout"):
+        for key in ("typography", "layout", "components", "states"):
             val = design.get(key)
             if val:
                 bits.append(f"{key}={val}")
-        return "; ".join(bits)[:400]
+        return "; ".join(bits)[:700]
 
     # Stub content per extension for the offline slice path (non-empty + valid).
     @staticmethod

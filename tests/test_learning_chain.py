@@ -26,6 +26,7 @@ def test_knowledge_block_assembles_all_sources():
         "lessons": [{"text": "App must be a default export"}],
     })
     assert "use vite" in kb
+    assert "SKILL QUALITY CONTRACT" in kb
     assert "default export" in kb
     assert "scored 100" in kb
 
@@ -79,6 +80,7 @@ def test_studio_injects_skills_and_recall_into_payload():
     assert recall and "main.jsx" in recall[0]["text"]
     # and knowledge_block turns them into a prompt preamble
     kb = knowledge_block({"extra": {"skills_advice": advice, "recall": recall}})
+    assert "SKILL QUALITY CONTRACT" in kb
     assert "vite" in kb.lower() and "main.jsx" in kb
 
 

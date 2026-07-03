@@ -325,12 +325,13 @@ _MAX_SKILL_ADVICE = 6000
 
 
 def knowledge_block(payload: Any) -> str:
-    """Assemble injected prior knowledge into an advisory prompt preamble.
+    """Assemble injected prior knowledge into a prompt preamble.
 
     Pulls skill advice, graded lessons, and RAG recall (which is fed by past
     build outcomes AND ingested GitHub repos) out of the stage payload so the
     generative agents actually USE what the system has learned. Returns "" when
-    there is nothing to inject. Advisory only — the model applies what fits.
+    there is nothing to inject. Skills are labeled as a quality contract so they
+    do not disappear as vague background text in long build prompts.
     """
     if not isinstance(payload, dict):
         return ""
@@ -342,8 +343,11 @@ def knowledge_block(payload: Any) -> str:
     if advice:
         # Cap injected skill advice: full skill-doc bodies (up to tens of KB) bloat
         # the codegen prompt, slowing claude -p enough to blow the agentic timeout
-        # and ship a stub. Keep an advisory excerpt — like recall/lessons below.
-        parts.append(str(advice).strip()[:_MAX_SKILL_ADVICE])
+        # and ship a stub. Keep a bounded contract excerpt — like recall/lessons below.
+        parts.append(
+            "SKILL QUALITY CONTRACT (apply these stack-specific rules):\n"
+            + str(advice).strip()[:_MAX_SKILL_ADVICE]
+        )
 
     lessons = payload.get("lessons") or []
     if lessons:

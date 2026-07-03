@@ -150,6 +150,7 @@ export default function Settings() {
       setKey("");
       setMsg(`${provider}: ${r.configured ? "saved" : "cleared"} → backend ${r.backend}`);
       secrets.refetch();
+      if (provider === "openrouter") models.refetch();
     } catch (e) {
       setMsg(String(e.message));
     }
@@ -319,6 +320,9 @@ export default function Settings() {
   const active = secrets.data?.backend;
   const routing = secrets.data?.routing || {};
   const codegen = routing.codegen || {};
+  const providerConfigured = !!secrets.data?.providers?.[provider];
+  const openrouterConfigured =
+    !!secrets.data?.providers?.openrouter || !!routing.openrouter_configured;
   const chData = integrations.data?.channels || {};
 
   return (
@@ -385,8 +389,44 @@ export default function Settings() {
             <div className="mb-4 overflow-hidden rounded border border-hairline/60">
               <Row label="requested" value={routing.requested || "auto"} />
               <Row label="active" value={routing.active || active || "stub"} />
+              <Row label="OpenRouter" value={openrouterConfigured ? "configured" : "not set"} />
               <Row label="reason" value={routing.reason || "ready"} />
               <Row label="codegen" value={codegen.reason || "follows active backend"} />
+            </div>
+            <div className="mb-4 border-b border-hairline pb-4">
+              <p className="mb-2 text-sm text-ash">
+                Primary OpenRouter model.{" "}
+                <span className="font-mono text-bone">auto</span> lets the router
+                pick per task; pin one here when you want every OpenRouter call to
+                use the selected model.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={model}
+                  onChange={(e) => saveModel(e.target.value)}
+                  className="field min-w-[16rem] flex-1"
+                >
+                  <option value="">auto — smart routing</option>
+                  {(models.data?.models || []).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={() => models.refetch()} className="btn-ghost">
+                  Refresh models
+                </button>
+                <span className="font-mono text-[11px] text-ash/60">
+                  {models.isLoading
+                    ? "loading..."
+                    : models.data?.note
+                      ? models.data.note
+                      : `${(models.data?.models || []).length} models`}
+                </span>
+              </div>
+              {modelMsg ? (
+                <p className="mt-2 font-mono text-[11px] text-plasma">{modelMsg}</p>
+              ) : null}
             </div>
             <div className="flex flex-wrap gap-2">
               <select
@@ -481,7 +521,14 @@ export default function Settings() {
         </Panel>
 
         <Panel>
-          <PanelHead label="API key" />
+          <PanelHead
+            label="API key"
+            right={
+              <Pill tone={providerConfigured ? "plasma" : "ash"}>
+                {providerConfigured ? `${provider} configured ✓` : `${provider} not set`}
+              </Pill>
+            }
+          />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
               Stored in the server&apos;s <code className="font-mono text-bone">.env</code>.
@@ -512,38 +559,6 @@ export default function Settings() {
               <button onClick={saveKey} className="btn-ember">
                 Save key
               </button>
-            </div>
-            <div className="mt-4 border-t border-hairline pt-4">
-              <p className="mb-2 text-sm text-ash">
-                Model — which OpenRouter model skyn3t builds with.{" "}
-                <span className="font-mono text-bone">auto</span> lets the learned
-                router pick per task; or pin one from the live list (it updates with
-                the newest models automatically).
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  value={model}
-                  onChange={(e) => saveModel(e.target.value)}
-                  className="field min-w-[16rem] flex-1"
-                >
-                  <option value="">auto — smart routing</option>
-                  {(models.data?.models || []).map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-                <span className="font-mono text-[11px] text-ash/60">
-                  {models.isLoading
-                    ? "loading…"
-                    : models.data?.note
-                      ? models.data.note
-                      : `${(models.data?.models || []).length} models`}
-                </span>
-              </div>
-              {modelMsg ? (
-                <p className="mt-2 font-mono text-[11px] text-plasma">{modelMsg}</p>
-              ) : null}
             </div>
           </div>
         </Panel>

@@ -123,7 +123,8 @@ def test_ensure_node_deps_installs_when_node_modules_missing(tmp_path):
     assert ok is True
     assert len(calls) == 1
     cmd, cwd = calls[0]
-    assert cmd[-1] in ("install", "ci")  # npm install (or ci with a lockfile)
+    assert cmd[1] in ("install", "ci")  # npm install (or ci with a lockfile)
+    assert "--prefer-offline" in cmd and "--no-progress" in cmd
     assert cwd == str(tmp_path)
 
 
@@ -132,7 +133,8 @@ def test_ensure_node_deps_prefers_ci_with_lockfile(tmp_path):
     (tmp_path / "package-lock.json").write_text("{}")
     calls = []
     ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))
-    assert calls and calls[0][-1] == "ci"
+    assert calls and calls[0][1] == "ci"
+    assert "--prefer-offline" in calls[0]
 
 
 def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path):
@@ -144,8 +146,8 @@ def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path):
     calls = []
 
     def fake(cmd, cwd):
-        calls.append(cmd[-1])
-        if cmd[-1] == "ci":
+        calls.append(cmd[1])
+        if cmd[1] == "ci":
             return False, {"error": "npm ci requires package.json and lock in sync"}
         return True, {"ran": True}
 
@@ -158,7 +160,7 @@ def test_ensure_node_deps_ci_success_does_not_fall_back(tmp_path):
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
     (tmp_path / "package-lock.json").write_text("{}")
     calls = []
-    ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd[-1]) or (True, {}))
+    ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd[1]) or (True, {}))
     assert calls == ["ci"]  # ci worked -> no fallback
 
 

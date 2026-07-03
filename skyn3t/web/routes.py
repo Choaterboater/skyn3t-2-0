@@ -920,8 +920,16 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         or os.environ.get("SKYN3T_GITHUB_TOKEN")
         or os.environ.get("GITHUB_TOKEN")
     )
+    providers = {
+        p: bool(
+            getattr(s, f, "")
+            or os.environ.get(f"SKYN3T_{f.upper()}")
+            or os.environ.get(f.upper())
+        )
+        for p, f in _PROVIDER_FIELDS.items()
+    }
     return {
-        "providers": {p: bool(getattr(s, f, "")) for p, f in _PROVIDER_FIELDS.items()},
+        "providers": providers,
         "backend": backend,
         "routing": routing,
         "backend_pref": getattr(s, "llm_backend", "auto"),

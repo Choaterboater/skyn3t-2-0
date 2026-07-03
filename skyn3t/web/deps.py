@@ -64,6 +64,11 @@ class BuildRecord:
     score: float | None = None
     verdict: str = ""
     cost_usd: float = 0.0
+    build_profile: str = ""
+    model_trace: dict[str, Any] = field(default_factory=dict)
+    quality_scorecard: dict[str, Any] = field(default_factory=dict)
+    skills_used: list[str] = field(default_factory=list)
+    recall_used: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     correlation_id: str | None = None
@@ -82,6 +87,11 @@ class BuildRecord:
             "score": self.score,
             "verdict": self.verdict,
             "cost_usd": self.cost_usd,
+            "build_profile": self.build_profile,
+            "model_trace": self.model_trace,
+            "quality_scorecard": self.quality_scorecard,
+            "skills_used": self.skills_used,
+            "recall_used": self.recall_used,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "correlation_id": self.correlation_id,
@@ -246,12 +256,15 @@ class AppState:
                 rec = BuildRecord(build_id=bid, brief=str(ev.payload.get("brief", "")))
                 self.builds[bid] = rec
             # Identity fields may arrive on any build event.
-            for k in ("slug", "stack", "app_type", "engine"):
+            for k in ("slug", "stack", "app_type", "engine", "build_profile"):
                 if ev.payload.get(k):
                     setattr(rec, k, str(ev.payload[k]))
-            for k in ("stack_selection", "classification"):
+            for k in ("stack_selection", "classification", "model_trace", "quality_scorecard"):
                 if isinstance(ev.payload.get(k), dict):
                     setattr(rec, k, dict(ev.payload[k]))
+            for k in ("skills_used", "recall_used"):
+                if isinstance(ev.payload.get(k), list):
+                    setattr(rec, k, list(ev.payload[k]))
             if "cost_usd" in ev.payload:
                 try:
                     rec.cost_usd = float(ev.payload["cost_usd"])

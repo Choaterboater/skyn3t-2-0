@@ -320,6 +320,14 @@ def test_base_payload_threads_reference_image():
     assert payload.get("reference_image") == _DATA_URL
 
 
+def test_base_payload_threads_model_override():
+    runner = StudioRunner(EventBus(), MagicMock())
+    plan = _make_plan()
+    payload = runner._base_payload(
+        plan, "/proj", "/wt", {}, [], {"model_override": "openrouter/test-model"})
+    assert payload.get("model_override") == "openrouter/test-model"
+
+
 def test_base_payload_omits_reference_image_when_absent():
     runner = StudioRunner(EventBus(), MagicMock())
     plan = _make_plan()
@@ -347,9 +355,11 @@ class _FakeBus:
 
 class _FakeState:
     def __init__(self, studio):
+        from types import SimpleNamespace
         self.studio = studio
         self.event_bus = _FakeBus()
         self.builds = {}
+        self.settings = SimpleNamespace(data_dir="data", llm_backend="auto")
         self._n = 0
 
     def new_build_id(self):
@@ -375,6 +385,24 @@ async def test_submit_build_decodes_and_passes_reference_image():
     else:
         with open(ref, "rb") as f:
             assert f.read() == _PNG_BYTES
+
+
+async def test_submit_build_passes_profile_and_model_override():
+    studio = _FakeStudio()
+    state = _FakeState(studio)
+    res = await routes.submit_build(
+        state,
+        brief="a dashboard",
+        build_profile="manual",
+        model_override="openrouter/custom-model",
+    )
+    assert res["build_profile"] == "manual"
+    assert res["model_override"] == "openrouter/custom-model"
+    import asyncio
+    await asyncio.sleep(0)
+    extra = studio.extra or {}
+    assert extra["build_profile"] == "manual"
+    assert extra["model_override"] == "openrouter/custom-model"
 
 
 async def test_submit_build_rejects_non_data_reference_image():

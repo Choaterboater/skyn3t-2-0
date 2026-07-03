@@ -90,7 +90,8 @@ _STYLE_SIGNALS = (
     ("sticker",  ("sticker", "stickers", "emoji", "decal")),
     ("photo",    ("photo", "photograph", "photorealistic", "realistic", "product shot",
                   "product photo", "real-life", "recipe", "food", "menu", "restaurant",
-                  "travel", "real estate", "portrait", "headshot",
+                  "travel", "real estate", "portrait", "headshot", "golf",
+                  "golf course", "clubhouse",
                   # home-services / trades marketing sites want real photos, not vectors
                   "hvac", "plumbing", "electrical", "contractor", "heating",
                   "air conditioning")),

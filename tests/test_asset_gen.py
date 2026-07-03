@@ -63,6 +63,17 @@ def test_extract_subjects_no_invented_defaults():
     assert _extract_subjects(brief, 4) == []
 
 
+def test_business_site_subjects_are_domain_specific_not_hvac_default():
+    subjects = _extract_subjects("a modern golf course website with tee times", 4)
+    assert subjects
+    assert all("hvac" not in s.lower() and "air conditioning" not in s.lower() for s in subjects)
+    assert any("golf" in s.lower() or "clubhouse" in s.lower() for s in subjects)
+
+
+def test_generic_business_site_does_not_invent_hvac_assets():
+    assert _extract_subjects("a modern business website", 4) == []
+
+
 # ---- end-to-end (mocked client) -------------------------------------------
 async def test_writes_images_and_manifest(tmp_path):
     proj = tmp_path / "proj"

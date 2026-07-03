@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
 from skyn3t.memory.models import Base, BuildRow, LessonRow, MessageRow, TaskRow
+from skyn3t.studio.build_summary import build_summary
 
 
 class MemoryStore:
@@ -163,7 +164,7 @@ class MemoryStore:
                 extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
                 classification = extra.get("classification") if isinstance(extra.get("classification"), dict) else {}
                 stack_selection = extra.get("stack_selection") if isinstance(extra.get("stack_selection"), dict) else {}
-                out.append({
+                row = {
                     "build_id": r.build_id,
                     "slug": r.slug,
                     "brief": r.brief,
@@ -177,7 +178,9 @@ class MemoryStore:
                     "verdict": r.verdict,
                     "cost_usd": r.cost_usd,
                     "artifact_dir": r.artifact_dir,
-                })
+                }
+                row.update(build_summary(manifest))
+                out.append(row)
             return out
 
     async def get_build(self, build_id: str) -> dict[str, Any] | None:

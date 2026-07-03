@@ -127,3 +127,13 @@ def test_settings_wires_visual_self_heal_toggle() -> None:
     assert "/settings/visual_self_heal" in settings
     assert "visual_self_heal" in settings
     assert "Drive rendered UI" in settings
+
+
+def test_studio_wires_build_profiles_and_manual_model() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "Cheap + learned" in studio
+    assert "Best quality" in studio
+    assert "Manual model" in studio
+    assert "build_profile" in studio
+    assert "model_override" in studio
+    assert 'queryFn("/models")' in studio

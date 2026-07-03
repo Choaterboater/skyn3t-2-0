@@ -33,6 +33,12 @@ def test_photo_app_routes_to_flux_pro():
     assert "photograph" in asset_prompt(style, "pizza")
 
 
+def test_golf_site_routes_to_photo_assets():
+    style = select_asset_style("A golf course website with tee times and a clubhouse")
+    assert style == "photo"
+    assert "photograph" in asset_prompt(style, "sunlit golf course fairway and green")
+
+
 def test_sticker_app_routes_to_sticker_maker():
     assert select_asset_style("a sticker pack maker app") == "sticker"
     assert asset_model("sticker") == "fofr/sticker-maker"

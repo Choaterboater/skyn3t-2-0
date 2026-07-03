@@ -61,8 +61,15 @@ async def test_recent_builds_exposes_manifest_classification(tmp_path):
             "extra": {
                 "classification": {"app_type": "dashboard", "engine": "dom"},
                 "stack_selection": {"method": "keyword", "stack": "react"},
+                "build_profile": "manual",
+                "model_override": "openrouter/custom-model",
+                "skills_used": ["react-ui"],
+                "recall_used": [{"score": 0.91, "text": "prior"}],
+                "proof": {"passed": True, "detail": {"build": "passed"}},
             }
         },
+        score=91.0,
+        verdict="go",
     )
 
     row = (await store.recent_builds(limit=1))[0]
@@ -71,3 +78,8 @@ async def test_recent_builds_exposes_manifest_classification(tmp_path):
     assert row["app_type"] == "dashboard"
     assert row["engine"] == "dom"
     assert row["stack_selection"]["stack"] == "react"
+    assert row["build_profile"] == "manual"
+    assert row["model_trace"]["model_override"] == "openrouter/custom-model"
+    assert row["quality_scorecard"]["proof_passed"] is True
+    assert row["quality_scorecard"]["skills_count"] == 1
+    assert row["skills_used"] == ["react-ui"]

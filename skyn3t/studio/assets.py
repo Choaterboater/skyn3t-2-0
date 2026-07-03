@@ -23,7 +23,6 @@ from typing import Any
 import structlog
 
 from skyn3t.adapters.replicate import (
-    DEFAULT_MODEL,
     ReplicateClient,
     asset_model,
     asset_prompt,
@@ -72,9 +71,23 @@ _SERVICE_SUBJECTS = (
     (("plumbing", "plumber", "drain", " pipe"), "plumber repairing a pipe under a sink"),
     (("electrical", "electrician", "wiring", " panel"), "electrician working on a home electrical panel"),
     (("generator",), "home standby backup generator"),
-    (("commercial", "office", "business", "retail"), "commercial HVAC rooftop units on an office building"),
+    (("commercial hvac", "rooftop unit", "rooftop hvac"), "commercial HVAC rooftop units on an office building"),
     (("roofing", "roof"), "roofer installing shingles on a roof"),
     (("landscaping", "lawn care"), "professionally landscaped residential yard"),
+)
+_DOMAIN_SUBJECTS = (
+    (("golf", "golfing", "country club", "clubhouse", "tee time", "tee-time"),
+     (
+         "sunlit golf course fairway and green",
+         "golfer putting on a manicured green",
+         "welcoming golf clubhouse exterior",
+     )),
+    (("restaurant", "cafe", "coffee shop", "bakery"),
+     ("welcoming restaurant dining room", "fresh prepared signature dish")),
+    (("fitness", "gym", "yoga", "trainer"),
+     ("bright fitness studio with modern equipment", "personal trainer coaching a client")),
+    (("salon", "spa", "barber"),
+     ("modern salon interior", "spa treatment room with soft lighting")),
 )
 
 
@@ -104,7 +117,10 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     # Business / marketing / home-services site: ship a hero + the per-service
     # photos the brief names, so a company site has real imagery instead of none.
     if any(w in low for w in _BUSINESS_SIGNALS):
-        subs = ["uniformed HVAC technician servicing an outdoor air conditioning unit at a home"]
+        subs: list[str] = []
+        for keys, subjects in _DOMAIN_SUBJECTS:
+            if any(k in low for k in keys):
+                subs.extend(subject for subject in subjects if subject not in subs)
         for keys, subject in _SERVICE_SUBJECTS:
             if any(k in low for k in keys) and subject not in subs:
                 subs.append(subject)

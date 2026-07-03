@@ -20,6 +20,7 @@ integration test is skipped when the ``swift`` toolchain is absent. Mirrors
 from __future__ import annotations
 
 import shutil
+import sys
 
 import pytest
 
@@ -43,6 +44,9 @@ from skyn3t.studio.stack_selector import _COLLAPSE, REAL_BUILDER_STACKS
 
 requires_swift = pytest.mark.skipif(
     shutil.which("swift") is None, reason="swift toolchain not installed"
+)
+requires_swiftui = pytest.mark.skipif(
+    sys.platform != "darwin", reason="SwiftUI is only available on Apple platforms"
 )
 
 
@@ -212,6 +216,7 @@ def test_swift_resolves_in_all_vocabularies():
 
 # ---- 7. REAL swift build (integration) -----------------------------------
 @requires_swift
+@requires_swiftui
 @pytest.mark.skipif(shutil.which("swift") is None, reason="swift toolchain not installed")
 def test_swift_scaffold_actually_compiles(tmp_path):
     # The scaffold MUST really compile under the installed toolchain — a scaffold

@@ -797,7 +797,7 @@ class CodeAgent(BaseAgent):
             f"  {f['path']} — {f.get('purpose', '')}"
             for f in files if isinstance(f, dict) and f.get("path")
         )
-        return (
+        prompt = (
             f"{knowledge}"
             f"Build a COMPLETE, production-quality {stack} application for this brief:\n"
             f"{brief}\n\n"
@@ -846,6 +846,7 @@ class CodeAgent(BaseAgent):
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
         )
+        return self.system_prompt(prompt)
 
     @staticmethod
     def _game_art_on(stack: str) -> bool:
@@ -1107,7 +1108,7 @@ class CodeAgent(BaseAgent):
             summary = self._design_summary(design)
             if summary:
                 design_block += f"\nFollow this design direction: {summary}"
-        return (
+        prompt = (
             f"{knowledge}"
             f"You are building the **{slice_name}** part of a larger {stack} application, "
             f"in parallel with other agents building the rest. Brief:\n{brief}\n\n"
@@ -1120,6 +1121,7 @@ class CodeAgent(BaseAgent):
             "paths above exactly. Do not ask questions — just write your files."
             f"{design_block}"
         )
+        return self.system_prompt(prompt)
 
     @staticmethod
     def _design_summary(design: dict[str, Any] | None) -> str:

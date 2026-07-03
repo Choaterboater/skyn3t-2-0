@@ -524,7 +524,11 @@ class LLMClient:
         # always queried the empty task bucket and could never serve.
         # ``model_override`` pins a specific model (best-of-N cross-model sampling)
         # and bypasses the router; the (tier, task_type) bucket is unchanged.
-        model = model_override or self.router.resolve(tier, file_hint, task_type=task_type)
+        # A GUI-chosen `preferred_model` pins the model for every OpenRouter call
+        # (empty = auto: the learned router picks per tier/task). An explicit
+        # per-call model_override (e.g. best-of-N sampling) still wins over both.
+        preferred = (getattr(self.settings, "preferred_model", "") or "").strip()
+        model = model_override or preferred or self.router.resolve(tier, file_hint, task_type=task_type)
         backend = self.backend
         # An attached image only matters to the openrouter backend (the only one
         # that speaks the multimodal message shape). stub/CLI ignore it and behave

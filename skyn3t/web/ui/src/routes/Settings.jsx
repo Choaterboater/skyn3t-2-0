@@ -68,6 +68,30 @@ export default function Settings() {
   const [agenticMsg, setAgenticMsg] = useState("");
   const [gateMsg, setGateMsg] = useState("");
 
+  // Model dropdown: the LIVE OpenRouter list (auto-updates with the newest
+  // models) + the currently-pinned model (empty = auto / smart routing).
+  const models = useQuery({
+    queryKey: ["models"],
+    queryFn: queryFn("/models"),
+    retry: 0,
+  });
+  const [model, setModel] = useState("");
+  const [modelMsg, setModelMsg] = useState("");
+  useEffect(() => {
+    const cur = secrets.data?.preferred_model;
+    if (cur !== undefined) setModel(cur || "");
+  }, [secrets.data?.preferred_model]);
+  async function saveModel(m) {
+    setModel(m);
+    try {
+      await apiPost("/settings/model", { model: m });
+      setModelMsg(m ? `pinned → ${m}` : "auto — smart routing");
+      secrets.refetch();
+    } catch (e) {
+      setModelMsg(String(e.message));
+    }
+  }
+
   const [appTypeOverride, setAppTypeOverride] = useState("auto");
   const [engineOverride, setEngineOverride] = useState("auto");
   const [metaMsg, setMetaMsg] = useState("");
@@ -377,6 +401,38 @@ export default function Settings() {
               <button onClick={saveKey} className="btn-ember">
                 Save key
               </button>
+            </div>
+            <div className="mt-4 border-t border-hairline pt-4">
+              <p className="mb-2 text-sm text-ash">
+                Model — which OpenRouter model skyn3t builds with.{" "}
+                <span className="font-mono text-bone">auto</span> lets the learned
+                router pick per task; or pin one from the live list (it updates with
+                the newest models automatically).
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={model}
+                  onChange={(e) => saveModel(e.target.value)}
+                  className="field min-w-[16rem] flex-1"
+                >
+                  <option value="">auto — smart routing</option>
+                  {(models.data?.models || []).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <span className="font-mono text-[11px] text-ash/60">
+                  {models.isLoading
+                    ? "loading…"
+                    : models.data?.note
+                      ? models.data.note
+                      : `${(models.data?.models || []).length} models`}
+                </span>
+              </div>
+              {modelMsg ? (
+                <p className="mt-2 font-mono text-[11px] text-plasma">{modelMsg}</p>
+              ) : null}
             </div>
           </div>
         </Panel>

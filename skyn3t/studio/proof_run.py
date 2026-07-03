@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from skyn3t.npm_utils import npm_env, npm_install_args
+from skyn3t.npm_utils import (
+    mark_npm_install_current,
+    npm_env,
+    npm_install_args,
+    npm_install_current,
+)
 
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
 # NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
@@ -2715,25 +2720,29 @@ def _run_node_build(
     # registry) soft-skips. Floor the budget at 120s so a slow-but-valid install
     # isn't starved into a false timeout.
     install_budget = max(120, int(timeout * 0.6))
-    inst = _run_proof_command(
-        cmd_ctx,
-        npm_install_args(npm_cmd, "install"),
-        cwd=pdir,
-        timeout=install_budget,
-        env=env,
-        network=True,
-    )
-    if inst.timed_out:
-        # A hang/too-slow install is a delivery problem, not a free pass.
-        return (True, False, f"npm install timed out after {install_budget}s")
-    if inst.returncode == 127:
-        # npm could not even be launched -> environmental, soft-skip.
-        return (False, False, "npm install could not be launched — build skipped")
-    if inst.returncode != 0:
-        out = ((inst.stdout or "") + (inst.stderr or "")).strip()
-        if _npm_install_is_offline(out):
-            return (False, False, "npm install failed (offline registry) — build skipped")
-        return (True, False, out[-700:])
+    install_summary = "npm install skipped (dependencies current)"
+    if not npm_install_current(pdir):
+        inst = _run_proof_command(
+            cmd_ctx,
+            npm_install_args(npm_cmd, "install"),
+            cwd=pdir,
+            timeout=install_budget,
+            env=env,
+            network=True,
+        )
+        if inst.timed_out:
+            # A hang/too-slow install is a delivery problem, not a free pass.
+            return (True, False, f"npm install timed out after {install_budget}s")
+        if inst.returncode == 127:
+            # npm could not even be launched -> environmental, soft-skip.
+            return (False, False, "npm install could not be launched — build skipped")
+        if inst.returncode != 0:
+            out = ((inst.stdout or "") + (inst.stderr or "")).strip()
+            if _npm_install_is_offline(out):
+                return (False, False, "npm install failed (offline registry) — build skipped")
+            return (True, False, out[-700:])
+        mark_npm_install_current(pdir)
+        install_summary = "npm install ok"
 
     bld = _run_proof_command(
         cmd_ctx,
@@ -2748,7 +2757,8 @@ def _run_node_build(
         return (False, False, "")
     out = ((bld.stdout or "") + (bld.stderr or "")).strip()
     if bld.returncode == 0:
-        return (True, True, out[-300:])
+        tail = out[-300:]
+        return (True, True, f"{install_summary}; {tail}" if tail else install_summary)
     # Surface the file/symbol-naming diagnostics (not just the tail) so the
     # fix-loop's improver can target the real cause (e.g. a missing export).
     return (True, False, _distill_build_errors(out))

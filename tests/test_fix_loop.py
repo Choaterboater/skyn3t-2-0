@@ -271,7 +271,13 @@ def _node_proj(tmp_path, build_script: str | None):
 @pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
 def test_proof_node_build_pass(tmp_path):
     proj = _node_proj(tmp_path, 'node -e "process.exit(0)"')
-    res = proof_run(str(proj), stack="react", run_build=True, build_timeout=120)
+    res = proof_run(
+        str(proj),
+        stack="react",
+        run_build=True,
+        build_timeout=120,
+        execution_backend="inline",
+    )
     assert res.passed is True
     assert res.detail.get("build") == "passed"
 
@@ -279,7 +285,13 @@ def test_proof_node_build_pass(tmp_path):
 @pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
 def test_proof_node_build_fail(tmp_path):
     proj = _node_proj(tmp_path, 'node -e "process.exit(1)"')
-    res = proof_run(str(proj), stack="react", run_build=True, build_timeout=120)
+    res = proof_run(
+        str(proj),
+        stack="react",
+        run_build=True,
+        build_timeout=120,
+        execution_backend="inline",
+    )
     assert res.passed is False
     assert res.detail.get("build") == "failed"
     assert "<build>" in res.missing

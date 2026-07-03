@@ -16,18 +16,22 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
 
 _SYSTEM = (
-    "You are a product designer. Given a brief, propose a small, tasteful design "
-    "system. Respond with JSON: "
+    "You are a senior product designer. Given a brief and stack, propose a concrete, "
+    "domain-specific interface direction for the actual app, not a generic template. "
+    "Prefer usable information architecture, clear hierarchy, responsive layout, "
+    "accessible contrast, and polished interaction states. Avoid default purple "
+    "starter themes unless the brief explicitly calls for them. Respond with JSON: "
     '{"theme": str, "palette": {"bg": str, "fg": str, "accent": str}, '
-    '"typography": str, "layout": [str], "components": [str]}.'
+    '"typography": str, "layout": [str], "components": [str], "states": [str]}.'
 )
 
 _DEFAULT_DESIGN = {
-    "theme": "clean light",
-    "palette": {"bg": "#ffffff", "fg": "#1a1a1a", "accent": "#6750f2"},
+    "theme": "neutral product workspace",
+    "palette": {"bg": "#f8fafc", "fg": "#111827", "accent": "#0f766e"},
     "typography": "system-ui, sans-serif",
-    "layout": ["centered single-column", "generous whitespace", "responsive"],
-    "components": ["header", "main content", "primary action button"],
+    "layout": ["responsive app shell", "clear content hierarchy", "dense but readable spacing"],
+    "components": ["top navigation", "content sections", "action controls", "status feedback"],
+    "states": ["hover", "focus", "empty", "loading", "error"],
 }
 
 
@@ -58,7 +62,10 @@ class DesignerAgent(BaseAgent):
             part for part in (
                 f"Brief: {brief}\nStack: {stack}",
                 knowledge,
-                "Propose the design system as JSON.",
+                (
+                    "Propose the design system as JSON. Include concrete layout zones, "
+                    "components, and interaction states that match this domain."
+                ),
             )
             if part
         )
@@ -76,7 +83,7 @@ class DesignerAgent(BaseAgent):
         design: dict[str, Any] = dict(_DEFAULT_DESIGN)
         out: dict[str, Any] = {"design": design, "model": result.model, "backend": result.backend}
         if isinstance(parsed, dict) and parsed.get("stub") is not True and result.backend != "stub":
-            for key in ("theme", "palette", "typography", "layout", "components"):
+            for key in ("theme", "palette", "typography", "layout", "components", "states"):
                 if parsed.get(key):
                     design[key] = parsed[key]
         elif result.backend != "stub" and not isinstance(parsed, dict):

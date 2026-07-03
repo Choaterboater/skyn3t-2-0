@@ -924,6 +924,9 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         # ``model`` is shown so the operator can see/override the active model.
         "replicate": bool(getattr(s, "replicate_api_token", "")),
         "replicate_model": getattr(s, "replicate_model", "") or "",
+        # The pinned OpenRouter model (empty = auto). Surfaced so the model
+        # dropdown can show the current selection.
+        "preferred_model": getattr(s, "preferred_model", "") or "",
         # The asset-gen STEP additionally needs asset_gen on — surface it so the
         # UI can tell the user real assets won't be generated until it's enabled.
         "asset_gen": bool(getattr(s, "asset_gen", False)),
@@ -1091,6 +1094,55 @@ async def set_build_metadata_overrides(
         _persist_env_var("SKYN3T_APP_TYPE_OVERRIDE", app_type)
         _persist_env_var("SKYN3T_ENGINE_OVERRIDE", engine)
     return {"app_type_override": app_type, "engine_override": engine}
+
+
+_MODELS_CACHE: dict[str, Any] = {"ts": 0.0, "models": None}
+
+
+async def list_openrouter_models(state: AppState) -> dict[str, Any]:
+    """The LIVE OpenRouter model list — always current, so the newest models show
+    up automatically with no maintenance. Needs an OpenRouter key; returns [] with
+    a note otherwise. Cached 5 min so opening Settings doesn't re-hit OpenRouter."""
+    import time
+
+    key = (getattr(state.settings, "openrouter_api_key", "") or "").strip()
+    if not key:
+        return {"models": [], "note": "set an OpenRouter key to load the model list"}
+    now = time.time()
+    if _MODELS_CACHE["models"] is not None and now - _MODELS_CACHE["ts"] < 300:
+        return {"models": _MODELS_CACHE["models"], "cached": True}
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            r.raise_for_status()
+            ids = sorted(
+                str(m.get("id")) for m in (r.json().get("data") or []) if m.get("id")
+            )
+        _MODELS_CACHE.update(ts=now, models=ids)
+        return {"models": ids, "count": len(ids)}
+    except Exception as exc:  # noqa: BLE001 - degrade to cached/empty, never 500
+        return {"models": _MODELS_CACHE.get("models") or [],
+                "note": f"could not load models: {exc}"}
+
+
+async def set_preferred_model(state: AppState, model: str = "") -> dict[str, Any]:
+    """Pin the OpenRouter model skyn3t uses (empty = auto: the learned router picks
+    per tier/task). Persisted so it survives a restart."""
+    import os
+
+    model = (model or "").strip()
+    try:
+        state.settings.preferred_model = model
+    except Exception:  # noqa: BLE001
+        pass
+    os.environ["SKYN3T_PREFERRED_MODEL"] = model
+    _persist_env_var("SKYN3T_PREFERRED_MODEL", model)
+    return {"preferred_model": model}
 
 
 async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str, Any]:
@@ -1552,6 +1604,14 @@ def build_router(state: AppState) -> Any:
             app_type=str(body.get("app_type", body.get("app_type_override", "auto"))),
             engine=str(body.get("engine", body.get("engine_override", "auto"))),
         )
+
+    @router.get("/models", dependencies=[auth])
+    async def _models() -> dict[str, Any]:
+        return await list_openrouter_models(state)
+
+    @router.post("/settings/model", dependencies=[auth])
+    async def _set_model(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await set_preferred_model(state, str(body.get("model", "")))
 
     @router.post("/proposals/clear", dependencies=[auth])
     async def _clear_proposals(body: dict[str, Any] = empty_body) -> dict[str, Any]:

@@ -2770,6 +2770,14 @@ class StudioRunner:
                     record.output_summary = {"error": result.error}
                     prior[spec.name] = {"error": result.error}
 
+                # Capture the exact prompt(s) codegen sent the model, per-build, so
+                # they're inspectable in the dashboard's Prompts panel — built,
+                # sent, and until now discarded (recorded beside skills_used).
+                if spec.agent_type == "code" and result.success:
+                    _prompts = result.output.get("prompts")
+                    if _prompts:
+                        manifest.extra["prompts"] = _prompts
+
                 # Codegen degradation: if the agentic code path failed or under-
                 # delivered, surface that in the manifest so verdict/scoring has
                 # the signal (the build is not crashed — scaffold is still written).

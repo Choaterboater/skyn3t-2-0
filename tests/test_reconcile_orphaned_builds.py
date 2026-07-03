@@ -4,8 +4,11 @@ lingers as a phantom 'running' build forever (observed: abfe... ran 3.5h)."""
 
 from __future__ import annotations
 
+import json
+
 from skyn3t.config.settings import Settings
 from skyn3t.memory.store import MemoryStore
+from skyn3t.studio.manifest import MANIFEST_FILENAME
 
 
 async def test_reconcile_marks_orphaned_running_as_interrupted(tmp_path):
@@ -83,3 +86,43 @@ async def test_recent_builds_exposes_manifest_classification(tmp_path):
     assert row["quality_scorecard"]["proof_passed"] is True
     assert row["quality_scorecard"]["skills_count"] == 1
     assert row["skills_used"] == ["react-ui"]
+
+
+async def test_recent_builds_prefers_repaired_disk_manifest(tmp_path):
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    project = tmp_path / "Projects" / "golf"
+    project.mkdir(parents=True)
+    disk_manifest = {
+        "build_id": "b2",
+        "slug": "golf",
+        "brief": "adult beginner golf website",
+        "stack": "nextjs",
+        "status": "completed",
+        "verdict": "go",
+        "score": 100.0,
+        "cost_usd": 0.12,
+        "artifact_dir": str(project),
+        "extra": {"proof": {"passed": True, "detail": {"build": "passed"}}},
+    }
+    (project / MANIFEST_FILENAME).write_text(json.dumps(disk_manifest))
+    await store.save_build(
+        build_id="b2",
+        slug="golf",
+        brief="adult beginner golf website",
+        stack="nextjs",
+        status="completed_no_go",
+        verdict="no_go",
+        score=49.0,
+        cost_usd=0.12,
+        artifact_dir=str(project),
+        manifest={"build_id": "b2", "slug": "golf", "status": "completed_no_go",
+                  "verdict": "no_go", "score": 49.0, "extra": {}},
+    )
+
+    row = (await store.recent_builds(limit=1))[0]
+
+    assert row["status"] == "completed"
+    assert row["verdict"] == "go"
+    assert row["score"] == 100.0
+    assert row["quality_scorecard"]["proof_passed"] is True

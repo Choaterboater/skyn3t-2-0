@@ -6,6 +6,8 @@ the studio (build records), and the learning loop (graded lessons).
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select, update
@@ -15,6 +17,7 @@ from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
 from skyn3t.memory.models import Base, BuildRow, LessonRow, MessageRow, TaskRow
 from skyn3t.studio.build_summary import build_summary
+from skyn3t.studio.manifest import MANIFEST_FILENAME
 
 
 class MemoryStore:
@@ -160,28 +163,52 @@ class MemoryStore:
             )).scalars().all()
             out: list[dict[str, Any]] = []
             for r in rows:
-                manifest = r.manifest if isinstance(r.manifest, dict) else {}
+                manifest = self._disk_manifest_for_row(r) or (
+                    r.manifest if isinstance(r.manifest, dict) else {}
+                )
                 extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
                 classification = extra.get("classification") if isinstance(extra.get("classification"), dict) else {}
                 stack_selection = extra.get("stack_selection") if isinstance(extra.get("stack_selection"), dict) else {}
                 row = {
-                    "build_id": r.build_id,
-                    "slug": r.slug,
-                    "brief": r.brief,
-                    "stack": r.stack,
+                    "build_id": manifest.get("build_id") or r.build_id,
+                    "slug": manifest.get("slug") or r.slug,
+                    "brief": manifest.get("brief") or r.brief,
+                    "stack": manifest.get("stack") or r.stack,
                     "app_type": classification.get("app_type", ""),
                     "engine": classification.get("engine", ""),
                     "stack_selection": stack_selection,
                     "classification": classification,
-                    "status": r.status,
-                    "score": r.score,
-                    "verdict": r.verdict,
-                    "cost_usd": r.cost_usd,
-                    "artifact_dir": r.artifact_dir,
+                    "status": manifest.get("status") or r.status,
+                    "score": manifest.get("score", r.score),
+                    "verdict": manifest.get("verdict") or r.verdict,
+                    "cost_usd": manifest.get("cost_usd", r.cost_usd),
+                    "artifact_dir": manifest.get("artifact_dir") or r.artifact_dir,
                 }
                 row.update(build_summary(manifest))
                 out.append(row)
             return out
+
+    @staticmethod
+    def _disk_manifest_for_row(row: BuildRow) -> dict[str, Any] | None:
+        artifact_dir = getattr(row, "artifact_dir", None)
+        if not artifact_dir:
+            return None
+        path = Path(str(artifact_dir)) / MANIFEST_FILENAME
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        build_id = str(data.get("build_id") or "")
+        slug = str(data.get("slug") or "")
+        if build_id and build_id != str(getattr(row, "build_id", "")):
+            return None
+        if not build_id and slug and slug != str(getattr(row, "slug", "")):
+            return None
+        return data
 
     async def get_build(self, build_id: str) -> dict[str, Any] | None:
         """Return a single build row by primary key, or ``None`` if not found."""

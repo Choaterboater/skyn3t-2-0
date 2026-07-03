@@ -60,6 +60,7 @@ from skyn3t.intelligence.learning_loop import (
 )
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
 from skyn3t.studio.fix_feedback import format_fix_feedback
@@ -2542,6 +2543,9 @@ class StudioRunner:
             ref = extra.get("reference_image")
             if ref:
                 payload["reference_image"] = ref
+            model_override = extra.get("model_override")
+            if model_override:
+                payload["model_override"] = str(model_override)
         return payload
 
     def _reserve_unique_slug(self, slug: str) -> str:
@@ -2627,6 +2631,18 @@ class StudioRunner:
         import socket as _socket
         manifest.extra["owner_pid"] = _os.getpid()
         manifest.extra["owner_host"] = _socket.gethostname()
+        build_profile = str(extra.get("build_profile") or "cheap_learned")
+        model_override = str(extra.get("model_override") or "").strip()
+        manifest.extra["build_profile"] = build_profile
+        if model_override:
+            manifest.extra["model_override"] = model_override
+        manifest.extra["codegen_model"] = (
+            model_override
+            or str(getattr(self.settings, "openrouter_codegen_model", "") or "")
+            or str(getattr(self.settings, "codegen_cli_model", "") or "")
+            or str(getattr(self.settings, "preferred_model", "") or "")
+        )
+        manifest.extra["llm_backend"] = str(getattr(self.settings, "llm_backend", ""))
         manifest.extra["clarification"] = clar.to_dict()
         manifest.extra["stack_selection"] = {
             "method": choice.method, "stack": choice.stack,
@@ -3461,7 +3477,7 @@ class StudioRunner:
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
             payload.update(spec.extra)
             payload["trajectory_index"] = index
-            if across_models:
+            if across_models and not payload.get("model_override"):
                 payload["model_override"] = pool[index % len(pool)]
             return await self._submit_stage(spec, payload, correlation_id)
 
@@ -3590,7 +3606,7 @@ class StudioRunner:
                 "manifest": manifest,
             }
             model = self._slice_model(slice_tier(name))
-            if model and agentic_backend:
+            if model and agentic_backend and not payload.get("model_override"):
                 payload["model_override"] = model
             # Run each slice in its OWN fresh CodeAgent.execute() — the orchestrator
             # routes every codegen task to the ONE registered CodeAgent whose run()
@@ -3872,8 +3888,12 @@ class StudioRunner:
                                         manifest.brief, manifest.stack)
             except Exception as exc:  # noqa: BLE001 - capture must not break delivery
                 log.warning("studio.bench_capture_failed", error=str(exc))
+        summary = build_summary(manifest.to_dict())
+        manifest.extra["model_trace"] = summary["model_trace"]
+        manifest.extra["quality_scorecard"] = summary["quality_scorecard"]
         manifest.save(project_dir)
         await self._save_build(manifest)
+        summary = build_summary(manifest.to_dict())
         await self.event_bus.emit(
             EventType.BUILD_COMPLETED,
             "studio",
@@ -3889,6 +3909,7 @@ class StudioRunner:
                 "verdict": manifest.verdict,
                 "score": final_score,
                 "files": manifest.files_count,
+                **summary,
             },
             correlation_id=correlation_id,
         )

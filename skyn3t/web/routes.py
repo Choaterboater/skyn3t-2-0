@@ -218,8 +218,34 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
         return s  # a data: URL is safe inline data; the LLM client accepts it
 
 
+_BUILD_PROFILES = {"cheap_learned", "fast", "best_quality", "manual"}
+
+
+def _normalize_build_profile(profile: str) -> str:
+    profile = (profile or "cheap_learned").strip().lower().replace("-", "_")
+    return profile if profile in _BUILD_PROFILES else "cheap_learned"
+
+
+def _normalize_model_override(model: str) -> str:
+    model = (model or "").strip()
+    if len(model) > 160:
+        return ""
+    if any(ch.isspace() for ch in model):
+        return ""
+    return model
+
+
+def _profile_extra(profile: str) -> dict[str, Any]:
+    if profile == "fast":
+        return {"max_debug_attempts": 1}
+    if profile == "best_quality":
+        return {"best_of_n": 2, "max_debug_attempts": 3}
+    return {}
+
+
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
-                       reference_image: str = "") -> dict[str, Any]:
+                       reference_image: str = "", build_profile: str = "cheap_learned",
+                       model_override: str = "") -> dict[str, Any]:
     """Queue a build. Uses the studio if wired, else records + emits an event.
 
     ``reference_image`` is an optional base64 ``data:`` URL (or path); when
@@ -229,12 +255,20 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     if not brief or not brief.strip():
         raise ValueError("brief is required")
     build_id = state.new_build_id()
+    profile = _normalize_build_profile(build_profile)
+    model = _normalize_model_override(model_override)
     rec = BuildRecord(
         build_id=build_id,
         brief=brief.strip(),
         slug=slug.strip(),
         stack=stack.strip(),
         status="queued",
+        build_profile=profile,
+        model_trace={
+            "profile": profile,
+            "model_override": model,
+            "backend": getattr(state.settings, "llm_backend", ""),
+        },
         correlation_id=build_id,
     )
     state.builds[build_id] = rec
@@ -252,7 +286,14 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     runner = None
     if studio is not None:
         if hasattr(studio, "start"):
-            _extra = {"stack": stack, "build_id": build_id}
+            _extra = {
+                "stack": stack,
+                "build_id": build_id,
+                "build_profile": profile,
+                **_profile_extra(profile),
+            }
+            if model:
+                _extra["model_override"] = model
             if ref_path:
                 _extra["reference_image"] = ref_path
             def runner() -> Any:
@@ -277,12 +318,25 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     await state.event_bus.emit(
         EventType.BUILD_STARTED,
         source="web.api",
-        payload={"build_id": build_id, "brief": rec.brief, "slug": rec.slug, "stack": rec.stack},
+        payload={
+            "build_id": build_id,
+            "brief": rec.brief,
+            "slug": rec.slug,
+            "stack": rec.stack,
+            "build_profile": profile,
+            "model_trace": rec.model_trace,
+        },
         correlation_id=build_id,
     )
     if not dispatched:
         rec.status = "queued_no_studio"
-    return {"build_id": build_id, "status": rec.status, "dispatched": dispatched}
+    return {
+        "build_id": build_id,
+        "status": rec.status,
+        "dispatched": dispatched,
+        "build_profile": profile,
+        "model_override": model,
+    }
 
 
 async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
@@ -1562,6 +1616,8 @@ def build_router(state: AppState) -> Any:
                 stack=str(body.get("stack", "")),
                 slug=str(body.get("slug", "")),
                 reference_image=str(body.get("reference_image", "")),
+                build_profile=str(body.get("build_profile", "")),
+                model_override=str(body.get("model_override", "")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1786,6 +1842,8 @@ def build_router(state: AppState) -> Any:
                 stack=str(body.get("stack", "")),
                 slug=str(body.get("slug", "")),
                 reference_image=str(body.get("reference_image", "")),
+                build_profile=str(body.get("build_profile", "")),
+                model_override=str(body.get("model_override", "")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

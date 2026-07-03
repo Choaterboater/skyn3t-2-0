@@ -58,6 +58,17 @@ const FALLBACK_STACKS = [
 // Today's default fan-out selection — keeps behavior unchanged if left untouched.
 const DEFAULT_STACK_SELECTION = ["react", "static", "fastapi"];
 
+const BUILD_PROFILES = [
+  {
+    id: "cheap_learned",
+    label: "Cheap + learned",
+    hint: "Uses learned routing, skills, and recall without pinning an expensive model.",
+  },
+  { id: "fast", label: "Fast", hint: "Shortest path with fewer debug retries." },
+  { id: "best_quality", label: "Best quality", hint: "Runs a small best-of-N for codegen." },
+  { id: "manual", label: "Manual model", hint: "Pin one OpenRouter model for this build." },
+];
+
 // The forge line. Each stage is a node on a horizontal rail: it ignites EMBER
 // while running, cools to PLASMA when done, sits ASH while pending, flares the
 // hot ember on failure. It also shows WHICH agent ran the stage and its score —
@@ -127,6 +138,23 @@ function buildMeta(build) {
   };
 }
 
+function aiMeta(build) {
+  const trace = build.model_trace || {};
+  const scorecard = build.quality_scorecard || {};
+  return {
+    profile: build.build_profile || trace.profile || "cheap_learned",
+    model: trace.model_override || trace.codegen_model || "auto",
+    skills: Array.isArray(build.skills_used)
+      ? build.skills_used.length
+      : scorecard.skills_count || 0,
+    recall: Array.isArray(build.recall_used)
+      ? build.recall_used.length
+      : scorecard.recall_count || 0,
+    proof: scorecard.proof_passed,
+    build: scorecard.build,
+  };
+}
+
 export default function Studio({ stream }) {
   const qc = useQueryClient();
   const [brief, setBrief] = useState("");
@@ -140,6 +168,8 @@ export default function Studio({ stream }) {
   // the build. No attachment -> the field is omitted from the POST (unchanged).
   const [refImage, setRefImage] = useState(null); // { url, name }
   const fileInputRef = useRef(null);
+  const [buildProfile, setBuildProfile] = useState("cheap_learned");
+  const [modelOverride, setModelOverride] = useState("");
 
   const onPickImage = (file) => {
     if (!file || !file.type?.startsWith("image/")) return;
@@ -167,6 +197,12 @@ export default function Studio({ stream }) {
     const opts = stacksData?.stacks;
     return Array.isArray(opts) && opts.length > 0 ? opts : FALLBACK_STACKS;
   }, [stacksData]);
+
+  const models = useQuery({
+    queryKey: ["models"],
+    queryFn: queryFn("/models"),
+    retry: 0,
+  });
 
   const toggleStack = (id) =>
     setSelectedStacks((prev) => {
@@ -261,7 +297,10 @@ export default function Studio({ stream }) {
           onSubmit={(e) => {
             e.preventDefault();
             if (!brief.trim()) return;
-            const payload = { brief: brief.trim() };
+            const payload = { brief: brief.trim(), build_profile: buildProfile };
+            if (buildProfile === "manual" && modelOverride.trim()) {
+              payload.model_override = modelOverride.trim();
+            }
             if (refImage?.url) payload.reference_image = refImage.url;
             submit.mutate(payload);
           }}
@@ -313,7 +352,11 @@ export default function Studio({ stream }) {
           )}
           <button
             type="submit"
-            disabled={submit.isPending || !brief.trim()}
+            disabled={
+              submit.isPending ||
+              !brief.trim() ||
+              (buildProfile === "manual" && !modelOverride.trim())
+            }
             className="btn-ember disabled:opacity-50"
           >
             {submit.isPending ? "Forging…" : "Forge build"}
@@ -324,6 +367,60 @@ export default function Studio({ stream }) {
             {String(submit.error.message)}
           </p>
         ) : null}
+
+        <div className="mt-3 border-t border-hairline pt-3">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap gap-2">
+              {BUILD_PROFILES.map((p) => {
+                const on = buildProfile === p.id;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setBuildProfile(p.id)}
+                    title={p.hint}
+                    aria-pressed={on}
+                    className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
+                      on
+                        ? "border-plasma/50 bg-plasma/10 text-plasma"
+                        : "border-hairline text-ash hover:border-plasma/30 hover:text-bone"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-1 lg:max-w-[28rem]">
+              <input
+                list="studio-openrouter-models"
+                value={modelOverride}
+                onChange={(e) => {
+                  setModelOverride(e.target.value);
+                  if (buildProfile !== "manual") setBuildProfile("manual");
+                }}
+                disabled={buildProfile !== "manual"}
+                className="field"
+                placeholder={
+                  buildProfile === "manual"
+                    ? "Select or type an OpenRouter model"
+                    : "Manual model disabled for this profile"
+                }
+                title="Pin one AI model for this build"
+              />
+              <datalist id="studio-openrouter-models">
+                {(models.data?.models || []).map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              <span className="font-mono text-[10px] text-ash/60">
+                {buildProfile === "manual"
+                  ? models.data?.note || `${(models.data?.models || []).length} OpenRouter models`
+                  : BUILD_PROFILES.find((p) => p.id === buildProfile)?.hint}
+              </span>
+            </div>
+          </div>
+        </div>
 
         {/* Example briefs: clickable starters that fill the brief box. */}
         <div className="mt-3">
@@ -524,6 +621,7 @@ export default function Studio({ stream }) {
                   <th className="px-4 py-2 font-normal">Stack</th>
                   <th className="px-4 py-2 font-normal">Type</th>
                   <th className="px-4 py-2 font-normal">Engine</th>
+                  <th className="px-4 py-2 font-normal">AI</th>
                   <th className="px-4 py-2 font-normal">Status</th>
                   <th className="px-4 py-2 font-normal">Score</th>
                   <th className="px-4 py-2 font-normal">Cost</th>
@@ -533,6 +631,7 @@ export default function Studio({ stream }) {
               <tbody className="divide-y divide-hairline/60">
                 {recentBuilds.map((b) => {
                   const meta = buildMeta(b);
+                  const ai = aiMeta(b);
                   return (
                     <tr key={b.build_id || b.slug}>
                       <td className="px-4 py-2 font-mono text-xs text-bone">
@@ -541,6 +640,15 @@ export default function Studio({ stream }) {
                       <td className="px-4 py-2 font-mono text-xs text-ash">{meta.stack}</td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">{meta.appType}</td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">{meta.engine}</td>
+                      <td className="px-4 py-2 font-mono text-[11px] text-ash">
+                        <div className="max-w-[12rem] truncate text-bone">{ai.profile}</div>
+                        <div
+                          className="max-w-[12rem] truncate text-ash/70"
+                          title={`${ai.model} · skills ${ai.skills} · recall ${ai.recall}`}
+                        >
+                          {ai.model} · skills {ai.skills}
+                        </div>
+                      </td>
                       <td className="px-4 py-2">
                         <Pill tone={verdictTone(b.status)}>{b.status}</Pill>
                       </td>

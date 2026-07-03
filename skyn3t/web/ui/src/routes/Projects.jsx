@@ -114,10 +114,21 @@ function improveStatusFor(stream, slug, cid) {
       return { tone: "text-ember", text: "improving…" };
     case "improve.stage":
       return { tone: "text-ash", text: `${p.stage || "working"}…` };
-    case "improve.completed":
+    case "improve.completed": {
+      // The backend is honest about no-ops (files_changed + no_targets_found /
+      // no_files_changed); surface it so "improved" can't mean "changed nothing".
+      const n = (p.files_changed || []).length;
+      if (n === 0) {
+        const why = p.detail?.no_targets_found
+          ? "no matching files found"
+          : "no edits applied";
+        return { tone: "text-ember", text: `no changes — ${why}` };
+      }
+      const files = `${n} file${n === 1 ? "" : "s"}`;
       return p.proof_passed
-        ? { tone: "text-plasma", text: `improved · score ${p.score ?? "—"}` }
-        : { tone: "text-ember", text: "no_go" };
+        ? { tone: "text-plasma", text: `improved · ${files} · score ${p.score ?? "—"}` }
+        : { tone: "text-ember", text: `${files} changed · no_go` };
+    }
     case "improve.failed":
       return { tone: "text-ember", text: `failed: ${p.error || "unknown"}` };
     default:

@@ -1242,7 +1242,7 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - a safety pass must never break delivery
             log.warning("runner.final_consistency_repairs_failed", error=str(exc))
             final_repairs = {}
-        changed_keys = ("npm_deps_added", "next_config_peers",
+        changed_keys = ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added")
         if any(final_repairs.get(k) for k in changed_keys):
             manifest.files = list_files(project_dir)
@@ -2886,6 +2886,9 @@ class StudioRunner:
             # Module not found' break). Genuinely-broken stubs still fail the
             # boot/liveness gate. Same repairs re-run inside _fix_loop.
             repairs = self._deterministic_repairs(project_dir, plan)
+            if repairs["npm_deps_sanitized"]:
+                manifest.extra["npm_deps_sanitized"] = repairs["npm_deps_sanitized"]
+                log.info("runner.npm_deps_sanitized", removed=repairs["npm_deps_sanitized"])
             if repairs["npm_deps_added"]:
                 manifest.extra["npm_deps_added"] = repairs["npm_deps_added"]
                 log.info("runner.npm_deps_reconciled", added=repairs["npm_deps_added"])
@@ -2942,7 +2945,7 @@ class StudioRunner:
             if not proof.passed and (getattr(proof, "detail", None) or {}).get("unresolved_imports"):
                 recovery_repairs = self._deterministic_repairs(project_dir, plan)
                 if any(recovery_repairs.get(k) for k in
-                       ("npm_deps_added", "next_config_peers",
+                       ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added")):
                     manifest.files = list_files(project_dir)
                     proof = await asyncio.to_thread(

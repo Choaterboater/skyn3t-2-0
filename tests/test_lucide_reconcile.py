@@ -37,12 +37,16 @@ def test_no_duplicate_import_when_fallback_already_present(tmp_path):
     assert "GeneratorIcon" not in body and "PipeIcon" not in body
 
 
-def test_noop_without_installed_lucide(tmp_path):
-    # Can't validate against real exports if the package isn't installed — leave as-is.
+def test_reconciles_common_hallucination_without_installed_lucide(tmp_path):
+    # The build pipeline runs deterministic repairs before npm install, so common
+    # hallucinated lucide names must still be fixable without node_modules.
     f = tmp_path / "X.jsx"
-    f.write_text("import { GeneratorIcon } from 'lucide-react';\n")
-    assert reconcile_lucide_icons(tmp_path) == []
-    assert "GeneratorIcon" in f.read_text()
+    f.write_text("import { GolfIcon } from 'lucide-react';\n"
+                 "export default () => <GolfIcon />;\n")
+    assert reconcile_lucide_icons(tmp_path) == ["X.jsx"]
+    body = f.read_text()
+    assert "GolfIcon" not in body
+    assert "Flag" in body
 
 
 def test_keeps_all_real_icons(tmp_path):
@@ -50,3 +54,19 @@ def test_keeps_all_real_icons(tmp_path):
     f = tmp_path / "Ok.jsx"
     f.write_text("import { Zap, Wrench, Thermometer } from 'lucide-react';\n")
     assert reconcile_lucide_icons(tmp_path) == []   # nothing hallucinated -> no change
+
+
+def test_keeps_single_letter_and_export_alias_icons(tmp_path):
+    dist = tmp_path / "node_modules" / "lucide-react" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "lucide-react.d.ts").write_text(
+        "declare const X: LucideIcon;\n"
+        "declare const CircleCheckBig: LucideIcon;\n"
+        "declare const LoaderCircle: LucideIcon;\n"
+        "export { CircleCheckBig as CheckCircle, LoaderCircle as Loader2, X };\n",
+        encoding="utf-8",
+    )
+    f = tmp_path / "RealAliases.jsx"
+    f.write_text("import { X, CheckCircle, Loader2 } from 'lucide-react';\n")
+    assert reconcile_lucide_icons(tmp_path) == []
+    assert f.read_text() == "import { X, CheckCircle, Loader2 } from 'lucide-react';\n"

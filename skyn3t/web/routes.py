@@ -8,6 +8,7 @@ absent (design rule #6).
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import shutil
 import time
@@ -109,11 +110,12 @@ def _reap_fanout_task(task: Any) -> None:
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, Response
     _HAVE_FASTAPI = True
 except Exception:  # noqa: BLE001
     APIRouter = Body = Depends = HTTPException = Query = Request = None  # type: ignore[assignment,misc]
     FileResponse = None  # type: ignore[assignment,misc]
+    Response = None  # type: ignore[assignment,misc]
     _HAVE_FASTAPI = False
 
 
@@ -178,6 +180,32 @@ def resolve_project_file(state: AppState, slug: str, rel_path: str) -> Path:
     if not candidate.is_file():
         raise FileNotFoundError(rel_path)
     return candidate
+
+
+_PROJECT_REWRITE_EXTS = {".html", ".htm", ".css", ".js", ".mjs"}
+
+
+def project_file_response(path: Path, slug: str) -> Any:
+    """Serve a generated preview file with project-scoped asset URLs.
+
+    The cockpit iframe loads generated HTML through `/api/projects/{slug}/...`.
+    Absolute project asset refs like `/assets/hero.webp` would otherwise hit the
+    dashboard's own `/assets` mount instead of the generated project. Text files
+    are rewritten on the way out; binary images/fonts stay as normal file
+    responses.
+    """
+    if path.suffix.lower() not in _PROJECT_REWRITE_EXTS:
+        return FileResponse(str(path))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return FileResponse(str(path))
+
+    scoped = f"/api/projects/{slug}/assets/"
+    for prefix in ('"/assets/', "'/assets/", "(/assets/", "url(/assets/"):
+        text = text.replace(prefix, prefix.replace("/assets/", scoped))
+    media_type = mimetypes.guess_type(str(path))[0] or "text/plain"
+    return Response(content=text, media_type=media_type)
 
 
 def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
@@ -1695,7 +1723,7 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=400, detail="invalid path") from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="not found") from None
-        return FileResponse(str(resolved))
+        return project_file_response(resolved, slug)
 
     @router.get("/cortex/proposals", dependencies=[auth])
     async def _cortex_proposals(status: str = Query(default="")) -> dict[str, Any]:

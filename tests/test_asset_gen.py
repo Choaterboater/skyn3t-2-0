@@ -6,14 +6,19 @@ is mocked (no network); the step itself is exercised end-to-end on disk.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from skyn3t.config.settings import Settings
+from skyn3t.core.events import EventBus
+from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.assets import (
     _extract_subjects,
     _wants_images,
     asset_gen_enabled,
     generate_assets,
 )
+from skyn3t.studio.planner import Planner
+from skyn3t.studio.runner import StudioRunner
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
@@ -200,3 +205,69 @@ async def test_empty_images_yields_zero(tmp_path):
     s = _settings(replicate_api_token="r8_x", asset_gen=True)
     res = await generate_assets(str(proj), "coloring animals", settings=s, client=client)
     assert res["generated"] == 0 and res["skipped"] is True
+
+
+async def test_runner_asset_step_clears_stale_extra_assets(tmp_path):
+    runner = StudioRunner(
+        EventBus(),
+        Orchestrator(EventBus()),
+        settings=Settings(replicate_api_token="", asset_gen=False),
+    )
+    manifest = SimpleNamespace(extra={})
+    extra = {
+        "assets": [
+            {
+                "subject": "uniformed HVAC technician",
+                "file": "/assets/uniformed-hvac-technician.webp",
+            }
+        ],
+        "model_override": "openrouter/test",
+    }
+
+    out = await runner._generate_assets(
+        str(tmp_path),
+        "a golf website for nervous adult beginners",
+        manifest,
+        extra,
+        stack="nextjs",
+    )
+
+    assert "assets" not in out
+    assert out["model_override"] == "openrouter/test"
+
+
+def test_codegen_payload_prefers_current_worktree_asset_manifest(tmp_path):
+    runner = StudioRunner(EventBus(), Orchestrator(EventBus()), settings=Settings())
+    worktree = tmp_path / "wt"
+    assets_dir = worktree / "public" / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "sunlit-golf-course.svg").write_text("<svg />")
+    (assets_dir / "assets.json").write_text(json.dumps([
+        {
+            "subject": "sunlit golf course fairway and green",
+            "file": "/assets/sunlit-golf-course.svg",
+        }
+    ]))
+    plan = Planner().plan(
+        "Build a golf website for adult beginners who never played",
+        "golf",
+        stack_hint="nextjs",
+    )
+    extra = {
+        "assets": [
+            {
+                "subject": "uniformed HVAC technician",
+                "file": "/assets/uniformed-hvac-technician.webp",
+            }
+        ]
+    }
+
+    payload = runner._base_payload(plan, str(tmp_path / "proj"), str(worktree), {}, [], extra)
+
+    assets = payload["extra"]["assets"]
+    assert assets == [
+        {
+            "subject": "sunlit golf course fairway and green",
+            "file": "/assets/sunlit-golf-course.svg",
+        }
+    ]

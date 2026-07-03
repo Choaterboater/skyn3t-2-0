@@ -23,6 +23,7 @@ Import has zero side effects.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -542,6 +543,12 @@ class StudioRunner:
         failure leaves the build unchanged. Records what was generated on the build
         manifest for observability. Never raises.
         """
+        # Asset hints must be per-build. A caller-supplied/reused extra dict can
+        # carry stale paths from a previous build; if this build generates no
+        # assets, that stale list must not reach codegen.
+        extra = {**(extra or {})}
+        extra.pop("assets", None)
+
         # 1) Subject coloring/photo images — existing opt-in flow.
         try:
             from skyn3t.studio.assets import asset_gen_enabled, generate_assets
@@ -2535,6 +2542,7 @@ class StudioRunner:
             "checklist": list(plan.checklist),
         }
         if extra:
+            extra = self._sanitize_assets_for_worktree(extra, worktree_dir)
             payload["extra"] = extra
             # "Build from a picture": surface an optional reference image at the
             # top level so the designer/architect agents can read it directly
@@ -2547,6 +2555,81 @@ class StudioRunner:
             if model_override:
                 payload["model_override"] = str(model_override)
         return payload
+
+    @staticmethod
+    def _asset_path_exists(root: Path, asset_file: str) -> bool:
+        raw = str(asset_file or "").split("?", 1)[0].split("#", 1)[0].strip()
+        if not raw:
+            return False
+        rel = raw.lstrip("/")
+        candidates = [Path(rel)]
+        if rel.startswith("assets/"):
+            candidates.insert(0, Path("public") / rel)
+        for candidate_rel in candidates:
+            try:
+                candidate = (root / candidate_rel).resolve()
+                if candidate.is_relative_to(root) and candidate.is_file():
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @classmethod
+    def _asset_manifest_for_worktree(cls, root: Path) -> list[dict[str, Any]]:
+        """Read the current build's general asset manifest, if present.
+
+        Prefer this over inherited prompt extras so codegen only sees assets
+        generated for the current worktree. Role sprites have their own
+        `public/assets/sprites/assets.json` flow and are intentionally ignored.
+        """
+        for rel in ("public/assets/assets.json", "assets/assets.json"):
+            path = root / rel
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(data, dict):
+                data = data.get("assets") or []
+            if isinstance(data, list):
+                return [a for a in data if isinstance(a, dict)]
+        return []
+
+    @classmethod
+    def _sanitize_assets_for_worktree(
+        cls, extra: dict[str, Any], worktree_dir: str
+    ) -> dict[str, Any]:
+        """Drop stale codegen asset hints that are not in this worktree.
+
+        Generated image prompts are powerful enough to steer the whole site
+        visually. Reusing an old `extra["assets"]` list can make a golf build
+        reference an HVAC photo even when the current manifest is golf-specific.
+        """
+        if not isinstance(extra, dict):
+            return extra
+        root = Path(worktree_dir).resolve()
+        raw_assets: Any = cls._asset_manifest_for_worktree(root)
+        if not raw_assets:
+            raw_assets = extra.get("assets") or []
+        if isinstance(raw_assets, dict):
+            raw_assets = raw_assets.get("assets") or []
+
+        clean: list[dict[str, Any]] = []
+        if isinstance(raw_assets, list):
+            for asset in raw_assets:
+                if not isinstance(asset, dict):
+                    continue
+                asset_file = str(asset.get("file") or "")
+                if asset_file and cls._asset_path_exists(root, asset_file):
+                    clean.append({**asset, "file": asset_file})
+
+        out = {**extra}
+        if clean:
+            out["assets"] = clean
+        else:
+            out.pop("assets", None)
+        return out
 
     def _reserve_unique_slug(self, slug: str) -> str:
         """Atomically reserve a NEW project folder for this build, so a redo (or a

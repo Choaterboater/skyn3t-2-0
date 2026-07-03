@@ -327,8 +327,25 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 # Spec 2 cost attribution (None when a build predates it).
                 "cost_usd": extra.get("build_cost_usd"),
                 "wasted_usd": extra.get("wasted_usd"),
+                # Prompts are captured per-build but can be large (10-50 KB each),
+                # so the list carries only a flag/count — the text loads lazily via
+                # GET /projects/{slug}/prompts when the panel is expanded.
+                "prompt_count": len(extra.get("prompts") or []),
             })
     return {"projects": out}
+
+
+async def get_project_prompts(state: AppState, slug: str) -> dict[str, Any]:
+    """The exact prompt(s) a build sent the model — loaded on demand (they can be
+    large). Read from the project manifest's ``extra['prompts']``."""
+    from skyn3t.studio.cleanup import _load_manifest
+    projects_root = Path(state.settings.projects_dir).resolve()
+    target = (projects_root / slug).resolve()
+    if target == projects_root or not target.is_relative_to(projects_root):
+        raise ValueError(f"invalid slug: {slug!r}")
+    man = _load_manifest(target) or {}
+    prompts = (man.get("extra") or {}).get("prompts") or []
+    return {"slug": slug, "prompts": prompts}
 
 
 async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
@@ -1429,6 +1446,15 @@ def build_router(state: AppState) -> Any:
             # e.g. the trash dir isn't writable — a controlled error, not a 500 leak.
             # (FileNotFoundError is caught above; this covers the other OSErrors.)
             raise HTTPException(status_code=500, detail="failed to trash project") from exc
+
+    # MUST be registered before the /{slug}/{path:path} catch-all below, or the
+    # catch-all treats "prompts" as a file path and this never matches.
+    @router.get("/projects/{slug}/prompts", dependencies=[auth])
+    async def _project_prompts(slug: str) -> dict[str, Any]:
+        try:
+            return await get_project_prompts(state, slug)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
     async def _project_file(slug: str, path: str) -> Any:

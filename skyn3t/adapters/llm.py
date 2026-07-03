@@ -1201,6 +1201,7 @@ class LLMClient:
                 m = (
                     model
                     or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
+                    or str(getattr(self.settings, "preferred_model", "") or "").strip()
                     or self.router.resolve(Tier.BACKEND)
                 )
                 return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout,

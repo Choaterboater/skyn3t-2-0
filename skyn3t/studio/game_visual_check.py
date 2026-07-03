@@ -7,10 +7,11 @@ sprite game from a good one without false-no_go'ing a real genre — because "is
 field populated?" and "are entities a readable size?" are VISUAL properties. A human
 caught both in seconds by looking; this asks a vision model the same question.
 
-It is ADVISORY and never-raises: a screenshot of the running game is judged by a vision
-model; any issues feed the fix-loop as guidance (like the #8 input-wiring specialist),
-never a hard block — a fuzzy vision verdict must not be able to false-no_go a build.
-With no vision model / no screenshot it soft-skips.
+It is never-raises: a screenshot of the running game is judged by a vision model; any
+issues feed the fix-loop as guidance (like the #8 input-wiring specialist). Callers
+decide policy: the StudioRunner can hard-gate a real non-skipped failure when
+``game_quality_gates_verdict`` is enabled, while missing vision / missing screenshot
+soft-skips so offline builds are not false-failed.
 """
 
 from __future__ import annotations

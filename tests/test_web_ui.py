@@ -120,6 +120,9 @@ def test_skills_wires_build_pattern_scoreboard() -> None:
     assert "Build-pattern reuse" in skills
     assert "Successful builds fill this scoreboard" in skills
     assert "win_rate" in skills
+    assert "Agent catalog" in skills
+    assert "/agent-catalog/import" in skills
+    assert "previewed roles" in skills
 
 
 def test_settings_wires_visual_self_heal_toggle() -> None:

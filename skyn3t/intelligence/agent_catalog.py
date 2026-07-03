@@ -15,7 +15,6 @@ from typing import Any
 
 from skyn3t.intelligence.skill_library import SkillLibrary, _slugify
 
-
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _MAX_BODY_CHARS = 2400
 

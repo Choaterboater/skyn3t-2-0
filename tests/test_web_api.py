@@ -241,6 +241,39 @@ async def test_skills_payload_surfaces_build_patterns():
     assert res["patterns"][0]["shape"] == {"stages": 5}
 
 
+async def test_agent_catalog_preview_and_import(tmp_path):
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "frontend-agent.md").write_text(
+        "---\n"
+        "name: Frontend Builder\n"
+        "description: Builds responsive React interfaces.\n"
+        "---\n"
+        "# Frontend Builder\n\n- Build accessible components.\n",
+        encoding="utf-8",
+    )
+    skills = SkillLibrary(tmp_path / "skills")
+    st = _state(skills=skills)
+
+    preview = await routes.agent_catalog_preview(st, str(catalog), limit=20)
+    assert preview["summary"]["entries"] == 1
+    assert preview["entries"][0]["title"] == "Frontend Builder"
+    assert "react" in preview["entries"][0]["stacks"]
+
+    imported = await routes.import_agent_catalog(st, str(catalog), limit=20)
+    assert imported["imported"] == 1
+    skills_payload = await routes.list_skills(st)
+    assert skills_payload["skills"][0]["title"] == "Frontend Builder"
+
+
+async def test_agent_catalog_import_degrades_without_skill_library(tmp_path):
+    st = _state()
+    with pytest.raises(ValueError, match="skill library"):
+        await routes.import_agent_catalog(st, str(tmp_path))
+
+
 # ---- trajectory replay / time-travel hooks (P2) ---------------------------
 async def test_trajectory_filtering_and_correlation():
     st = _state()

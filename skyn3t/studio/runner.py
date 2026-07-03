@@ -3099,9 +3099,10 @@ class StudioRunner:
             # Visual check (opt-in, game stacks): screenshot the delivered, RUNNING game
             # mid-play and vision-judge it for an EMPTY play field / TINY entities — the
             # "is there anything to play / does it look right" question headless gates
-            # fundamentally can't answer (a human catches these by looking). ADVISORY:
-            # recorded to the manifest and never blocks the verdict; soft-skips with no
-            # vision model. `gate is not None` selects game stacks.
+            # fundamentally can't answer (a human catches these by looking). The result
+            # is recorded in the manifest; real non-skipped failures affect the verdict
+            # when game_quality_gates_verdict is enabled. No vision model soft-skips.
+            # `gate is not None` selects game stacks.
             if gate is not None and bool(
                     getattr(self.settings, "game_visual_check_enabled", False)):
                 try:
@@ -3155,6 +3156,7 @@ class StudioRunner:
                         "ok": gv_res.final.ok, "skipped": gv_res.final.skipped,
                         "issues": list(gv_res.final.issues),
                         "gap": gv_res.final.gap() or "",
+                        "gated": bool(getattr(self.settings, "game_quality_gates_verdict", True)),
                         "repaired": gv_res.repaired,
                         "build_reverted": gv_res.build_reverted,
                         "rounds": [r.to_dict() for r in gv_res.rounds],

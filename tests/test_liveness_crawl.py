@@ -20,6 +20,18 @@ def test_extract_links_keeps_same_origin_paths():
     assert "/about" in links and "/products/1" in links
     assert "https://external.example/x" not in links  # external dropped
     assert "#anchor" not in links and "mailto:x@y.z" not in links
+    assert "/style.css" not in links and "/app.js" not in links
+
+
+def test_extract_links_drops_framework_static_assets():
+    html = (
+        '<script src="/_next/static/chunks/app.js"></script>'
+        '<script src="/@vite/client"></script>'
+        '<link href="/assets/app.css" rel="stylesheet">'
+        '<a href="/portfolio">Portfolio</a>'
+    )
+    links = _extract_links(html)
+    assert links == {"/portfolio"}
 
 
 def test_merge_routes_dedupes_by_path_method():

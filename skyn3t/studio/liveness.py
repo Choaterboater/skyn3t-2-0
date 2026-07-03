@@ -82,11 +82,33 @@ def enumerate_routes(project_dir: str | Path, stack: str = "") -> list[Route]:
 
 
 _LINK_ATTR = re.compile(r"""(?:href|src)\s*=\s*['"]([^'"#]+)['"]""", re.I)
+_ASSET_ROUTE_PREFIXES = (
+    "/_next/", "/@vite/", "/assets/", "/static/", "/public/",
+    "/src/", "/node_modules/",
+)
+_ASSET_ROUTE_SUFFIXES = (
+    ".js", ".mjs", ".cjs", ".css", ".map", ".json",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp4", ".webm", ".mp3", ".wav", ".wasm", ".txt", ".xml",
+)
+
+
+def _is_page_like(path: str) -> bool:
+    p = (path or "").split("?", 1)[0].split("#", 1)[0].strip().lower()
+    if not p or p == "/":
+        return bool(p)
+    if any(p.startswith(prefix) for prefix in _ASSET_ROUTE_PREFIXES):
+        return False
+    leaf = p.rsplit("/", 1)[-1]
+    if "." in leaf and p.endswith(_ASSET_ROUTE_SUFFIXES):
+        return False
+    return True
 
 
 def _extract_links(html: str) -> set[str]:
     """Same-origin URL PATHS referenced by href/src in a page. Drops external
-    URLs, anchors, mailto/tel/javascript, and empties."""
+    URLs, anchors, mailto/tel/javascript, static assets, and empties."""
     out: set[str] = set()
     for raw in _LINK_ATTR.findall(html or ""):
         v = raw.strip()
@@ -94,7 +116,9 @@ def _extract_links(html: str) -> set[str]:
             continue
         if not v.startswith("/"):
             v = "/" + v  # treat relative as root-relative (best-effort)
-        out.add(v.split("?")[0])
+        path = v.split("?")[0]
+        if _is_page_like(path):
+            out.add(path)
     return out
 
 
@@ -144,11 +168,19 @@ class LivenessReport:
     dead: int = 0
     dead_routes: list[str] = field(default_factory=list)
     health: float = 1.0
+    visual_total: int = 0
+    visual_failed: int = 0
+    visual_failed_routes: list[str] = field(default_factory=list)
+    visual_health: float = 1.0
 
     def to_dict(self) -> dict:
         return {
             "total": self.total, "ok": self.ok, "dead": self.dead,
             "dead_routes": self.dead_routes, "health": round(self.health, 3),
+            "visual_total": self.visual_total,
+            "visual_failed": self.visual_failed,
+            "visual_failed_routes": self.visual_failed_routes,
+            "visual_health": round(self.visual_health, 3),
             "results": [
                 {"path": r.path, "method": r.method, "status": r.status,
                  "ok": r.ok, "kind": r.kind, "visual": r.visual}
@@ -187,24 +219,45 @@ def _wired(status: int) -> bool:
 
 
 async def check_liveness(base_url: str, routes: list[Route], *,
-                         vision_fn=None, screenshot_dir: str | None = None) -> LivenessReport:
+                         vision_fn=None, screenshot_dir: str | None = None,
+                         max_concurrency: int = 8) -> LivenessReport:
     """Hit every route over HTTP (thread-offloaded). ok = 200<=status<400. When a
     vision_fn + screenshot_dir are wired, each reachable PAGE is also screenshotted
     and judged. health = ok/total (1.0 when there are no routes)."""
     base = str(base_url).rstrip("/")
+    sem = asyncio.Semaphore(max(1, int(max_concurrency or 1)))
+
+    async def _check(route: Route) -> RouteResult:
+        async with sem:
+            status = await asyncio.to_thread(_hit, base + route.path, route.method)
+            ok = _wired(status)
+            visual = None
+            if ok and route.kind == "page" and vision_fn is not None and screenshot_dir:
+                visual = await _judge_page(base + route.path, route.path, vision_fn, screenshot_dir)
+            return RouteResult(route.path, route.method, status, ok, route.kind, visual)
+
     results: list[RouteResult] = []
-    for route in routes:
-        status = await asyncio.to_thread(_hit, base + route.path, route.method)
-        ok = _wired(status)
-        visual = None
-        if ok and route.kind == "page" and vision_fn is not None and screenshot_dir:
-            visual = await _judge_page(base + route.path, route.path, vision_fn, screenshot_dir)
-        results.append(RouteResult(route.path, route.method, status, ok, route.kind, visual))
+    if routes:
+        results = list(await asyncio.gather(*(_check(route) for route in routes)))
     total = len(results)
     ok_n = sum(1 for r in results if r.ok)
     dead = [r.path for r in results if not r.ok]
+    visual_results = [r for r in results if r.visual is not None]
+    visual_failed = [
+        r.path for r in visual_results
+        if r.visual and r.visual.get("matches") is False
+    ]
+    visual_total = len(visual_results)
+    visual_health = (
+        (visual_total - len(visual_failed)) / visual_total
+        if visual_total else 1.0
+    )
     return LivenessReport(results=results, total=total, ok=ok_n, dead=len(dead),
-                          dead_routes=dead, health=(ok_n / total) if total else 1.0)
+                          dead_routes=dead, health=(ok_n / total) if total else 1.0,
+                          visual_total=visual_total,
+                          visual_failed=len(visual_failed),
+                          visual_failed_routes=visual_failed,
+                          visual_health=visual_health)
 
 
 async def _judge_page(url: str, path: str, vision_fn, screenshot_dir: str) -> dict | None:

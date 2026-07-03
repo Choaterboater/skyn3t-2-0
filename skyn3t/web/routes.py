@@ -909,6 +909,12 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
 
     s = state.settings
     backend = state.llm_client.backend if state.llm_client is not None else "n/a"
+    routing = {}
+    if state.llm_client is not None and hasattr(state.llm_client, "backend_status"):
+        try:
+            routing = state.llm_client.backend_status()
+        except Exception:  # noqa: BLE001
+            routing = {}
     github = bool(
         getattr(s, "github_token", "")
         or os.environ.get("SKYN3T_GITHUB_TOKEN")
@@ -917,8 +923,19 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
     return {
         "providers": {p: bool(getattr(s, f, "")) for p, f in _PROVIDER_FIELDS.items()},
         "backend": backend,
+        "routing": routing,
         "backend_pref": getattr(s, "llm_backend", "auto"),
         "cli_provider": getattr(s, "cli_llm_provider", "claude"),
+        "codegen_cli_provider": getattr(s, "codegen_cli_provider", "") or "",
+        "codegen_cli_model": getattr(s, "codegen_cli_model", "") or "",
+        "openrouter_codegen_model": getattr(s, "openrouter_codegen_model", "") or "",
+        "model_pins": {
+            "cheap": getattr(s, "model_cheap", "") or "",
+            "ui": getattr(s, "model_ui", "") or "",
+            "backend": getattr(s, "model_backend", "") or "",
+            "strong": getattr(s, "model_strong", "") or "",
+            "docs": getattr(s, "model_docs", "") or "",
+        },
         "github": github,
         # Image generation (Replicate): report presence only (never the token).
         # ``model`` is shown so the operator can see/override the active model.
@@ -1184,20 +1201,37 @@ async def scout_now(state: AppState, topic: str = "") -> dict[str, Any]:
 
 
 async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = True) -> dict[str, Any]:
+    import os
+
     field = _PROVIDER_FIELDS.get((provider or "").lower())
     if field is None:
         raise ValueError(f"unknown provider {provider!r}")
     key = (key or "").strip()
     setattr(state.settings, field, key)
+    env_name = f"SKYN3T_{field.upper()}"
+    if key:
+        os.environ[env_name] = key
+    else:
+        os.environ.pop(env_name, None)
     if state.llm_client is not None:
         try:
             state.llm_client.settings = state.settings  # same singleton, kept explicit
         except Exception:  # noqa: BLE001
             pass
     if persist:
-        _persist_env_var(f"SKYN3T_{field.upper()}", key)
+        _persist_env_var(env_name, key)
     backend = state.llm_client.backend if state.llm_client is not None else "n/a"
-    return {"provider": provider.lower(), "configured": bool(key), "backend": backend}
+    routing = (
+        state.llm_client.backend_status()
+        if state.llm_client is not None and hasattr(state.llm_client, "backend_status")
+        else {}
+    )
+    return {
+        "provider": provider.lower(),
+        "configured": bool(key),
+        "backend": backend,
+        "routing": routing,
+    }
 
 
 # Messaging channels read their credentials from the environment via
@@ -1267,8 +1301,11 @@ async def set_integration_credential(
 
 
 async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -> dict[str, Any]:
+    import os
+
     backend = (backend or "auto").lower()
     state.settings.llm_backend = backend
+    os.environ["SKYN3T_LLM_BACKEND"] = backend
     if state.llm_client is not None:
         try:
             state.llm_client.settings = state.settings
@@ -1277,7 +1314,81 @@ async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -
     if persist:
         _persist_env_var("SKYN3T_LLM_BACKEND", backend)
     active = state.llm_client.backend if state.llm_client is not None else backend
-    return {"requested": backend, "active": active}
+    routing = (
+        state.llm_client.backend_status()
+        if state.llm_client is not None and hasattr(state.llm_client, "backend_status")
+        else {}
+    )
+    return {"requested": backend, "active": active, "routing": routing}
+
+
+_MODEL_PIN_FIELDS = {
+    "cheap": "model_cheap",
+    "ui": "model_ui",
+    "backend": "model_backend",
+    "strong": "model_strong",
+    "docs": "model_docs",
+}
+
+
+async def set_llm_routing(
+    state: AppState,
+    *,
+    codegen_cli_provider: str = "",
+    codegen_cli_model: str = "",
+    openrouter_codegen_model: str = "",
+    model_pins: dict[str, Any] | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Set model-routing controls used by future builds.
+
+    Empty strings intentionally clear a pin/override. Values are written to the
+    live Settings object, process env, and optionally .env.
+    """
+    import os
+
+    updates = {
+        "codegen_cli_provider": (codegen_cli_provider or "").strip().lower(),
+        "codegen_cli_model": (codegen_cli_model or "").strip(),
+        "openrouter_codegen_model": (openrouter_codegen_model or "").strip(),
+    }
+    pins = model_pins or {}
+    for tier, field in _MODEL_PIN_FIELDS.items():
+        updates[field] = str(pins.get(tier, getattr(state.settings, field, "")) or "").strip()
+
+    for field, value in updates.items():
+        try:
+            setattr(state.settings, field, value)
+        except Exception:  # noqa: BLE001
+            pass
+        env_key = f"SKYN3T_{field.upper()}"
+        if value:
+            os.environ[env_key] = value
+        else:
+            os.environ.pop(env_key, None)
+        if persist:
+            _persist_env_var(env_key, value)
+
+    if state.llm_client is not None:
+        try:
+            state.llm_client.settings = state.settings
+        except Exception:  # noqa: BLE001
+            pass
+    if getattr(state.llm_client, "router", None) is not None:
+        state.router = state.llm_client.router
+
+    routing = (
+        state.llm_client.backend_status()
+        if state.llm_client is not None and hasattr(state.llm_client, "backend_status")
+        else {}
+    )
+    tiers = {}
+    if state.router is not None:
+        try:
+            tiers = state.router.describe()
+        except Exception:  # noqa: BLE001
+            tiers = {}
+    return {"routing": routing, "tiers": tiers}
 
 
 # ---------------------------------------------------------------------------
@@ -1364,6 +1475,8 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
             "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
+            "codegen_cli_provider", "codegen_cli_model", "openrouter_codegen_model",
+            "model_cheap", "model_ui", "model_backend", "model_strong", "model_docs",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
             "visual_self_heal", "visual_self_heal_max_rounds",
             "improve_agentic", "improve_agentic_timeout")
@@ -1555,6 +1668,16 @@ def build_router(state: AppState) -> Any:
     @router.post("/llm/backend", dependencies=[auth])
     async def _set_llm_backend(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_llm_backend(state, str(body.get("backend", "auto")))
+
+    @router.post("/llm/routing", dependencies=[auth])
+    async def _set_llm_routing(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await set_llm_routing(
+            state,
+            codegen_cli_provider=str(body.get("codegen_cli_provider", "")),
+            codegen_cli_model=str(body.get("codegen_cli_model", "")),
+            openrouter_codegen_model=str(body.get("openrouter_codegen_model", "")),
+            model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else {},
+        )
 
     @router.post("/settings/github", dependencies=[auth])
     async def _set_github(body: dict[str, Any] = empty_body) -> dict[str, Any]:

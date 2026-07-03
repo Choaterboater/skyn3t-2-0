@@ -183,8 +183,14 @@ class ModelRouter:
             elif ext in {".py", ".go", ".rs", ".java", ".rb", ".sql"}:
                 tier = Tier.BACKEND
 
-        # Manual lock wins.
-        if tier.value in self._overrides:
+        # Runtime/env lock wins over persisted tuning so operator choices from
+        # Settings stay visible and predictable.
+        runtime_pin = str(getattr(self.settings, f"model_{tier.value}", "") or "").strip()
+        runtime_locked = bool(runtime_pin)
+        if runtime_locked:
+            model = runtime_pin
+        # Persisted manual lock wins over defaults.
+        elif tier.value in self._overrides:
             model = self._overrides[tier.value]
         else:
             base = _FREE_DEFAULTS if self.settings.free_only else _PAID_DEFAULTS
@@ -201,6 +207,9 @@ class ModelRouter:
                 model = live
             else:
                 model = _PAID_DEFAULTS.get(tier, "deepseek/deepseek-v4-flash")
+
+        if runtime_locked:
+            return model
 
         model = self._apply_policy(model, tier)
         # Self-heal a retired :free id against OpenRouter's LIVE catalog (only

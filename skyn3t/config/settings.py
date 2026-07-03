@@ -122,6 +122,18 @@ class Settings(BaseSettings):
     # completion (vision still resolves its own model for image calls). Chosen in
     # Settings via the model dropdown; overridable per-call by model_override.
     preferred_model: str = ""
+    # Pin OpenRouter whole-project codegen to a specific model. Empty means use
+    # the router's backend tier pick. This is separate from ``codegen_cli_model``
+    # because the CLI override and OpenRouter path are mutually exclusive.
+    openrouter_codegen_model: str = ""
+    # First-class per-tier model pins. These outrank persisted
+    # data/model_tier_overrides.json so dashboard/env choices are visible and
+    # predictable.
+    model_cheap: str = ""
+    model_ui: str = ""
+    model_backend: str = ""
+    model_strong: str = ""
+    model_docs: str = ""
     # Give OpenRouter (cheap) models a whole-project AGENTIC codegen loop — the
     # model writes files itself via tool-calls with full context (like bolt/v0/
     # Aider), instead of the weak per-file generation. This is what lets cheap

@@ -54,6 +54,57 @@ def test_designer_stub_backend_not_flagged():
     assert "degraded" not in res.output  # stub degradation is expected, not flagged
 
 
+def test_designer_prompt_includes_injected_knowledge():
+    from skyn3t.agents.designer import DesignerAgent
+    from skyn3t.core.agent import TaskRequest
+
+    captured = {}
+
+    class _LLM:
+        backend = "openrouter"
+        async def complete(self, prompt, *a, **k):
+            captured["prompt"] = prompt
+            return SimpleNamespace(
+                text='{"theme":"sharp","palette":{"bg":"#fff","fg":"#111","accent":"#0af"}}',
+                model="m",
+                backend="openrouter",
+            )
+
+    agent = DesignerAgent(event_bus=EventBus(), llm=_LLM())
+    task = TaskRequest(
+        type="design",
+        payload={
+            "brief": "a trading dashboard",
+            "extra": {"skills_advice": "Use dense financial dashboard layouts."},
+        },
+        capabilities_required=("design",),
+    )
+    res = asyncio.run(agent.execute(task))
+    assert res.success
+    assert "dense financial dashboard" in captured["prompt"]
+
+
+def test_code_agent_agentic_prompt_includes_design_direction():
+    from skyn3t.agents.code_agent import CodeAgent
+
+    agent = CodeAgent(event_bus=EventBus())
+    prompt = agent._agentic_prompt(
+        "a trading dashboard",
+        "nextjs",
+        {"summary": "s", "files": []},
+        "",
+        design={
+            "theme": "institutional trading desk",
+            "palette": {"bg": "#ffffff", "fg": "#111827", "accent": "#0f766e"},
+            "typography": "Inter",
+            "layout": ["dense grid", "left nav"],
+        },
+    )
+    assert "Follow this design direction" in prompt
+    assert "institutional trading desk" in prompt
+    assert "dense grid" in prompt
+
+
 # --- #4 packaging must not leave an empty Installation section ----------------
 
 def test_packaging_readme_no_empty_installation_for_plain_project():

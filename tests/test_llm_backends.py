@@ -21,6 +21,34 @@ def test_openrouter_requires_key():
     assert _client("openrouter", openrouter_api_key="sk-or-test").backend == "openrouter"
 
 
+def test_explicit_openrouter_missing_key_is_reported():
+    c = _client("openrouter")
+    status = c.backend_status()
+    assert status["active"] == "stub"
+    assert status["requested"] == "openrouter"
+    assert status["state"] == "missing_key"
+    assert "OPENROUTER_API_KEY" in status["reason"]
+
+
+def test_openrouter_codegen_model_pin_used_for_agentic(monkeypatch, tmp_path):
+    c = _client(
+        "openrouter",
+        openrouter_api_key="sk-or-test",
+        openrouter_codegen_model="provider/custom-code-model",
+    )
+    captured = {}
+
+    async def _fake(prompt, workdir, model, timeout=None, stack=""):
+        captured["model"] = model
+        return {"ok": True, "backend": "openrouter"}
+
+    monkeypatch.setattr(c, "_openrouter_agentic", _fake)
+    import asyncio
+
+    asyncio.run(c.agentic_build("build", str(tmp_path), stack="react_vite"))
+    assert captured["model"] == "provider/custom-code-model"
+
+
 def test_auto_prefers_cli_when_available(monkeypatch):
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
     monkeypatch.setattr(llm_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
@@ -118,6 +146,11 @@ def test_learned_router_off_by_default():
     c = LLMClient(Settings(model_evolution=False, auto_route=False))
     assert isinstance(c.router, ModelRouter)
     assert not isinstance(c.router, LearnedModelRouter)
+
+
+def test_runtime_model_pin_overrides_router_default():
+    r = ModelRouter(Settings(free_only=False, model_backend="provider/backend-pin"))
+    assert r.resolve(Tier.BACKEND) == "provider/backend-pin"
 
 
 def test_learned_router_needs_both_gates():

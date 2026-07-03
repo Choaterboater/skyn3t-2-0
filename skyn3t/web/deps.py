@@ -347,9 +347,17 @@ class AppState:
         return out
 
     def llm_backends(self) -> dict[str, Any]:
+        status = {}
+        if self.llm_client is not None and hasattr(self.llm_client, "backend_status"):
+            try:
+                status = self.llm_client.backend_status()
+            except Exception:  # noqa: BLE001
+                status = {}
         info: dict[str, Any] = {
             "backend": getattr(self.llm_client, "backend", "stub" if self.llm_client is None else "unknown"),
             "available": self.llm_client is not None,
+            "status": status,
+            "routing": status,
         }
         if self.router is not None:
             try:

@@ -230,6 +230,22 @@ async def _assemble_spine(*, with_memory: bool = True, event_bus: Any | None = N
         except Exception:  # noqa: BLE001
             continue
 
+    # Replay approved Cortex prompt overrides before any CLI build starts. The
+    # previous replay lived in build_cortex(), but studio build constructs Cortex
+    # only after runner.start(), so learned instructions missed the active build.
+    try:
+        from skyn3t.cortex.prompt_store import load_prompt_overrides
+
+        overrides = load_prompt_overrides(settings.data_dir)
+        if overrides:
+            from skyn3t.cortex.handlers import CortexHandlers
+
+            handlers = CortexHandlers(settings, agents=orchestrator.agents)
+            for target, instruction in overrides.items():
+                handlers._apply_prompt_to_live(target, instruction)
+    except Exception:  # noqa: BLE001 - prompt replay must never block startup
+        pass
+
     return {
         "settings": settings,
         "event_bus": event_bus,
@@ -558,10 +574,14 @@ def _make_ratchet_build_fn():
 
     return build_fn
 
+_RATCHET_SET_OPTION = typer.Option(
+    None, "--set", help="A tuning override to test, e.g. --set best_of_n=3 (repeatable)."
+)
+
 
 @cortex_app.command("ratchet")
 def cortex_ratchet(
-    set_kv: list[str] = typer.Option([], "--set", help="A tuning override to test, e.g. --set best_of_n=3 (repeatable)."),
+    set_kv: list[str] | None = _RATCHET_SET_OPTION,
     cases: str = typer.Option("", "--cases", help="Path to a JSON bench-case list (default: the built-in exam)."),
     min_score_delta: float = typer.Option(0.0, "--min-score-delta", help="Required go-only mean-score improvement to keep."),
 ) -> None:
@@ -584,7 +604,7 @@ def cortex_ratchet(
         raise typer.Exit(code=1)
 
     overrides: dict[str, Any] = {}
-    for kv in set_kv:
+    for kv in set_kv or []:
         if "=" in kv:
             k, v = kv.split("=", 1)
             overrides[k.strip()] = _ratchet_coerce(v)
@@ -1879,6 +1899,17 @@ def _check_llm(settings: Any) -> tuple[str, bool]:
 
         client = LLMClient(settings)
         backend = getattr(client, "backend", "stub")
+        if hasattr(client, "backend_status"):
+            status = client.backend_status()
+            state = status.get("state", "ready")
+            requested = status.get("requested", getattr(settings, "llm_backend", "auto"))
+            detail = f"{backend} (requested {requested}, {state})"
+            codegen = (status.get("codegen") or {})
+            if codegen.get("cli_provider"):
+                detail += f"; codegen={codegen.get('backend')} via {codegen.get('cli_provider')}"
+            if status.get("reason"):
+                detail += f"; {status['reason']}"
+            return (detail, backend != "stub" and state == "ready")
         return (backend, backend != "stub")
     except Exception as exc:  # noqa: BLE001
         return (f"unavailable: {exc}", False)

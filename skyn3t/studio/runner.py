@@ -42,22 +42,31 @@ from skyn3t.core.orchestrator import Orchestrator
 # test import keeps its historical name.
 from skyn3t.core.stacks import (
     DESIGN_STACKS as _DESIGN_STACKS,
+)
+from skyn3t.core.stacks import (
     GAME_STACKS as _GAME_STACKS,
+)
+from skyn3t.core.stacks import (
     UI_WEB_STACKS as _UI_WEB_STACKS,
+)
+from skyn3t.core.stacks import (
     WEB_STACKS as _WEB_STACKS,  # noqa: F401 - re-exported; tests + drift check read it here
+)
+from skyn3t.core.stacks import (
     gate_applies as _gate_applies,
 )
-from skyn3t.studio import best_of_n as bon
-from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.intelligence.learning_loop import (
     extract_gate_findings as _extract_gate_findings,
 )
+from skyn3t.studio import best_of_n as bon
+from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.clarification import clarify
+from skyn3t.studio.deploy import plan_deploy
+from skyn3t.studio.fix_feedback import format_fix_feedback
+from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.liveness import liveness_self_improve
-from skyn3t.studio.deploy import plan_deploy
 from skyn3t.studio.manifest import BuildManifest, StageRecord
-from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
     _unresolved_local_imports,
@@ -837,7 +846,8 @@ class StudioRunner:
 
     @staticmethod
     def _liveness_gate(verdict: str, stack: str, dead: int,
-                       dead_routes: list[str], broad_gate_on: bool) -> tuple[str, str | None]:
+                       dead_routes: list[str], broad_gate_on: bool,
+                       visual_failed_routes: list[str] | None = None) -> tuple[str, str | None]:
         """Decide the post-liveness verdict from real route health.
 
         Always-on (conservative): a UI web app whose ROOT '/' is dead after
@@ -850,6 +860,12 @@ class StudioRunner:
             return "no_go", f"{dead} route(s) dead: {', '.join(routes[:5])}"
         if stack in _UI_WEB_STACKS and "/" in routes:
             return "no_go", "root route '/' dead after repair — app does not serve a homepage"
+        visual_routes = visual_failed_routes or []
+        if stack in _UI_WEB_STACKS and visual_routes:
+            return "no_go", (
+                "rendered page(s) failed visual liveness after repair: "
+                f"{', '.join(visual_routes[:5])}"
+            )
         return verdict, None
 
     async def _run_liveness(self, manifest, project_dir, plan, proof,
@@ -879,16 +895,24 @@ class StudioRunner:
         report = outcome.report
         manifest.extra["liveness"] = report.to_dict()
         manifest.extra["liveness_health"] = round(report.health, 3)
+        visual_total = int(getattr(report, "visual_total", 0) or 0)
+        raw_visual_health = getattr(report, "visual_health", 1.0)
+        visual_health = 1.0 if raw_visual_health is None else float(raw_visual_health)
+        effective_health = min(report.health, visual_health) if visual_total else report.health
+        manifest.extra["liveness_effective_health"] = round(effective_health, 3)
+        if visual_total:
+            manifest.extra["liveness_visual_health"] = round(visual_health, 3)
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
         if proof.passed and report.total:
-            final_score = round(final_score * (0.5 + 0.5 * report.health), 2)
+            final_score = round(final_score * (0.5 + 0.5 * effective_health), 2)
             manifest.score = final_score
         # Runtime gate: serve+probe decides the verdict. Always-on for a dead
         # UI root '/'; the broad any-dead-route gate stays opt-in.
         verdict, gate_reason = self._liveness_gate(
             verdict, plan.stack, report.dead, report.dead_routes,
             bool(getattr(self.settings, "liveness_gates_verdict", False)),
+            list(getattr(report, "visual_failed_routes", []) or []),
         )
         if gate_reason:
             manifest.extra["liveness_gate"] = gate_reason
@@ -3217,6 +3241,19 @@ class StudioRunner:
             if bool(getattr(self.settings, "visual_self_heal", False)):
                 visual_changed = await self._run_visual_self_heal(
                     manifest, project_dir, plan, correlation_id)
+                visual_data = manifest.extra.get("visual_self_heal")
+                if (
+                    isinstance(visual_data, dict)
+                    and visual_data.get("passed") is False
+                    and visual_data.get("skipped") is not True
+                    and plan.stack in _UI_WEB_STACKS
+                ):
+                    verdict = "no_go"
+                    manifest.extra["visual_self_heal_gate"] = (
+                        "rendered UI still failed visual check after self-heal"
+                    )
+                    final_score = min(final_score, 74.0)
+                    manifest.score = final_score
                 if visual_changed:
                     proof = await asyncio.to_thread(
                         proof_run,
@@ -3785,7 +3822,7 @@ class StudioRunner:
             log.warning("studio.save_build_failed", error=str(exc))
 
     async def _run_deploy_check(self, manifest: BuildManifest, url: str,
-                                correlation_id: str = "") -> "GateVerdict":
+                                correlation_id: str = "") -> GateVerdict:
         """Ship-pillar gate: probe a build at its LIVE url after a real deploy and
         record the verdict to ``manifest.extra['deploy_check']``. Advisory — a
         proven build already shipped, so this reports live health and never flips

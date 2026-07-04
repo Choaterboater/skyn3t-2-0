@@ -138,15 +138,16 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("phaser", ("phaser", "arcade", "platformer", "browser game",
                 "html5 game", "2d game", "game engine", "shooter",
                 "side-scroller", "endless runner", "tower defense")),
-    # A GUI / graphical interface = a web app (SkyN3t's user-facing app stack).
+    # A GUI / graphical interface / explicit UI = a web app (SkyN3t's user-facing app stack).
     # "gui" caught a real miss: "a trading app configured in a gui" was routing to
     # a python CLI because "gui" was no signal + "...apis for data" hit python's
     # "data". "gui" is word-bounded (via _WORD_BOUNDED_KEYWORDS) so it fires only
     # on the standalone token, never inside "penguin"/"arguing"/"roguish". An
-    # AI-bearing gui brief is then bumped to nextjs below (a server route holds the
-    # key) — exactly right for "a trading app with AI, configured in a GUI".
+    # AI-bearing gui/ui brief is then bumped to nextjs below (a server route holds
+    # the key) — exactly right for "a trading app with AI, configured in a GUI".
     ("react", ("react", "vite", "spa", "single page", "frontend", "dashboard ui",
-               "gui", "graphical interface", "graphical ui", "graphical user interface")),
+               "gui", "ui", "graphical interface", "graphical ui",
+               "graphical user interface")),
     ("fastapi", ("fastapi", "rest api", "http api", "backend api", "endpoint")),
     ("flask", ("flask",)),
     ("django", ("django",)),
@@ -273,9 +274,9 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     # MCP (Model Context Protocol): whole-word so bare "mcp" only routes on the
     # standalone token, never as a substring inside an unrelated word.
     "mcp",
-    # GUI: whole-word so "gui" only routes on the standalone token, never inside
-    # "penguin"/"arguing"/"roguish"/"beguile".
-    "gui",
+    # GUI/UI: whole-word so these only route on standalone tokens, never inside
+    # "penguin"/"arguing"/"suitable"/"build".
+    "gui", "ui",
     # Swift phrases that END in "swift": whole-word so the trailing token can't be
     # "swiftly"/"swiftness" (which are NOT the Swift language).
     "macos swift", "written in swift", "built with swift",

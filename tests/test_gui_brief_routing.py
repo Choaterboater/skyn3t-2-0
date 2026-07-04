@@ -33,10 +33,21 @@ def test_gui_without_ai_is_a_plain_web_spa():
     assert detect_stack("a note manager with a graphical interface") == "react"
 
 
+def test_plain_ui_ai_rebuild_is_fullstack_web_not_python():
+    brief = (
+        "Here is my project in past and due to all the safeguards AI cant trade "
+        "even with papermoney - remake the project with different AI, rebuilt "
+        "new fancier UI, options for super risky risky medium and conservative. "
+        "No real money is used papermoney https://github.com/Choaterboater/voltanode.git"
+    )
+    assert detect_stack(brief) == "nextjs"
+
+
 def test_gui_is_word_bounded_and_steals_no_genuine_cli_or_data_briefs():
     # 'gui' must fire only as a standalone word — never inside other words, and it
     # must not hijack genuine CLI / data / library briefs.
     assert detect_stack("a penguin facts explorer CLI") != "react"
     assert detect_stack("a bot for arguing on forums") != "react"
+    assert detect_stack("a suitable data pipeline script") == "python"
     assert detect_stack("a data pipeline script") == "python"
     assert detect_stack("a python library for stats") == "python"

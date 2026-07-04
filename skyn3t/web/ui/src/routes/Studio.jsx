@@ -318,7 +318,7 @@ export default function Studio({ stream }) {
               build_profile: buildProfile,
               full_app: fullApp,
             };
-            if (buildProfile === "manual" && modelOverride.trim()) {
+            if (modelOverride.trim()) {
               payload.model_override = modelOverride.trim();
             }
             if (refImage?.url) payload.reference_image = refImage.url;
@@ -374,8 +374,7 @@ export default function Studio({ stream }) {
             type="submit"
             disabled={
               submit.isPending ||
-              !brief.trim() ||
-              (buildProfile === "manual" && !modelOverride.trim())
+              !brief.trim()
             }
             className="btn-ember disabled:opacity-50"
           >
@@ -416,16 +415,12 @@ export default function Studio({ stream }) {
                 value={modelOverride}
                 onChange={(e) => {
                   setModelOverride(e.target.value);
-                  if (buildProfile !== "manual") setBuildProfile("manual");
                 }}
-                disabled={buildProfile !== "manual"}
                 className="field"
                 title="Pin one AI model for this build"
               >
                 <option value="">
-                  {buildProfile === "manual"
-                    ? "Select OpenRouter model"
-                    : "Manual model disabled"}
+                  Select OpenRouter model
                 </option>
                 {manualModelChoices.map((m) => (
                   <option key={m} value={m}>
@@ -434,9 +429,9 @@ export default function Studio({ stream }) {
                 ))}
               </select>
               <span className="font-mono text-[10px] text-ash/60">
-                {buildProfile === "manual"
-                  ? models.data?.note || `${(models.data?.models || []).length} OpenRouter models`
-                  : BUILD_PROFILES.find((p) => p.id === buildProfile)?.hint}
+                {modelOverride
+                  ? `Model override: ${modelOverride} (for this build)`
+                  : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
               </span>
             </div>
             <label

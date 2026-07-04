@@ -337,6 +337,7 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
             "profile": profile,
             "model_override": model,
             "backend": getattr(state.settings, "llm_backend", ""),
+            "full_app": full_app_requested,
         },
         correlation_id=build_id,
     )
@@ -473,6 +474,80 @@ async def cancel_build(state: AppState, build_id: str, reason: str = "") -> dict
         correlation_id=bid,
     )
     return {"build_id": bid, "status": "cancelled", "task_cancelled": task_cancelled}
+
+
+def _build_replay_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Extract the small set of inputs needed to rerun a prior build."""
+    manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+    extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
+    trace = row.get("model_trace") if isinstance(row.get("model_trace"), dict) else {}
+    profile = (
+        row.get("build_profile")
+        or trace.get("profile")
+        or extra.get("build_profile")
+        or "cheap_learned"
+    )
+    normalized_profile = _normalize_build_profile(str(profile))
+    model = trace.get("model_override") or extra.get("model_override") or ""
+    full_app = bool(
+        row.get("full_app")
+        or trace.get("full_app")
+        or extra.get("full_app_contract")
+        or normalized_profile == "full_app"
+    )
+    return {
+        "brief": str(manifest.get("brief") or row.get("brief") or ""),
+        "stack": str(manifest.get("stack") or row.get("stack") or ""),
+        "slug": str(manifest.get("slug") or row.get("slug") or ""),
+        "build_profile": normalized_profile,
+        "model_override": _normalize_model_override(str(model)),
+        "full_app": full_app,
+    }
+
+
+async def rebuild_build(
+    state: AppState,
+    build_id: str,
+    *,
+    reuse_slug: bool = False,
+) -> dict[str, Any]:
+    """Rerun a previous build with its brief, stack, profile, and model pin."""
+    bid = (build_id or "").strip()
+    if not bid:
+        raise ValueError("build_id is required")
+
+    rec = state.builds.get(bid)
+    row: dict[str, Any] | None = rec.to_dict() if rec is not None else None
+    if row is None and state.memory is not None and hasattr(state.memory, "get_build"):
+        try:
+            row = await state.memory.get_build(bid)
+        except Exception:  # noqa: BLE001
+            row = None
+    if row is None:
+        raise KeyError(bid)
+
+    replay = _build_replay_fields(row)
+    if not replay["brief"].strip():
+        raise ValueError("source build has no brief")
+    res = await submit_build(
+        state,
+        brief=replay["brief"],
+        stack=replay["stack"],
+        slug=replay["slug"] if reuse_slug else "",
+        build_profile=replay["build_profile"],
+        model_override=replay["model_override"],
+        full_app=replay["full_app"],
+    )
+    return {
+        **res,
+        "source_build_id": bid,
+        "reused": {
+            "stack": replay["stack"],
+            "build_profile": replay["build_profile"],
+            "model_override": replay["model_override"],
+            "slug": replay["slug"] if reuse_slug else "",
+        },
+    }
 
 
 async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
@@ -1929,6 +2004,19 @@ def build_router(state: AppState) -> Any:
                 state,
                 build_id=str(body.get("build_id", "")),
                 reason=str(body.get("reason", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except KeyError:
+            raise HTTPException(status_code=404, detail="build not found") from None
+
+    @router.post("/builds/rebuild", dependencies=[auth])
+    async def _rebuild_alias(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            return await rebuild_build(
+                state,
+                build_id=str(body.get("build_id", "")),
+                reuse_slug=bool(body.get("reuse_slug", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

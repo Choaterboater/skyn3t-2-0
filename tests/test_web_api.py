@@ -214,6 +214,125 @@ async def test_submit_build_normalizes_model_override():
     assert studio.extra["model_override"] == "openrouter/gpt-4o-mini"
 
 
+async def test_rebuild_build_replays_live_build_settings():
+    class _Studio:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.calls.append({
+                "brief": brief,
+                "slug": slug,
+                "extra": dict(extra or {}),
+            })
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    first = await routes.submit_build(
+        st,
+        brief="a complete analytics dashboard",
+        stack="react",
+        slug="analytics-v1",
+        build_profile="manual",
+        model_override="openrouter/custom-model",
+        full_app=True,
+    )
+    st.builds[first["build_id"]].status = "completed"
+
+    out = await routes.rebuild_build(st, first["build_id"])
+
+    assert out["source_build_id"] == first["build_id"]
+    assert out["build_id"] != first["build_id"]
+    assert out["reused"] == {
+        "stack": "react",
+        "build_profile": "manual",
+        "model_override": "openrouter/custom-model",
+        "slug": "",
+    }
+    assert len(studio.calls) == 2
+    replay = studio.calls[1]
+    assert replay["brief"] == "a complete analytics dashboard"
+    assert replay["slug"] is None
+    assert replay["extra"]["stack"] == "react"
+    assert replay["extra"]["build_profile"] == "manual"
+    assert replay["extra"]["model_override"] == "openrouter/custom-model"
+    assert replay["extra"]["full_app_contract"] is True
+    assert st.builds[out["build_id"]].model_trace["full_app"] is True
+
+
+async def test_rebuild_build_replays_persisted_history_row_with_reuse_slug():
+    class _Memory:
+        async def get_build(self, build_id):
+            return {
+                "build_id": build_id,
+                "manifest": {
+                    "brief": "a finance API with audit logs",
+                    "stack": "fastapi",
+                    "slug": "finance-api",
+                    "extra": {
+                        "build_profile": "best_quality",
+                        "model_override": "openrouter/history-model",
+                        "full_app_contract": True,
+                    },
+                },
+                "model_trace": {"profile": "best_quality"},
+                "status": "completed",
+            }
+
+    class _Studio:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.calls.append({
+                "brief": brief,
+                "slug": slug,
+                "extra": dict(extra or {}),
+            })
+
+    studio = _Studio()
+    st = _state(memory=_Memory(), studio=studio)
+
+    out = await routes.rebuild_build(st, "hist1", reuse_slug=True)
+
+    assert out["source_build_id"] == "hist1"
+    assert out["reused"] == {
+        "stack": "fastapi",
+        "build_profile": "best_quality",
+        "model_override": "openrouter/history-model",
+        "slug": "finance-api",
+    }
+    replay = studio.calls[0]
+    assert replay["brief"] == "a finance API with audit logs"
+    assert replay["slug"] == "finance-api"
+    assert replay["extra"]["stack"] == "fastapi"
+    assert replay["extra"]["build_profile"] == "best_quality"
+    assert replay["extra"]["model_override"] == "openrouter/history-model"
+    assert replay["extra"]["full_app_contract"] is True
+
+
+async def test_rebuild_build_rejects_missing_source_brief():
+    class _Memory:
+        async def get_build(self, build_id):
+            return {
+                "build_id": build_id,
+                "manifest": {"extra": {"build_profile": "manual"}},
+                "status": "completed",
+            }
+
+    st = _state(memory=_Memory())
+
+    with pytest.raises(ValueError, match="source build has no brief"):
+        await routes.rebuild_build(st, "hist-empty")
+
+
+async def test_rebuild_build_missing_source_raises_keyerror():
+    st = _state()
+
+    with pytest.raises(KeyError):
+        await routes.rebuild_build(st, "missing-build")
+
+
 async def test_cancel_build_marks_live_record_cancelled():
     st = _state()
     res = await routes.submit_build(st, brief="a todo app")

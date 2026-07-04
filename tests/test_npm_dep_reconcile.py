@@ -124,6 +124,28 @@ def test_run_node_build_offline_soft_skips(tmp_path, monkeypatch):
     assert ran is False, (ran, ok, summary)
 
 
+def test_run_node_build_skips_build_when_build_stamp_current(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as pr
+    from skyn3t.npm_utils import mark_npm_build_current, mark_npm_install_current
+
+    _node_proj(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.jsx").write_text("export default function App(){return null}\n", encoding="utf-8")
+    mark_npm_install_current(tmp_path)
+    mark_npm_build_current(tmp_path, "build")
+    monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("current build stamp should skip npm commands")
+
+    monkeypatch.setattr(pr, "_run_proof_command", fail_run)
+
+    ran, ok, summary = pr._run_node_build(tmp_path, "nextjs", 120)
+    assert ran is True and ok is True
+    assert "npm run build skipped" in summary
+
+
 def test_adds_only_undeclared_bare_imports(tmp_path):
     (tmp_path / "package.json").write_text(
         json.dumps({"name": "x", "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")

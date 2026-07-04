@@ -141,6 +141,14 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert "prompts {ai.promptCount}" in projects
 
 
+def test_cortex_effects_surface_reusable_skills() -> None:
+    cortex = (ROUTES / "Cortex.jsx").read_text()
+    assert "Reusable skills" in cortex
+    assert "skillRows" in cortex
+    assert "skillCount" in cortex
+    assert "No learned skills yet" in cortex
+
+
 def test_settings_wires_visual_self_heal_toggle() -> None:
     settings = (ROUTES / "Settings.jsx").read_text()
     assert "/settings/visual_self_heal" in settings

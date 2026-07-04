@@ -769,10 +769,11 @@ async def stacks_payload(state: AppState) -> dict[str, Any]:
 async def cortex_effects_payload(state: AppState) -> dict[str, Any]:
     """What cortex has actually changed — the visible proof the loops took effect.
 
-    Reads three durable sources under ``data/``: the learned-router leaderboard
-    (fed per successful build stage), persisted tuning overrides, and evolved
-    agent instructions. Each source degrades to ``{}`` independently so a missing
-    or corrupt file never breaks the dashboard.
+    Reads durable/self-improving sources: the learned-router leaderboard (fed per
+    successful build stage), persisted tuning overrides, evolved agent
+    instructions, and the live learned/imported skill library. Each source
+    degrades independently so a missing or corrupt file never breaks the
+    dashboard.
     """
     data_dir = state.settings.data_dir
     leaderboard: dict[str, Any] = {}
@@ -796,7 +797,43 @@ async def cortex_effects_payload(state: AppState) -> dict[str, Any]:
         prompts = load_prompt_overrides(data_dir)
     except Exception:  # noqa: BLE001
         prompts = {}
-    return {"leaderboard": leaderboard, "tuning": tuning, "prompts": prompts}
+    skills_effect: dict[str, Any] = {"count": 0, "items": []}
+    skills = getattr(state, "skills", None)
+    getter = getattr(skills, "all", None) or getattr(skills, "list_skills", None)
+    if skills is not None and getter is not None:
+        try:
+            res = getter()
+            if hasattr(res, "__await__"):
+                res = await res
+            items: list[dict[str, Any]] = []
+            for s in list(res or []):
+                if isinstance(s, dict):
+                    row = {
+                        "slug": s.get("slug", ""),
+                        "title": s.get("title") or s.get("name", ""),
+                        "stack": s.get("stack", ""),
+                        "score": s.get("score", 0),
+                        "source": s.get("source", ""),
+                    }
+                else:
+                    row = {
+                        "slug": getattr(s, "slug", ""),
+                        "title": getattr(s, "title", ""),
+                        "stack": getattr(s, "stack", ""),
+                        "score": getattr(s, "score", 0),
+                        "source": getattr(s, "source", ""),
+                    }
+                items.append(row)
+            items.sort(key=lambda r: (float(r.get("score") or 0), str(r.get("title") or "")), reverse=True)
+            skills_effect = {"count": len(items), "items": items[:12]}
+        except Exception:  # noqa: BLE001
+            skills_effect = {"count": 0, "items": []}
+    return {
+        "leaderboard": leaderboard,
+        "tuning": tuning,
+        "prompts": prompts,
+        "skills": skills_effect,
+    }
 
 
 async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:

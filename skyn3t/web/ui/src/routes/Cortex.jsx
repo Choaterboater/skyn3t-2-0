@@ -38,13 +38,16 @@ export default function Cortex() {
   const leaderboard = effects?.leaderboard || {};
   const tuning = effects?.tuning || {};
   const prompts = effects?.prompts || {};
+  const skills = effects?.skills || {};
   const leaderRows = Object.entries(leaderboard).flatMap(([bucket, rows]) =>
     (rows || []).map((r) => ({ bucket, ...r }))
   );
   const tuningRows = Object.entries(tuning);
   const promptRows = Object.entries(prompts);
+  const skillRows = Array.isArray(skills) ? skills : skills.items || [];
+  const skillCount = Number(skills.count ?? skillRows.length);
   const hasEffects =
-    leaderRows.length || tuningRows.length || promptRows.length;
+    leaderRows.length || tuningRows.length || promptRows.length || skillCount;
 
   const proposals = Array.isArray(data) ? data : data?.proposals || [];
 
@@ -173,11 +176,11 @@ export default function Cortex() {
         />
         {!hasEffects ? (
           <Empty icon="◇">
-            No effects yet. Cortex feeds the learned router, tuning, and agent
-            instructions as builds run.
+            No effects yet. Cortex feeds the learned router, reusable skills,
+            tuning, and agent instructions as builds run.
           </Empty>
         ) : (
-          <div className="grid grid-cols-1 gap-6 px-4 py-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 px-4 py-4 md:grid-cols-4">
             <div>
               <div className="mb-2 font-mono text-[11px] uppercase text-ash">
                 Learned router
@@ -194,6 +197,33 @@ export default function Cortex() {
                       <span className="shrink-0 text-ash">
                         {Math.round((r.win_rate ?? 0) * 100)}% · {r.plays}
                       </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-2 font-mono text-[11px] uppercase text-ash">
+                Reusable skills
+              </div>
+              {skillCount === 0 ? (
+                <p className="text-sm text-ash">No learned skills yet.</p>
+              ) : (
+                <ul className="space-y-2 text-sm text-bone">
+                  {skillRows.slice(0, 8).map((skill) => (
+                    <li key={skill.slug || skill.title}>
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate font-mono text-xs">
+                          {skill.title || skill.slug}
+                        </span>
+                        <span className="shrink-0 text-ash">
+                          {Math.round((skill.score ?? 0) * 100)}%
+                        </span>
+                      </div>
+                      <p className="mt-1 truncate font-sans text-xs text-ash">
+                        {skill.stack || "generic"} · {skill.source || "learned"}
+                      </p>
                     </li>
                   ))}
                 </ul>

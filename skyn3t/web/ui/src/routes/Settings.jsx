@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { queryFn, apiPost } from "../api.js";
+import { apiFetch, queryFn, apiPost } from "../api.js";
 import { PageHeader, Panel, PanelHead, Pill, Empty } from "../components/ui.jsx";
 
 function Row({ label, value }) {
@@ -93,15 +93,47 @@ export default function Settings() {
   const [model, setModel] = useState("");
   const [modelMsg, setModelMsg] = useState("");
   const normalizeModelId = (value) => value.replace(/\s+/g, "").trim();
+  const [modelValidation, setModelValidation] = useState(null);
   useEffect(() => {
     const cur = secrets.data?.preferred_model;
-    if (cur !== undefined) setModel(cur || "");
+    if (cur !== undefined) {
+      const normalized = normalizeModelId(cur || "");
+      setModel(normalized);
+      if (secrets.data) {
+        void refreshModelValidation(normalized);
+      }
+    }
   }, [secrets.data?.preferred_model]);
+
+  async function refreshModelValidation(nextModel) {
+    const normalized = normalizeModelId(nextModel);
+    if (!normalized) {
+      setModelValidation({
+        model: "",
+        status: "auto",
+        available: true,
+      });
+      return;
+    }
+    try {
+      const resolved = await apiFetch(`/models/resolve?model=${encodeURIComponent(normalized)}`);
+      setModelValidation(resolved);
+    } catch (e) {
+      setModelValidation({
+        model: normalized,
+        status: "unknown",
+        available: false,
+        note: String(e?.message || e),
+      });
+    }
+  }
+
   async function saveModel(m) {
     const normalized = normalizeModelId(m);
     setModel(normalized);
     try {
       await apiPost("/settings/model", { model: normalized });
+      await refreshModelValidation(normalized);
       queryClient.setQueryData(["llm-secrets"], (old) => ({
         ...(old || {}),
         preferred_model: normalized,
@@ -439,12 +471,12 @@ export default function Settings() {
                 whole-app builds when it is set.
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <div className="min-w-[16rem] flex-1">
-                  <input
-                    type="text"
-                    list="preferred-models"
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
+                  <div className="min-w-[16rem] flex-1">
+                    <input
+                      type="text"
+                      list="preferred-models"
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -452,6 +484,7 @@ export default function Settings() {
                       }
                     }}
                     onBlur={() => saveModel(model)}
+                    onFocus={() => refreshModelValidation(model)}
                     placeholder="auto — smart routing"
                     className="field"
                   />
@@ -476,6 +509,26 @@ export default function Settings() {
                       : `${(models.data?.models || []).length} models`}
                 </span>
               </div>
+              {modelValidation ? (
+                <p
+                  className={`mt-1 font-mono text-[11px] ${
+                    modelValidation.available ? "text-ash/60" : "text-ember"
+                  }`}
+                >
+                  {modelValidation.status === "auto"
+                    ? "model mode: auto (learned router)"
+                    : modelValidation.available
+                      ? "model found in OpenRouter catalog"
+                      : `model not found in catalog${modelValidation.note ? ` — ${modelValidation.note}` : ""}`}
+                  {modelValidation.status !== "auto" &&
+                  !modelValidation.available &&
+                  Array.isArray(modelValidation.suggestions)
+                    ? modelValidation.suggestions.length
+                      ? `; try: ${modelValidation.suggestions.join(", ")}`
+                      : ""
+                    : ""}
+                </p>
+              ) : null}
               {modelMsg ? (
                 <p className="mt-2 font-mono text-[11px] text-plasma">{modelMsg}</p>
               ) : null}

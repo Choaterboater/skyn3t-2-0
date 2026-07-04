@@ -146,6 +146,26 @@ async def test_best_quality_profile_requests_visual_self_heal():
     assert studio.extra["visual_self_heal"] is True
 
 
+async def test_balanced_profile_adds_more_retries_without_asset_cost():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    res = await routes.submit_build(st, brief="a polished golf website", build_profile="balanced")
+
+    assert res["build_profile"] == "balanced"
+    assert studio.extra["best_of_n"] == 1
+    assert studio.extra["max_debug_attempts"] == 2
+    assert studio.extra["asset_gen"] is False
+    assert studio.extra["visual_self_heal"] is False
+
+
+
 async def test_full_app_option_requests_contract_assets_and_extra_repair_budget():
     class _Studio:
         def __init__(self):

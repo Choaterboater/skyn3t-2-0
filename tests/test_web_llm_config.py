@@ -106,6 +106,28 @@ async def test_set_llm_routing_updates_codegen_and_model_pins():
     assert p["model_pins"]["ui"] == "provider/ui"
 
 
+async def test_set_llm_routing_compacts_model_inputs():
+    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x")
+    await set_llm_routing(
+        st,
+        codegen_cli_provider="",
+        codegen_cli_model=" provider / model\ncli ",
+        openrouter_codegen_model=" provider  /  chosen ",
+        model_pins={
+            "cheap": " provider / cheap ",
+            "ui": "  provider/ui  ",
+            "backend": "provider/backend",
+            "strong": "",
+            "docs": "   ",
+        },
+        persist=False,
+    )
+    assert st.settings.codegen_cli_model == "provider/modelcli"
+    assert st.settings.openrouter_codegen_model == "provider/chosen"
+    assert st.settings.model_cheap == "provider/cheap"
+    assert st.settings.model_ui == "provider/ui"
+
+
 async def test_set_llm_routing_persist_false_does_not_mutate_env(monkeypatch):
     monkeypatch.delenv("SKYN3T_OPENROUTER_CODEGEN_MODEL", raising=False)
     monkeypatch.delenv("SKYN3T_MODEL_UI", raising=False)

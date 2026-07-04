@@ -204,6 +204,7 @@ function rebuildFields(build) {
     buildProfile: BUILD_PROFILES.some((p) => p.id === profile)
       ? profile
       : "cheap_learned",
+    sourceBuildProfile: profile === "full_app" ? "full_app" : null,
     modelOverride: String(trace.model_override || extra.model_override || ""),
     fullApp: Boolean(
       trace.full_app ||
@@ -297,6 +298,13 @@ export default function Studio({ stream }) {
     }
   };
 
+  const chooseBuildProfile = (id) => {
+    setBuildProfile(id);
+    setVariantSource((prev) =>
+      prev?.sourceBuildProfile ? { ...prev, sourceBuildProfile: null } : prev
+    );
+  };
+
   const loadRebuildVariant = (build) => {
     const fields = rebuildFields(build);
     if (!fields.brief.trim()) return;
@@ -308,6 +316,7 @@ export default function Studio({ stream }) {
       build_id: String(build.build_id || ""),
       slug: fields.slug,
       stack: fields.stack,
+      sourceBuildProfile: fields.sourceBuildProfile,
     });
     clearImage();
     const el = briefRef.current;
@@ -422,7 +431,7 @@ export default function Studio({ stream }) {
             if (!brief.trim()) return;
             const payload = {
               brief: brief.trim(),
-              build_profile: buildProfile,
+              build_profile: variantSource?.sourceBuildProfile || buildProfile,
               full_app: fullApp,
             };
             if (variantSource?.stack) {
@@ -506,7 +515,7 @@ export default function Studio({ stream }) {
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => setBuildProfile(p.id)}
+                    onClick={() => chooseBuildProfile(p.id)}
                     title={p.hint}
                     aria-pressed={on}
                     className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${

@@ -22,6 +22,9 @@ def test_each_variant_brief_gets_its_contract():
         ("rag", "a chatbot that remembers me", ("MEMORY_FILE", "AFTER its own")),
         ("python_cli", "a terminal assistant for my notes",
          ("workspace-write", "session_start", "denied")),
+        ("nextjs", "a Next.js app with Supabase auth",
+         ("NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+          "SUPABASE_SERVICE_ROLE_KEY", "server-only")),
     )
     for stack, brief, tokens in cases:
         directive = variant_directive(stack, brief)
@@ -36,6 +39,8 @@ def test_base_briefs_get_no_variant_directive():
         ("rag", "a rag app to chat with my documents"),
         ("python_cli", "a command line todo manager"),
         ("workflow", "an agent that sends briefings"),  # workflow has no variants
+        ("nextjs", "a Next.js blog"),
+        ("nextjs", "a pricing page about Supabase"),
     ):
         assert variant_directive(stack, brief) == "", (stack, brief)
 
@@ -44,3 +49,4 @@ def test_triggers_are_stack_scoped():
     # A gateway phrase on the WRONG stack must not inject the gateway contract.
     assert variant_directive("rag", "an llm gateway with cost tracking") == ""
     assert variant_directive("fastapi", "a chatbot that remembers me") == ""
+    assert variant_directive("fastapi", "a Supabase auth dashboard") == ""

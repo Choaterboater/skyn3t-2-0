@@ -35,6 +35,7 @@ from skyn3t.agents._scaffold import (
     _implies_llm_gateway,
     _implies_market_data,
     _implies_memory_chat,
+    _implies_supabase,
     default_pyproject,
     scaffold_for,
     synthesize_python_entrypoint,
@@ -505,6 +506,13 @@ _VARIANT_DIRECTIVES: tuple[tuple[str, Any, str], ...] = (
      "workspace-write (read-only is the DEFAULT) and every file path is confined "
      "to the workspace (symlink-safe, size-capped); ship offline mock-provider "
      "scenarios in scenarios.json and `doctor --output-format json`."),
+    ("nextjs", _implies_supabase,
+     "VARIANT — Supabase Next.js app: create `lib/supabaseClient.js` with "
+     "`createClient` from `@supabase/supabase-js`, reading ONLY browser-safe "
+     "`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`; show a "
+     "clear missing-config state instead of crashing; any `SUPABASE_SERVICE_ROLE_KEY` "
+     "or admin secret is server-only and must NEVER be imported, referenced, or "
+     "rendered from client components such as `app/page.jsx`."),
 )
 
 

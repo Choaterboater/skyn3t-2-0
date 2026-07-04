@@ -199,6 +199,11 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "golf website for adult beginners" in studio
 
 
+def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert 'model: trace.codegen_model || trace.model_override || "auto",' in studio
+
+
 def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "function rebuildFields(build)" in studio

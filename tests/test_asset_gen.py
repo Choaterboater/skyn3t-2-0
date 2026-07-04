@@ -15,6 +15,8 @@ from skyn3t.studio.assets import (
     _extract_subjects,
     _wants_images,
     asset_gen_enabled,
+    asset_subject_relevant,
+    filter_assets_for_brief,
     generate_assets,
 )
 from skyn3t.studio.planner import Planner
@@ -77,6 +79,27 @@ def test_business_site_subjects_are_domain_specific_not_hvac_default():
 
 def test_generic_business_site_does_not_invent_hvac_assets():
     assert _extract_subjects("a modern business website", 4) == []
+
+
+def test_asset_subject_relevance_matches_business_domain():
+    brief = "a modern golf course website with tee times"
+    assert asset_subject_relevant(brief, "sunlit golf course fairway and green")
+    assert not asset_subject_relevant(brief, "uniformed HVAC technician servicing an AC unit")
+
+
+def test_filter_assets_for_brief_drops_wrong_domain_assets():
+    assets = [
+        {
+            "subject": "sunlit golf course fairway and green",
+            "file": "/assets/sunlit-golf-course.webp",
+        },
+        {
+            "subject": "uniformed HVAC technician servicing an AC unit",
+            "file": "/assets/uniformed-hvac-technician.webp",
+        },
+    ]
+    filtered = filter_assets_for_brief("a golf website for adult beginners", assets)
+    assert [a["subject"] for a in filtered] == ["sunlit golf course fairway and green"]
 
 
 # ---- end-to-end (mocked client) -------------------------------------------
@@ -266,6 +289,46 @@ def test_codegen_payload_prefers_current_worktree_asset_manifest(tmp_path):
 
     assets = payload["extra"]["assets"]
     assert assets == [
+        {
+            "subject": "sunlit golf course fairway and green",
+            "file": "/assets/sunlit-golf-course.svg",
+        }
+    ]
+
+
+def test_codegen_payload_filters_wrong_domain_current_asset_manifest(tmp_path):
+    runner = StudioRunner(EventBus(), Orchestrator(EventBus()), settings=Settings())
+    worktree = tmp_path / "wt"
+    assets_dir = worktree / "public" / "assets"
+    assets_dir.mkdir(parents=True)
+    (assets_dir / "sunlit-golf-course.svg").write_text("<svg />")
+    (assets_dir / "uniformed-hvac-technician.svg").write_text("<svg />")
+    (assets_dir / "assets.json").write_text(json.dumps([
+        {
+            "subject": "sunlit golf course fairway and green",
+            "file": "/assets/sunlit-golf-course.svg",
+        },
+        {
+            "subject": "uniformed HVAC technician servicing an AC unit",
+            "file": "/assets/uniformed-hvac-technician.svg",
+        },
+    ]))
+    plan = Planner().plan(
+        "Build a golf website for adult beginners who never played",
+        "golf",
+        stack_hint="nextjs",
+    )
+
+    payload = runner._base_payload(
+        plan,
+        str(tmp_path / "proj"),
+        str(worktree),
+        {},
+        [],
+        {"assets": [{"subject": "stale", "file": "/assets/stale.svg"}]},
+    )
+
+    assert payload["extra"]["assets"] == [
         {
             "subject": "sunlit golf course fairway and green",
             "file": "/assets/sunlit-golf-course.svg",

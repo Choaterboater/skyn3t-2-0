@@ -89,6 +89,22 @@ _DOMAIN_SUBJECTS = (
     (("salon", "spa", "barber"),
      ("modern salon interior", "spa treatment room with soft lighting")),
 )
+_SUBJECT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "beside",
+    "by",
+    "for",
+    "home",
+    "house",
+    "modern",
+    "of",
+    "on",
+    "the",
+    "with",
+}
 
 
 def _wants_images(brief: str) -> bool:
@@ -130,6 +146,49 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     # an app that ships decorative pictures. Generating cat/dog/tree/flower here
     # only litters unrelated builds. No subject -> generate nothing.
     return []
+
+
+def _subject_tokens(value: str) -> set[str]:
+    return {
+        tok
+        for tok in re.findall(r"[a-z0-9]+", (value or "").lower())
+        if len(tok) > 2 and tok not in _SUBJECT_STOPWORDS
+    }
+
+
+def asset_subject_relevant(brief: str, subject: str) -> bool:
+    """Whether an asset subject belongs to this brief's expected image set.
+
+    This is intentionally conservative: generated assets are strong visual
+    prompt hints. If the brief implies a domain-specific set (golf, restaurant,
+    HVAC, etc.), drop unrelated subjects even when stale files still exist in
+    the worktree.
+    """
+    expected = _extract_subjects(brief, MAX_ASSETS)
+    if not expected:
+        return not _wants_images(brief)
+    subject_tokens = _subject_tokens(subject)
+    if not subject_tokens:
+        return False
+    for candidate in expected:
+        candidate_tokens = _subject_tokens(candidate)
+        if subject_tokens & candidate_tokens:
+            return True
+    return False
+
+
+def filter_assets_for_brief(
+    brief: str, assets: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Keep only generated assets whose subject is relevant to this brief."""
+    if not isinstance(assets, list):
+        return []
+    return [
+        asset
+        for asset in assets
+        if isinstance(asset, dict)
+        and asset_subject_relevant(brief, str(asset.get("subject") or ""))
+    ]
 
 
 def _ext_for(data: bytes) -> str:

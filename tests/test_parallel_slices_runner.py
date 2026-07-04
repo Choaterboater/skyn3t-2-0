@@ -101,6 +101,52 @@ def test_run_parallel_slices_merges_every_slice(tmp_path):
     assert "api/main.py" in captured["frontend"]["slice_scope"]["manifest"]
 
 
+def test_summarize_keeps_codegen_override_unavailable() -> None:
+    summary = StudioRunner._summarize({
+        "files_written": 3,
+        "codegen_override_unavailable": "claude",
+        "debug_payload": {"large": "ignored"},
+    })
+
+    assert summary["files_written"] == 3
+    assert summary["codegen_override_unavailable"] == "claude"
+
+
+def test_run_parallel_slices_aggregates_codegen_override_unavailable(tmp_path):
+    r = _runner(tmp_path, parallel_code_slices=True)
+    main_wt = create_worktree(str(r.settings.projects_dir), "demo")
+    plan = _plan()
+    prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
+    slices = r._maybe_slices(plan, prior)
+    unavailable = {
+        "frontend": "claude",
+        "backend": "codex",
+        "tests": "claude",
+        "config": "",
+    }
+
+    async def fake_submit(spec, payload, cid):
+        wt = Path(payload["worktree_dir"])
+        sc = payload["slice_scope"]
+        for rel in sc["files"]:
+            p = wt / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(f"// {rel}\n", encoding="utf-8")
+        value = unavailable.get(sc["name"], "")
+        output = {"files_written": len(sc["files"]), "slice": sc["name"]}
+        if value:
+            output["codegen_override_unavailable"] = value
+        return TaskResult(task_id="x", success=True, output=output)
+
+    r._submit_stage = fake_submit  # type: ignore[assignment]
+
+    result = asyncio.run(r._run_code_parallel_slices(
+        plan, _CODE_SPEC, str(r.settings.projects_dir / "demo"),
+        prior, [], {}, "cid", main_wt, [main_wt], slices))
+
+    assert result.output["codegen_override_unavailable"] == "claude, codex"
+
+
 def test_run_parallel_slices_scopes_each_agent_to_its_files(tmp_path):
     r = _runner(tmp_path, parallel_code_slices=True)
     main_wt = create_worktree(str(r.settings.projects_dir), "demo")

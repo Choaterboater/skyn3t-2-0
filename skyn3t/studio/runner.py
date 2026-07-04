@@ -3830,6 +3830,7 @@ class StudioRunner:
         total_written = 0
         summaries: dict[str, Any] = {}
         degraded_reasons: list[str] = []
+        unavailable_overrides: set[str] = set()
         # A vanished SUBSTANTIVE slice (frontend/backend) means the app is missing
         # whole features — surface it so the existing degradation gate fires.
         # tests/config emptiness is tolerable (tests optional; the checklist /
@@ -3842,6 +3843,14 @@ class StudioRunner:
             sl_out = (getattr(r, "output", None) or {}) if r else {}
             ok = bool(r and r.success) and len(merged) > 0
             summaries[name] = {"files": len(merged), "ok": ok}
+            unavailable = sl_out.get("codegen_override_unavailable")
+            if isinstance(unavailable, str):
+                unavailable = [unavailable]
+            if isinstance(unavailable, list):
+                for value in unavailable:
+                    value = str(value).strip()
+                    if value:
+                        unavailable_overrides.add(value)
             if name in substantive and (sl_out.get("degraded") or not ok):
                 degraded_reasons.append(
                     f"{name}: {sl_out.get('degraded_reason') or 'slice produced no files'}")
@@ -3852,6 +3861,8 @@ class StudioRunner:
             "slices": summaries,
             "backend": getattr(getattr(self, "settings", None), "llm_backend", ""),
         }
+        if unavailable_overrides:
+            out["codegen_override_unavailable"] = ", ".join(sorted(unavailable_overrides))
         if degraded_reasons:
             out["degraded"] = True
             out["degraded_reason"] = "; ".join(degraded_reasons)
@@ -3925,7 +3936,10 @@ class StudioRunner:
 
     @staticmethod
     def _summarize(output: dict[str, Any]) -> dict[str, Any]:
-        keep = ("score", "verdict", "files_written", "gaps", "worktree_dir")
+        keep = (
+            "score", "verdict", "files_written", "gaps", "worktree_dir",
+            "codegen_override_unavailable",
+        )
         summary = {k: output[k] for k in keep if k in output}
         if not summary:
             # Keep a tiny, JSON-safe digest.

@@ -150,7 +150,7 @@ function aiMeta(build) {
   const stageCount = Array.isArray(trace.stages) ? trace.stages.length : 0;
   return {
     profile: build.build_profile || trace.profile || "cheap_learned",
-    model: trace.model_override || trace.codegen_model || "auto",
+    model: trace.codegen_model || trace.model_override || "auto",
     backend: trace.backend || "auto",
     promptCount: trace.prompt_count || 0,
     stageCount,

@@ -147,9 +147,13 @@ function buildMeta(build) {
 function aiMeta(build) {
   const trace = build.model_trace || {};
   const scorecard = build.quality_scorecard || {};
+  const stageCount = Array.isArray(trace.stages) ? trace.stages.length : 0;
   return {
     profile: build.build_profile || trace.profile || "cheap_learned",
     model: trace.model_override || trace.codegen_model || "auto",
+    backend: trace.backend || "auto",
+    promptCount: trace.prompt_count || 0,
+    stageCount,
     skills: Array.isArray(build.skills_used)
       ? build.skills_used.length
       : scorecard.skills_count || 0,
@@ -158,6 +162,54 @@ function aiMeta(build) {
       : scorecard.recall_count || 0,
     proof: scorecard.proof_passed,
     build: scorecard.build,
+  };
+}
+
+function buildDiagnostics(build) {
+  const trace = build.model_trace || {};
+  const scorecard = build.quality_scorecard || {};
+  const skills = Array.isArray(build.skills_used)
+    ? build.skills_used.length
+    : scorecard.skills_count || 0;
+  const recall = Array.isArray(build.recall_used)
+    ? build.recall_used.length
+    : scorecard.recall_count || 0;
+  const issues = [];
+  if (scorecard.proof_passed === false) issues.push("proof failed");
+  if (scorecard.build && scorecard.build !== "passed") {
+    issues.push(`build ${scorecard.build}`);
+  }
+  if (build.status === "failed") issues.push("failed");
+  if (skills === 0) issues.push("skills 0");
+  if (recall === 0) issues.push("recall 0");
+  if ((trace.prompt_count || 0) === 0 && ["completed", "completed_no_go"].includes(build.status)) {
+    issues.push("prompts 0");
+  }
+  return issues.length ? issues.join(" · ") : "no obvious gaps";
+}
+
+function rebuildFields(build) {
+  const manifest = build.manifest && typeof build.manifest === "object" ? build.manifest : {};
+  const extra = manifest.extra && typeof manifest.extra === "object" ? manifest.extra : {};
+  const trace = build.model_trace || {};
+  const profile =
+    build.build_profile ||
+    trace.profile ||
+    extra.build_profile ||
+    "cheap_learned";
+  return {
+    brief: String(manifest.brief || build.brief || ""),
+    stack: String(manifest.stack || build.stack || build.stack_selection?.stack || ""),
+    slug: String(manifest.slug || build.slug || ""),
+    buildProfile: BUILD_PROFILES.some((p) => p.id === profile)
+      ? profile
+      : "cheap_learned",
+    modelOverride: String(trace.model_override || extra.model_override || ""),
+    fullApp: Boolean(
+      trace.full_app ||
+        extra.full_app_contract ||
+        profile === "full_app"
+    ),
   };
 }
 
@@ -177,6 +229,7 @@ export default function Studio({ stream }) {
   const [buildProfile, setBuildProfile] = useState("cheap_learned");
   const [fullApp, setFullApp] = useState(false);
   const [modelOverride, setModelOverride] = useState("");
+  const [variantSource, setVariantSource] = useState(null);
 
   const onPickImage = (file) => {
     if (!file || !file.type?.startsWith("image/")) return;
@@ -210,6 +263,11 @@ export default function Studio({ stream }) {
     queryFn: queryFn("/models"),
     retry: 0,
   });
+  const secrets = useQuery({
+    queryKey: ["llm-secrets"],
+    queryFn: queryFn("/llm/secrets"),
+    retry: 0,
+  });
   const modelOptions = models.data?.models || [];
   const normalizeModelId = (value) => value.replace(/\s+/g, "").trim();
   const normalizedModelOverride = normalizeModelId(modelOverride);
@@ -239,11 +297,32 @@ export default function Studio({ stream }) {
     }
   };
 
+  const loadRebuildVariant = (build) => {
+    const fields = rebuildFields(build);
+    if (!fields.brief.trim()) return;
+    setBrief(fields.brief);
+    setBuildProfile(fields.buildProfile);
+    setFullApp(fields.fullApp);
+    setModelOverride(fields.modelOverride);
+    setVariantSource({
+      build_id: String(build.build_id || ""),
+      slug: fields.slug,
+      stack: fields.stack,
+    });
+    clearImage();
+    const el = briefRef.current;
+    if (el) {
+      el.focus();
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  };
+
   const submit = useMutation({
     mutationFn: (payload) => apiPost("/builds", payload),
     onSuccess: () => {
       setBrief("");
       clearImage();
+      setVariantSource(null);
       qc.invalidateQueries({ queryKey: ["builds"] });
     },
   });
@@ -298,6 +377,23 @@ export default function Studio({ stream }) {
   }, [events]);
 
   const recentBuilds = Array.isArray(builds) ? builds : builds?.builds || [];
+  const assetState = secrets.data?.replicate
+    ? secrets.data?.asset_gen
+      ? {
+          tone: "plasma",
+          label: "assets ready",
+          title: `Replicate ${secrets.data?.replicate_model || "default"} is configured for generated assets`,
+        }
+      : {
+          tone: "ember",
+          label: "asset gen off",
+          title: "Replicate key is configured, but asset generation is off",
+        }
+    : {
+        tone: "ash",
+        label: "no Replicate",
+        title: "No Replicate key configured for generated assets",
+      };
 
   const running = pipeline.filter((p) => p.state === "running").length;
   const done = pipeline.filter((p) => p.state === "done").length;
@@ -329,6 +425,9 @@ export default function Studio({ stream }) {
               build_profile: buildProfile,
               full_app: fullApp,
             };
+            if (variantSource?.stack) {
+              payload.stack = variantSource.stack;
+            }
             if (normalizedModelOverride) {
               payload.model_override = normalizedModelOverride;
             }
@@ -469,7 +568,28 @@ export default function Studio({ stream }) {
               />
               <span className={fullApp ? "text-plasma" : ""}>Full app</span>
             </label>
+            <span title={assetState.title}>
+              <Pill tone={assetState.tone}>{assetState.label}</Pill>
+            </span>
           </div>
+          {variantSource ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3 font-mono text-[11px] text-ash">
+              <Pill tone="ash">
+                variant · {variantSource.stack || "auto stack"}
+              </Pill>
+              <span>
+                Loaded from {variantSource.slug || variantSource.build_id || "previous build"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setVariantSource(null)}
+                className="btn-ghost py-0.5 text-[10px]"
+                title="Return to a new auto-stack build"
+              >
+                clear variant
+              </button>
+            </div>
+          ) : null}
         </div>
 
         {/* Example briefs: clickable starters that fill the brief box. */}
@@ -706,8 +826,12 @@ export default function Studio({ stream }) {
                 {recentBuilds.map((b) => {
                   const meta = buildMeta(b);
                   const ai = aiMeta(b);
+                  const diagnostics = buildDiagnostics(b);
+                  const fields = rebuildFields(b);
+                  const buildKey = b.build_id || b.slug;
+                  const active = ["running", "queued", "pending", "awaiting_approval"].includes(b.status);
                   return (
-                    <tr key={b.build_id || b.slug}>
+                    <tr key={buildKey}>
                       <td className="px-4 py-2 font-mono text-xs text-bone">
                         {b.slug}
                       </td>
@@ -722,6 +846,12 @@ export default function Studio({ stream }) {
                         >
                           {ai.model} · skills {ai.skills}
                         </div>
+                        <div
+                          className="max-w-[12rem] truncate text-ash/70"
+                          title={diagnostics}
+                        >
+                          {buildDiagnostics(b)}
+                        </div>
                       </td>
                       <td className="px-4 py-2">
                         <Pill tone={verdictTone(b.status)}>{b.status}</Pill>
@@ -735,18 +865,18 @@ export default function Studio({ stream }) {
                           : "—"}
                       </td>
                       <td className="px-4 py-2 text-right">
-                        {["running", "queued", "pending", "awaiting_approval"].includes(b.status) ? (
+                        {active ? (
                           <div className="flex items-center justify-end gap-2">
                             <button
                               onClick={() => {
-                                setPendingBuildId(b.build_id || b.slug);
+                                setPendingBuildId(buildKey);
                                 approve.mutate({
-                                  build_id: b.build_id || b.slug,
+                                  build_id: buildKey,
                                   approved: true,
                                   reason: "",
                                 });
                               }}
-                              disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                              disabled={approve.isPending && pendingBuildId === buildKey}
                               className="btn-ember disabled:opacity-50"
                               title="Approve this build"
                             >
@@ -754,14 +884,14 @@ export default function Studio({ stream }) {
                             </button>
                             <button
                               onClick={() => {
-                                setPendingBuildId(b.build_id || b.slug);
+                                setPendingBuildId(buildKey);
                                 approve.mutate({
-                                  build_id: b.build_id || b.slug,
+                                  build_id: buildKey,
                                   approved: false,
                                   reason: "",
                                 });
                               }}
-                              disabled={approve.isPending && pendingBuildId === (b.build_id || b.slug)}
+                              disabled={approve.isPending && pendingBuildId === buildKey}
                               className="btn-ghost disabled:opacity-50"
                               title="Reject this build"
                             >
@@ -769,12 +899,12 @@ export default function Studio({ stream }) {
                             </button>
                             <button
                               onClick={() => {
-                                setPendingBuildId(b.build_id || b.slug);
-                                cancelBuild.mutate({ build_id: b.build_id || b.slug });
+                                setPendingBuildId(buildKey);
+                                cancelBuild.mutate({ build_id: buildKey });
                               }}
                               disabled={
                                 cancelBuild.isPending &&
-                                pendingBuildId === (b.build_id || b.slug)
+                                pendingBuildId === buildKey
                               }
                               className="btn-ghost disabled:opacity-50"
                               title="Cancel this build"
@@ -782,7 +912,20 @@ export default function Studio({ stream }) {
                               Cancel
                             </button>
                           </div>
-                        ) : null}
+                        ) : (
+                          <button
+                            onClick={() => loadRebuildVariant(b)}
+                            disabled={!fields.brief.trim()}
+                            className="btn-ghost disabled:opacity-50"
+                            title={
+                              fields.brief.trim()
+                                ? "Load this build into the form for an editable rebuild variant"
+                                : "No recoverable brief"
+                            }
+                          >
+                            Rebuild
+                          </button>
+                        )}
                       </td>
                     </tr>
                   );

@@ -267,7 +267,11 @@ def _profile_extra(profile: str) -> dict[str, Any]:
     if profile == "fast":
         return {"max_debug_attempts": 1}
     if profile == "best_quality":
-        return {"best_of_n": 2, "max_debug_attempts": 3}
+        return {
+            "best_of_n": 2,
+            "best_of_n_across_models": True,
+            "max_debug_attempts": 3,
+        }
     return {}
 
 

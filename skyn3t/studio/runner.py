@@ -295,13 +295,30 @@ class StudioRunner:
     def _bon_model_pool(self, n: int) -> list[str]:
         """Candidate models for cross-model best-of-N, honouring policy.
 
-        Drawn from ``settings.tournament_model_pool`` (comma-separated) and
-        filtered by ``free_only`` / ``no_claude``. Returns up to ``n`` models, or
-        ``[]`` when the pool is unconfigured (the sampler then degrades to
-        today's same-model behaviour). The on/off flag is checked by the caller.
+        Drawn from ``settings.tournament_model_pool`` (comma-separated), or from
+        visible router/model pins when no explicit pool is configured. Filtered
+        by ``free_only`` / ``no_claude``. Returns up to ``n`` models. The on/off
+        flag is checked by the caller.
         """
         raw = str(getattr(self.settings, "tournament_model_pool", "") or "")
         pool = [m.strip() for m in raw.split(",") if m.strip()]
+        if not pool:
+            configured = [
+                str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip(),
+                str(getattr(self.settings, "preferred_model", "") or "").strip(),
+            ]
+            try:
+                from skyn3t.core.model_router import ModelRouter
+
+                router = ModelRouter(self.settings)
+                described = router.describe()
+                configured.extend(
+                    str(described.get(tier, "") or "").strip()
+                    for tier in ("strong", "backend", "ui", "cheap", "docs")
+                )
+            except Exception as exc:  # noqa: BLE001 - sampler fallback is best-effort
+                log.warning("best_of_n.model_pool_fallback_failed", error=str(exc)[:120])
+            pool = [m for m in configured if m]
         free_only = bool(getattr(self.settings, "free_only", False))
         no_claude = bool(getattr(self.settings, "no_claude", False))
         out: list[str] = []
@@ -311,13 +328,15 @@ class StudioRunner:
                 continue
             if free_only and not (ml.endswith(":free") or "free" in ml):
                 continue
-            out.append(m)
+            if m not in out:
+                out.append(m)
         return out[: max(0, n)]
 
-    def _bon_across_models(self, pool: list[str]) -> bool:
+    def _bon_across_models(self, pool: list[str], *, requested: bool = False) -> bool:
         """Cross-model sampling is on only when explicitly opted in AND there are
         >=2 distinct models to contest (else it degrades to same-model)."""
-        return bool(getattr(self.settings, "best_of_n_across_models", False)) and len(pool) >= 2
+        enabled = requested or bool(getattr(self.settings, "best_of_n_across_models", False))
+        return enabled and len(pool) >= 2
 
     @staticmethod
     def _candidate_buckets(candidate: Any, spec: StageSpec) -> set[str]:
@@ -3607,7 +3626,10 @@ class StudioRunner:
         # models cycle (index % len) — diversity where possible, not guaranteed
         # unique.
         pool = self._bon_model_pool(plan.best_of_n)
-        across_models = self._bon_across_models(pool)
+        across_models = self._bon_across_models(
+            pool,
+            requested=bool(extra.get("best_of_n_across_models")),
+        )
 
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
             worktrees.append(wt)

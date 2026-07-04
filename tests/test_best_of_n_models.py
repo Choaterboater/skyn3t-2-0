@@ -48,9 +48,11 @@ def test_model_pool_resolves_distinct_models(tmp_path):
     assert pool[:3] == ["a/m1:free", "b/m2:free", "c/m3:free"]
 
 
-def test_model_pool_empty_without_setting(tmp_path):
-    r = _runner(tmp_path)  # no pool configured
-    assert r._bon_model_pool(3) == []
+def test_model_pool_falls_back_to_router_models_without_setting(tmp_path):
+    r = _runner(tmp_path)  # no explicit tournament pool configured
+    pool = r._bon_model_pool(3)
+    assert len(pool) >= 2
+    assert all(m.endswith(":free") for m in pool)
 
 
 def test_across_models_gated_by_explicit_flag(tmp_path):
@@ -63,6 +65,8 @@ def test_across_models_gated_by_explicit_flag(tmp_path):
     on = _runner(tmp_path, best_of_n_across_models=True,
                  tournament_model_pool="a/m1:free,b/m2:free")
     assert on._bon_across_models(pool) is True
+    # Per-build request can enable the contest without changing global settings.
+    assert off._bon_across_models(pool, requested=True) is True
     # Flag ON but <2 models → off (degrades to same-model).
     assert on._bon_across_models(["only/one:free"]) is False
 

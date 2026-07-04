@@ -2,7 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
-import { PageHeader, Panel, PanelHead, Pill, Empty } from "../components/ui.jsx";
+import {
+  PageHeader,
+  Panel,
+  PanelHead,
+  Empty,
+  SignalGrid,
+} from "../components/ui.jsx";
 
 // ---------------------------------------------------------------------------
 // Two-pane live workspace (Spec 3): a running app on the left, an improve chat
@@ -306,6 +312,31 @@ export default function Workspace({ stream }) {
   }
 
   const current = projects.find((p) => p.slug === slug);
+  const workspaceActivity = (stream?.events || []).filter(
+    (event) =>
+      slug &&
+      (event.type?.startsWith("serve.") || event.type?.startsWith("improve.")) &&
+      event.payload?.slug === slug,
+  ).length;
+  const workspaceSignals = [
+    { label: "selected", value: slug || "none" },
+    {
+      label: "stack",
+      value: current?.stack || (slug ? "unknown stack" : "pick project"),
+    },
+    {
+      label: "status",
+      value: current
+        ? `${current.status || current.verdict || "—"} · score ${current.score ?? "—"}`
+        : "idle",
+    },
+    {
+      label: "activity",
+      value: slug
+        ? `${workspaceActivity} event${workspaceActivity === 1 ? "" : "s"}`
+        : "none",
+    },
+  ];
 
   return (
     <div className="flex h-full flex-col">
@@ -330,14 +361,9 @@ export default function Workspace({ stream }) {
         }
       />
 
-      {slug && current ? (
-        <div className="mb-3 flex items-center gap-2">
-          <Pill tone="plasma">{current.stack || "—"}</Pill>
-          <span className="font-mono text-[11px] text-ash">
-            {current.status || "—"} · score {current.score ?? "—"}
-          </span>
-        </div>
-      ) : null}
+      <Panel className="mb-3 p-3">
+        <SignalGrid label="Workspace signals" items={workspaceSignals} />
+      </Panel>
 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-2">
         <ServePane slug={slug} stream={stream} />

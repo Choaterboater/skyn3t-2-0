@@ -157,7 +157,6 @@ def create_app(
         assets_dir = UI_DIST_DIR / "assets"
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-        index_text = index_html.read_text()
 
         @app.get("/{full_path:path}", include_in_schema=False)
         async def _spa(full_path: str) -> Any:
@@ -167,7 +166,10 @@ def create_app(
             candidate = UI_DIST_DIR / full_path
             if full_path and candidate.is_file() and candidate.is_relative_to(UI_DIST_DIR):
                 return FileResponse(str(candidate))
-            return HTMLResponse(index_text)
+            return HTMLResponse(
+                index_html.read_text(),
+                headers={"Cache-Control": "no-cache"},
+            )
     else:
         @app.get("/", response_class=HTMLResponse, include_in_schema=False)
         async def _index() -> Any:

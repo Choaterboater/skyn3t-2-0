@@ -8,6 +8,7 @@ import {
   Stat,
   Pill,
   Empty,
+  SignalGrid,
   verdictTone,
 } from "../components/ui.jsx";
 import {
@@ -636,30 +637,22 @@ export default function Studio({ stream }) {
             </div>
           </div>
           <aside className="order-2 rounded-md border border-hairline bg-void/45 p-3 xl:order-2">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="eyebrow">Command deck</span>
-              <span title={assetState.title}>
-                <Pill tone={assetState.tone}>{assetState.label}</Pill>
-              </span>
-            </div>
-            <div className="space-y-2 font-mono text-[11px]">
-              {[
-                ["mode", buildIntent.mode],
-                ["model", buildIntent.model],
-                ["reference", buildIntent.reference],
-                ["fan-out", buildIntent.fanout],
-              ].map(([label, value]) => (
-                <div
-                  key={label}
-                  className="flex items-start justify-between gap-3 border-t border-hairline/60 pt-2"
-                >
-                  <span className="text-ash/60">{label}</span>
-                  <span className="min-w-0 break-words max-w-[13rem] text-right text-bone" title={value}>
-                    {value}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <SignalGrid
+              label="Command deck"
+              items={[
+                { label: "mode", value: buildIntent.mode },
+                { label: "model", value: buildIntent.model },
+                { label: "reference", value: buildIntent.reference },
+                { label: "fan-out", value: buildIntent.fanout },
+              ]}
+              right={
+                <span title={assetState.title}>
+                  <Pill tone={assetState.tone}>{assetState.label}</Pill>
+                </span>
+              }
+              gridClassName="grid-cols-1"
+              valueClassName="text-[11px]"
+            />
           </aside>
           <div className="order-3 min-w-0 xl:col-start-1 xl:row-start-2">
             {/* Example briefs: clickable starters that fill the brief box. */}

@@ -31,6 +31,42 @@ export function PanelHead({ label, right }) {
   );
 }
 
+export function SignalGrid({
+  label,
+  items,
+  right = null,
+  className = "",
+  gridClassName = "sm:grid-cols-2 xl:grid-cols-4",
+  valueClassName = "",
+}) {
+  return (
+    <div className={className}>
+      {label || right ? (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          {label ? <div className="eyebrow">{label}</div> : <span />}
+          {right}
+        </div>
+      ) : null}
+      <div className={`grid gap-2 ${gridClassName}`}>
+        {items.map((item) => (
+          <div
+            key={item.label}
+            className="min-w-0 rounded-md border border-hairline bg-void/45 p-3"
+            title={item.title || String(item.value ?? "")}
+          >
+            <div className="eyebrow text-[9px]">{item.label}</div>
+            <div
+              className={`mt-2 min-w-0 break-words [overflow-wrap:anywhere] font-mono text-xs text-bone ${valueClassName}`}
+            >
+              {item.value ?? "—"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // A big telemetry number with a mono label. The unit of the dashboard.
 export function Stat({ label, value, tone = "bone", hint }) {
   const toneCls =

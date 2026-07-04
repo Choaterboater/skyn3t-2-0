@@ -8,6 +8,7 @@ import {
   PanelHead,
   Pill,
   Empty,
+  SignalGrid,
   verdictTone,
 } from "../components/ui.jsx";
 
@@ -513,6 +514,20 @@ export default function Projects({ stream }) {
 
   const projects = Array.isArray(data) ? data : data?.projects || [];
   const liveCount = Object.keys(served).length;
+  const shippableCount = projects.filter((project) => {
+    const state = String(project.verdict || project.status || "").toLowerCase();
+    return state === "go" || state === "completed" || state === "applied";
+  }).length;
+  const wastedSpend = projects.reduce(
+    (sum, project) => sum + Number(project.wasted_usd || 0),
+    0,
+  );
+  const projectSignals = [
+    { label: "projects", value: String(projects.length) },
+    { label: "live", value: String(liveCount) },
+    { label: "shippable", value: String(shippableCount) },
+    { label: "wasted", value: fmtCost(wastedSpend) },
+  ];
 
   const sorted = useMemo(() => {
     const arr = [...projects];
@@ -559,6 +574,10 @@ export default function Projects({ stream }) {
           Could not load projects: {String(error.message)}
         </Panel>
       ) : null}
+
+      <Panel className="mb-4 p-3">
+        <SignalGrid label="Projects cockpit" items={projectSignals} />
+      </Panel>
 
       <CleanupPanel qc={qc} />
 

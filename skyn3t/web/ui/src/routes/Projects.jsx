@@ -20,6 +20,26 @@ function fmtCost(usd) {
   return usd == null ? "—" : `$${Number(usd).toFixed(4)}`;
 }
 
+function aiEvidence(project) {
+  const skills = Array.isArray(project.skills_used) ? project.skills_used : [];
+  const recall = Array.isArray(project.recall_used) ? project.recall_used : [];
+  const stageSkills =
+    project.stage_skills_used && typeof project.stage_skills_used === "object"
+      ? project.stage_skills_used
+      : {};
+  const roleStages = Object.values(stageSkills).filter(
+    (items) => Array.isArray(items) && items.length > 0,
+  ).length;
+  const promptCount = Number(project.prompt_count || 0);
+  const title = [
+    skills.length ? `skills: ${skills.join(", ")}` : "skills: 0",
+    `recall: ${recall.length}`,
+    `stage roles: ${roleStages}`,
+    `prompts: ${promptCount}`,
+  ].join(" · ");
+  return { skills, recall, roleStages, promptCount, title };
+}
+
 // created_at/updated_at may be epoch seconds, epoch ms, a numeric string, or an
 // ISO string — normalize to a comparable ms timestamp (0 when absent/unparseable).
 function toTime(v) {
@@ -563,6 +583,7 @@ export default function Projects({ stream }) {
                   <SortHeader label="Stack" sortKey="stack" sort={sort} setSort={setSort} />
                   <SortHeader label="Status" sortKey="status" sort={sort} setSort={setSort} />
                   <SortHeader label="Score" sortKey="score" sort={sort} setSort={setSort} />
+                  <th className="px-4 py-2 font-normal">AI</th>
                   <SortHeader label="Cost" sortKey="cost_usd" sort={sort} setSort={setSort} />
                   <SortHeader label="Size" sortKey="size_bytes" sort={sort} setSort={setSort} />
                   <SortHeader label="Updated" sortKey="updated_at" sort={sort} setSort={setSort} />
@@ -576,6 +597,7 @@ export default function Projects({ stream }) {
                   const isConfirming = confirmSlug === p.slug;
                   const isImproving = improveSlug === p.slug;
                   const isShowingPrompts = promptsSlug === p.slug;
+                  const ai = aiEvidence(p);
                   return (
                     <React.Fragment key={p.slug}>
                       <tr>
@@ -592,6 +614,20 @@ export default function Projects({ stream }) {
                         </td>
                         <td className="px-4 py-2 font-mono text-xs text-ash">
                           {p.score ?? "—"}
+                        </td>
+                        <td className="px-4 py-2 font-mono text-[11px] text-ash">
+                          <div className="whitespace-nowrap" title={ai.title}>
+                            <span className={ai.skills.length ? "text-plasma" : "text-ash/50"}>
+                              skills {ai.skills.length}
+                            </span>
+                            <span className="mx-1 text-ash/40">·</span>
+                            <span className={ai.recall.length ? "text-bone" : "text-ash/50"}>
+                              recall {ai.recall.length}
+                            </span>
+                          </div>
+                          <div className="whitespace-nowrap text-ash/60" title={ai.title}>
+                            roles {ai.roleStages} · prompts {ai.promptCount}
+                          </div>
                         </td>
                         <td className="px-4 py-2 font-mono text-xs">
                           <span className={p.wasted_usd ? "text-ember" : "text-ash"}>

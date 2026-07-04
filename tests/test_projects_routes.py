@@ -56,6 +56,37 @@ def test_list_projects_surfaces_cost(tmp_path):
     assert row["cost_usd"] == 0.42 and row["wasted_usd"] == 0.42
 
 
+def test_list_projects_surfaces_ai_guidance_evidence(tmp_path):
+    state = _state(tmp_path)
+    d = state.settings.projects_dir / "guided"
+    d.mkdir(parents=True)
+    (d / "skyn3t_manifest.json").write_text(json.dumps({
+        "slug": "guided",
+        "stack": "react",
+        "status": "completed",
+        "verdict": "go",
+        "score": 88,
+        "extra": {
+            "skills_used": ["react-ui", "seo-copy"],
+            "recall_used": [{"score": 0.91, "text": "prior winner"}],
+            "stage_skills_used": {"code": ["react-code-role"]},
+            "prompts": [{"stage": "code", "prompt": "use skill guidance"}],
+            "quality_scorecard": {"proof_passed": True, "skills_count": 2},
+        },
+    }))
+    (d / "src").mkdir()
+    (d / "src" / "App.jsx").write_text("export default function App(){return null}\n")
+
+    out = asyncio.run(list_projects(state))
+    row = {p["slug"]: p for p in out["projects"]}["guided"]
+
+    assert row["skills_used"] == ["react-ui", "seo-copy"]
+    assert row["recall_used"] == [{"score": 0.91, "text": "prior winner"}]
+    assert row["stage_skills_used"] == {"code": ["react-code-role"]}
+    assert row["prompt_count"] == 1
+    assert row["quality_scorecard"]["proof_passed"] is True
+
+
 def test_delete_project_moves_to_trash(tmp_path):
     state = _state(tmp_path)
     proj = _project(state.settings.projects_dir, "gamma")

@@ -400,6 +400,10 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             man = _load_manifest(d)
             m = man or {}
             extra = m.get("extra") or {}
+            skills_used = extra.get("skills_used") or []
+            recall_used = extra.get("recall_used") or []
+            stage_skills_used = extra.get("stage_skills_used") or {}
+            prompts = extra.get("prompts") or []
             out.append({
                 "slug": m.get("slug", d.name),
                 "stack": m.get("stack", ""),
@@ -417,7 +421,16 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 # Prompts are captured per-build but can be large (10-50 KB each),
                 # so the list carries only a flag/count — the text loads lazily via
                 # GET /projects/{slug}/prompts when the panel is expanded.
-                "prompt_count": len(extra.get("prompts") or []),
+                "prompt_count": len(prompts) if isinstance(prompts, list) else 0,
+                # Existing manifest evidence that skills/Cortex guidance actually
+                # reached the build. Keep the row payload compact: full prompt text
+                # still loads on demand via /prompts.
+                "skills_used": list(skills_used) if isinstance(skills_used, list) else [],
+                "recall_used": list(recall_used) if isinstance(recall_used, list) else [],
+                "stage_skills_used": dict(stage_skills_used)
+                if isinstance(stage_skills_used, dict) else {},
+                "quality_scorecard": dict(extra.get("quality_scorecard") or {})
+                if isinstance(extra.get("quality_scorecard"), dict) else {},
             })
     return {"projects": out}
 

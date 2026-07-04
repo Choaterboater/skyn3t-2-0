@@ -31,14 +31,31 @@ async def test_cortex_effects_payload_reports_three_effects(tmp_path):
 
     persist_overrides(data_dir, {"best_of_n": 3})
 
-    state = AppState(settings=Settings(
-        data_dir=data_dir, projects_dir=tmp_path / "p", logs_dir=tmp_path / "l",
-    ))
+    class _Skills:
+        def all(self):
+            return [
+                {
+                    "slug": "react-ui",
+                    "title": "React UI",
+                    "stack": "react",
+                    "score": 0.91,
+                    "source": "github",
+                }
+            ]
+
+    state = AppState(
+        settings=Settings(
+            data_dir=data_dir, projects_dir=tmp_path / "p", logs_dir=tmp_path / "l",
+        ),
+        skills=_Skills(),
+    )
     payload = await cortex_effects_payload(state)
 
     assert "vendor/coder:free" in str(payload["leaderboard"])
     assert payload["prompts"].get("reviewer") == "Be stricter."
     assert payload["tuning"].get("best_of_n") == 3
+    assert payload["skills"]["count"] == 1
+    assert payload["skills"]["items"][0]["slug"] == "react-ui"
 
 
 async def test_cortex_effects_payload_empty_is_well_formed(tmp_path):
@@ -46,4 +63,9 @@ async def test_cortex_effects_payload_empty_is_well_formed(tmp_path):
         data_dir=tmp_path / "data", projects_dir=tmp_path / "p", logs_dir=tmp_path / "l",
     ))
     payload = await cortex_effects_payload(state)
-    assert payload == {"leaderboard": {}, "tuning": {}, "prompts": {}}
+    assert payload == {
+        "leaderboard": {},
+        "tuning": {},
+        "prompts": {},
+        "skills": {"count": 0, "items": []},
+    }

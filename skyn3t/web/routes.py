@@ -258,13 +258,16 @@ def _normalize_build_profile(profile: str) -> str:
     return profile if profile in _BUILD_PROFILES else "cheap_learned"
 
 
+def _normalize_model_id(model: str, *, max_len: int = 240) -> str:
+    """Normalize freeform model IDs from UI/pasteboard safely."""
+    compact = "".join((model or "").split())
+    if len(compact) > max_len:
+        return ""
+    return compact
+
+
 def _normalize_model_override(model: str) -> str:
-    model = (model or "").strip()
-    if len(model) > 160:
-        return ""
-    if any(ch.isspace() for ch in model):
-        return ""
-    return model
+    return _normalize_model_id(model)
 
 
 def _profile_extra(profile: str) -> dict[str, Any]:
@@ -1442,7 +1445,7 @@ async def set_preferred_model(state: AppState, model: str = "") -> dict[str, Any
     per tier/task). Persisted so it survives a restart."""
     import os
 
-    model = (model or "").strip()
+    model = _normalize_model_id(model)
     try:
         state.settings.preferred_model = model
     except Exception:  # noqa: BLE001
@@ -1510,6 +1513,9 @@ async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = 
         else:
             os.environ.pop(env_name, None)
         _persist_env_var(env_name, key)
+    if field == "openrouter_api_key":
+        # Avoid serving stale model lists after key rotation.
+        _MODELS_CACHE.update(ts=0.0, models=None)
     backend = state.llm_client.backend if state.llm_client is not None else "n/a"
     routing = (
         state.llm_client.backend_status()

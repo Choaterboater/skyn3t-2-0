@@ -173,6 +173,27 @@ async def test_full_app_option_requests_contract_assets_and_extra_repair_budget(
     assert studio.extra["model_override"] == "openrouter/test-model"
 
 
+async def test_submit_build_normalizes_model_override():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    res = await routes.submit_build(
+        st,
+        brief="a test build",
+        build_profile="manual",
+        model_override=" openrouter / gpt-4o-mini \n",
+    )
+    row = st.builds[res["build_id"]]
+    assert row.model_trace["model_override"] == "openrouter/gpt-4o-mini"
+    assert studio.extra["model_override"] == "openrouter/gpt-4o-mini"
+
+
 async def test_cancel_build_marks_live_record_cancelled():
     st = _state()
     res = await routes.submit_build(st, brief="a todo app")

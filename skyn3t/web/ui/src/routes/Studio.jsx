@@ -206,10 +206,12 @@ export default function Studio({ stream }) {
     retry: 0,
   });
   const modelOptions = models.data?.models || [];
-  const manualModelChoices =
-    modelOverride && !modelOptions.includes(modelOverride)
-      ? [modelOverride, ...modelOptions]
-      : modelOptions;
+  const normalizeModelId = (value) => value.replace(/\s+/g, "").trim();
+  const normalizedModelOverride = normalizeModelId(modelOverride);
+  const manualModelChoices = normalizedModelOverride &&
+    !modelOptions.includes(normalizedModelOverride)
+    ? [normalizedModelOverride, ...modelOptions]
+    : modelOptions;
 
   const toggleStack = (id) =>
     setSelectedStacks((prev) => {
@@ -318,8 +320,8 @@ export default function Studio({ stream }) {
               build_profile: buildProfile,
               full_app: fullApp,
             };
-            if (modelOverride.trim()) {
-              payload.model_override = modelOverride.trim();
+            if (normalizedModelOverride) {
+              payload.model_override = normalizedModelOverride;
             }
             if (refImage?.url) payload.reference_image = refImage.url;
             submit.mutate(payload);
@@ -411,26 +413,25 @@ export default function Studio({ stream }) {
               })}
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-1 lg:max-w-[28rem]">
-              <select
+              <input
+                type="text"
+                list="studio-models"
                 value={modelOverride}
-                onChange={(e) => {
-                  setModelOverride(e.target.value);
-                }}
+                onChange={(e) => setModelOverride(e.target.value)}
+                placeholder="openrouter model (optional)"
                 className="field"
-                title="Pin one AI model for this build"
-              >
-                <option value="">
-                  Select OpenRouter model
-                </option>
-                {manualModelChoices.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+                title="Pin one OpenRouter model for this build"
+              />
+              <datalist id="studio-models">
+                {manualModelChoices.length === 0 ? (
+                  <option value="openai/gpt-4o-mini" />
+                ) : (
+                  manualModelChoices.map((m) => <option key={m} value={m} />)
+                )}
+              </datalist>
               <span className="font-mono text-[10px] text-ash/60">
-                {modelOverride
-                  ? `Model override: ${modelOverride} (for this build)`
+                {normalizedModelOverride
+                  ? `Model override: ${normalizedModelOverride} (for this build)`
                   : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
               </span>
             </div>

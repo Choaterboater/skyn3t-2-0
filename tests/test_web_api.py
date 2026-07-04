@@ -15,6 +15,7 @@ from skyn3t.web import app as web_app
 from skyn3t.web import routes
 from skyn3t.web.deps import (
     AppState,
+    BuildRecord,
     check_auth,
     extract_bearer,
     is_loopback,
@@ -193,6 +194,94 @@ async def test_full_app_option_requests_contract_assets_and_extra_repair_budget(
     assert studio.extra["model_override"] == "openrouter/test-model"
 
 
+async def test_studio_runner_persists_full_app_contract_extra(tmp_path):
+    from pathlib import Path
+
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    class _Memory:
+        def __init__(self):
+            self.saves = []
+
+        async def save_build(self, **fields):
+            self.saves.append(dict(fields))
+
+        async def relevant_lessons(self, stack: str, stage: str = "", limit: int = 5):
+            return []
+
+        async def grade_lesson(self, lesson_id: int, helpful: bool, quality=None):
+            return None
+
+    class _CodeAgent(BaseAgent):
+        async def initialize(self):
+            return None
+
+        async def health_check(self):
+            return True
+
+        async def execute(self, task: TaskRequest) -> TaskResult:
+            wt = Path(task.payload["worktree_dir"])
+            (wt / "src").mkdir(parents=True, exist_ok=True)
+            (wt / "src" / "main.py").write_text("def main():\n    return 42\n", encoding="utf-8")
+            (wt / "README.md").write_text("# generated\n", encoding="utf-8")
+            (wt / "pyproject.toml").write_text(
+                "[project]\nname = 'demo'\nversion = '0.1.0'\n",
+                encoding="utf-8",
+            )
+            return TaskResult(
+                task_id=task.task_id,
+                success=True,
+                output={"files_written": 3, "worktree_dir": str(wt)},
+            )
+
+    class _Reviewer(BaseAgent):
+        async def initialize(self):
+            return None
+
+        async def health_check(self):
+            return True
+
+        async def execute(self, task: TaskRequest) -> TaskResult:
+            return TaskResult(
+                task_id=task.task_id,
+                success=True,
+                output={"score": 88.0, "verdict": "go", "gaps": []},
+            )
+
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        critic_enabled=False,
+        approval_gates=False,
+        best_of_n=1,
+    )
+    memory = _Memory()
+    bus = EventBus()
+    orch = Orchestrator(bus)
+    code = _CodeAgent("coder", "code", "stub", bus)
+    code.add_capability(AgentCapability("codegen"))
+    reviewer = _Reviewer("reviewer", "reviewer", "stub", bus)
+    reviewer.add_capability(AgentCapability("review"))
+    await orch.register(code)
+    await orch.register(reviewer)
+
+    runner = StudioRunner(bus, orch, settings=settings, memory=memory)
+
+    outcome = await runner.start(
+        "Build a python tool",
+        slug="full-app-persist",
+        extra={"build_profile": "manual", "full_app_contract": True},
+    )
+
+    saved = [row for row in memory.saves if row["build_id"] == outcome.build_id]
+    assert saved
+    assert saved[0]["manifest"]["extra"]["full_app_contract"] is True
+
+
 async def test_submit_build_normalizes_model_override():
     class _Studio:
         def __init__(self):
@@ -331,6 +420,85 @@ async def test_rebuild_build_missing_source_raises_keyerror():
 
     with pytest.raises(KeyError):
         await routes.rebuild_build(st, "missing-build")
+
+
+def test_rebuild_route_parses_request_and_maps_status_codes():
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    class _Studio:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.calls.append({
+                "brief": brief,
+                "slug": slug,
+                "extra": dict(extra or {}),
+            })
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    st.settings.auth_token = "secret"
+    st.builds["source-build"] = BuildRecord(
+        build_id="source-build",
+        brief="a complete analytics dashboard",
+        stack="react",
+        slug="analytics-v1",
+        status="completed",
+        build_profile="manual",
+        model_trace={
+            "profile": "manual",
+            "model_override": "openrouter/route-model",
+            "full_app": True,
+        },
+    )
+    app = FastAPI()
+    app.include_router(routes.build_router(st))
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer secret"}
+
+    res = client.post(
+        "/api/builds/rebuild",
+        json={"build_id": "source-build", "reuse_slug": True},
+        headers=headers,
+    )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["source_build_id"] == "source-build"
+    assert body["reused"] == {
+        "stack": "react",
+        "build_profile": "manual",
+        "model_override": "openrouter/route-model",
+        "slug": "analytics-v1",
+    }
+    assert studio.calls[0]["brief"] == "a complete analytics dashboard"
+    assert studio.calls[0]["slug"] == "analytics-v1"
+    assert studio.calls[0]["extra"]["full_app_contract"] is True
+
+    missing_id = client.post("/api/builds/rebuild", json={}, headers=headers)
+    assert missing_id.status_code == 422
+    assert missing_id.json()["detail"] == "build_id is required"
+
+    null_id = client.post(
+        "/api/builds/rebuild",
+        json={"build_id": None},
+        headers=headers,
+    )
+    assert null_id.status_code == 422
+    assert null_id.json()["detail"] == "build_id is required"
+
+    missing_build = client.post(
+        "/api/builds/rebuild",
+        json={"build_id": "does-not-exist"},
+        headers=headers,
+    )
+    assert missing_build.status_code == 404
+    assert missing_build.json()["detail"] == "build not found"
 
 
 async def test_cancel_build_marks_live_record_cancelled():

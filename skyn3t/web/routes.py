@@ -2015,7 +2015,7 @@ def build_router(state: AppState) -> Any:
         try:
             return await rebuild_build(
                 state,
-                build_id=str(body.get("build_id", "")),
+                build_id=str(body.get("build_id") or ""),
                 reuse_slug=bool(body.get("reuse_slug", False)),
             )
         except ValueError as exc:

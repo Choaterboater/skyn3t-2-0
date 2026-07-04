@@ -2801,6 +2801,8 @@ class StudioRunner:
         build_profile = str(extra.get("build_profile") or "cheap_learned")
         model_override = str(extra.get("model_override") or "").strip()
         manifest.extra["build_profile"] = build_profile
+        if extra.get("full_app_contract"):
+            manifest.extra["full_app_contract"] = True
         if model_override:
             manifest.extra["model_override"] = model_override
         manifest.extra["codegen_model"] = (

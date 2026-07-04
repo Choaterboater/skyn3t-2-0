@@ -100,6 +100,10 @@ export default function Settings() {
     setModel(m);
     try {
       await apiPost("/settings/model", { model: m });
+      queryClient.setQueryData(["llm-secrets"], (old) => ({
+        ...(old || {}),
+        preferred_model: m,
+      }));
       setModelMsg(m ? `pinned → ${m}` : "auto — smart routing");
       secrets.refetch();
     } catch (e) {
@@ -190,6 +194,11 @@ export default function Settings() {
           ? `saved → image generation available (model ${r.model || "default"})`
           : "cleared"
       );
+      queryClient.setQueryData(["llm-secrets"], (old) => ({
+        ...(old || {}),
+        replicate: !!r.configured,
+        replicate_model: r.model || repModel.trim() || ((old && old.replicate_model) || ""),
+      }));
       secrets.refetch();
     } catch (e) {
       setRepMsg(String(e.message));

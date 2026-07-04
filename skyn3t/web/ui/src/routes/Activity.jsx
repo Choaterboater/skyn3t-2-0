@@ -286,9 +286,19 @@ export default function Activity({ stream }) {
         <Panel className="overflow-hidden">
           <PanelHead label="Selected event" right={selected?.id ? <Pill>{selected.id}</Pill> : null} />
           {selected ? (
-            <pre className="max-h-[70vh] overflow-auto p-4 font-mono text-xs leading-relaxed text-ash">
-              {JSON.stringify(selected, null, 2)}
-            </pre>
+            <>
+              <div className="border-b border-hairline px-4 py-3 text-sm">
+                <p className="mb-1 text-xs uppercase tracking-eyebrow text-ash">Summary</p>
+                <p className="font-mono text-bone break-words">{eventSummary(selected)}</p>
+                <p className="mt-2 font-mono text-xs text-ash">
+                  type: {selected.type || "—"} · source: {selected.source || "—"} · correlation:{" "}
+                  {selected.correlation_id || "—"} · time: {fmtTime(selected.timestamp) || "—"}
+                </p>
+              </div>
+              <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-relaxed text-ash">
+                {JSON.stringify(selected, null, 2)}
+              </pre>
+            </>
           ) : (
             <Empty icon="⌁">Select an event to inspect its full payload.</Empty>
           )}

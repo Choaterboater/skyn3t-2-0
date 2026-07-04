@@ -62,7 +62,7 @@ class _AgenticLLM:
         return {"ok": self.ok, "backend": "openrouter", "error": self.error}
 
     async def complete(self, prompt, **kwargs):
-        self.complete_calls.append(kwargs)
+        self.complete_calls.append({"prompt": prompt, **kwargs})
         text = self.completions.pop(0) if self.completions else ""
         return SimpleNamespace(text=text, backend="openrouter")
 
@@ -153,6 +153,35 @@ def test_agentic_payload_routing_reaches_agentic_build(tmp_path):
     assert call["model"] == "sonnet"
     # The prompt frames this as improving an EXISTING app, not a fresh build.
     assert "existing" in call["prompt"].lower()
+
+
+def test_agentic_improve_prompt_includes_stage_role_guidance(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(
+        tmp_path,
+        llm,
+        extra={"extra": {"role_guidance": "Use the imported React builder role."}},
+    )
+    assert "STAGE ROLE GUIDANCE" in llm.agentic_calls[0]["prompt"]
+    assert "imported React builder role" in llm.agentic_calls[0]["prompt"]
+
+
+def test_classic_improve_prompt_includes_stage_role_guidance(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/page.jsx"],
+            "extra": {"role_guidance": "Use the imported React repair role."},
+        },
+    )
+    assert result.success
+    assert "STAGE ROLE GUIDANCE" in llm.complete_calls[0]["prompt"]
+    assert "imported React repair role" in llm.complete_calls[0]["prompt"]
 
 
 def test_engine_threads_improve_agentic_setting(tmp_path):

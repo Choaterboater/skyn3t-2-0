@@ -18,9 +18,9 @@ effects (design rule #4).
 
 from __future__ import annotations
 
+import json
 import re
 import time
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -337,6 +337,67 @@ class SkillLibrary:
         blocks = "\n\n".join(s.as_advice() for s in skills)
         return (
             "Relevant skills (advisory — apply only where they fit the task):\n\n"
+            f"{blocks}"
+        )
+
+    def relevant_for_stage(
+        self,
+        stack: str,
+        stages: str | list[str],
+        *,
+        tags: list[str] | None = None,
+        limit: int = 3,
+    ) -> list[Skill]:
+        """Relevant skills that explicitly target one of this stage's roles.
+
+        Imported external agent catalogs are tagged as ``stage:<name>``. This
+        stricter matcher prevents a stack-level role, such as a React frontend
+        implementer, from being injected into every stage just because the stack
+        matches.
+        """
+        raw_stages = [stages] if isinstance(stages, str) else list(stages or [])
+        stage_tags = {
+            f"stage:{str(s).strip().lower()}"
+            for s in raw_stages
+            if str(s).strip()
+        }
+        if not stage_tags:
+            return []
+        tagset = {t.lower() for t in (tags or [])}
+        aliases = _stack_aliases(stack)
+
+        def _match(sk: Skill) -> tuple[int, float]:
+            sk_tags = {t.lower() for t in sk.tags}
+            stage_hit = len(stage_tags & sk_tags)
+            if stage_hit <= 0:
+                return (0, sk.score)
+            stack_hit = 1 if (
+                sk.stack in aliases or sk.stack == "generic" or sk.stack == stack
+            ) else 0
+            if not stack_hit:
+                return (0, sk.score)
+            tag_hit = len(tagset & sk_tags)
+            return (stage_hit + tag_hit + stack_hit, sk.score)
+
+        cands = [s for s in self._skills.values() if _match(s)[0] > 0]
+        cands.sort(key=_match, reverse=True)
+        return cands[:limit]
+
+    def inject_for_stage(
+        self,
+        stack: str,
+        stages: str | list[str],
+        *,
+        tags: list[str] | None = None,
+        limit: int = 3,
+    ) -> str:
+        """Render stage-specific role guidance for a prompt."""
+        skills = self.relevant_for_stage(stack, stages, tags=tags, limit=limit)
+        if not skills:
+            return ""
+        blocks = "\n\n".join(s.as_advice() for s in skills)
+        return (
+            "Relevant stage role guidance (advisory — apply only to this stage):\n\n"
             f"{blocks}"
         )
 

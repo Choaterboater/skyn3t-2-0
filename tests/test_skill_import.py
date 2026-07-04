@@ -77,3 +77,53 @@ def test_relevant_matches_new_factory_stack_aliases(tmp_path):
     assert [s.title for s in lib.relevant("automation")]
     assert [s.title for s in lib.relevant("knowledge-base")]
     assert [s.title for s in lib.relevant("mcp-server")]
+
+
+def test_relevant_for_stage_requires_stage_and_stack_match(tmp_path):
+    lib = SkillLibrary(skills_dir=tmp_path / "lib")
+    code_role = lib.add(
+        "React code implementer",
+        "Build the routed React UI.",
+        stack="react",
+        tags=["stage:code", "ui"],
+        slug="react-code-implementer",
+    )
+    lib.add(
+        "React reviewer",
+        "Review React changes.",
+        stack="react",
+        tags=["stage:review", "qa"],
+        slug="react-reviewer",
+    )
+    lib.add(
+        "Python code implementer",
+        "Build the Python CLI.",
+        stack="python",
+        tags=["stage:code"],
+        slug="python-code-implementer",
+    )
+
+    matches = lib.relevant_for_stage("react", ["code", "codegen"], limit=10)
+    assert [s.slug for s in matches] == [code_role.slug]
+    assert lib.relevant_for_stage("python", ["review"], limit=10) == []
+
+
+def test_inject_for_stage_renders_only_stage_specific_guidance(tmp_path):
+    lib = SkillLibrary(skills_dir=tmp_path / "lib")
+    lib.add(
+        "React code implementer",
+        "Use the imported frontend role.",
+        stack="react",
+        tags=["stage:code"],
+    )
+    lib.add(
+        "React reviewer",
+        "Use the imported review role.",
+        stack="react",
+        tags=["stage:review"],
+    )
+
+    advice = lib.inject_for_stage("react", "code", limit=10)
+    assert "stage role guidance" in advice.lower()
+    assert "imported frontend role" in advice
+    assert "imported review role" not in advice

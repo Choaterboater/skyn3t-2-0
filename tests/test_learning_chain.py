@@ -31,6 +31,14 @@ def test_knowledge_block_assembles_all_sources():
     assert "scored 100" in kb
 
 
+def test_knowledge_block_surfaces_stage_role_guidance():
+    kb = knowledge_block({
+        "extra": {"role_guidance": "Use the imported React code role."},
+    })
+    assert "STAGE ROLE GUIDANCE" in kb
+    assert "imported React code role" in kb
+
+
 def test_knowledge_block_empty_when_nothing_injected():
     assert knowledge_block({}) == ""
     assert knowledge_block(None) == ""
@@ -82,6 +90,50 @@ def test_studio_injects_skills_and_recall_into_payload():
     kb = knowledge_block({"extra": {"skills_advice": advice, "recall": recall}})
     assert "SKILL QUALITY CONTRACT" in kb
     assert "vite" in kb.lower() and "main.jsx" in kb
+
+
+def test_studio_injects_stage_role_guidance_into_extra(tmp_path):
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.studio.runner import StudioRunner
+    from skyn3t.studio.stages import StageSpec
+
+    lib = SkillLibrary(tmp_path / "skills")
+    lib.add(
+        "React code implementer",
+        "Use the imported UI catalog role.",
+        stack="react",
+        tags=["stage:code"],
+        slug="react-code-implementer",
+    )
+    lib.add(
+        "React reviewer",
+        "Do review-only work.",
+        stack="react",
+        tags=["stage:review"],
+        slug="react-reviewer",
+    )
+
+    bus = EventBus()
+    runner = StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"),
+                          skills=lib)
+    manifest = BuildManifest(slug="site", brief="a golf site", stack="react")
+    spec = StageSpec(name="code", agent_type="code", capability="codegen")
+
+    stage_extra = runner._extra_with_stage_role_guidance(
+        {"skills_advice": "base stack advice"},
+        "react",
+        spec,
+        "a golf site",
+        manifest,
+    )
+
+    assert "imported UI catalog role" in stage_extra["role_guidance"]
+    assert "review-only" not in stage_extra["role_guidance"]
+    assert manifest.extra["stage_skills_used"]["code"] == ["react-code-implementer"]
+    assert "react-code-implementer" in manifest.extra["skills_used"]
 
 
 def test_fetch_github_repo_rejects_non_github():

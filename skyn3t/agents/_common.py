@@ -349,6 +349,13 @@ def knowledge_block(payload: Any) -> str:
             + str(advice).strip()[:_MAX_SKILL_ADVICE]
         )
 
+    role_guidance = extra.get("role_guidance") or payload.get("role_guidance")
+    if role_guidance:
+        parts.append(
+            "STAGE ROLE GUIDANCE (external/catalog roles for this stage only):\n"
+            + str(role_guidance).strip()[:3000]
+        )
+
     lessons = payload.get("lessons") or []
     if lessons:
         lines = [

@@ -56,6 +56,7 @@ async def test_creates_missing_file_at_the_importer_relative_path_not_worktree_r
         result = await improver.run(TaskRequest(
             type="code_improve",
             payload={"brief": "a phaser game", "worktree_dir": str(tmp_path),
+                     "extra": {"role_guidance": "Use the imported game repair role."},
                      "gaps": ["UNRESOLVED IMPORT — create the missing target or fix "
                               "the path: src/main.js -> ./PreloadScene.js"]}))
 
@@ -67,6 +68,8 @@ async def test_creates_missing_file_at_the_importer_relative_path_not_worktree_r
     # The importer's own content must have been fed as context, not just the spec.
     assert "src/main.js" in captured["prompt"]
     assert "PreloadScene" in captured["prompt"]
+    assert "STAGE ROLE GUIDANCE" in captured["prompt"]
+    assert "imported game repair role" in captured["prompt"]
 
 
 async def test_stub_backend_does_not_fabricate_a_missing_file(tmp_path):

@@ -155,6 +155,25 @@ def test_brief_llm_fn_used_when_provided():
     assert spec.key_names() == ["VITE_FANCY"]
 
 
+def test_brief_llm_prompt_uses_nextjs_client_prefix():
+    seen: dict[str, str] = {}
+
+    def llm(prompt: str) -> str:
+        seen["prompt"] = prompt
+        return '{"keys": [], "apis": []}'
+
+    detect_from_brief("a weather dashboard", "nextjs", llm_fn=llm)
+    assert "NEXT_PUBLIC_" in seen["prompt"]
+    assert "prefix those names with VITE_" not in seen["prompt"]
+
+
+def test_brief_llm_nextjs_client_key_normalized_to_next_public():
+    raw = ('{"keys": [{"name": "VITE_WEATHER_API_KEY", "kind": "api_key", '
+           '"scope": "client"}], "apis": ["Weather API"]}')
+    spec = detect_from_brief("a weather dashboard", "nextjs", llm_fn=lambda _p: raw)
+    assert spec.key_names() == ["NEXT_PUBLIC_WEATHER_API_KEY"]
+
+
 def test_brief_llm_fn_error_falls_back_to_keywords():
     def boom(_p):
         raise RuntimeError("model down")

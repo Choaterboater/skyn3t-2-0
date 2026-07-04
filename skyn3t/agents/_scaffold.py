@@ -228,6 +228,27 @@ def _implies_cli_agent(brief: str) -> bool:
     return any(k in low for k in _CLI_AGENT_KEYWORDS)
 
 
+# Supabase variant of the nextjs stack: a Supabase-auth/database/backend brief
+# gets a Next.js App Router scaffold with client-safe public env wiring. Phrases
+# only; bare "Supabase" may be content ("a pricing page about Supabase").
+_SUPABASE_KEYWORDS = (
+    r"\bsupabase\s+auth\b",
+    r"\bsupabase\s+database\b",
+    r"\bsupabase\s+backend\b",
+    r"\bsupabase\s+project\b",
+    r"\bsupabase\s+login\b",
+    r"\bsupabase\s+dashboard\b",
+    r"\bsupabase\s+admin\b",
+    r"\bsupabase\s+service[-_ ]?role\b",
+)
+
+
+def _implies_supabase(brief: str) -> bool:
+    """True when the brief asks for a Supabase-backed Next.js app."""
+    low = (brief or "").lower()
+    return any(_re.search(pat, low) for pat in _SUPABASE_KEYWORDS)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -943,6 +964,167 @@ def _nextjs(app_name: str, brief: str) -> dict[str, str]:
                 "React 18 client component with local state",
                 "Production build + start scripts (next build / next start)",
             ],
+        ),
+    }
+
+
+def _nextjs_supabase(app_name: str, brief: str) -> dict[str, str]:
+    """Next.js App Router scaffold with Supabase public-client wiring."""
+    title = brief.strip() or app_name
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "scripts": {\n'
+            '    "dev": "next dev",\n'
+            '    "build": "next build",\n'
+            '    "start": "next start"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "@supabase/supabase-js": "^2.45.0",\n'
+            '    "next": "^14.2.0",\n'
+            '    "react": "^18.2.0",\n'
+            '    "react-dom": "^18.2.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "next.config.js": (
+            "/** @type {import('next').NextConfig} */\n"
+            "const nextConfig = {\n"
+            "  reactStrictMode: true,\n"
+            "};\n\n"
+            "module.exports = nextConfig;\n"
+        ),
+        "jsconfig.json": (
+            "{\n"
+            '  "compilerOptions": {\n'
+            '    "baseUrl": "."\n'
+            "  }\n"
+            "}\n"
+        ),
+        ".env.example": (
+            "NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co\n"
+            "NEXT_PUBLIC_SUPABASE_ANON_KEY=your-public-anon-key\n"
+        ),
+        "lib/supabaseClient.js": (
+            "import { createClient } from '@supabase/supabase-js';\n\n"
+            "export const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';\n"
+            "export const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';\n"
+            "export const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);\n"
+            "export const supabase = supabaseConfigured\n"
+            "  ? createClient(supabaseUrl, supabaseAnonKey)\n"
+            "  : null;\n"
+        ),
+        "app/layout.jsx": (
+            "import './globals.css';\n\n"
+            "export const metadata = {\n"
+            f"  title: '{js_title}',\n"
+            "  description: 'Generated offline by SkyN3t with Supabase wiring.',\n"
+            "};\n\n"
+            "export default function RootLayout({ children }) {\n"
+            "  return (\n"
+            '    <html lang="en">\n'
+            "      <body>{children}</body>\n"
+            "    </html>\n"
+            "  );\n"
+            "}\n"
+        ),
+        "app/page.jsx": (
+            "'use client';\n\n"
+            "import { supabaseConfigured, supabaseUrl } from '../lib/supabaseClient';\n\n"
+            "const setupItems = [\n"
+            "  'Create a Supabase project and copy the project URL',\n"
+            "  'Copy the public anon key into NEXT_PUBLIC_SUPABASE_ANON_KEY',\n"
+            "  'Restart Next.js after changing environment variables',\n"
+            "];\n\n"
+            "export default function Home() {\n"
+            "  return (\n"
+            '    <main className="app">\n'
+            '      <section className="hero">\n'
+            '        <p className="eyebrow">Supabase + Next.js</p>\n'
+            f"        <h1>{'{'}'{js_title}'{'}'}</h1>\n"
+            "        <p className=\"lede\">\n"
+            "          A runnable App Router starter with Supabase client wiring and\n"
+            "          client-safe environment checks.\n"
+            "        </p>\n"
+            "        <div className={supabaseConfigured ? 'status ready' : 'status missing'}>\n"
+            "          <span>{supabaseConfigured ? 'Supabase configured' : 'Supabase config missing'}</span>\n"
+            "          <strong>{supabaseConfigured ? supabaseUrl : 'Add public env vars'}</strong>\n"
+            "        </div>\n"
+            "      </section>\n"
+            '      <section className="panel" aria-labelledby="setup-heading">\n'
+            '        <h2 id="setup-heading">Setup checklist</h2>\n'
+            "        <ul>\n"
+            "          {setupItems.map((item) => (\n"
+            "            <li key={item}>{item}</li>\n"
+            "          ))}\n"
+            "        </ul>\n"
+            "        <button disabled={!supabaseConfigured}>\n"
+            "          {supabaseConfigured ? 'Ready for auth flows' : 'Waiting for config'}\n"
+            "        </button>\n"
+            "      </section>\n"
+            "    </main>\n"
+            "  );\n"
+            "}\n"
+        ),
+        "app/globals.css": (
+            ":root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #172026; background: #f8faf7; }\n"
+            "* { box-sizing: border-box; }\n"
+            "body { margin: 0; min-height: 100vh; }\n"
+            ".app { min-height: 100vh; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr); gap: 2rem; align-items: center; padding: 4rem; }\n"
+            ".hero, .panel { max-width: 720px; }\n"
+            ".eyebrow { color: #27856a; font-weight: 700; letter-spacing: 0; margin: 0 0 1rem; text-transform: uppercase; }\n"
+            "h1 { font-size: clamp(2.4rem, 5vw, 4.8rem); line-height: 1; margin: 0; }\n"
+            "h2 { margin-top: 0; }\n"
+            ".lede { color: #4b5c63; font-size: 1.125rem; line-height: 1.7; max-width: 44rem; }\n"
+            ".status { border: 1px solid #d6e2dd; border-radius: 8px; display: grid; gap: 0.35rem; margin-top: 2rem; padding: 1rem; width: min(100%, 32rem); }\n"
+            ".status span { color: #56666d; font-size: 0.9rem; }\n"
+            ".status strong { overflow-wrap: anywhere; }\n"
+            ".status.ready { background: #e9f8f1; border-color: #84d4b4; }\n"
+            ".status.missing { background: #fff7e6; border-color: #f0c66f; }\n"
+            ".panel { background: #ffffff; border: 1px solid #dce6e2; border-radius: 8px; padding: 2rem; box-shadow: 0 20px 60px rgba(23, 32, 38, 0.08); }\n"
+            "ul { color: #314047; line-height: 1.8; padding-left: 1.2rem; }\n"
+            "button { background: #172026; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-size: 1rem; padding: 0.8rem 1rem; }\n"
+            "button:disabled { background: #a9b5b8; cursor: not-allowed; }\n"
+            "@media (max-width: 800px) { .app { grid-template-columns: 1fr; padding: 2rem; } }\n"
+        ),
+        ".gitignore": "node_modules\n.next\nout\n.env*.local\n.env\n",
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Next.js (App Router) + Supabase",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18.18+.",
+            usage=(
+                "Copy the example environment file, fill in the public Supabase values, "
+                "then start the dev server:\n\n"
+                "```bash\ncp .env.example .env.local\nnpm run dev\n```\n\n"
+                "Open `http://localhost:3000`. Build for production and serve it:\n\n"
+                "```bash\nnpm run build\nnpm start\n```"
+            ),
+            structure=[
+                ("app/page.jsx", "Home page showing Supabase setup status"),
+                ("app/layout.jsx", "Root layout wrapping every page (<html>/<body>)"),
+                ("app/globals.css", "Global styles imported by the layout"),
+                ("lib/supabaseClient.js", "Client-safe Supabase browser client factory"),
+                (".env.example", "Public Supabase environment variable template"),
+                ("next.config.js", "Next.js configuration"),
+                ("package.json", "Dependencies and npm scripts (dev/build/start)"),
+            ],
+            features=[
+                "Next.js App Router with a default-exported page + root layout",
+                "Supabase JS client dependency and public env wiring",
+                "Configuration status UI that works without network access",
+            ],
+            extra=(
+                "## Supabase environment\n\n"
+                "- `NEXT_PUBLIC_SUPABASE_URL` is the browser-safe project URL.\n"
+                "- `NEXT_PUBLIC_SUPABASE_ANON_KEY` is the browser-safe anon key.\n"
+                "- Keep service-role keys in server-only code; never import them into `app/page.jsx`."
+            ),
         ),
     }
 
@@ -5130,6 +5312,10 @@ def scaffold_for(
     # python_cli stack gets the typed-event-stream scaffold.
     if stack == "python_cli" and _implies_cli_agent(brief):
         return _python_cli_agent(safe_name, brief)
+    # Supabase variant: a precise Supabase auth/database/backend brief on the
+    # nextjs stack gets client-safe Supabase env wiring.
+    if stack == "nextjs" and _implies_supabase(brief):
+        return _nextjs_supabase(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

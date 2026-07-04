@@ -187,20 +187,21 @@ def _parse_llm(raw: str) -> ConfigSpec | None:
 
 
 def _normalize_spec(spec: ConfigSpec, stack: str) -> ConfigSpec:
-    keys: list[ConfigKey] = []
+    by_name: dict[str, ConfigKey] = {}
     for k in spec.keys:
         if k.scope == "client":
-            keys.append(ConfigKey(
+            normalized = ConfigKey(
                 name=_normalize_client_key_name(k.name, stack),
                 kind=k.kind,
                 description=k.description,
                 scope=k.scope,
                 required=k.required,
                 default=k.default,
-            ))
+            )
         else:
-            keys.append(k)
-    return ConfigSpec(keys=keys, apis=list(spec.apis))
+            normalized = k
+        by_name.setdefault(normalized.name, normalized)
+    return ConfigSpec(keys=list(by_name.values()), apis=list(spec.apis))
 
 
 def detect_from_brief(brief: str, stack: str = "", *, llm_fn: LLMFn | None = None) -> ConfigSpec:

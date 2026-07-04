@@ -92,19 +92,21 @@ export default function Settings() {
   });
   const [model, setModel] = useState("");
   const [modelMsg, setModelMsg] = useState("");
+  const normalizeModelId = (value) => value.replace(/\s+/g, "").trim();
   useEffect(() => {
     const cur = secrets.data?.preferred_model;
     if (cur !== undefined) setModel(cur || "");
   }, [secrets.data?.preferred_model]);
   async function saveModel(m) {
-    setModel(m);
+    const normalized = normalizeModelId(m);
+    setModel(normalized);
     try {
-      await apiPost("/settings/model", { model: m });
+      await apiPost("/settings/model", { model: normalized });
       queryClient.setQueryData(["llm-secrets"], (old) => ({
         ...(old || {}),
-        preferred_model: m,
+        preferred_model: normalized,
       }));
-      setModelMsg(m ? `pinned → ${m}` : "auto — smart routing");
+      setModelMsg(normalized ? `pinned → ${normalized}` : "auto — smart routing");
       secrets.refetch();
     } catch (e) {
       setModelMsg(String(e.message));
@@ -285,8 +287,14 @@ export default function Settings() {
       const r = await apiPost("/llm/routing", {
         codegen_cli_provider: codegenCliProvider,
         codegen_cli_model: codegenCliModel,
-        openrouter_codegen_model: openrouterCodegenModel,
-        model_pins: modelPins,
+        openrouter_codegen_model: normalizeModelId(openrouterCodegenModel),
+        model_pins: {
+          cheap: normalizeModelId(modelPins.cheap),
+          ui: normalizeModelId(modelPins.ui),
+          backend: normalizeModelId(modelPins.backend),
+          strong: normalizeModelId(modelPins.strong),
+          docs: normalizeModelId(modelPins.docs),
+        },
       });
       setRoutingMsg(`saved → codegen ${r.routing?.codegen?.backend || "active backend"}`);
       secrets.refetch();
@@ -431,18 +439,32 @@ export default function Settings() {
                 whole-app builds when it is set.
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <select
-                  value={model}
-                  onChange={(e) => saveModel(e.target.value)}
-                  className="field min-w-[16rem] flex-1"
-                >
-                  <option value="">auto — smart routing</option>
-                  {primaryModelChoices.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
+                <div className="min-w-[16rem] flex-1">
+                  <input
+                    type="text"
+                    list="preferred-models"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        saveModel(model);
+                      }
+                    }}
+                    onBlur={() => saveModel(model)}
+                    placeholder="auto — smart routing"
+                    className="field"
+                  />
+                  <datalist id="preferred-models">
+                    <option value="">auto — smart routing</option>
+                    {primaryModelChoices.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </div>
+                <button className="btn-ghost" onClick={() => saveModel(model)}>
+                  Set
+                </button>
                 <button onClick={() => models.refetch()} className="btn-ghost">
                   Refresh models
                 </button>
@@ -477,19 +499,23 @@ export default function Settings() {
                 value={codegenCliModel}
                 onChange={(e) => setCodegenCliModel(e.target.value)}
               />
-              <select
-                className="field min-w-[14rem] flex-1"
-                value={openrouterCodegenModel}
-                onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
-                title="OpenRouter codegen model; overrides primary for whole-app builds"
-              >
-                <option value="">OpenRouter codegen · auto</option>
-                {codegenModelChoices.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+              <div className="min-w-[14rem] flex-1">
+                <input
+                  type="text"
+                  className="field"
+                  list="openrouter-codegen-models"
+                  value={openrouterCodegenModel}
+                  onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
+                  title="OpenRouter codegen model; overrides primary for whole-app builds"
+                  placeholder="OpenRouter codegen · auto"
+                />
+                <datalist id="openrouter-codegen-models">
+                  <option value="" />
+                  {codegenModelChoices.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              </div>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-5">
               {MODEL_TIERS.map((tier) => (
@@ -572,6 +598,12 @@ export default function Settings() {
               <span className="font-mono text-bone">auto</span> to real cloud
               generation immediately.
             </p>
+            <div className="mb-3">
+              <Row
+                label="OpenRouter"
+                value={openrouterConfigured ? "configured ✓" : "not set"}
+              />
+            </div>
             <div className="flex flex-wrap gap-2">
               <select
                 value={provider}

@@ -192,7 +192,7 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "model_override" in studio
     assert 'queryFn("/models")' in studio
     assert "manualModelChoices" in studio
-    assert "Select OpenRouter model" in studio
+    assert "datalist id=\"studio-models\"" in studio
     assert "const DEFAULT_STACK_SELECTION = []" in studio
     assert "Web set" in studio
     assert "golf website for adult beginners" in studio

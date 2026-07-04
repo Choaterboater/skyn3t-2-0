@@ -95,3 +95,25 @@ async def test_set_preferred_model_updates_settings(monkeypatch):
     # empty clears the pin (back to auto)
     res2 = await routes.set_preferred_model(state, "")
     assert res2["preferred_model"] == ""
+
+
+async def test_set_preferred_model_compacts_whitespace(monkeypatch):
+    import skyn3t.web.routes as routes
+
+    monkeypatch.setattr(routes, "_persist_env_var", lambda *a, **k: None)
+    state = SimpleNamespace(settings=Settings())
+    res = await routes.set_preferred_model(
+        state,
+        " z z \n openrouter/ gpt 4o-mini ",
+    )
+    assert res["preferred_model"] == "zzopenrouter/gpt4o-mini"
+
+
+async def test_set_preferred_model_trims_overly_long_payload(monkeypatch):
+    import skyn3t.web.routes as routes
+
+    monkeypatch.setattr(routes, "_persist_env_var", lambda *a, **k: None)
+    state = SimpleNamespace(settings=Settings())
+    long_model = "x" * 300
+    res = await routes.set_preferred_model(state, long_model)
+    assert res["preferred_model"] == ""

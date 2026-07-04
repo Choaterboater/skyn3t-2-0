@@ -541,6 +541,7 @@ class CodeAgent(BaseAgent):
         # false no_go + halved score on a clean build). Clear before any work.
         self.metadata.pop("degraded", None)
         self.metadata.pop("degraded_reason", None)
+        self.metadata.pop("codegen_override_unavailable", None)
         brief = p.get("brief", "") or p.get("slug", "app")
         # An art plan the runner computed + threaded (LLM-tailored or the floor); the
         # game-art directive uses it so codegen lists the SAME roles the sprite
@@ -592,6 +593,8 @@ class CodeAgent(BaseAgent):
         model_override = p.get("model_override")
         _codegen_cli_ok, _agentic_kwargs, _codegen_unavailable = self._codegen_agentic_routing(
             stack, model_override)
+        if _codegen_unavailable:
+            self.metadata["codegen_override_unavailable"] = _codegen_unavailable
         if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
@@ -637,8 +640,6 @@ class CodeAgent(BaseAgent):
                 })
                 res = await self.llm.agentic_build(prompt, str(worktree), **_agentic_kwargs)
                 self.metadata["agentic"] = res
-                if _codegen_unavailable:
-                    self.metadata["codegen_override_unavailable"] = _codegen_unavailable
                 agentic_ok = bool(res.get("ok", True))
                 agentic_error = res.get("error", "")
                 disk = self._read_files(worktree)
@@ -760,6 +761,9 @@ class CodeAgent(BaseAgent):
         if self.metadata.get("degraded"):
             out["degraded"] = True
             out["degraded_reason"] = self.metadata.get("degraded_reason", "unknown")
+        codegen_unavailable = self.metadata.get("codegen_override_unavailable")
+        if codegen_unavailable:
+            out["codegen_override_unavailable"] = codegen_unavailable
 
         return TaskResult(
             task_id=task.task_id, success=True,
@@ -1048,6 +1052,8 @@ class CodeAgent(BaseAgent):
         model_override = p.get("model_override")
         codegen_cli_ok, agentic_kwargs, codegen_unavailable = self._codegen_agentic_routing(
             stack, model_override)
+        if codegen_unavailable:
+            self.metadata["codegen_override_unavailable"] = codegen_unavailable
         knowledge = knowledge_block(p)
         files: dict[str, str] = {}
         degraded_reason = ""
@@ -1065,8 +1071,6 @@ class CodeAgent(BaseAgent):
                 brief, stack, name, slice_files, manifest, knowledge, design=design)
             res = await self.llm.agentic_build(prompt, str(worktree), **agentic_kwargs)
             self.metadata["agentic"] = res
-            if codegen_unavailable:
-                self.metadata["codegen_override_unavailable"] = codegen_unavailable
             disk = self._read_files(worktree)
             # Reject chat-prose source files (no scaffold to revert to -> dropped).
             disk, prose = self._clean_agentic_files(disk, {})
@@ -1111,6 +1115,9 @@ class CodeAgent(BaseAgent):
         if degraded_reason:
             out["degraded"] = True
             out["degraded_reason"] = degraded_reason
+        codegen_unavailable_out = self.metadata.get("codegen_override_unavailable")
+        if codegen_unavailable_out:
+            out["codegen_override_unavailable"] = codegen_unavailable_out
         return TaskResult(task_id=task.task_id, success=True, output=out)
 
     def _agentic_slice_prompt(

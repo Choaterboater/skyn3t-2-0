@@ -233,6 +233,69 @@ async def test_studio_runner_persists_full_app_contract_extra(tmp_path):
     assert saved[0]["extra"]["full_app_contract"] is True
 
 
+async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
+    tmp_path,
+    monkeypatch,
+):
+    from skyn3t.adapters.llm import LLMClient
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    class _StopAfterInitialSave(Exception):
+        pass
+
+    async def _saved_codegen_model(label: str, *, cli_available: bool, extra=None) -> str:
+        monkeypatch.setattr(
+            LLMClient,
+            "_cli_available",
+            lambda self, provider: cli_available and provider == "claude",
+        )
+        root = tmp_path / label
+        settings = Settings(
+            projects_dir=root / "Projects",
+            data_dir=root / "data",
+            logs_dir=root / "logs",
+            llm_backend="stub",
+            codegen_cli_provider="claude",
+            codegen_cli_model="sonnet",
+            openrouter_codegen_model="openrouter/codegen",
+            preferred_model="openrouter/preferred",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        saved = []
+
+        async def _capture_initial_save(manifest):
+            saved.append(manifest.to_dict())
+            raise _StopAfterInitialSave
+
+        runner._save_build = _capture_initial_save
+        with pytest.raises(_StopAfterInitialSave):
+            await runner.start(
+                "Build a python tool",
+                slug=f"codegen-trace-{label}",
+                extra=extra or {},
+            )
+        return str(saved[0]["extra"]["codegen_model"])
+
+    assert await _saved_codegen_model(
+        "cli-available",
+        cli_available=True,
+        extra={"model_override": "openrouter/manual"},
+    ) == "sonnet"
+
+    assert await _saved_codegen_model(
+        "cli-unavailable",
+        cli_available=False,
+        extra={"openrouter_codegen_model": ""},
+    ) == "openrouter/codegen"
+
+
 async def test_submit_build_normalizes_model_override():
     class _Studio:
         def __init__(self):

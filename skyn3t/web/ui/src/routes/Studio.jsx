@@ -304,6 +304,14 @@ export default function Studio({ stream }) {
       prev?.sourceBuildProfile ? { ...prev, sourceBuildProfile: null } : prev
     );
   };
+  const toggleFullApp = (checked) => {
+    setFullApp(checked);
+    if (!checked) {
+      setVariantSource((prev) =>
+        prev?.sourceBuildProfile ? { ...prev, sourceBuildProfile: null } : prev
+      );
+    }
+  };
 
   const loadRebuildVariant = (build) => {
     const fields = rebuildFields(build);
@@ -431,7 +439,7 @@ export default function Studio({ stream }) {
             if (!brief.trim()) return;
             const payload = {
               brief: brief.trim(),
-              build_profile: variantSource?.sourceBuildProfile || buildProfile,
+              build_profile: fullApp && variantSource?.sourceBuildProfile ? variantSource.sourceBuildProfile : buildProfile,
               full_app: fullApp,
             };
             if (variantSource?.stack) {
@@ -572,7 +580,7 @@ export default function Studio({ stream }) {
               <input
                 type="checkbox"
                 checked={fullApp}
-                onChange={(e) => setFullApp(e.target.checked)}
+                onChange={(e) => toggleFullApp(e.target.checked)}
                 className="accent-plasma"
               />
               <span className={fullApp ? "text-plasma" : ""}>Full app</span>

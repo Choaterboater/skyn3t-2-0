@@ -24,7 +24,9 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.npm_utils import (
+    mark_npm_build_current,
     mark_npm_install_current,
+    npm_build_current,
     npm_env,
     npm_install_args,
     npm_install_current,
@@ -2822,6 +2824,13 @@ def _run_node_build(
         mark_npm_install_current(pdir)
         install_summary = "npm install ok"
 
+    if npm_build_current(pdir, build_cmd):
+        return (
+            True,
+            True,
+            f"{install_summary}; npm run {build_cmd} skipped (build current)",
+        )
+
     bld = _run_proof_command(
         cmd_ctx,
         [npm_cmd, "run", build_cmd],
@@ -2835,6 +2844,7 @@ def _run_node_build(
         return (False, False, "")
     out = ((bld.stdout or "") + (bld.stderr or "")).strip()
     if bld.returncode == 0:
+        mark_npm_build_current(pdir, build_cmd)
         tail = out[-300:]
         return (True, True, f"{install_summary}; {tail}" if tail else install_summary)
     # Surface the file/symbol-naming diagnostics (not just the tail) so the

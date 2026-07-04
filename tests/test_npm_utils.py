@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from skyn3t.npm_utils import mark_npm_install_current, npm_install_current
+from skyn3t.npm_utils import (
+    mark_npm_build_current,
+    mark_npm_install_current,
+    npm_build_current,
+    npm_install_current,
+)
 
 
 def test_npm_install_stamp_invalidates_when_manifest_changes(tmp_path):
@@ -15,3 +20,21 @@ def test_npm_install_stamp_invalidates_when_manifest_changes(tmp_path):
 
     pkg.write_text(json.dumps({"dependencies": {"vite": "latest", "react": "latest"}}), encoding="utf-8")
     assert npm_install_current(tmp_path) is False
+
+
+def test_npm_build_stamp_invalidates_when_source_changes(tmp_path):
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"build": "vite build"}, "dependencies": {"vite": "latest"}}),
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    app = src / "App.jsx"
+    app.write_text("export default function App(){return <h1>One</h1>}\n", encoding="utf-8")
+
+    mark_npm_build_current(tmp_path, "build")
+    assert npm_build_current(tmp_path, "build") is True
+
+    app.write_text("export default function App(){return <h1>Two</h1>}\n", encoding="utf-8")
+    assert npm_build_current(tmp_path, "build") is False

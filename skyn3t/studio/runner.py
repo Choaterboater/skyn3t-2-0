@@ -514,6 +514,46 @@ class StudioRunner:
             log.warning("semantic_skills.failed", error=str(exc))
         return advice, slugs
 
+    def _stage_skill_advice(
+        self, stack: str, spec: StageSpec, brief: str = ""
+    ) -> tuple[str, list[str]]:
+        """Stage-scoped role guidance from imported catalog skills."""
+        if self.skills is None:
+            return "", []
+        injector = getattr(self.skills, "inject_for_stage", None)
+        relevant = getattr(self.skills, "relevant_for_stage", None)
+        if injector is None or relevant is None:
+            return "", []
+        try:
+            stage_names = [spec.name, spec.agent_type, spec.capability]
+            advice = injector(stack, stage_names, limit=3)
+            skills = relevant(stack, stage_names, limit=3)
+            slugs = [getattr(s, "slug", "") for s in skills if getattr(s, "slug", "")]
+            return advice, slugs
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stage_skills.inject_failed", stage=spec.name, error=str(exc))
+            return "", []
+
+    def _extra_with_stage_role_guidance(
+        self,
+        extra: dict[str, Any],
+        stack: str,
+        spec: StageSpec,
+        brief: str,
+        manifest: BuildManifest,
+    ) -> dict[str, Any]:
+        advice, slugs = self._stage_skill_advice(stack, spec, brief)
+        if not advice:
+            return extra
+        out = {**extra, "role_guidance": advice}
+        stage_used = manifest.extra.setdefault("stage_skills_used", {})
+        if isinstance(stage_used, dict):
+            stage_used[spec.name] = list(slugs)
+        existing = set(manifest.extra.get("skills_used") or [])
+        existing.update(slugs)
+        manifest.extra["skills_used"] = sorted(existing)
+        return out
+
     # ---- RAG recall (past builds + ingested GitHub repos) ----------------
     def _recall(self, brief: str, stack: str) -> list[dict[str, Any]]:
         """Retrieve relevant prior knowledge to inject into stage prompts."""
@@ -2856,21 +2896,25 @@ class StudioRunner:
                 lessons = await self._inject_lessons(plan.stack, spec.name, brief)
                 if lessons:
                     used_lessons.extend(lessons)
+                stage_extra = self._extra_with_stage_role_guidance(
+                    extra, plan.stack, spec, brief, manifest
+                )
 
                 # ---- best-of-N for the code stage (P0) -------------------
                 if spec.agent_type == "code" and plan.best_of_n > 1:
                     result = await self._run_code_best_of_n(
-                        plan, spec, project_dir, prior, lessons, extra, correlation_id, main_wt, worktrees
+                        plan, spec, project_dir, prior, lessons, stage_extra,
+                        correlation_id, main_wt, worktrees
                     )
                 # ---- Hermes orchestrator-worker: parallel code slices ----
                 elif spec.agent_type == "code" and (slices := self._maybe_slices(plan, prior)):
                     result = await self._run_code_parallel_slices(
-                        plan, spec, project_dir, prior, lessons, extra,
+                        plan, spec, project_dir, prior, lessons, stage_extra,
                         correlation_id, main_wt, worktrees, slices,
                     )
                 else:
                     payload = self._base_payload(
-                        plan, project_dir, main_wt.dir, prior, lessons, extra
+                        plan, project_dir, main_wt.dir, prior, lessons, stage_extra
                     )
                     payload.update(spec.extra)
                     call = self._submit_stage(spec, payload, correlation_id)

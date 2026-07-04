@@ -15,8 +15,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, extract_code
+from skyn3t.agents._common import detect_stack, extract_code, knowledge_block
 from skyn3t.agents.code_agent import _FULL_FILE_CONTRACT
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
@@ -70,6 +72,7 @@ _TARGET_DISCOVERY_SYSTEM = (
 _DISCOVERY_BULLET_RE = re.compile(r"^(?:[-*•]|\d+[.)])\s*")
 
 _MAX_DISCOVERED_TARGETS = 6
+_log = structlog.get_logger(__name__)
 
 
 def _parse_discovery_lines(text: str) -> list[str]:
@@ -171,6 +174,7 @@ class CodeImproverAgent(BaseAgent):
                               error="no project_dir in payload")
         worktree = Path(root)
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
+        knowledge = knowledge_block(p)
 
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
@@ -182,7 +186,9 @@ class CodeImproverAgent(BaseAgent):
             # entrypoint rewrite. Falls through to the classic per-file path
             # whenever the session is unavailable, fails, or lands nothing —
             # this branch can only ever ADD capability, never remove it.
-            improved, skipped, ran = await self._agentic_improve(worktree, brief, gaps, stack, p)
+            improved, skipped, ran = await self._agentic_improve(
+                worktree, brief, gaps, stack, p, knowledge
+            )
             if ran and improved:
                 return TaskResult(task_id=task.task_id, success=True,
                                   output={"files_improved": len(improved),
@@ -214,7 +220,7 @@ class CodeImproverAgent(BaseAgent):
             if target.is_file():
                 original = target.read_text(encoding="utf-8")
                 new_content, skip_reason = await self._improve_one(
-                    rel, original, brief, gaps, stack)
+                    rel, original, brief, gaps, stack, knowledge)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -223,7 +229,9 @@ class CodeImproverAgent(BaseAgent):
                 # ./PreloadScene.js which was never created, so the app can't
                 # boot. Editing can't fix a file that doesn't exist; CREATE it.
                 original = ""
-                new_content = await self._create_one(rel, brief, gaps, stack, worktree)
+                new_content = await self._create_one(
+                    rel, brief, gaps, stack, worktree, knowledge
+                )
             if new_content and new_content.strip() and new_content != original:
                 from skyn3t.agents.validate import validate_source
                 ok, _ = validate_source(rel, new_content)
@@ -266,9 +274,13 @@ class CodeImproverAgent(BaseAgent):
         return snap
 
     @staticmethod
-    def _agentic_improve_prompt(brief: str, gaps: list[Any], stack: str) -> str:
+    def _agentic_improve_prompt(
+        brief: str, gaps: list[Any], stack: str, knowledge: str = ""
+    ) -> str:
         goals = "\n".join(f"- {str(g).strip()}" for g in gaps if str(g).strip()) or f"- {brief}"
+        preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
         return (
+            f"{preamble}"
             "You are IMPROVING an existing, working application — not building "
             "a new one. The project's current files are on disk.\n"
             f"Stack: {stack or 'detect from the files'}\n"
@@ -287,6 +299,7 @@ class CodeImproverAgent(BaseAgent):
 
     async def _agentic_improve(self, worktree: Path, brief: str, gaps: list[Any],
                                stack: str, payload: dict[str, Any],
+                               knowledge: str = "",
                                ) -> tuple[list[str], dict[str, str], bool]:
         """Run one whole-project agentic session toward the goal. Returns
         (improved_rels, skipped_reasons, ran). ran=False means the session
@@ -295,7 +308,7 @@ class CodeImproverAgent(BaseAgent):
         from skyn3t.agents.validate import validate_source
 
         before = self._snapshot(worktree)
-        prompt = self._agentic_improve_prompt(brief, gaps, stack)
+        prompt = self._agentic_improve_prompt(brief, gaps, stack, knowledge)
         try:
             res = await self.llm.agentic_build(
                 prompt, str(worktree),
@@ -333,7 +346,8 @@ class CodeImproverAgent(BaseAgent):
         return improved, skipped, True
 
     async def _improve_one(self, rel: str, original: str, brief: str,
-                           gaps: list[Any], stack: str) -> tuple[str, str]:
+                           gaps: list[Any], stack: str,
+                           knowledge: str = "") -> tuple[str, str]:
         """Rewrite one file toward the gaps/goal. Returns (content, skip_reason):
         content == original with a reason means the file was deliberately left
         alone (e.g. "already_satisfied") — the caller records the reason instead
@@ -341,8 +355,9 @@ class CodeImproverAgent(BaseAgent):
         if self.llm.backend != "stub":
             ext = Path(rel).suffix.lower()
             tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+            preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
             prompt = (
-                f"Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
+                f"{preamble}Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
@@ -381,7 +396,7 @@ class CodeImproverAgent(BaseAgent):
         return self._deterministic_fix(rel, original, stack), ""
 
     async def _create_one(self, rel: str, brief: str, gaps: list[Any], stack: str,
-                          worktree: Path) -> str:
+                          worktree: Path, knowledge: str = "") -> str:
         """Write a BRAND NEW file at `rel` that some existing file imports but that
         codegen never created. Unlike `_improve_one`, there is no deterministic
         offline fallback here — synthesizing a plausible NEW file (not just a
@@ -406,8 +421,9 @@ class CodeImproverAgent(BaseAgent):
             )
         ext = Path(rel).suffix.lower()
         tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+        preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
         prompt = (
-            f"Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"
+            f"{preamble}Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"
             f"Issues: {gaps}\n{importer_context}\n"
             f"This file does NOT exist yet — you are creating it, not editing it. "
             f"Write the COMPLETE, real contents of a new file at {rel} that the "

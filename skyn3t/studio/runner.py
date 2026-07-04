@@ -338,6 +338,35 @@ class StudioRunner:
         enabled = requested or bool(getattr(self.settings, "best_of_n_across_models", False))
         return enabled and len(pool) >= 2
 
+    def _codegen_trace_model(self, model_override: str) -> str:
+        """Model label for persisted codegen diagnostics.
+
+        Match CodeAgent routing: an available codegen CLI override owns codegen.
+        When the override is absent or unavailable, report the OpenRouter path's
+        visible model preference instead.
+        """
+        provider = str(
+            getattr(self.settings, "codegen_cli_provider", "") or "").strip().lower()
+        codegen_cli_model = str(
+            getattr(self.settings, "codegen_cli_model", "") or "").strip()
+        if provider:
+            try:
+                from skyn3t.adapters.llm import LLMClient
+
+                if LLMClient(self.settings)._cli_available(provider):
+                    return codegen_cli_model
+            except Exception as exc:  # noqa: BLE001 - diagnostics must not break a build
+                log.warning(
+                    "studio.codegen_trace_cli_probe_failed",
+                    provider=provider,
+                    error=str(exc)[:120],
+                )
+        return (
+            model_override
+            or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
+            or str(getattr(self.settings, "preferred_model", "") or "").strip()
+        )
+
     @staticmethod
     def _candidate_buckets(candidate: Any, spec: StageSpec) -> set[str]:
         """The (tier:task_type) buckets a candidate trajectory actually used.
@@ -2805,12 +2834,7 @@ class StudioRunner:
             manifest.extra["full_app_contract"] = True
         if model_override:
             manifest.extra["model_override"] = model_override
-        manifest.extra["codegen_model"] = (
-            model_override
-            or str(getattr(self.settings, "openrouter_codegen_model", "") or "")
-            or str(getattr(self.settings, "codegen_cli_model", "") or "")
-            or str(getattr(self.settings, "preferred_model", "") or "")
-        )
+        manifest.extra["codegen_model"] = self._codegen_trace_model(model_override)
         manifest.extra["llm_backend"] = str(getattr(self.settings, "llm_backend", ""))
         manifest.extra["clarification"] = clar.to_dict()
         manifest.extra["stack_selection"] = {

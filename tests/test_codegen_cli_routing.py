@@ -192,9 +192,130 @@ async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp
         payload={"brief": "a react counter app", "slug": "counter", "worktree_dir": str(tmp_path)},
         capabilities_required=("codegen",),
     )
-    await agent.run(task)
+    result = await agent.run(task)
     assert "provider" not in captured
     assert agent.metadata["codegen_override_unavailable"] == "claude"
+    assert result.output["codegen_override_unavailable"] == "claude"
+
+
+async def test_unavailable_codegen_cli_override_reported_in_monolithic_completion_output(
+    tmp_path,
+    monkeypatch,
+):
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        openrouter_agentic=False,
+        codegen_cli_provider="claude",
+        codegen_cli_model="sonnet",
+    )
+    llm = LLMClient(settings)
+    monkeypatch.setattr(llm, "_cli_available", lambda _provider: False)
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+
+    async def fake_generate_file(
+        rel_path,
+        brief,
+        stack,
+        plan,
+        knowledge="",
+        model_override=None,
+        manifest="",
+        design=None,
+    ):
+        return "export default function App(){ return null }\n"
+
+    monkeypatch.setattr(agent, "_generate_file", fake_generate_file)
+    task = TaskRequest(
+        type="codegen",
+        payload={
+            "brief": "a react counter app",
+            "slug": "counter",
+            "stack": "react",
+            "worktree_dir": str(tmp_path),
+            "plan": {"stack": "react", "files": [{"path": "src/App.jsx"}]},
+        },
+        capabilities_required=("codegen",),
+    )
+    result = await agent.run(task)
+    assert agent.metadata["codegen_override_unavailable"] == "claude"
+    assert result.output["codegen_override_unavailable"] == "claude"
+
+
+async def test_unavailable_codegen_cli_override_reported_in_slice_completion_output(
+    tmp_path,
+    monkeypatch,
+):
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        openrouter_agentic=False,
+        codegen_cli_provider="claude",
+        codegen_cli_model="sonnet",
+    )
+    llm = LLMClient(settings)
+    monkeypatch.setattr(llm, "_cli_available", lambda _provider: False)
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+
+    async def fake_generate_file(
+        rel_path,
+        brief,
+        stack,
+        plan,
+        knowledge="",
+        model_override=None,
+        manifest="",
+        design=None,
+    ):
+        return "export default function Widget(){ return null }\n"
+
+    monkeypatch.setattr(agent, "_generate_file", fake_generate_file)
+    task = TaskRequest(
+        type="codegen",
+        payload={
+            "brief": "a react dashboard",
+            "slug": "dashboard",
+            "stack": "react",
+            "worktree_dir": str(tmp_path),
+            "plan": {"stack": "react", "files": [{"path": "src/Widget.jsx"}]},
+            "slice_scope": {
+                "name": "frontend",
+                "files": ["src/Widget.jsx"],
+                "manifest": "  api/main.py - backend API",
+            },
+        },
+        capabilities_required=("codegen",),
+    )
+    result = await agent.run(task)
+    assert agent.metadata["codegen_override_unavailable"] == "claude"
+    assert result.output["codegen_override_unavailable"] == "claude"
+
+
+async def test_codegen_override_unavailable_metadata_cleared_between_runs(tmp_path):
+    settings = Settings(llm_backend="stub")
+    llm = LLMClient(settings)
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+    agent.metadata["codegen_override_unavailable"] = "claude"
+
+    task = TaskRequest(
+        type="codegen",
+        payload={
+            "brief": "a python cli",
+            "slug": "tool",
+            "stack": "python",
+            "worktree_dir": str(tmp_path),
+        },
+        capabilities_required=("codegen",),
+    )
+    result = await agent.run(task)
+    assert "codegen_override_unavailable" not in agent.metadata
+    assert "codegen_override_unavailable" not in result.output
 
 
 async def test_model_override_reaches_monolithic_agentic_build(tmp_path):

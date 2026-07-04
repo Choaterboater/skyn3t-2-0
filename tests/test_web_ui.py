@@ -118,6 +118,15 @@ def test_activity_wires_trajectory_replay_ui() -> None:
     activity = (ROUTES / "Activity.jsx").read_text()
     assert 'apiFetch(`/trajectory?' in activity
     assert "Trajectory replay / time travel" in activity
+    assert "const activitySignals =" in activity
+    assert "Activity signals" in activity
+    assert 'const filterSignal = filter === "" ? "none" : JSON.stringify(filter)' in activity
+    assert 'const selectedSignal = selected ? selected.type || selected.id || selected.correlation_id || "event" : "none"' in activity
+    assert 'label: "view", value: mode' in activity
+    assert 'label: "visible", value: `${filtered.length}/${events.length}`' in activity
+    assert 'label: "filter", value: filterSignal' in activity
+    assert 'label: "selected", value: selectedSignal' in activity
+    assert "[overflow-wrap:anywhere]" in activity
     assert "Freeze latest" in activity
     assert "correlation_id" in activity
     assert "function eventSummary" in activity

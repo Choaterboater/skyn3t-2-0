@@ -393,6 +393,12 @@ export default function Settings() {
     openrouterCodegenModel && !openrouterModels.includes(openrouterCodegenModel)
       ? [openrouterCodegenModel, ...openrouterModels]
       : openrouterModels;
+  const routingCockpit = [
+    { label: "requested backend", value: routing.requested || "auto" },
+    { label: "active route", value: routing.active || active || "stub" },
+    { label: "primary model", value: model || "auto · learned routing" },
+    { label: "codegen path", value: codegen.reason || "follows active backend" },
+  ];
 
   return (
     <div>
@@ -455,6 +461,22 @@ export default function Settings() {
             }
           />
           <div className="p-4">
+            <div className="mb-4">
+              <div className="eyebrow mb-2">Routing cockpit</div>
+              <div className="grid gap-2 md:grid-cols-4">
+                {routingCockpit.map((item) => (
+                  <div
+                    key={item.label}
+                    className="min-w-0 rounded-md border border-hairline bg-void/45 p-3"
+                  >
+                    <div className="eyebrow text-[9px]">{item.label}</div>
+                    <div className="mt-2 min-h-[2.5rem] min-w-0 break-words [overflow-wrap:anywhere] font-mono text-xs text-bone">
+                      {item.value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="mb-4 overflow-hidden rounded border border-hairline/60">
               <Row label="requested" value={routing.requested || "auto"} />
               <Row label="active" value={routing.active || active || "stub"} />

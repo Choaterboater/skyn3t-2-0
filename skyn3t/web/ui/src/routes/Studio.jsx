@@ -418,6 +418,26 @@ export default function Studio({ stream }) {
         label: "no Replicate",
         title: "No Replicate key configured for generated assets",
       };
+  const effectiveBuildProfile =
+    fullApp && variantSource?.sourceBuildProfile
+      ? variantSource.sourceBuildProfile
+      : buildProfile;
+  const effectiveProfileLabel =
+    effectiveBuildProfile === "full_app"
+      ? "Full app contract"
+      : BUILD_PROFILES.find((p) => p.id === effectiveBuildProfile)?.label || effectiveBuildProfile;
+  const buildIntent = {
+    mode: `${effectiveProfileLabel}${
+      fullApp ? " · full app" : ""
+    }`,
+    model: normalizedModelOverride || "learned routing",
+    reference: refImage?.name || "no reference image",
+    fanout: selectedStacks.size
+      ? `${selectedStacks.size} stack${selectedStacks.size === 1 ? "" : "s"} · ${[
+          ...selectedStacks,
+        ].join(", ")}${selectedStacks.size === 1 ? " · add one more" : ""}`
+      : "auto stack",
+  };
 
   const running = pipeline.filter((p) => p.state === "running").length;
   const done = pipeline.filter((p) => p.state === "done").length;
@@ -439,274 +459,302 @@ export default function Studio({ stream }) {
       />
 
       <Panel className="mb-6 p-4">
-        <form
-          className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!brief.trim()) return;
-            const payload = {
-              brief: brief.trim(),
-              build_profile: fullApp && variantSource?.sourceBuildProfile ? variantSource.sourceBuildProfile : buildProfile,
-              full_app: fullApp,
-            };
-            if (variantSource?.stack) {
-              payload.stack = variantSource.stack;
-            }
-            if (normalizedModelOverride) {
-              payload.model_override = normalizedModelOverride;
-            }
-            if (refImage?.url) payload.reference_image = refImage.url;
-            submit.mutate(payload);
-          }}
-        >
-          <input
-            ref={briefRef}
-            className="field flex-1"
-            placeholder="Describe the app to build…"
-            value={brief}
-            onChange={(e) => setBrief(e.target.value)}
-          />
-          {/* "Build from a picture": attach one reference image (screenshot,
-              drawing, or diagram) that the design/architecture agents match. */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => onPickImage(e.target.files?.[0])}
-          />
-          {refImage ? (
-            <div className="flex items-center gap-2 rounded border border-hairline px-2 py-1">
-              <img
-                src={refImage.url}
-                alt="reference"
-                className="h-9 w-9 rounded object-cover"
-              />
-              <span className="max-w-[8rem] truncate font-mono text-[11px] text-ash">
-                {refImage.name}
-              </span>
-              <button
-                type="button"
-                onClick={clearImage}
-                title="Remove reference image"
-                className="text-ash hover:text-ember"
-              >
-                ✕
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="btn-ghost disabled:opacity-50"
-              title="Attach a reference image — a screenshot, drawing, or diagram to match"
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="min-w-0">
+            <form
+              className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!brief.trim()) return;
+                const payload = {
+                  brief: brief.trim(),
+                  build_profile: effectiveBuildProfile,
+                  full_app: fullApp,
+                };
+                if (variantSource?.stack) {
+                  payload.stack = variantSource.stack;
+                }
+                if (normalizedModelOverride) {
+                  payload.model_override = normalizedModelOverride;
+                }
+                if (refImage?.url) payload.reference_image = refImage.url;
+                submit.mutate(payload);
+              }}
             >
-              + Image
-            </button>
-          )}
-          <button
-            type="submit"
-            disabled={
-              submit.isPending ||
-              !brief.trim()
-            }
-            className="btn-ember disabled:opacity-50"
-          >
-            {submit.isPending ? "Forging…" : "Forge build"}
-          </button>
-        </form>
-        {submit.isError ? (
-          <p className="mt-3 font-mono text-xs text-ember">
-            {String(submit.error.message)}
-          </p>
-        ) : null}
-
-        <div className="mt-3 border-t border-hairline pt-3">
-          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-2">
-              {BUILD_PROFILES.map((p) => {
-                const on = buildProfile === p.id;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => chooseBuildProfile(p.id)}
-                    title={p.hint}
-                    aria-pressed={on}
-                    className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
-                      on
-                        ? "border-plasma/50 bg-plasma/10 text-plasma"
-                        : "border-hairline text-ash hover:border-plasma/30 hover:text-bone"
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex min-w-0 flex-1 flex-col gap-1 lg:max-w-[28rem]">
               <input
-                type="text"
-                list="studio-models"
-                value={modelOverride}
-                onChange={(e) => setModelOverride(e.target.value)}
-                placeholder="openrouter model (optional)"
-                className="field"
-                title="Pin one OpenRouter model for this build"
+                ref={briefRef}
+                className="field flex-1"
+                placeholder="Describe the app to build…"
+                value={brief}
+                onChange={(e) => setBrief(e.target.value)}
               />
-              <datalist id="studio-models">
-                {manualModelChoices.length === 0 ? (
-                  <option value="openai/gpt-4o-mini" />
-                ) : (
-                  manualModelChoices.map((m) => <option key={m} value={m} />)
-                )}
-              </datalist>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
-                  {normalizedModelOverride
-                    ? unknownModelOverride
-                      ? `Model override: ${normalizedModelOverride} (not in cached OpenRouter list)`
-                      : `Model override: ${normalizedModelOverride} (for this build)`
-                    : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
-                </span>
-                {normalizedModelOverride ? (
+              {/* "Build from a picture": attach one reference image (screenshot,
+                  drawing, or diagram) that the design/architecture agents match. */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => onPickImage(e.target.files?.[0])}
+              />
+              {refImage ? (
+                <div className="flex items-center gap-2 rounded border border-hairline px-2 py-1">
+                  <img
+                    src={refImage.url}
+                    alt="reference"
+                    className="h-9 w-9 rounded object-cover"
+                  />
+                  <span className="max-w-[8rem] truncate font-mono text-[11px] text-ash">
+                    {refImage.name}
+                  </span>
                   <button
                     type="button"
-                    onClick={() => setModelOverride("")}
-                    className="btn-ghost py-0.5 text-[10px]"
+                    onClick={clearImage}
+                    title="Remove reference image"
+                    className="text-ash hover:text-ember"
                   >
-                    clear
+                    ✕
                   </button>
-                ) : null}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="btn-ghost disabled:opacity-50"
+                  title="Attach a reference image — a screenshot, drawing, or diagram to match"
+                >
+                  + Image
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={
+                  submit.isPending ||
+                  !brief.trim()
+                }
+                className="btn-ember disabled:opacity-50"
+              >
+                {submit.isPending ? "Forging…" : "Forge build"}
+              </button>
+            </form>
+            {submit.isError ? (
+              <p className="mt-3 font-mono text-xs text-ember">
+                {String(submit.error.message)}
+              </p>
+            ) : null}
+
+            <div className="mt-3 border-t border-hairline pt-3">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-wrap gap-2">
+                  {BUILD_PROFILES.map((p) => {
+                    const on = buildProfile === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => chooseBuildProfile(p.id)}
+                        title={p.hint}
+                        aria-pressed={on}
+                        className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
+                          on
+                            ? "border-plasma/50 bg-plasma/10 text-plasma"
+                            : "border-hairline text-ash hover:border-plasma/30 hover:text-bone"
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex min-w-0 flex-1 flex-col gap-1 lg:max-w-[28rem]">
+                  <input
+                    type="text"
+                    list="studio-models"
+                    value={modelOverride}
+                    onChange={(e) => setModelOverride(e.target.value)}
+                    placeholder="openrouter model (optional)"
+                    className="field"
+                    title="Pin one OpenRouter model for this build"
+                  />
+                  <datalist id="studio-models">
+                    {manualModelChoices.length === 0 ? (
+                      <option value="openai/gpt-4o-mini" />
+                    ) : (
+                      manualModelChoices.map((m) => <option key={m} value={m} />)
+                    )}
+                  </datalist>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
+                      {normalizedModelOverride
+                        ? unknownModelOverride
+                          ? `Model override: ${normalizedModelOverride} (not in cached OpenRouter list)`
+                          : `Model override: ${normalizedModelOverride} (for this build)`
+                        : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
+                    </span>
+                    {normalizedModelOverride ? (
+                      <button
+                        type="button"
+                        onClick={() => setModelOverride("")}
+                        className="btn-ghost py-0.5 text-[10px]"
+                      >
+                        clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <label
+                  className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
+                  title="Build a fuller product with richer content, assets when configured, and more repair budget"
+                >
+                  <input
+                    type="checkbox"
+                    checked={fullApp}
+                    onChange={(e) => toggleFullApp(e.target.checked)}
+                    className="accent-plasma"
+                  />
+                  <span className={fullApp ? "text-plasma" : ""}>Full app</span>
+                </label>
+              </div>
+              {variantSource ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3 font-mono text-[11px] text-ash">
+                  <Pill tone="ash">
+                    variant · {variantSource.stack || "auto stack"}
+                  </Pill>
+                  <span>
+                    Loaded from {variantSource.slug || variantSource.build_id || "previous build"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setVariantSource(null)}
+                    className="btn-ghost py-0.5 text-[10px]"
+                    title="Return to a new auto-stack build"
+                  >
+                    clear variant
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <aside className="order-2 rounded-md border border-hairline bg-void/45 p-3 xl:order-2">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <span className="eyebrow">Command deck</span>
+              <span title={assetState.title}>
+                <Pill tone={assetState.tone}>{assetState.label}</Pill>
+              </span>
+            </div>
+            <div className="space-y-2 font-mono text-[11px]">
+              {[
+                ["mode", buildIntent.mode],
+                ["model", buildIntent.model],
+                ["reference", buildIntent.reference],
+                ["fan-out", buildIntent.fanout],
+              ].map(([label, value]) => (
+                <div
+                  key={label}
+                  className="flex items-start justify-between gap-3 border-t border-hairline/60 pt-2"
+                >
+                  <span className="text-ash/60">{label}</span>
+                  <span className="min-w-0 break-words max-w-[13rem] text-right text-bone" title={value}>
+                    {value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </aside>
+          <div className="order-3 min-w-0 xl:col-start-1 xl:row-start-2">
+            {/* Example briefs: clickable starters that fill the brief box. */}
+            <div>
+              <span className="eyebrow text-[9px] text-ash/70">Need a starting point? Try:</span>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {EXAMPLE_BRIEFS.map((ex) => (
+                  <button
+                    key={ex}
+                    type="button"
+                    onClick={() => useExample(ex)}
+                    title="Fill the brief with this example — then edit and forge"
+                    className="rounded-full border border-hairline px-3 py-1 text-left text-[11px] text-ash transition-colors hover:border-ember/40 hover:text-bone"
+                  >
+                    {ex}
+                  </button>
+                ))}
               </div>
             </div>
-            <label
-              className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
-              title="Build a fuller product with richer content, assets when configured, and more repair budget"
-            >
-              <input
-                type="checkbox"
-                checked={fullApp}
-                onChange={(e) => toggleFullApp(e.target.checked)}
-                className="accent-plasma"
-              />
-              <span className={fullApp ? "text-plasma" : ""}>Full app</span>
-            </label>
-            <span title={assetState.title}>
-              <Pill tone={assetState.tone}>{assetState.label}</Pill>
-            </span>
-          </div>
-          {variantSource ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3 font-mono text-[11px] text-ash">
-              <Pill tone="ash">
-                variant · {variantSource.stack || "auto stack"}
-              </Pill>
-              <span>
-                Loaded from {variantSource.slug || variantSource.build_id || "previous build"}
-              </span>
-              <button
-                type="button"
-                onClick={() => setVariantSource(null)}
-                className="btn-ghost py-0.5 text-[10px]"
-                title="Return to a new auto-stack build"
-              >
-                clear variant
-              </button>
-            </div>
-          ) : null}
-        </div>
 
-        {/* Example briefs: clickable starters that fill the brief box. */}
-        <div className="mt-3">
-          <span className="eyebrow text-[9px] text-ash/70">Need a starting point? Try:</span>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {EXAMPLE_BRIEFS.map((ex) => (
-              <button
-                key={ex}
-                type="button"
-                onClick={() => useExample(ex)}
-                title="Fill the brief with this example — then edit and forge"
-                className="rounded-full border border-hairline px-3 py-1 text-left text-[11px] text-ash transition-colors hover:border-ember/40 hover:text-bone"
-              >
-                {ex}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Spec 4: fan the same brief out across divergent stacks, pick a winner */}
-        <div className="mt-3 border-t border-hairline pt-3">
-          <div className="flex flex-col gap-1">
-            <span className="font-mono text-[11px] text-ash">Fan out across stacks:</span>
-            <span className="text-[11px] text-ash/70">
-              Optional — skyn3t auto-picks a stack from your brief. Use fan-out to
-              build across several and compare.
-            </span>
-          </div>
-          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex flex-wrap gap-2">
-              {stackOptions.map((s) => {
-                const on = selectedStacks.has(s.id);
-                return (
+            {/* Spec 4: fan the same brief out across divergent stacks, pick a winner */}
+            <div className="mt-3 border-t border-hairline pt-3">
+              <div className="flex flex-col gap-1">
+                <span className="font-mono text-[11px] text-ash">Fan out across stacks:</span>
+                <span className="text-[11px] text-ash/70">
+                  Optional — skyn3t auto-picks a stack from your brief. Use fan-out to
+                  build across several and compare.
+                </span>
+              </div>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex flex-wrap gap-2">
+                  {stackOptions.map((s) => {
+                    const on = selectedStacks.has(s.id);
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => toggleStack(s.id)}
+                        title={s.description}
+                        aria-pressed={on}
+                        className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
+                          on
+                            ? "border-ember/50 bg-ember/10 text-ember"
+                            : "border-hairline text-ash hover:border-ember/30 hover:text-bone"
+                        }`}
+                      >
+                        {s.id}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-shrink-0 gap-2">
                   <button
-                    key={s.id}
                     type="button"
-                    onClick={() => toggleStack(s.id)}
-                    title={s.description}
-                    aria-pressed={on}
-                    className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
-                      on
-                        ? "border-ember/50 bg-ember/10 text-ember"
-                        : "border-hairline text-ash hover:border-ember/30 hover:text-bone"
-                    }`}
+                    onClick={() => setSelectedStacks(new Set(["react", "nextjs", "static"]))}
+                    className="btn-ghost disabled:opacity-50"
+                    title="Select common website/UI stacks for fan-out"
                   >
-                    {s.id}
+                    Web set
                   </button>
-                );
-              })}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStacks(new Set())}
+                    disabled={selectedStacks.size === 0}
+                    className="btn-ghost disabled:opacity-50"
+                    title="Clear fan-out stack selection"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fanoutMut.mutate()}
+                  disabled={
+                    fanoutMut.isPending || !brief.trim() || selectedStacks.size < 2
+                  }
+                  className="btn-ghost flex-shrink-0 disabled:opacity-50"
+                  title="Build N divergent stack candidates for this brief and pick the winner"
+                >
+                  {fanoutMut.isPending ? "Exploring…" : "Fan out"}
+                </button>
+              </div>
             </div>
-            <div className="flex flex-shrink-0 gap-2">
-              <button
-                type="button"
-                onClick={() => setSelectedStacks(new Set(["react", "nextjs", "static"]))}
-                className="btn-ghost disabled:opacity-50"
-                title="Select common website/UI stacks for fan-out"
-              >
-                Web set
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedStacks(new Set())}
-                disabled={selectedStacks.size === 0}
-                className="btn-ghost disabled:opacity-50"
-                title="Clear fan-out stack selection"
-              >
-                Clear
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={() => fanoutMut.mutate()}
-              disabled={
-                fanoutMut.isPending || !brief.trim() || selectedStacks.size < 2
-              }
-              className="btn-ghost flex-shrink-0 disabled:opacity-50"
-              title="Build N divergent stack candidates for this brief and pick the winner"
-            >
-              {fanoutMut.isPending ? "Exploring…" : "Fan out"}
-            </button>
+            {fanoutMut.isError ? (
+              <p className="mt-2 font-mono text-[11px] text-ember">
+                {String(fanoutMut.error.message)}
+              </p>
+            ) : null}
+            {fanoutMut.data && fanoutMut.data.accepted === false ? (
+              <p className="mt-2 font-mono text-[11px] text-ember">
+                {fanoutMut.data.reason || "fan-out unavailable"}
+              </p>
+            ) : null}
           </div>
         </div>
-        {fanoutMut.isError ? (
-          <p className="mt-2 font-mono text-[11px] text-ember">
-            {String(fanoutMut.error.message)}
-          </p>
-        ) : null}
-        {fanoutMut.data && fanoutMut.data.accepted === false ? (
-          <p className="mt-2 font-mono text-[11px] text-ember">
-            {fanoutMut.data.reason || "fan-out unavailable"}
-          </p>
-        ) : null}
       </Panel>
 
       {fanout.cands.length > 0 || fanout.active ? (

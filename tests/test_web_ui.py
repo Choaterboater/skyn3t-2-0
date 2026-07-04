@@ -199,6 +199,26 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "golf website for adult beginners" in studio
 
 
+def test_studio_has_command_deck_summary() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "const effectiveBuildProfile =" in studio
+    assert "build_profile: effectiveBuildProfile" in studio
+    assert "Full app contract" in studio
+    assert "const buildIntent =" in studio
+    assert "Command deck" in studio
+    assert "mode" in studio
+    assert "model" in studio
+    assert "reference" in studio
+    assert "fan-out" in studio
+    assert "assetState.label" in studio
+    assert "selectedStacks.size" in studio
+    assert "add one more" in studio
+    assert "xl:order-2" in studio
+    assert "order-3" in studio
+    assert "xl:row-start-2" in studio
+    assert "min-w-0 break-words" in studio
+
+
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert 'const codegenModel = String(trace.codegen_model || "");' in studio
@@ -235,9 +255,11 @@ def test_studio_rebuild_full_app_variant_only_preserves_source_profile_while_che
     assert 'sourceBuildProfile: profile === "full_app" ? "full_app" : null' in studio
     assert "sourceBuildProfile: fields.sourceBuildProfile" in studio
     assert (
-        "build_profile: fullApp && variantSource?.sourceBuildProfile "
-        "? variantSource.sourceBuildProfile : buildProfile"
+        "fullApp && variantSource?.sourceBuildProfile"
     ) in studio
+    assert "? variantSource.sourceBuildProfile" in studio
+    assert ": buildProfile" in studio
+    assert "build_profile: effectiveBuildProfile" in studio
     assert "const toggleFullApp = (checked) =>" in studio
     assert "if (!checked) {" in studio
     assert "sourceBuildProfile: null" in studio

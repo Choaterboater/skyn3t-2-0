@@ -59,7 +59,8 @@ export default function Settings() {
 
   const [provider, setProvider] = useState("openrouter");
   const [key, setKey] = useState("");
-  const [msg, setMsg] = useState("");
+  const [backendMsg, setBackendMsg] = useState("");
+  const [keyMsg, setKeyMsg] = useState("");
   const [routingMsg, setRoutingMsg] = useState("");
   const [codegenCliProvider, setCodegenCliProvider] = useState("");
   const [codegenCliModel, setCodegenCliModel] = useState("");
@@ -149,7 +150,7 @@ export default function Settings() {
     try {
       const r = await apiPost("/llm/key", { provider, key });
       setKey("");
-      setMsg(`${provider}: ${r.configured ? "saved" : "cleared"} → backend ${r.backend}`);
+      setKeyMsg(`${provider}: ${r.configured ? "saved" : "cleared"} → backend ${r.backend}`);
       queryClient.setQueryData(["llm-secrets"], (old) => ({
         ...(old || {}),
         providers: {
@@ -162,7 +163,7 @@ export default function Settings() {
       secrets.refetch();
       if (provider === "openrouter") models.refetch();
     } catch (e) {
-      setMsg(String(e.message));
+      setKeyMsg(String(e.message));
     }
   }
 
@@ -263,10 +264,10 @@ export default function Settings() {
   async function pickBackend(b) {
     try {
       const r = await apiPost("/llm/backend", { backend: b });
-      setMsg(`backend → ${r.active}`);
+      setBackendMsg(`backend → ${r.active}`);
       secrets.refetch();
     } catch (e) {
-      setMsg(String(e.message));
+      setBackendMsg(String(e.message));
     }
   }
 
@@ -334,6 +335,11 @@ export default function Settings() {
   const openrouterConfigured =
     !!secrets.data?.providers?.openrouter || !!routing.openrouter_configured;
   const chData = integrations.data?.channels || {};
+  const openrouterModels = models.data?.models || [];
+  const codegenModelChoices =
+    openrouterCodegenModel && !openrouterModels.includes(openrouterCodegenModel)
+      ? [openrouterCodegenModel, ...openrouterModels]
+      : openrouterModels;
 
   return (
     <div>
@@ -380,8 +386,8 @@ export default function Settings() {
                 );
               })}
             </div>
-            {msg ? (
-              <p className="mt-3 font-mono text-[11px] text-plasma">{msg}</p>
+            {backendMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{backendMsg}</p>
             ) : null}
           </div>
         </Panel>
@@ -458,13 +464,19 @@ export default function Settings() {
                 value={codegenCliModel}
                 onChange={(e) => setCodegenCliModel(e.target.value)}
               />
-              <input
-                type="text"
+              <select
                 className="field min-w-[14rem] flex-1"
-                placeholder="OpenRouter codegen model (overrides primary for builds)"
                 value={openrouterCodegenModel}
                 onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
-              />
+                title="OpenRouter codegen model; overrides primary for whole-app builds"
+              >
+                <option value="">OpenRouter codegen · auto</option>
+                {codegenModelChoices.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-5">
               {MODEL_TIERS.map((tier) => (
@@ -571,6 +583,9 @@ export default function Settings() {
                 Save key
               </button>
             </div>
+            {keyMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{keyMsg}</p>
+            ) : null}
           </div>
         </Panel>
 

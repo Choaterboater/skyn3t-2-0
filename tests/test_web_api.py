@@ -195,61 +195,12 @@ async def test_full_app_option_requests_contract_assets_and_extra_repair_budget(
 
 
 async def test_studio_runner_persists_full_app_contract_extra(tmp_path):
-    from pathlib import Path
-
     from skyn3t.config.settings import Settings
-    from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
     from skyn3t.core.orchestrator import Orchestrator
     from skyn3t.studio.runner import StudioRunner
 
-    class _Memory:
-        def __init__(self):
-            self.saves = []
-
-        async def save_build(self, **fields):
-            self.saves.append(dict(fields))
-
-        async def relevant_lessons(self, stack: str, stage: str = "", limit: int = 5):
-            return []
-
-        async def grade_lesson(self, lesson_id: int, helpful: bool, quality=None):
-            return None
-
-    class _CodeAgent(BaseAgent):
-        async def initialize(self):
-            return None
-
-        async def health_check(self):
-            return True
-
-        async def execute(self, task: TaskRequest) -> TaskResult:
-            wt = Path(task.payload["worktree_dir"])
-            (wt / "src").mkdir(parents=True, exist_ok=True)
-            (wt / "src" / "main.py").write_text("def main():\n    return 42\n", encoding="utf-8")
-            (wt / "README.md").write_text("# generated\n", encoding="utf-8")
-            (wt / "pyproject.toml").write_text(
-                "[project]\nname = 'demo'\nversion = '0.1.0'\n",
-                encoding="utf-8",
-            )
-            return TaskResult(
-                task_id=task.task_id,
-                success=True,
-                output={"files_written": 3, "worktree_dir": str(wt)},
-            )
-
-    class _Reviewer(BaseAgent):
-        async def initialize(self):
-            return None
-
-        async def health_check(self):
-            return True
-
-        async def execute(self, task: TaskRequest) -> TaskResult:
-            return TaskResult(
-                task_id=task.task_id,
-                success=True,
-                output={"score": 88.0, "verdict": "go", "gaps": []},
-            )
+    class _StopAfterInitialSave(Exception):
+        pass
 
     settings = Settings(
         projects_dir=tmp_path / "Projects",
@@ -259,27 +210,26 @@ async def test_studio_runner_persists_full_app_contract_extra(tmp_path):
         approval_gates=False,
         best_of_n=1,
     )
-    memory = _Memory()
     bus = EventBus()
     orch = Orchestrator(bus)
-    code = _CodeAgent("coder", "code", "stub", bus)
-    code.add_capability(AgentCapability("codegen"))
-    reviewer = _Reviewer("reviewer", "reviewer", "stub", bus)
-    reviewer.add_capability(AgentCapability("review"))
-    await orch.register(code)
-    await orch.register(reviewer)
+    runner = StudioRunner(bus, orch, settings=settings, memory=None)
+    saved = []
 
-    runner = StudioRunner(bus, orch, settings=settings, memory=memory)
+    async def _capture_initial_save(manifest):
+        saved.append(manifest.to_dict())
+        raise _StopAfterInitialSave
 
-    outcome = await runner.start(
-        "Build a python tool",
-        slug="full-app-persist",
-        extra={"build_profile": "manual", "full_app_contract": True},
-    )
+    runner._save_build = _capture_initial_save
 
-    saved = [row for row in memory.saves if row["build_id"] == outcome.build_id]
+    with pytest.raises(_StopAfterInitialSave):
+        await runner.start(
+            "Build a python tool",
+            slug="full-app-persist",
+            extra={"build_profile": "manual", "full_app_contract": True},
+        )
+
     assert saved
-    assert saved[0]["manifest"]["extra"]["full_app_contract"] is True
+    assert saved[0]["extra"]["full_app_contract"] is True
 
 
 async def test_submit_build_normalizes_model_override():
@@ -422,6 +372,9 @@ async def test_rebuild_build_missing_source_raises_keyerror():
         await routes.rebuild_build(st, "missing-build")
 
 
+@pytest.mark.filterwarnings(
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated"
+)
 def test_rebuild_route_parses_request_and_maps_status_codes():
     if not web_app.fastapi_available():
         pytest.skip("fastapi not installed; cannot test route wrapper")

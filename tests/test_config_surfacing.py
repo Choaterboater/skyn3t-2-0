@@ -86,6 +86,27 @@ def test_brief_database_and_auth_stay_server_even_on_web():
             assert k.scope == "server"
 
 
+def test_detect_from_brief_supabase_public_keys_are_client_scoped():
+    spec = detect_from_brief("a Next.js app with Supabase auth", "nextjs", llm_fn=None)
+    by_name = {k.name: k for k in spec.keys}
+    assert by_name["NEXT_PUBLIC_SUPABASE_URL"].kind == "url"
+    assert by_name["NEXT_PUBLIC_SUPABASE_URL"].scope == "client"
+    assert by_name["NEXT_PUBLIC_SUPABASE_ANON_KEY"].kind == "api_key"
+    assert by_name["NEXT_PUBLIC_SUPABASE_ANON_KEY"].scope == "client"
+    assert "Supabase" in spec.apis
+
+
+def test_detect_from_brief_supabase_service_role_is_server_scoped():
+    spec = detect_from_brief(
+        "a Supabase admin dashboard that uses the service role key",
+        "nextjs",
+        llm_fn=None,
+    )
+    by_name = {k.name: k for k in spec.keys}
+    assert by_name["SUPABASE_SERVICE_ROLE_KEY"].kind == "secret"
+    assert by_name["SUPABASE_SERVICE_ROLE_KEY"].scope == "server"
+
+
 def test_brief_with_no_config_need_is_empty():
     spec = detect_from_brief("a simple offline counter app", "react", llm_fn=None)
     assert spec.is_empty()

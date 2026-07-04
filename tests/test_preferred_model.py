@@ -117,3 +117,32 @@ async def test_set_preferred_model_trims_overly_long_payload(monkeypatch):
     long_model = "x" * 300
     res = await routes.set_preferred_model(state, long_model)
     assert res["preferred_model"] == ""
+
+
+async def test_resolve_openrouter_model_reports_known(monkeypatch):
+    import skyn3t.web.routes as routes
+
+    async def fake_list_models(_state):
+        return {"models": ["provider/known-model", "openai/gpt-4o-mini"], "note": "ok"}
+
+    monkeypatch.setattr(routes, "list_openrouter_models", fake_list_models)
+    state = SimpleNamespace(settings=SimpleNamespace(openrouter_api_key="sk-or-x"))
+    out = await routes.resolve_openrouter_model(state, "provider/known-model")
+    assert out["model"] == "provider/known-model"
+    assert out["available"] is True
+    assert out["status"] == "known"
+
+
+async def test_resolve_openrouter_model_reports_unknown_with_suggestions(monkeypatch):
+    import skyn3t.web.routes as routes
+
+    async def fake_list_models(_state):
+        return {"models": ["provider/gpt-4o-mini", "provider/another"], "note": "ok"}
+
+    monkeypatch.setattr(routes, "list_openrouter_models", fake_list_models)
+    state = SimpleNamespace(settings=SimpleNamespace(openrouter_api_key="sk-or-x"))
+    out = await routes.resolve_openrouter_model(state, "provider/gpt")
+    assert out["available"] is False
+    assert out["status"] == "unknown"
+    assert out["model"] == "provider/gpt"
+    assert "provider/gpt-4o-mini" in out["suggestions"]

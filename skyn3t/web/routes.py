@@ -250,7 +250,14 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
         return s  # a data: URL is safe inline data; the LLM client accepts it
 
 
-_BUILD_PROFILES = {"cheap_learned", "fast", "best_quality", "full_app", "manual"}
+_BUILD_PROFILES = {
+    "cheap_learned",
+    "fast",
+    "balanced",
+    "best_quality",
+    "full_app",
+    "manual",
+}
 
 
 def _normalize_build_profile(profile: str) -> str:
@@ -273,6 +280,13 @@ def _normalize_model_override(model: str) -> str:
 def _profile_extra(profile: str) -> dict[str, Any]:
     if profile == "fast":
         return {"max_debug_attempts": 1}
+    if profile == "balanced":
+        return {
+            "best_of_n": 1,
+            "max_debug_attempts": 2,
+            "asset_gen": False,
+            "visual_self_heal": False,
+        }
     if profile == "best_quality":
         return {
             "best_of_n": 2,
@@ -1440,6 +1454,57 @@ async def list_openrouter_models(state: AppState) -> dict[str, Any]:
                 "note": f"could not load models: {exc}"}
 
 
+async def resolve_openrouter_model(state: AppState, model: str) -> dict[str, Any]:
+    """Check if a model id is in the live/saved OpenRouter catalog.
+
+    This is intentionally permissive: when catalog access is unavailable (missing
+    key or temporary API issues), resolution returns ``available=False`` with a
+    hint. Build inputs are still accepted — this is validation, not a hard stop.
+    """
+    normalized = _normalize_model_id(model)
+    if not normalized:
+        return {"model": "", "available": True, "status": "auto"}
+
+    listed = await list_openrouter_models(state)
+    catalog = listed.get("models")
+    if not isinstance(catalog, list):
+        catalog = []
+    available = normalized in catalog
+    if available:
+        return {
+            "model": normalized,
+            "available": True,
+            "status": "known",
+            "note": "exact match in OpenRouter catalog",
+        }
+
+    lower = normalized.lower()
+    suggestions = []
+    for model_id in catalog:
+        if lower in model_id.lower():
+            suggestions.append(model_id)
+    if not suggestions:
+        short = lower.split("/", 1)[-1]
+        suggestions = [m for m in catalog if short and short in m.lower()]
+    if not suggestions:
+        # Deterministic fallback keeps the payload small and stable.
+        suggestions = catalog[:3]
+    if len(suggestions) > 5:
+        suggestions = suggestions[:5]
+
+    note = listed.get("note") or "not in cached OpenRouter catalog"
+    if listed.get("note") and listed.get("count") is None and listed.get("cached") is None:
+        # If catalog resolution failed for network reasons, keep the reason explicit.
+        note = str(listed.get("note"))
+    return {
+        "model": normalized,
+        "available": False,
+        "status": "unknown",
+        "suggestions": suggestions,
+        "note": note,
+    }
+
+
 async def set_preferred_model(state: AppState, model: str = "") -> dict[str, Any]:
     """Pin the OpenRouter model skyn3t uses (empty = auto: the learned router picks
     per tier/task). Persisted so it survives a restart."""
@@ -1645,12 +1710,12 @@ async def set_llm_routing(
 
     updates = {
         "codegen_cli_provider": (codegen_cli_provider or "").strip().lower(),
-        "codegen_cli_model": (codegen_cli_model or "").strip(),
-        "openrouter_codegen_model": (openrouter_codegen_model or "").strip(),
+        "codegen_cli_model": _normalize_model_id(codegen_cli_model),
+        "openrouter_codegen_model": _normalize_model_id(openrouter_codegen_model),
     }
     pins = model_pins or {}
     for tier, field in _MODEL_PIN_FIELDS.items():
-        updates[field] = str(pins.get(tier, getattr(state.settings, field, "")) or "").strip()
+        updates[field] = _normalize_model_id(str(pins.get(tier, getattr(state.settings, field, "")) or ""))
 
     for field, value in updates.items():
         try:
@@ -2043,6 +2108,10 @@ def build_router(state: AppState) -> Any:
     @router.get("/models", dependencies=[auth])
     async def _models() -> dict[str, Any]:
         return await list_openrouter_models(state)
+
+    @router.get("/models/resolve", dependencies=[auth])
+    async def _resolve_model(model: str = Query(default="")) -> dict[str, Any]:
+        return await resolve_openrouter_model(state, model=model)
 
     @router.post("/settings/model", dependencies=[auth])
     async def _set_model(body: dict[str, Any] = empty_body) -> dict[str, Any]:

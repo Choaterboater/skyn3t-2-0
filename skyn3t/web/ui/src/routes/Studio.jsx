@@ -66,6 +66,11 @@ const BUILD_PROFILES = [
     hint: "Uses learned routing, skills, and recall without pinning an expensive model.",
   },
   { id: "fast", label: "Fast", hint: "Shortest path with fewer debug retries." },
+  {
+    id: "balanced",
+    label: "Balanced",
+    hint: "Keeps cheap routing with a little extra reliability for cleaner results.",
+  },
   { id: "best_quality", label: "Best quality", hint: "Runs best-of-N, richer assets when configured, and visual repair." },
   { id: "manual", label: "Manual model", hint: "Pin one OpenRouter model for this build." },
 ];
@@ -212,6 +217,10 @@ export default function Studio({ stream }) {
     !modelOptions.includes(normalizedModelOverride)
     ? [normalizedModelOverride, ...modelOptions]
     : modelOptions;
+  const unknownModelOverride =
+    !!normalizedModelOverride &&
+    modelOptions.length > 0 &&
+    !modelOptions.includes(normalizedModelOverride);
 
   const toggleStack = (id) =>
     setSelectedStacks((prev) => {
@@ -429,11 +438,24 @@ export default function Studio({ stream }) {
                   manualModelChoices.map((m) => <option key={m} value={m} />)
                 )}
               </datalist>
-              <span className="font-mono text-[10px] text-ash/60">
-                {normalizedModelOverride
-                  ? `Model override: ${normalizedModelOverride} (for this build)`
-                  : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
-              </span>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
+                  {normalizedModelOverride
+                    ? unknownModelOverride
+                      ? `Model override: ${normalizedModelOverride} (not in cached OpenRouter list)`
+                      : `Model override: ${normalizedModelOverride} (for this build)`
+                    : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
+                </span>
+                {normalizedModelOverride ? (
+                  <button
+                    type="button"
+                    onClick={() => setModelOverride("")}
+                    className="btn-ghost py-0.5 text-[10px]"
+                  >
+                    clear
+                  </button>
+                ) : null}
+              </div>
             </div>
             <label
               className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"

@@ -184,6 +184,7 @@ def test_settings_explains_model_precedence() -> None:
 def test_studio_wires_build_profiles_and_manual_model() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "Cheap + learned" in studio
+    assert "Balanced" in studio
     assert "Best quality" in studio
     assert "Manual model" in studio
     assert "Full app" in studio

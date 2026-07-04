@@ -336,6 +336,10 @@ export default function Settings() {
     !!secrets.data?.providers?.openrouter || !!routing.openrouter_configured;
   const chData = integrations.data?.channels || {};
   const openrouterModels = models.data?.models || [];
+  const primaryModelChoices =
+    model && !openrouterModels.includes(model)
+      ? [model, ...openrouterModels]
+      : openrouterModels;
   const codegenModelChoices =
     openrouterCodegenModel && !openrouterModels.includes(openrouterCodegenModel)
       ? [openrouterCodegenModel, ...openrouterModels]
@@ -424,7 +428,7 @@ export default function Settings() {
                   className="field min-w-[16rem] flex-1"
                 >
                   <option value="">auto — smart routing</option>
-                  {(models.data?.models || []).map((m) => (
+                  {primaryModelChoices.map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>

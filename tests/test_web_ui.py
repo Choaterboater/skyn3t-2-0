@@ -34,6 +34,14 @@ def test_required_top_level_files_present() -> None:
         assert (UI_DIR / name).is_file(), f"missing {name}"
 
 
+def test_vite_dev_proxy_matches_default_backend_port() -> None:
+    vite = (UI_DIR / "vite.config.js").read_text()
+    readme = (UI_DIR / "README.md").read_text()
+    assert "http://127.0.0.1:6660" in vite
+    assert "http://127.0.0.1:6660" in readme
+    assert "process.env.SKYN3T_API" in vite
+
+
 def test_required_src_files_present() -> None:
     for name in ("main.jsx", "App.jsx", "api.js", "styles.css"):
         assert (SRC / name).is_file(), f"missing src/{name}"
@@ -138,6 +146,7 @@ def test_settings_explains_model_precedence() -> None:
     assert "OpenRouter codegen model below wins" in settings
     assert "overrides primary for whole-app builds" in settings
     assert "OpenRouter codegen · auto" in settings
+    assert "primaryModelChoices" in settings
     assert "codegenModelChoices" in settings
     assert "keyMsg" in settings  # key-save feedback is shown in the API-key panel
 

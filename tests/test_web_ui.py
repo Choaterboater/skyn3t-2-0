@@ -210,3 +210,12 @@ def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
     assert "buildDiagnostics(b)" in studio
     assert "No recoverable brief" in studio
     assert "apiPost(\"/builds/rebuild\"" not in studio
+
+
+def test_studio_rebuild_full_app_variant_preserves_source_profile_for_submit() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert 'sourceBuildProfile: profile === "full_app" ? "full_app" : null' in studio
+    assert "sourceBuildProfile: fields.sourceBuildProfile" in studio
+    assert "build_profile: variantSource?.sourceBuildProfile || buildProfile" in studio
+    assert "setFullApp(fields.fullApp)" in studio
+    assert '{ id: "full_app"' not in studio

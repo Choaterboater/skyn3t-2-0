@@ -118,6 +118,52 @@ async def test_openrouter_model_override_does_not_replace_codegen_cli_model(tmp_
     assert captured.get("model") == "sonnet"
 
 
+async def test_slice_codegen_cli_provider_uses_codegen_model_not_model_override(tmp_path, monkeypatch):
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        openrouter_agentic=True,
+        codegen_cli_provider="claude",
+        codegen_cli_model="sonnet",
+    )
+    llm = LLMClient(settings)
+    monkeypatch.setattr(llm, "_cli_available", lambda provider: provider == "claude")
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+    captured = {}
+
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
+        captured.update(kwargs)
+        pathlib.Path(workdir, "src").mkdir(parents=True, exist_ok=True)
+        pathlib.Path(workdir, "src/App.jsx").write_text(
+            "// selected cli model slice\n", encoding="utf-8")
+        return {"ok": True, "backend": "claude_cli", "model": kwargs.get("model")}
+
+    agent.llm.agentic_build = fake_agentic_build  # type: ignore[method-assign]
+    task = TaskRequest(
+        type="codegen",
+        payload={
+            "brief": "a react trading dashboard",
+            "slug": "trading",
+            "stack": "react",
+            "worktree_dir": str(tmp_path),
+            "model_override": "openrouter/custom-selected",
+            "plan": {"stack": "react", "files": [{"path": "src/App.jsx"}]},
+            "slice_scope": {
+                "name": "frontend",
+                "files": ["src/App.jsx"],
+                "manifest": "  api/main.py - backend API",
+            },
+        },
+        capabilities_required=("codegen",),
+    )
+    await agent.run(task)
+    assert captured.get("provider") == "claude"
+    assert captured.get("model") == "sonnet"
+    assert captured.get("stack") == "react_vite"
+
+
 async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp_path, monkeypatch):
     settings = Settings(
         llm_backend="openrouter",

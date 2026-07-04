@@ -589,11 +589,9 @@ class CodeAgent(BaseAgent):
         # "claude") runs the agentic whole-app build on that CLI even when the
         # global backend is cheap (OpenRouter) — high-quality codegen without
         # paying for the CLI on every other stage.
-        live_settings = getattr(self.llm, "settings", None)
-        _codegen_prov = (getattr(live_settings, "codegen_cli_provider", "") or "").lower()
-        _codegen_model = (getattr(live_settings, "codegen_cli_model", "") or None)
-        _codegen_cli_ok = bool(_codegen_prov) and self.llm._cli_available(_codegen_prov)
         model_override = p.get("model_override")
+        _codegen_cli_ok, _agentic_kwargs, _codegen_unavailable = self._codegen_agentic_routing(
+            stack, model_override)
         if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
@@ -637,16 +635,10 @@ class CodeAgent(BaseAgent):
                     "chars": len(prompt),
                     "text": prompt,
                 })
-                res = await (
-                    self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov,
-                                           model=_codegen_model, stack=stack)
-                    if _codegen_cli_ok
-                    else self.llm.agentic_build(prompt, str(worktree),
-                                                model=model_override, stack=stack)
-                )
+                res = await self.llm.agentic_build(prompt, str(worktree), **_agentic_kwargs)
                 self.metadata["agentic"] = res
-                if _codegen_prov and not _codegen_cli_ok:
-                    self.metadata["codegen_override_unavailable"] = _codegen_prov
+                if _codegen_unavailable:
+                    self.metadata["codegen_override_unavailable"] = _codegen_unavailable
                 agentic_ok = bool(res.get("ok", True))
                 agentic_error = res.get("error", "")
                 disk = self._read_files(worktree)
@@ -1024,6 +1016,21 @@ class CodeAgent(BaseAgent):
             "only renders it), so it stays deterministic and testable."
         )
 
+    def _codegen_agentic_routing(
+        self, stack: str, model_override: Any,
+    ) -> tuple[bool, dict[str, Any], str]:
+        live_settings = getattr(self.llm, "settings", None)
+        codegen_provider = str(
+            getattr(live_settings, "codegen_cli_provider", "") or "").strip().lower()
+        codegen_model = (
+            str(getattr(live_settings, "codegen_cli_model", "") or "").strip() or None
+        )
+        codegen_cli_ok = bool(codegen_provider) and self.llm._cli_available(codegen_provider)
+        if codegen_cli_ok:
+            return True, {"provider": codegen_provider, "model": codegen_model, "stack": stack}, ""
+        unavailable = codegen_provider if codegen_provider else ""
+        return False, {"model": model_override, "stack": stack}, unavailable
+
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
     async def _execute_slice(
         self, task: TaskRequest, p: dict[str, Any], brief: str, stack: str,
@@ -1039,24 +1046,27 @@ class CodeAgent(BaseAgent):
         slice_files = [str(x) for x in (slice_scope.get("files") or [])]
         manifest = str(slice_scope.get("manifest") or "")
         model_override = p.get("model_override")
+        codegen_cli_ok, agentic_kwargs, codegen_unavailable = self._codegen_agentic_routing(
+            stack, model_override)
         knowledge = knowledge_block(p)
         files: dict[str, str] = {}
         degraded_reason = ""
 
-        if self.llm.backend == "stub":
+        if self.llm.backend == "stub" and not codegen_cli_ok:
             # Offline: emit a minimal non-empty stub per slice file so the
             # orchestration is testable and the merge produces real files.
             files = self._slice_stub(stack, app_name, brief, slice_files)
-        elif getattr(self.llm, "supports_agentic", False):
+        elif getattr(self.llm, "supports_agentic", False) or codegen_cli_ok:
             raw_prior = p.get("prior")
             prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
             raw_design = prior.get("design")
             design = raw_design if isinstance(raw_design, dict) else None
             prompt = self._agentic_slice_prompt(
                 brief, stack, name, slice_files, manifest, knowledge, design=design)
-            res = await self.llm.agentic_build(prompt, str(worktree), model=model_override,
-                                               stack=stack)
+            res = await self.llm.agentic_build(prompt, str(worktree), **agentic_kwargs)
             self.metadata["agentic"] = res
+            if codegen_unavailable:
+                self.metadata["codegen_override_unavailable"] = codegen_unavailable
             disk = self._read_files(worktree)
             # Reject chat-prose source files (no scaffold to revert to -> dropped).
             disk, prose = self._clean_agentic_files(disk, {})

@@ -197,3 +197,16 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "const DEFAULT_STACK_SELECTION = []" in studio
     assert "Web set" in studio
     assert "golf website for adult beginners" in studio
+
+
+def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "function rebuildFields(build)" in studio
+    assert "const [variantSource, setVariantSource]" in studio
+    assert "const loadRebuildVariant = (build) =>" in studio
+    assert "payload.stack = variantSource.stack" in studio
+    assert "Loaded from" in studio
+    assert "clear variant" in studio
+    assert "buildDiagnostics(b)" in studio
+    assert "No recoverable brief" in studio
+    assert "apiPost(\"/builds/rebuild\"" not in studio

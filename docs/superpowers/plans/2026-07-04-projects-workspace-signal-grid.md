@@ -243,3 +243,19 @@ git add tests/test_web_ui.py skyn3t/web/ui/src/components/ui.jsx skyn3t/web/ui/s
 git commit -m "Add shared signal grids"
 git push
 ```
+
+## Execution Evidence
+
+- `pytest -q tests/test_web_ui.py` failed red after adding structural SignalGrid,
+  Projects, and Workspace assertions, then passed after implementation.
+- `pytest -q tests/test_web_spa_compat.py` failed red for cached SPA index
+  fallback after simulated frontend rebuild, then passed after reading
+  `dist/index.html` per request.
+- Code-review follow-up added regressions for encoded SPA traversal and
+  correlation-matched Workspace activity; `pytest -q tests/test_web_spa_compat.py
+  tests/test_web_ui.py` passed with 43 tests.
+- Frontend verification: `npm run build` completed successfully.
+- Full regression verification: `pytest -q` completed with 2249 passed,
+  3 skipped, and 73 warnings before the review follow-up patch.
+- Final post-review regression verification: `pytest -q` completed with
+  2251 passed, 3 skipped, and 73 warnings.

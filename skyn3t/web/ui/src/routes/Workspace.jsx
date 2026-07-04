@@ -9,6 +9,10 @@ import {
   Empty,
   SignalGrid,
 } from "../components/ui.jsx";
+import {
+  countWorkspaceActivity,
+  workspaceEventMatches,
+} from "../workspaceSignals.js";
 
 // ---------------------------------------------------------------------------
 // Two-pane live workspace (Spec 3): a running app on the left, an improve chat
@@ -201,26 +205,16 @@ function ServePane({ slug, stream }) {
   );
 }
 
-function ImprovePane({ slug, stream }) {
+function ImprovePane({ slug, stream, cids = new Set(), onDispatched }) {
   const [goal, setGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [note, setNote] = useState(null);
-  // Correlation ids of improves dispatched from this pane. ImproveEngine emits
-  // events keyed by the *manifest* slug, which can differ from the directory
-  // slug the workspace uses — so we also match by correlation_id to keep the
-  // timeline intact when those diverge.
-  const [cids, setCids] = useState(() => new Set());
 
   const timeline = useMemo(() => {
     const evts = stream?.events || [];
     return evts
-      .filter(
-        (e) =>
-          (e.type?.startsWith("improve.") || e.type?.startsWith("serve.")) &&
-          (e.payload?.slug === slug ||
-            (e.correlation_id && cids.has(e.correlation_id))),
-      )
+      .filter((e) => workspaceEventMatches(e, slug, cids))
       .map((e) => ({ ...e, line: eventLine(e) }))
       .filter((e) => e.line);
   }, [stream?.events, slug, cids]);
@@ -234,7 +228,7 @@ function ImprovePane({ slug, stream }) {
       const r = await apiPost("/studio/improve", { slug, goal });
       if (r.accepted) {
         if (r.correlation_id) {
-          setCids((prev) => new Set(prev).add(r.correlation_id));
+          onDispatched?.(slug, r.correlation_id);
         }
         setNote(`dispatched · ${r.correlation_id?.slice(0, 8)}`);
         setGoal("");
@@ -300,6 +294,7 @@ function ImprovePane({ slug, stream }) {
 export default function Workspace({ stream }) {
   const [params, setParams] = useSearchParams();
   const slug = params.get("slug") || "";
+  const [improveCidsBySlug, setImproveCidsBySlug] = useState({});
 
   const { data } = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
   const projects = Array.isArray(data) ? data : data?.projects || [];
@@ -312,12 +307,24 @@ export default function Workspace({ stream }) {
   }
 
   const current = projects.find((p) => p.slug === slug);
-  const workspaceActivity = (stream?.events || []).filter(
-    (event) =>
-      slug &&
-      (event.type?.startsWith("serve.") || event.type?.startsWith("improve.")) &&
-      event.payload?.slug === slug,
-  ).length;
+  const improveCids = useMemo(
+    () => new Set(improveCidsBySlug[slug] || []),
+    [improveCidsBySlug, slug],
+  );
+  function rememberImproveCid(activeSlug, cid) {
+    if (!activeSlug || !cid) return;
+    setImproveCidsBySlug((prev) => {
+      const existing = prev[activeSlug] || [];
+      if (existing.includes(cid)) return prev;
+      return { ...prev, [activeSlug]: [...existing, cid] };
+    });
+  }
+
+  const workspaceActivity = countWorkspaceActivity(
+    stream?.events || [],
+    slug,
+    improveCids,
+  );
   const workspaceSignals = [
     { label: "selected", value: slug || "none" },
     {
@@ -367,7 +374,12 @@ export default function Workspace({ stream }) {
 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-2">
         <ServePane slug={slug} stream={stream} />
-        <ImprovePane slug={slug} stream={stream} />
+        <ImprovePane
+          slug={slug}
+          stream={stream}
+          cids={improveCids}
+          onDispatched={rememberImproveCid}
+        />
       </div>
     </div>
   );

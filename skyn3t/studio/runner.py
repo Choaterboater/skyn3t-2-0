@@ -2582,7 +2582,7 @@ class StudioRunner:
             "checklist": list(plan.checklist),
         }
         if extra:
-            extra = self._sanitize_assets_for_worktree(extra, worktree_dir)
+            extra = self._sanitize_assets_for_worktree(extra, worktree_dir, plan.brief)
             payload["extra"] = extra
             # "Build from a picture": surface an optional reference image at the
             # top level so the designer/architect agents can read it directly
@@ -2638,7 +2638,7 @@ class StudioRunner:
 
     @classmethod
     def _sanitize_assets_for_worktree(
-        cls, extra: dict[str, Any], worktree_dir: str
+        cls, extra: dict[str, Any], worktree_dir: str, brief: str = ""
     ) -> dict[str, Any]:
         """Drop stale codegen asset hints that are not in this worktree.
 
@@ -2663,6 +2663,13 @@ class StudioRunner:
                 asset_file = str(asset.get("file") or "")
                 if asset_file and cls._asset_path_exists(root, asset_file):
                     clean.append({**asset, "file": asset_file})
+        if clean and brief:
+            try:
+                from skyn3t.studio.assets import filter_assets_for_brief
+
+                clean = filter_assets_for_brief(brief, clean)
+            except Exception as exc:  # noqa: BLE001 - prompt hygiene is best-effort
+                log.warning("assets.relevance_filter_failed", error=str(exc)[:160])
 
         out = {**extra}
         if clean:

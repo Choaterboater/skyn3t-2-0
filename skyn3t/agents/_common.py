@@ -380,9 +380,10 @@ def knowledge_block(payload: Any) -> str:
             "GitHub repos):\n" + str(recall)[:1600]
         )
 
-    # Generated image assets (Replicate): real line-art/coloring images already
-    # written into the project under assets/. Tell the app to USE them instead of
-    # drawing crappy art itself. Surfaced from the asset-gen step's manifest.
+    # Generated image assets (Replicate): real current-build images already
+    # written into the project (public/assets for web stacks, assets/ otherwise).
+    # Tell the app to USE them instead of drawing crappy art itself. Surfaced
+    # from the asset-gen step's manifest after brief relevance filtering.
     assets = extra.get("assets") or payload.get("assets") or []
     if isinstance(assets, list) and assets:
         lines = [
@@ -392,9 +393,10 @@ def knowledge_block(payload: Any) -> str:
         ]
         if lines:
             parts.append(
-                "REAL generated image assets are already in this project under "
-                "`assets/` — reference these files directly (e.g. <img src> / "
-                "import) instead of generating placeholder or low-quality art:\n"
+                "REAL generated image assets for THIS brief are already in the "
+                "project and served at these paths. Reference only these matching "
+                "files directly (e.g. <img src>) instead of inventing unrelated "
+                "assets or drawing placeholder art:\n"
                 + "\n".join(lines)
             )
 

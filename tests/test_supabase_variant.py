@@ -54,6 +54,24 @@ def test_supabase_readme_matches_safe_missing_config_behavior():
     assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in readme
 
 
+def test_supabase_admin_scaffold_documents_server_only_service_role_key():
+    files = scaffold_for(
+        "nextjs",
+        "admin",
+        "a Supabase admin dashboard that uses the service role key",
+    )
+    assert "SUPABASE_SERVICE_ROLE_KEY" in files[".env.example"]
+    assert "SUPABASE_SERVICE_ROLE_KEY" in files["README.md"]
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in files["app/page.jsx"]
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in files["lib/supabaseClient.js"]
+
+
+def test_supabase_public_scaffold_does_not_request_service_role_key():
+    files = scaffold_for("nextjs", "member-portal", "a Supabase login for customers")
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in files[".env.example"]
+    assert "SUPABASE_SERVICE_ROLE_KEY" not in files["README.md"]
+
+
 def test_plain_nextjs_brief_is_unchanged():
     files = scaffold_for("nextjs", "blog", "a Next.js blog")
     assert "lib/supabaseClient.js" not in files

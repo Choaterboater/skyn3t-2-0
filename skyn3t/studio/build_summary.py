@@ -38,6 +38,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "model_override": extra.get("model_override", ""),
         "codegen_model": extra.get("codegen_model", ""),
         "backend": extra.get("llm_backend", ""),
+        "full_app": bool(extra.get("full_app_contract") or extra.get("full_app")),
         "prompt_count": len(prompts),
         "stages": [
             {

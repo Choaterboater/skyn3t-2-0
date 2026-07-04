@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from skyn3t.core.events import Event, EventBus, EventType
+from skyn3t.studio.build_summary import build_summary
 from skyn3t.web import app as web_app
 from skyn3t.web import routes
 from skyn3t.web.deps import (
@@ -299,6 +300,62 @@ async def test_rebuild_build_replays_live_build_settings():
     assert st.builds[out["build_id"]].model_trace["full_app"] is True
 
 
+def test_build_summary_preserves_full_app_contract_in_model_trace():
+    summary = build_summary({
+        "status": "completed",
+        "extra": {
+            "build_profile": "manual",
+            "full_app_contract": True,
+        },
+    })
+
+    assert summary["model_trace"]["full_app"] is True
+
+
+async def test_completed_build_summary_preserves_full_app_for_rebuild_replay():
+    class _Studio:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.calls.append({
+                "brief": brief,
+                "slug": slug,
+                "extra": dict(extra or {}),
+            })
+
+    summary = build_summary({
+        "status": "completed",
+        "extra": {
+            "build_profile": "manual",
+            "full_app_contract": True,
+        },
+    })
+    studio = _Studio()
+    st = _state(studio=studio)
+
+    await st.event_bus.publish(Event(
+        EventType.BUILD_COMPLETED,
+        source="studio",
+        payload={
+            "build_id": "done-full-app",
+            "brief": "a complete scheduling dashboard",
+            "stack": "react",
+            "status": "completed",
+            **summary,
+        },
+        correlation_id="done-full-app",
+    ))
+
+    assert st.builds["done-full-app"].model_trace["full_app"] is True
+
+    out = await routes.rebuild_build(st, "done-full-app")
+
+    assert out["source_build_id"] == "done-full-app"
+    assert studio.calls[0]["brief"] == "a complete scheduling dashboard"
+    assert studio.calls[0]["extra"]["full_app_contract"] is True
+
+
 async def test_rebuild_build_replays_persisted_history_row_with_reuse_slug():
     class _Memory:
         async def get_build(self, build_id):
@@ -348,6 +405,49 @@ async def test_rebuild_build_replays_persisted_history_row_with_reuse_slug():
     assert replay["extra"]["build_profile"] == "best_quality"
     assert replay["extra"]["model_override"] == "openrouter/history-model"
     assert replay["extra"]["full_app_contract"] is True
+
+
+async def test_rebuild_build_replays_compact_persisted_full_app_trace():
+    class _Memory:
+        async def get_build(self, build_id):
+            return {
+                "build_id": build_id,
+                "brief": "a complete task management app",
+                "stack": "react",
+                "status": "completed",
+                "model_trace": {
+                    "profile": "manual",
+                    "full_app": True,
+                },
+            }
+
+    class _Studio:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.calls.append({
+                "brief": brief,
+                "slug": slug,
+                "extra": dict(extra or {}),
+            })
+
+    studio = _Studio()
+    st = _state(memory=_Memory(), studio=studio)
+
+    out = await routes.rebuild_build(st, "compact-full")
+
+    assert out["source_build_id"] == "compact-full"
+    assert out["reused"] == {
+        "stack": "react",
+        "build_profile": "manual",
+        "model_override": "",
+        "slug": "",
+    }
+    assert studio.calls[0]["brief"] == "a complete task management app"
+    assert studio.calls[0]["extra"]["stack"] == "react"
+    assert studio.calls[0]["extra"]["build_profile"] == "manual"
+    assert studio.calls[0]["extra"]["full_app_contract"] is True
 
 
 async def test_rebuild_build_rejects_missing_source_brief():

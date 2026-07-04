@@ -101,6 +101,32 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
     for pat, name, kind, label in _SERVICE_RULES:
         if pat.search(low):
             add(name, kind, label)
+    supabase_requested = (
+        re.search(r"\bsupabase\b", low)
+        and re.search(r"\b(auth|database|backend|project|login|dashboard|admin|service[-_ ]?role)\b", low)
+    )
+    if supabase_requested:
+        keys.setdefault("NEXT_PUBLIC_SUPABASE_URL", ConfigKey(
+            name="NEXT_PUBLIC_SUPABASE_URL",
+            kind="url",
+            scope="client",
+            description="Supabase project URL",
+        ))
+        keys.setdefault("NEXT_PUBLIC_SUPABASE_ANON_KEY", ConfigKey(
+            name="NEXT_PUBLIC_SUPABASE_ANON_KEY",
+            kind="api_key",
+            scope="client",
+            description="Supabase anon key",
+        ))
+        if "Supabase" not in apis:
+            apis.append("Supabase")
+        if re.search(r"\b(service[-_ ]?role|admin|server)\b", low):
+            keys.setdefault("SUPABASE_SERVICE_ROLE_KEY", ConfigKey(
+                name="SUPABASE_SERVICE_ROLE_KEY",
+                kind="secret",
+                scope="server",
+                description="Supabase service role key",
+            ))
     if not keys and _GENERIC_API.search(low):
         add("API_KEY", "api_key", "External API")
     return ConfigSpec(keys=list(keys.values()), apis=apis)

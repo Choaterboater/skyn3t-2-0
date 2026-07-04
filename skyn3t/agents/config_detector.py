@@ -90,11 +90,10 @@ def _client_prefix_for(stack: str) -> str:
 def _normalize_client_key_name(name: str, stack: str) -> str:
     """Normalize safe browser config names to the selected stack's convention."""
     prefix = _client_prefix_for(stack)
-    if not name.startswith(_CLIENT_PREFIXES):
-        return f"{prefix}{name}"
-    if prefix == "NEXT_PUBLIC_" and name.startswith("VITE_"):
-        return f"NEXT_PUBLIC_{name.removeprefix('VITE_')}"
-    return name
+    for existing in _CLIENT_PREFIXES:
+        if name.startswith(existing):
+            return f"{prefix}{name.removeprefix(existing)}"
+    return f"{prefix}{name}"
 
 
 def _keyword_detect(brief: str, stack: str) -> ConfigSpec:

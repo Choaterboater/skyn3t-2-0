@@ -174,6 +174,20 @@ def test_brief_llm_nextjs_client_key_normalized_to_next_public():
     assert spec.key_names() == ["NEXT_PUBLIC_WEATHER_API_KEY"]
 
 
+def test_brief_llm_nextjs_client_key_normalizes_other_browser_prefixes():
+    raw = ('{"keys": [{"name": "REACT_APP_WEATHER_API_KEY", "kind": "api_key", '
+           '"scope": "client"}], "apis": ["Weather API"]}')
+    spec = detect_from_brief("a weather dashboard", "nextjs", llm_fn=lambda _p: raw)
+    assert spec.key_names() == ["NEXT_PUBLIC_WEATHER_API_KEY"]
+
+
+def test_brief_llm_react_client_key_normalizes_next_public_to_vite():
+    raw = ('{"keys": [{"name": "NEXT_PUBLIC_WEATHER_API_KEY", "kind": "api_key", '
+           '"scope": "client"}], "apis": ["Weather API"]}')
+    spec = detect_from_brief("a weather dashboard", "react", llm_fn=lambda _p: raw)
+    assert spec.key_names() == ["VITE_WEATHER_API_KEY"]
+
+
 def test_brief_llm_fn_error_falls_back_to_keywords():
     def boom(_p):
         raise RuntimeError("model down")

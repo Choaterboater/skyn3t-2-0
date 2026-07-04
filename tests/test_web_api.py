@@ -142,7 +142,72 @@ async def test_best_quality_profile_requests_visual_self_heal():
     assert res["build_profile"] == "best_quality"
     assert studio.extra["best_of_n"] == 2
     assert studio.extra["best_of_n_across_models"] is True
+    assert studio.extra["asset_gen"] is True
     assert studio.extra["visual_self_heal"] is True
+
+
+async def test_full_app_option_requests_contract_assets_and_extra_repair_budget():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    res = await routes.submit_build(
+        st,
+        brief="a complete golf tutorial website",
+        build_profile="manual",
+        model_override="openrouter/test-model",
+        full_app=True,
+    )
+
+    assert res["build_profile"] == "manual"
+    assert res["full_app"] is True
+    assert studio.extra["full_app_contract"] is True
+    assert studio.extra["asset_gen"] is True
+    assert studio.extra["max_debug_attempts"] == 4
+    assert studio.extra["visual_self_heal"] is True
+    assert studio.extra["model_override"] == "openrouter/test-model"
+
+
+async def test_cancel_build_marks_live_record_cancelled():
+    st = _state()
+    res = await routes.submit_build(st, brief="a todo app")
+
+    out = await routes.cancel_build(st, res["build_id"], reason="wrong stack")
+
+    assert out["status"] == "cancelled"
+    assert st.builds[res["build_id"]].status == "cancelled"
+    assert st.event_bus.published_count >= 2
+
+
+async def test_cancel_build_persists_unseen_history_row():
+    class _Memory:
+        def __init__(self):
+            self.saved = None
+
+        async def get_build(self, build_id):
+            return {
+                "build_id": build_id,
+                "manifest": {"build_id": build_id, "status": "running"},
+                "status": "running",
+            }
+
+        async def save_build(self, **fields):
+            self.saved = fields
+
+    mem = _Memory()
+    st = _state(memory=mem)
+
+    out = await routes.cancel_build(st, "hist1", reason="stale")
+
+    assert out["status"] == "cancelled"
+    assert mem.saved["status"] == "cancelled"
+    assert mem.saved["manifest"]["status"] == "cancelled"
+    assert mem.saved["manifest"]["cancel_reason"] == "stale"
 
 
 async def test_settings_payload_surfaces_learned_router_flags():

@@ -107,7 +107,8 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # "ios app" should resolve to the mobile stack, not the web React scaffold.
     ("react_native", (
         "mobile app", "react native", "react-native", "expo",
-        "ios app", "android app", "mobile application",
+        "ios app", "android app", "iphone app", "ipad app", "mobile application",
+        "ios", "android",
     )),
     # Swift / SwiftUI native macOS must precede tauri AND react/static: a brief
     # like "a swiftui macos app" contains "macos app" (a Tauri keyword) and "app"
@@ -126,7 +127,8 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
                "written in swift", "built with swift")),
     # Tauri desktop must precede react/static — a desktop app uses a React frontend
     # and may say "app"/"web", but it bundles to a native Mac/Windows binary.
-    ("tauri", ("desktop app", "tauri", "mac app", "macos app", "windows app",
+    ("tauri", ("desktop app", "tauri", "mac app", "macos app", "osx app", "os x app",
+               "windows app", "mac desktop", "native desktop",
                "native app", "desktop application", "standalone app", "menu bar app",
                "cross-platform app", "desktop")),
     # Phaser game must precede react/static: a "single-page browser game" or an
@@ -159,6 +161,16 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _DEFAULT_STACK = "python"
+
+# SkyN3t is primarily an app/site factory: an unqualified "app", "project",
+# or repo rebuild should produce a usable GUI/web build. Explicit non-web
+# signatures above (script, CLI, MCP, desktop, mobile, package, API, etc.) still
+# win before this default layer.
+_GUI_DEFAULT_STACK = "react"
+_GUI_DEFAULT_KEYWORDS: tuple[str, ...] = (
+    "app", "apps", "application", "project", "repo", "repository",
+    "github.com", "gitlab.com", "bitbucket.org", "rebuild", "remake",
+)
 
 # ---- file-level checklist (P2) ------------------------------------------
 # Minimal expected deliverable file set per stack. Used to verify the build is
@@ -243,10 +255,14 @@ def detect_stack(brief: str, hint: str | None = None) -> str:
                 return stack
     low = (brief or "").lower()
     stack = _DEFAULT_STACK
+    matched = False
     for s, keywords in _STACK_SIGNATURES:
         if any(_kw_match(k, low) for k in keywords):
             stack = s
+            matched = True
             break
+    if not matched and any(_kw_match(k, low) for k in _GUI_DEFAULT_KEYWORDS):
+        stack = _GUI_DEFAULT_STACK
     # LLM brief on a server-less web stack -> bump to nextjs so a server route can
     # hold the OpenRouter key (single `npm run dev` previews UI + app/api routes).
     if stack in _SERVERLESS_WEB_STACKS and _LLM_RE.search(low):
@@ -274,9 +290,12 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     # MCP (Model Context Protocol): whole-word so bare "mcp" only routes on the
     # standalone token, never as a substring inside an unrelated word.
     "mcp",
-    # GUI/UI: whole-word so these only route on standalone tokens, never inside
-    # "penguin"/"arguing"/"suitable"/"build".
-    "gui", "ui",
+    # GUI/UI/app-default terms: whole-word so these only route on standalone
+    # tokens, never inside "penguin"/"arguing"/"suitable"/"happy".
+    "gui", "ui", "app", "apps", "application", "project", "repo", "repository",
+    "rebuild", "remake",
+    # Mobile target names: whole-word so "bios"/"dandroid" don't false-route.
+    "ios", "android",
     # Swift phrases that END in "swift": whole-word so the trailing token can't be
     # "swiftly"/"swiftness" (which are NOT the Swift language).
     "macos swift", "written in swift", "built with swift",

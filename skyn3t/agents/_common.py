@@ -339,6 +339,9 @@ def knowledge_block(payload: Any) -> str:
     extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
     parts: list[str] = []
 
+    if extra.get("full_app_contract"):
+        parts.append(_full_app_contract(payload, extra))
+
     advice = extra.get("skills_advice") or payload.get("skills_advice")
     if advice:
         # Cap injected skill advice: full skill-doc bodies (up to tens of KB) bloat
@@ -403,6 +406,47 @@ def knowledge_block(payload: Any) -> str:
     if not parts:
         return ""
     return "## Prior knowledge (advisory — reuse what fits)\n" + "\n\n".join(parts) + "\n\n"
+
+
+def _full_app_contract(payload: dict[str, Any], extra: dict[str, Any]) -> str:
+    """Contract used by the Full App build profile.
+
+    The intent is to prevent "semi-app" deliveries: codegen must build core
+    workflows, real content, state, and polished screens in one pass instead of a
+    thin shell that needs repeated manual follow-ups.
+    """
+    stack = str(payload.get("stack") or extra.get("stack") or "").lower()
+    brief = str(payload.get("brief") or "").lower()
+    webish = stack in {
+        "react", "nextjs", "static", "astro", "remix", "express", "fastapi",
+        "rag", "workflow", "phaser",
+    } or any(k in brief for k in ("website", "web app", "site", "page", "dashboard"))
+    contentish = any(
+        k in brief
+        for k in (
+            "website", "site", "landing", "tutorial", "tutorials", "course",
+            "lesson", "lessons", "beginner", "learn", "guide", "golf",
+        )
+    )
+    lines = [
+        "FULL APP CONTRACT (this profile must ship a complete product, not a thin scaffold):",
+        "- Build the primary user workflows end-to-end with meaningful state, validation, empty/loading/error states, and useful sample data.",
+        "- Include enough screens/sections for the brief to feel complete on first run; do not leave follow-up features as placeholders.",
+        "- Make the first screen the actual usable app experience, not a generic hero-only shell.",
+        "- Use any generated /assets images listed above; never reference unrelated or invented assets.",
+    ]
+    if webish:
+        lines.extend([
+            "- For UI/web builds, include responsive navigation, polished dense content sections, real CTAs/forms or interactive controls, and a finished footer/settings/help area when relevant.",
+            "- Verify text hierarchy, spacing, and mobile layout in the implementation; avoid placeholder copy and repeated generic cards.",
+        ])
+    if contentish:
+        lines.extend([
+            "- For content/tutorial sites, create a full editorial page: audience-specific learning path, at least 5 substantial sections, practical drills/checklists, FAQ, and next-step resources.",
+            "- When the brief asks for tutorials or learning, include a tutorials/resources section with at least 3 curated external-resource cards or video/embed placeholders labeled with specific search-ready titles.",
+            "- For beginner education, organize content by progression from first-time basics to practice routines and common mistakes.",
+        ])
+    return "\n".join(lines)
 
 
 def extract_code(text: str) -> str:

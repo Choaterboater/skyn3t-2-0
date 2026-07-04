@@ -171,7 +171,7 @@ class MemoryStore:
                 stack_selection = extra.get("stack_selection") if isinstance(extra.get("stack_selection"), dict) else {}
                 disk_status = manifest.get("status")
                 status = disk_status or r.status
-                if r.status == "interrupted" and disk_status in ("running", "queued", "pending"):
+                if r.status in ("interrupted", "cancelled") and disk_status in ("running", "queued", "pending"):
                     status = r.status
                 row = {
                     "build_id": manifest.get("build_id") or r.build_id,

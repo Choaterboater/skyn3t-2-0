@@ -172,7 +172,9 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "Cheap + learned" in studio
     assert "Best quality" in studio
     assert "Manual model" in studio
+    assert "Full app" in studio
     assert "build_profile" in studio
+    assert "full_app" in studio
     assert "model_override" in studio
     assert 'queryFn("/models")' in studio
     assert "manualModelChoices" in studio

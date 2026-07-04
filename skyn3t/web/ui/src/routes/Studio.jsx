@@ -65,7 +65,7 @@ const BUILD_PROFILES = [
     hint: "Uses learned routing, skills, and recall without pinning an expensive model.",
   },
   { id: "fast", label: "Fast", hint: "Shortest path with fewer debug retries." },
-  { id: "best_quality", label: "Best quality", hint: "Runs a small best-of-N for codegen." },
+  { id: "best_quality", label: "Best quality", hint: "Runs best-of-N, richer assets when configured, and visual repair." },
   { id: "manual", label: "Manual model", hint: "Pin one OpenRouter model for this build." },
 ];
 
@@ -169,6 +169,7 @@ export default function Studio({ stream }) {
   const [refImage, setRefImage] = useState(null); // { url, name }
   const fileInputRef = useRef(null);
   const [buildProfile, setBuildProfile] = useState("cheap_learned");
+  const [fullApp, setFullApp] = useState(false);
   const [modelOverride, setModelOverride] = useState("");
 
   const onPickImage = (file) => {
@@ -241,6 +242,15 @@ export default function Studio({ stream }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
     onSettled: () => setPendingBuildId(null),
   });
+  const cancelBuild = useMutation({
+    mutationFn: ({ build_id }) =>
+      apiPost("/builds/cancel", {
+        build_id,
+        reason: "cancelled from Studio",
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
+    onSettled: () => setPendingBuildId(null),
+  });
 
   // Spec 4: explore the brief across divergent stacks; results stream as
   // FANOUT_* events on the shared socket. The selected stack ids are sent as a
@@ -302,7 +312,11 @@ export default function Studio({ stream }) {
           onSubmit={(e) => {
             e.preventDefault();
             if (!brief.trim()) return;
-            const payload = { brief: brief.trim(), build_profile: buildProfile };
+            const payload = {
+              brief: brief.trim(),
+              build_profile: buildProfile,
+              full_app: fullApp,
+            };
             if (buildProfile === "manual" && modelOverride.trim()) {
               payload.model_override = modelOverride.trim();
             }
@@ -424,6 +438,18 @@ export default function Studio({ stream }) {
                   : BUILD_PROFILES.find((p) => p.id === buildProfile)?.hint}
               </span>
             </div>
+            <label
+              className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
+              title="Build a fuller product with richer content, assets when configured, and more repair budget"
+            >
+              <input
+                type="checkbox"
+                checked={fullApp}
+                onChange={(e) => setFullApp(e.target.checked)}
+                className="accent-plasma"
+              />
+              <span className={fullApp ? "text-plasma" : ""}>Full app</span>
+            </label>
           </div>
         </div>
 
@@ -615,6 +641,11 @@ export default function Studio({ stream }) {
             {String(approve.error?.message || approve.error)}
           </p>
         ) : null}
+        {cancelBuild.isError ? (
+          <p className="px-4 py-3 font-mono text-xs text-ember">
+            {String(cancelBuild.error?.message || cancelBuild.error)}
+          </p>
+        ) : null}
         {recentBuilds.length === 0 ? (
           <Empty icon="⬡">No builds yet. Submit a brief to fire the forge.</Empty>
         ) : (
@@ -697,6 +728,20 @@ export default function Studio({ stream }) {
                               title="Reject this build"
                             >
                               Reject
+                            </button>
+                            <button
+                              onClick={() => {
+                                setPendingBuildId(b.build_id || b.slug);
+                                cancelBuild.mutate({ build_id: b.build_id || b.slug });
+                              }}
+                              disabled={
+                                cancelBuild.isPending &&
+                                pendingBuildId === (b.build_id || b.slug)
+                              }
+                              className="btn-ghost disabled:opacity-50"
+                              title="Cancel this build"
+                            >
+                              Cancel
                             </button>
                           </div>
                         ) : null}

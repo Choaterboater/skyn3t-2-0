@@ -612,9 +612,18 @@ class StudioRunner:
         try:
             from skyn3t.studio.assets import asset_gen_enabled, generate_assets
 
-            if asset_gen_enabled(self.settings):
+            asset_settings = self.settings
+            if extra.get("asset_gen") and not asset_gen_enabled(asset_settings):
+                try:
+                    asset_settings = self.settings.model_copy(update={"asset_gen": True})
+                except Exception:  # noqa: BLE001 - fall back to global settings
+                    asset_settings = self.settings
+            manifest.extra["asset_gen_requested"] = bool(
+                extra.get("asset_gen") or getattr(self.settings, "asset_gen", False)
+            )
+            if asset_gen_enabled(asset_settings):
                 result = await generate_assets(
-                    worktree_dir, brief, settings=self.settings, stack=stack
+                    worktree_dir, brief, settings=asset_settings, stack=stack
                 )
                 manifest.extra["assets"] = result
                 assets = result.get("assets") or []

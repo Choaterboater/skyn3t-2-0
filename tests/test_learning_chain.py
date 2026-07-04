@@ -53,6 +53,18 @@ def test_knowledge_block_surfaces_generated_assets():
     assert "assets/" in kb and "instead of" in kb
 
 
+def test_knowledge_block_surfaces_full_app_contract():
+    kb = knowledge_block({
+        "brief": "Build a golf website for adult beginners with tutorials",
+        "stack": "nextjs",
+        "extra": {"full_app_contract": True},
+    })
+    assert "FULL APP CONTRACT" in kb
+    assert "complete product" in kb
+    assert "tutorials/resources" in kb
+    assert "beginner education" in kb
+
+
 def test_studio_injects_skills_and_recall_into_payload():
     # A runner with a fake skills library + fake rag should surface both into
     # the stage payload's extra, where knowledge_block reads them.

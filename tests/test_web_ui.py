@@ -136,7 +136,10 @@ def test_settings_explains_model_precedence() -> None:
     settings = (ROUTES / "Settings.jsx").read_text()
     assert "OpenRouter calls that are not using" in settings
     assert "OpenRouter codegen model below wins" in settings
-    assert "overrides primary for builds" in settings
+    assert "overrides primary for whole-app builds" in settings
+    assert "OpenRouter codegen · auto" in settings
+    assert "codegenModelChoices" in settings
+    assert "keyMsg" in settings  # key-save feedback is shown in the API-key panel
 
 
 def test_studio_wires_build_profiles_and_manual_model() -> None:
@@ -147,3 +150,5 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "build_profile" in studio
     assert "model_override" in studio
     assert 'queryFn("/models")' in studio
+    assert "manualModelChoices" in studio
+    assert "Select OpenRouter model" in studio

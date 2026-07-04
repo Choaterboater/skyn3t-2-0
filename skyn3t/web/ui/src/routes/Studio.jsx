@@ -203,6 +203,11 @@ export default function Studio({ stream }) {
     queryFn: queryFn("/models"),
     retry: 0,
   });
+  const modelOptions = models.data?.models || [];
+  const manualModelChoices =
+    modelOverride && !modelOptions.includes(modelOverride)
+      ? [modelOverride, ...modelOptions]
+      : modelOptions;
 
   const toggleStack = (id) =>
     setSelectedStacks((prev) => {
@@ -392,8 +397,7 @@ export default function Studio({ stream }) {
               })}
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-1 lg:max-w-[28rem]">
-              <input
-                list="studio-openrouter-models"
+              <select
                 value={modelOverride}
                 onChange={(e) => {
                   setModelOverride(e.target.value);
@@ -401,18 +405,19 @@ export default function Studio({ stream }) {
                 }}
                 disabled={buildProfile !== "manual"}
                 className="field"
-                placeholder={
-                  buildProfile === "manual"
-                    ? "Select or type an OpenRouter model"
-                    : "Manual model disabled for this profile"
-                }
                 title="Pin one AI model for this build"
-              />
-              <datalist id="studio-openrouter-models">
-                {(models.data?.models || []).map((m) => (
-                  <option key={m} value={m} />
+              >
+                <option value="">
+                  {buildProfile === "manual"
+                    ? "Select OpenRouter model"
+                    : "Manual model disabled"}
+                </option>
+                {manualModelChoices.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
                 ))}
-              </datalist>
+              </select>
               <span className="font-mono text-[10px] text-ash/60">
                 {buildProfile === "manual"
                   ? models.data?.note || `${(models.data?.models || []).length} OpenRouter models`

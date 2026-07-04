@@ -13,6 +13,7 @@ from skyn3t.config.settings import REPO_ROOT
 UI_DIR = REPO_ROOT / "skyn3t" / "web" / "ui"
 SRC = UI_DIR / "src"
 ROUTES = SRC / "routes"
+COMPONENTS = SRC / "components"
 
 
 def test_ui_dir_exists() -> None:
@@ -116,6 +117,7 @@ def test_brain_uses_r3f() -> None:
 
 def test_activity_wires_trajectory_replay_ui() -> None:
     activity = (ROUTES / "Activity.jsx").read_text()
+    assert "SignalGrid" in activity
     assert 'apiFetch(`/trajectory?' in activity
     assert "Trajectory replay / time travel" in activity
     assert "const activitySignals =" in activity
@@ -126,12 +128,20 @@ def test_activity_wires_trajectory_replay_ui() -> None:
     assert 'label: "visible", value: `${filtered.length}/${events.length}`' in activity
     assert 'label: "filter", value: filterSignal' in activity
     assert 'label: "selected", value: selectedSignal' in activity
-    assert "[overflow-wrap:anywhere]" in activity
     assert "Freeze latest" in activity
     assert "correlation_id" in activity
     assert "function eventSummary" in activity
     assert "Summary" in activity
     assert "searchableEventText" in activity
+
+
+def test_signal_grid_primitive_wraps_long_values() -> None:
+    ui = (COMPONENTS / "ui.jsx").read_text()
+    assert "export function SignalGrid" in ui
+    assert "items.map((item)" in ui
+    assert "min-w-0" in ui
+    assert "break-words" in ui
+    assert "[overflow-wrap:anywhere]" in ui
 
 
 def test_skills_wires_build_pattern_scoreboard() -> None:
@@ -147,12 +157,26 @@ def test_skills_wires_build_pattern_scoreboard() -> None:
 
 def test_projects_surfaces_ai_guidance_evidence() -> None:
     projects = (ROUTES / "Projects.jsx").read_text()
+    assert "SignalGrid" in projects
     assert "function aiEvidence" in projects
     assert "skills {ai.skills.length}" in projects
     assert "roles {ai.roleStages}" in projects
     assert "prompts {ai.promptCount}" in projects
     assert "Cleanup recommendations" in projects
     assert "safe cleanup candidates" in projects
+    assert "const projectSignals =" in projects
+    assert "Projects cockpit" in projects
+    assert 'label: "shippable"' in projects
+    assert 'label: "wasted"' in projects
+
+
+def test_workspace_surfaces_selected_project_signals() -> None:
+    workspace = (ROUTES / "Workspace.jsx").read_text()
+    assert "SignalGrid" in workspace
+    assert "const workspaceSignals =" in workspace
+    assert "Workspace signals" in workspace
+    assert 'label: "selected"' in workspace
+    assert 'label: "activity"' in workspace
 
 
 def test_cortex_effects_surface_reusable_skills() -> None:
@@ -181,6 +205,7 @@ def test_settings_wires_visual_self_heal_toggle() -> None:
 
 def test_settings_explains_model_precedence() -> None:
     settings = (ROUTES / "Settings.jsx").read_text()
+    assert "SignalGrid" in settings
     assert "const routingCockpit =" in settings
     assert "Routing cockpit" in settings
     assert "requested backend" in settings
@@ -191,9 +216,6 @@ def test_settings_explains_model_precedence() -> None:
     assert 'value: routing.active || active || "stub"' in settings
     assert 'value: model || "auto · learned routing"' in settings
     assert 'value: codegen.reason || "follows active backend"' in settings
-    assert "min-w-0" in settings
-    assert "break-words" in settings
-    assert "[overflow-wrap:anywhere]" in settings
     assert "OpenRouter calls that are not using" in settings
     assert "OpenRouter codegen model below wins" in settings
     assert "overrides primary for whole-app builds" in settings
@@ -223,6 +245,7 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
 
 def test_studio_has_command_deck_summary() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
+    assert "SignalGrid" in studio
     assert "const effectiveBuildProfile =" in studio
     assert "build_profile: effectiveBuildProfile" in studio
     assert "Full app contract" in studio
@@ -238,7 +261,6 @@ def test_studio_has_command_deck_summary() -> None:
     assert "xl:order-2" in studio
     assert "order-3" in studio
     assert "xl:row-start-2" in studio
-    assert "min-w-0 break-words" in studio
 
 
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:

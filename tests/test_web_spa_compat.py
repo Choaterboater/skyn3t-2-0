@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from skyn3t.config.settings import Settings  # noqa: E402
 from skyn3t.intelligence.skill_library import SkillLibrary  # noqa: E402
-from skyn3t.web.app import create_app  # noqa: E402
-from skyn3t.web.deps import AppState  # noqa: E402
+from skyn3t.web import app as web_app  # noqa: E402
+from skyn3t.web.deps import AppState, BuildRecord  # noqa: E402
 
 SPA_GETS = [
     "/api/health", "/api/brain", "/api/settings", "/api/builds", "/api/agents",
@@ -24,7 +24,7 @@ SPA_GETS = [
 
 @pytest.fixture()
 def client():
-    app = create_app(state=AppState(settings=Settings(llm_backend="stub")))
+    app = web_app.create_app(state=AppState(settings=Settings(llm_backend="stub")))
     return TestClient(app)
 
 
@@ -35,6 +35,47 @@ def test_spa_get_endpoint_exists(client, path):
 
 def test_spa_post_build_alias(client):
     assert client.post("/api/builds", json={"brief": "a todo app"}).status_code == 200
+
+
+def test_spa_post_studio_approve_endpoint_is_mounted():
+    state = AppState(settings=Settings(llm_backend="stub"))
+    state.builds["build-123"] = BuildRecord(build_id="build-123", brief="gate me")
+    app = web_app.create_app(state=state)
+    local_client = TestClient(app)
+
+    response = local_client.post(
+        "/api/studio/approve",
+        json={"build_id": "build-123", "approved": True, "reason": "ok"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "approved"
+
+
+def test_spa_fallback_reloads_index_after_frontend_rebuild(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    index = dist / "index.html"
+    index.write_text(
+        '<!doctype html><script type="module" src="/assets/old.js"></script>',
+        encoding="utf-8",
+    )
+    (assets / "old.js").write_text("console.log('old')", encoding="utf-8")
+    monkeypatch.setattr(web_app, "UI_DIST_DIR", dist)
+
+    app = web_app.create_app(state=AppState(settings=Settings(llm_backend="stub")))
+    local_client = TestClient(app)
+    assert "/assets/old.js" in local_client.get("/agents").text
+
+    (assets / "old.js").unlink()
+    (assets / "new.js").write_text("console.log('new')", encoding="utf-8")
+    index.write_text(
+        '<!doctype html><script type="module" src="/assets/new.js"></script>',
+        encoding="utf-8",
+    )
+
+    assert "/assets/new.js" in local_client.get("/agents").text
 
 
 def test_spa_cortex_decide_alias(client):
@@ -55,7 +96,7 @@ def test_agent_catalog_import_endpoint(tmp_path):
         encoding="utf-8",
     )
     skills = SkillLibrary(tmp_path / "skills")
-    app = create_app(state=AppState(settings=Settings(llm_backend="stub"), skills=skills))
+    app = web_app.create_app(state=AppState(settings=Settings(llm_backend="stub"), skills=skills))
     local_client = TestClient(app)
 
     preview = local_client.get("/api/agent-catalog", params={"path": str(catalog)})

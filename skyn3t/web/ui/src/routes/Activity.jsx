@@ -1,6 +1,13 @@
 import React, { useState } from "react";
 import { apiFetch } from "../api.js";
-import { PageHeader, Panel, PanelHead, Empty, Pill } from "../components/ui.jsx";
+import {
+  PageHeader,
+  Panel,
+  PanelHead,
+  Empty,
+  Pill,
+  SignalGrid,
+} from "../components/ui.jsx";
 
 // Heat palette: failed=ember, completed=plasma, build=ember-soft, else ash.
 // Undefined-safe — `type` may be missing on raw stream events.
@@ -175,20 +182,7 @@ export default function Activity({ stream }) {
       />
 
       <Panel className="mb-4 p-3">
-        <div className="eyebrow mb-2">Activity signals</div>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          {activitySignals.map((item) => (
-            <div
-              key={item.label}
-              className="min-w-0 rounded-md border border-hairline bg-void/45 p-3"
-            >
-              <div className="eyebrow text-[9px]">{item.label}</div>
-              <div className="mt-2 min-w-0 break-words [overflow-wrap:anywhere] font-mono text-xs text-bone">
-                {item.value}
-              </div>
-            </div>
-          ))}
-        </div>
+        <SignalGrid label="Activity signals" items={activitySignals} />
       </Panel>
 
       <Panel className="mb-4 overflow-hidden">

@@ -1,7 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, queryFn, apiPost } from "../api.js";
-import { PageHeader, Panel, PanelHead, Pill, Empty } from "../components/ui.jsx";
+import {
+  PageHeader,
+  Panel,
+  PanelHead,
+  Pill,
+  Empty,
+  SignalGrid,
+} from "../components/ui.jsx";
 
 function Row({ label, value }) {
   return (
@@ -461,22 +468,13 @@ export default function Settings() {
             }
           />
           <div className="p-4">
-            <div className="mb-4">
-              <div className="eyebrow mb-2">Routing cockpit</div>
-              <div className="grid gap-2 md:grid-cols-4">
-                {routingCockpit.map((item) => (
-                  <div
-                    key={item.label}
-                    className="min-w-0 rounded-md border border-hairline bg-void/45 p-3"
-                  >
-                    <div className="eyebrow text-[9px]">{item.label}</div>
-                    <div className="mt-2 min-h-[2.5rem] min-w-0 break-words [overflow-wrap:anywhere] font-mono text-xs text-bone">
-                      {item.value}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <SignalGrid
+              label="Routing cockpit"
+              items={routingCockpit}
+              className="mb-4"
+              gridClassName="md:grid-cols-4"
+              valueClassName="min-h-[2.5rem]"
+            />
             <div className="mb-4 overflow-hidden rounded border border-hairline/60">
               <Row label="requested" value={routing.requested || "auto"} />
               <Row label="active" value={routing.active || active || "stub"} />

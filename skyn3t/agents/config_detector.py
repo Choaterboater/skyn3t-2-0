@@ -21,6 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from skyn3t.agents._scaffold import _implies_supabase
 from skyn3t.agents.env_scanner import EnvScanner
 from skyn3t.studio.config_spec import ConfigKey, ConfigSpec, kind_for, scope_for
 
@@ -101,10 +102,7 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
     for pat, name, kind, label in _SERVICE_RULES:
         if pat.search(low):
             add(name, kind, label)
-    supabase_requested = (
-        re.search(r"\bsupabase\b", low)
-        and re.search(r"\b(auth|database|backend|project|login|dashboard|admin|service[-_ ]?role)\b", low)
-    )
+    supabase_requested = _implies_supabase(brief)
     if supabase_requested:
         keys.setdefault("NEXT_PUBLIC_SUPABASE_URL", ConfigKey(
             name="NEXT_PUBLIC_SUPABASE_URL",

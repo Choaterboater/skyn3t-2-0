@@ -850,7 +850,7 @@ export default function Studio({ stream }) {
                           className="max-w-[12rem] truncate text-ash/70"
                           title={diagnostics}
                         >
-                          {buildDiagnostics(b)}
+                          {diagnostics}
                         </div>
                       </td>
                       <td className="px-4 py-2">

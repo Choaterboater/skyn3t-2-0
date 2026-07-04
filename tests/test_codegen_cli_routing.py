@@ -80,6 +80,44 @@ async def test_codegen_cli_model_threaded_to_agentic_build(tmp_path, monkeypatch
         get_settings.cache_clear()
 
 
+async def test_openrouter_model_override_does_not_replace_codegen_cli_model(tmp_path, monkeypatch):
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        codegen_cli_provider="claude",
+        codegen_cli_model="sonnet",
+    )
+    llm = LLMClient(settings)
+    monkeypatch.setattr(llm, "_cli_available", lambda provider: provider == "claude")
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus, llm=llm)
+    await agent.start()
+    captured = {}
+
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
+        captured.update(kwargs)
+        pathlib.Path(workdir, "App.jsx").write_text(
+            "// selected cli model app\n" + ("const x = 1;\n" * 300),
+            encoding="utf-8",
+        )
+        return {"ok": True, "backend": "claude_cli", "model": kwargs.get("model")}
+
+    agent.llm.agentic_build = fake_agentic_build  # type: ignore[method-assign]
+    task = TaskRequest(
+        type="codegen",
+        payload={
+            "brief": "a react trading dashboard",
+            "slug": "trading",
+            "worktree_dir": str(tmp_path),
+            "model_override": "openrouter/custom-selected",
+        },
+        capabilities_required=("codegen",),
+    )
+    await agent.run(task)
+    assert captured.get("provider") == "claude"
+    assert captured.get("model") == "sonnet"
+
+
 async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp_path, monkeypatch):
     settings = Settings(
         llm_backend="openrouter",

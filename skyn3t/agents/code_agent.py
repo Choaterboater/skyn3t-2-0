@@ -639,7 +639,7 @@ class CodeAgent(BaseAgent):
                 })
                 res = await (
                     self.llm.agentic_build(prompt, str(worktree), provider=_codegen_prov,
-                                           model=(model_override or _codegen_model), stack=stack)
+                                           model=_codegen_model, stack=stack)
                     if _codegen_cli_ok
                     else self.llm.agentic_build(prompt, str(worktree),
                                                 model=model_override, stack=stack)

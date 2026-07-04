@@ -68,6 +68,16 @@ def test_brief_weather_api_key_client_for_web_stack():
     assert k.name.startswith("VITE_")  # client keys get a browser-visible prefix
 
 
+def test_brief_weather_api_key_client_for_nextjs_uses_next_public_prefix():
+    spec = detect_from_brief(
+        "a weather dashboard that needs a weather API key",
+        "nextjs",
+        llm_fn=None,
+    )
+    assert spec.client_keys()
+    assert spec.key_names() == ["NEXT_PUBLIC_WEATHER_API_KEY"]
+
+
 def test_brief_api_key_server_for_backend_stack():
     spec = detect_from_brief("a weather service exposing a weather API key",
                              "fastapi", llm_fn=None)

@@ -82,7 +82,8 @@ _GENERIC_API = re.compile(r"\bapi key\b|\bapi token\b|\bthird[- ]party api\b|\be
 
 def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
     low = (brief or "").lower()
-    client_stack = (stack or "").strip().lower() in _CLIENT_STACKS
+    stack_name = (stack or "").strip().lower()
+    client_stack = stack_name in _CLIENT_STACKS
     supabase_requested = _implies_supabase(brief)
     keys: dict[str, ConfigKey] = {}
     apis: list[str] = []
@@ -94,8 +95,11 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
             scope = "server"
         else:
             scope = "client" if client_stack else "server"
-        name = f"VITE_{name}" if (scope == "client" and not any(
-            name.startswith(p) for p in ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_"))) else name
+        if scope == "client" and not any(
+            name.startswith(p) for p in ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_")
+        ):
+            prefix = "NEXT_PUBLIC_" if stack_name in ("next", "nextjs") else "VITE_"
+            name = f"{prefix}{name}"
         keys.setdefault(name, ConfigKey(name=name, kind=kind, scope=scope, description=label))
         if label not in apis and kind in ("api_key", "url"):
             apis.append(label)

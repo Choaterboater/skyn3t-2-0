@@ -405,6 +405,24 @@ async def test_submit_build_passes_profile_and_model_override():
     assert extra["model_override"] == "openrouter/custom-model"
 
 
+async def test_best_quality_profile_requests_cross_model_sampling():
+    studio = _FakeStudio()
+    state = _FakeState(studio)
+    res = await routes.submit_build(
+        state,
+        brief="a polished golf website",
+        build_profile="best_quality",
+    )
+    assert res["build_profile"] == "best_quality"
+    import asyncio
+    await asyncio.sleep(0)
+    extra = studio.extra or {}
+    assert extra["build_profile"] == "best_quality"
+    assert extra["best_of_n"] == 2
+    assert extra["best_of_n_across_models"] is True
+    assert extra["max_debug_attempts"] == 3
+
+
 async def test_submit_build_rejects_non_data_reference_image():
     # SECURITY: a bare filesystem path / remote URL in the API body must NOT be
     # threaded into the build — otherwise the server would read an arbitrary local

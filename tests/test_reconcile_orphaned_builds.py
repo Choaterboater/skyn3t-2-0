@@ -126,3 +126,31 @@ async def test_recent_builds_prefers_repaired_disk_manifest(tmp_path):
     assert row["verdict"] == "go"
     assert row["score"] == 100.0
     assert row["quality_scorecard"]["proof_passed"] is True
+
+
+async def test_recent_builds_keeps_interrupted_status_over_stale_running_manifest(tmp_path):
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    project = tmp_path / "Projects" / "zombie"
+    project.mkdir(parents=True)
+    (project / MANIFEST_FILENAME).write_text(json.dumps({
+        "build_id": "b3",
+        "slug": "zombie",
+        "brief": "old build",
+        "stack": "react",
+        "status": "running",
+        "extra": {},
+    }))
+    await store.save_build(
+        build_id="b3",
+        slug="zombie",
+        brief="old build",
+        stack="react",
+        status="interrupted",
+        artifact_dir=str(project),
+        manifest={"build_id": "b3", "slug": "zombie", "status": "running", "extra": {}},
+    )
+
+    row = (await store.recent_builds(limit=1))[0]
+
+    assert row["status"] == "interrupted"

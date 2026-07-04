@@ -169,6 +169,10 @@ class MemoryStore:
                 extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
                 classification = extra.get("classification") if isinstance(extra.get("classification"), dict) else {}
                 stack_selection = extra.get("stack_selection") if isinstance(extra.get("stack_selection"), dict) else {}
+                disk_status = manifest.get("status")
+                status = disk_status or r.status
+                if r.status == "interrupted" and disk_status in ("running", "queued", "pending"):
+                    status = r.status
                 row = {
                     "build_id": manifest.get("build_id") or r.build_id,
                     "slug": manifest.get("slug") or r.slug,
@@ -178,7 +182,7 @@ class MemoryStore:
                     "engine": classification.get("engine", ""),
                     "stack_selection": stack_selection,
                     "classification": classification,
-                    "status": manifest.get("status") or r.status,
+                    "status": status,
                     "score": manifest.get("score", r.score),
                     "verdict": manifest.get("verdict") or r.verdict,
                     "cost_usd": manifest.get("cost_usd", r.cost_usd),

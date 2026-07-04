@@ -45,6 +45,15 @@ def test_supabase_nextjs_brief_gets_variant_scaffold():
     assert "Supabase" in files["app/page.jsx"]
 
 
+def test_supabase_readme_matches_safe_missing_config_behavior():
+    files = scaffold_for("nextjs", "member-portal", "a Supabase auth dashboard")
+    readme = files["README.md"]
+    assert "fails fast" not in readme
+    assert "missing-config" in readme
+    assert "NEXT_PUBLIC_SUPABASE_URL" in readme
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in readme
+
+
 def test_plain_nextjs_brief_is_unchanged():
     files = scaffold_for("nextjs", "blog", "a Next.js blog")
     assert "lib/supabaseClient.js" not in files

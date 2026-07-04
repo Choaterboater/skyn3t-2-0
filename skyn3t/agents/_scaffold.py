@@ -74,6 +74,7 @@ def compose_readme(
     structure: list[tuple[str, str]],
     features: list[str],
     extra: str = "",
+    configuration: str | None = None,
 ) -> str:
     """Assemble a comprehensive README from stack-specific pieces.
 
@@ -110,15 +111,18 @@ def compose_readme(
         lines.append(f"- `{path}` — {desc}")
     if extra:
         lines += ["", extra.rstrip()]
-    lines += [
-        "",
-        "## Configuration",
-        "",
+    config_text = configuration or (
         "Configuration is read once at startup from environment variables. Any required "
         "variables are listed in `.env.example`; if a required variable is missing the "
         "app fails fast with a single clear error at startup, rather than silently "
         "falling back to broken behaviour. Copy `.env.example` to `.env`, fill in your "
-        "values, and never commit real secrets.",
+        "values, and never commit real secrets."
+    )
+    lines += [
+        "",
+        "## Configuration",
+        "",
+        config_text,
         "",
         "## Development",
         "",
@@ -1119,6 +1123,13 @@ def _nextjs_supabase(app_name: str, brief: str) -> dict[str, str]:
                 "Supabase JS client dependency and public env wiring",
                 "Configuration status UI that works without network access",
             ],
+            configuration=(
+                "Supabase configuration is read from browser-safe environment variables "
+                "with the `NEXT_PUBLIC_` prefix. Missing values do not crash the app; "
+                "the home page shows a missing-config state until `.env.local` contains "
+                "`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Never "
+                "commit real secrets."
+            ),
             extra=(
                 "## Supabase environment\n\n"
                 "- `NEXT_PUBLIC_SUPABASE_URL` is the browser-safe project URL.\n"

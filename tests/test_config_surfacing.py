@@ -107,6 +107,17 @@ def test_detect_from_brief_supabase_service_role_is_server_scoped():
     assert by_name["SUPABASE_SERVICE_ROLE_KEY"].scope == "server"
 
 
+def test_detect_from_brief_supabase_requires_precise_phrase():
+    spec = detect_from_brief(
+        "an auth dashboard comparing Firebase and Supabase",
+        "nextjs",
+        llm_fn=None,
+    )
+    assert "NEXT_PUBLIC_SUPABASE_URL" not in spec.key_names()
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" not in spec.key_names()
+    assert "Supabase" not in spec.apis
+
+
 def test_brief_with_no_config_need_is_empty():
     spec = detect_from_brief("a simple offline counter app", "react", llm_fn=None)
     assert spec.is_empty()

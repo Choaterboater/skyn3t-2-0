@@ -133,6 +133,14 @@ def test_skills_wires_build_pattern_scoreboard() -> None:
     assert "previewed roles" in skills
 
 
+def test_projects_surfaces_ai_guidance_evidence() -> None:
+    projects = (ROUTES / "Projects.jsx").read_text()
+    assert "function aiEvidence" in projects
+    assert "skills {ai.skills.length}" in projects
+    assert "roles {ai.roleStages}" in projects
+    assert "prompts {ai.promptCount}" in projects
+
+
 def test_settings_wires_visual_self_heal_toggle() -> None:
     settings = (ROUTES / "Settings.jsx").read_text()
     assert "/settings/visual_self_heal" in settings

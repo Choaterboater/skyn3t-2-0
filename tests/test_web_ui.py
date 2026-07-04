@@ -172,6 +172,19 @@ def test_settings_wires_visual_self_heal_toggle() -> None:
 
 def test_settings_explains_model_precedence() -> None:
     settings = (ROUTES / "Settings.jsx").read_text()
+    assert "const routingCockpit =" in settings
+    assert "Routing cockpit" in settings
+    assert "requested backend" in settings
+    assert "active route" in settings
+    assert "primary model" in settings
+    assert "codegen path" in settings
+    assert 'value: routing.requested || "auto"' in settings
+    assert 'value: routing.active || active || "stub"' in settings
+    assert 'value: model || "auto · learned routing"' in settings
+    assert 'value: codegen.reason || "follows active backend"' in settings
+    assert "min-w-0" in settings
+    assert "break-words" in settings
+    assert "[overflow-wrap:anywhere]" in settings
     assert "OpenRouter calls that are not using" in settings
     assert "OpenRouter codegen model below wins" in settings
     assert "overrides primary for whole-app builds" in settings

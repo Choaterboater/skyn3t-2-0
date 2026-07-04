@@ -45,6 +45,20 @@ def test_config_spec_merge_unions_by_name():
     assert merged.apis == ["X", "Y"]
 
 
+def test_config_spec_from_dict_dedupes_keys_and_apis():
+    spec = ConfigSpec.from_dict({
+        "keys": [
+            {"name": "API_KEY", "kind": "api_key", "description": "first"},
+            {"name": "API_KEY", "kind": "value", "description": "second"},
+            {"name": "DATABASE_URL", "kind": "url"},
+        ],
+        "apis": ["Weather", "Weather", "", "Maps"],
+    })
+    assert spec.key_names() == ["API_KEY", "DATABASE_URL"]
+    assert spec.keys[0].description == "first"
+    assert spec.apis == ["Weather", "Maps"]
+
+
 def test_kind_and_scope_inference():
     assert kind_for("OPENAI_API_KEY") == "api_key"
     assert kind_for("DATABASE_URL") == "url"

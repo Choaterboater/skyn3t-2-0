@@ -80,9 +80,17 @@ class ConfigSpec:
     def from_dict(cls, d: dict[str, Any]) -> ConfigSpec:
         if not isinstance(d, dict):
             return cls()
-        keys = [ConfigKey.from_dict(k) for k in (d.get("keys") or []) if isinstance(k, dict)]
-        apis = [str(a) for a in (d.get("apis") or [])]
-        return cls(keys=keys, apis=apis)
+        by_name: dict[str, ConfigKey] = {}
+        for k in (d.get("keys") or []):
+            if isinstance(k, dict):
+                key = ConfigKey.from_dict(k)
+                by_name.setdefault(key.name, key)
+        apis: list[str] = []
+        for a in (d.get("apis") or []):
+            name = str(a)
+            if name and name not in apis:
+                apis.append(name)
+        return cls(keys=list(by_name.values()), apis=apis)
 
     # ---- composition -----------------------------------------------------
     def merge(self, other: ConfigSpec) -> ConfigSpec:

@@ -120,6 +120,9 @@ def test_activity_wires_trajectory_replay_ui() -> None:
     assert "Trajectory replay / time travel" in activity
     assert "Freeze latest" in activity
     assert "correlation_id" in activity
+    assert "function eventSummary" in activity
+    assert "Summary" in activity
+    assert "searchableEventText" in activity
 
 
 def test_skills_wires_build_pattern_scoreboard() -> None:
@@ -139,6 +142,8 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert "skills {ai.skills.length}" in projects
     assert "roles {ai.roleStages}" in projects
     assert "prompts {ai.promptCount}" in projects
+    assert "Cleanup recommendations" in projects
+    assert "safe cleanup candidates" in projects
 
 
 def test_cortex_effects_surface_reusable_skills() -> None:
@@ -147,6 +152,15 @@ def test_cortex_effects_surface_reusable_skills() -> None:
     assert "skillRows" in cortex
     assert "skillCount" in cortex
     assert "No learned skills yet" in cortex
+    assert "search proposals, skills, models" in cortex
+    assert "filteredProposals" in cortex
+
+
+def test_agents_explains_roster_count() -> None:
+    agents = (ROUTES / "Agents.jsx").read_text()
+    assert "registered specialist roles" in agents
+    assert "not the number of parallel agents" in agents
+    assert "Roster size" in agents
 
 
 def test_settings_wires_visual_self_heal_toggle() -> None:
@@ -179,3 +193,6 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert 'queryFn("/models")' in studio
     assert "manualModelChoices" in studio
     assert "Select OpenRouter model" in studio
+    assert "const DEFAULT_STACK_SELECTION = []" in studio
+    assert "Web set" in studio
+    assert "golf website for adult beginners" in studio

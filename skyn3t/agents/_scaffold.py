@@ -976,6 +976,17 @@ def _nextjs_supabase(app_name: str, brief: str) -> dict[str, str]:
     """Next.js App Router scaffold with Supabase public-client wiring."""
     title = brief.strip() or app_name
     js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    needs_service_role = bool(_re.search(r"\b(service[-_ ]?role|admin|server)\b", (brief or "").lower()))
+    env_example = (
+        "NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co\n"
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY=your-public-anon-key\n"
+        + ("SUPABASE_SERVICE_ROLE_KEY=your-server-service-role-key\n" if needs_service_role else "")
+    )
+    service_role_note = (
+        "\n- `SUPABASE_SERVICE_ROLE_KEY` is server-only. Use it only in server routes or "
+        "background jobs; never import it into client components."
+        if needs_service_role else ""
+    )
     return {
         "package.json": (
             "{\n"
@@ -1010,10 +1021,7 @@ def _nextjs_supabase(app_name: str, brief: str) -> dict[str, str]:
             "  }\n"
             "}\n"
         ),
-        ".env.example": (
-            "NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co\n"
-            "NEXT_PUBLIC_SUPABASE_ANON_KEY=your-public-anon-key\n"
-        ),
+        ".env.example": env_example,
         "lib/supabaseClient.js": (
             "import { createClient } from '@supabase/supabase-js';\n\n"
             "export const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';\n"
@@ -1135,6 +1143,7 @@ def _nextjs_supabase(app_name: str, brief: str) -> dict[str, str]:
                 "- `NEXT_PUBLIC_SUPABASE_URL` is the browser-safe project URL.\n"
                 "- `NEXT_PUBLIC_SUPABASE_ANON_KEY` is the browser-safe anon key.\n"
                 "- Keep service-role keys in server-only code; never import them into `app/page.jsx`."
+                f"{service_role_note}"
             ),
         ),
     }

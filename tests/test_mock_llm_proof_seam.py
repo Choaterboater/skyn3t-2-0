@@ -65,6 +65,7 @@ def _llm_project(tmp_path):
         "import os\nBASE = os.getenv('OPENAI_BASE_URL')\n", encoding="utf-8")
 
 
+@pytest.mark.requires_loopback
 def test_seam_starts_and_injects_env(tmp_path):
     _llm_project(tmp_path)
     seam = _start_proof_mock_llm(tmp_path, None, enabled=True)
@@ -156,6 +157,7 @@ def _pytest_env(calls):
     return None
 
 
+@pytest.mark.requires_loopback
 def test_env_injected_into_python_test_step(tmp_path, monkeypatch):
     _llm_python_project_with_tests(tmp_path)
     calls = _patch_executor(monkeypatch)

@@ -120,7 +120,7 @@ def _detect_kind(project_dir: Path, stack: str) -> str:
     try:
         from skyn3t.studio.app_runner import build_run_spec
 
-        spec = build_run_spec(project_dir, stack)
+        spec = build_run_spec(project_dir, stack, port=0)
     except Exception:  # noqa: BLE001
         spec = None
     if spec is None:

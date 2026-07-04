@@ -44,6 +44,7 @@ def _settings(tmp_path):
     not _fastapi_stack_available(),
     reason="fastapi/uvicorn not importable — rag_check would soft-skip",
 )
+@pytest.mark.requires_loopback
 def test_offline_rag_build_end_to_end(tmp_path):
     async def run():
         bus = EventBus()

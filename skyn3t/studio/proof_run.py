@@ -2882,17 +2882,29 @@ def _run_swift_build(
     if not manifest.exists():
         return (False, False, "no Package.swift — build skipped")
     swift_cmd = "swift" if use_container_names else str(swift or "swift")
+    swift_env = dict(os.environ)
+    module_cache = pdir / ".skyn3t-swift-module-cache"
+    try:
+        module_cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    swift_env.setdefault("CLANG_MODULE_CACHE_PATH", str(module_cache))
     # `swift build` resolves the package graph + compiles. The scaffold ships no
     # external SwiftPM deps (compiles offline), but allow the network in case
     # codegen adds package dependencies.
     bld = _run_proof_command(
-        cmd_ctx, [swift_cmd, "build"], cwd=pdir, timeout=timeout, network=True)
+        cmd_ctx, [swift_cmd, "build"], cwd=pdir, timeout=timeout, env=swift_env,
+        network=True)
     if bld.timed_out:
         return (True, False, f"swift build timed out after {timeout}s")
     if bld.returncode == 127:
         # swift could not even be launched -> environmental, soft-skip.
         return (False, False, "swift could not be launched — build skipped")
     out = ((bld.stdout or "") + (bld.stderr or "")).strip()
+    if "sandbox-exec: sandbox_apply: Operation not permitted" in out:
+        return (False, False, "swift sandbox-exec blocked by host sandbox — build skipped")
+    if "ModuleCache: Operation not permitted" in out:
+        return (False, False, "swift module cache blocked by host sandbox — build skipped")
     if bld.returncode == 0:
         return (True, True, out[-300:])
     return (True, False, out[-700:])
@@ -2925,11 +2937,23 @@ def _run_swift_tests(
     except OSError:
         return (False, False, "")
     swift_cmd = "swift" if use_container_names else str(swift or "swift")
+    swift_env = dict(os.environ)
+    module_cache = pdir / ".skyn3t-swift-module-cache"
+    try:
+        module_cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    swift_env.setdefault("CLANG_MODULE_CACHE_PATH", str(module_cache))
     res = _run_proof_command(
-        cmd_ctx, [swift_cmd, "test"], cwd=pdir, timeout=timeout, network=True)
+        cmd_ctx, [swift_cmd, "test"], cwd=pdir, timeout=timeout, env=swift_env,
+        network=True)
     if res.timed_out or res.returncode == 127:
         return (False, False, "swift test timed out / failed to launch")
     out = ((res.stdout or "") + (res.stderr or "")).strip()
+    if "sandbox-exec: sandbox_apply: Operation not permitted" in out:
+        return (False, False, "swift sandbox-exec blocked by host sandbox")
+    if "ModuleCache: Operation not permitted" in out:
+        return (False, False, "swift module cache blocked by host sandbox")
     return (True, res.returncode == 0, out[-500:])
 
 

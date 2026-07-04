@@ -33,7 +33,7 @@ def test_http_served_stacks_get_a_python_web_run_spec(tmp_path):
         ("rag", "a chatbot that remembers me"),             # §3.10 variant
     ):
         root = _materialize(tmp_path, stack, brief)
-        spec = build_run_spec(root, stack)
+        spec = build_run_spec(root, stack, port=9200)
         assert spec is not None, f"{stack} ({brief!r}): liveness could not serve it"
         assert spec.kind == "python_web", (stack, brief, spec.kind)
         # The scaffolds read PORT; the runner must provide it.

@@ -201,7 +201,20 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
 
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
-    assert 'model: trace.codegen_model || trace.model_override || "auto",' in studio
+    assert 'const codegenModel = String(trace.codegen_model || "");' in studio
+    assert 'const modelOverride = String(trace.model_override || "");' in studio
+    assert 'model: codegenModel || modelOverride || "auto",' in studio
+
+
+def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "modelOverride && (!codegenModel || codegenModel === modelOverride)" in studio
+    assert '? "manual"' in studio
+    assert ': codegenModel ? "codegen" : "auto route"' in studio
+    assert "backend setting {ai.backend}" in studio
+    assert "{ai.modelSource} · {ai.model}" in studio
+    assert "prompts {ai.promptCount}" in studio
+    assert "stages {ai.stageCount}" in studio
 
 
 def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:

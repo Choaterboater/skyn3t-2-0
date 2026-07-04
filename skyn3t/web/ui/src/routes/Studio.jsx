@@ -148,9 +148,16 @@ function aiMeta(build) {
   const trace = build.model_trace || {};
   const scorecard = build.quality_scorecard || {};
   const stageCount = Array.isArray(trace.stages) ? trace.stages.length : 0;
+  const codegenModel = String(trace.codegen_model || "");
+  const modelOverride = String(trace.model_override || "");
+  const modelSource =
+    modelOverride && (!codegenModel || codegenModel === modelOverride)
+      ? "manual"
+      : codegenModel ? "codegen" : "auto route";
   return {
     profile: build.build_profile || trace.profile || "cheap_learned",
-    model: trace.codegen_model || trace.model_override || "auto",
+    model: codegenModel || modelOverride || "auto",
+    modelSource,
     backend: trace.backend || "auto",
     promptCount: trace.prompt_count || 0,
     stageCount,
@@ -856,15 +863,26 @@ export default function Studio({ stream }) {
                       <td className="px-4 py-2 font-mono text-xs text-ash">{meta.appType}</td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">{meta.engine}</td>
                       <td className="px-4 py-2 font-mono text-[11px] text-ash">
-                        <div className="max-w-[12rem] truncate text-bone">{ai.profile}</div>
                         <div
-                          className="max-w-[12rem] truncate text-ash/70"
-                          title={`${ai.model} · skills ${ai.skills} · recall ${ai.recall}`}
+                          className="max-w-[13rem] truncate text-bone"
+                          title={`${ai.profile} · backend setting ${ai.backend}`}
                         >
-                          {ai.model} · skills {ai.skills}
+                          {ai.profile} · backend setting {ai.backend}
                         </div>
                         <div
-                          className="max-w-[12rem] truncate text-ash/70"
+                          className="max-w-[13rem] truncate text-ash/70"
+                          title={`${ai.modelSource} · ${ai.model}`}
+                        >
+                          {ai.modelSource} · {ai.model}
+                        </div>
+                        <div
+                          className="max-w-[13rem] truncate text-ash/70"
+                          title={`prompts ${ai.promptCount} · stages ${ai.stageCount} · skills ${ai.skills} · recall ${ai.recall}`}
+                        >
+                          prompts {ai.promptCount} · stages {ai.stageCount}
+                        </div>
+                        <div
+                          className="max-w-[13rem] truncate text-ash/70"
                           title={diagnostics}
                         >
                           {diagnostics}

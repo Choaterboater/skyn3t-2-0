@@ -118,6 +118,21 @@ def test_detect_from_brief_supabase_requires_precise_phrase():
     assert "Supabase" not in spec.apis
 
 
+def test_detect_from_brief_supabase_auth_uses_supabase_keys_not_generic_secret():
+    spec = detect_from_brief("a Next.js app with Supabase auth", "nextjs", llm_fn=None)
+    assert "NEXT_PUBLIC_SUPABASE_URL" in spec.key_names()
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in spec.key_names()
+    assert "AUTH_SECRET" not in spec.key_names()
+
+
+def test_detect_from_brief_supabase_database_uses_supabase_keys_not_database_url():
+    spec = detect_from_brief("Supabase database dashboard", "nextjs", llm_fn=None)
+    assert "NEXT_PUBLIC_SUPABASE_URL" in spec.key_names()
+    assert "NEXT_PUBLIC_SUPABASE_ANON_KEY" in spec.key_names()
+    assert "DATABASE_URL" not in spec.key_names()
+    assert "Database" not in spec.apis
+
+
 def test_brief_with_no_config_need_is_empty():
     spec = detect_from_brief("a simple offline counter app", "react", llm_fn=None)
     assert spec.is_empty()

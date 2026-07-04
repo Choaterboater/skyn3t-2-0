@@ -83,6 +83,7 @@ _GENERIC_API = re.compile(r"\bapi key\b|\bapi token\b|\bthird[- ]party api\b|\be
 def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
     low = (brief or "").lower()
     client_stack = (stack or "").strip().lower() in _CLIENT_STACKS
+    supabase_requested = _implies_supabase(brief)
     keys: dict[str, ConfigKey] = {}
     apis: list[str] = []
 
@@ -101,8 +102,9 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
 
     for pat, name, kind, label in _SERVICE_RULES:
         if pat.search(low):
+            if supabase_requested and name in ("DATABASE_URL", "AUTH_SECRET"):
+                continue
             add(name, kind, label)
-    supabase_requested = _implies_supabase(brief)
     if supabase_requested:
         keys.setdefault("NEXT_PUBLIC_SUPABASE_URL", ConfigKey(
             name="NEXT_PUBLIC_SUPABASE_URL",

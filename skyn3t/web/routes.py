@@ -72,10 +72,14 @@ def code_is_stale(force_refresh: bool = False) -> bool:
 
 # Strong references to in-flight background build tasks (prevent GC mid-run).
 _BUILD_TASKS: set = set()
+_BUILD_TASKS_BY_ID: dict[str, Any] = {}
 
 
 def _reap_build_task(task: Any) -> None:
     _BUILD_TASKS.discard(task)
+    bid = getattr(task, "_skyn3t_build_id", "")
+    if bid:
+        _BUILD_TASKS_BY_ID.pop(str(bid), None)
     if task.cancelled():
         return
     exc = task.exception()
@@ -246,7 +250,7 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
         return s  # a data: URL is safe inline data; the LLM client accepts it
 
 
-_BUILD_PROFILES = {"cheap_learned", "fast", "best_quality", "manual"}
+_BUILD_PROFILES = {"cheap_learned", "fast", "best_quality", "full_app", "manual"}
 
 
 def _normalize_build_profile(profile: str) -> str:
@@ -271,14 +275,28 @@ def _profile_extra(profile: str) -> dict[str, Any]:
             "best_of_n": 2,
             "best_of_n_across_models": True,
             "max_debug_attempts": 3,
+            "asset_gen": True,
             "visual_self_heal": True,
         }
+    if profile == "full_app":
+        return _full_app_extra()
     return {}
+
+
+def _full_app_extra() -> dict[str, Any]:
+    return {
+        "full_app_contract": True,
+        "asset_gen": True,
+        "best_of_n": 2,
+        "best_of_n_across_models": True,
+        "max_debug_attempts": 4,
+        "visual_self_heal": True,
+    }
 
 
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
                        reference_image: str = "", build_profile: str = "cheap_learned",
-                       model_override: str = "") -> dict[str, Any]:
+                       model_override: str = "", full_app: bool = False) -> dict[str, Any]:
     """Queue a build. Uses the studio if wired, else records + emits an event.
 
     ``reference_image`` is an optional base64 ``data:`` URL (or path); when
@@ -290,6 +308,7 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     build_id = state.new_build_id()
     profile = _normalize_build_profile(build_profile)
     model = _normalize_model_override(model_override)
+    full_app_requested = bool(full_app) or profile == "full_app"
     rec = BuildRecord(
         build_id=build_id,
         brief=brief.strip(),
@@ -325,6 +344,8 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
                 "build_profile": profile,
                 **_profile_extra(profile),
             }
+            if full_app_requested:
+                _extra = {**_extra, **_full_app_extra()}
             if model:
                 _extra["model_override"] = model
             if ref_path:
@@ -342,7 +363,9 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
                 # Keep a strong reference so the build task isn't garbage-
                 # collected mid-run, and retrieve any exception on completion.
                 task = asyncio.ensure_future(res)
+                task._skyn3t_build_id = build_id  # type: ignore[attr-defined]
                 _BUILD_TASKS.add(task)
+                _BUILD_TASKS_BY_ID[build_id] = task
                 task.add_done_callback(_reap_build_task)
             dispatched = True
         except Exception:  # noqa: BLE001 - never let a build crash the API
@@ -369,7 +392,70 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         "dispatched": dispatched,
         "build_profile": profile,
         "model_override": model,
+        "full_app": full_app_requested,
     }
+
+
+async def cancel_build(state: AppState, build_id: str, reason: str = "") -> dict[str, Any]:
+    """Cancel a queued/running build and persist the terminal status.
+
+    Cancellation is best-effort. If this process still owns the asyncio task, it
+    is cancelled directly; if the process restarted and only a persisted row
+    remains, the visible record is still marked cancelled so it does not keep
+    showing as running forever.
+    """
+    bid = (build_id or "").strip()
+    if not bid:
+        raise ValueError("build_id is required")
+    now = time.time()
+    rec = state.builds.get(bid)
+    db_row: dict[str, Any] | None = None
+    if state.memory is not None and hasattr(state.memory, "get_build"):
+        try:
+            db_row = await state.memory.get_build(bid)
+        except Exception:  # noqa: BLE001 - cancellation must not crash on store read
+            db_row = None
+    if rec is None and db_row is None:
+        raise KeyError(bid)
+
+    task = _BUILD_TASKS_BY_ID.pop(bid, None)
+    task_cancelled = False
+    if task is not None and not task.done():
+        task.cancel()
+        task_cancelled = True
+
+    if rec is not None:
+        rec.status = "cancelled"
+        rec.updated_at = now
+
+    if state.memory is not None and hasattr(state.memory, "save_build"):
+        manifest = None
+        if isinstance(db_row, dict) and isinstance(db_row.get("manifest"), dict):
+            manifest = dict(db_row["manifest"])
+            manifest["status"] = "cancelled"
+            manifest["cancelled_at"] = now
+            manifest["cancel_reason"] = reason
+        try:
+            fields: dict[str, Any] = {"build_id": bid, "status": "cancelled"}
+            if manifest is not None:
+                fields["manifest"] = manifest
+            await state.memory.save_build(**fields)
+        except Exception:  # noqa: BLE001
+            pass
+
+    await state.event_bus.emit(
+        EventType.PROPOSAL_DECIDED,
+        source="web.api",
+        payload={
+            "build_id": bid,
+            "status": "cancelled",
+            "reason": reason,
+            "kind": "build_cancel",
+            "task_cancelled": task_cancelled,
+        },
+        correlation_id=bid,
+    )
+    return {"build_id": bid, "status": "cancelled", "task_cancelled": task_cancelled}
 
 
 async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
@@ -1760,9 +1846,23 @@ def build_router(state: AppState) -> Any:
                 reference_image=str(body.get("reference_image", "")),
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
+                full_app=bool(body.get("full_app", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/builds/cancel", dependencies=[auth])
+    async def _cancel_build_alias(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            return await cancel_build(
+                state,
+                build_id=str(body.get("build_id", "")),
+                reason=str(body.get("reason", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except KeyError:
+            raise HTTPException(status_code=404, detail="build not found") from None
 
     @router.get("/preview/{slug}", dependencies=[auth])
     async def _preview(slug: str) -> dict[str, Any]:
@@ -1986,6 +2086,7 @@ def build_router(state: AppState) -> Any:
                 reference_image=str(body.get("reference_image", "")),
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
+                full_app=bool(body.get("full_app", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1993,6 +2094,19 @@ def build_router(state: AppState) -> Any:
     @router.get("/studio/builds", dependencies=[auth])
     async def _builds(limit: int = Query(default=25, ge=1, le=200)) -> dict[str, Any]:
         return await list_builds(state, limit=limit)
+
+    @router.post("/studio/build/cancel", dependencies=[auth])
+    async def _cancel_build(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            return await cancel_build(
+                state,
+                build_id=str(body.get("build_id", "")),
+                reason=str(body.get("reason", "")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except KeyError:
+            raise HTTPException(status_code=404, detail="build not found") from None
 
     @router.post("/studio/approve", dependencies=[auth])
     async def _approve(body: dict[str, Any] = empty_body) -> dict[str, Any]:

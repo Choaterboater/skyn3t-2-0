@@ -259,6 +259,39 @@ async def test_runner_asset_step_clears_stale_extra_assets(tmp_path):
     assert out["model_override"] == "openrouter/test"
 
 
+async def test_runner_asset_step_honors_per_build_asset_gen_override(tmp_path, monkeypatch):
+    captured = {}
+
+    async def _fake_generate_assets(project_dir, brief, *, settings, stack):
+        captured["asset_gen"] = settings.asset_gen
+        captured["stack"] = stack
+        return {
+            "generated": 1,
+            "skipped": False,
+            "assets": [{"subject": "sunlit golf course fairway and green", "file": "/assets/golf.png"}],
+        }
+
+    monkeypatch.setattr("skyn3t.studio.assets.generate_assets", _fake_generate_assets)
+    runner = StudioRunner(
+        EventBus(),
+        Orchestrator(EventBus()),
+        settings=Settings(replicate_api_token="r8_x", asset_gen=False),
+    )
+    manifest = SimpleNamespace(extra={})
+
+    out = await runner._generate_assets(
+        str(tmp_path),
+        "a golf website for adult beginners",
+        manifest,
+        {"asset_gen": True},
+        stack="nextjs",
+    )
+
+    assert captured == {"asset_gen": True, "stack": "nextjs"}
+    assert manifest.extra["asset_gen_requested"] is True
+    assert out["assets"][0]["subject"].startswith("sunlit golf")
+
+
 def test_codegen_payload_prefers_current_worktree_asset_manifest(tmp_path):
     runner = StudioRunner(EventBus(), Orchestrator(EventBus()), settings=Settings())
     worktree = tmp_path / "wt"

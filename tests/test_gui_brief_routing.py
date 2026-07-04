@@ -43,6 +43,20 @@ def test_plain_ui_ai_rebuild_is_fullstack_web_not_python():
     assert detect_stack(brief) == "nextjs"
 
 
+def test_ordinary_app_and_repo_rebuild_default_to_web_gui():
+    assert detect_stack("build a task manager app") == "react"
+    assert detect_stack("remake this repo with a cleaner product experience") == "react"
+    assert detect_stack("rebuild https://github.com/example/demo as a useful project") == "react"
+    assert detect_stack("build an AI app that explains uploaded notes") == "nextjs"
+
+
+def test_explicit_non_web_targets_still_win_over_app_default():
+    assert detect_stack("build a python script to rename photos") == "python"
+    assert detect_stack("build an mcp server repo for filesystem tools") == "mcp"
+    assert detect_stack("build an iOS habit tracker project") == "react_native"
+    assert detect_stack("build a mac desktop project for notes") == "tauri"
+
+
 def test_gui_is_word_bounded_and_steals_no_genuine_cli_or_data_briefs():
     # 'gui' must fire only as a standalone word — never inside other words, and it
     # must not hijack genuine CLI / data / library briefs.

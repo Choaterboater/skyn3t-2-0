@@ -154,3 +154,31 @@ async def test_recent_builds_keeps_interrupted_status_over_stale_running_manifes
     row = (await store.recent_builds(limit=1))[0]
 
     assert row["status"] == "interrupted"
+
+
+async def test_recent_builds_keeps_cancelled_status_over_stale_running_manifest(tmp_path):
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    project = tmp_path / "Projects" / "cancelled"
+    project.mkdir(parents=True)
+    (project / MANIFEST_FILENAME).write_text(json.dumps({
+        "build_id": "b4",
+        "slug": "cancelled",
+        "brief": "cancelled build",
+        "stack": "react",
+        "status": "running",
+        "extra": {},
+    }))
+    await store.save_build(
+        build_id="b4",
+        slug="cancelled",
+        brief="cancelled build",
+        stack="react",
+        status="cancelled",
+        artifact_dir=str(project),
+        manifest={"build_id": "b4", "slug": "cancelled", "status": "running", "extra": {}},
+    )
+
+    row = (await store.recent_builds(limit=1))[0]
+
+    assert row["status"] == "cancelled"

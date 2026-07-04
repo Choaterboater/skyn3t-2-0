@@ -35,7 +35,7 @@ export default function Agents({ stream }) {
       <PageHeader
         eyebrow="Foundry · Swarm"
         title="Agents"
-        sub="Registered agents and their live status. Heat is work — nodes flare ember while forging."
+        sub="Registered worker roles and their live status. This roster is capability coverage, not the number of parallel agents assigned to one build."
         actions={
           <span className="badge border-hairline text-ash">
             roster · <span className="ml-1 text-plasma">{agents.length}</span>
@@ -50,7 +50,7 @@ export default function Agents({ stream }) {
       ) : null}
 
       <div className="mb-6 grid grid-cols-3 gap-4">
-        <Stat label="Registered" value={agents.length} />
+        <Stat label="Roster size" value={agents.length} hint="available roles" />
         <Stat
           label="Forging"
           value={forging}
@@ -65,10 +65,14 @@ export default function Agents({ stream }) {
           label="The Roster"
           right={
             <span className="font-mono text-[11px] text-ash">
-              {forging}/{agents.length} forging
+              {forging}/{agents.length} active now
             </span>
           }
         />
+        <div className="border-b border-hairline px-4 py-2 font-mono text-[11px] text-ash">
+          The roster count is the set of registered specialist roles SkyN3t can call.
+          A build only uses the stages, skills, and workers its plan needs.
+        </div>
 
         {isLoading ? (
           <Empty icon="⬡">Loading the swarm…</Empty>

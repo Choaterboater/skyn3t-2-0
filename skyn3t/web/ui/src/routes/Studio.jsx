@@ -35,14 +35,14 @@ const STAGES = [
 // Curated one-liner starters spanning the supported stacks. Clicking one fills
 // the brief box so a new user has a good, varied jumping-off point.
 const EXAMPLE_BRIEFS = [
-  "A kids coloring app: gallery of animal line-art SVGs you can click to fill with color",
-  "A FastAPI todo REST API with SQLite persistence and a /health endpoint",
-  "A React dashboard that charts a CSV you upload",
-  "A static landing page for a coffee shop with hours, menu, and a map",
-  "A Python CLI that renames photos by EXIF date",
-  "A markdown note-taking SPA with local-storage autosave",
-  "A Node/Express URL shortener with an in-memory store",
-  "An Expo mobile app: a habit tracker with daily streaks",
+  "A golf website for adult beginners with lesson paths, drills, equipment basics, tutorial resources, and tee-time CTAs",
+  "A local HVAC company website with service pages, financing calls-to-action, reviews, emergency contact, and generated service photos",
+  "A client portal web app for a small marketing agency: projects, approvals, invoices, messages, and admin settings",
+  "An AI paper-trading dashboard using OpenRouter models, Alpaca paper mode, risk profiles, backtests, and audit logs",
+  "A course marketplace for woodworking classes with instructor profiles, schedule filters, checkout mockup, and learner dashboard",
+  "A rebuild of a GitHub repo as a polished web UI with the same core features, better onboarding, and editable settings",
+  "A mobile habit tracker with streaks, reminders, charts, and offline-first local storage",
+  "An MCP server for filesystem search and safe read-only project inspection",
 ];
 
 // Fallback stack ids if GET /stacks is empty/unavailable — the six real builders.
@@ -55,8 +55,9 @@ const FALLBACK_STACKS = [
   { id: "express", description: "a Node.js web server / API" },
 ];
 
-// Today's default fan-out selection — keeps behavior unchanged if left untouched.
-const DEFAULT_STACK_SELECTION = ["react", "static", "fastapi"];
+// Fan-out is optional; start empty so highlighted chips never look like the
+// normal build route. A regular Forge build auto-picks from the brief.
+const DEFAULT_STACK_SELECTION = [];
 
 const BUILD_PROFILES = [
   {
@@ -501,6 +502,25 @@ export default function Studio({ stream }) {
                   </button>
                 );
               })}
+            </div>
+            <div className="flex flex-shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedStacks(new Set(["react", "nextjs", "static"]))}
+                className="btn-ghost disabled:opacity-50"
+                title="Select common website/UI stacks for fan-out"
+              >
+                Web set
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedStacks(new Set())}
+                disabled={selectedStacks.size === 0}
+                className="btn-ghost disabled:opacity-50"
+                title="Clear fan-out stack selection"
+              >
+                Clear
+              </button>
             </div>
             <button
               type="button"

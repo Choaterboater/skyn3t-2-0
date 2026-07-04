@@ -200,7 +200,7 @@ function CleanupPanel({ qc }) {
   return (
     <Panel className="mb-6 overflow-hidden">
       <PanelHead
-        label="Cleanup"
+        label="Cleanup recommendations"
         right={
           <div className="flex items-center gap-2">
             {scan ? (
@@ -280,7 +280,8 @@ function CleanupPanel({ qc }) {
         </div>
       ) : (
         <div className="px-4 py-3 font-mono text-[11px] text-ash">
-          Run a scan to see what can be cleaned up.
+          Run a scan to see failed builds, superseded outputs, orphaned worktrees,
+          and stray previews that are safe cleanup candidates.
         </div>
       )}
     </Panel>

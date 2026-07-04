@@ -1,10 +1,11 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiPost } from "../api.js";
 import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/ui.jsx";
 
 export default function Cortex() {
   const qc = useQueryClient();
+  const [search, setSearch] = useState("");
   const { data, isLoading, error } = useQuery({
     queryKey: ["proposals"],
     // Inbox = only proposals genuinely awaiting a decision (not already
@@ -50,6 +51,31 @@ export default function Cortex() {
     leaderRows.length || tuningRows.length || promptRows.length || skillCount;
 
   const proposals = Array.isArray(data) ? data : data?.proposals || [];
+  const q = search.trim().toLowerCase();
+  const matchText = (value) =>
+    !q || String(value || "").toLowerCase().includes(q);
+  const rowMatches = (row) =>
+    !q || matchText(JSON.stringify(row || {}));
+  const filteredProposals = useMemo(
+    () => proposals.filter((p) => rowMatches(p)),
+    [proposals, q],
+  );
+  const filteredLeaderRows = useMemo(
+    () => leaderRows.filter((r) => rowMatches(r)),
+    [leaderRows, q],
+  );
+  const filteredSkillRows = useMemo(
+    () => skillRows.filter((r) => rowMatches(r)),
+    [skillRows, q],
+  );
+  const filteredTuningRows = useMemo(
+    () => tuningRows.filter((r) => rowMatches(r)),
+    [tuningRows, q],
+  );
+  const filteredPromptRows = useMemo(
+    () => promptRows.filter((r) => rowMatches(r)),
+    [promptRows, q],
+  );
 
   return (
     <div>
@@ -59,8 +85,14 @@ export default function Cortex() {
         sub="Self-evolution proposals awaiting your decision. The swarm wants to reshape itself."
         actions={
           <div className="flex items-center gap-2">
+            <input
+              className="field w-56"
+              placeholder="search proposals, skills, models..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
             <span className="badge border-hairline text-ash">
-              open · <span className="ml-1 text-ember">{proposals.length}</span>
+              open · <span className="ml-1 text-ember">{filteredProposals.length}</span>
             </span>
             <button
               onClick={() => scout.mutate()}
@@ -112,17 +144,23 @@ export default function Cortex() {
           label="Proposal inbox"
           right={
             <span className="font-mono text-[11px] text-ash">
-              {decide.isPending ? "deciding…" : `${proposals.length} open`}
+              {decide.isPending
+                ? "deciding…"
+                : q
+                  ? `${filteredProposals.length}/${proposals.length} match`
+                  : `${proposals.length} open`}
             </span>
           }
         />
         {isLoading ? (
           <Empty icon="≋">Listening to Cortex…</Empty>
-        ) : proposals.length === 0 ? (
-          <Empty icon="◇">No open proposals. The swarm is content for now.</Empty>
+        ) : filteredProposals.length === 0 ? (
+          <Empty icon="◇">
+            {q ? "No Cortex rows match that search." : "No open proposals. The swarm is content for now."}
+          </Empty>
         ) : (
           <div className="divide-y divide-hairline/60">
-            {proposals.map((p) => {
+            {filteredProposals.map((p) => {
               const id = p.id ?? p.proposal_id;
               return (
                 <div key={id} className="px-4 py-4">
@@ -185,11 +223,11 @@ export default function Cortex() {
               <div className="mb-2 font-mono text-[11px] uppercase text-ash">
                 Learned router
               </div>
-              {leaderRows.length === 0 ? (
+              {filteredLeaderRows.length === 0 ? (
                 <p className="text-sm text-ash">No tournament data yet.</p>
               ) : (
                 <ul className="space-y-1 text-sm text-bone">
-                  {leaderRows.slice(0, 8).map((r, i) => (
+                  {filteredLeaderRows.slice(0, 8).map((r, i) => (
                     <li key={i} className="flex justify-between gap-2">
                       <span className="truncate font-mono text-xs">
                         {r.bucket} · {r.model}
@@ -207,11 +245,11 @@ export default function Cortex() {
               <div className="mb-2 font-mono text-[11px] uppercase text-ash">
                 Reusable skills
               </div>
-              {skillCount === 0 ? (
+              {filteredSkillRows.length === 0 ? (
                 <p className="text-sm text-ash">No learned skills yet.</p>
               ) : (
                 <ul className="space-y-2 text-sm text-bone">
-                  {skillRows.slice(0, 8).map((skill) => (
+                  {filteredSkillRows.slice(0, 8).map((skill) => (
                     <li key={skill.slug || skill.title}>
                       <div className="flex justify-between gap-2">
                         <span className="truncate font-mono text-xs">
@@ -234,11 +272,11 @@ export default function Cortex() {
               <div className="mb-2 font-mono text-[11px] uppercase text-ash">
                 Applied tuning
               </div>
-              {tuningRows.length === 0 ? (
+              {filteredTuningRows.length === 0 ? (
                 <p className="text-sm text-ash">No tuning overrides.</p>
               ) : (
                 <ul className="space-y-1 text-sm text-bone">
-                  {tuningRows.map(([k, v]) => (
+                  {filteredTuningRows.map(([k, v]) => (
                     <li key={k} className="flex justify-between gap-2">
                       <span className="font-mono text-xs">{k}</span>
                       <span className="text-ash">{String(v)}</span>
@@ -252,11 +290,11 @@ export default function Cortex() {
               <div className="mb-2 font-mono text-[11px] uppercase text-ash">
                 Evolved instructions
               </div>
-              {promptRows.length === 0 ? (
+              {filteredPromptRows.length === 0 ? (
                 <p className="text-sm text-ash">No prompt overrides.</p>
               ) : (
                 <ul className="space-y-2 text-sm text-bone">
-                  {promptRows.map(([agent, instr]) => (
+                  {filteredPromptRows.map(([agent, instr]) => (
                     <li key={agent}>
                       <Pill tone="ash">{agent}</Pill>
                       <p className="mt-1 max-w-xs truncate font-sans text-xs text-ash">

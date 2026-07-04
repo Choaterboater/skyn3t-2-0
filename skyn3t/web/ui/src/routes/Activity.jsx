@@ -33,6 +33,53 @@ function eventKey(e, i) {
   return e.id || `${e.timestamp}-${e.type}-${i}`;
 }
 
+function compact(value, max = 120) {
+  const s = String(value || "").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+function eventSummary(e) {
+  const p = e.payload || {};
+  switch (e.type) {
+    case "build.started":
+      return compact(`Build started: ${p.slug || p.build_id || ""} ${p.stack ? `(${p.stack})` : ""}`);
+    case "build.completed":
+      return compact(`Build ${p.status || "completed"}: ${p.slug || p.build_id || ""} · ${p.verdict || "no verdict"} · score ${p.score ?? "—"}`);
+    case "build.failed":
+      return compact(`Build failed: ${p.slug || p.build_id || ""} · ${p.error || p.reason || "unknown error"}`);
+    case "build.stage.started":
+      return compact(`Stage started: ${p.stage || ""} ${p.agent ? `· ${p.agent}` : ""}`);
+    case "build.stage.completed":
+      return compact(`Stage completed: ${p.stage || ""} · score ${p.score ?? "—"}${p.gaps ? ` · gaps ${Array.isArray(p.gaps) ? p.gaps.length : p.gaps}` : ""}`);
+    case "improve.started":
+      return compact(`Improve started: ${p.slug || ""} · ${p.goal || ""}`);
+    case "improve.completed":
+      return compact(`Improve completed: ${(p.files_changed || []).length} file(s) · score ${p.score ?? "—"} · ${p.proof_passed ? "go" : "no_go"}`);
+    case "improve.failed":
+      return compact(`Improve failed: ${p.slug || ""} · ${p.error || "unknown error"}`);
+    case "serve.started":
+      return compact(`Preview started: ${p.slug || ""} · ${p.url || ""}`);
+    case "serve.stopped":
+      return compact(`Preview stopped: ${p.slug || ""}`);
+    case "proposal.created":
+      return compact(`Proposal: ${p.title || p.summary || p.kind || ""}`);
+    case "proposal.decided":
+      return compact(`Decision: ${p.kind || "proposal"} · ${p.status || (p.approved ? "approved" : "rejected")} ${p.reason ? `· ${p.reason}` : ""}`);
+    default:
+      return compact(p.summary || p.title || p.reason || p.error || p.stage || p.slug || p.build_id || "");
+  }
+}
+
+function searchableEventText(e) {
+  return [
+    e.type,
+    e.source,
+    e.correlation_id,
+    eventSummary(e),
+    JSON.stringify(e.payload || {}),
+  ].join(" ").toLowerCase();
+}
+
 export default function Activity({ stream }) {
   const [filter, setFilter] = useState("");
   const [mode, setMode] = useState("live");
@@ -50,12 +97,7 @@ export default function Activity({ stream }) {
   const replayView = [...replayEvents].reverse();
   const events = mode === "replay" ? replayView : liveEvents;
   const filtered = filter
-    ? events.filter(
-        (e) =>
-          (e.type || "").toLowerCase().includes(filter.toLowerCase()) ||
-          (e.source || "").toLowerCase().includes(filter.toLowerCase()) ||
-          (e.correlation_id || "").toLowerCase().includes(filter.toLowerCase())
-      )
+    ? events.filter((e) => searchableEventText(e).includes(filter.toLowerCase()))
     : events;
 
   async function loadReplay(overrides = {}) {
@@ -209,6 +251,7 @@ export default function Activity({ stream }) {
                 <tr className="border-b border-hairline">
                   <th className="eyebrow px-4 py-3 font-normal">Time</th>
                   <th className="eyebrow px-4 py-3 font-normal">Type</th>
+                  <th className="eyebrow px-4 py-3 font-normal">Summary</th>
                   <th className="eyebrow px-4 py-3 font-normal">Source</th>
                   <th className="eyebrow px-4 py-3 font-normal">Correlation</th>
                 </tr>
@@ -225,6 +268,9 @@ export default function Activity({ stream }) {
                     </td>
                     <td className={`px-4 py-1.5 ${TYPE_COLOR(e.type)}`}>
                       {e.type}
+                    </td>
+                    <td className="max-w-[420px] truncate px-4 py-1.5 font-sans text-xs text-bone">
+                      {eventSummary(e)}
                     </td>
                     <td className="px-4 py-1.5 text-ash">{e.source}</td>
                     <td className="max-w-[180px] truncate px-4 py-1.5 text-ash/70">

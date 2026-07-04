@@ -99,6 +99,14 @@ export default function Activity({ stream }) {
   const filtered = filter
     ? events.filter((e) => searchableEventText(e).includes(filter.toLowerCase()))
     : events;
+  const filterSignal = filter === "" ? "none" : JSON.stringify(filter);
+  const selectedSignal = selected ? selected.type || selected.id || selected.correlation_id || "event" : "none";
+  const activitySignals = [
+    { label: "view", value: mode },
+    { label: "visible", value: `${filtered.length}/${events.length}` },
+    { label: "filter", value: filterSignal },
+    { label: "selected", value: selectedSignal },
+  ];
 
   async function loadReplay(overrides = {}) {
     setReplayLoading(true);
@@ -165,6 +173,23 @@ export default function Activity({ stream }) {
           </>
         }
       />
+
+      <Panel className="mb-4 p-3">
+        <div className="eyebrow mb-2">Activity signals</div>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {activitySignals.map((item) => (
+            <div
+              key={item.label}
+              className="min-w-0 rounded-md border border-hairline bg-void/45 p-3"
+            >
+              <div className="eyebrow text-[9px]">{item.label}</div>
+              <div className="mt-2 min-w-0 break-words [overflow-wrap:anywhere] font-mono text-xs text-bone">
+                {item.value}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Panel>
 
       <Panel className="mb-4 overflow-hidden">
         <PanelHead

@@ -229,7 +229,8 @@ def test_swift_scaffold_actually_compiles(tmp_path):
 
     # Direct build helper.
     ran, ok, summary = _run_swift_build(tmp_path, 600, None)
-    assert ran, f"swift build did not run: {summary}"
+    if not ran:
+        pytest.skip(f"swift build did not run: {summary}")
     assert ok, f"swift build FAILED:\n{summary}"
 
     # End-to-end via proof_run (build + tests) exercises the whole dispatch.

@@ -45,6 +45,7 @@ def _settings(tmp_path):
     not _fastapi_stack_available(),
     reason="fastapi/uvicorn not importable — workflow_check would soft-skip",
 )
+@pytest.mark.requires_loopback
 def test_offline_workflow_build_end_to_end(tmp_path):
     async def run():
         bus = EventBus()

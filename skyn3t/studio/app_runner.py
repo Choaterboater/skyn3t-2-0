@@ -264,7 +264,9 @@ def resolve_serve_secrets(
 def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None = None) -> RunSpec | None:
     """Map a project to a run command by inspecting its contents. None = no web preview."""
     pdir = Path(project_dir)
-    port = port if port is not None else free_port()
+
+    def _port() -> int:
+        return port if port is not None else free_port()
 
     # Narrow secret passthrough: resolve ONLY the secrets the app declared it
     # needs (explicit env refs + SDK deps) from the host env / SkyN3t store. Every
@@ -293,26 +295,29 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
             scripts = {}
         script = "dev" if "dev" in scripts else ("start" if "start" in scripts else None)
         if script:
+            run_port = _port()
             npm = shutil.which("npm") or "npm"
             # _serve_env: scrub host secrets (same trust boundary as sandboxed
             # agents) EXCEPT the ones this app declared it needs (narrow passthrough).
-            env = _serve_env({"PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none"})
+            env = _serve_env({"PORT": str(run_port), "HOST": "127.0.0.1", "BROWSER": "none"})
             # Next.js' CLI rejects the unknown `--host` flag (it uses `--hostname`)
             # and exits, which would kill the preview — use the right flag per server.
             host_flag = "--hostname" if "next" in (scripts.get(script) or "") else "--host"
-            return RunSpec([npm, "run", script, "--", "--port", str(port), host_flag, "127.0.0.1"],
-                           str(pdir), env, "node", port,
+            return RunSpec([npm, "run", script, "--", "--port", str(run_port), host_flag, "127.0.0.1"],
+                           str(pdir), env, "node", run_port,
                            injected=injected, missing_secrets=missing_t)
 
     entry = next((f for f in _PY_ENTRYPOINTS if (pdir / f).exists()), None)
     if entry and _is_python_web(pdir):
-        env = _serve_env({"PORT": str(port), "HOST": "127.0.0.1"})
-        return RunSpec([_python_bin(pdir), entry], str(pdir), env, "python_web", port,
+        run_port = _port()
+        env = _serve_env({"PORT": str(run_port), "HOST": "127.0.0.1"})
+        return RunSpec([_python_bin(pdir), entry], str(pdir), env, "python_web", run_port,
                        injected=injected, missing_secrets=missing_t)
 
     if (pdir / "index.html").exists():
-        return RunSpec([_python_bin(pdir), "-m", "http.server", str(port), "--bind", "127.0.0.1"],
-                       str(pdir), _serve_env(), "static", port,
+        run_port = _port()
+        return RunSpec([_python_bin(pdir), "-m", "http.server", str(run_port), "--bind", "127.0.0.1"],
+                       str(pdir), _serve_env(), "static", run_port,
                        injected=injected, missing_secrets=missing_t)
 
     return None

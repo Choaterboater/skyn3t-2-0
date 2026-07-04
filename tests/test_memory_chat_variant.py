@@ -96,6 +96,7 @@ def _fastapi_stack_available() -> bool:
     not _fastapi_stack_available(),
     reason="fastapi/uvicorn not importable in this env",
 )
+@pytest.mark.requires_loopback
 def test_facts_survive_a_real_process_restart(tmp_path):
     # The spec's §3.10 proof, live: turn 1 states a fact, the PROCESS is
     # killed, a fresh process on the same directory answers turn 2 from the

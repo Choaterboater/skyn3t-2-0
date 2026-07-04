@@ -168,6 +168,7 @@ def test_browser_verify_degrades_without_playwright() -> None:
 
 
 # ---- DeployAgent static path (always available) -------------------------
+@pytest.mark.requires_loopback
 def test_deploy_static_serves(tmp_path: Path) -> None:
     (tmp_path / "index.html").write_text("<html><body>hello skyn3t</body></html>")
     agent = DeployAgent(event_bus=None)

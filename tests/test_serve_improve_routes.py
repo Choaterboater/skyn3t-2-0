@@ -73,6 +73,7 @@ class _FailRunner:
 # serve
 # --------------------------------------------------------------------------
 
+@pytest.mark.requires_loopback
 def test_serve_static_then_stop_registers_and_cleans_up(tmp_path):
     state = _state(tmp_path)
     _static_project(state, "alpha")
@@ -122,6 +123,7 @@ def test_serve_rejects_traversal(tmp_path):
         asyncio.run(serve_project(state, "../etc"))
 
 
+@pytest.mark.requires_loopback
 def test_serve_status_lists_running(tmp_path):
     state = _state(tmp_path)
     _static_project(state, "beta")
@@ -134,6 +136,7 @@ def test_serve_status_lists_running(tmp_path):
         asyncio.run(stop_serve(state, "beta"))
 
 
+@pytest.mark.requires_loopback
 def test_serve_same_slug_replaces_previous(tmp_path):
     state = _state(tmp_path)
     _static_project(state, "gamma")
@@ -153,6 +156,7 @@ def test_stop_unknown_slug_is_noop(tmp_path):
     assert out["stopped"] is False
 
 
+@pytest.mark.requires_loopback
 def test_concurrent_serves_same_slug_no_leak(tmp_path):
     # Two serves of one slug racing across the `await start` suspension must not
     # leak a started process: exactly one survivor registered, the loser's port
@@ -176,6 +180,7 @@ def test_concurrent_serves_same_slug_no_leak(tmp_path):
         asyncio.run(stop_serve(state, "race"))
 
 
+@pytest.mark.requires_loopback
 def test_serve_then_concurrent_stop_is_consistent(tmp_path):
     # A stop racing an in-flight start must not be silently lost: the end state
     # is either cleanly stopped or cleanly running — never an orphan port that

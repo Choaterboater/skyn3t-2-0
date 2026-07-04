@@ -78,6 +78,23 @@ _SERVICE_RULES: tuple[tuple[re.Pattern[str], str, str, str], ...] = (
 )
 # Generic "the app calls an API / needs an API key" with no named service.
 _GENERIC_API = re.compile(r"\bapi key\b|\bapi token\b|\bthird[- ]party api\b|\bexternal api\b|\bcalls? (an|the|a) .{0,20}api\b")
+_CLIENT_PREFIXES = ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_")
+
+
+def _client_prefix_for(stack: str) -> str:
+    """Browser env prefix preferred by the selected client stack."""
+    stack_name = (stack or "").strip().lower()
+    return "NEXT_PUBLIC_" if stack_name in ("next", "nextjs") else "VITE_"
+
+
+def _normalize_client_key_name(name: str, stack: str) -> str:
+    """Normalize safe browser config names to the selected stack's convention."""
+    prefix = _client_prefix_for(stack)
+    if not name.startswith(_CLIENT_PREFIXES):
+        return f"{prefix}{name}"
+    if prefix == "NEXT_PUBLIC_" and name.startswith("VITE_"):
+        return f"NEXT_PUBLIC_{name.removeprefix('VITE_')}"
+    return name
 
 
 def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
@@ -95,11 +112,8 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
             scope = "server"
         else:
             scope = "client" if client_stack else "server"
-        if scope == "client" and not any(
-            name.startswith(p) for p in ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_")
-        ):
-            prefix = "NEXT_PUBLIC_" if stack_name in ("next", "nextjs") else "VITE_"
-            name = f"{prefix}{name}"
+        if scope == "client":
+            name = _normalize_client_key_name(name, stack)
         keys.setdefault(name, ConfigKey(name=name, kind=kind, scope=scope, description=label))
         if label not in apis and kind in ("api_key", "url"):
             apis.append(label)
@@ -145,9 +159,17 @@ _PROMPT = (
     "\"api_key|url|secret|toggle|value\", \"scope\": \"client|server\", "
     "\"description\": \"...\", \"required\": true}}], \"apis\": [\"service name\"]}}. "
     "Use client scope only for values safe to expose in a browser bundle (prefix "
-    "those names with VITE_). If the app needs no external configuration, return "
-    "empty lists."
+    "those names with {client_prefix}). If the app needs no external configuration, "
+    "return empty lists."
 )
+
+
+def _prompt_for(brief: str, stack: str) -> str:
+    return _PROMPT.format(
+        brief=brief or "",
+        stack=stack or "",
+        client_prefix=_client_prefix_for(stack),
+    )
 
 
 def _parse_llm(raw: str) -> ConfigSpec | None:
@@ -165,6 +187,23 @@ def _parse_llm(raw: str) -> ConfigSpec | None:
         return None
 
 
+def _normalize_spec(spec: ConfigSpec, stack: str) -> ConfigSpec:
+    keys: list[ConfigKey] = []
+    for k in spec.keys:
+        if k.scope == "client":
+            keys.append(ConfigKey(
+                name=_normalize_client_key_name(k.name, stack),
+                kind=k.kind,
+                description=k.description,
+                scope=k.scope,
+                required=k.required,
+                default=k.default,
+            ))
+        else:
+            keys.append(k)
+    return ConfigSpec(keys=keys, apis=list(spec.apis))
+
+
 def detect_from_brief(brief: str, stack: str = "", *, llm_fn: LLMFn | None = None) -> ConfigSpec:
     """Predict required config from the brief. LLM when wired, else keyword heuristic.
 
@@ -172,11 +211,11 @@ def detect_from_brief(brief: str, stack: str = "", *, llm_fn: LLMFn | None = Non
     detector, so detection degrades but never breaks the build."""
     if llm_fn is not None:
         try:
-            spec = _parse_llm(llm_fn(_PROMPT.format(brief=brief or "", stack=stack or "")))
+            spec = _parse_llm(llm_fn(_prompt_for(brief, stack)))
         except Exception:  # noqa: BLE001 - any model/transport failure -> fallback
             spec = None
         if spec is not None and not spec.is_empty():
-            return spec
+            return _normalize_spec(spec, stack)
     return _keyword_detect(brief, stack)
 
 

@@ -1,12 +1,13 @@
 """Offline structural tests for the web_ui dashboard source.
 
-These tests never touch the network and need no node/npm or heavy Python deps.
-They assert the Vite + React source tree is present and internally consistent so
-the package degrades to a known-good, buildable state.
+These tests never touch the network and avoid heavy Python deps. Most assertions
+are source-structural; the Workspace activity helper is checked with local Node
+because it is a pure JavaScript predicate used by the React route.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 
 from skyn3t.config.settings import REPO_ROOT
 
@@ -87,6 +88,8 @@ def test_app_imports_every_route() -> None:
         "Overview",
         "Agents",
         "Studio",
+        "Projects",
+        "Workspace",
         "Cortex",
         "Brain",
         "Skills",
@@ -173,10 +176,40 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
 def test_workspace_surfaces_selected_project_signals() -> None:
     workspace = (ROUTES / "Workspace.jsx").read_text()
     assert "SignalGrid" in workspace
+    assert "countWorkspaceActivity" in workspace
+    assert "workspaceEventMatches" in workspace
     assert "const workspaceSignals =" in workspace
     assert "Workspace signals" in workspace
     assert 'label: "selected"' in workspace
     assert 'label: "activity"' in workspace
+
+
+def test_workspace_activity_helper_counts_correlation_matched_events() -> None:
+    helper = SRC / "workspaceSignals.js"
+    script = f"""
+      import {{ countWorkspaceActivity, workspaceEventMatches }} from {json.dumps(helper.as_uri())};
+      const cids = new Set(["cid-1"]);
+      const events = [
+        {{ type: "serve.started", payload: {{ slug: "project-slug" }} }},
+        {{ type: "improve.stage", payload: {{ slug: "manifest-slug" }}, correlation_id: "cid-1" }},
+        {{ type: "improve.stage", payload: {{ slug: "other" }}, correlation_id: "cid-2" }},
+        {{ type: "build.started", payload: {{ slug: "project-slug" }} }},
+      ];
+      if (!workspaceEventMatches(events[1], "project-slug", cids)) {{
+        throw new Error("expected correlation id match");
+      }}
+      const count = countWorkspaceActivity(events, "project-slug", cids);
+      if (count !== 2) {{
+        throw new Error(`expected 2 matched events, got ${{count}}`);
+      }}
+    """
+    subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=UI_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_cortex_effects_surface_reusable_skills() -> None:

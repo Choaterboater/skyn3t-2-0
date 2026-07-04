@@ -78,6 +78,24 @@ def test_spa_fallback_reloads_index_after_frontend_rebuild(tmp_path, monkeypatch
     assert "/assets/new.js" in local_client.get("/agents").text
 
 
+def test_spa_fallback_rejects_encoded_traversal(tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><div id='root'></div>", encoding="utf-8")
+    outside = tmp_path / "package.json"
+    outside.write_text('{"private": true}', encoding="utf-8")
+    monkeypatch.setattr(web_app, "UI_DIST_DIR", dist)
+
+    app = web_app.create_app(state=AppState(settings=Settings(llm_backend="stub")))
+    local_client = TestClient(app)
+
+    response = local_client.get("/%2e%2e/package.json")
+
+    assert response.status_code == 404
+    assert "private" not in response.text
+
+
 def test_spa_cortex_decide_alias(client):
     r = client.post("/api/cortex/proposals/none/decide", json={"decision": "reject"})
     assert r.status_code == 200

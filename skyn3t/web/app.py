@@ -163,8 +163,11 @@ def create_app(
             # Real 404s for unknown API/WS paths (don't mask them as the SPA).
             if full_path.startswith(("api/", "api", "ws")):
                 raise HTTPException(status_code=404, detail="not found")
-            candidate = UI_DIST_DIR / full_path
-            if full_path and candidate.is_file() and candidate.is_relative_to(UI_DIST_DIR):
+            root = UI_DIST_DIR.resolve()
+            candidate = (root / full_path).resolve()
+            if full_path and not candidate.is_relative_to(root):
+                raise HTTPException(status_code=404, detail="not found")
+            if full_path and candidate.is_file():
                 return FileResponse(str(candidate))
             return HTMLResponse(
                 index_html.read_text(),

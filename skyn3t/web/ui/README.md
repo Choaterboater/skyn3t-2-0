@@ -28,7 +28,7 @@ In dev, `/api/*` and `/ws` are proxied to the backend. Point the proxy at a
 non-default host with:
 
 ```bash
-SKYN3T_API=http://127.0.0.1:8000 npm run dev
+SKYN3T_API=http://127.0.0.1:6660 npm run dev
 ```
 
 ## Endpoints consumed

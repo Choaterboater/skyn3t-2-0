@@ -81,6 +81,12 @@ def test_data_directive_absent_for_game_stack() -> None:
     assert "password123" not in p.lower()
 
 
+def test_config_directive_names_nextjs_client_prefix() -> None:
+    p = _agent()._agentic_prompt("a weather dashboard", "nextjs", {"files": []}, "K ")
+    assert "Next.js client config" in p
+    assert "NEXT_PUBLIC_*" in p
+
+
 # --- A4: dry-run-by-default agent-app safety contract -------------------------
 
 def test_agent_app_directive_injected_when_brief_implies_automation() -> None:

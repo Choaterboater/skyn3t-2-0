@@ -100,10 +100,12 @@ _DESIGN_DIRECTIVE = (
 # wire it to a generated Settings screen.
 _CONFIG_DIRECTIVE = (
     "CONFIGURATION: never hardcode API keys, tokens, secrets or external endpoint "
-    "URLs. Read them from configuration — `import.meta.env.VITE_*` / `process.env.*` "
-    "for web/Node, `os.getenv(...)` for Python — with a sensible fallback. For a "
-    "web UI that needs user-supplied values (e.g. an API key), expose them via a "
-    "config module and a Settings screen the user can fill in, not literals in code."
+    "URLs. Read them from configuration — Vite/browser client config uses "
+    "`import.meta.env.VITE_*`; Next.js client config uses `process.env.NEXT_PUBLIC_*`; "
+    "server-side Node config uses unprefixed `process.env.*`; Python uses "
+    "`os.getenv(...)` — with a sensible fallback. For a web UI that needs "
+    "user-supplied values (e.g. an API key), expose them via a config module and "
+    "a Settings screen the user can fill in, not literals in code."
 )
 # Cheap, broadly-available default for generated apps. Overridable per-app via the
 # OPENROUTER_MODEL env var; intentionally NOT a Claude model (cost) or a :free id

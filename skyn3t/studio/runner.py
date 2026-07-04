@@ -985,6 +985,15 @@ class StudioRunner:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
 
+    @staticmethod
+    def _visual_self_heal_requested(settings, extra: dict[str, Any]) -> bool:
+        return bool(
+            extra.get(
+                "visual_self_heal",
+                getattr(settings, "visual_self_heal", False),
+            )
+        )
+
     async def _run_visual_self_heal(
         self,
         manifest,
@@ -3421,8 +3430,11 @@ class StudioRunner:
 
             # Opt-in rendered-UI self-heal: serve the built UI, screenshot + judge it
             # against the original brief, repair with the improver, then re-proof if
-            # files changed so a visual repair cannot silently break the build.
-            if bool(getattr(self.settings, "visual_self_heal", False)):
+            # files changed so a visual repair cannot silently break the build. The
+            # web build profiles may request this for a single high-quality build
+            # without turning the global setting on for every cheap/fast build.
+            visual_self_heal_enabled = self._visual_self_heal_requested(self.settings, extra)
+            if visual_self_heal_enabled:
                 visual_changed = await self._run_visual_self_heal(
                     manifest, project_dir, plan, correlation_id)
                 visual_data = manifest.extra.get("visual_self_heal")

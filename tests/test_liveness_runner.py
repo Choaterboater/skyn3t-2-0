@@ -117,6 +117,18 @@ def test_visual_self_heal_records_skip_for_non_ui_stack(tmp_path):
     assert "rendered UI" in man.extra["visual_self_heal"]["reason"]
 
 
+def test_visual_self_heal_requested_honors_per_build_override(tmp_path):
+    r = _runner(tmp_path, visual_self_heal=False)
+    assert r._visual_self_heal_requested(r.settings, {}) is False
+    assert r._visual_self_heal_requested(r.settings, {"visual_self_heal": True}) is True
+
+    globally_enabled = _runner(tmp_path, visual_self_heal=True)
+    assert globally_enabled._visual_self_heal_requested(globally_enabled.settings, {}) is True
+    assert globally_enabled._visual_self_heal_requested(
+        globally_enabled.settings, {"visual_self_heal": False}
+    ) is False
+
+
 def test_visual_self_heal_records_result_and_refreshes_files(tmp_path, monkeypatch):
     async def fake_loop(project_dir, goal, **kw):
         assert goal == "a polished landing page"

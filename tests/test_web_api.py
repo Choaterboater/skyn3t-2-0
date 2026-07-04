@@ -127,6 +127,24 @@ async def test_submit_and_list_builds():
     assert any(b["build_id"] == res["build_id"] for b in listed["builds"])
 
 
+async def test_best_quality_profile_requests_visual_self_heal():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    res = await routes.submit_build(st, brief="a polished golf website", build_profile="best_quality")
+
+    assert res["build_profile"] == "best_quality"
+    assert studio.extra["best_of_n"] == 2
+    assert studio.extra["best_of_n_across_models"] is True
+    assert studio.extra["visual_self_heal"] is True
+
+
 async def test_settings_payload_surfaces_learned_router_flags():
     st = _state()
     st.settings.auto_route = True

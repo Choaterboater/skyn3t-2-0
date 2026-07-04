@@ -271,6 +271,7 @@ def _profile_extra(profile: str) -> dict[str, Any]:
             "best_of_n": 2,
             "best_of_n_across_models": True,
             "max_debug_attempts": 3,
+            "visual_self_heal": True,
         }
     return {}
 

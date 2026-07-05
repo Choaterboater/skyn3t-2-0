@@ -175,9 +175,15 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
     return out
 
 
-# The advisory end-of-build gates whose verdicts share the same to_dict shape
+# Gates whose verdicts share the same to_dict shape
 # ({"skipped": bool, "issues": [str, ...], ...}) under these manifest.extra keys.
-_GATE_VERDICT_KEYS = ("seo", "mcp_check", "rag_check")
+_GATE_VERDICT_KEYS = (
+    "seo",
+    "mcp_check",
+    "rag_check",
+    "finance_sanity",
+    "workflow_depth",
+)
 _HARD_GATE_KEYS = (
     "verifier_gate",
     "critic_gate",

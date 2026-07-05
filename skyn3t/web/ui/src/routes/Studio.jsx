@@ -187,6 +187,33 @@ function buildDiagnostics(build) {
   if (scorecard.build && scorecard.build !== "passed") {
     issues.push(`build ${scorecard.build}`);
   }
+  const financeSanity = scorecard.finance_sanity || {};
+  if (financeSanity.ok === false) {
+    const financeIssue = Array.isArray(financeSanity.issues)
+      ? String(financeSanity.issues[0] || "").trim()
+      : "";
+    issues.push(
+      financeIssue ? `finance sanity: ${financeIssue}` : "finance sanity failed"
+    );
+  }
+  const workflowDepth = scorecard.workflow_depth || {};
+  if (workflowDepth.ok === false) {
+    const missingWorkflow = Array.isArray(workflowDepth.missing)
+      ? workflowDepth.missing
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, 2)
+      : [];
+    const workflowIssue = Array.isArray(workflowDepth.issues)
+      ? String(workflowDepth.issues[0] || "").trim()
+      : "";
+    const workflowMessage = missingWorkflow.length
+      ? `workflow depth: missing ${missingWorkflow.join(", ")}`
+      : workflowIssue
+        ? `workflow depth: ${workflowIssue}`
+        : "workflow depth failed";
+    issues.push(workflowMessage);
+  }
   if (build.status === "failed") issues.push("failed");
   if (skills === 0) issues.push("skills 0");
   if (recall === 0) issues.push("recall 0");

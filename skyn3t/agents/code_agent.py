@@ -561,6 +561,7 @@ class CodeAgent(BaseAgent):
         # The runner-threaded GDD (LLM-tailored or the deterministic floor); the
         # depth directive uses it so a retry keeps the SAME design the run committed.
         _game_design = _extra.get("game_design") if isinstance(_extra, dict) else None
+        _asset_foundry = _extra.get("asset_foundry") if isinstance(_extra, dict) else None
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         raw_prior = p.get("prior")
@@ -633,12 +634,12 @@ class CodeAgent(BaseAgent):
                     self._agentic_prompt(
                         brief, stack, plan, knowledge,
                         art_plan=_art_plan, game_design=_game_design,
-                        design=design)
+                        asset_foundry=_asset_foundry, design=design)
                     if attempt == 0
                     else self._agentic_retry_prompt(
                         brief, stack, plan, knowledge, code_bytes,
                         art_plan=_art_plan, game_design=_game_design,
-                        design=design)
+                        asset_foundry=_asset_foundry, design=design)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
@@ -806,6 +807,7 @@ class CodeAgent(BaseAgent):
     def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
                         *, art_plan: dict[str, Any] | None = None,
                         game_design: dict[str, Any] | None = None,
+                        asset_foundry: dict[str, Any] | None = None,
                         design: dict[str, Any] | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
@@ -853,7 +855,10 @@ class CodeAgent(BaseAgent):
                 if self._design_summary(design) and (stack or "").lower() in _WEB_STACKS
                 else ""
             )
-            + (f"{self._game_art_directive(brief, art_plan)}\n" if self._game_art_on(stack) else "")
+            + (
+                f"{self._game_art_directive(brief, art_plan, asset_foundry)}\n"
+                if self._game_art_on(stack) else ""
+            )
             + (f"{_DATA_DIRECTIVE}\n" if (stack or "").lower() in _DATA_STACKS else "")
             + (f"{_AGENT_APP_DIRECTIVE}\n" if _implies_agent_app(brief) else "")
             + f"{_FULL_FILE_CONTRACT}\n"
@@ -875,7 +880,11 @@ class CodeAgent(BaseAgent):
         return bool(getattr(get_settings(), "game_art_enabled", True))
 
     @staticmethod
-    def _game_art_directive(brief: str, art_plan: dict[str, Any] | None = None) -> str:
+    def _game_art_directive(
+        brief: str,
+        art_plan: dict[str, Any] | None = None,
+        asset_foundry: dict[str, Any] | None = None,
+    ) -> str:
         """Genre-aware game-art directive. Uses the runner-threaded ``art_plan`` when
         present (so codegen lists the SAME roles the sprite generator produced — the
         alignment guarantee for a non-deterministic LLM plan), else derives the plan
@@ -888,6 +897,21 @@ class CodeAgent(BaseAgent):
         palette = " ".join(plan.palette)
         sprites = plan.sprite_roles()
         prims = plan.primitive_roles()
+        foundry_paths: list[str] = []
+        if isinstance(asset_foundry, dict):
+            selected = asset_foundry.get("selected")
+            if isinstance(selected, dict):
+                for entry in selected.values():
+                    if isinstance(entry, dict) and entry.get("path"):
+                        foundry_paths.append(str(entry["path"]))
+        foundry_clause = ""
+        if foundry_paths:
+            foundry_clause = (
+                "ASSET FOUNDRY — exact served paths already selected for this build: "
+                + ", ".join(sorted(dict.fromkeys(foundry_paths)))
+                + ". Load and reference ONLY these exact paths; do not invent extra "
+                "sprite/audio files outside the manifest.\n"
+            )
 
         if plan.open_ended:
             # A game the genre table doesn't recognize: don't pin a role list — give
@@ -964,6 +988,7 @@ class CodeAgent(BaseAgent):
         return (
             f"GAME ART — genre '{plan.genre}'. Use this EXACT shared palette (hex): "
             f"{palette}.\n"
+            f"{foundry_clause}"
             f"SPRITE ROLES — {sprite_list}: in preload() load EACH via "
             "`this.load.image('<role>', '/assets/sprites/<role>.png')` — these PNG "
             "files ALREADY EXIST at build time and ARE the game's real art. Do NOT "
@@ -1227,6 +1252,7 @@ class CodeAgent(BaseAgent):
         self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
         code_bytes: int, *, art_plan: dict[str, Any] | None = None,
         game_design: dict[str, Any] | None = None,
+        asset_foundry: dict[str, Any] | None = None,
         design: dict[str, Any] | None = None,
     ) -> str:
         """Corrective prompt for a retry after the agent under-delivered. Threads the
@@ -1243,7 +1269,8 @@ class CodeAgent(BaseAgent):
             "fully-working app as possible.\n\n"
             + self._agentic_prompt(
                 brief, stack, plan, knowledge, art_plan=art_plan,
-                game_design=game_design, design=design)
+                game_design=game_design, asset_foundry=asset_foundry,
+                design=design)
         )
 
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps

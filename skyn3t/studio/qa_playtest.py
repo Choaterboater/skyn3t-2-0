@@ -36,6 +36,7 @@ from skyn3t.studio.visual_check import (
     _fit_viewport_to_canvas,
     _vision_locate_with_retry,
 )
+from skyn3t.studio.asset_foundry import check_asset_outputs
 
 # Where the build-time art tier writes generated role sprites (see game-art-tier #6).
 _SPRITE_DIR = "public/assets/sprites"
@@ -92,19 +93,29 @@ class QaPlaytestVerdict:
     console_errors: list[str] = field(default_factory=list)
     sprites_rendered: bool = True
     missing_sprite_roles: list[str] = field(default_factory=list)
+    missing_asset_paths: list[str] = field(default_factory=list)
+    missing_credit_assets: list[str] = field(default_factory=list)
     skipped: bool = False
     reason: str = ""
 
     @property
     def ok(self) -> bool:
         """A clean playthrough: served + driven, no uncaught error, sprites rendered."""
-        return (not self.skipped) and (not self.console_errors) and self.sprites_rendered
+        return (
+            (not self.skipped)
+            and (not self.console_errors)
+            and self.sprites_rendered
+            and (not self.missing_asset_paths)
+            and (not self.missing_credit_assets)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "console_errors": list(self.console_errors),
             "sprites_rendered": self.sprites_rendered,
             "missing_sprite_roles": list(self.missing_sprite_roles),
+            "missing_asset_paths": list(self.missing_asset_paths),
+            "missing_credit_assets": list(self.missing_credit_assets),
             "skipped": self.skipped,
             "reason": self.reason,
             "ok": self.ok,
@@ -137,6 +148,16 @@ class QaPlaytestVerdict:
                 "resolve to one of these exact strings). Load each in preload() first "
                 "(this.load.image('<role>', 'assets/sprites/<role>.png')) if not already; "
                 "textures.exists fallback to a primitive only if the file is truly absent."
+            )
+        if self.missing_asset_paths:
+            out.append(
+                "the asset manifests reference files that do not exist on disk: "
+                + ", ".join(self.missing_asset_paths)
+            )
+        if self.missing_credit_assets:
+            out.append(
+                "non-CC0 assets are missing attribution/credit entries: "
+                + ", ".join(self.missing_credit_assets)
             )
         return out
 
@@ -230,10 +251,13 @@ def build_verdict(console_errors: Any, project_dir: str | Path) -> QaPlaytestVer
     verdict. Console errors are deduped + capped. Never raises."""
     errs = _dedup_cap(console_errors)
     rendered, missing = check_sprites_rendered(project_dir)
+    asset_checks = check_asset_outputs(project_dir)
     return QaPlaytestVerdict(
         console_errors=errs,
         sprites_rendered=rendered,
         missing_sprite_roles=missing,
+        missing_asset_paths=list(asset_checks.get("missing_paths") or []),
+        missing_credit_assets=list(asset_checks.get("missing_credits") or []),
     )
 
 

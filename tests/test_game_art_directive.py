@@ -223,3 +223,14 @@ def test_sprite_directive_demands_distinct_powerup_sprites():
     assert "power-up variety" in low, "the power-up variety clause is present"
     assert "powerup_shield" in low and "powerup_rapid" in low, "distinct power-up roles named"
     assert "never draw every power-up with the same texture" in low
+
+
+def test_agentic_prompt_mentions_asset_foundry_paths():
+    prompt = _agent()._agentic_prompt(
+        "a platformer",
+        "phaser",
+        _plan(),
+        "",
+        asset_foundry={"selected": {"sprite/player/idle/down": {"path": "player/idle/down.png"}}},
+    )
+    assert "player/idle/down.png" in prompt

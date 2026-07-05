@@ -314,6 +314,14 @@ def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None
     assert "stages {ai.stageCount}" in studio
 
 
+def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "scorecard.finance_sanity" in studio
+    assert "scorecard.workflow_depth" in studio
+    assert "finance sanity:" in studio
+    assert "workflow depth:" in studio
+
+
 def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "function rebuildFields(build)" in studio

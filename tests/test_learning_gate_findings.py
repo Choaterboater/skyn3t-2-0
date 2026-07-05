@@ -81,6 +81,49 @@ def test_extract_hard_quality_gate_failures():
     assert all("\n" not in f and len(f) <= 190 for f in findings)
 
 
+def test_extract_product_quality_gate_failures_and_skips():
+    extra = {
+        "finance_sanity": {
+            "ok": False,
+            "skipped": False,
+            "issues": [
+                "cash must be non-negative",
+                "positions must be non-negative",
+                "portfolio totals must balance",
+                "ignored fourth finance issue",
+            ],
+        },
+        "workflow_depth": {
+            "ok": False,
+            "skipped": False,
+            "missing": ["audit_log"],
+            "issues": [
+                "audit_log: mentioned concept has no backing route/api/state",
+                "trade_history: mentioned concept has no backing route/api/state",
+                "risk_controls: mentioned concept has no backing route/api/state",
+                "ignored fourth workflow issue",
+            ],
+        },
+    }
+    findings = extract_gate_findings(extra)
+    joined = "\n".join(findings)
+    assert "finance_sanity: cash must be non-negative" in joined
+    assert "workflow_depth: audit_log: mentioned concept has no backing route/api/state" in joined
+    assert "ignored fourth finance issue" not in joined
+    assert "ignored fourth workflow issue" not in joined
+
+    skipped = {
+        "finance_sanity": {"ok": True, "skipped": True, "issues": ["ghost finance"]},
+        "workflow_depth": {
+            "ok": True,
+            "skipped": True,
+            "missing": ["ghost"],
+            "issues": ["ghost workflow"],
+        },
+    }
+    assert extract_gate_findings(skipped) == []
+
+
 def test_skipped_gate_contributes_nothing():
     # A degrade-open skip (gate could not run) must never mint an avoid-rule.
     findings = extract_gate_findings(_EXTRA)

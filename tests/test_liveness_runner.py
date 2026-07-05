@@ -154,3 +154,47 @@ def test_visual_self_heal_records_result_and_refreshes_files(tmp_path, monkeypat
     assert changed is True
     assert man.extra["visual_self_heal"]["passed"] is True
     assert "visual-fix.txt" in man.files
+
+
+def test_product_quality_gates_flip_finance_build_to_no_go(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="AI paper trading dashboard", stack="nextjs")
+    (tmp_path / "app" / "api" / "portfolio").mkdir(parents=True)
+    (tmp_path / "app" / "api" / "portfolio" / "route.js").write_text("export const GET = () => {}", encoding="utf-8")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "store.js").write_text(
+        "for (let d=0; d<30; d++) { Math.random(); createTrade({status: 'filled'}); }",
+        encoding="utf-8",
+    )
+
+    score, verdict = r._run_product_quality_gates(
+        man,
+        str(tmp_path),
+        SimpleNamespace(stack="nextjs", brief=man.brief),
+        91.0,
+        "go",
+    )
+
+    assert verdict == "no_go"
+    assert score == 49.0
+    assert man.extra["finance_sanity"]["ok"] is False
+    assert man.extra["workflow_depth"]["ok"] is False
+    assert "product_quality_gate" in man.extra
+
+
+def test_product_quality_gates_skip_non_finance_build(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="wedding photography website", stack="nextjs")
+
+    score, verdict = r._run_product_quality_gates(
+        man,
+        str(tmp_path),
+        SimpleNamespace(stack="nextjs", brief=man.brief),
+        88.0,
+        "go",
+    )
+
+    assert verdict == "go"
+    assert score == 88.0
+    assert man.extra["finance_sanity"]["skipped"] is True
+    assert man.extra["workflow_depth"]["skipped"] is True

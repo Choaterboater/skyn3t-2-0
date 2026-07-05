@@ -865,3 +865,18 @@ async def test_hub_channel_isolation():
     await bus.emit(EventType.PROPOSAL_CREATED, source="cortex", payload={"proposal_id": "x"})
     assert len(props.sent) == 1
     hub.close()
+
+
+def test_build_summary_exposes_product_quality_gates():
+    summary = build_summary({
+        "status": "completed_no_go",
+        "verdict": "no_go",
+        "extra": {
+            "finance_sanity": {"ok": False, "issues": ["cash must be non-negative"]},
+            "workflow_depth": {"ok": False, "missing": ["audit_log"]},
+        },
+    })
+
+    card = summary["quality_scorecard"]
+    assert card["finance_sanity"]["ok"] is False
+    assert card["workflow_depth"]["missing"] == ["audit_log"]

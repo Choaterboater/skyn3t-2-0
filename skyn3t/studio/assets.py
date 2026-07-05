@@ -415,16 +415,6 @@ async def generate_role_sprites(
     per-role generation failure OMITS that role (primitive fallback), so the result
     is never a gap and never crashes the build.
     """
-    decision = _role_art_source(settings)
-    if decision != "replicate":
-        return {"generated": 0, "skipped": True, "reason": decision,
-                "source": "offline", "role_map": {}}
-
-    cli = client or ReplicateClient(settings)
-    if not cli.available:
-        return {"generated": 0, "skipped": True, "reason": "no_token",
-                "source": "offline", "role_map": {}}
-
     # The art director decides, per genre, which roles are SPRITES vs styled
     # PRIMITIVES — we generate ONLY the sprite roles, so a geometric game (all
     # primitives) spends nothing and a themed game gets exactly its game-aware
@@ -434,6 +424,21 @@ async def generate_role_sprites(
     # it from the brief. The codegen directive plans from the SAME source, so the two
     # structurally agree on which roles get a sprite file.
     plan = art_plan or direct_art(brief)
+
+    decision = _role_art_source(settings)
+    if decision == "disabled":
+        return {"generated": 0, "skipped": True, "reason": "disabled",
+                "source": "offline", "role_map": {}}
+    if decision == "offline":
+        from skyn3t.studio.offline_sprites import write_offline_role_sprites
+
+        return write_offline_role_sprites(project_dir, plan)
+
+    cli = client or ReplicateClient(settings)
+    if not cli.available:
+        from skyn3t.studio.offline_sprites import write_offline_role_sprites
+
+        return write_offline_role_sprites(project_dir, plan)
     sprite_roles = plan.sprite_roles()
     sprites_dir = Path(project_dir) / "public" / "assets" / "sprites"
     try:

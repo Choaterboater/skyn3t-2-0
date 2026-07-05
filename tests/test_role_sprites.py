@@ -110,15 +110,28 @@ async def test_per_role_failure_omits_that_role_not_a_gap(tmp_path):
     assert not (tmp_path / "public/assets/sprites/coin.png").exists()
 
 
-async def test_offline_source_skips_generation(tmp_path):
+async def test_offline_source_writes_local_role_sprites(tmp_path):
+    brief = "a space shooter with aliens"
     client = _StubClient()
     res = await generate_role_sprites(
-        str(tmp_path), "a game", settings=_settings(game_art_source="offline"), client=client
+        str(tmp_path), brief, settings=_settings(game_art_source="offline"), client=client
     )
-    assert res["skipped"] is True
+    plan = direct_art(brief)
+    sprites = tmp_path / "public" / "assets" / "sprites"
+
+    assert res["skipped"] is False
     assert res["source"] == "offline"
-    assert res["role_map"] == {}
+    assert res["generated"] == len(plan.sprite_roles())
+    assert res["role_map"]
     assert client.prompts == []  # no predictions spent on the offline floor
+    for role in plan.sprite_roles():
+        path = sprites / f"{role}.png"
+        assert path.is_file()
+        assert path.read_bytes().startswith(_PNG[:8])
+        assert res["role_map"][role] == f"/assets/sprites/{role}.png"
+    manifest = json.loads((sprites / "assets.json").read_text())
+    assert manifest["source"] == "offline"
+    assert manifest["role_map"] == res["role_map"]
 
 
 async def test_disabled_skips(tmp_path):
@@ -130,12 +143,13 @@ async def test_disabled_skips(tmp_path):
     assert client.prompts == []
 
 
-async def test_auto_without_token_uses_offline(tmp_path):
+async def test_auto_without_token_uses_offline_assets(tmp_path):
     client = _StubClient()
     s = Settings(llm_backend="stub", game_art_source="auto", replicate_api_token="")
-    res = await generate_role_sprites(str(tmp_path), "a game", settings=s, client=client)
-    assert res["skipped"] is True
+    res = await generate_role_sprites(str(tmp_path), "a space shooter", settings=s, client=client)
     assert res["source"] == "offline"
+    assert res["generated"] > 0
+    assert res["role_map"]
     assert client.prompts == []
 
 
@@ -169,13 +183,15 @@ class _Manifest:
 
 
 async def test_runner_wires_role_sprites_for_game_stack(tmp_path):
-    # offline source -> no network; the wiring still records the (skipped) result,
+    # offline source -> no network; the wiring records real local role sprites,
     # proving _generate_assets invokes generate_role_sprites for a game stack.
     runner = _runner(game_art_source="offline")
     m = _Manifest()
     await runner._generate_assets(str(tmp_path), "a space game", m, {}, stack="phaser")
     assert "role_sprites" in m.extra
     assert m.extra["role_sprites"]["source"] == "offline"
+    assert m.extra["role_sprites"]["generated"] > 0
+    assert m.extra["role_sprites"]["role_map"]
 
 
 async def test_runner_skips_role_sprites_for_non_game_stack(tmp_path):

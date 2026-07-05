@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.studio.visual_check import (
@@ -10,6 +12,7 @@ from skyn3t.studio.visual_check import (
     _fit_viewport_to_canvas,
     inspect,
     playwright_available,
+    screenshot,
 )
 
 
@@ -66,6 +69,63 @@ def test_check_runs_vision_when_screenshot_succeeds(monkeypatch):
     v = asyncio.run(checker.check("http://127.0.0.1:9/", "make it blue",
                                   vision_fn=lambda i, p: '{"matches": true, "confidence": 1.0}'))
     assert v.matches and not v.skipped
+
+
+def test_screenshot_waits_for_client_hydration_before_capture(monkeypatch, tmp_path):
+    import skyn3t.studio.visual_check as vc
+
+    calls = []
+
+    class FakePage:
+        def goto(self, url, **kwargs):
+            calls.append(("goto", url, kwargs))
+
+        def wait_for_load_state(self, state, **kwargs):
+            calls.append(("wait_for_load_state", state, kwargs))
+
+        def wait_for_timeout(self, ms):
+            calls.append(("wait_for_timeout", ms))
+
+        def screenshot(self, **kwargs):
+            calls.append(("screenshot", kwargs))
+
+    class FakeBrowser:
+        def new_page(self):
+            return FakePage()
+
+        def close(self):
+            calls.append(("browser.close",))
+
+    class FakeChromium:
+        def launch(self):
+            calls.append(("chromium.launch",))
+            return FakeBrowser()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            calls.append(("playwright.exit",))
+
+    fake_api = types.ModuleType("playwright.sync_api")
+    fake_api.sync_playwright = lambda: FakePlaywright()
+    fake_pkg = types.ModuleType("playwright")
+    fake_pkg.sync_api = fake_api
+    monkeypatch.setitem(sys.modules, "playwright", fake_pkg)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_api)
+    monkeypatch.setattr(vc, "playwright_available", lambda: True)
+
+    out = tmp_path / "shot.png"
+    assert screenshot("http://example.test", str(out)) == str(out)
+    assert calls[0] == ("chromium.launch",)
+    assert calls[1][0] == "goto"
+    assert calls[2][0] == "wait_for_load_state"
+    assert calls[2][1] == "networkidle"
+    assert calls[3][0] == "wait_for_timeout"
+    assert calls[4][0] == "screenshot"
 
 
 # ── _fit_viewport_to_canvas (fake page, no browser) ────────────────────────────

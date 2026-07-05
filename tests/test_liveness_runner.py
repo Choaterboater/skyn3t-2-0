@@ -107,6 +107,24 @@ def test_liveness_never_crashes_the_build(tmp_path, monkeypatch):
     assert score == 80.0 and verdict == "go"  # degraded, build unaffected
 
 
+def test_liveness_repair_does_not_record_improve_history(tmp_path, monkeypatch):
+    captured = []
+
+    async def fake(*a, **k):
+        engine = k["improve_engine"]
+        captured.append(getattr(engine, "record_history", True))
+        return LivenessOutcome(skipped=True, reason="no live preview")
+
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+
+    asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 80.0, "go"))
+    assert captured == [False]
+
+
 def test_visual_self_heal_records_skip_for_non_ui_stack(tmp_path):
     r = _runner(tmp_path)
     man = BuildManifest(slug="x", brief="b", stack="python_cli")
@@ -115,6 +133,32 @@ def test_visual_self_heal_records_skip_for_non_ui_stack(tmp_path):
     assert changed is False
     assert man.extra["visual_self_heal"]["skipped"] is True
     assert "rendered UI" in man.extra["visual_self_heal"]["reason"]
+
+
+def test_visual_self_heal_repair_does_not_record_improve_history(tmp_path, monkeypatch):
+    captured = []
+
+    async def fake_loop(project_dir, goal, **kw):
+        engine = kw["improve_engine"]
+        captured.append(getattr(engine, "record_history", True))
+
+        class _Outcome:
+            def to_dict(self):
+                return {
+                    "passed": True,
+                    "skipped": False,
+                    "reason": "",
+                    "rounds": [{"index": 0, "improved": False}],
+                }
+
+        return _Outcome()
+
+    monkeypatch.setattr(runner_mod, "visual_self_improve", fake_loop)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="a polished dashboard", stack="nextjs")
+
+    asyncio.run(r._run_visual_self_heal(man, str(tmp_path), SimpleNamespace(stack="nextjs")))
+    assert captured == [False]
 
 
 def test_visual_self_heal_requested_honors_per_build_override(tmp_path):

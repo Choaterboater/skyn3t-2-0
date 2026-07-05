@@ -270,10 +270,21 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "model_override" in studio
     assert 'queryFn("/models")' in studio
     assert "manualModelChoices" in studio
+    assert "/models/routing-preview" in studio
     assert "datalist id=\"studio-models\"" in studio
     assert "const DEFAULT_STACK_SELECTION = []" in studio
     assert "Web set" in studio
     assert "golf website for adult beginners" in studio
+
+
+def test_studio_exposes_free_only_routing_toggle() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "const routingFreeOnly =" in studio
+    assert "const setFreeOnlyRouting = useMutation" in studio
+    assert 'apiPost("/llm/routing", { free_only })' in studio
+    assert "Free only" in studio
+    assert "routingFreeOnly ? \"free only\" : \"paid allowed\"" in studio
+    assert "setFreeOnlyRouting.mutate(e.target.checked)" in studio
 
 
 def test_studio_has_command_deck_summary() -> None:
@@ -289,11 +300,25 @@ def test_studio_has_command_deck_summary() -> None:
     assert "reference" in studio
     assert "fan-out" in studio
     assert "assetState.label" in studio
+    assert "Routing preview" in studio
     assert "selectedStacks.size" in studio
+    assert "Cleanup completed" in studio
+    assert "onClick={() => cleanupCompletedBuilds.mutate()}" in studio
+    assert "cleanupBuild.mutate({ build_id: buildKey })" in studio
     assert "add one more" in studio
     assert "xl:order-2" in studio
     assert "order-3" in studio
     assert "xl:row-start-2" in studio
+
+
+def test_studio_foundry_layout_avoids_stretched_empty_card() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert 'const [showRoutingDetails, setShowRoutingDetails] = useState(false)' in studio
+    assert 'className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start"' in studio
+    assert 'className="min-w-0 space-y-4"' in studio
+    assert '<Panel className="p-4">' in studio
+    assert '<Panel className="order-2 p-3 xl:order-2">' in studio
+    assert '<Panel className="mb-6 p-4">' not in studio
 
 
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
@@ -312,6 +337,15 @@ def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None
     assert "{ai.modelSource} · {ai.model}" in studio
     assert "prompts {ai.promptCount}" in studio
     assert "stages {ai.stageCount}" in studio
+
+
+def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "function aiCostMeta(build)" in studio
+    assert "quality_scorecard?.cost_usd" in studio
+    assert "trace.stage_costs" in studio
+    assert "run {ai.costLabel}" in studio
+    assert "stage cost {ai.stageCostLabel}" in studio
 
 
 def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None:

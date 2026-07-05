@@ -259,6 +259,24 @@ _BUILD_PROFILES = {
     "manual",
 }
 
+_BUILD_TERMINAL_STATUSES = {
+    "completed",
+    "completed_no_go",
+    "cancelled",
+    "failed",
+    "rejected",
+    "approved",
+    "interrupted",
+}
+
+
+def _normalize_status(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _build_is_terminal(value: str) -> bool:
+    return _normalize_status(value) in _BUILD_TERMINAL_STATUSES
+
 
 def _normalize_build_profile(profile: str) -> str:
     profile = (profile or "cheap_learned").strip().lower().replace("-", "_")
@@ -271,6 +289,23 @@ def _normalize_model_id(model: str, *, max_len: int = 240) -> str:
     if len(compact) > max_len:
         return ""
     return compact
+
+
+def _is_free_model_id(model: str) -> bool:
+    return (model or "").strip().lower().endswith(":free")
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", ""}:
+        return False
+    raise ValueError(f"invalid boolean value: {value!r}")
 
 
 def _normalize_model_override(model: str) -> str:
@@ -567,6 +602,101 @@ async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             pass
     return {"builds": builds[:limit]}
+
+
+def _cleanup_build_ids_from_payload(payload: dict[str, Any] | None) -> list[str]:
+    if payload is None:
+        return []
+    ids = payload.get("build_ids")
+    if ids is None:
+        return []
+    if isinstance(ids, str):
+        ids = [ids]
+    if not isinstance(ids, (list, tuple)):
+        return []
+    out: list[str] = []
+    for raw in ids:
+        item = (str(raw) if raw is not None else "").strip()
+        if item and item not in out:
+            out.append(item)
+    return out
+
+
+async def _build_for_cleanup(state: AppState, build_id: str) -> dict[str, Any] | None:
+    bid = (build_id or "").strip()
+    if not bid:
+        return None
+    rec = state.builds.get(bid)
+    if rec is not None:
+        return rec.to_dict()
+    memory = getattr(state, "memory", None)
+    if memory is None or not hasattr(memory, "get_build"):
+        return None
+    try:
+        return await memory.get_build(bid)  # type: ignore[no-any-return]
+    except Exception:  # noqa: BLE001 - db read failures should not crash cleanup
+        return None
+
+
+async def delete_build(state: AppState, build_id: str) -> dict[str, Any]:
+    bid = (build_id or "").strip()
+    if not bid:
+        raise ValueError("build_id is required")
+
+    row = await _build_for_cleanup(state, bid)
+    if row is None:
+        raise KeyError(bid)
+
+    if not _build_is_terminal(row.get("status", "")):
+        raise ValueError("build is active")
+
+    state.builds.pop(bid, None)
+    memory = getattr(state, "memory", None)
+    if memory is not None and hasattr(memory, "delete_build"):
+        await memory.delete_build(bid)  # type: ignore[func-returns-value]
+
+    return {"build_id": bid, "deleted": True}
+
+
+async def cleanup_builds(
+    state: AppState,
+    *,
+    build_ids: list[str] | None = None,
+    all_terminal: bool = False,
+    limit: int = 200,
+) -> dict[str, Any]:
+    requested = build_ids or []
+    if not requested and not all_terminal:
+        raise ValueError("build_id or all_terminal is required")
+
+    if all_terminal:
+        rows = (await list_builds(state, limit=limit)).get("builds", [])
+        for row in rows:
+            rid = str(row.get("build_id") or "").strip()
+            if not rid or not _build_is_terminal(row.get("status", "")):
+                continue
+            if rid not in requested:
+                requested.append(rid)
+
+    deleted = []
+    blocked = []
+    missing = []
+
+    for bid in requested:
+        try:
+            await delete_build(state, bid)
+            deleted.append(bid)
+        except ValueError:
+            blocked.append(bid)
+        except KeyError:
+            missing.append(bid)
+
+    return {
+        "requested": requested,
+        "deleted": deleted,
+        "blocked": blocked,
+        "missing": missing,
+    }
 
 
 async def list_projects(state: AppState) -> dict[str, Any]:
@@ -1309,6 +1439,7 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         "codegen_cli_provider": getattr(s, "codegen_cli_provider", "") or "",
         "codegen_cli_model": getattr(s, "codegen_cli_model", "") or "",
         "openrouter_codegen_model": getattr(s, "openrouter_codegen_model", "") or "",
+        "free_only": bool(getattr(s, "free_only", True)),
         "model_pins": {
             "cheap": getattr(s, "model_cheap", "") or "",
             "ui": getattr(s, "model_ui", "") or "",
@@ -1493,40 +1624,440 @@ async def set_build_metadata_overrides(
     return {"app_type_override": app_type, "engine_override": engine}
 
 
-_MODELS_CACHE: dict[str, Any] = {"ts": 0.0, "models": None}
+_MODELS_CACHE: dict[str, Any] = {
+    "ts": 0.0,
+    "models": None,
+    "catalog": None,
+    "note": None,
+}
 
 
-async def list_openrouter_models(state: AppState) -> dict[str, Any]:
-    """The LIVE OpenRouter model list — always current, so the newest models show
-    up automatically with no maintenance. Needs an OpenRouter key; returns [] with
-    a note otherwise. Cached 5 min so opening Settings doesn't re-hit OpenRouter."""
+def _format_openrouter_unit_cost(raw: Any) -> str | None:
+    cost = _parse_openrouter_unit_cost(raw)
+    if cost is None:
+        return None
+    if cost <= 0:
+        return "free"
+    # OpenRouter pricing is often "$/token"; convert to per-1M-token labels for
+    # quick human comparison in UI.
+    return f"${cost * 1_000_000:.6g}/M"
+
+
+def _parse_openrouter_unit_cost(raw: Any) -> float | None:
+    try:
+        cost = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if cost <= 0:
+        return 0.0
+    return cost
+
+
+def _normalize_openrouter_pricing(model_record: dict[str, Any] | None) -> dict[str, float]:
+    if not isinstance(model_record, dict):
+        return {}
+    raw = model_record.get("pricing")
+    if not isinstance(raw, dict):
+        return {}
+
+    normalized: dict[str, float] = {}
+    for key in (
+        "prompt",
+        "completion",
+        "input",
+        "output",
+        "request",
+        "image",
+        "search",
+        "cached_prompt",
+        "cached_completion",
+    ):
+        value = _parse_openrouter_unit_cost(raw.get(key))
+        if value is None:
+            continue
+        normalized[key] = value
+    return normalized
+
+
+def _estimate_openrouter_cost(
+    pricing: dict[str, float],
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> float | None:
+    if not pricing:
+        return None
+
+    prompt_rate = pricing.get("prompt")
+    if prompt_rate is None:
+        prompt_rate = pricing.get("input")
+    completion_rate = pricing.get("completion")
+    if completion_rate is None:
+        completion_rate = pricing.get("output")
+
+    if prompt_rate is None and completion_rate is None:
+        if "request" in pricing:
+            return pricing.get("request")
+        return None
+
+    prompt_cost = max(0, int(prompt_tokens)) * float(prompt_rate or 0.0)
+    completion_cost = max(0, int(completion_tokens)) * float(completion_rate or 0.0)
+    return round(prompt_cost + completion_cost, 10)
+
+
+def _model_pricing_summary(model_record: dict[str, Any] | None) -> str:
+    if not isinstance(model_record, dict):
+        return "price unknown"
+    model_id = str(model_record.get("id") or "")
+    if model_id.endswith(":free"):
+        return "free"
+
+    pricing = model_record.get("pricing")
+    if not isinstance(pricing, dict):
+        return "price unknown"
+
+    keys = (
+        "prompt",
+        "completion",
+        "input",
+        "output",
+        "request",
+        "image",
+        "search",
+        "cached_prompt",
+        "cached_completion",
+    )
+    parts: list[str] = []
+    for key in keys:
+        if key not in pricing:
+            continue
+        label = key.replace("_", " ")
+        val = _format_openrouter_unit_cost(pricing.get(key))
+        if val is not None:
+            parts.append(f"{label}:{val}")
+    if not parts:
+        return "price unknown"
+    return " · ".join(parts)
+
+
+def _catalog_model_provider(model_id: str) -> str:
+    return (model_id.split("/", 1)[0].strip() if "/" in model_id else "").lower()
+
+
+def _catalog_model_family(model_id: str) -> str:
+    return model_id.split("/", 1)[1].split(":", 1)[0].split("-", 1)[0].strip() if "/" in model_id else ""
+
+
+def _build_model_catalog_item(model_record: dict[str, Any]) -> dict[str, Any]:
+    model_id = str(model_record.get("id") or "").strip()
+    pricing = _normalize_openrouter_pricing(model_record)
+    prompt_rate = pricing.get("prompt", pricing.get("input"))
+    completion_rate = pricing.get("completion", pricing.get("output"))
+    request_rate = pricing.get("request")
+    return {
+        "id": model_id,
+        "provider": _catalog_model_provider(model_id),
+        "family": _catalog_model_family(model_id),
+        "created": int(model_record.get("created", 0) or 0),
+        "is_free": model_id.endswith(":free"),
+        "pricing_summary": _model_pricing_summary(model_record),
+        "pricing_raw": pricing,
+        "prompt_rate": prompt_rate,
+        "completion_rate": completion_rate,
+        "request_rate": request_rate,
+    }
+
+async def _load_openrouter_catalog(
+    state: AppState,
+    force_refresh: bool = False,
+) -> tuple[list[dict[str, Any]], str | None]:
     import time
 
     from skyn3t.adapters.llm import openrouter_key
 
-    key = openrouter_key(state.settings)
-    if not key:
-        return {"models": [], "note": "set an OpenRouter key to load the model list"}
     now = time.time()
-    if _MODELS_CACHE["models"] is not None and now - _MODELS_CACHE["ts"] < 300:
-        return {"models": _MODELS_CACHE["models"], "cached": True}
+    if (
+        not force_refresh
+        and _MODELS_CACHE["catalog"] is not None
+        and now - float(_MODELS_CACHE["ts"]) < 300
+    ):
+        return _MODELS_CACHE["catalog"], _MODELS_CACHE.get("note")
+
     try:
         import httpx
 
+        key = openrouter_key(state.settings).strip()
+        attempts: list[dict[str, dict[str, str]]] = [
+            {"headers": {"User-Agent": "skyn3t"}},
+        ]
+        if key:
+            attempts.insert(
+                0,
+                {"headers": {"Authorization": f"Bearer {key}", "User-Agent": "skyn3t"}},
+            )
+
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(
-                "https://openrouter.ai/api/v1/models",
-                headers={"Authorization": f"Bearer {key}"},
+            last_exc = None
+            for attempt in attempts:
+                try:
+                    r = await client.get(
+                        "https://openrouter.ai/api/v1/models",
+                        headers=attempt["headers"],
+                    )
+                    r.raise_for_status()
+                    raw = r.json().get("data") or []
+                    catalog = [
+                        dict(item)
+                        for item in raw
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    ]
+                    _MODELS_CACHE.update(
+                        ts=now,
+                        models=[str(m.get("id")) for m in catalog if isinstance(m.get("id"), str)],
+                        catalog=catalog,
+                        note="ok",
+                    )
+                    return catalog, "ok"
+                except Exception as exc:  # noqa: BLE001 - try each auth mode, then fail safely
+                    last_exc = exc
+                    continue
+
+            note = f"could not load OpenRouter catalog: {last_exc}"
+            catalog = _MODELS_CACHE.get("catalog") or []
+            _MODELS_CACHE.update(ts=now, note=note)
+            return catalog, note
+    except Exception as exc:  # noqa: BLE001 - degrade to cache/empty on API/network
+        note = f"could not load OpenRouter catalog: {exc}"
+        catalog = _MODELS_CACHE.get("catalog") or []
+        _MODELS_CACHE.update(ts=now, note=note)
+        return catalog, note
+
+
+async def list_openrouter_models(
+    state: AppState,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """The LIVE OpenRouter model list — always current, so the newest models show
+    up automatically with no maintenance. Cached 5 min so opening Settings
+    doesn't re-hit OpenRouter."""
+    try:
+        catalog, note = await _load_openrouter_catalog(state, refresh)
+    except TypeError:
+        catalog, note = await _load_openrouter_catalog(state)
+    models = sorted({str(m.get("id")) for m in catalog if isinstance(m.get("id"), str)})
+    payload = {"models": models, "count": len(models)}
+    if note:
+        payload["note"] = note
+    return payload
+
+
+async def list_openrouter_model_catalog(
+    state: AppState,
+    *,
+    query: str = "",
+    provider: str = "",
+    family: str = "",
+    only_free: bool = False,
+    sort: str = "id",
+    order: str = "asc",
+    limit: int = 200,
+    offset: int = 0,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    try:
+        catalog, note = await _load_openrouter_catalog(state, force_refresh)
+    except TypeError:
+        catalog, note = await _load_openrouter_catalog(state)
+    normalized_query = (query or "").strip().lower()
+    normalized_provider = (provider or "").strip().lower()
+    normalized_family = (family or "").strip().lower()
+    normalized_order = (order or "asc").strip().lower()
+    normalized_sort = (sort or "id").strip().lower()
+
+    filtered: list[dict[str, Any]] = []
+    for m in catalog:
+        if not isinstance(m, dict):
+            continue
+        raw_model_id = m.get("id")
+        if not isinstance(raw_model_id, str):
+            continue
+        model_id = raw_model_id.strip()
+        if not model_id:
+            continue
+        model_id_l = model_id.lower()
+        provider_name = _catalog_model_provider(model_id)
+        family_name = _catalog_model_family(model_id)
+        if only_free and not model_id_l.endswith(":free"):
+            continue
+        if normalized_query and normalized_query not in model_id_l:
+            continue
+        if normalized_provider and normalized_provider != provider_name:
+            continue
+        if normalized_family and normalized_family not in family_name.lower():
+            continue
+
+        filtered.append(_build_model_catalog_item(m))
+
+    def _sort_key(item: dict[str, Any]) -> tuple[Any, Any, Any]:
+        if normalized_sort in {"created", "newest"}:
+            return (item.get("created", 0), item["provider"], item["id"])
+        if normalized_sort == "provider":
+            return (item["provider"], item["family"], item["id"])
+        if normalized_sort == "price":
+            unknown = float("inf")
+            prompt_rate = item.get("prompt_rate")
+            completion_rate = item.get("completion_rate")
+            request_rate = item.get("request_rate")
+            primary: float | int
+            secondary: float | int
+            if isinstance(request_rate, (int, float)):
+                primary = float(request_rate)
+                secondary = 0.0
+            else:
+                primary = float(prompt_rate) if isinstance(prompt_rate, (int, float)) else unknown
+                secondary = float(completion_rate) if isinstance(completion_rate, (int, float)) else unknown
+            return (primary, secondary, item["id"])
+        return (item["provider"], item["id"])
+
+    filtered.sort(key=_sort_key, reverse=(normalized_order == "desc"))
+    start = max(0, offset)
+    if limit <= 0:
+        page: list[dict[str, Any]] = filtered[:0]
+    else:
+        page = filtered[start:start + limit]
+
+    return {
+        "items": page,
+        "count": len(filtered),
+        "returned": len(page),
+        "offset": start,
+        "limit": limit,
+        "note": note or "",
+    }
+
+async def model_routing_preview_payload(
+    state: AppState,
+    build_profile: str = "cheap_learned",
+    model_override: str = "",
+) -> dict[str, Any]:
+    """Resolve the currently selected model per router tier and attach pricing.
+
+    This lets Studio show exactly what will be sent to OpenRouter before submit,
+    including manual/model-preference override, backend/policy context, and pricing tags.
+    """
+    from skyn3t.core.model_router import (
+        _FREE_DEFAULTS,
+        _PAID_DEFAULTS,
+        ModelRouter,
+        Tier,
+    )
+
+    profile = _normalize_build_profile(build_profile)
+    override = _normalize_model_id(model_override)
+    preferred = _normalize_model_id(str(getattr(state.settings, "preferred_model", "") or ""))
+    free_only = bool(getattr(state.settings, "free_only", True))
+    backend = getattr(
+        state.llm_client,
+        "backend",
+        "stub" if state.llm_client is None else "unknown",
+    )
+    catalog, catalog_note = await _load_openrouter_catalog(state)
+    catalog_map = {str(m.get("id")): m for m in catalog if isinstance(m, dict) and m.get("id")}
+    catalog_age_seconds = None
+    try:
+        if _MODELS_CACHE.get("ts"):
+            import time
+
+            catalog_age_seconds = max(0.0, time.time() - float(_MODELS_CACHE["ts"]))
+    except Exception:  # noqa: BLE001 - defensive
+        catalog_age_seconds = None
+
+    tier_models: list[dict[str, Any]] = []
+    try:
+        router = state.router
+        if router is None:
+            router = ModelRouter(state.settings)
+    except Exception:
+        router = None
+
+    for tier in Tier:
+        model = ""
+        source = ""
+        blocked_paid_pin = False
+        if override:
+            if not free_only or _is_free_model_id(override):
+                model = override
+                source = "manual"
+            else:
+                blocked_paid_pin = True
+        elif preferred:
+            if not free_only or _is_free_model_id(preferred):
+                model = preferred
+                source = "preferred"
+            else:
+                blocked_paid_pin = True
+        if not model and router is not None:
+            try:
+                try:
+                    model = router.resolve(tier, profile=profile)
+                except TypeError:
+                    model = router.resolve(tier)
+            except Exception as exc:  # noqa: BLE001 - fallback on failures
+                log.warning("routing_preview_resolve_error", error=str(exc)[:120], tier=tier.value)
+                model = _normalize_model_id(
+                    _PAID_DEFAULTS[tier]
+                    if not free_only
+                    else _FREE_DEFAULTS[tier]
+                )
+            source = "free_only" if blocked_paid_pin else "learned"
+        elif not model:
+            model = _normalize_model_id(
+                _PAID_DEFAULTS[tier]
+                if not free_only
+                else _FREE_DEFAULTS[tier]
             )
-            r.raise_for_status()
-            ids = sorted(
-                str(m.get("id")) for m in (r.json().get("data") or []) if m.get("id")
-            )
-        _MODELS_CACHE.update(ts=now, models=ids)
-        return {"models": ids, "count": len(ids)}
-    except Exception as exc:  # noqa: BLE001 - degrade to cached/empty, never 500
-        return {"models": _MODELS_CACHE.get("models") or [],
-                "note": f"could not load models: {exc}"}
+            # Ensure no empty model propagates to the UI when fallback data is
+            # unexpectedly missing.
+            if not model:
+                model = _FREE_DEFAULTS[tier]
+            source = "free_only" if blocked_paid_pin else "fallback"
+
+        pricing = _normalize_openrouter_pricing(catalog_map.get(str(model)))
+        tier_models.append({
+            "tier": tier.value,
+            "model": str(model),
+            "source": source,
+            "pricing": _model_pricing_summary(catalog_map.get(str(model))),
+            "pricing_raw": pricing,
+            "cost_estimates_usd": {
+                "prompt_1k_completion_1k": _estimate_openrouter_cost(
+                    pricing,
+                    prompt_tokens=1000,
+                    completion_tokens=1000,
+                ),
+                "prompt_5k_completion_2k": _estimate_openrouter_cost(
+                    pricing,
+                    prompt_tokens=5000,
+                    completion_tokens=2000,
+                ),
+                "prompt_20k_completion_8k": _estimate_openrouter_cost(
+                    pricing,
+                    prompt_tokens=20_000,
+                    completion_tokens=8_000,
+                ),
+            },
+        })
+
+    return {
+        "backend": backend,
+        "build_profile": profile,
+        "model_override": override,
+        "preferred_model": preferred,
+        "free_only": free_only,
+        "catalog_note": catalog_note,
+        "catalog_age_seconds": catalog_age_seconds,
+        "catalog_model_count": len(catalog),
+        "tiers": tier_models,
+    }
 
 
 async def resolve_openrouter_model(state: AppState, model: str) -> dict[str, Any]:
@@ -1770,27 +2301,32 @@ _MODEL_PIN_FIELDS = {
 async def set_llm_routing(
     state: AppState,
     *,
-    codegen_cli_provider: str = "",
-    codegen_cli_model: str = "",
-    openrouter_codegen_model: str = "",
+    codegen_cli_provider: str | None = None,
+    codegen_cli_model: str | None = None,
+    openrouter_codegen_model: str | None = None,
     model_pins: dict[str, Any] | None = None,
+    free_only: bool | None = None,
     persist: bool = True,
 ) -> dict[str, Any]:
     """Set model-routing controls used by future builds.
 
-    Empty strings intentionally clear a pin/override. Values are written to the
-    live Settings object, process env, and optionally .env.
+    Missing fields are left unchanged; explicit empty strings clear a
+    pin/override. Values are written to the live Settings object, process env,
+    and optionally .env.
     """
     import os
 
-    updates = {
-        "codegen_cli_provider": (codegen_cli_provider or "").strip().lower(),
-        "codegen_cli_model": _normalize_model_id(codegen_cli_model),
-        "openrouter_codegen_model": _normalize_model_id(openrouter_codegen_model),
-    }
-    pins = model_pins or {}
-    for tier, field in _MODEL_PIN_FIELDS.items():
-        updates[field] = _normalize_model_id(str(pins.get(tier, getattr(state.settings, field, "")) or ""))
+    updates: dict[str, str] = {}
+    if codegen_cli_provider is not None:
+        updates["codegen_cli_provider"] = (codegen_cli_provider or "").strip().lower()
+    if codegen_cli_model is not None:
+        updates["codegen_cli_model"] = _normalize_model_id(codegen_cli_model)
+    if openrouter_codegen_model is not None:
+        updates["openrouter_codegen_model"] = _normalize_model_id(openrouter_codegen_model)
+    if model_pins is not None:
+        for tier, field in _MODEL_PIN_FIELDS.items():
+            if tier in model_pins:
+                updates[field] = _normalize_model_id(str(model_pins.get(tier) or ""))
 
     for field, value in updates.items():
         try:
@@ -1804,6 +2340,17 @@ async def set_llm_routing(
             else:
                 os.environ.pop(env_key, None)
             _persist_env_var(env_key, value)
+
+    if free_only is not None:
+        free = bool(free_only)
+        try:
+            state.settings.free_only = free
+        except Exception:  # noqa: BLE001
+            pass
+        if persist:
+            value = "true" if free else "false"
+            os.environ["SKYN3T_FREE_ONLY"] = value
+            _persist_env_var("SKYN3T_FREE_ONLY", value)
 
     if state.llm_client is not None:
         try:
@@ -1824,7 +2371,11 @@ async def set_llm_routing(
             tiers = state.router.describe()
         except Exception:  # noqa: BLE001
             tiers = {}
-    return {"routing": routing, "tiers": tiers}
+    return {
+        "routing": routing,
+        "tiers": tiers,
+        "free_only": bool(getattr(state.settings, "free_only", True)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2023,6 +2574,31 @@ def build_router(state: AppState) -> Any:
         except KeyError:
             raise HTTPException(status_code=404, detail="build not found") from None
 
+    @router.post("/builds/cleanup", dependencies=[auth])
+    async def _build_cleanup_alias(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        payload = dict(body)
+        build_id = str(payload.get("build_id", "")).strip()
+        ids = _cleanup_build_ids_from_payload(payload)
+        if build_id and build_id not in ids:
+            ids.append(build_id)
+        all_terminal = bool(payload.get("all_terminal", False))
+        if not ids and not all_terminal:
+            raise HTTPException(status_code=422, detail="build_id or all_terminal is required")
+        try:
+            limit = int(payload.get("limit", 200) or 200)
+        except (TypeError, ValueError):
+            limit = 200
+
+        res = await cleanup_builds(state, build_ids=ids, all_terminal=all_terminal, limit=limit)
+        if len(ids) == 1 and res["deleted"]:
+            return {"build_id": ids[0], "deleted": True}
+        if len(ids) == 1 and not res["deleted"]:
+            if res["missing"]:
+                raise HTTPException(status_code=404, detail="build not found") from None
+            if res["blocked"]:
+                raise HTTPException(status_code=409, detail="build is active") from None
+        return res
+
     @router.get("/preview/{slug}", dependencies=[auth])
     async def _preview(slug: str) -> dict[str, Any]:
         try:
@@ -2136,12 +2712,17 @@ def build_router(state: AppState) -> Any:
 
     @router.post("/llm/routing", dependencies=[auth])
     async def _set_llm_routing(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            free_only = _coerce_bool(body["free_only"]) if "free_only" in body else None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await set_llm_routing(
             state,
-            codegen_cli_provider=str(body.get("codegen_cli_provider", "")),
-            codegen_cli_model=str(body.get("codegen_cli_model", "")),
-            openrouter_codegen_model=str(body.get("openrouter_codegen_model", "")),
-            model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else {},
+            codegen_cli_provider=str(body["codegen_cli_provider"]) if "codegen_cli_provider" in body else None,
+            codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
+            openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
+            model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
+            free_only=free_only,
         )
 
     @router.post("/settings/github", dependencies=[auth])
@@ -2194,8 +2775,46 @@ def build_router(state: AppState) -> Any:
         )
 
     @router.get("/models", dependencies=[auth])
-    async def _models() -> dict[str, Any]:
-        return await list_openrouter_models(state)
+    async def _models(
+        refresh: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        return await list_openrouter_models(state, refresh=refresh)
+
+    @router.get("/models/catalog", dependencies=[auth])
+    async def _catalog(
+        q: str = Query(default=""),
+        provider: str = Query(default=""),
+        family: str = Query(default=""),
+        only_free: bool = Query(default=False),
+        refresh: bool = Query(default=False),
+        sort: str = Query(default="id"),
+        order: str = Query(default="asc"),
+        limit: int = Query(default=200, ge=0, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        return await list_openrouter_model_catalog(
+            state,
+            query=q,
+            provider=provider,
+            family=family,
+            only_free=only_free,
+            force_refresh=refresh,
+            sort=sort,
+            order=order,
+            limit=limit,
+            offset=offset,
+        )
+
+    @router.get("/models/routing-preview", dependencies=[auth])
+    async def _routing_preview(
+        build_profile: str = Query(default="cheap_learned"),
+        model_override: str = Query(default=""),
+    ) -> dict[str, Any]:
+        return await model_routing_preview_payload(
+            state,
+            build_profile=build_profile,
+            model_override=model_override,
+        )
 
     @router.get("/models/resolve", dependencies=[auth])
     async def _resolve_model(model: str = Query(default="")) -> dict[str, Any]:
@@ -2282,6 +2901,31 @@ def build_router(state: AppState) -> Any:
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="build not found") from None
+
+    @router.post("/studio/builds/cleanup", dependencies=[auth])
+    async def _studio_build_cleanup_alias(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        payload = dict(body)
+        build_id = str(payload.get("build_id", "")).strip()
+        ids = _cleanup_build_ids_from_payload(payload)
+        if build_id and build_id not in ids:
+            ids.append(build_id)
+        all_terminal = bool(payload.get("all_terminal", False))
+        if not ids and not all_terminal:
+            raise HTTPException(status_code=422, detail="build_id or all_terminal is required")
+        try:
+            limit = int(payload.get("limit", 200) or 200)
+        except (TypeError, ValueError):
+            limit = 200
+
+        res = await cleanup_builds(state, build_ids=ids, all_terminal=all_terminal, limit=limit)
+        if len(ids) == 1 and res["deleted"]:
+            return {"build_id": ids[0], "deleted": True}
+        if len(ids) == 1 and not res["deleted"]:
+            if res["missing"]:
+                raise HTTPException(status_code=404, detail="build not found") from None
+            if res["blocked"]:
+                raise HTTPException(status_code=409, detail="build is active") from None
+        return res
 
     @router.post("/studio/serve", dependencies=[auth])
     async def _serve(body: dict[str, Any] = empty_body) -> dict[str, Any]:

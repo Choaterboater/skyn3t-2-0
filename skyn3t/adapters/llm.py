@@ -332,6 +332,10 @@ def _is_vision_model(model: str) -> bool:
     return any(m in low for m in _VISION_MODEL_MARKERS)
 
 
+def _is_free_model_id(model: str) -> bool:
+    return (model or "").strip().lower().endswith(":free")
+
+
 def _strip_code_fences(text: str) -> str:
     """Strip a leading/trailing ```json ... ``` fence if a CLI added one."""
     t = text.strip()
@@ -809,18 +813,23 @@ class LLMClient:
         # was dead-wired (resolve(tier, file_hint) only) -> the learned router
         # always queried the empty task bucket and could never serve.
         # ``model_override`` pins a specific model (best-of-N cross-model sampling)
-        # and bypasses the router; the (tier, task_type) bucket is unchanged.
-        # A GUI-chosen `preferred_model` pins the model for every OpenRouter call
-        # (empty = auto: the learned router picks per tier/task). An explicit
-        # per-call model_override (e.g. best-of-N sampling) still wins over both.
+        # and normally bypasses the router; the (tier, task_type) bucket is
+        # unchanged. ``free_only`` is the hard cost guard: a paid manual/preferred
+        # pin is ignored unless it is itself an OpenRouter ":free" model.
         preferred = (getattr(self.settings, "preferred_model", "") or "").strip()
-        model = model_override or preferred or self.router.resolve(tier, file_hint, task_type=task_type)
+        requested_override = (model_override or "").strip()
+        pinned = requested_override or preferred
+        if pinned and bool(getattr(self.settings, "free_only", False)) and not _is_free_model_id(pinned):
+            log.warning("llm.free_only_ignored_paid_pin", model=pinned)
+            pinned = ""
+        vision_override = requested_override if requested_override and pinned == requested_override else None
+        model = pinned or self.router.resolve(tier, file_hint, task_type=task_type)
         backend = self.backend
         # An attached image only matters to the openrouter backend (the only one
         # that speaks the multimodal message shape). stub/CLI ignore it and behave
         # exactly as today — degrade, don't crash (design rule #6).
         if backend == "openrouter" and images:
-            model, send_images = self._resolve_vision(model, model_override)
+            model, send_images = self._resolve_vision(model, vision_override)
             if send_images:
                 result = await self._openrouter(model, prompt, system, max_tokens, json_mode, images, tier=tier)
             else:

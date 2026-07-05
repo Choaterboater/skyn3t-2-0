@@ -71,6 +71,26 @@ def test_improve_delivers_change_and_records_history(tmp_path):
     assert not any(p.name.startswith("improve-demo-") for p in wt_root.iterdir()) if wt_root.exists() else True
 
 
+def test_improve_can_skip_history_during_in_build_repair(tmp_path):
+    settings = _settings(tmp_path)
+    project = settings.projects_dir / "active-build"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("print('original')\n")
+
+    engine = ImproveEngine(
+        EventBus(),
+        _FakeOrchestrator(),
+        settings=settings,
+        record_history=False,
+    )
+
+    outcome = asyncio.run(engine.improve("active-build", "make it say improved"))
+
+    assert outcome.status == "completed"
+    assert (project / "main.py").read_text() == "print('improved')\n"
+    assert not (project / "skyn3t_manifest.json").exists()
+
+
 def test_improve_rejects_slug_traversal(tmp_path):
     settings = _settings(tmp_path)
     engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings)

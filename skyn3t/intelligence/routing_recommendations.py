@@ -94,10 +94,16 @@ class LearnedModelRouter(ModelRouter):
         super().__init__(settings=settings)
         self.recommender = recommender
 
-    def resolve(self, tier: Tier, file_hint: str | None = None, task_type: str = "") -> str:  # type: ignore[override]
+    def resolve(
+        self,
+        tier: Tier,
+        file_hint: str | None = None,
+        task_type: str = "",
+        profile: str = "balanced",
+    ) -> str:  # type: ignore[override]
         # Respect manual locks / free-only via the base policy first as the
         # canonical fallback, then *prefer* a confident learned pick.
-        base = super().resolve(tier, file_hint=file_hint)
+        base = super().resolve(tier, file_hint=file_hint, profile=profile)
         try:
             learned = self.recommender.recommend(tier, task_type)
         except Exception as exc:  # noqa: BLE001

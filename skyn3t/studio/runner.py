@@ -64,6 +64,7 @@ from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
+from skyn3t.studio.finance_sanity import check_finance_sanity
 from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
@@ -81,6 +82,7 @@ from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
 from skyn3t.studio.visual_loop import visual_self_improve
+from skyn3t.studio.workflow_depth import check_workflow_depth
 from skyn3t.worktree import (
     Worktree,
     cleanup_worktree,
@@ -972,6 +974,42 @@ class StudioRunner:
                 f"{', '.join(visual_routes[:5])}"
             )
         return verdict, None
+
+    def _run_product_quality_gates(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+        """Run brief-scoped product quality gates on the delivered tree."""
+        brief = str(getattr(manifest, "brief", "") or getattr(plan, "brief", "") or "")
+        stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
+        try:
+            finance = check_finance_sanity(project_dir, brief, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("finance_sanity.failed", error=str(exc))
+            finance = {"ok": True, "skipped": True, "checked": [], "issues": [], "warnings": [str(exc)[:160]]}
+        try:
+            workflow = check_workflow_depth(project_dir, brief, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("workflow_depth.failed", error=str(exc))
+            workflow = {"ok": True, "skipped": True, "checked": [], "missing": [], "issues": [], "warnings": [str(exc)[:160]]}
+
+        manifest.extra["finance_sanity"] = finance
+        manifest.extra["workflow_depth"] = workflow
+        failed = (
+            finance.get("skipped") is not True
+            and finance.get("ok") is False
+        ) or (
+            workflow.get("skipped") is not True
+            and workflow.get("ok") is False
+        )
+        if failed:
+            verdict = "no_go"
+            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            manifest.score = final_score
+            reasons = []
+            if finance.get("ok") is False:
+                reasons.extend(str(issue) for issue in finance.get("issues", [])[:3])
+            if workflow.get("ok") is False:
+                reasons.extend(str(issue) for issue in workflow.get("issues", [])[:3])
+            manifest.extra["product_quality_gate"] = "; ".join(reasons)[:500]
+        return final_score, verdict
 
     async def _run_liveness(self, manifest, project_dir, plan, proof,
                             final_score: float, verdict: str):
@@ -3509,6 +3547,10 @@ class StudioRunner:
                     self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
                     manifest, project_dir, plan, proof, final_score, verdict)
+
+            final_score, verdict = self._run_product_quality_gates(
+                manifest, project_dir, plan, final_score, verdict
+            )
 
             # End-of-build SEO check (web/HTML stacks, ADVISORY): a deterministic static
             # scan of the delivered pages/metadata for the cheap, unambiguous SEO signals

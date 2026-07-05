@@ -363,11 +363,23 @@ class StudioRunner:
                     provider=provider,
                     error=str(exc)[:120],
                 )
-        return (
+        configured = (
             model_override
             or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
             or str(getattr(self.settings, "preferred_model", "") or "").strip()
         )
+        if configured:
+            return configured
+        try:
+            from skyn3t.core.model_router import ModelRouter, Tier
+
+            return ModelRouter(self.settings).resolve(Tier.BACKEND)
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not break a build
+            log.warning(
+                "studio.codegen_trace_router_fallback_failed",
+                error=str(exc)[:120],
+            )
+            return ""
 
     @staticmethod
     def _candidate_buckets(candidate: Any, spec: StageSpec) -> set[str]:
@@ -671,6 +683,7 @@ class StudioRunner:
             try:
                 from skyn3t.agents.art_director import direct_art, plan_art_llm
                 from skyn3t.agents.game_designer import design_game_llm
+                from skyn3t.studio.asset_foundry import build_asset_foundry
                 from skyn3t.studio.assets import generate_role_sprites
 
                 # Compute the art plan ONCE here and thread it to BOTH consumers: the
@@ -692,10 +705,18 @@ class StudioRunner:
                 # depth directive (and its retry) demand the SAME design.
                 game_design = await design_game_llm(brief, settings=self.settings)
                 manifest.extra["game_design"] = game_design.to_dict()
+                foundry = build_asset_foundry(
+                    worktree_dir,
+                    brief,
+                    art_plan=art_plan,
+                    game_design=game_design,
+                )
+                manifest.extra["asset_foundry"] = foundry
                 extra = {
                     **extra,
                     "art_plan": art_plan.to_dict(),
                     "game_design": game_design.to_dict(),
+                    "asset_foundry": foundry,
                 }
                 if sprites.get("generated"):
                     log.info("role_sprites.step", count=sprites["generated"])
@@ -1024,7 +1045,8 @@ class StudioRunner:
                 project_dir,
                 app_runner=AppRunner(),
                 improve_engine=ImproveEngine(self.event_bus, self.orchestrator,
-                                             settings=self.settings),
+                                             settings=self.settings,
+                                             record_history=False),
                 vision_fn=make_vision_fn(self.settings),
                 stack=plan.stack,
                 max_rounds=int(getattr(self.settings, "liveness_max_rounds", 2)),
@@ -1110,6 +1132,7 @@ class StudioRunner:
                     memory=self.memory,
                     skills=self.skills,
                     rag=self.rag,
+                    record_history=False,
                 ),
                 vision_fn=make_vision_fn(self.settings),
                 stack=stack,
@@ -2971,6 +2994,7 @@ class StudioRunner:
                     record.status = "skipped"
                     record.output_summary = {"reason": "critic_disabled"}
                     manifest.add_stage(record)
+                    await self._save_build(manifest)
                     await self._emit_stage_done(build_id, record, correlation_id)
                     continue
 
@@ -2987,6 +3011,7 @@ class StudioRunner:
                         record.output_summary["mandatory_skip"] = True
                         manifest.extra.setdefault("skipped_mandatory_stages", []).append(spec.name)
                     manifest.add_stage(record)
+                    await self._save_build(manifest)
                     await self._emit_stage_done(build_id, record, correlation_id)
                     if spec.gated:
                         approval = self.approval_gate.request(
@@ -3086,6 +3111,7 @@ class StudioRunner:
                     reviewer_ran = True
 
                 manifest.add_stage(record)
+                await self._save_build(manifest)
                 await self._emit_stage_done(build_id, record, correlation_id)
 
                 # Per-stage autonomous debug + live preview snapshot (Phase A).

@@ -228,6 +228,14 @@ async def test_runner_threads_game_design_for_game_stack(tmp_path):
     assert out["game_design"].get("powerups"), "the threaded GDD carries power-ups"
 
 
+async def test_runner_threads_asset_foundry_for_game_stack(tmp_path):
+    runner = _runner(game_art_source="offline")
+    m = _Manifest()
+    out = await runner._generate_assets(str(tmp_path), "a platformer", m, {}, stack="phaser")
+    assert isinstance(out.get("asset_foundry"), dict)
+    assert out["asset_foundry"]["requirements"], "the foundry carries concrete asset needs"
+
+
 def test_sprite_model_is_an_official_replicate_model():
     # Verified live: community models (fofr/sticker-maker) return 404 on the
     # official-models endpoint the adapter uses. The sprite model MUST be official.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from skyn3t.adapters import llm as llm_mod
 from skyn3t.adapters.llm import LLMClient, _strip_code_fences
 from skyn3t.config.settings import Settings
-from skyn3t.core.model_router import Tier
+from skyn3t.core.model_router import Tier, _FREE_DEFAULTS
 
 
 def _client(backend: str, **kw) -> LLMClient:
@@ -179,6 +179,11 @@ def test_learned_router_off_by_default():
 def test_runtime_model_pin_overrides_router_default():
     r = ModelRouter(Settings(free_only=False, model_backend="provider/backend-pin"))
     assert r.resolve(Tier.BACKEND) == "provider/backend-pin"
+
+
+def test_free_only_overrides_paid_runtime_model_pin():
+    r = ModelRouter(Settings(free_only=True, model_backend="provider/backend-pin"))
+    assert r.resolve(Tier.BACKEND) == _FREE_DEFAULTS[Tier.BACKEND]
 
 
 def test_learned_router_needs_both_gates():

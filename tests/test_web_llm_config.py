@@ -32,6 +32,7 @@ async def test_secrets_payload_shape():
     assert set(p["providers"]) == {"openrouter", "anthropic", "openai", "kimi"}
     assert p["backend"] == "stub"
     assert p["backend_pref"] == "stub"
+    assert p["free_only"] is True
     assert "routing" in p
     assert "model_pins" in p
 
@@ -89,7 +90,7 @@ async def test_explicit_openrouter_missing_key_surfaces_routing_state():
 
 
 async def test_set_llm_routing_updates_codegen_and_model_pins():
-    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x")
+    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x", free_only=False)
     r = await set_llm_routing(
         st,
         codegen_cli_provider="",
@@ -145,6 +146,28 @@ async def test_set_llm_routing_persist_false_does_not_mutate_env(monkeypatch):
     assert "SKYN3T_MODEL_UI" not in os.environ
     assert st.settings.openrouter_codegen_model == "provider/codegen"
     assert st.settings.model_ui == "provider/ui"
+
+
+async def test_set_llm_routing_updates_free_only_without_clearing_pins(monkeypatch):
+    monkeypatch.delenv("SKYN3T_FREE_ONLY", raising=False)
+    st = _state(
+        llm_backend="openrouter",
+        openrouter_api_key="sk-or-x",
+        free_only=True,
+        openrouter_codegen_model="provider/codegen",
+        model_ui="provider/ui",
+    )
+
+    r = await set_llm_routing(st, free_only=False, persist=False)
+
+    import os
+    assert st.settings.free_only is False
+    assert st.settings.openrouter_codegen_model == "provider/codegen"
+    assert st.settings.model_ui == "provider/ui"
+    assert r["free_only"] is False
+    assert "SKYN3T_FREE_ONLY" not in os.environ
+    p = await llm_secrets_payload(st)
+    assert p["free_only"] is False
 
 
 async def test_unknown_provider_rejected():

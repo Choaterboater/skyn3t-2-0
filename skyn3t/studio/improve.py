@@ -48,13 +48,15 @@ class ImproveEngine:
 
     def __init__(self, event_bus: EventBus, orchestrator: Any, *,
                  settings: Any | None = None, memory: Any | None = None,
-                 skills: Any | None = None, rag: Any | None = None) -> None:
+                 skills: Any | None = None, rag: Any | None = None,
+                 record_history: bool = True) -> None:
         self.event_bus = event_bus
         self.orchestrator = orchestrator
         self.settings = settings or get_settings()
         self.memory = memory
         self.skills = skills
         self.rag = rag
+        self.record_history = bool(record_history)
 
     def _resolve_project(self, project: str) -> Path:
         projects_root = Path(self.settings.projects_dir).resolve()
@@ -171,12 +173,13 @@ class ImproveEngine:
 
             # Delivery already happened. A failure while recording history must NOT
             # relabel a successful deliver as 'failed' (no partial-result lie).
-            try:
-                self._record_history(manifest, project_dir, goal, delivered, proof,
-                                     stack, slug, config_summary,
-                                     files_changed=files_changed)
-            except Exception as rec_exc:  # noqa: BLE001
-                _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
+            if self.record_history:
+                try:
+                    self._record_history(manifest, project_dir, goal, delivered, proof,
+                                         stack, slug, config_summary,
+                                         files_changed=files_changed)
+                except Exception as rec_exc:  # noqa: BLE001
+                    _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
 
             detail: dict[str, Any] = {
                 "delivered": len(delivered), "proof": proof.to_dict(),

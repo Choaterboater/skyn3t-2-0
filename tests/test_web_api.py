@@ -296,6 +296,38 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
     ) == "openrouter/codegen"
 
 
+async def test_studio_runner_codegen_model_trace_reports_router_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.model_router import ModelRouter, Tier
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    def fake_resolve(self, tier, *args, **kwargs):
+        assert tier == Tier.BACKEND
+        return "router/backend-model"
+
+    monkeypatch.setattr(ModelRouter, "resolve", fake_resolve)
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        llm_backend="openrouter",
+        codegen_cli_provider="",
+        openrouter_codegen_model="",
+        preferred_model="",
+        critic_enabled=False,
+        approval_gates=False,
+        best_of_n=1,
+    )
+    bus = EventBus()
+    runner = StudioRunner(bus, Orchestrator(bus), settings=settings, memory=None)
+
+    assert runner._codegen_trace_model("") == "router/backend-model"
+
+
 async def test_submit_build_normalizes_model_override():
     class _Studio:
         def __init__(self):
@@ -535,6 +567,103 @@ async def test_rebuild_build_missing_source_raises_keyerror():
         await routes.rebuild_build(st, "missing-build")
 
 
+async def test_delete_build_terminal_entry_is_removed():
+    class _Memory:
+        def __init__(self):
+            self.deleted: list[str] = []
+
+        async def get_build(self, build_id: str):
+            return {
+                "build_id": "completed-build",
+                "status": "completed",
+            } if build_id == "completed-build" else None
+
+        async def delete_build(self, build_id: str) -> bool:
+            self.deleted.append(build_id)
+            return True
+
+    mem = _Memory()
+    st = _state(memory=mem)
+    st.builds["running-build"] = BuildRecord(build_id="running-build", brief="busy", status="running")
+    st.builds["completed-build"] = BuildRecord(
+        build_id="completed-build",
+        brief="done",
+        status="completed",
+        updated_at=1.0,
+    )
+
+    out = await routes.delete_build(st, "completed-build")
+
+    assert out["build_id"] == "completed-build"
+    assert out["deleted"] is True
+    assert "completed-build" not in st.builds
+    assert mem.deleted == ["completed-build"]
+
+
+async def test_delete_build_blocks_active_status():
+    st = _state()
+    st.builds["active-build"] = BuildRecord(build_id="active-build", brief="busy", status="running")
+
+    with pytest.raises(ValueError, match="build is active"):
+        await routes.delete_build(st, "active-build")
+
+    assert "active-build" in st.builds
+
+
+async def test_delete_build_missing_raises_keyerror():
+    st = _state()
+    st.builds["completed-build"] = BuildRecord(build_id="completed-build", brief="done", status="completed")
+
+    with pytest.raises(KeyError):
+        await routes.delete_build(st, "missing-build")
+
+
+async def test_cleanup_builds_all_terminal_collects_completed():
+    st = _state()
+    st.builds["completed-build"] = BuildRecord(
+        build_id="completed-build",
+        brief="done",
+        status="completed",
+        updated_at=3.0,
+    )
+    st.builds["failed-build"] = BuildRecord(
+        build_id="failed-build",
+        brief="broken",
+        status="failed",
+        updated_at=2.0,
+    )
+    st.builds["running-build"] = BuildRecord(
+        build_id="running-build",
+        brief="busy",
+        status="running",
+        updated_at=1.0,
+    )
+
+    out = await routes.cleanup_builds(st, all_terminal=True)
+
+    assert "running-build" in st.builds
+    assert out["requested"] == ["completed-build", "failed-build"]
+    assert sorted(out["deleted"]) == ["completed-build", "failed-build"]
+    assert out["blocked"] == []
+    assert out["missing"] == []
+
+
+async def test_cleanup_builds_blocks_active_when_requested():
+    st = _state()
+    st.builds["active-build"] = BuildRecord(
+        build_id="active-build",
+        brief="busy",
+        status="queued",
+    )
+
+    out = await routes.cleanup_builds(st, build_ids=["active-build"])
+
+    assert out["deleted"] == []
+    assert out["blocked"] == ["active-build"]
+    assert out["requested"] == ["active-build"]
+    assert "active-build" in st.builds
+
+
 @pytest.mark.filterwarnings(
     "ignore:Using `httpx` with `starlette.testclient` is deprecated"
 )
@@ -615,6 +744,60 @@ def test_rebuild_route_parses_request_and_maps_status_codes():
     )
     assert missing_build.status_code == 404
     assert missing_build.json()["detail"] == "build not found"
+
+
+def test_build_cleanup_route_deletes_terminal_build():
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    st = _state()
+    st.settings.auth_token = "secret"
+    st.builds["completed-cleanup"] = BuildRecord(
+        build_id="completed-cleanup",
+        brief="done",
+        status="completed",
+    )
+    st.builds["running-cleanup"] = BuildRecord(
+        build_id="running-cleanup",
+        brief="busy",
+        status="running",
+    )
+
+    app = FastAPI()
+    app.include_router(routes.build_router(st))
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer secret"}
+
+    response = client.post(
+        "/api/builds/cleanup",
+        json={"build_id": "completed-cleanup"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {"build_id": "completed-cleanup", "deleted": True}
+
+    response_active = client.post(
+        "/api/builds/cleanup",
+        json={"build_id": "running-cleanup"},
+        headers=headers,
+    )
+    assert response_active.status_code == 409
+    assert response_active.json()["detail"] == "build is active"
+
+    response_missing = client.post(
+        "/api/builds/cleanup",
+        json={"build_id": "missing-cleanup"},
+        headers=headers,
+    )
+    assert response_missing.status_code == 404
+    assert response_missing.json()["detail"] == "build not found"
+
+    response_empty = client.post("/api/builds/cleanup", json={}, headers=headers)
+    assert response_empty.status_code == 422
+    assert response_empty.json()["detail"] == "build_id or all_terminal is required"
 
 
 async def test_cancel_build_marks_live_record_cancelled():

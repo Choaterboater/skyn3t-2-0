@@ -30,8 +30,10 @@ class _FakeMemory:
 
     def __init__(self) -> None:
         self._builds: dict[str, dict] = {}
+        self.calls: list[dict] = []
 
     async def save_build(self, **fields) -> None:
+        self.calls.append(dict(fields))
         bid = fields["build_id"]
         if bid in self._builds:
             self._builds[bid] = {**self._builds[bid], **fields}
@@ -52,7 +54,7 @@ class _FakeMemory:
 
     def saves_for(self, build_id: str) -> list[dict]:
         """Return all save_build calls matching build_id."""
-        return [v for k, v in self._builds.items() if k == build_id]
+        return [v for v in self.calls if v.get("build_id") == build_id]
 
 
 # ---------------------------------------------------------------------------
@@ -172,5 +174,40 @@ def test_running_record_retrievable_via_get_build(tmp_path):
         row = await memory.get_build(build_id)
         assert row is not None, "get_build must return the persisted record"
         assert row["build_id"] == build_id
+
+    asyncio.run(run())
+
+
+def test_running_build_persists_stage_progress_before_final_status(tmp_path):
+    """Stage snapshots should reach the store while the build is still running."""
+
+    async def run():
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+        )
+        memory = _FakeMemory()
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        rev = _StubReviewer("rev", "reviewer", "stub", bus)
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+
+        runner = StudioRunner(bus, orch, settings=settings, memory=memory)
+        outcome = await runner.start("Build a python tool", slug="demo3")
+
+        progress_saves = [
+            call for call in memory.saves_for(outcome.build_id)
+            if call.get("status") == "running"
+            and call.get("manifest", {}).get("stages")
+        ]
+        assert progress_saves, "a running build should persist completed stage snapshots"
 
     asyncio.run(run())

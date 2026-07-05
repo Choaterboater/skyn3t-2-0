@@ -52,6 +52,56 @@ def test_spa_post_studio_approve_endpoint_is_mounted():
     assert response.json()["status"] == "approved"
 
 
+def test_spa_get_model_routing_preview_is_available(client):
+    response = client.get("/api/models/routing-preview?build_profile=balanced")
+    assert response.status_code == 200
+    body = response.json()
+    assert "tiers" in body
+    assert body["build_profile"] == "balanced"
+
+
+def test_spa_model_catalog_endpoint_is_available(client):
+    response = client.get("/api/models/catalog?q=gpt&sort=provider&order=asc&limit=5")
+    assert response.status_code == 200
+    body = response.json()
+    assert "items" in body
+    assert "count" in body
+    assert "returned" in body
+
+
+def test_spa_cleanup_endpoints_are_mounted():
+    state = AppState(settings=Settings(llm_backend="stub"))
+    state.builds["cleanup-terminal"] = BuildRecord(
+        build_id="cleanup-terminal",
+        brief="cleanup done",
+        status="completed",
+    )
+    state.builds["cleanup-active"] = BuildRecord(
+        build_id="cleanup-active",
+        brief="cleanup busy",
+        status="running",
+    )
+    app = web_app.create_app(state=state)
+    local_client = TestClient(app)
+
+    response = local_client.post("/api/builds/cleanup", json={"all_terminal": True})
+    assert response.status_code == 200
+
+    state.builds["cleanup-terminal-alias"] = BuildRecord(
+        build_id="cleanup-terminal-alias",
+        brief="alias path",
+        status="completed",
+    )
+
+    response_alias = local_client.post(
+        "/api/studio/builds/cleanup",
+        json={"build_id": "cleanup-terminal-alias"},
+    )
+    assert response_alias.status_code == 200
+    body = response_alias.json()
+    assert body == {"build_id": "cleanup-terminal-alias", "deleted": True}
+
+
 def test_spa_fallback_reloads_index_after_frontend_rebuild(tmp_path, monkeypatch):
     dist = tmp_path / "dist"
     assets = dist / "assets"

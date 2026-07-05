@@ -51,6 +51,37 @@ async def test_reconcile_leaves_live_owner_interrupts_dead(tmp_path):
     assert (await store.get_build("dead"))["status"] == "interrupted"
 
 
+async def test_reconcile_interrupts_same_host_permission_denied_owner(tmp_path, monkeypatch):
+    """A same-host owner PID that cannot be signaled is not trustworthy.
+
+    On macOS/sandboxed launches, a dead SkyN3t PID can be reused by a process the
+    web server cannot signal. Keeping that row as running creates a phantom
+    build forever.
+    """
+    import os
+    import socket
+
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    host = socket.gethostname()
+    await store.save_build(
+        build_id="opaque",
+        slug="x",
+        status="running",
+        manifest={"extra": {"owner_pid": 20485, "owner_host": host}},
+    )
+
+    def denied(_pid, _signal):
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(os, "kill", denied)
+
+    n = await store.reconcile_orphaned_builds()
+
+    assert n == 1
+    assert (await store.get_build("opaque"))["status"] == "interrupted"
+
+
 async def test_recent_builds_exposes_manifest_classification(tmp_path):
     store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
     await store.init_db()

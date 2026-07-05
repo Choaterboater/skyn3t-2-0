@@ -7,6 +7,7 @@ the studio (build records), and the learning loop (graded lessons).
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -233,6 +234,33 @@ class MemoryStore:
                 "artifact_dir": row.artifact_dir,
             }
 
+    async def delete_build(self, build_id: str) -> bool:
+        """Delete one persisted build row and best-effort cleanup its artifact dir.
+
+        Returns ``True`` when a row is deleted, ``False`` when no row exists.
+        """
+        bid = (build_id or "").strip()
+        if not bid:
+            return False
+        artifact_dir = None
+        async with self._session() as s:
+            row = await s.get(BuildRow, bid)
+            if row is None:
+                return False
+            artifact_dir = row.artifact_dir
+            await s.delete(row)
+            await s.commit()
+
+        if artifact_dir:
+            try:
+                p = Path(str(artifact_dir))
+                if p.exists():
+                    shutil.rmtree(p)
+            except Exception:  # noqa: BLE001 - artifact cleanup must never block DB cleanup
+                pass
+
+        return True
+
     async def reconcile_orphaned_builds(self) -> int:
         """Mark builds whose owning process is DEAD as ``interrupted``.
 
@@ -254,7 +282,11 @@ class MemoryStore:
             except ProcessLookupError:
                 return False
             except PermissionError:
-                return True  # exists, just not signalable by us
+                # Same-host SkyN3t build workers are owned by this server
+                # process/user. EPERM usually means the old PID was reused by an
+                # unrelated process, so keeping the build "running" would create
+                # a phantom row forever.
+                return False
             except (OSError, OverflowError, TypeError, ValueError):
                 return False
             return True

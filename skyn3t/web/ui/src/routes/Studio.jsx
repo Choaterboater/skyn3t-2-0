@@ -1,6 +1,6 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { queryFn, apiPost } from "../api.js";
+import { queryFn, apiFetch, apiPost } from "../api.js";
 import {
   PageHeader,
   Panel,
@@ -32,6 +32,202 @@ const STAGES = [
   "verify_build",
   "package",
 ];
+
+const ROUTING_PREVIEW_ESTIMATES = [
+  { key: "prompt_1k_completion_1k", label: "small run", promptTokens: 1000, completionTokens: 1000 },
+  { key: "prompt_5k_completion_2k", label: "standard run", promptTokens: 5000, completionTokens: 2000 },
+  { key: "prompt_20k_completion_8k", label: "heavy run", promptTokens: 20000, completionTokens: 8000 },
+];
+
+const MODEL_CATALOG_PAGE_SIZE = 24;
+
+const ROUTING_TIER_LABELS = {
+  cheap: "cheap",
+  ui: "ui",
+  backend: "backend",
+  strong: "strong",
+  docs: "docs",
+};
+
+function routingPolicyHint(profile) {
+  const normalized = String(profile || "cheap_learned");
+  if (normalized === "fast") {
+    return "Fast profile leans lower-latency routing over deep optimization.";
+  }
+  if (normalized === "balanced") {
+    return "Balanced profile trades cost for quality on reasoning-heavy stages.";
+  }
+  if (normalized === "best_quality") {
+    return "Best-quality profile favors stronger models where reliability matters more.";
+  }
+  if (normalized === "manual") {
+    return "Manual mode pins one model for all stages; use only when you want fixed behavior.";
+  }
+  return "Cheap+learned profile keeps costs low while applying learned routing defaults by stage.";
+}
+
+function formatRoutingSummary(tiers = []) {
+  if (!Array.isArray(tiers) || tiers.length === 0) return "learned routing";
+  const bucket = new Map();
+  for (const tier of tiers) {
+    const model = String(tier?.model || "").trim() || "auto";
+    const tierLabel = ROUTING_TIER_LABELS[tier?.tier] || String(tier?.tier || "tier");
+    const line = `${tierLabel}:${model}`;
+    if (!bucket.has(model)) {
+      bucket.set(model, []);
+    }
+    bucket.get(model).push(line);
+  }
+  return [...bucket.entries()]
+    .map(([model, lines]) =>
+      lines.length > 1
+        ? `${lines.map((line) => line.split(":")[0]).join(",")}→${model}`
+        : lines[0]
+    )
+    .join(" · ");
+}
+
+function formatUsd(value) {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) return "—";
+  return `$${value < 1e-3 ? value.toFixed(8) : value.toFixed(4)}`;
+}
+
+function formatRate(value) {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) return "—";
+  if (value <= 0) return "free";
+  return `$${(value * 1_000_000).toFixed(6)}/M`;
+}
+
+function numericPricingValue(value) {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  if (Number.isNaN(parsed) || !Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function estimateCost(tier, promptTokens, completionTokens) {
+  const pricing = tier?.pricing_raw || {};
+  const prompt = pricing.prompt ?? pricing.input;
+  const completion = pricing.completion ?? pricing.output;
+  const promptCost = numericPricingValue(prompt);
+  const completionCost = numericPricingValue(completion);
+
+  if ((promptCost == null || promptCost === 0) && (completionCost == null || completionCost === 0)) {
+    const request = numericPricingValue(pricing.request);
+    if (request != null) return request;
+    return null;
+  }
+
+  const promptRate = promptCost == null ? 0 : promptCost;
+  const completionRate = completionCost == null ? 0 : completionCost;
+  return promptRate * promptTokens + completionRate * completionTokens;
+}
+
+function catalogPrompt(inputModel) {
+  const promptRate = numericPricingValue(
+    inputModel?.prompt_rate ?? inputModel?.pricing_raw?.prompt ?? inputModel?.pricing_raw?.input
+  );
+  const completionRate = numericPricingValue(
+    inputModel?.completion_rate ?? inputModel?.pricing_raw?.completion ?? inputModel?.pricing_raw?.output
+  );
+  if (promptRate == null && completionRate == null) {
+    const request = numericPricingValue(inputModel?.request_rate ?? inputModel?.pricing_raw?.request);
+    if (request != null) return `request ${formatRate(request)}`;
+    return "pricing unknown";
+  }
+  if (promptRate == null) return `output ${formatRate(completionRate)}`;
+  if (completionRate == null) return `input ${formatRate(promptRate)}`;
+  return `${formatRate(promptRate)} / ${formatRate(completionRate)}`;
+}
+
+function catalogRunCost(inputModel, promptTokens, completionTokens) {
+  const pricing = inputModel?.pricing_raw || {};
+  const promptRate = numericPricingValue(pricing.prompt ?? pricing.input);
+  const completionRate = numericPricingValue(pricing.completion ?? pricing.output);
+  if ((promptRate == null || promptRate === 0) && (completionRate == null || completionRate === 0)) {
+    const requestRate = numericPricingValue(pricing.request);
+    if (requestRate == null) return null;
+    return requestRate;
+  }
+  const promptCost = (promptRate || 0) * Number(promptTokens || 0);
+  const completionCost = (completionRate || 0) * Number(completionTokens || 0);
+  return promptCost + completionCost;
+}
+
+function routingPinSummary(tiers, modelOverride, preferredModel) {
+  if (!Array.isArray(tiers) || tiers.length === 0) return null;
+  const normalizedModels = tiers
+    .map((tier) => String(tier?.model || "").trim())
+    .filter(Boolean);
+  if (!normalizedModels.length) return null;
+
+  const model = normalizedModels[0];
+  const allSameModel = normalizedModels.every((item) => item === model);
+  if (!allSameModel) return null;
+
+  const sources = new Set(
+    tiers.map((tier) => String(tier?.source || "learned").toLowerCase())
+  );
+  const prettySources = Array.from(sources).map((source) => `${source}`).join("/");
+
+  if (modelOverride) {
+    return `all tiers forced to one model from your build override (${model}); clear override to let routing vary by tier`;
+  }
+  if (preferredModel) {
+    return `all tiers forced to one model from preferred-model setting (${model}); clear preferred model in Settings to resume per-tier routing`;
+  }
+  if (sources.size === 1 && sources.has("manual")) {
+    return `all tiers locked manually to one model (${model}); use Settings routing pins per tier for variation`;
+  }
+  if (sources.size === 1 && sources.has("learned")) {
+    return `all tiers resolved to one model (${model}) by current learned/default policy`;
+  }
+  return `${prettySources} routing resolved this tier-set to one model (${model})`;
+}
+
+function describeRoutingLocks(secretsData, modelOverride, routingTiers) {
+  const preferred = String(secretsData?.preferred_model || "").trim();
+  const modelPins =
+    secretsData && typeof secretsData.model_pins === "object" && secretsData.model_pins
+      ? secretsData.model_pins
+      : {};
+  const pinGroups = new Map();
+  for (const [tier, value] of Object.entries(modelPins)) {
+    const model = String(value || "").trim();
+    if (!model) continue;
+    const entry = pinGroups.get(model) || [];
+    entry.push(tier);
+    pinGroups.set(model, entry);
+  }
+  const pinLines = [...pinGroups.entries()].map(
+    ([model, tiers]) => `route pin ${tiers.join(",")}: ${model}`,
+  );
+
+  const codegenOpenrouter = String(secretsData?.openrouter_codegen_model || "").trim();
+  const codegenCli = String(secretsData?.codegen_cli_model || "").trim();
+  const codegenProvider = String(secretsData?.codegen_cli_provider || "").trim();
+
+  const override = String(modelOverride || "").trim();
+  const allSameManual =
+    Array.isArray(routingTiers) &&
+    routingTiers.length > 0 &&
+    new Set(routingTiers.map((tier) => tier?.source)).size === 1 &&
+    String(routingTiers[0]?.source || "").toLowerCase() === "manual";
+
+  const lines = [];
+  if (override) lines.push(`build override: ${override}`);
+  if (preferred) lines.push(`preferred model: ${preferred}`);
+  if (pinLines.length) lines.push(...pinLines);
+  if (codegenOpenrouter) lines.push(`codegen model: ${codegenOpenrouter}`);
+  if (codegenCli) lines.push(`codegen CLI model: ${codegenCli}`);
+  if (codegenProvider && !codegenCli) lines.push(`codegen provider: ${codegenProvider}`);
+  if (allSameManual && !override && !preferred && pinLines.length === 0) {
+    const model = String(routingTiers[0]?.model || "").trim();
+    if (model) lines.push(`routing manual lock: ${model}`);
+  }
+
+  return lines;
+}
 
 // Curated one-liner starters spanning the supported stacks. Clicking one fills
 // the brief box so a new user has a good, varied jumping-off point.
@@ -75,6 +271,36 @@ const BUILD_PROFILES = [
   { id: "best_quality", label: "Best quality", hint: "Runs best-of-N, richer assets when configured, and visual repair." },
   { id: "manual", label: "Manual model", hint: "Pin one OpenRouter model for this build." },
 ];
+
+const BUILD_ACTIVE_STATUSES = new Set([
+  "running",
+  "queued",
+  "queued_no_studio",
+  "pending",
+  "awaiting_approval",
+]);
+
+const BUILD_TERMINAL_STATUSES = new Set([
+  "completed",
+  "completed_no_go",
+  "cancelled",
+  "failed",
+  "approved",
+  "rejected",
+  "interrupted",
+]);
+
+function normalizeBuildStatus(status) {
+  return String(status || "").trim().toLowerCase();
+}
+
+function isActiveBuild(status) {
+  return BUILD_ACTIVE_STATUSES.has(normalizeBuildStatus(status));
+}
+
+function isTerminalBuild(status) {
+  return BUILD_TERMINAL_STATUSES.has(normalizeBuildStatus(status));
+}
 
 // The forge line. Each stage is a node on a horizontal rail: it ignites EMBER
 // while running, cools to PLASMA when done, sits ASH while pending, flares the
@@ -170,6 +396,33 @@ function aiMeta(build) {
       : scorecard.recall_count || 0,
     proof: scorecard.proof_passed,
     build: scorecard.build,
+    ...aiCostMeta(build),
+  };
+}
+
+function aiCostMeta(build) {
+  const trace = build.model_trace || {};
+  const quality_scorecard = build.quality_scorecard || {};
+  const runCost = numericPricingValue(
+    build.cost_usd ?? quality_scorecard?.cost_usd
+  );
+  const stageCosts = Array.isArray(trace.stage_costs)
+    ? trace.stage_costs
+    : [];
+  const stageCostTotal = stageCosts.reduce((sum, item) => {
+    const value = numericPricingValue(item?.cost_usd ?? item?.cost);
+    return value == null ? sum : sum + value;
+  }, 0);
+  const stageCostCount = stageCosts.filter((item) => {
+    const value = numericPricingValue(item?.cost_usd ?? item?.cost);
+    return value != null;
+  }).length;
+
+  return {
+    costLabel: runCost == null ? "—" : formatUsd(runCost),
+    stageCostLabel: stageCostCount
+      ? `${formatUsd(stageCostTotal)} / ${stageCostCount}`
+      : "—",
   };
 }
 
@@ -266,6 +519,12 @@ export default function Studio({ stream }) {
   const [fullApp, setFullApp] = useState(false);
   const [modelOverride, setModelOverride] = useState("");
   const [variantSource, setVariantSource] = useState(null);
+  const [showRoutingDetails, setShowRoutingDetails] = useState(false);
+  const [modelCatalogQuery, setModelCatalogQuery] = useState("");
+  const [modelCatalogSort, setModelCatalogSort] = useState("created");
+  const [modelCatalogOrder, setModelCatalogOrder] = useState("desc");
+  const [modelCatalogPage, setModelCatalogPage] = useState(0);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
 
   const onPickImage = (file) => {
     if (!file || !file.type?.startsWith("image/")) return;
@@ -299,22 +558,127 @@ export default function Studio({ stream }) {
     queryFn: queryFn("/models"),
     retry: 0,
   });
+  const catalog = useQuery({
+    queryKey: [
+      "models",
+      "catalog",
+      modelCatalogQuery,
+      modelCatalogSort,
+      modelCatalogOrder,
+      modelCatalogPage,
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        limit: String((modelCatalogPage + 1) * MODEL_CATALOG_PAGE_SIZE),
+        sort: modelCatalogSort,
+        order: modelCatalogOrder,
+        refresh: catalogRefreshing,
+      });
+      const q = modelCatalogQuery.trim();
+      if (q) {
+        params.set("q", q);
+      }
+      return apiFetch(`/models/catalog?${params.toString()}`);
+    },
+    retry: 0,
+  });
+  useEffect(() => {
+    setModelCatalogPage(0);
+  }, [modelCatalogQuery, modelCatalogSort, modelCatalogOrder]);
   const secrets = useQuery({
     queryKey: ["llm-secrets"],
     queryFn: queryFn("/llm/secrets"),
     retry: 0,
   });
-  const modelOptions = models.data?.models || [];
   const normalizeModelId = (value) => value.replace(/\s+/g, "").trim();
+  const routingSecrets = secrets.data || {};
+  const routingFreeOnly = routingSecrets.free_only !== false;
+  const routingModelPins =
+    routingSecrets && typeof routingSecrets.model_pins === "object" && routingSecrets.model_pins
+      ? routingSecrets.model_pins
+      : {};
+  const effectiveBuildProfile =
+    fullApp && variantSource?.sourceBuildProfile
+      ? variantSource.sourceBuildProfile
+      : buildProfile;
   const normalizedModelOverride = normalizeModelId(modelOverride);
+  const modelOptions = models.data?.models || [];
+  const routingPreview = useQuery({
+    queryKey: [
+      "routing-preview",
+      effectiveBuildProfile,
+      normalizedModelOverride,
+      String(routingSecrets.preferred_model || ""),
+      String(routingSecrets.codegen_cli_model || ""),
+      String(routingSecrets.openrouter_codegen_model || ""),
+      String(routingSecrets.free_only ?? ""),
+      String(routingModelPins.cheap || ""),
+      String(routingModelPins.ui || ""),
+      String(routingModelPins.backend || ""),
+      String(routingModelPins.strong || ""),
+      String(routingModelPins.docs || ""),
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("build_profile", effectiveBuildProfile);
+      if (normalizedModelOverride) {
+        params.set("model_override", normalizedModelOverride);
+      }
+      return apiFetch(`/models/routing-preview?${params.toString()}`);
+    },
+    retry: 0,
+  });
   const manualModelChoices = normalizedModelOverride &&
     !modelOptions.includes(normalizedModelOverride)
     ? [normalizedModelOverride, ...modelOptions]
     : modelOptions;
+  const modelCatalogRows = Array.isArray(catalog.data?.items)
+    ? catalog.data.items
+    : [];
+  const catalogTotal = catalog.data?.count ?? 0;
+  const catalogShown = catalog.data?.returned ?? modelCatalogRows.length;
+  const catalogShowingAll = catalogShown >= catalogTotal || catalogTotal === 0;
   const unknownModelOverride =
     !!normalizedModelOverride &&
     modelOptions.length > 0 &&
     !modelOptions.includes(normalizedModelOverride);
+  const routingTiers = Array.isArray(routingPreview.data?.tiers)
+    ? routingPreview.data.tiers
+    : [];
+  const routingCatalogInfo = (() => {
+    const count = routingPreview.data?.catalog_model_count;
+    const age = routingPreview.data?.catalog_age_seconds;
+    const ageLabel =
+      typeof age === "number" ? `${Math.max(1, Math.round(age))}s ago` : null;
+    return [
+      count != null ? `${count} models in OpenRouter catalog` : null,
+      ageLabel ? `updated ${ageLabel}` : null,
+      routingPreview.data?.catalog_note ? `catalog: ${routingPreview.data.catalog_note}` : null,
+    ].filter(Boolean).join(" · ");
+  })();
+  const routingLockLines = describeRoutingLocks(
+    secrets.data,
+    normalizedModelOverride,
+    routingTiers,
+  );
+  const hasRoutingLocks = routingLockLines.length > 0;
+  const routingSummaryWithCost = routingTiers
+    .slice(0, 4)
+    .map((tier) => {
+      const tierLabel = ROUTING_TIER_LABELS[tier.tier] || tier.tier;
+      const tierCost = tier?.cost_estimates_usd?.prompt_1k_completion_1k;
+      return `${tierLabel}:${String(tier?.model || "auto")}${
+        typeof tierCost === "number"
+          ? ` · ${formatUsd(tierCost)} · 1k×1k`
+        : ""
+      }`;
+    })
+    .join(" · ");
+  const routingPin = routingPinSummary(
+    routingTiers,
+    normalizedModelOverride,
+    routingPreview.data?.preferred_model
+  );
 
   const toggleStack = (id) =>
     setSelectedStacks((prev) => {
@@ -395,6 +759,49 @@ export default function Studio({ stream }) {
     onSettled: () => setPendingBuildId(null),
   });
 
+  const cleanupBuild = useMutation({
+    mutationFn: ({ build_id }) => apiPost("/builds/cleanup", { build_id }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
+    onSettled: () => setPendingBuildId(null),
+  });
+
+  const cleanupCompletedBuilds = useMutation({
+    mutationFn: () => apiPost("/builds/cleanup", { all_terminal: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
+  });
+
+  const setFreeOnlyRouting = useMutation({
+    mutationFn: (free_only) => apiPost("/llm/routing", { free_only }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["llm-secrets"] });
+      qc.invalidateQueries({ queryKey: ["routing-preview"] });
+    },
+  });
+
+  const clearRoutingLocks = useMutation({
+    mutationFn: async () => {
+      await apiPost("/settings/model", { model: "" });
+      await apiPost("/llm/routing", {
+        codegen_cli_provider: "",
+        codegen_cli_model: "",
+        openrouter_codegen_model: "",
+        model_pins: {
+          cheap: "",
+          ui: "",
+          backend: "",
+          strong: "",
+          docs: "",
+        },
+      });
+    },
+    onSuccess: () => {
+      setModelOverride("");
+      qc.invalidateQueries({ queryKey: ["llm-secrets"] });
+      qc.invalidateQueries({ queryKey: ["routing-preview"] });
+      qc.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
+
   // Spec 4: explore the brief across divergent stacks; results stream as
   // FANOUT_* events on the shared socket. The selected stack ids are sent as a
   // comma-joined string (the /studio/fanout contract).
@@ -429,6 +836,7 @@ export default function Studio({ stream }) {
   }, [events]);
 
   const recentBuilds = Array.isArray(builds) ? builds : builds?.builds || [];
+  const terminalCleanupCandidates = recentBuilds.filter((b) => isTerminalBuild(b.status));
   const assetState = secrets.data?.replicate
     ? secrets.data?.asset_gen
       ? {
@@ -446,10 +854,6 @@ export default function Studio({ stream }) {
         label: "no Replicate",
         title: "No Replicate key configured for generated assets",
       };
-  const effectiveBuildProfile =
-    fullApp && variantSource?.sourceBuildProfile
-      ? variantSource.sourceBuildProfile
-      : buildProfile;
   const effectiveProfileLabel =
     effectiveBuildProfile === "full_app"
       ? "Full app contract"
@@ -458,7 +862,13 @@ export default function Studio({ stream }) {
     mode: `${effectiveProfileLabel}${
       fullApp ? " · full app" : ""
     }`,
-    model: normalizedModelOverride || "learned routing",
+    model: (() => {
+      const tiers = routingPreview.data?.tiers;
+      if (Array.isArray(tiers) && tiers.length > 0) {
+        return formatRoutingSummary(tiers);
+      }
+      return normalizedModelOverride || "learned routing";
+    })(),
     reference: refImage?.name || "no reference image",
     fanout: selectedStacks.size
       ? `${selectedStacks.size} stack${selectedStacks.size === 1 ? "" : "s"} · ${[
@@ -466,6 +876,65 @@ export default function Studio({ stream }) {
         ].join(", ")}${selectedStacks.size === 1 ? " · add one more" : ""}`
       : "auto stack",
   };
+  const routingPolicy = routingPolicyHint(routingPreview.data?.build_profile || effectiveBuildProfile);
+  const routingRows = routingTiers.map((tier) => {
+    const costRows = ROUTING_PREVIEW_ESTIMATES.map(({ key, label, promptTokens, completionTokens }) => {
+      const estimated = tier.cost_estimates_usd?.[key] ??
+        estimateCost(tier, promptTokens, completionTokens);
+      if (estimated == null) return null;
+      return (
+        <span key={key} className="inline-flex items-center justify-between gap-1 rounded border border-hairline/50 px-1.5 py-0.5">
+          <span className="font-mono text-[9px] text-ash/80">{label}</span>
+          <span className="font-mono text-[9px] text-ash">{formatUsd(estimated)}</span>
+        </span>
+      );
+    }).filter(Boolean);
+
+    const pricing = tier.pricing_raw || {};
+    const promptRate = formatRate(
+      numericPricingValue(pricing.prompt ?? pricing.input)
+    );
+    const completionRate = formatRate(
+      numericPricingValue(pricing.completion ?? pricing.output)
+    );
+
+    return {
+      key: tier.tier,
+      tier: tier.tier,
+      model: tier.model,
+      source: tier.source,
+      row: (
+        <div key={tier.tier} className="min-w-0 space-y-1.5 text-[10px]">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Pill tone={tier.source === "manual" ? "ember" : "plasma"}>{tier.source}</Pill>
+            <span className="text-bone capitalize">{tier.tier}</span>
+            <span className="min-w-0 break-words text-ash">{tier.model}</span>
+          </div>
+          <div className="flex flex-wrap gap-x-3 text-[9px] text-ash">
+            <span>
+              input <span className="text-plasma">{promptRate}</span>
+            </span>
+            <span>·</span>
+            <span>
+              output <span className="text-plasma">{completionRate}</span>
+            </span>
+            <span>·</span>
+            <span className="text-plasma">{tier.pricing}</span>
+          </div>
+          {costRows.length ? (
+            <div className="grid min-w-0 grid-cols-1 gap-1 sm:grid-cols-3">
+              {costRows}
+            </div>
+          ) : null}
+        </div>
+      ),
+      costs: null,
+    };
+  });
+  const routingSummary = routingTiers
+    .slice(0, 4)
+    .map((tier) => `${ROUTING_TIER_LABELS[tier.tier] || tier.tier}: ${tier.model}`)
+    .join(" · ");
 
   const running = pipeline.filter((p) => p.state === "running").length;
   const done = pipeline.filter((p) => p.state === "done").length;
@@ -486,9 +955,9 @@ export default function Studio({ stream }) {
         }
       />
 
-      <Panel className="mb-6 p-4">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
-          <div className="min-w-0">
+      <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start">
+        <div className="min-w-0 space-y-4">
+          <Panel className="p-4">
             <form
               className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
               onSubmit={(e) => {
@@ -605,11 +1074,9 @@ export default function Studio({ stream }) {
                     title="Pin one OpenRouter model for this build"
                   />
                   <datalist id="studio-models">
-                    {manualModelChoices.length === 0 ? (
-                      <option value="openai/gpt-4o-mini" />
-                    ) : (
-                      manualModelChoices.map((m) => <option key={m} value={m} />)
-                    )}
+                    {manualModelChoices.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
                   </datalist>
                   <div className="mt-1 flex items-center justify-between gap-2">
                     <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
@@ -629,19 +1096,130 @@ export default function Studio({ stream }) {
                       </button>
                     ) : null}
                   </div>
+                  <details className="mt-2 rounded border border-hairline/60">
+                    <summary className="cursor-pointer px-2 py-1 font-mono text-[10px] text-ash">
+                      Model catalog explorer
+                    </summary>
+                    <div className="border-t border-hairline p-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={modelCatalogQuery}
+                          onChange={(e) => setModelCatalogQuery(e.target.value)}
+                          placeholder="filter model id (e.g. qwen, deepseek, openai/)"
+                          className="field min-w-[12rem] flex-1"
+                        />
+                        <select
+                          value={modelCatalogSort}
+                          onChange={(e) => setModelCatalogSort(e.target.value)}
+                          className="field max-w-[8.5rem]"
+                        >
+                          <option value="created">sort newest</option>
+                          <option value="id">sort id</option>
+                          <option value="provider">sort provider</option>
+                          <option value="price">sort price</option>
+                        </select>
+                        <select
+                          value={modelCatalogOrder}
+                          onChange={(e) => setModelCatalogOrder(e.target.value)}
+                          className="field max-w-[7.5rem]"
+                        >
+                          <option value="asc">asc</option>
+                          <option value="desc">desc</option>
+                        </select>
+                        <button
+                      type="button"
+                          className="btn-ghost py-0.5 text-[10px]"
+                          onClick={() => {
+                            setModelCatalogPage(0);
+                            setCatalogRefreshing(true);
+                            catalog.refetch().finally(() => {
+                              setCatalogRefreshing(false);
+                            });
+                          }}
+                          disabled={catalog.isLoading}
+                          title="Refresh model catalog with latest OpenRouter data"
+                        >
+                          {catalog.isLoading ? "refreshing…" : "refresh"}
+                        </button>
+                      </div>
+                      <div className="mt-1 text-[10px] text-ash/70">
+                        {catalog.isLoading
+                          ? "loading catalog…"
+                          : catalog.data?.note
+                            ? catalog.data.note
+                            : `${catalogShown} shown · ${catalogTotal} total`}
+                      </div>
+                      <div className="mt-1 max-h-56 overflow-auto rounded border border-hairline/60">
+                        {modelCatalogRows.length ? (
+                          modelCatalogRows.map((entry) => (
+                            <button
+                              key={entry.id}
+                              type="button"
+                              onClick={() => setModelOverride(entry.id)}
+                              className="flex w-full border-b border-hairline/60 px-2 py-1 text-left transition-colors hover:bg-void/55 last:border-b-0"
+                              title={`pin model: ${entry.id}`}
+                            >
+                              <span className="shrink-0 pr-2 text-[9px] text-ash/80">
+                                {entry.provider}
+                              </span>
+                              <span className="min-w-0 flex-1 break-all font-mono text-[10px] text-bone">
+                                {entry.id}
+                              </span>
+                              <span className="shrink-0 pl-2 text-[9px] text-ash">
+                                {entry.is_free ? "free" : catalogPrompt(entry)}
+                              </span>
+                              <span className="shrink-0 pl-2 text-[9px] text-ash">
+                                1k×1k {formatUsd(catalogRunCost(entry, 1000, 1000))}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-2 py-2 font-mono text-[10px] text-ash/70">
+                            No catalog rows matched.
+                          </div>
+                        )}
+                        {!catalogShowingAll ? (
+                          <button
+                            type="button"
+                            onClick={() => setModelCatalogPage((page) => page + 1)}
+                            disabled={catalog.isLoading}
+                            className="w-full border-t border-hairline/60 bg-void/35 py-2 text-[10px] font-mono text-plasma hover:bg-void/55 disabled:opacity-50"
+                          >
+                            {catalog.isLoading ? "loading…" : "load more"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </details>
                 </div>
-                <label
-                  className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
-                  title="Build a fuller product with richer content, assets when configured, and more repair budget"
-                >
-                  <input
-                    type="checkbox"
-                    checked={fullApp}
-                    onChange={(e) => toggleFullApp(e.target.checked)}
-                    className="accent-plasma"
-                  />
-                  <span className={fullApp ? "text-plasma" : ""}>Full app</span>
-                </label>
+                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                  <label
+                    className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
+                    title="Force automatic routing to OpenRouter free models"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={routingFreeOnly}
+                      disabled={setFreeOnlyRouting.isPending || secrets.isLoading}
+                      onChange={(e) => setFreeOnlyRouting.mutate(e.target.checked)}
+                      className="accent-plasma"
+                    />
+                    <span className={routingFreeOnly ? "text-plasma" : ""}>Free only</span>
+                  </label>
+                  <label
+                    className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
+                    title="Build a fuller product with richer content, assets when configured, and more repair budget"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={fullApp}
+                      onChange={(e) => toggleFullApp(e.target.checked)}
+                      className="accent-plasma"
+                    />
+                    <span className={fullApp ? "text-plasma" : ""}>Full app</span>
+                  </label>
+                </div>
               </div>
               {variantSource ? (
                 <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3 font-mono text-[11px] text-ash">
@@ -662,25 +1240,8 @@ export default function Studio({ stream }) {
                 </div>
               ) : null}
             </div>
-          </div>
-          <aside className="order-2 rounded-md border border-hairline bg-void/45 p-3 xl:order-2">
-            <SignalGrid
-              label="Command deck"
-              items={[
-                { label: "mode", value: buildIntent.mode },
-                { label: "model", value: buildIntent.model },
-                { label: "reference", value: buildIntent.reference },
-                { label: "fan-out", value: buildIntent.fanout },
-              ]}
-              right={
-                <span title={assetState.title}>
-                  <Pill tone={assetState.tone}>{assetState.label}</Pill>
-                </span>
-              }
-              gridClassName="grid-cols-1"
-              valueClassName="text-[11px]"
-            />
-          </aside>
+          </Panel>
+          <Panel className="p-4">
           <div className="order-3 min-w-0 xl:col-start-1 xl:row-start-2">
             {/* Example briefs: clickable starters that fill the brief box. */}
             <div>
@@ -774,8 +1335,123 @@ export default function Studio({ stream }) {
               </p>
             ) : null}
           </div>
+          </Panel>
         </div>
-      </Panel>
+          <Panel className="order-2 p-3 xl:order-2">
+            <div className="mb-3 border-b border-hairline pb-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="eyebrow text-[9px]">Routing preview</div>
+                {routingRows.length ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowRoutingDetails((v) => !v)}
+                    className="font-mono text-[9px] text-ash underline decoration-dotted underline-offset-4"
+                  >
+                    {showRoutingDetails ? "hide details" : "show details"}
+                  </button>
+                ) : null}
+              </div>
+              <div className="mt-1 font-mono text-[11px] text-ash">
+                backend: {routingPreview.data?.backend || "auto"} · profile:
+                {" "}
+                {routingPreview.data?.build_profile || effectiveBuildProfile}
+                {" "}· {routingFreeOnly ? "free only" : "paid allowed"}
+                {routingPreview.isError || routingPreview.isLoading ? " · updating" : ""}
+              </div>
+              {routingCatalogInfo ? (
+                <div className="mt-1 break-words text-[9px] text-ash/70">
+                  {routingCatalogInfo}
+                </div>
+              ) : null}
+              {routingPin ? (
+                <div className="mt-1 break-words text-[9px] text-ash/80">
+                  {routingPin}
+                </div>
+              ) : null}
+              {routingLockLines.length ? (
+                <div className="mt-2">
+                  <div className="font-mono text-[9px] text-ash/80">routing locks active:</div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {routingLockLines.map((line) => (
+                      <span
+                        key={line}
+                        className="rounded-full border border-hairline/70 px-2 py-0.5 text-[9px] text-ash"
+                      >
+                        {line}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {routingSummaryWithCost ? (
+                <div className="mt-1 break-words text-[10px] text-ash">
+                  {routingSummaryWithCost}
+                </div>
+              ) : null}
+              {routingSummary ? (
+                <div className="mt-1 break-words text-[9px] text-ash/70">
+                  {routingSummary}
+                </div>
+              ) : null}
+              {hasRoutingLocks ? (
+                <div className="mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => clearRoutingLocks.mutate()}
+                    disabled={clearRoutingLocks.isPending}
+                    className="btn-ghost py-0.5 text-[9px]"
+                    title="Clear preferred model, per-tier pins, and codegen model overrides"
+                  >
+                    {clearRoutingLocks.isPending ? "clearing locks…" : "clear routing locks"}
+                  </button>
+                </div>
+              ) : null}
+              {clearRoutingLocks.isError ? (
+                <div className="mt-1 break-words text-[9px] text-ember">
+                  {String(clearRoutingLocks.error?.message || clearRoutingLocks.error)}
+                </div>
+              ) : null}
+              <div className="mt-1 text-[9px] text-ash/80">{routingPolicy}</div>
+            </div>
+            {showRoutingDetails && routingRows.length ? (
+              <>
+                <div className="mt-2 border-t border-hairline pt-2">
+                  <div className="text-[9px] text-ash/80">
+                    Cost presets shown per tier: small (1k/1k), standard (5k/2k), heavy (20k/8k)
+                  </div>
+                </div>
+                <div className="mt-2 overflow-hidden rounded border border-hairline/60">
+                  {routingRows.map(({ key, row }) => (
+                    <div key={key} className="p-2 border-b border-hairline/60 last:border-b-0">
+                      {row}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {!routingRows.length || showRoutingDetails ? null : (
+              <div className="mt-1 break-words text-[9px] text-ash/80">
+                pricing + routing lines shown per tier: open details
+              </div>
+            )}
+            <SignalGrid
+              label="Command deck"
+              items={[
+                { label: "mode", value: buildIntent.mode },
+                { label: "model", value: buildIntent.model },
+                { label: "reference", value: buildIntent.reference },
+                { label: "fan-out", value: buildIntent.fanout },
+              ]}
+              right={
+                <span title={assetState.title}>
+                  <Pill tone={assetState.tone}>{assetState.label}</Pill>
+                </span>
+              }
+              gridClassName="grid-cols-1"
+              valueClassName="text-[11px]"
+            />
+          </Panel>
+      </div>
 
       {fanout.cands.length > 0 || fanout.active ? (
         <Panel className="mb-6 overflow-hidden">
@@ -881,9 +1557,24 @@ export default function Studio({ stream }) {
         <PanelHead
           label="Recent builds"
           right={
-            <span className="font-mono text-[11px] text-ash">
-              {recentBuilds.length} total
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] text-ash">
+                {recentBuilds.length} total
+              </span>
+              <button
+                type="button"
+                onClick={() => cleanupCompletedBuilds.mutate()}
+                disabled={
+                  cleanupCompletedBuilds.isPending || terminalCleanupCandidates.length === 0
+                }
+                className="btn-ghost py-0.5 text-[10px] disabled:opacity-50"
+                title="Delete completed/terminal builds from recent build history"
+              >
+                {cleanupCompletedBuilds.isPending
+                  ? "Cleaning…"
+                  : `Cleanup completed (${terminalCleanupCandidates.length})`}
+              </button>
+            </div>
           }
         />
         {approve.isError ? (
@@ -894,6 +1585,16 @@ export default function Studio({ stream }) {
         {cancelBuild.isError ? (
           <p className="px-4 py-3 font-mono text-xs text-ember">
             {String(cancelBuild.error?.message || cancelBuild.error)}
+          </p>
+        ) : null}
+        {cleanupBuild.isError ? (
+          <p className="px-4 py-3 font-mono text-xs text-ember">
+            {String(cleanupBuild.error?.message || cleanupBuild.error)}
+          </p>
+        ) : null}
+        {cleanupCompletedBuilds.isError ? (
+          <p className="px-4 py-3 font-mono text-xs text-ember">
+            {String(cleanupCompletedBuilds.error?.message || cleanupCompletedBuilds.error)}
           </p>
         ) : null}
         {recentBuilds.length === 0 ? (
@@ -921,7 +1622,7 @@ export default function Studio({ stream }) {
                   const diagnostics = buildDiagnostics(b);
                   const fields = rebuildFields(b);
                   const buildKey = b.build_id || b.slug;
-                  const active = ["running", "queued", "pending", "awaiting_approval"].includes(b.status);
+                  const active = isActiveBuild(b.status);
                   return (
                     <tr key={buildKey}>
                       <td className="px-4 py-2 font-mono text-xs text-bone">
@@ -948,6 +1649,12 @@ export default function Studio({ stream }) {
                           title={`prompts ${ai.promptCount} · stages ${ai.stageCount} · skills ${ai.skills} · recall ${ai.recall}`}
                         >
                           prompts {ai.promptCount} · stages {ai.stageCount}
+                        </div>
+                        <div
+                          className="max-w-[13rem] truncate text-ash/70"
+                          title={`run ${ai.costLabel} · stage cost ${ai.stageCostLabel}`}
+                        >
+                          run {ai.costLabel} · stage cost {ai.stageCostLabel}
                         </div>
                         <div
                           className="max-w-[13rem] truncate text-ash/70"
@@ -1016,18 +1723,39 @@ export default function Studio({ stream }) {
                             </button>
                           </div>
                         ) : (
-                          <button
-                            onClick={() => loadRebuildVariant(b)}
-                            disabled={!fields.brief.trim()}
-                            className="btn-ghost disabled:opacity-50"
-                            title={
-                              fields.brief.trim()
-                                ? "Load this build into the form for an editable rebuild variant"
-                                : "No recoverable brief"
-                            }
-                          >
-                            Rebuild
-                          </button>
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => loadRebuildVariant(b)}
+                              disabled={!fields.brief.trim()}
+                              className="btn-ghost disabled:opacity-50"
+                              title={
+                                fields.brief.trim()
+                                  ? "Load this build into the form for an editable rebuild variant"
+                                  : "No recoverable brief"
+                              }
+                            >
+                              Rebuild
+                            </button>
+                            <button
+                              onClick={() => {
+                                setPendingBuildId(buildKey);
+                                cleanupBuild.mutate({ build_id: buildKey });
+                              }}
+                              disabled={
+                                !isTerminalBuild(b.status) ||
+                                (cleanupBuild.isPending &&
+                                pendingBuildId === buildKey)
+                              }
+                              className="btn-ghost disabled:opacity-50"
+                              title={
+                                isTerminalBuild(b.status)
+                                  ? "Delete this build from recent history"
+                                  : "Only completed builds can be cleaned up"
+                              }
+                            >
+                              Delete
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>

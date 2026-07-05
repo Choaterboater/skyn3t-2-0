@@ -63,6 +63,11 @@ def screenshot(url: str, out_path: str, *, timeout_ms: int = 8000) -> str | None
             try:
                 page = browser.new_page()
                 page.goto(url, timeout=timeout_ms, wait_until="load")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=min(2500, timeout_ms))
+                except Exception:  # noqa: BLE001 - apps may poll forever; settle best-effort
+                    pass
+                page.wait_for_timeout(750)
                 page.screenshot(path=out_path, full_page=True)
             finally:
                 browser.close()

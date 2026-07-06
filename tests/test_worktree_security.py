@@ -53,3 +53,23 @@ def test_merge_back_excludes_swift_module_cache(tmp_path):
     assert "Package.swift" in copied
     assert ".skyn3t-swift-module-cache/JFWOF8FH7S6X/SwiftShims.pcm" not in copied
     assert not (dst / ".skyn3t-swift-module-cache").exists()
+
+
+def test_merge_back_excludes_swiftpm_build_artifacts(tmp_path):
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    build_cache = src / ".build" / "arm64-apple-macosx" / "debug" / "ModuleCache"
+    build_cache.mkdir(parents=True)
+    (build_cache / "SwiftShims.pcm").write_text("absolute-path-bound cache\n", encoding="utf-8")
+    swiftpm = src / ".swiftpm" / "configuration"
+    swiftpm.mkdir(parents=True)
+    (swiftpm / "registries.json").write_text("{}", encoding="utf-8")
+    (src / "Package.swift").write_text("// swift package\n", encoding="utf-8")
+
+    copied = merge_back(src, dst)
+
+    assert "Package.swift" in copied
+    assert ".build/arm64-apple-macosx/debug/ModuleCache/SwiftShims.pcm" not in copied
+    assert ".swiftpm/configuration/registries.json" not in copied
+    assert not (dst / ".build").exists()
+    assert not (dst / ".swiftpm").exists()

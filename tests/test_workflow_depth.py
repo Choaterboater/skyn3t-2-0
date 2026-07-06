@@ -66,3 +66,15 @@ def test_non_product_brief_skips(tmp_path: Path):
     result = check_workflow_depth(tmp_path, "single page recipe blog", "nextjs")
     assert result["ok"] is True
     assert result["skipped"] is True
+
+
+def test_non_finance_common_business_words_skip(tmp_path: Path):
+    result = check_workflow_depth(
+        tmp_path,
+        "sales order workflow for open positions and content strategy",
+        "nextjs",
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["missing"] == []

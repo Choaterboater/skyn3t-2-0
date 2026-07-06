@@ -11,6 +11,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 
 import structlog
 
+from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
@@ -73,6 +75,8 @@ def code_is_stale(force_refresh: bool = False) -> bool:
 # Strong references to in-flight background build tasks (prevent GC mid-run).
 _BUILD_TASKS: set = set()
 _BUILD_TASKS_BY_ID: dict[str, Any] = {}
+_ENV_WRITE_LOCK = threading.RLock()
+_MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def _reap_build_task(task: Any) -> None:
@@ -231,10 +235,17 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
     try:
         header, _, b64 = s.partition(",")
         if not b64:
-            return s
+            return ""
         import base64
 
-        raw = base64.b64decode(b64, validate=False)
+        max_b64 = ((_MAX_REFERENCE_IMAGE_BYTES + 2) // 3) * 4 + 4
+        if len(b64) > max_b64:
+            log.warning("build.reference_image_rejected", note="reference_image too large")
+            return ""
+        raw = base64.b64decode(b64, validate=True)
+        if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
+            log.warning("build.reference_image_rejected", note="reference_image too large")
+            return ""
         ext = "png"
         if "image/jpeg" in header or "image/jpg" in header:
             ext = "jpg"
@@ -247,7 +258,7 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
         return str(out_path)
     except Exception as exc:  # noqa: BLE001 - never let an image break a build
         log.warning("build.reference_image_save_failed", error=str(exc)[:160])
-        return s  # a data: URL is safe inline data; the LLM client accepts it
+        return ""
 
 
 _BUILD_PROFILES = {
@@ -389,25 +400,34 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     studio = state.studio
     dispatched = False
     runner = None
+    build_extra = {
+        "stack": stack,
+        "build_id": build_id,
+        "build_profile": profile,
+        **_profile_extra(profile),
+    }
+    if full_app_requested:
+        build_extra = {**build_extra, **_full_app_extra()}
+    if model:
+        build_extra["model_override"] = model
+    if ref_path:
+        build_extra["reference_image"] = ref_path
     if studio is not None:
         if hasattr(studio, "start"):
-            _extra = {
-                "stack": stack,
-                "build_id": build_id,
-                "build_profile": profile,
-                **_profile_extra(profile),
-            }
-            if full_app_requested:
-                _extra = {**_extra, **_full_app_extra()}
-            if model:
-                _extra["model_override"] = model
-            if ref_path:
-                _extra["reference_image"] = ref_path
             def runner() -> Any:
-                return studio.start(brief, slug=slug or None, extra=_extra)
+                return studio.start(brief, slug=slug or None, extra=build_extra)
         elif hasattr(studio, "submit"):  # pragma: no cover - legacy shape
             def runner() -> Any:
-                return studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
+                try:
+                    return studio.submit(
+                        brief=brief,
+                        slug=slug,
+                        stack=stack,
+                        build_id=build_id,
+                        extra=build_extra,
+                    )
+                except TypeError:
+                    return studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
     if runner is not None:
         try:
             res = runner()
@@ -439,6 +459,19 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     )
     if not dispatched:
         rec.status = "queued_no_studio"
+        await state.event_bus.emit(
+            EventType.BUILD_FAILED,
+            source="web.api",
+            payload={
+                "build_id": build_id,
+                "brief": rec.brief,
+                "slug": rec.slug,
+                "stack": rec.stack,
+                "status": rec.status,
+                "error": "no StudioRunner is wired in this process",
+            },
+            correlation_id=build_id,
+        )
     return {
         "build_id": build_id,
         "status": rec.status,
@@ -1382,26 +1415,27 @@ def _persist_env_var(name: str, value: str) -> None:
         from skyn3t.config.settings import REPO_ROOT
 
         env = REPO_ROOT / ".env"
-        lines = env.read_text().splitlines() if env.exists() else []
-        out: list[str] = []
-        found = False
-        for ln in lines:
-            stripped = ln.strip()
-            # Only a real (non-comment) ``KEY=value`` assignment can match — a
-            # commented line (``# KEY=...``) must be preserved verbatim, never
-            # uncommented/overwritten.
-            if stripped.startswith("#") or "=" not in stripped:
-                out.append(ln)
-                continue
-            key = stripped.split("=", 1)[0].strip()
-            if key == name:
+        with _ENV_WRITE_LOCK:
+            lines = env.read_text().splitlines() if env.exists() else []
+            out: list[str] = []
+            found = False
+            for ln in lines:
+                stripped = ln.strip()
+                # Only a real (non-comment) ``KEY=value`` assignment can match — a
+                # commented line (``# KEY=...``) must be preserved verbatim, never
+                # uncommented/overwritten.
+                if stripped.startswith("#") or "=" not in stripped:
+                    out.append(ln)
+                    continue
+                key = stripped.split("=", 1)[0].strip()
+                if key == name:
+                    out.append(f"{name}={value}")
+                    found = True
+                else:
+                    out.append(ln)
+            if not found:
                 out.append(f"{name}={value}")
-                found = True
-            else:
-                out.append(ln)
-        if not found:
-            out.append(f"{name}={value}")
-        env.write_text("\n".join(out) + "\n")
+            atomic_write_text(env, "\n".join(out) + "\n")
     except Exception:  # noqa: BLE001
         pass
 
@@ -2296,6 +2330,7 @@ _MODEL_PIN_FIELDS = {
     "strong": "model_strong",
     "docs": "model_docs",
 }
+_CODEGEN_CLI_PROVIDERS = {"", "claude", "kimi", "copilot"}
 
 
 async def set_llm_routing(
@@ -2318,7 +2353,11 @@ async def set_llm_routing(
 
     updates: dict[str, str] = {}
     if codegen_cli_provider is not None:
-        updates["codegen_cli_provider"] = (codegen_cli_provider or "").strip().lower()
+        provider = (codegen_cli_provider or "").strip().lower()
+        if provider not in _CODEGEN_CLI_PROVIDERS:
+            allowed = ", ".join(sorted(p or "none" for p in _CODEGEN_CLI_PROVIDERS))
+            raise ValueError(f"Unsupported codegen_cli_provider {provider!r}; use one of: {allowed}")
+        updates["codegen_cli_provider"] = provider
     if codegen_cli_model is not None:
         updates["codegen_cli_model"] = _normalize_model_id(codegen_cli_model)
     if openrouter_codegen_model is not None:
@@ -2461,7 +2500,8 @@ async def set_gate_enabled(
 async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
-            "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
+            "approval_gates", "per_build_usd_cap", "daily_usd_cap",
+            "daily_token_cap", "autonomous_daily_build_cap", "llm_backend",
             "codegen_cli_provider", "codegen_cli_model", "openrouter_codegen_model",
             "model_cheap", "model_ui", "model_backend", "model_strong", "model_docs",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
@@ -2714,16 +2754,16 @@ def build_router(state: AppState) -> Any:
     async def _set_llm_routing(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             free_only = _coerce_bool(body["free_only"]) if "free_only" in body else None
+            return await set_llm_routing(
+                state,
+                codegen_cli_provider=str(body["codegen_cli_provider"]) if "codegen_cli_provider" in body else None,
+                codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
+                openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
+                model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
+                free_only=free_only,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return await set_llm_routing(
-            state,
-            codegen_cli_provider=str(body["codegen_cli_provider"]) if "codegen_cli_provider" in body else None,
-            codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
-            openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
-            model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
-            free_only=free_only,
-        )
 
     @router.post("/settings/github", dependencies=[auth])
     async def _set_github(body: dict[str, Any] = empty_body) -> dict[str, Any]:

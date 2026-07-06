@@ -257,3 +257,23 @@ def test_check_mcp_never_raises_on_garbage(tmp_path):
     v = check_mcp(tmp_path / "does-not-exist", stack="mcp")
     assert isinstance(v, McpVerdict)
     assert v.skipped
+
+
+def test_mcp_check_does_not_pass_host_secrets_to_server(tmp_path, monkeypatch):
+    import subprocess
+
+    captured = {}
+    _write_server(tmp_path, _GOOD_SERVER)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-host-secret")
+
+    def fake_popen(*args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        raise OSError("stop after capture")
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    v = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
+
+    assert v.skipped
+    assert "OPENAI_API_KEY" not in captured["env"]
+    assert captured["env"]["PYTHONUNBUFFERED"] == "1"

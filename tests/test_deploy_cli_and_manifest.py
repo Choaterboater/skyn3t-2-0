@@ -147,6 +147,29 @@ def test_deploy_cli_errors_on_a_missing_build(monkeypatch, tmp_path):
     assert "No such build" in result.output
 
 
+def test_record_deployment_persists_live_url(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment
+
+    proj = _seed_project(
+        tmp_path / "site-live",
+        {"index.html": "<h1>hi</h1>"},
+        stack="static",
+    )
+    plan = plan_deploy(proj, "static")
+
+    record = record_deployment(
+        proj,
+        result={"ok": True, "url": "https://example.pages.dev", "target": "cloudflare"},
+        plan=plan,
+        target="cloudflare-pages",
+    )
+
+    assert record["url"] == "https://example.pages.dev"
+    man = BuildManifest.load(proj)
+    assert man.extra["live_url"] == "https://example.pages.dev"
+    assert man.extra["deployments"][-1]["target"] == "cloudflare-pages"
+
+
 # ---------------------------------------------------------------------------
 # _finalize wiring: a finished build records its deploy plan
 # ---------------------------------------------------------------------------

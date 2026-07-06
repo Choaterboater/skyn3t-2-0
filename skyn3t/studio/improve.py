@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -263,7 +264,7 @@ class ImproveEngine:
                         stack: str, slug: str,
                         config_summary: dict[str, Any] | None = None,
                         files_changed: list[str] | None = None) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
         hist = man.extra.setdefault("improve_history", [])
@@ -272,7 +273,7 @@ class ImproveEngine:
         # 8 consecutive improves changed nothing, hiding the silent no-op.
         hist.append({"goal": goal, "files": len(delivered),
                      "files_changed": len(files_changed or []),
-                     "at": datetime.now(timezone.utc).isoformat(),
+                     "at": datetime.now(UTC).isoformat(),
                      "proof_passed": bool(proof.passed), "score": float(proof.score)})
         if config_summary:
             man.extra["config_spec"] = config_summary.get("config_spec", {})

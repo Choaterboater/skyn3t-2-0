@@ -18,16 +18,27 @@ class _App:
 
 
 def test_skipped_when_no_preview(tmp_path):
+    stopped = {"stop": 0, "cleanup": 0}
+
     class _NoApp:
         async def start(self, *a, **k):
-            return SimpleNamespace(status="failed", url="")
+            return SimpleNamespace(status="failed", url="", pid=123, log_path="x")
 
         def stop(self, app):
-            ...
+            stopped["stop"] += 1
 
-    out = asyncio.run(liveness_self_improve(tmp_path, app_runner=_NoApp(),
-                                            improve_engine=None, max_rounds=1))
+    def fake_cleanup(app):
+        stopped["cleanup"] += 1
+
+    old_cleanup = lv.cleanup_serve
+    lv.cleanup_serve = fake_cleanup
+    try:
+        out = asyncio.run(liveness_self_improve(tmp_path, app_runner=_NoApp(),
+                                                improve_engine=None, max_rounds=1))
+    finally:
+        lv.cleanup_serve = old_cleanup
     assert out.skipped is True
+    assert stopped == {"stop": 1, "cleanup": 1}
 
 
 def test_healthy_first_round_no_improve(tmp_path, monkeypatch):

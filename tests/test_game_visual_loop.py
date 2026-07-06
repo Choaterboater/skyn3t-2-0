@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 from skyn3t.studio.game_visual_check import GameVisualVerdict
 from skyn3t.studio.game_visual_loop import (
@@ -25,7 +24,6 @@ from skyn3t.studio.game_visual_loop import (
     visual_improved,
     visual_regressed,
 )
-
 
 # ── pure verdict comparisons ────────────────────────────────────────────────
 

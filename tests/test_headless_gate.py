@@ -12,7 +12,6 @@ contract tests always run.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 import pytest
@@ -795,7 +794,7 @@ async def test_transient_improver_crash_does_not_block_missing_core(tmp_path, mo
     monkeypatch.setattr(runner, "_has_capability", lambda cap: True)
 
     async def boom(task):
-        raise asyncio.TimeoutError("improver timed out")
+        raise TimeoutError("improver timed out")
 
     monkeypatch.setattr(runner.orchestrator, "submit", boom)
     monkeypatch.setattr(

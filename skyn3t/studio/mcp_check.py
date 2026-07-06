@@ -51,6 +51,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from skyn3t.security.secrets import filter_env
+
 # Default per-phase read budgets (seconds). Generous enough for a real SDK boot,
 # bounded so a wedged server can never hang a build. Overridable (the tests pass
 # small values for the hang case).
@@ -190,10 +192,10 @@ class _StdioClient:
             assert self.proc.stdin is not None
             self.proc.stdin.write(data)
             self.proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
+        except (BrokenPipeError, ValueError, OSError) as exc:
             # The server closed stdin / exited — treat as a server exit so the
             # caller can classify the boot failure.
-            raise _ServerExited("server stdin is closed (process exited)")
+            raise _ServerExited("server stdin is closed (process exited)") from exc
         return rid
 
     def read_result(self, rid: int, timeout: float) -> dict:
@@ -207,8 +209,8 @@ class _StdioClient:
                 raise _Timeout(f"no response to id={rid} within {timeout:.0f}s")
             try:
                 line = self._out_q.get(timeout=remaining)
-            except queue.Empty:
-                raise _Timeout(f"no response to id={rid} within {timeout:.0f}s")
+            except queue.Empty as exc:
+                raise _Timeout(f"no response to id={rid} within {timeout:.0f}s") from exc
             if line is None:  # EOF — the server's stdout closed
                 raise _ServerExited("server closed stdout (process exited)")
             line = line.strip()
@@ -359,7 +361,7 @@ def _probe_server(
     list_timeout: float,
     call_timeout: float,
 ) -> McpVerdict:
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {**filter_env(os.environ), "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     try:
         # NOT `-I`: since Python 3.11 isolated mode implies -P (safe path), which
         # drops the script's directory from sys.path — the scaffold's own
@@ -530,5 +532,6 @@ def _shutdown(proc: subprocess.Popen) -> None:
     except Exception:  # noqa: BLE001
         try:
             proc.kill()
+            proc.wait(timeout=2.0)
         except Exception:  # noqa: BLE001
             pass

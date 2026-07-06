@@ -242,3 +242,79 @@ def test_product_quality_gates_skip_non_finance_build(tmp_path):
     assert score == 88.0
     assert man.extra["finance_sanity"]["skipped"] is True
     assert man.extra["workflow_depth"]["skipped"] is True
+
+
+def test_ai_native_gate_blocks_real_contract_findings(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="chat with docs", stack="rag")
+    man.extra["rag_check"] = {
+        "ok": False,
+        "skipped": False,
+        "issues": ["query did not retrieve the planted marker"],
+    }
+
+    verdict = r._apply_ai_native_gates(man, "go")
+
+    assert verdict == "no_go"
+    assert "ai_native_gate" in man.extra
+    assert "rag_check" in man.extra["ai_native_gate"]
+
+
+def test_ai_native_gate_never_blocks_soft_skips(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="chat with docs", stack="rag")
+    man.extra["rag_check"] = {
+        "ok": False,
+        "skipped": True,
+        "issues": ["ignored because skipped"],
+    }
+
+    assert r._apply_ai_native_gates(man, "go") == "go"
+    assert "ai_native_gate" not in man.extra
+
+
+def test_degraded_proof_caps_success_score(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="app", stack="fastapi")
+    proof = SimpleNamespace(detail={
+        "proof_environment": {
+            "degraded": True,
+            "degraded_reasons": ["build skipped"],
+        }
+    })
+
+    score = r._apply_degraded_proof_score(man, proof, 96.0, "go")
+
+    assert score == 74.0
+    assert man.extra["proof_environment_gate"]["degraded"] is True
+
+
+def test_post_proof_repair_triggers_full_reproof(tmp_path, monkeypatch):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="game", stack="phaser")
+    man.extra["post_proof_repair_changed"] = True
+    plan = SimpleNamespace(stack="phaser", checklist=["src/sim.js"])
+    calls = []
+
+    class _Proof:
+        def __init__(self, passed):
+            self.passed = passed
+            self.detail = {"build": "failed" if not passed else "passed"}
+
+        def to_dict(self):
+            return {"passed": self.passed, "detail": dict(self.detail)}
+
+    def fake_proof(project_dir, **kwargs):
+        calls.append(kwargs)
+        return _Proof(False)
+
+    monkeypatch.setattr(runner_mod, "proof_run", fake_proof)
+
+    proof = asyncio.run(
+        r._reproof_after_post_proof_repairs(man, plan, str(tmp_path), _Proof(True))
+    )
+
+    assert proof.passed is False
+    assert calls and calls[0]["run_build"] is True
+    assert man.extra["proof"]["passed"] is False
+    assert man.extra["proof_after_post_proof_repair"]["passed"] is False

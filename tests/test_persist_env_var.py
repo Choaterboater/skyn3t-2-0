@@ -8,6 +8,7 @@ destroying the comment and producing duplicate active lines.
 from __future__ import annotations
 
 import skyn3t.config.settings as smod
+from skyn3t.web import routes
 from skyn3t.web.routes import _persist_env_var
 
 
@@ -50,3 +51,21 @@ def test_commented_key_absent_active_is_appended_not_uncommented(tmp_path, monke
     lines = env.read_text().splitlines()
     assert "# SKYN3T_TOKEN=disabled" in lines
     assert "SKYN3T_TOKEN=live" in lines
+
+
+def test_persist_env_var_writes_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr(smod, "REPO_ROOT", tmp_path)
+    calls = []
+
+    def fake_atomic(path, text):
+        calls.append((path, text))
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(routes, "atomic_write_text", fake_atomic)
+
+    _persist_env_var("SKYN3T_ATOMIC", "yes")
+
+    assert calls
+    assert calls[0][0] == tmp_path / ".env"
+    assert "SKYN3T_ATOMIC=yes" in calls[0][1]

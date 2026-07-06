@@ -11,8 +11,8 @@ router (2.0 backlog P2) plugs in by overriding :meth:`resolve`.
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 import math
+from enum import StrEnum
 from pathlib import Path
 
 import structlog

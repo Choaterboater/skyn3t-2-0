@@ -6,6 +6,7 @@ validate_source guard should already have regenerated it the OpenRouter way; thi
 gate is the last line of defense in the verdict."""
 from __future__ import annotations
 
+from skyn3t.agents.validate import key_prompt_violation
 from skyn3t.studio.runner import StudioRunner
 
 
@@ -69,9 +70,6 @@ def test_gate_never_raises_on_missing_dir(tmp_path):
 # passthrough), never PROMPT the end user for one. `key_prompt_violation` +
 # the gate reject that; a match needs an input/prompt element AND api-key wording
 # together, so a mere mention of a key (env line, os.getenv read) is not flagged.
-
-from skyn3t.agents.validate import key_prompt_violation
-
 
 def test_key_prompt_flags_streamlit_password_input():
     src = (

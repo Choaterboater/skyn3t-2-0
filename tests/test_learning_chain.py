@@ -154,3 +154,30 @@ def test_fetch_github_repo_rejects_non_github():
     from skyn3t.cli.main import _fetch_github_repo
 
     assert asyncio.run(_fetch_github_repo("https://example.com/not/github")) is None
+
+
+async def test_studio_grades_each_lesson_id_once_per_build():
+    from skyn3t.studio.runner import StudioRunner
+
+    class _Memory:
+        def __init__(self):
+            self.calls = []
+
+        async def grade_lesson(self, lesson_id, helpful, quality=None):
+            self.calls.append((lesson_id, helpful, quality))
+
+    memory = _Memory()
+    runner = StudioRunner.__new__(StudioRunner)
+    runner.memory = memory
+
+    await runner._grade_lessons(
+        [
+            {"id": 7, "stage": ""},
+            {"id": 7, "stage": ""},
+            {"id": 8, "stage": "code"},
+        ],
+        helpful=True,
+        quality=0.9,
+    )
+
+    assert memory.calls == [(7, True, 0.9), (8, True, 0.9)]

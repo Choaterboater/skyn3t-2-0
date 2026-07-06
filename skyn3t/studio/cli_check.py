@@ -24,6 +24,7 @@ Design contract — mirrors rag_check/workflow_check:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from skyn3t.security.secrets import filter_env
 from skyn3t.studio.gate_verdict import GateVerdict
 
 CliVerdict = GateVerdict
@@ -51,7 +53,13 @@ def _python_exec(explicit: str | None) -> str | None:
     return sys.executable or shutil.which("python") or shutil.which("python3")
 
 
-def _run(py: str, root: Path, args: list[str], timeout: float) -> tuple[int, str, str]:
+def _run(
+    py: str,
+    root: Path,
+    args: list[str],
+    timeout: float,
+    env: dict[str, str],
+) -> tuple[int, str, str]:
     """One bounded CLI invocation. Returns (returncode, stdout, stderr);
     a timeout or spawn failure is (-1, "", reason). Never raises."""
     try:
@@ -59,6 +67,7 @@ def _run(py: str, root: Path, args: list[str], timeout: float) -> tuple[int, str
             [py, "-B", "main.py", *args],
             cwd=str(root), capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
+            env=env,
         )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except subprocess.TimeoutExpired:
@@ -129,9 +138,10 @@ def check_cli(
 def _probe_cli(root: Path, py: str, *, cmd_timeout: float) -> CliVerdict:
     checked: dict[str, Any] = {}
     issues: list[str] = []
+    env = {**filter_env(os.environ), "PYTHONDONTWRITEBYTECODE": "1"}
 
     # 1. --help is the front door: exit 0 with real usage text.
-    code, out, err = _run(py, root, ["--help"], cmd_timeout)
+    code, out, err = _run(py, root, ["--help"], cmd_timeout, env)
     if code != 0:
         local = _missing_local_module(err, root)
         if local is not None:
@@ -159,7 +169,7 @@ def _probe_cli(root: Path, py: str, *, cmd_timeout: float) -> CliVerdict:
     subcommands = parse_subcommands(help_text)
     checked["subcommands"] = subcommands
     for name in subcommands:
-        code, out, err = _run(py, root, [name, "--help"], cmd_timeout)
+        code, out, err = _run(py, root, [name, "--help"], cmd_timeout, env)
         if code != 0:
             issues.append(
                 f"the help text advertises the '{name}' subcommand but "
@@ -173,7 +183,7 @@ def _probe_cli(root: Path, py: str, *, cmd_timeout: float) -> CliVerdict:
     if not subcommands:
         checked["nonsense_exit"] = "not_probed_flat_cli"
         return CliVerdict(issues=issues, checked=checked)
-    code, out, err = _run(py, root, [_NONSENSE], cmd_timeout)
+    code, out, err = _run(py, root, [_NONSENSE], cmd_timeout, env)
     checked["nonsense_exit"] = code
     if code == 0:
         issues.append(

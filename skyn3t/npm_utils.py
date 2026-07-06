@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 
+from skyn3t.security.secrets import filter_env
+
 _STAMP_VERSION = 1
 _LOCKFILES = ("package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock")
 _BUILD_SKIP_DIRS = {
@@ -81,12 +83,13 @@ def npm_cache_dir() -> str:
 
 def npm_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     env = {
-        **os.environ,
+        **filter_env(os.environ),
         "CI": "1",
         "npm_config_audit": "false",
         "npm_config_fund": "false",
         "npm_config_progress": "false",
         "npm_config_prefer_offline": "true",
+        "npm_config_ignore_scripts": "true",
     }
     cache = npm_cache_dir()
     if cache:
@@ -104,6 +107,7 @@ def npm_install_args(npm_cmd: str, action: str = "install") -> list[str]:
         "--no-fund",
         "--no-progress",
         "--prefer-offline",
+        "--ignore-scripts",
     ]
     cache = npm_cache_dir()
     if cache:

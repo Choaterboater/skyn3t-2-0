@@ -488,7 +488,10 @@ def check_asset_outputs(project_dir: str | Path) -> dict[str, list[str]]:
             if not path:
                 continue
             rel = path.lstrip("/")
-            target = root / rel
+            if rel == "assets" or rel.startswith("assets/"):
+                target = root / _ROOT_ASSET_DIR / rel.removeprefix("assets/").removeprefix("assets")
+            else:
+                target = root / rel
             if not target.exists():
                 missing_paths.append(path)
             license_name = str(rec.get("license") or "").strip().lower()

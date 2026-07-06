@@ -16,8 +16,9 @@ production; it only decides and reverts.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 # Cortex writes live overrides to these files under <data_dir>/cortex/. There is
 # no revert primitive, so the ratchet snapshots their bytes and restores them.

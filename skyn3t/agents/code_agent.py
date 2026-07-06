@@ -658,6 +658,7 @@ class CodeAgent(BaseAgent):
                 # against it writing chat prose instead of code: reject prose source
                 # files so they don't count as "delivered" and never ship.
                 disk, prose_files = self._clean_agentic_files(disk, scaffold)
+                self._unlink_rejected_agentic_files(worktree, prose_files, scaffold)
                 code_bytes = self._code_bytes(disk)
                 contract_gap = self._agentic_contract_gap(stack, disk)
                 under_delivered = not (disk and code_bytes >= threshold) or bool(contract_gap)
@@ -1109,6 +1110,7 @@ class CodeAgent(BaseAgent):
             disk = self._read_files(worktree)
             # Reject chat-prose source files (no scaffold to revert to -> dropped).
             disk, prose = self._clean_agentic_files(disk, {})
+            self._unlink_rejected_agentic_files(worktree, prose, {})
             if prose:
                 self.metadata["prose_rejected"] = list(prose)
             if not disk:
@@ -1634,6 +1636,28 @@ class CodeAgent(BaseAgent):
             else:
                 clean[path] = content
         return clean, rejected
+
+    @staticmethod
+    def _unlink_rejected_agentic_files(
+        worktree: Path, rejected: list[str], scaffold: dict[str, str]
+    ) -> None:
+        """Remove rejected agent-authored files that are absent from the scaffold."""
+        root = Path(worktree).resolve()
+        for rel in rejected:
+            if rel in scaffold:
+                continue
+            try:
+                target = (root / rel).resolve()
+            except OSError:
+                continue
+            if target == root or root not in target.parents:
+                continue
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                log.warning("code_agent.agentic_rejected_unlink_failed", file=rel)
 
     async def _generate_file(self, rel_path: str, brief: str, stack: str,
                              plan: dict[str, Any], knowledge: str = "",

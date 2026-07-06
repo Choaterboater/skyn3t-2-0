@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from skyn3t.worktree import create_worktree
+from skyn3t.worktree import create_worktree, merge_back
 
 
 def test_create_worktree_rejects_path_traversal_slug(tmp_path):
@@ -23,3 +23,18 @@ def test_create_worktree_allows_normal_slug(tmp_path):
     wt = create_worktree(base, "my-app")
     root = (base.parent / ".skyn3t_worktrees").resolve()
     assert wt.path.resolve().is_relative_to(root)
+
+
+def test_merge_back_rejects_symlink_to_outside_file(tmp_path):
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    src.mkdir()
+    outside = tmp_path / "secret.env"
+    outside.write_text("OPENROUTER_API_KEY=sk-or-leak\n", encoding="utf-8")
+    (src / "public").mkdir()
+    (src / "public" / "leak.txt").symlink_to(outside)
+
+    copied = merge_back(src, dst)
+
+    assert "public/leak.txt" not in copied
+    assert not (dst / "public" / "leak.txt").exists()

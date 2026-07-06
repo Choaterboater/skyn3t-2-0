@@ -43,6 +43,23 @@ def test_largest_source_excludes_node_modules_and_dist(tmp_path):
     assert r._largest_source_bytes(str(tmp_path)) == 500
 
 
+def test_largest_source_counts_swift_mjs_and_astro(tmp_path):
+    r = _runner()
+    (tmp_path / "Sources").mkdir()
+    (tmp_path / "Sources" / "App.swift").write_text("s" * 700, encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.mjs").write_text("m" * 500, encoding="utf-8")
+    (tmp_path / "src" / "page.astro").write_text("a" * 300, encoding="utf-8")
+
+    assert r._largest_source_bytes(str(tmp_path)) == 1500
+
+
+def test_failed_code_stage_is_not_treated_as_stub_backend():
+    r = _runner()
+
+    assert r._code_backend_from_prior({"code": {"error": "boom"}}) == "failed"
+
+
 # --- fix 2: scaffold-stub-delivery detection --------------------------------
 
 def test_pure_scaffold_stub_is_flagged(tmp_path):

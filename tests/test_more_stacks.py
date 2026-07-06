@@ -125,6 +125,21 @@ def test_astro_scaffold_is_runnable_shape():
     assert "documentation" in index.lower() or "tool" in index.lower()
 
 
+def test_astro_docs_scaffold_has_sidebar_and_code_blocks():
+    files = scaffold_for(
+        "astro",
+        "docs",
+        "an Astro static documentation site with a sidebar and code blocks",
+    )
+
+    page = files["src/pages/index.astro"]
+
+    assert "docs-sidebar" in page
+    assert "<pre" in page
+    assert "<code" in page
+    assert "Quick start" in page
+
+
 def test_remix_scaffold_is_runnable_shape():
     files = scaffold_for("remix", "shop-app", "An online shop")
     for required in ("package.json", "app/root.tsx", "app/routes/_index.tsx",

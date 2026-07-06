@@ -20,6 +20,7 @@ data/skills/
 data/cortex/
 data/proposals/
 data/checkpoints/
+data/budget/
 logs/
 .claude/
 scratchpad/

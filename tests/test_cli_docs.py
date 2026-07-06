@@ -45,6 +45,25 @@ def test_has_module_detects_stdlib_and_missing() -> None:
     assert cli._has_module("a_module_that_does_not_exist_xyz") is False
 
 
+def test_reset_bench_budget_preserves_daily_counters() -> None:
+    class _Budget:
+        spent_build = 0.75
+        spent_day = 2.5
+        tokens_day = 1234
+
+        def reset_build(self):
+            self.spent_build = 0.0
+
+    class _LLM:
+        budget = _Budget()
+
+    cli._reset_bench_budget(_LLM())
+
+    assert _LLM.budget.spent_build == 0.0
+    assert _LLM.budget.spent_day == 2.5
+    assert _LLM.budget.tokens_day == 1234
+
+
 # ---------------------------------------------------------------------------
 # Agent registry — builds the canonical stage vocabulary offline.
 # ---------------------------------------------------------------------------

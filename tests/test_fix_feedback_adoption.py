@@ -7,8 +7,6 @@ the improver's gap→file targeting keeps working.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from skyn3t.config.settings import Settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus

@@ -115,6 +115,8 @@ def create_worktree(
 
 def _iter_files(root: Path):
     for p in root.rglob("*"):
+        if p.is_symlink():
+            continue
         if p.is_dir():
             continue
         rel_parts = p.relative_to(root).parts

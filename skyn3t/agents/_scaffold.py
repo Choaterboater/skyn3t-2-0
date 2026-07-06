@@ -3217,7 +3217,7 @@ def _fastapi_llm_gateway(app_name: str, brief: str) -> dict[str, str]:
             '    messages = payload.get("messages") or []\n'
             '    text = " ".join(str(m.get("content", "")) for m in messages if isinstance(m, dict))\n'
             "    prompt_tokens = max(1, len(text) // 4)\n"
-            f'    content = f"[{{name}}] ok: {{text[:60]}}"\n'
+            '    content = f"[{name}] ok: {text[:60]}"\n'
             "    return {\n"
             '        "id": f"chatcmpl-{name}",\n'
             '        "object": "chat.completion",\n'

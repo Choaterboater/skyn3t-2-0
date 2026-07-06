@@ -132,16 +132,30 @@ def test_openrouter_routed_app_does_not_also_need_native_openai_key(tmp_path: Pa
     assert "OPENAI_API_KEY" not in needed
 
 
-def test_serve_passes_openrouter_key_to_routed_app_no_setup(tmp_path: Path, monkeypatch):
-    # The loop closes: a generated OpenRouter app previews using the user's
-    # configured OpenRouter key, with nothing reported missing.
+def test_serve_reports_openrouter_need_without_injecting_key_by_default(tmp_path: Path, monkeypatch):
+    # Previewed generated apps are untrusted, so real provider keys are not
+    # injected by default even when the app declares it needs one.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     _node_pkg(tmp_path, deps={"openai": "^4.0.0"})
     (tmp_path / "main.js").write_text(_OPENROUTER_JS)
     spec = build_run_spec(tmp_path, "react", port=9140)
-    assert spec.env.get("OPENROUTER_API_KEY") == "sk-or-real"
+    assert "OPENROUTER_API_KEY" not in spec.env
     assert "OPENAI_API_KEY" not in spec.env
+    assert spec.injected == ()
+    assert spec.missing_secrets == ("OPENROUTER_API_KEY",)
+
+
+def test_serve_can_opt_into_openrouter_key_passthrough(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SKYN3T_PREVIEW_SECRET_PASSTHROUGH", "true")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real")
+    _node_pkg(tmp_path, deps={"openai": "^4.0.0"})
+    (tmp_path / "main.js").write_text(_OPENROUTER_JS)
+
+    spec = build_run_spec(tmp_path, "react", port=9140)
+
+    assert spec.env.get("OPENROUTER_API_KEY") == "sk-or-real"
+    assert spec.injected == ("OPENROUTER_API_KEY",)
     assert spec.missing_secrets == ()
 
 
@@ -209,10 +223,9 @@ def test_store_seeds_replicate_and_github(monkeypatch):
 
 # ---- end-to-end through build_run_spec -----------------------------------
 
-def test_serve_passes_openrouter_key_and_scrubs_the_rest(tmp_path: Path, monkeypatch):
-    # A Claude-SDK app is served with the user's OpenRouter key (folded need); a
-    # native ANTHROPIC_API_KEY on the host is NEVER passed through, and an unrelated
-    # secret stays scrubbed.
+def test_serve_scrubs_provider_keys_by_default(tmp_path: Path, monkeypatch):
+    # A Claude-SDK app reports the folded OpenRouter need, but no real key is
+    # passed into the untrusted preview unless explicit passthrough is enabled.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
     monkeypatch.setenv("STRIPE_API_KEY", "sk-stripe-unrelated")
@@ -221,12 +234,12 @@ def test_serve_passes_openrouter_key_and_scrubs_the_rest(tmp_path: Path, monkeyp
     (tmp_path / "main.js").write_text("import Anthropic from '@anthropic-ai/sdk';\n")
 
     spec = build_run_spec(tmp_path, "react", port=9123)
-    assert spec.env.get("OPENROUTER_API_KEY") == "sk-or-real"
+    assert "OPENROUTER_API_KEY" not in spec.env
     assert "ANTHROPIC_API_KEY" not in spec.env   # native key never required/passed
     assert "STRIPE_API_KEY" not in spec.env      # unrelated host secret scrubbed
     assert spec.env.get("PATH") == "/usr/bin:/bin"
-    assert spec.injected == ("OPENROUTER_API_KEY",)
-    assert spec.missing_secrets == ()
+    assert spec.injected == ()
+    assert spec.missing_secrets == ("OPENROUTER_API_KEY",)
 
 
 def test_serve_missing_key_is_openrouter_not_anthropic(tmp_path: Path, monkeypatch):

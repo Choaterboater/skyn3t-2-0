@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from skyn3t.adapters import llm as llm_mod
-from skyn3t.adapters.llm import LLMClient, _strip_code_fences
+from skyn3t.adapters.llm import LLMClient, LLMResult, _strip_code_fences
 from skyn3t.config.settings import Settings
-from skyn3t.core.model_router import Tier, _FREE_DEFAULTS
+from skyn3t.core.model_router import _FREE_DEFAULTS, Tier
 
 
 def _client(backend: str, **kw) -> LLMClient:
@@ -75,6 +75,47 @@ def test_preferred_model_used_for_openrouter_agentic_codegen(monkeypatch, tmp_pa
 
     asyncio.run(c.agentic_build("build", str(tmp_path), stack="react_vite"))
     assert captured["model"] == "provider/selected-in-ui"
+
+
+def test_free_only_ignores_paid_openrouter_agentic_codegen_pin(monkeypatch, tmp_path):
+    c = _client(
+        "openrouter",
+        openrouter_api_key="sk-or-test",
+        free_only=True,
+        openrouter_codegen_model="provider/paid-code-model",
+        model_backend=_FREE_DEFAULTS[Tier.BACKEND],
+    )
+    captured = {}
+
+    async def _fake(prompt, workdir, model, timeout=None, stack=""):
+        captured["model"] = model
+        return {"ok": True, "backend": "openrouter"}
+
+    monkeypatch.setattr(c, "_openrouter_agentic", _fake)
+    import asyncio
+
+    asyncio.run(c.agentic_build("build", str(tmp_path), stack="react_vite"))
+    assert captured["model"].endswith(":free")
+
+
+def test_budget_tracker_persists_daily_usage_across_clients(tmp_path):
+    settings = Settings(
+        llm_backend="stub",
+        data_dir=tmp_path,
+        per_build_usd_cap=10.0,
+        daily_usd_cap=10.0,
+        daily_token_cap=10_000,
+    )
+    first = LLMClient(settings)
+    first.budget.record(LLMResult(
+        text="ok", model="m", backend="openrouter",
+        prompt_tokens=100, completion_tokens=50, cost_usd=0.25,
+    ))
+
+    second = LLMClient(settings)
+
+    assert round(second.budget.spent_day, 4) == 0.25
+    assert second.budget.tokens_day == 150
 
 
 def test_auto_prefers_cli_when_available(monkeypatch):

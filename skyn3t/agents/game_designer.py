@@ -16,7 +16,7 @@ specific brief and is threaded by the runner exactly like the art plan.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import structlog
 
@@ -265,8 +265,8 @@ async def design_game_llm(brief, *, settings, llm=None) -> GameDesign:
     if not bool(getattr(settings, "game_designer_enabled", False)):
         return floor
     try:
-        from skyn3t.agents._common import parse_json
         from skyn3t.adapters.llm import LLMClient
+        from skyn3t.agents._common import parse_json
         from skyn3t.core.model_router import Tier
 
         client = llm or LLMClient(settings)

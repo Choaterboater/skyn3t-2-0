@@ -140,7 +140,7 @@ def create_app(
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:  # pragma: no cover - lifecycle hook
-        state.stop_all_serves()  # don't leave detached preview servers running
+        await state.close()
         hub.close()
 
     # Backstop: the ASGI "shutdown" hook only fires on a graceful lifespan stop.

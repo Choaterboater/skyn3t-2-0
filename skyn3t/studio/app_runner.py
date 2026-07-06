@@ -29,7 +29,7 @@ from typing import Any
 
 from skyn3t.agents.config_detector import detect_from_code
 from skyn3t.npm_utils import mark_npm_install_current, npm_env, npm_install_args
-from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name
+from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name, scrub_text
 
 _PY_ENTRYPOINTS = ("main.py", "app.py", "server.py")
 _WEB_HINTS = ("fastapi", "flask", "uvicorn", "django", "starlette", "aiohttp")
@@ -261,6 +261,12 @@ def resolve_serve_secrets(
     return resolved, missing
 
 
+def _preview_secret_passthrough_enabled() -> bool:
+    return os.environ.get("SKYN3T_PREVIEW_SECRET_PASSTHROUGH", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None = None) -> RunSpec | None:
     """Map a project to a run command by inspecting its contents. None = no web preview."""
     pdir = Path(project_dir)
@@ -274,8 +280,12 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
     # needed names already present in the host env; `resolved` carries values that
     # came from the store (and so aren't in the host env).
     needed = needed_secret_names(pdir, stack)
-    resolved, missing = resolve_serve_secrets(needed)
-    keep = set(resolved) | set(missing)  # the secret-looking subset of needs
+    if _preview_secret_passthrough_enabled():
+        resolved, missing = resolve_serve_secrets(needed)
+    else:
+        resolved = {}
+        missing = sorted(n for n in needed if isinstance(n, str) and is_secret_name(n))
+    keep = set(resolved)  # only pass secrets explicitly resolved for injection
     injected = tuple(sorted(resolved))
     missing_t = tuple(sorted(missing))
 
@@ -344,9 +354,9 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
         return False, {"error": f"npm install timed out after {timeout:.0f}s"}
     except OSError as exc:
         return False, {"error": str(exc)}
-    tail = (proc.stdout or "")[-2000:]
+    tail = scrub_text((proc.stdout or "")[-2000:])
     if proc.returncode != 0:
-        return False, {"error": f"npm exited {proc.returncode}", "log_tail": tail}
+            return False, {"error": f"npm exited {proc.returncode}", "log_tail": tail}
     return True, {"log_tail": tail}
 
 
@@ -458,7 +468,7 @@ class AppRunner:
         url, real_port = await self._await_ready(proc, log_path, spec.port, ready_timeout)
         if url is None:
             self._terminate(proc)
-            tail = _read_tail(log_path)
+            tail = scrub_text(_read_tail(log_path))
             detail: dict[str, Any] = {"log_tail": tail,
                                       "injected_secrets": list(spec.injected),
                                       "missing_secrets": list(spec.missing_secrets)}

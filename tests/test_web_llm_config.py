@@ -129,6 +129,17 @@ async def test_set_llm_routing_compacts_model_inputs():
     assert st.settings.model_ui == "provider/ui"
 
 
+async def test_set_llm_routing_rejects_unknown_codegen_provider():
+    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x")
+    with pytest.raises(ValueError, match="Unsupported codegen_cli_provider"):
+        await set_llm_routing(
+            st,
+            codegen_cli_provider="definitely-not-a-cli",
+            persist=False,
+        )
+    assert st.settings.codegen_cli_provider == ""
+
+
 async def test_set_llm_routing_persist_false_does_not_mutate_env(monkeypatch):
     monkeypatch.delenv("SKYN3T_OPENROUTER_CODEGEN_MODEL", raising=False)
     monkeypatch.delenv("SKYN3T_MODEL_UI", raising=False)

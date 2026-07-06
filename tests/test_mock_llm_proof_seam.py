@@ -24,7 +24,6 @@ from skyn3t.studio.proof_run import (
     proof_run,
 )
 
-
 # --- detection heuristic -----------------------------------------------------
 
 

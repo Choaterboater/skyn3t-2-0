@@ -21,7 +21,6 @@ from skyn3t.studio.qa_playtest import (
 )
 from skyn3t.studio.visual_check import _vision_locate_start_click, _vision_locate_with_retry
 
-
 # ── injected app_runner stubs (mirror tests/test_visual_loop.py) ──────────────
 
 class _App:

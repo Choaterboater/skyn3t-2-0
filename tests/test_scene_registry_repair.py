@@ -362,7 +362,6 @@ def test_repair_unterminated_config_falls_back_to_default(tmp_path):
     assert new_main.count("{") == new_main.count("}")  # valid default config used
 
 
-import re  # noqa: E402  (used by the dedup test above)
 
 
 def test_repair_real_build6_stub_if_present(tmp_path):

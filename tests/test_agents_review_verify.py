@@ -120,6 +120,23 @@ def test_detect_reward_hacking_trivial_tests(tmp_path):
     assert result["suspicious"]
 
 
+def test_detect_reward_hacking_flags_skips_even_with_assertions(tmp_path):
+    root = tmp_path / "mixed"
+    root.mkdir()
+    (root / "app.py").write_text("def f():\n    return 1\n")
+    (root / "test_app.py").write_text(
+        "import pytest\n\n"
+        "def test_structure():\n"
+        "    assert True\n\n"
+        "@pytest.mark.skip(reason='not implemented')\n"
+        "def test_acceptance_behavior():\n"
+        "    assert f() == 2\n"
+    )
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+    assert result["suspicious"]
+    assert any("skipped/xfailed" in flag for flag in result["flags"])
+
+
 def test_detect_reward_hacking_clean(tmp_path):
     root = _good_project(tmp_path)
     (root / "test_main.js").write_text("test('add', () => { expect(add(1,2)).toBe(3); });\n")

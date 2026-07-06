@@ -270,6 +270,11 @@ def _implies_storefront(brief: str) -> bool:
     return ("storefront" in low or "shop" in low or "product list" in low) and "cart" in low
 
 
+def _implies_dino_runner(brief: str) -> bool:
+    low = (brief or "").lower()
+    return "dino" in low and ("cacti" in low or "cactus" in low or "runner" in low or "jump" in low)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -2024,6 +2029,169 @@ def _phaser_main_js(art: bool) -> str:
     )
 
 
+def _phaser_dino_sim_js() -> str:
+    return (
+        "export const WIDTH = 800\n"
+        "export const HEIGHT = 420\n"
+        "const GROUND_Y = 340\n"
+        "const DINO_SIZE = 54\n"
+        "const CACTUS_W = 38\n"
+        "const CACTUS_H = 72\n"
+        "const GRAVITY = 1900\n"
+        "const JUMP_VELOCITY = -720\n"
+        "const SPEED = 330\n"
+        "const TARGET = 8\n\n"
+        "function makeObstacle(x) {\n"
+        "  return { x, y: GROUND_Y - CACTUS_H / 2, w: CACTUS_W, h: CACTUS_H, passed: false }\n"
+        "}\n\n"
+        "export function createState(seed) {\n"
+        "  return {\n"
+        "    rng: (seed >>> 0) || 1,\n"
+        "    player: { x: 120, y: GROUND_Y - DINO_SIZE / 2, vy: 0, size: DINO_SIZE, onGround: true },\n"
+        "    obstacles: [makeObstacle(560), makeObstacle(860), makeObstacle(1160)],\n"
+        "    score: 0,\n"
+        "    timeLeft: 45,\n"
+        "    paused: false,\n"
+        "    over: false,\n"
+        "    won: false,\n"
+        "  }\n"
+        "}\n\n"
+        "function overlaps(a, b) {\n"
+        "  return Math.abs(a.x - b.x) < (a.size / 2 + b.w / 2) && Math.abs(a.y - b.y) < (a.size / 2 + b.h / 2)\n"
+        "}\n\n"
+        "export function step(state, input, dt) {\n"
+        "  if (state.paused || state.over) return state\n"
+        "  if ((input.action || input.up) && state.player.onGround) {\n"
+        "    state.player.vy = JUMP_VELOCITY\n"
+        "    state.player.onGround = false\n"
+        "  }\n"
+        "  state.player.vy += GRAVITY * dt\n"
+        "  state.player.y += state.player.vy * dt\n"
+        "  const floorY = GROUND_Y - state.player.size / 2\n"
+        "  if (state.player.y >= floorY) {\n"
+        "    state.player.y = floorY\n"
+        "    state.player.vy = 0\n"
+        "    state.player.onGround = true\n"
+        "  }\n"
+        "  for (const obstacle of state.obstacles) {\n"
+        "    obstacle.x -= SPEED * dt\n"
+        "    if (!obstacle.passed && obstacle.x + obstacle.w / 2 < state.player.x) {\n"
+        "      obstacle.passed = true\n"
+        "      state.score += 1\n"
+        "    }\n"
+        "    if (overlaps(state.player, obstacle)) {\n"
+        "      state.over = true\n"
+        "      state.won = false\n"
+        "    }\n"
+        "  }\n"
+        "  const rightMost = Math.max(...state.obstacles.map((o) => o.x))\n"
+        "  for (const obstacle of state.obstacles) {\n"
+        "    if (obstacle.x < -80) {\n"
+        "      obstacle.x = rightMost + 280\n"
+        "      obstacle.passed = false\n"
+        "    }\n"
+        "  }\n"
+        "  state.timeLeft = Math.max(0, state.timeLeft - dt)\n"
+        "  if (state.score >= TARGET) { state.won = true; state.over = true }\n"
+        "  else if (state.timeLeft <= 0) { state.over = true }\n"
+        "  return state\n"
+        "}\n\n"
+        "export function isWin(state) { return state.won }\n"
+        "export function isLose(state) { return state.over && !state.won }\n"
+    )
+
+
+def _phaser_dino_main_js(art: bool) -> str:
+    preload = (
+        "  preload() {\n"
+        "    this.load.image('player', '/assets/sprites/player.png')\n"
+        "    this.load.image('enemy', '/assets/sprites/enemy.png')\n"
+        "    this.load.image('coin', '/assets/sprites/coin.png')\n"
+        "  }\n\n"
+        if art else ""
+    )
+    player_view = (
+        "    this.dinoView = this.textures.exists('player')\n"
+        "      ? this.add.sprite(0, 0, 'player').setDisplaySize(64, 64).setDepth(10)\n"
+        "      : this.add.rectangle(0, 0, 58, 58, 0x7ddc5c).setDepth(10)\n"
+        if art else
+        "    this.dinoView = this.add.rectangle(0, 0, 58, 58, 0x7ddc5c).setDepth(10)\n"
+    )
+    obstacle_factory = (
+        "      this.textures.exists('enemy')\n"
+        "        ? this.add.sprite(0, 0, 'enemy').setDisplaySize(42, 76).setDepth(10)\n"
+        "        : this.add.rectangle(0, 0, 38, 72, 0x4ade80).setDepth(10)\n"
+        if art else
+        "      this.add.rectangle(0, 0, 38, 72, 0x4ade80).setDepth(10)\n"
+    )
+    coin_view = (
+        "    this.coinView = this.textures.exists('coin')\n"
+        "      ? this.add.sprite(0, 0, 'coin').setDisplaySize(34, 34).setDepth(12)\n"
+        "      : this.add.circle(0, 0, 16, 0xfacc15).setDepth(12)\n"
+        if art else
+        "    this.coinView = this.add.circle(0, 0, 16, 0xfacc15).setDepth(12)\n"
+    )
+    return (
+        "import Phaser from 'phaser'\n"
+        "import './styles.css'\n"
+        "import { createState, step, isWin, isLose, WIDTH, HEIGHT } from './sim.js'\n\n"
+        "class MainScene extends Phaser.Scene {\n"
+        "  constructor() { super('dino-runner') }\n\n"
+        + preload +
+        "  create() {\n"
+        "    this.cameras.main.setBackgroundColor('#c7ecff')\n"
+        "    this.state = createState((Math.random() * 0xffffffff) >>> 0)\n"
+        "    this.add.rectangle(WIDTH / 2, 370, WIDTH, 44, 0xd6b172)\n"
+        "    this.add.text(24, 24, 'Dino runner: jump over cacti', { fontFamily: 'system-ui, sans-serif', fontSize: '22px', color: '#17324d' })\n"
+        "    this.hud = this.add.text(24, 56, '', { fontFamily: 'system-ui, sans-serif', fontSize: '18px', color: '#17324d' })\n"
+        + player_view +
+        "    this.cactusViews = this.state.obstacles.map(() => (\n"
+        + obstacle_factory +
+        "    ))\n"
+        + coin_view +
+        "    this.cursors = this.input.keyboard.createCursorKeys()\n"
+        "    this.space = this.input.keyboard.addKey('SPACE')\n"
+        "    this.pointerDown = false\n"
+        "    this.input.on('pointerdown', () => { this.pointerDown = true })\n"
+        "    this.input.on('pointerup', () => { this.pointerDown = false })\n"
+        "    this.input.keyboard.on('keydown-P', () => { this.state.paused = !this.state.paused })\n"
+        "  }\n\n"
+        "  update(time, delta) {\n"
+        "    const input = {\n"
+        "      left: false,\n"
+        "      right: false,\n"
+        "      up: this.cursors.up.isDown,\n"
+        "      down: false,\n"
+        "      action: this.space.isDown || this.pointerDown,\n"
+        "      pause: false,\n"
+        "    }\n"
+        "    this.state = step(this.state, input, delta / 1000)\n"
+        "    this.draw(this.state)\n"
+        "  }\n\n"
+        "  draw(s) {\n"
+        "    this.dinoView.setPosition(s.player.x, s.player.y)\n"
+        "    s.obstacles.forEach((cactus, index) => {\n"
+        "      const view = this.cactusViews[index]\n"
+        "      view.setPosition(cactus.x, cactus.y)\n"
+        "    })\n"
+        "    this.coinView.setPosition(744, 50)\n"
+        "    const status = isWin(s) ? ' GOAL!' : isLose(s) ? ' HIT!' : ''\n"
+        "    this.hud.setText(`Score: ${s.score}  Time: ${Math.ceil(s.timeLeft)}${status}`)\n"
+        "  }\n"
+        "}\n\n"
+        "const config = {\n"
+        "  type: Phaser.AUTO,\n"
+        "  parent: 'game-container',\n"
+        "  width: WIDTH,\n"
+        "  height: HEIGHT,\n"
+        "  backgroundColor: '#c7ecff',\n"
+        "  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },\n"
+        "  scene: [MainScene],\n"
+        "}\n\n"
+        "new Phaser.Game(config)\n"
+    )
+
+
 def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
     """Phaser 3 + Vite 2D browser-game scaffold = a genuinely PLAYABLE vanilla-JS
     starter the codegen extends (NOT React — built fresh, not cloned from
@@ -2042,7 +2210,7 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
     """
     title = (brief.strip() or app_name).split("\n")[0][:120]
     html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return {
+    files = {
         "package.json": (
             "{\n"
             f'  "name": "{app_name}",\n'
@@ -2189,6 +2357,41 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
             ],
         ),
     }
+    if _implies_dino_runner(title):
+        files["src/sim.js"] = _phaser_dino_sim_js()
+        files["src/main.js"] = _phaser_dino_main_js(art)
+        files["src/styles.css"] = (
+            ":root { font-family: system-ui, sans-serif; }\n"
+            "body { margin: 0; background: #7bcdf2; display: grid; place-items: center; min-height: 100vh; }\n"
+            "#game-container { width: min(100vw, 900px); line-height: 0; }\n"
+            "canvas { width: 100%; height: auto; border-radius: 8px; box-shadow: 0 18px 44px rgba(23, 50, 77, 0.18); }\n"
+        )
+        files["README.md"] = compose_readme(
+            title,
+            brief,
+            stack_label="Phaser 3 + Vite",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18+.",
+            usage=(
+                "Start the dino runner:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Press Space, Up, or click/tap to jump over cacti. Build and preview:\n\n"
+                "```bash\nnpm run build\nnpm run preview\n```"
+            ),
+            structure=[
+                ("src/sim.js", "Pure dino-runner simulation with jump physics and cacti"),
+                ("src/main.js", "Phaser scene that renders the dino and cactus sprites"),
+                ("index.html", "HTML entry that mounts the Phaser canvas"),
+                ("src/styles.css", "Canvas page styling"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Dino jump controls",
+                "Scrolling cactus obstacles",
+                "Score for each cactus cleared",
+                "Pure sim core for headless checks",
+            ],
+        )
+    return files
 
 
 def _swift_escape(text: str) -> str:

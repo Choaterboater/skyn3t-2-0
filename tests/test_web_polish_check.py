@@ -28,6 +28,21 @@ def test_web_polish_accepts_structured_page(tmp_path):
     assert check_web_polish(tmp_path, "static")["ok"] is True
 
 
+def test_web_polish_skips_phaser_canvas_games(tmp_path):
+    (tmp_path / "index.html").write_text(
+        "<div id='game-container'></div><script type='module' src='/src/main.js'></script>",
+        encoding="utf-8",
+    )
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "main.js").write_text("new Phaser.Game({ parent: 'game-container' })", encoding="utf-8")
+
+    verdict = check_web_polish(tmp_path, "phaser")
+
+    assert verdict["skipped"] is True
+    assert verdict["ok"] is True
+
+
 def test_web_polish_gate_downgrades_thin_ui(tmp_path):
     (tmp_path / "index.html").write_text("<html><body>hello</body></html>", encoding="utf-8")
     runner = StudioRunner(

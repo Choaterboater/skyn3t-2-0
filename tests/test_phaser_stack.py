@@ -129,6 +129,27 @@ def test_phaser_scaffold_has_pure_sim_render_split():
     assert "step(" in main, "main.js must call step()"
 
 
+def test_phaser_dino_runner_scaffold_renders_cacti_and_enemy_sprite():
+    files = scaffold_for(
+        "phaser",
+        "dino-runner",
+        "a phaser browser game where a dino jumps over cacti to score points",
+        art=True,
+    )
+
+    main = files["src/main.js"]
+    sim = files["src/sim.js"]
+
+    assert "cacti" in main.lower() or "cactus" in main.lower()
+    assert "dino" in main.lower()
+    assert "this.load.image('enemy'" in main
+    assert "this.add.sprite(0, 0, 'enemy')" in main
+    assert "this.load.image('coin'" in main
+    assert "this.add.sprite(0, 0, 'coin')" in main
+    assert "obstacles" in sim
+    assert "jump" in sim.lower()
+
+
 def test_phaser_codegen_prompt_pins_dt_in_seconds():
     # A model writing its OWN Phaser scene (not the scaffold's) drifted to passing
     # Phaser's raw delta (MILLISECONDS) into step(), so the headless gate (dt=1/60

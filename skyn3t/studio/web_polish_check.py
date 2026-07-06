@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-_UI_STACKS = {"react", "react_vite", "nextjs", "astro", "remix", "static", "phaser"}
+_UI_STACKS = {"react", "react_vite", "nextjs", "astro", "remix", "static"}
 _SUFFIXES = {".html", ".jsx", ".tsx", ".js", ".ts", ".astro", ".css"}
 _SKIP_DIRS = {"node_modules", ".next", "dist", "build", "out"}
 _HEADING_RE = re.compile(r"<h1\b|className=.*text-[34]|font-size\s*:\s*(?:[2-9]rem|[3-9][0-9]px)", re.I | re.S)
@@ -21,6 +21,8 @@ _STYLE_RE = re.compile(r"className=|class=|background|border-radius|box-shadow|g
 def check_web_polish(project_dir: str | Path, stack: str = "") -> dict[str, Any]:
     try:
         low = (stack or "").lower()
+        if low == "phaser":
+            return {"ok": True, "skipped": True, "issues": [], "checked": []}
         if low and low not in _UI_STACKS:
             return {"ok": True, "skipped": True, "issues": [], "checked": []}
         root = Path(project_dir)

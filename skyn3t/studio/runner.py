@@ -1195,6 +1195,18 @@ class StudioRunner:
             bool(getattr(self.settings, "liveness_gates_verdict", False)),
             list(getattr(report, "visual_failed_routes", []) or []),
         )
+        if (
+            "visual_self_heal_gate" in manifest.extra
+            and plan.stack in _UI_WEB_STACKS
+            and proof.passed
+            and report.dead == 0
+            and visual_total
+            and visual_health >= 1.0
+        ):
+            manifest.extra.pop("visual_self_heal_gate", None)
+            manifest.extra["visual_self_heal_reconciled_by_liveness"] = True
+            if verdict == "no_go":
+                verdict = "go"
         if gate_reason:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict

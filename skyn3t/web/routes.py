@@ -389,25 +389,34 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     studio = state.studio
     dispatched = False
     runner = None
+    build_extra = {
+        "stack": stack,
+        "build_id": build_id,
+        "build_profile": profile,
+        **_profile_extra(profile),
+    }
+    if full_app_requested:
+        build_extra = {**build_extra, **_full_app_extra()}
+    if model:
+        build_extra["model_override"] = model
+    if ref_path:
+        build_extra["reference_image"] = ref_path
     if studio is not None:
         if hasattr(studio, "start"):
-            _extra = {
-                "stack": stack,
-                "build_id": build_id,
-                "build_profile": profile,
-                **_profile_extra(profile),
-            }
-            if full_app_requested:
-                _extra = {**_extra, **_full_app_extra()}
-            if model:
-                _extra["model_override"] = model
-            if ref_path:
-                _extra["reference_image"] = ref_path
             def runner() -> Any:
-                return studio.start(brief, slug=slug or None, extra=_extra)
+                return studio.start(brief, slug=slug or None, extra=build_extra)
         elif hasattr(studio, "submit"):  # pragma: no cover - legacy shape
             def runner() -> Any:
-                return studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
+                try:
+                    return studio.submit(
+                        brief=brief,
+                        slug=slug,
+                        stack=stack,
+                        build_id=build_id,
+                        extra=build_extra,
+                    )
+                except TypeError:
+                    return studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
     if runner is not None:
         try:
             res = runner()
@@ -2296,6 +2305,7 @@ _MODEL_PIN_FIELDS = {
     "strong": "model_strong",
     "docs": "model_docs",
 }
+_CODEGEN_CLI_PROVIDERS = {"", "claude", "kimi", "copilot"}
 
 
 async def set_llm_routing(
@@ -2318,7 +2328,11 @@ async def set_llm_routing(
 
     updates: dict[str, str] = {}
     if codegen_cli_provider is not None:
-        updates["codegen_cli_provider"] = (codegen_cli_provider or "").strip().lower()
+        provider = (codegen_cli_provider or "").strip().lower()
+        if provider not in _CODEGEN_CLI_PROVIDERS:
+            allowed = ", ".join(sorted(p or "none" for p in _CODEGEN_CLI_PROVIDERS))
+            raise ValueError(f"Unsupported codegen_cli_provider {provider!r}; use one of: {allowed}")
+        updates["codegen_cli_provider"] = provider
     if codegen_cli_model is not None:
         updates["codegen_cli_model"] = _normalize_model_id(codegen_cli_model)
     if openrouter_codegen_model is not None:
@@ -2461,7 +2475,8 @@ async def set_gate_enabled(
 async def settings_payload(state: AppState) -> dict[str, Any]:
     s = state.settings
     keys = ("free_only", "no_claude", "execution_backend", "autonomous_builds",
-            "approval_gates", "per_build_usd_cap", "daily_usd_cap", "llm_backend",
+            "approval_gates", "per_build_usd_cap", "daily_usd_cap",
+            "daily_token_cap", "autonomous_daily_build_cap", "llm_backend",
             "codegen_cli_provider", "codegen_cli_model", "openrouter_codegen_model",
             "model_cheap", "model_ui", "model_backend", "model_strong", "model_docs",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
@@ -2714,16 +2729,16 @@ def build_router(state: AppState) -> Any:
     async def _set_llm_routing(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             free_only = _coerce_bool(body["free_only"]) if "free_only" in body else None
+            return await set_llm_routing(
+                state,
+                codegen_cli_provider=str(body["codegen_cli_provider"]) if "codegen_cli_provider" in body else None,
+                codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
+                openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
+                model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
+                free_only=free_only,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return await set_llm_routing(
-            state,
-            codegen_cli_provider=str(body["codegen_cli_provider"]) if "codegen_cli_provider" in body else None,
-            codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
-            openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
-            model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
-            free_only=free_only,
-        )
 
     @router.post("/settings/github", dependencies=[auth])
     async def _set_github(body: dict[str, Any] = empty_body) -> dict[str, Any]:

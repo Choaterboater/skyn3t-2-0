@@ -356,7 +356,7 @@ class StudioRunner:
                 from skyn3t.adapters.llm import LLMClient
 
                 if LLMClient(self.settings)._cli_available(provider):
-                    return codegen_cli_model
+                    return codegen_cli_model or f"{provider}-cli:default"
             except Exception as exc:  # noqa: BLE001 - diagnostics must not break a build
                 log.warning(
                     "studio.codegen_trace_cli_probe_failed",
@@ -510,6 +510,18 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - observability never breaks a build
             log.warning("obs.call_failed", method=method, error=str(exc))
             return None
+
+    def _guard_check(self, stage: str) -> None:
+        guard = self.budget_guard
+        if guard is None:
+            return
+        check = getattr(guard, "check", None)
+        if check is None:
+            return
+        try:
+            check()
+        except Exception as exc:  # noqa: BLE001 - convert guard trip into build failure
+            raise _BuildRejected(f"budget guard tripped before {stage}: {exc}") from exc
 
     # ---- skills (advisory injection) ------------------------------------
     def _skill_advice(self, stack: str, brief: str = "") -> tuple[str, list[str]]:
@@ -2967,6 +2979,8 @@ class StudioRunner:
         # Observability + budget guard for this build (all best-effort).
         self._obs_call(self.cost_tracker, "start_build", build_id)
         self._obs_call(self.budget_guard, "reset")
+        self._obs_call(self.budget_guard, "attach", self.event_bus)
+        self._guard_check("build")
 
         # Track the stage whose cost slice is currently open so a mid-stage
         # exception can still close it (else its base leaks). end_stage is
@@ -2975,6 +2989,7 @@ class StudioRunner:
         try:
             for spec in plan.stages:
                 self._obs_call(self.budget_guard, "heartbeat")
+                self._guard_check(spec.name)
                 # Mark the stage boundary so cost is attributed per stage (Spec 2).
                 self._obs_call(self.cost_tracker, "start_stage", build_id, spec.name)
                 open_stage = spec.name
@@ -3718,6 +3733,7 @@ class StudioRunner:
                 pass
             return self._outcome(manifest)
         finally:
+            self._obs_call(self.budget_guard, "detach")
             for wt in worktrees:
                 cleanup_worktree(wt)
 

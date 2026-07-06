@@ -29,6 +29,7 @@ import shutil
 import signal
 import tempfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -446,18 +447,26 @@ class BudgetTracker:
     per_build_cap: float
     daily_cap: float
     token_cap: int
+    ledger_path: Path | None = None
     spent_build: float = 0.0
     spent_day: float = 0.0
     tokens_day: int = 0
     calls: list[LLMResult] = field(default_factory=list)
+    ledger_day: str = field(default_factory=lambda: date.today().isoformat())
+
+    def __post_init__(self) -> None:
+        self._load_ledger()
 
     def record(self, r: LLMResult) -> None:
+        self._rollover_if_needed()
         self.spent_build += r.cost_usd
         self.spent_day += r.cost_usd
         self.tokens_day += r.prompt_tokens + r.completion_tokens
         self.calls.append(r)
+        self._save_ledger()
 
     def check(self) -> None:
+        self._rollover_if_needed()
         if self.spent_build > self.per_build_cap:
             raise BudgetExceeded(f"per-build cap ${self.per_build_cap} exceeded (${self.spent_build:.4f})")
         if self.spent_day > self.daily_cap:
@@ -467,6 +476,51 @@ class BudgetTracker:
 
     def reset_build(self) -> None:
         self.spent_build = 0.0
+
+    def _load_ledger(self) -> None:
+        if self.ledger_path is None:
+            return
+        try:
+            data = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        today = date.today().isoformat()
+        if data.get("day") != today:
+            return
+        try:
+            self.spent_day = float(data.get("spent_day", 0.0) or 0.0)
+            self.tokens_day = int(data.get("tokens_day", 0) or 0)
+            self.ledger_day = today
+        except (TypeError, ValueError):
+            self.spent_day = 0.0
+            self.tokens_day = 0
+
+    def _save_ledger(self) -> None:
+        if self.ledger_path is None:
+            return
+        try:
+            self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            self.ledger_path.write_text(
+                json.dumps({
+                    "day": self.ledger_day,
+                    "spent_day": self.spent_day,
+                    "tokens_day": self.tokens_day,
+                }, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def _rollover_if_needed(self) -> None:
+        today = date.today().isoformat()
+        if self.ledger_day == today:
+            return
+        self.ledger_day = today
+        self.spent_day = 0.0
+        self.tokens_day = 0
+        self._save_ledger()
 
 
 class BudgetExceeded(RuntimeError):
@@ -504,6 +558,7 @@ class LLMClient:
             per_build_cap=self.settings.per_build_usd_cap,
             daily_cap=self.settings.daily_usd_cap,
             token_cap=self.settings.daily_token_cap,
+            ledger_path=self.settings.data_dir / "budget" / "daily_usage.json",
         )
         # Route capture is HYBRID: a task-local contextvar (so concurrent agent
         # runs sharing this client don't clobber each other) plus a global
@@ -522,6 +577,29 @@ class LLMClient:
         _LAST_MODEL.set(None)
         _LAST_ROUTE.set(None)
         _ROUTES.set([])
+
+    def _resolve_pinned_model(
+        self,
+        *,
+        tier: Tier,
+        model_override: str | None = None,
+        setting_names: tuple[str, ...] = (),
+        file_hint: str | None = None,
+        task_type: str = "",
+    ) -> str:
+        requested: list[str] = []
+        if model_override:
+            requested.append(str(model_override).strip())
+        for name in setting_names:
+            val = str(getattr(self.settings, name, "") or "").strip()
+            if val:
+                requested.append(val)
+        for pinned in requested:
+            if bool(getattr(self.settings, "free_only", False)) and not _is_free_model_id(pinned):
+                log.warning("llm.free_only_ignored_paid_pin", model=pinned)
+                continue
+            return pinned
+        return self.router.resolve(tier, file_hint, task_type=task_type)
 
     def _record_completion(self, tier: str, task_type: str, model: str) -> None:
         """Record one completion's route into both the task-local capture (if a
@@ -816,14 +894,15 @@ class LLMClient:
         # and normally bypasses the router; the (tier, task_type) bucket is
         # unchanged. ``free_only`` is the hard cost guard: a paid manual/preferred
         # pin is ignored unless it is itself an OpenRouter ":free" model.
-        preferred = (getattr(self.settings, "preferred_model", "") or "").strip()
         requested_override = (model_override or "").strip()
-        pinned = requested_override or preferred
-        if pinned and bool(getattr(self.settings, "free_only", False)) and not _is_free_model_id(pinned):
-            log.warning("llm.free_only_ignored_paid_pin", model=pinned)
-            pinned = ""
-        vision_override = requested_override if requested_override and pinned == requested_override else None
-        model = pinned or self.router.resolve(tier, file_hint, task_type=task_type)
+        model = self._resolve_pinned_model(
+            tier=tier,
+            model_override=requested_override,
+            setting_names=("preferred_model",),
+            file_hint=file_hint,
+            task_type=task_type,
+        )
+        vision_override = requested_override if requested_override and model == requested_override else None
         backend = self.backend
         # An attached image only matters to the openrouter backend (the only one
         # that speaks the multimodal message shape). stub/CLI ignore it and behave
@@ -1216,11 +1295,11 @@ class LLMClient:
             # No CLI agent: OpenRouter models get the agentic tool-loop (cheap,
             # whole-project codegen) instead of the weak per-file path.
             if backend == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)):
-                m = (
-                    model
-                    or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
-                    or str(getattr(self.settings, "preferred_model", "") or "").strip()
-                    or self.router.resolve(Tier.BACKEND)
+                m = self._resolve_pinned_model(
+                    tier=Tier.BACKEND,
+                    model_override=model,
+                    setting_names=("openrouter_codegen_model", "preferred_model"),
+                    task_type="codegen",
                 )
                 return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout,
                                                       stack=stack)
@@ -1367,6 +1446,10 @@ class LLMClient:
                     result_is_error = bool(evt.get("is_error"))
         finally:
             err_task.cancel()
+            try:
+                await err_task
+            except asyncio.CancelledError:
+                pass
 
         # stdout EOF means the agent is exiting; reap it (bounded) so returncode
         # is set for the fallback success check.

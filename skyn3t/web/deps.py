@@ -160,6 +160,9 @@ class AppState:
         self.skills = skills
         self.patterns = patterns
         self.messaging = messaging
+        self.ingestors: list[Any] = []
+        self.max_terminal_builds = 500
+        self.max_terminal_proposals = 500
 
         if llm_client is None and LLMClient is not None:
             try:  # pragma: no cover - construction is cheap and offline-safe
@@ -210,6 +213,63 @@ class AppState:
                 pass
             self.running_apps.pop(slug, None)
 
+    async def close(self) -> None:
+        """Release long-lived resources owned by the web AppState."""
+        self.stop_all_serves()
+        cortex_stop = getattr(self.cortex, "stop", None)
+        if cortex_stop is not None:
+            try:
+                res = cortex_stop()
+                if hasattr(res, "__await__"):
+                    await res
+            except Exception:  # noqa: BLE001 - shutdown must be best-effort
+                pass
+        for ingestor in list(self.ingestors):
+            stop = getattr(ingestor, "stop", None)
+            if stop is not None:
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001
+                    pass
+        self.ingestors.clear()
+        for resource in (self.memory, self.knowledge):
+            close = getattr(resource, "close", None)
+            if close is None:
+                continue
+            try:
+                res = close()
+                if hasattr(res, "__await__"):
+                    await res
+            except Exception:  # noqa: BLE001
+                pass
+
+    def prune_caches(self) -> None:
+        """Bound process-lifetime dashboard caches while keeping active records."""
+        self._prune_builds()
+        self._prune_proposals()
+
+    def _prune_builds(self) -> None:
+        terminal = [
+            rec for rec in self.builds.values()
+            if rec.status not in {"queued", "running"}
+        ]
+        excess = len(terminal) - int(self.max_terminal_builds)
+        if excess <= 0:
+            return
+        for rec in sorted(terminal, key=lambda r: r.updated_at)[:excess]:
+            self.builds.pop(rec.build_id, None)
+
+    def _prune_proposals(self) -> None:
+        terminal = [
+            rec for rec in self.proposals.values()
+            if rec.status not in {"pending", "gated"}
+        ]
+        excess = len(terminal) - int(self.max_terminal_proposals)
+        if excess <= 0:
+            return
+        for rec in sorted(terminal, key=lambda r: r.decided_at or r.created_at)[:excess]:
+            self.proposals.pop(rec.proposal_id, None)
+
     # ---- event helpers ---------------------------------------------------
     def _wire_proposal_capture(self) -> None:
         async def _on_proposal(ev: Event) -> None:  # pragma: no cover - async wiring
@@ -224,6 +284,7 @@ class AppState:
                     summary=str(p.get("summary") or p.get("title") or ""),
                     payload=dict(p),
                 )
+                self.prune_caches()
 
         async def _on_proposal_decided(ev: Event) -> None:  # pragma: no cover - async wiring
             # Keep the cache honest. The cortex emits PROPOSAL_DECIDED for every
@@ -287,6 +348,7 @@ class AppState:
             elif ev.type == EventType.BUILD_FAILED:
                 rec.status = "failed"
             rec.updated_at = time.time()
+            self.prune_caches()
 
         self.event_bus.subscribe(EventType.PROPOSAL_CREATED, _on_proposal)
         self.event_bus.subscribe(EventType.PROPOSAL_DECIDED, _on_proposal_decided)

@@ -530,5 +530,6 @@ def _shutdown(proc: subprocess.Popen) -> None:
     except Exception:  # noqa: BLE001
         try:
             proc.kill()
+            proc.wait(timeout=2.0)
         except Exception:  # noqa: BLE001
             pass

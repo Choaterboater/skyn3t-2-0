@@ -119,6 +119,47 @@ def test_status_and_budget_snapshots():
     assert "tiers" in backends and "budget" in backends
 
 
+def test_app_state_close_stops_long_lived_resources():
+    calls: list[str] = []
+
+    class _Cortex:
+        async def stop(self):
+            calls.append("cortex")
+
+    class _Memory:
+        async def close(self):
+            calls.append("memory")
+
+    class _Ingestor:
+        def stop(self):
+            calls.append("ingestor")
+
+    st = _state(cortex=_Cortex(), memory=_Memory())
+    st.ingestors.append(_Ingestor())
+
+    import asyncio
+
+    asyncio.run(st.close())
+
+    assert calls == ["cortex", "ingestor", "memory"]
+
+
+def test_app_state_prunes_terminal_build_cache():
+    st = _state()
+    st.max_terminal_builds = 2
+    now = 1000.0
+    for idx, status in enumerate(("completed", "failed", "running", "completed")):
+        rec = BuildRecord(build_id=f"b{idx}", brief="")
+        rec.status = status
+        rec.updated_at = now + idx
+        st.builds[rec.build_id] = rec
+
+    st.prune_caches()
+
+    assert "b0" not in st.builds
+    assert {"b1", "b2", "b3"} == set(st.builds)
+
+
 # ---- handlers (framework-agnostic) ----------------------------------------
 async def test_submit_and_list_builds():
     st = _state()
@@ -296,6 +337,37 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
     ) == "openrouter/codegen"
 
 
+async def test_studio_runner_codegen_model_trace_reports_cli_default(
+    tmp_path,
+    monkeypatch,
+):
+    from skyn3t.adapters.llm import LLMClient
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_available",
+        lambda self, provider: provider == "claude",
+    )
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        llm_backend="stub",
+        codegen_cli_provider="claude",
+        codegen_cli_model="",
+        critic_enabled=False,
+        approval_gates=False,
+        best_of_n=1,
+    )
+    bus = EventBus()
+    runner = StudioRunner(bus, Orchestrator(bus), settings=settings, memory=None)
+
+    assert runner._codegen_trace_model("") == "claude-cli:default"
+
+
 async def test_studio_runner_codegen_model_trace_reports_router_fallback(
     tmp_path,
     monkeypatch,
@@ -347,6 +419,34 @@ async def test_submit_build_normalizes_model_override():
     row = st.builds[res["build_id"]]
     assert row.model_trace["model_override"] == "openrouter/gpt-4o-mini"
     assert studio.extra["model_override"] == "openrouter/gpt-4o-mini"
+
+
+async def test_submit_build_legacy_submit_receives_live_build_extra():
+    class _Studio:
+        def __init__(self):
+            self.call = None
+
+        def submit(self, **kwargs):
+            self.call = kwargs
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    res = await routes.submit_build(
+        st,
+        brief="a premium reporting app",
+        stack="react",
+        slug="reports",
+        build_profile="full_app",
+        model_override="openrouter/custom-model",
+    )
+
+    assert res["dispatched"] is True
+    assert studio.call["extra"]["build_profile"] == "full_app"
+    assert studio.call["extra"]["model_override"] == "openrouter/custom-model"
+    assert studio.call["extra"]["full_app_contract"] is True
+    row = st.builds[res["build_id"]]
+    assert row.model_trace["model_override"] == "openrouter/custom-model"
+    assert row.model_trace["full_app"] is True
 
 
 async def test_rebuild_build_replays_live_build_settings():
@@ -842,11 +942,15 @@ async def test_settings_payload_surfaces_learned_router_flags():
     st.settings.auto_route = True
     st.settings.model_evolution = True
     st.settings.visual_self_heal = True
+    st.settings.daily_token_cap = 12345
+    st.settings.autonomous_daily_build_cap = 7
     payload = await routes.settings_payload(st)
     assert payload["auto_route"] is True
     assert payload["model_evolution"] is True
     assert payload["visual_self_heal"] is True
     assert payload["visual_self_heal_max_rounds"] >= 1
+    assert payload["daily_token_cap"] == 12345
+    assert payload["autonomous_daily_build_cap"] == 7
 
 
 async def test_visual_self_heal_setting_toggle_does_not_persist_in_tests():

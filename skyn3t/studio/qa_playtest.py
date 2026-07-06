@@ -27,16 +27,17 @@ from __future__ import annotations
 import asyncio
 import functools
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from skyn3t.studio.asset_foundry import check_asset_outputs
 from skyn3t.studio.visual_check import (
     _dom_start_click,
     _fit_viewport_to_canvas,
     _vision_locate_with_retry,
 )
-from skyn3t.studio.asset_foundry import check_asset_outputs
 
 # Where the build-time art tier writes generated role sprites (see game-art-tier #6).
 _SPRITE_DIR = "public/assets/sprites"

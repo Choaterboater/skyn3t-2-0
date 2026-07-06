@@ -30,6 +30,7 @@ import html
 import inspect
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,11 +48,13 @@ project_app = typer.Typer(help="Inspect delivered projects / builds.", no_args_i
 domain_app = typer.Typer(help="Ingest external knowledge (RAG corpus).", no_args_is_help=True)
 bench_app = typer.Typer(help="Benchmark/regression harness (Spec 2).", no_args_is_help=True)
 cortex_app = typer.Typer(help="Inspect the autonomy layer (cortex).", no_args_is_help=True)
+audit_app = typer.Typer(help="Audit SkyN3t itself as an app factory.", no_args_is_help=True)
 app.add_typer(studio_app, name="studio")
 app.add_typer(project_app, name="project")
 app.add_typer(domain_app, name="domain")
 app.add_typer(bench_app, name="bench")
 app.add_typer(cortex_app, name="cortex")
+app.add_typer(audit_app, name="audit")
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +684,9 @@ def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any
         rag = RagEngine(persist_path=settings.vector_db_path)
         from skyn3t.memory.ingestor import ExperienceIngestor
 
-        ExperienceIngestor(event_bus, rag_engine=rag).start()
+        ingestor = ExperienceIngestor(event_bus, rag_engine=rag)
+        ingestor.start()
+        rag._skyn3t_ingestor = ingestor
     except Exception:  # noqa: BLE001
         rag = None
     return learning, patterns, skills, rag
@@ -929,7 +934,7 @@ def _reset_bench_budget(llm) -> None:
             budget.reset_build()
         except Exception:  # noqa: BLE001
             pass
-    for attr, zero in (("spent_day", 0.0), ("tokens_day", 0), ("spent_build", 0.0)):
+    for attr, zero in (("spent_build", 0.0),):
         if hasattr(budget, attr):
             try:
                 setattr(budget, attr, zero)
@@ -1061,6 +1066,69 @@ def bench_run(
         console.print(f"[green]Saved[/green] ledger to [cyan]{path}[/cyan]")
 
 
+@audit_app.command("product")
+def audit_product(
+    out: str = typer.Option(
+        "",
+        "--out",
+        help="Markdown report path (default: docs/audits/<date>-skyn3t-product-audit.md).",
+    ),
+    json_out: str = typer.Option(
+        "",
+        "--json-out",
+        help="JSON report path (default: <data_dir>/audits/<date>-skyn3t-product-audit.json).",
+    ),
+    max_findings: int = typer.Option(20, "--max-findings", min=1, help="Maximum findings per audit section."),
+    llm: bool = typer.Option(
+        True,
+        "--llm/--no-llm",
+        help="Allow best-effort LLM assistance when a non-stub backend is configured.",
+    ),
+    include_tests: bool = typer.Option(
+        True,
+        "--include-tests/--no-include-tests",
+        help="Include tests/ in deterministic repo scans.",
+    ),
+) -> None:
+    """Audit SkyN3t itself as an app factory and write one handoff report."""
+    from skyn3t.audit import run_product_audit, write_audit_report
+    from skyn3t.config.settings import REPO_ROOT, get_settings
+
+    console = _console()
+    settings = get_settings()
+    stamp = datetime.now(UTC).date().isoformat()
+    repo_root = REPO_ROOT
+    md_path = Path(out) if out else repo_root / "docs" / "audits" / f"{stamp}-skyn3t-product-audit.md"
+    json_path = (
+        Path(json_out)
+        if json_out
+        else settings.data_dir / "audits" / f"{stamp}-skyn3t-product-audit.json"
+    )
+
+    llm_client = None
+    if llm:
+        try:
+            from skyn3t.adapters.llm import LLMClient
+
+            candidate = LLMClient(settings)
+            if getattr(candidate, "backend", "stub") != "stub":
+                llm_client = candidate
+        except Exception:  # noqa: BLE001 - audit stays useful offline
+            llm_client = None
+
+    report = run_product_audit(
+        repo_root=repo_root,
+        include_tests=include_tests,
+        max_findings=max_findings,
+        use_llm=bool(llm_client),
+        llm=llm_client,
+    )
+    md_written, json_written = write_audit_report(report, md_path, json_path)
+    console.print(f"[green]Product audit written[/green] {md_written}")
+    console.print(f"[green]Audit JSON written[/green] {json_written}")
+    console.print(f"Overall rating: {report.overall_rating:.1f}/100")
+
+
 @bench_app.command("compare")
 def bench_compare(
     before: str = typer.Argument(..., help="Baseline run JSON (data/bench/run-*.json)."),
@@ -1105,7 +1173,7 @@ def studio_serve(
     from pathlib import Path as _Path
 
     from skyn3t.config.settings import get_settings
-    from skyn3t.studio.app_runner import AppRunner
+    from skyn3t.studio.app_runner import AppRunner, cleanup_serve
 
     console = _console()
     s = get_settings()
@@ -1120,20 +1188,23 @@ def studio_serve(
     stack = man.stack if man else ""
     runner = AppRunner()
     app = asyncio.run(runner.start(pdir, stack, port=port or None))
-    if app.status == "no_preview":
-        console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
-        raise typer.Exit(code=1)
-    if app.status != "running":
-        console.print(f"[red]Failed to start[/red]: {app.detail.get('log_tail', '')[-400:]}")
-        raise typer.Exit(code=2)
-    console.print(f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] (pid {app.pid}). "
-                  "Press Ctrl+C to stop.")
     try:
-        while True:
-            _time.sleep(1)
-    except KeyboardInterrupt:
-        runner.stop(app)
-        console.print("\n[dim]stopped.[/dim]")
+        if app.status == "no_preview":
+            console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
+            raise typer.Exit(code=1)
+        if app.status != "running":
+            console.print(f"[red]Failed to start[/red]: {app.detail.get('log_tail', '')[-400:]}")
+            raise typer.Exit(code=2)
+        console.print(f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] (pid {app.pid}). "
+                      "Press Ctrl+C to stop.")
+        try:
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            runner.stop(app)
+            console.print("\n[dim]stopped.[/dim]")
+    finally:
+        cleanup_serve(app)
 
 
 @studio_app.command("shoot")
@@ -1378,7 +1449,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
     except Exception:  # noqa: BLE001
         messaging = None
 
-    return AppState(
+    state = AppState(
         settings=settings,
         event_bus=bus,
         orchestrator=spine["orchestrator"],
@@ -1391,6 +1462,10 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
         patterns=getattr(studio, "patterns", None),
         messaging=messaging,
     )
+    ingestor = getattr(rag, "_skyn3t_ingestor", None)
+    if ingestor is not None:
+        state.ingestors.append(ingestor)
+    return state
 
 
 async def _serve_web(console: Any, host: str, port: int) -> None:

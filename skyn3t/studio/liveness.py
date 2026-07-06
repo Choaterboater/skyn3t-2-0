@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skyn3t.studio.app_runner import cleanup_serve
+
 _PY_ROUTE = re.compile(r"""@\w+\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]""", re.I)
 _JS_ROUTE = re.compile(r"""\b(?:app|router)\.(get|post|put|patch|delete)\(\s*['"]([^'"]+)['"]""", re.I)
 _REACT_ROUTE = re.compile(r"""(?:<Route\s+[^>]*\bpath=|["']path["']\s*:\s*)['"]([^'"]+)['"]""")
@@ -326,6 +328,10 @@ async def liveness_self_improve(project_dir, *, app_runner, improve_engine,
             finally:
                 try:
                     app_runner.stop(app)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    cleanup_serve(app)
                 except Exception:  # noqa: BLE001
                     pass
             visual_fail = any(r.visual and r.visual.get("matches") is False

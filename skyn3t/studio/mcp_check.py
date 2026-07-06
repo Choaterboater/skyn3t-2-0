@@ -190,10 +190,10 @@ class _StdioClient:
             assert self.proc.stdin is not None
             self.proc.stdin.write(data)
             self.proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
+        except (BrokenPipeError, ValueError, OSError) as exc:
             # The server closed stdin / exited — treat as a server exit so the
             # caller can classify the boot failure.
-            raise _ServerExited("server stdin is closed (process exited)")
+            raise _ServerExited("server stdin is closed (process exited)") from exc
         return rid
 
     def read_result(self, rid: int, timeout: float) -> dict:
@@ -207,8 +207,8 @@ class _StdioClient:
                 raise _Timeout(f"no response to id={rid} within {timeout:.0f}s")
             try:
                 line = self._out_q.get(timeout=remaining)
-            except queue.Empty:
-                raise _Timeout(f"no response to id={rid} within {timeout:.0f}s")
+            except queue.Empty as exc:
+                raise _Timeout(f"no response to id={rid} within {timeout:.0f}s") from exc
             if line is None:  # EOF — the server's stdout closed
                 raise _ServerExited("server closed stdout (process exited)")
             line = line.strip()

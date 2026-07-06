@@ -37,7 +37,7 @@ _DEFAULT_ACCENT = "#6366f1"  # tasteful neutral indigo
 
 def _darken(hex_color: str, factor: float = 0.82) -> str:
     r, g, b = _to_rgb(hex_color)
-    return "#%02x%02x%02x" % (int(r * factor), int(g * factor), int(b * factor))
+    return f"#{int(r * factor):02x}{int(g * factor):02x}{int(b * factor):02x}"
 
 
 def derive_accent(brief: str) -> str:

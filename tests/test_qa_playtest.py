@@ -60,6 +60,13 @@ def _run(tmp_path, **kw):
     return asyncio.run(qa_playtest(tmp_path, settings=object(), **kw))
 
 
+def _vision_response(text: str):
+    def vision_fn(path, prompt):
+        return text
+
+    return vision_fn
+
+
 # ── check_sprites_rendered (pure, no browser) ─────────────────────────────────
 
 def test_sprite_with_a_reference_is_rendered(tmp_path: Path):
@@ -255,7 +262,7 @@ def test_verdict_to_dict_roundtrips(tmp_path: Path):
 # on a game that's actually fine (root cause of the Moonshine Hollow false no_go).
 
 def test_vision_locate_reports_already_in_play():
-    vision_fn = lambda path, prompt: '{"in_play": true}'
+    vision_fn = _vision_response('{"in_play": true}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is True
     assert click is None
@@ -282,14 +289,14 @@ def test_vision_locate_prompt_excludes_hud_only_screens_from_in_play():
 
 
 def test_vision_locate_returns_click_target():
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": 180, "y": 275}'
+    vision_fn = _vision_response('{"in_play": false, "x": 180, "y": 275}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click == (180.0, 275.0)
 
 
 def test_vision_locate_handles_markdown_fenced_json():
-    vision_fn = lambda path, prompt: '```json\n{"in_play": false, "x": 10, "y": 20}\n```'
+    vision_fn = _vision_response('```json\n{"in_play": false, "x": 10, "y": 20}\n```')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click == (10.0, 20.0)
@@ -302,14 +309,14 @@ def test_vision_locate_no_vision_fn_is_noop():
 
 
 def test_vision_locate_no_image_bytes_is_noop():
-    vision_fn = lambda path, prompt: '{"in_play": true}'
+    vision_fn = _vision_response('{"in_play": true}')
     in_play, click = _vision_locate_start_click(vision_fn, None, 800, 600)
     assert in_play is False
     assert click is None
 
 
 def test_vision_locate_never_raises_on_garbage_response():
-    vision_fn = lambda path, prompt: "not json at all"
+    vision_fn = _vision_response("not json at all")
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click is None
@@ -324,7 +331,7 @@ def test_vision_locate_never_raises_when_vision_fn_explodes():
 
 
 def test_vision_locate_ignores_non_numeric_coordinates():
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": "not a number", "y": 20}'
+    vision_fn = _vision_response('{"in_play": false, "x": "not a number", "y": 20}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click is None
@@ -338,28 +345,28 @@ def test_vision_locate_ignores_non_numeric_coordinates():
 # (the existing safe default), not as a real click target.
 
 def test_vision_locate_rejects_negative_coordinates():
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": -50, "y": 20}'
+    vision_fn = _vision_response('{"in_play": false, "x": -50, "y": 20}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click is None
 
 
 def test_vision_locate_rejects_coordinates_beyond_canvas_bounds():
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": 850, "y": 20}'
+    vision_fn = _vision_response('{"in_play": false, "x": 850, "y": 20}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click is None
 
 
 def test_vision_locate_accepts_coordinates_at_the_exact_boundary():
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": 800, "y": 600}'
+    vision_fn = _vision_response('{"in_play": false, "x": 800, "y": 600}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click == (800.0, 600.0)
 
 
 def test_vision_locate_accepts_origin_coordinates():
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": 0, "y": 0}'
+    vision_fn = _vision_response('{"in_play": false, "x": 0, "y": 0}')
     in_play, click = _vision_locate_start_click(vision_fn, b"fakepng", 800, 600)
     assert in_play is False
     assert click == (0.0, 0.0)
@@ -381,7 +388,7 @@ def test_vision_retry_succeeds_first_attempt_no_extra_calls():
     def wait_fn():
         calls["wait"] += 1
 
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": 10, "y": 20}'
+    vision_fn = _vision_response('{"in_play": false, "x": 10, "y": 20}')
     in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, wait_fn=wait_fn)
     assert in_play is False
     assert click == (10.0, 20.0)
@@ -420,7 +427,7 @@ def test_vision_retry_gives_up_after_attempts_exhausted():
         calls["n"] += 1
         return b"fakepng", {"width": 800, "height": 600}
 
-    vision_fn = lambda path, prompt: "always unparseable"
+    vision_fn = _vision_response("always unparseable")
     in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, attempts=2)
     assert in_play is False
     assert click is None
@@ -434,7 +441,7 @@ def test_vision_retry_in_play_true_stops_immediately():
         calls["n"] += 1
         return b"fakepng", {"width": 800, "height": 600}
 
-    vision_fn = lambda path, prompt: '{"in_play": true}'
+    vision_fn = _vision_response('{"in_play": true}')
     in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, attempts=3)
     assert in_play is True
     assert calls["n"] == 1  # already in play -> no retry needed
@@ -444,7 +451,7 @@ def test_vision_retry_stops_immediately_when_no_screenshot():
     def shot_fn():
         return None, None
 
-    vision_fn = lambda path, prompt: '{"in_play": false, "x": 1, "y": 1}'
+    vision_fn = _vision_response('{"in_play": false, "x": 1, "y": 1}')
     in_play, click, box = _vision_locate_with_retry(vision_fn, shot_fn, attempts=3)
     assert in_play is False
     assert click is None
@@ -474,7 +481,10 @@ def test_vision_locate_prompt_states_coordinate_convention():
 def test_playtest_catches_off_contract_keypress_error(tmp_path: Path):
     # no sprites on disk -> sprite axis clean; the drive surfaces the barrel-roll error
     _src(tmp_path, "// game\n")
-    drive = lambda url: ["BARREL_ROLL_COOLDOWN is not defined"]
+
+    def drive(url):
+        return ["BARREL_ROLL_COOLDOWN is not defined"]
+
     res = _run(tmp_path, app_runner=_Runner(_App()), drive_fn=drive)
     assert isinstance(res, QaPlaytestVerdict)
     assert res.skipped is False

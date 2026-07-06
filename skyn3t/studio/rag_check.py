@@ -60,6 +60,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from skyn3t.studio.gate_verdict import GateVerdict
+
 # Default budgets (seconds). Generous enough for a real uvicorn boot, bounded so
 # a wedged server can never hang a build. Overridable (tests pass small values).
 _BOOT_TIMEOUT = 25.0
@@ -109,8 +111,6 @@ def _missing_local_module(err: str, root: Path) -> str | None:
 # The gate-agnostic verdict shape, shared by every deterministic gate since the
 # third one arrived (see gate_verdict.py). The alias keeps every existing
 # import, test, and manifest reader unchanged.
-from skyn3t.studio.gate_verdict import GateVerdict
-
 RagVerdict = GateVerdict
 
 

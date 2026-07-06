@@ -38,10 +38,7 @@ jobs:
         run: pip install -e ".[dev,web,visual]"
 
       - name: Lint (ruff)
-        # Non-blocking for now: ~322 pre-existing findings are tracked but not yet
-        # enforced (see NEXT_SESSION.md). Keep the report in logs without making
-        # GitHub paint a red failed-step annotation on otherwise-green CI.
-        run: ruff check skyn3t/ || true
+        run: ruff check skyn3t tests
 
       - name: Type-check (mypy)
         run: mypy skyn3t/ || true

@@ -38,3 +38,18 @@ def test_merge_back_rejects_symlink_to_outside_file(tmp_path):
 
     assert "public/leak.txt" not in copied
     assert not (dst / "public" / "leak.txt").exists()
+
+
+def test_merge_back_excludes_swift_module_cache(tmp_path):
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    cache = src / ".skyn3t-swift-module-cache" / "JFWOF8FH7S6X"
+    cache.mkdir(parents=True)
+    (cache / "SwiftShims.pcm").write_text("absolute-path-bound cache\n", encoding="utf-8")
+    (src / "Package.swift").write_text("// swift package\n", encoding="utf-8")
+
+    copied = merge_back(src, dst)
+
+    assert "Package.swift" in copied
+    assert ".skyn3t-swift-module-cache/JFWOF8FH7S6X/SwiftShims.pcm" not in copied
+    assert not (dst / ".skyn3t-swift-module-cache").exists()

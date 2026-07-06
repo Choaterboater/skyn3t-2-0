@@ -295,6 +295,20 @@ def test_default_cases_use_valid_pin_keys():
             assert _validate_pin(c.stack), f"{c.id}: {c.stack!r} is not a valid pin"
 
 
+def test_cli_load_bench_cases_accepts_inline_json():
+    from skyn3t.cli.main import _load_bench_cases
+
+    cases = _load_bench_cases(
+        '[{"id":"swift-only","brief":"a Swift menu-bar timer","stack":"swift"}]'
+    )
+
+    assert cases is not None
+    assert len(cases) == 1
+    assert cases[0].id == "swift-only"
+    assert cases[0].brief == "a Swift menu-bar timer"
+    assert cases[0].stack == "swift"
+
+
 # --------------------------------------------------------------------------
 # coverage + regression cases (the flywheel's memory)
 # --------------------------------------------------------------------------

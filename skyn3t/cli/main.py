@@ -949,8 +949,12 @@ def _load_bench_cases(path: str):
     from skyn3t.studio.bench import BenchCase
     if not path:
         return None
+    raw_text = str(path).strip()
     try:
-        raw = _json.loads(_Path(path).read_text(encoding="utf-8"))
+        if raw_text.startswith("[") or raw_text.startswith("{"):
+            raw = _json.loads(raw_text)
+        else:
+            raw = _json.loads(_Path(path).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
     out = []

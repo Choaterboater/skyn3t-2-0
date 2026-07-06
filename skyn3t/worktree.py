@@ -30,6 +30,8 @@ _IGNORE_NAMES = frozenset(
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".build",
+        ".swiftpm",
         ".skyn3t-swift-module-cache",
     }
 )

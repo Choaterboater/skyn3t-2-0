@@ -261,6 +261,57 @@ def test_proof_run_routes_boot_command_through_sandbox(tmp_path, monkeypatch):
     assert calls[0]["stack"] == "python"
 
 
+def test_proof_run_records_degraded_environment_when_build_skips(tmp_path):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "index.html").write_text("<!doctype html><h1>Hi</h1>")
+    (tmp_path / "package.json").write_text('{"scripts":{}}')
+
+    res = proof_mod.proof_run(
+        tmp_path,
+        stack="static",
+        run_build=True,
+        execution_backend="inline",
+    )
+
+    env = res.detail["proof_environment"]
+    assert env["degraded"] is True
+    assert any("build skipped" in reason for reason in env["degraded_reasons"])
+
+
+def test_python_deps_install_is_bounded_and_sandboxed(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "requirements.txt").write_text("fastapi==0.111.0\nuvicorn==0.30.0\n")
+    calls = []
+
+    def fake_run(ctx, command, *, cwd, timeout, env=None, network=False):
+        calls.append({
+            "command": command,
+            "cwd": cwd,
+            "timeout": timeout,
+            "env": env,
+            "network": network,
+        })
+        return proof_mod._ProofCommandResult(0, "installed", "")
+
+    monkeypatch.setattr(proof_mod, "_run_proof_command", fake_run)
+
+    ran, ok, summary = proof_mod._install_python_deps(
+        tmp_path,
+        proof_mod._ProofCommandContext(runner=None, stack="python"),
+        timeout=9,
+    )
+
+    assert (ran, ok) == (True, True)
+    assert "installed" in summary
+    assert calls
+    assert calls[0]["command"][1:4] == ["-m", "pip", "install"]
+    assert calls[0]["timeout"] == 30
+    assert calls[0]["network"] is True
+    assert calls[0]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
 def test_node_build_uses_node_sandbox_and_network_only_for_install(tmp_path):
     import skyn3t.studio.proof_run as proof_mod
 
@@ -283,3 +334,39 @@ def test_node_build_uses_node_sandbox_and_network_only_for_install(tmp_path):
     assert calls[0]["stack"] == "node"
     assert calls[0]["network"] is True
     assert calls[1]["network"] is False
+
+
+def test_proof_command_uses_sandbox_from_inside_running_event_loop(tmp_path):
+    import asyncio
+    import skyn3t.studio.proof_run as proof_mod
+
+    calls = []
+
+    class _FakeSandbox:
+        async def run(self, command, **kw):
+            calls.append({"command": command, **kw})
+            return SimpleNamespace(
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                backend="docker",
+                timed_out=False,
+                warning=None,
+            )
+
+    async def _go():
+        ctx = proof_mod._ProofCommandContext(runner=_FakeSandbox(), stack="python")
+        return proof_mod._run_proof_command(
+            ctx,
+            [sys.executable, "-c", "print('ok')"],
+            cwd=tmp_path,
+            timeout=5,
+            env={"OPENAI_API_KEY": "sk-host-secret", "SAFE_FLAG": "1"},
+        )
+
+    result = asyncio.run(_go())
+
+    assert result.backend == "docker"
+    assert calls
+    assert "OPENAI_API_KEY" not in calls[0]["env"]
+    assert calls[0]["env"]["SAFE_FLAG"] == "1"

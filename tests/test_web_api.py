@@ -170,6 +170,17 @@ async def test_submit_and_list_builds():
     assert any(b["build_id"] == res["build_id"] for b in listed["builds"])
 
 
+async def test_submit_build_without_studio_emits_terminal_failure_event():
+    st = _state()
+
+    res = await routes.submit_build(st, brief="a todo app", stack="python")
+
+    assert res["dispatched"] is False
+    assert any(e.type is EventType.BUILD_FAILED for e in st.event_bus.history())
+    row = st.builds[res["build_id"]]
+    assert row.status == "failed"
+
+
 async def test_best_quality_profile_requests_visual_self_heal():
     class _Studio:
         def __init__(self):

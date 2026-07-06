@@ -654,6 +654,11 @@ _NODE_SANDBOX_STACKS = {
     "phaser", "node", "node_express", "express",
 }
 
+_PYTHON_PROOF_STACKS = {
+    "cli", "python", "python_cli", "fastapi", "flask", "django",
+    "rag", "workflow", "mcp", "agent_pack",
+}
+
 
 def _sandbox_stack(stack: str) -> str:
     low = (stack or "").lower()
@@ -714,8 +719,21 @@ def _run_proof_command(
 ) -> _ProofCommandResult:
     """Run a proof command through SandboxRunner when configured, else locally."""
     runner = ctx.runner if ctx is not None else None
+    from skyn3t.security.secrets import filter_env
+
+    safe_env = filter_env(env)
     if runner is not None:
         import asyncio
+
+        async def _run_sandbox() -> Any:
+            return await runner.run(
+                command,
+                cwd=cwd,
+                timeout=timeout,
+                stack=ctx.stack if ctx is not None else None,
+                env=safe_env,
+                network=network,
+            )
 
         try:
             asyncio.get_running_loop()
@@ -724,37 +742,35 @@ def _run_proof_command(
         else:
             loop_running = True
         if loop_running:
-            if ctx is not None:
-                ctx.warnings.append(
-                    "sandbox unavailable inside running event loop; using local proof command"
+            import concurrent.futures
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    res = ex.submit(lambda: asyncio.run(_run_sandbox())).result(
+                        timeout=timeout + 5
+                    )
+            except Exception as exc:  # noqa: BLE001 - proof commands report failure
+                return _ProofCommandResult(
+                    127, "", f"sandbox exec failed: {exc}", backend="sandbox"
                 )
         else:
             try:
-                res = asyncio.run(
-                    runner.run(
-                        command,
-                        cwd=cwd,
-                        timeout=timeout,
-                        stack=ctx.stack if ctx is not None else None,
-                        env=env,
-                        network=network,
-                    )
-                )
+                res = asyncio.run(_run_sandbox())
             except Exception as exc:  # noqa: BLE001 - proof commands report failure
                 return _ProofCommandResult(127, "", f"sandbox exec failed: {exc}", backend="sandbox")
-            backend = str(getattr(res, "backend", "") or "")
-            if ctx is not None and backend:
-                ctx.used_backend = backend
-            warning = getattr(res, "warning", None)
-            if ctx is not None and warning:
-                ctx.warnings.append(str(warning))
-            return _ProofCommandResult(
-                returncode=int(getattr(res, "exit_code", 1)),
-                stdout=str(getattr(res, "stdout", "") or ""),
-                stderr=str(getattr(res, "stderr", "") or ""),
-                backend=backend or "sandbox",
-                timed_out=bool(getattr(res, "timed_out", False)),
-            )
+        backend = str(getattr(res, "backend", "") or "")
+        if ctx is not None and backend:
+            ctx.used_backend = backend
+        warning = getattr(res, "warning", None)
+        if ctx is not None and warning:
+            ctx.warnings.append(str(warning))
+        return _ProofCommandResult(
+            returncode=int(getattr(res, "exit_code", 1)),
+            stdout=str(getattr(res, "stdout", "") or ""),
+            stderr=str(getattr(res, "stderr", "") or ""),
+            backend=backend or "sandbox",
+            timed_out=bool(getattr(res, "timed_out", False)),
+        )
 
     import subprocess
 
@@ -766,7 +782,7 @@ def _run_proof_command(
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=env,
+            env=safe_env,
         )
         return _ProofCommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:
@@ -791,6 +807,165 @@ def _use_container_command_names(ctx: _ProofCommandContext | None) -> bool:
         return True
     backend = str(getattr(getattr(runner, "settings", None), "execution_backend", "") or "")
     return bool(ctx.docker_available or backend == "docker")
+
+
+def _safe_requirements_file(pdir: Path) -> Path | None:
+    req = pdir / "requirements.txt"
+    if not req.is_file():
+        return None
+    try:
+        lines = req.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    specs = []
+    for raw in lines:
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if (
+            line.startswith(("-", "git+", "http://", "https://", "file:"))
+            or "/" in line
+            or "\\" in line
+        ):
+            return None
+        specs.append(line)
+    if not specs or len(specs) > 24:
+        return None
+    return req
+
+
+def _safe_requirement_names(pdir: Path) -> list[str]:
+    req = _safe_requirements_file(pdir)
+    if req is None:
+        return []
+    names: list[str] = []
+    try:
+        lines = req.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for raw in lines:
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name = re.split(r"[<>=!~;\[]", line, 1)[0].strip()
+        if name:
+            names.append(name.replace("-", "_").lower())
+    return names
+
+
+def _python_requirements_importable(pdir: Path) -> bool:
+    names = _safe_requirement_names(pdir)
+    if not names:
+        return False
+    import importlib.util
+
+    common = {"python_dotenv": "dotenv", "beautifulsoup4": "bs4", "pillow": "PIL"}
+    for name in names:
+        mod = common.get(name, name).split(".", 1)[0]
+        if importlib.util.find_spec(mod) is None:
+            return False
+    return True
+
+
+def _install_python_deps(
+    pdir: Path,
+    cmd_ctx: _ProofCommandContext | None,
+    *,
+    timeout: int,
+) -> tuple[bool, bool, str]:
+    """Install a small generated Python dependency manifest for proof commands.
+
+    Returns ``(ran, ok, summary)``. Unsupported or unsafe manifests are a soft
+    skip, not a proof failure. The command uses the same sandbox/filtered-env
+    path as boot/tests and gets only bounded network access.
+    """
+    req = _safe_requirements_file(pdir)
+    if req is None:
+        return (False, False, "no safe requirements.txt to install")
+    import os
+
+    py = _python_executable()
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if py is None and not use_container_names:
+        return (False, False, "no python interpreter available")
+    py_cmd = "python" if use_container_names else str(py)
+    budget = max(30, min(120, int(timeout)))
+    proc = _run_proof_command(
+        cmd_ctx,
+        [py_cmd, "-m", "pip", "install", "--disable-pip-version-check", "-r", str(req)],
+        cwd=pdir,
+        timeout=budget,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        network=True,
+    )
+    if proc.timed_out:
+        return (True, False, f"pip install timed out after {budget}s")
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode == 0:
+        return (True, True, out[-500:] or "pip install ok")
+    if proc.returncode == 127:
+        return (False, False, "pip could not be launched")
+    return (True, False, out[-500:] or "pip install failed")
+
+
+def _proof_install_python_deps_default() -> bool:
+    try:
+        from skyn3t.config.settings import get_settings
+        return bool(getattr(get_settings(), "proof_install_python_deps", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _proof_python_deps_timeout_default() -> int:
+    try:
+        from skyn3t.config.settings import get_settings
+        return int(getattr(get_settings(), "proof_python_deps_timeout", 120))
+    except Exception:  # noqa: BLE001
+        return 120
+
+
+def _should_install_python_deps(
+    pdir: Path,
+    stack: str,
+    *,
+    run_tests: bool,
+    run_build: bool,
+) -> bool:
+    if not (run_tests or run_build):
+        return False
+    low = (stack or "").lower()
+    return low in _PYTHON_PROOF_STACKS or _has_python_tests(pdir)
+
+
+def _attach_proof_environment(
+    detail: dict[str, Any],
+    *,
+    execution_backend: str,
+    cmd_ctx: _ProofCommandContext,
+    sandbox_available: bool,
+    run_tests: bool,
+    run_build: bool,
+) -> None:
+    reasons: list[str] = []
+    if execution_backend in ("auto", "docker") and not sandbox_available:
+        reasons.append("docker sandbox unavailable; used hardened local proof commands")
+    if run_build and detail.get("build") == "skipped":
+        summary = str(detail.get("build_summary") or "").strip()
+        reasons.append("build skipped" + (f": {summary}" if summary else ""))
+    if run_tests and detail.get("tests") == "skipped":
+        summary = str(detail.get("test_summary") or "").strip()
+        reasons.append("tests skipped" + (f": {summary}" if summary else ""))
+    if detail.get("python_deps") == "failed":
+        summary = str(detail.get("python_deps_summary") or "").strip()
+        reasons.append("python dependency install failed" + (f": {summary}" if summary else ""))
+    command_backend = cmd_ctx.used_backend or ("local" if cmd_ctx.runner is None else "not_run")
+    detail["proof_environment"] = {
+        "execution_backend": execution_backend,
+        "command_backend": command_backend,
+        "sandbox_available": sandbox_available,
+        "degraded": bool(reasons),
+        "degraded_reasons": reasons,
+    }
 
 
 def extract_error_gaps(
@@ -1989,6 +2164,8 @@ def proof_run(
     run_build: bool = False,
     build_timeout: int = 300,
     enable_mock_llm: bool | None = None,
+    install_python_deps: bool | None = None,
+    python_deps_timeout: int | None = None,
     brief: str = "",
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
@@ -2031,16 +2208,45 @@ def proof_run(
     if checklist and present < max(1, len(checklist) // 2):
         passed = False
 
+    detail: dict[str, Any] = {
+        "stack": stack,
+        "entrypoints": [],
+        "sandbox_available": sandbox_available,
+    }
+
+    install_py_deps = (
+        _proof_install_python_deps_default()
+        if install_python_deps is None
+        else bool(install_python_deps)
+    )
+    if install_py_deps and _should_install_python_deps(
+        pdir, stack, run_tests=run_tests, run_build=run_build
+    ):
+        if _python_requirements_importable(pdir):
+            detail["python_deps"] = "already_available"
+        else:
+            dep_timeout = (
+                _proof_python_deps_timeout_default()
+                if python_deps_timeout is None
+                else int(python_deps_timeout)
+            )
+            ran_deps, deps_ok, deps_summary = _install_python_deps(
+                pdir, cmd_ctx, timeout=dep_timeout)
+            if ran_deps:
+                detail["python_deps"] = "installed" if deps_ok else "failed"
+                if deps_summary:
+                    detail["python_deps_summary"] = deps_summary
+            else:
+                detail["python_deps"] = "skipped"
+                if deps_summary:
+                    detail["python_deps_summary"] = deps_summary
+
     # Behaviour, not vibes (rule #3): a code project that has no runnable
     # entrypoint, or whose entrypoint cannot even be imported, has NOT been
     # proven — a missing/broken root was the exact failure the old static-only
     # proof greenlit. Web/static stacks count index.html as an entrypoint.
     entrypoints, boot_error = _entrypoint_check(pdir, stack, cmd_ctx)
-    detail: dict[str, Any] = {
-        "stack": stack,
-        "entrypoints": entrypoints,
-        "sandbox_available": sandbox_available,
-    }
+    detail["entrypoints"] = entrypoints
     if total > 0 and not entrypoints:
         passed = False
         detail["reason"] = "no runnable entrypoint found"
@@ -2199,6 +2405,15 @@ def proof_run(
             mode = "sandbox"
         elif cmd_ctx.warnings:
             detail["sandbox_warning"] = cmd_ctx.warnings[-1]
+
+    _attach_proof_environment(
+        detail,
+        execution_backend=execution_backend,
+        cmd_ctx=cmd_ctx,
+        sandbox_available=sandbox_available,
+        run_tests=run_tests,
+        run_build=run_build,
+    )
 
     # Anti-fake gap producers (advisory, wave-2 items 44/47/48): record
     # incomplete-code placeholders, brief features with no trace in the delivery,

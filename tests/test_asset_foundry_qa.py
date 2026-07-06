@@ -36,6 +36,33 @@ def test_check_asset_outputs_reports_missing_path_and_credit(tmp_path: Path):
     assert out["missing_credits"] == ["sprite/player/idle/down"]
 
 
+def test_check_asset_outputs_accepts_served_public_asset_paths(tmp_path: Path):
+    assets_dir = tmp_path / "public" / "assets"
+    sprite = assets_dir / "sprites" / "player" / "idle" / "down.png"
+    sprite.parent.mkdir(parents=True)
+    sprite.write_bytes(b"png")
+    (assets_dir / "assets.json").write_text(
+        json.dumps(
+            [
+                {
+                    "asset_id": "sprite/player/idle/down",
+                    "kind": "sprite",
+                    "path": "/assets/sprites/player/idle/down.png",
+                    "license": "CC0",
+                    "credit": "",
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out = check_asset_outputs(tmp_path)
+
+    assert out["missing_paths"] == []
+
+
 def test_build_verdict_includes_manifest_gaps(tmp_path: Path):
     assets_dir = tmp_path / "public" / "assets"
     assets_dir.mkdir(parents=True)

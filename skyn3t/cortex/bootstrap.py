@@ -19,6 +19,7 @@ awaited.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from skyn3t.config.settings import Settings, get_settings
@@ -29,6 +30,7 @@ from skyn3t.cortex.proposal_store import (
     Proposal,
     ProposalStatus,
     ProposalStore,
+    ProposalType,
 )
 
 try:
@@ -59,6 +61,7 @@ class Cortex:
         rag: Any | None = None,
         skills: Any | None = None,
         agents: dict[str, Any] | None = None,
+        ratchet_evaluator: Callable[[Proposal], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.settings = settings or get_settings()
@@ -87,6 +90,7 @@ class Cortex:
             settings=self.settings,
         )
         self.auto_approve_threshold = auto_approve_threshold
+        self.ratchet_evaluator = ratchet_evaluator
         self._components: list[Any] = []
         self._tasks: list[asyncio.Task[Any]] = []
         self._started = False
@@ -126,6 +130,8 @@ class Cortex:
         if decision == "apply":
             self.store.set_status(prop.id, ProposalStatus.APPROVED, reason="auto-approved (safe)")
             await self._emit_decided(prop)
+            if self._should_ratchet(prop):
+                return await self._apply_with_ratchet(prop.id) or prop
             return await self.apply(prop.id) or prop
         # "hold" — leave pending for a later/manual decision.
         return prop
@@ -144,6 +150,36 @@ class Cortex:
             return "apply"
         # Safe but low-confidence, or gates off but still wants review.
         return "gate" if gates_on else "hold"
+
+    def _should_ratchet(self, prop: Proposal) -> bool:
+        return (
+            prop.type is ProposalType.TUNING
+            and bool(getattr(self.settings, "reliability_ratchet_enabled", False))
+            and self.ratchet_evaluator is not None
+        )
+
+    async def _apply_with_ratchet(self, proposal_id: str) -> Proposal | None:
+        prop = self.store.get(proposal_id)
+        if prop is None or self.ratchet_evaluator is None:
+            return prop
+        try:
+            ratchet = await self.ratchet_evaluator(prop)
+        except Exception as exc:  # noqa: BLE001
+            ratchet = {"kept": False, "error": True, "reasons": [f"ratchet error: {exc}"]}
+        kept = bool(ratchet.get("kept"))
+        result: dict[str, Any] = {"applied": kept, "ratchet": ratchet}
+        if not kept:
+            result["error"] = "; ".join(str(r) for r in ratchet.get("reasons", [])[:3])
+        new_status = ProposalStatus.APPLIED if kept else ProposalStatus.FAILED
+        self.store.set_status(
+            proposal_id, new_status, reason=result.get("error", ""), result=result
+        )
+        await self.event_bus.emit(
+            EventType.PROPOSAL_DECIDED,
+            "cortex",
+            {"proposal_id": prop.id, "status": new_status.value, "result": result},
+        )
+        return prop
 
     # ---- human / manual decisions ---------------------------------------
     async def approve(self, proposal_id: str, reason: str = "human approved") -> Proposal | None:
@@ -257,6 +293,7 @@ def build_cortex(
     llm: Any | None = None,
     rag: Any | None = None,
     skills: Any | None = None,
+    ratchet_evaluator: Callable[[Proposal], Awaitable[dict[str, Any]]] | None = None,
 ) -> Cortex:
     """Construct a Cortex with the standard component set attached.
 
@@ -267,7 +304,14 @@ def build_cortex(
     # Pass the live orchestrator agents so approved PROMPT proposals can write
     # their evolved instruction onto the matching agent (closes the prompt loop).
     agents = orchestrator.agents if orchestrator is not None else None
-    cortex = Cortex(event_bus, settings, rag=rag, skills=skills, agents=agents)
+    cortex = Cortex(
+        event_bus,
+        settings,
+        rag=rag,
+        skills=skills,
+        agents=agents,
+        ratchet_evaluator=ratchet_evaluator,
+    )
 
     # Re-attach prompt overrides approved in a prior process to the live agents,
     # so an evolved instruction carries across restarts (durable effect, not just

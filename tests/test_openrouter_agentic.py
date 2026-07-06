@@ -77,6 +77,41 @@ def test_agentic_loop_records_effective_model(tmp_path, monkeypatch):
     assert client.routes[-1] == ("backend", "codegen", "openrouter/selected")
 
 
+def test_agentic_loop_records_openrouter_usage_for_budget(tmp_path, monkeypatch):
+    turns = [
+        {
+            **_tool_turn(
+                "write_file",
+                {"path": "src/main.js", "content": "export const ok = true;"},
+            ),
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        },
+        {
+            **_tool_turn("finish", {}, "t2"),
+            "usage": {"prompt_tokens": 6, "completion_tokens": 4},
+        },
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    client = LLMClient(
+        Settings(
+            llm_backend="openrouter",
+            openrouter_api_key="x",
+            free_only=False,
+            per_build_usd_cap=10.0,
+            daily_usd_cap=10.0,
+            daily_token_cap=10_000,
+        )
+    )
+
+    res = asyncio.run(
+        client._openrouter_agentic("build", str(tmp_path), "provider/paid", stack="phaser")
+    )
+
+    assert res["ok"] is True
+    assert client.budget.tokens_day == 25
+    assert client.budget.spent_build > 0.0
+
+
 def test_agentic_loop_confines_paths(tmp_path, monkeypatch):
     sub = tmp_path / "proj"
     sub.mkdir()

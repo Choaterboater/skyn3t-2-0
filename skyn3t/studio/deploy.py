@@ -18,6 +18,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import time
 from typing import Any
 
 # stack (agent vocab + planner aliases) -> deploy kind. Every KNOWN_STACKS entry
@@ -299,3 +300,45 @@ def write_deploy_artifacts(plan: DeployPlan, project_dir: str | Path) -> list[st
         except OSError:
             continue
     return written
+
+
+def record_deployment(
+    project_dir: str | Path,
+    *,
+    result: dict[str, Any],
+    plan: DeployPlan,
+    target: str,
+) -> dict[str, Any]:
+    """Persist a successful live deployment onto the build manifest.
+
+    The record is append-only under ``extra.deployments`` and the latest URL is
+    mirrored to ``extra.live_url`` for dashboards that only need the current link.
+    Never raises; returns the record it attempted to persist.
+    """
+    url = str((result or {}).get("url") or "")
+    record = {
+        "ts": time(),
+        "target": str(target or (result or {}).get("target") or ""),
+        "provider": str((result or {}).get("target") or ""),
+        "url": url,
+        "kind": plan.kind,
+        "serves_url": bool(plan.serves_url),
+    }
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+
+        pdir = Path(project_dir)
+        manifest = BuildManifest.load(pdir)
+        if manifest is None:
+            return record
+        deployments = manifest.extra.get("deployments")
+        if not isinstance(deployments, list):
+            deployments = []
+        deployments.append(record)
+        manifest.extra["deployments"] = deployments[-20:]
+        if url:
+            manifest.extra["live_url"] = url
+        manifest.save(pdir)
+    except Exception:  # noqa: BLE001 - recording must not make deploy fail
+        pass
+    return record

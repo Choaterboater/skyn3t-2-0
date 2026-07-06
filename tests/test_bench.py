@@ -16,6 +16,7 @@ from skyn3t.studio.bench import (
     diff_runs,
     gate_change,
     load_run,
+    publish_go_rate,
     run_bench,
     save_run,
     summarize,
@@ -138,6 +139,23 @@ def test_to_dict_carries_per_stack_breakdown():
     d = run.to_dict()
     assert d["by_stack"]["python"]["go_rate"] == 1.0
     assert d["by_stack"]["phaser"]["go_rate"] == 0.0
+
+
+def test_publish_go_rate_writes_markdown_and_json(tmp_path):
+    run = BenchRun(label="r", results=[
+        _stacked("cli1", "python", verdict="go"),
+        _stacked("game1", "phaser", verdict="no_go", score=20),
+    ])
+
+    paths = publish_go_rate(run, tmp_path)
+
+    md = paths["markdown"]
+    js = paths["json"]
+    assert md.exists() and js.exists()
+    text = md.read_text(encoding="utf-8")
+    assert "Go-Rate" in text
+    assert "python" in text and "phaser" in text
+    assert '"go_rate": 0.5' in js.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------

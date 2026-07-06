@@ -85,6 +85,22 @@ def test_permissions_check_fail_closed():
     assert asyncio.run(pm.check("delete_path", actor="agent")) is True
 
 
+def test_permissions_check_writes_audit_record(tmp_path):
+    from skyn3t.security.audit import AuditLog
+    from skyn3t.security.permissions import PermissionManager
+
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    pm = PermissionManager(audit_log=audit)
+
+    assert asyncio.run(pm.check("delete_path", actor="agent")) is False
+
+    records = audit.read()
+    assert records
+    assert records[-1]["action"] == "permission"
+    assert records[-1]["outcome"] == "deny"
+    assert records[-1]["detail"]["permission_action"] == "delete_path"
+
+
 # ---- security: sandbox ---------------------------------------------------
 def test_sandbox_runs_offline():
     from skyn3t.security.sandbox import SandboxRunner, available_stacks

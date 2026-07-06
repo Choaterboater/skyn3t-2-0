@@ -258,6 +258,13 @@ def _implies_weather_forecast(brief: str) -> bool:
     return "weather" in low and ("forecast" in low or "5-day" in low or "five-day" in low)
 
 
+def _implies_docs_site(brief: str) -> bool:
+    low = (brief or "").lower()
+    return ("docs" in low or "documentation" in low) and (
+        "sidebar" in low or "code block" in low or "code blocks" in low
+    )
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -1269,7 +1276,7 @@ def _astro(app_name: str, brief: str) -> dict[str, str]:
     # The HTML body interpolates {title}; angle brackets in the brief would break
     # markup, so neutralise them for the visible heading.
     html_title = js_title.replace("<", "&lt;").replace(">", "&gt;")
-    return {
+    files = {
         "package.json": (
             "{\n"
             f'  "name": "{app_name}",\n'
@@ -1348,6 +1355,89 @@ def _astro(app_name: str, brief: str) -> dict[str, str]:
             ],
         ),
     }
+    if _implies_docs_site(title):
+        files["src/pages/index.astro"] = (
+            "---\n"
+            "import Layout from '../layouts/Layout.astro';\n"
+            f"const title = '{js_title}';\n"
+            "const navItems = ['Quick start', 'Components', 'API reference'];\n"
+            "---\n"
+            "<Layout title={title}>\n"
+            "  <main class=\"docs-shell\">\n"
+            "    <aside class=\"docs-sidebar\" aria-label=\"Documentation navigation\">\n"
+            f"      <strong>{html_title}</strong>\n"
+            "      <nav>\n"
+            "        {navItems.map((item) => (\n"
+            "          <a href={`#${item.toLowerCase().replaceAll(' ', '-')}`}>{item}</a>\n"
+            "        ))}\n"
+            "      </nav>\n"
+            "    </aside>\n"
+            "    <article class=\"docs-content\">\n"
+            "      <p class=\"eyebrow\">Astro documentation</p>\n"
+            "      <h1>Static docs with a sidebar and code blocks</h1>\n"
+            "      <p class=\"lede\">A compact documentation site with scannable navigation, installation steps, and copy-ready examples.</p>\n"
+            "      <section id=\"quick-start\">\n"
+            "        <h2>Quick start</h2>\n"
+            "        <p>Install dependencies, start Astro, and open the local docs preview.</p>\n"
+            "        <pre><code>npm install\nnpm run dev</code></pre>\n"
+            "      </section>\n"
+            "      <section id=\"components\">\n"
+            "        <h2>Components</h2>\n"
+            "        <p>Use content sections for guides, examples, and reference notes.</p>\n"
+            "        <pre><code>&lt;DocsSection title=\"Install\" /&gt;</code></pre>\n"
+            "      </section>\n"
+            "      <section id=\"api-reference\">\n"
+            "        <h2>API reference</h2>\n"
+            "        <p>Document inputs, outputs, and common responses in a predictable structure.</p>\n"
+            "        <pre><code>GET /api/docs\n200 OK</code></pre>\n"
+            "      </section>\n"
+            "    </article>\n"
+            "  </main>\n"
+            "</Layout>\n\n"
+            "<style>\n"
+            "  :global(body) { margin: 0; background: #f4f7fb; color: #172033; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }\n"
+            "  .docs-shell { min-height: 100vh; display: grid; grid-template-columns: 280px minmax(0, 1fr); }\n"
+            "  .docs-sidebar { position: sticky; top: 0; height: 100vh; display: grid; align-content: start; gap: 24px; padding: 32px 24px; background: #172033; color: #ffffff; }\n"
+            "  .docs-sidebar strong { line-height: 1.25; }\n"
+            "  .docs-sidebar nav { display: grid; gap: 8px; }\n"
+            "  .docs-sidebar a { color: #d8e6ff; text-decoration: none; border-radius: 8px; padding: 10px 12px; }\n"
+            "  .docs-sidebar a:hover { background: rgba(255,255,255,0.12); }\n"
+            "  .docs-content { max-width: 920px; padding: 56px; }\n"
+            "  .eyebrow { margin: 0 0 12px; color: #1f6f8b; font-weight: 800; text-transform: uppercase; }\n"
+            "  h1 { margin: 0; font-size: 44px; line-height: 1.08; }\n"
+            "  h2 { margin-top: 36px; }\n"
+            "  .lede { color: #516073; font-size: 18px; line-height: 1.7; max-width: 720px; }\n"
+            "  section { border-top: 1px solid #d9e2ee; padding-top: 20px; }\n"
+            "  pre { overflow-x: auto; border-radius: 8px; background: #101827; color: #d8e6ff; padding: 18px; }\n"
+            "  code { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 14px; }\n"
+            "  @media (max-width: 760px) { .docs-shell { grid-template-columns: 1fr; } .docs-sidebar { position: static; height: auto; } .docs-content { padding: 32px 24px; } h1 { font-size: 34px; } }\n"
+            "</style>\n"
+        )
+        files["README.md"] = compose_readme(
+            title,
+            brief,
+            stack_label="Astro",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18.14+.",
+            usage=(
+                "Start the documentation site:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Build the static docs and preview them:\n\n"
+                "```bash\nnpm run build\nnpm run preview\n```"
+            ),
+            structure=[
+                ("src/pages/index.astro", "Documentation homepage with sidebar and code examples"),
+                ("src/layouts/Layout.astro", "Shared HTML document layout"),
+                ("astro.config.mjs", "Astro configuration"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Sticky documentation sidebar",
+                "Quick start, component, and API reference sections",
+                "Syntax-style code blocks",
+                "Responsive single-column mobile layout",
+            ],
+        )
+    return files
 
 
 def _remix(app_name: str, brief: str) -> dict[str, str]:

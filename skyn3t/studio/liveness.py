@@ -85,11 +85,11 @@ def enumerate_routes(project_dir: str | Path, stack: str = "") -> list[Route]:
 
 _LINK_ATTR = re.compile(r"""(?:href|src)\s*=\s*['"]([^'"#]+)['"]""", re.I)
 _ASSET_ROUTE_PREFIXES = (
-    "/_next/", "/@vite/", "/assets/", "/static/", "/public/",
+    "/_next/", "/@vite/", "/@id/", "/assets/", "/static/", "/public/",
     "/src/", "/node_modules/",
 )
 _ASSET_ROUTE_SUFFIXES = (
-    ".js", ".mjs", ".cjs", ".css", ".map", ".json",
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".css", ".map", ".json",
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico",
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
     ".mp4", ".webm", ".mp3", ".wav", ".wasm", ".txt", ".xml",

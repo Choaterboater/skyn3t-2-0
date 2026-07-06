@@ -215,6 +215,54 @@ def save_run(run: BenchRun, data_dir) -> Path:
     return path
 
 
+def publish_go_rate(run: BenchRun, out_dir) -> dict[str, Path]:
+    """Publish a human-readable go-rate report plus machine-readable summary.
+
+    This does not run the bench; it makes an already-measured ledger visible as
+    the product claim: aggregate go-rate and per-stack rates from the same run.
+    """
+    base = Path(out_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    data = run.to_dict()
+    summary = data.get("summary") or {}
+    by_stack = data.get("by_stack") or {}
+    label = run.label or "latest"
+    md_lines = [
+        f"# SkyN3t Go-Rate: {label}",
+        "",
+        f"- Cases: {summary.get('go', 0)}/{summary.get('n', 0)} go",
+        f"- Go-Rate: {float(summary.get('go_rate', 0.0)) * 100:.1f}%",
+        f"- Mean Score: {summary.get('mean_score', 0)}",
+        "",
+        "| Stack | Go | Cases | Go-Rate | Mean Score |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for stack, row in by_stack.items():
+        md_lines.append(
+            f"| {stack} | {row.get('go', 0)} | {row.get('n', 0)} | "
+            f"{float(row.get('go_rate', 0.0)) * 100:.1f}% | {row.get('mean_score', 0)} |"
+        )
+    from skyn3t.atomic_io import atomic_write_text
+
+    md_path = base / "go-rate.md"
+    json_path = base / "go-rate.json"
+    atomic_write_text(md_path, "\n".join(md_lines) + "\n")
+    atomic_write_text(
+        json_path,
+        json.dumps(
+            {
+                "label": label,
+                "created_at": run.created_at,
+                "summary": summary,
+                "by_stack": by_stack,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+    )
+    return {"markdown": md_path, "json": json_path}
+
+
 def load_run(path) -> BenchRun:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     results = [

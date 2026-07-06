@@ -169,6 +169,7 @@ async def test_prose_file_in_substantial_app_is_not_degraded(tmp_path):
     assert "degraded" not in result.output, "prose-revert in a substantial app must not degrade it"
     assert any("App.jsx" in f for f in result.output["files"])      # substantial app delivered
     assert not any("notes.js" in f for f in result.output["files"])  # prose file cleaned out
+    assert not (tmp_path / "notes.js").exists()                      # prose file not shipped on disk
 
 
 async def test_exhausts_retry_then_degraded(tmp_path):

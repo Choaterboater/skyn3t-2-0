@@ -24,7 +24,6 @@ from skyn3t.studio.proof_run import (
     proof_run,
 )
 
-
 # --- detection heuristic -----------------------------------------------------
 
 
@@ -152,7 +151,7 @@ def _patch_executor(monkeypatch):
 
 def _pytest_env(calls):
     for command, env in calls:
-        if any("pytest" in str(c) for c in command):
+        if "-m" in command and "pytest" in command:
             return env
     return None
 

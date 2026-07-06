@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.config.settings import Settings
-from skyn3t.core.model_router import Tier, _FREE_DEFAULTS
+from skyn3t.core.model_router import _FREE_DEFAULTS, Tier
 
 
 async def test_preferred_model_pins_the_model_used():
@@ -80,6 +80,7 @@ async def test_list_models_uses_public_endpoint_without_key(monkeypatch):
             return _Resp()
 
     import httpx
+
     from skyn3t.web import routes
     monkeypatch.setattr(routes, "_MODELS_CACHE", {"ts": 0.0, "models": None, "catalog": None, "note": None})
     monkeypatch.setattr(httpx, "AsyncClient", _Client)

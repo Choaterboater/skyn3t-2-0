@@ -436,6 +436,36 @@ async def test_submit_build_rejects_non_data_reference_image():
         assert not (studio.extra or {}).get("reference_image"), f"{bad!r} was threaded"
 
 
+async def test_submit_build_rejects_invalid_reference_image_data():
+    studio = _FakeStudio()
+    state = _FakeState(studio)
+
+    await routes.submit_build(
+        state,
+        brief="a dashboard",
+        reference_image="data:image/png;base64,not valid base64!",
+    )
+
+    import asyncio
+    await asyncio.sleep(0)
+    assert "reference_image" not in (studio.extra or {})
+
+
+async def test_submit_build_rejects_oversized_reference_image_data():
+    import base64
+
+    studio = _FakeStudio()
+    state = _FakeState(studio)
+    raw = b"x" * (routes._MAX_REFERENCE_IMAGE_BYTES + 1)
+    data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+
+    await routes.submit_build(state, brief="a dashboard", reference_image=data_url)
+
+    import asyncio
+    await asyncio.sleep(0)
+    assert "reference_image" not in (studio.extra or {})
+
+
 async def test_submit_build_without_image_unchanged():
     studio = _FakeStudio()
     state = _FakeState(studio)

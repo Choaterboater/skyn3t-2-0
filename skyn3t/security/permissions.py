@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from skyn3t.config.settings import Settings, get_settings
+from skyn3t.security.audit import AuditLog
 
 
 class Decision(StrEnum):
@@ -53,6 +54,7 @@ class PermissionManager:
 
     settings: Settings = field(default_factory=get_settings)
     approval_fn: ApprovalFn = _default_deny
+    audit_log: AuditLog | None = None
     # actor -> set of explicitly granted capability names
     _grants: dict[str, set[str]] = field(default_factory=dict)
 
@@ -96,18 +98,49 @@ class PermissionManager:
         ctx = context or {}
         decision = self.classify(action, actor=actor)
         if decision is Decision.ALLOW:
+            self._audit(action, actor=actor, allowed=True, decision=decision, context=ctx)
             return True
         if decision is Decision.DENY:
+            self._audit(action, actor=actor, allowed=False, decision=decision, context=ctx)
             return False
         # NEEDS_APPROVAL -> consult the live-read approval callback (fail-closed).
         try:
-            return bool(await self.approval_fn(action, {"actor": actor, **ctx}))
+            allowed = bool(await self.approval_fn(action, {"actor": actor, **ctx}))
         except Exception:  # noqa: BLE001 - a broken approver must not grant access
+            self._audit(action, actor=actor, allowed=False, decision=decision, context=ctx)
             return False
+        self._audit(action, actor=actor, allowed=allowed, decision=decision, context=ctx)
+        return allowed
 
     def require_sync(self, action: str, *, actor: str = "agent") -> bool:
         """Synchronous best-effort check (no approval prompt). For hot paths."""
         return self.classify(action, actor=actor) is Decision.ALLOW
+
+    def _audit(
+        self,
+        action: str,
+        *,
+        actor: str,
+        allowed: bool,
+        decision: Decision,
+        context: dict,
+    ) -> None:
+        if self.audit_log is None:
+            return
+        try:
+            self.audit_log.record(
+                "permission",
+                actor=actor,
+                outcome="allow" if allowed else "deny",
+                detail={
+                    "permission_action": action,
+                    "decision": str(decision),
+                    "context": context,
+                },
+            )
+        except Exception:
+            # Auditing must not make permission checks less fail-closed or less available.
+            return
 
 
 def auto_approve_safe_fn() -> ApprovalFn:

@@ -381,6 +381,8 @@ export default function Settings() {
         visual_self_heal_max_rounds: data.visual_self_heal_max_rounds,
         per_build_usd_cap: data.per_build_usd_cap,
         daily_usd_cap: data.daily_usd_cap,
+        daily_token_cap: data.daily_token_cap,
+        autonomous_daily_build_cap: data.autonomous_daily_build_cap,
       }
     : null;
 

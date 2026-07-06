@@ -496,8 +496,8 @@ async def plan_art_llm(brief: str | None, *, settings, llm=None) -> ArtPlan:
     if not bool(getattr(settings, "art_director_enabled", False)):
         return floor
     try:
-        from skyn3t.agents._common import parse_json
         from skyn3t.adapters.llm import LLMClient
+        from skyn3t.agents._common import parse_json
         from skyn3t.core.model_router import Tier
 
         client = llm or LLMClient(settings)

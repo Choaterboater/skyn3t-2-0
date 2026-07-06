@@ -22,6 +22,21 @@ def test_filter_env_strips_secrets():
     assert "MY_TOKEN" not in clean
 
 
+def test_npm_env_filters_host_secrets(monkeypatch):
+    from skyn3t.npm_utils import npm_env
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret-secret-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_abcdefghijklmnopqrstuvwx")
+    monkeypatch.setenv("SAFE_FLAG", "ok")
+
+    env = npm_env()
+
+    assert env["SAFE_FLAG"] == "ok"
+    assert "OPENROUTER_API_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert env["CI"] == "1"
+
+
 def test_secrets_redaction():
     from skyn3t.security.secrets import SecretsStore, scrub_text
 
@@ -68,6 +83,22 @@ def test_permissions_check_fail_closed():
     assert asyncio.run(pm.check("delete_path")) is False
     pm.grant("agent", "delete_path")
     assert asyncio.run(pm.check("delete_path", actor="agent")) is True
+
+
+def test_permissions_check_writes_audit_record(tmp_path):
+    from skyn3t.security.audit import AuditLog
+    from skyn3t.security.permissions import PermissionManager
+
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    pm = PermissionManager(audit_log=audit)
+
+    assert asyncio.run(pm.check("delete_path", actor="agent")) is False
+
+    records = audit.read()
+    assert records
+    assert records[-1]["action"] == "permission"
+    assert records[-1]["outcome"] == "deny"
+    assert records[-1]["detail"]["permission_action"] == "delete_path"
 
 
 # ---- security: sandbox ---------------------------------------------------
@@ -253,3 +284,18 @@ def test_budget_guard_event_attach():
     status = asyncio.run(run())
     assert status["loops"] == 1
     assert status["state"] in ("ok", "warn")
+
+
+def test_studio_runner_budget_guard_check_raises_rejection():
+    from skyn3t.studio.runner import StudioRunner
+
+    class _Guard:
+        def check(self):
+            raise RuntimeError("daily cap exceeded")
+
+    runner = StudioRunner(EventBus(), None, budget_guard=_Guard())
+
+    with pytest.raises(Exception) as exc:
+        runner._guard_check("code")
+
+    assert "budget guard tripped before code" in str(exc.value)

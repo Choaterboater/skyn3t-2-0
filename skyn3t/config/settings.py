@@ -342,27 +342,30 @@ class Settings(BaseSettings):
     # Deterministic MCP-server gate (mcp stack, wave-2 §3.3): spawn the delivered
     # server.py and drive the real Model Context Protocol over stdio (initialize →
     # tools/list → tools/call each tool → one malformed call). ZERO LLM. Like the
-    # SEO check it is ADVISORY — findings are recorded to manifest.extra["mcp_check"]
-    # and fed to ONE repair (snapshot → improve → re-proof → keep or roll back);
-    # it NEVER flips the verdict. Soft-skips when the mcp SDK isn't importable.
+    # SEO check records findings to manifest.extra["mcp_check"] and feeds ONE
+    # repair (snapshot → improve → re-proof → keep or roll back). When
+    # ai_native_gates_verdict is on, a real non-skipped MCP/RAG/workflow contract
+    # failure blocks the final verdict; soft-skips never block.
     mcp_check_enabled: bool = True
     # Deterministic RAG-app gate (rag stack, wave-2 §3.1): boot the delivered
     # FastAPI app and drive the real HTTP contract (/health → /v1/stats → /ingest
     # a marker doc → /query must retrieve it → /chat answers → one malformed
     # ingest must yield a structured 4xx). ZERO LLM (the scaffold's /chat degrades
-    # to extractive answers with no key). ADVISORY like mcp_check — findings are
-    # recorded to manifest.extra["rag_check"] and fed to ONE repair (snapshot →
-    # improve → re-proof → keep or roll back); it NEVER flips the verdict.
-    # Soft-skips when fastapi/uvicorn aren't importable in the proof env.
+    # to extractive answers with no key). Records to manifest.extra["rag_check"]
+    # and feeds ONE repair; ai_native_gates_verdict decides whether real
+    # non-skipped findings block the final verdict.
     rag_check_enabled: bool = True
     # Deterministic agent-workflow gate (workflow stack, wave-2 §3.2): boot the
     # delivered runner (WEBHOOK_URL + LLM seams scrubbed) and drive the spec's
     # /trigger contract (dry-run envelope → live-unconfigured must yield
     # skipped_no_delivery not a crash → ledger recorded both → unknown workflow
-    # rejected 4xx). ADVISORY like rag_check — recorded to
-    # manifest.extra["workflow_check"], fed to ONE snapshot/re-proof/rollback
-    # repair; NEVER flips the verdict. Soft-skips when deps aren't importable.
+    # rejected 4xx). Records to manifest.extra["workflow_check"], feeds ONE
+    # snapshot/re-proof/rollback repair, and can hard-gate via
+    # ai_native_gates_verdict. Soft-skips when deps aren't importable.
     workflow_check_enabled: bool = True
+    ai_native_gates_verdict: bool = True
+    security_check_enabled: bool = True
+    web_polish_gate_enabled: bool = True
     # Deterministic CLI gate (python_cli family, wave-2 §3.6 tier): drive the
     # delivered main.py's command surface with bounded subprocess calls —
     # --help must work, every advertised subcommand's --help must work, and
@@ -380,6 +383,11 @@ class Settings(BaseSettings):
     # npm test), bounded + guarded. A real failure fails the proof and routes
     # into the fix loop — "verify behavior, not vibes". Kill-switch for CI/offline.
     run_generated_tests: bool = True
+    # For generated Python apps, install a small declared dependency set before
+    # boot/tests when proof needs to run code. The install is bounded and uses the
+    # same sandbox/filtered env path as other proof commands.
+    proof_install_python_deps: bool = True
+    proof_python_deps_timeout: int = 120
     # Reliability flywheel: when a REAL build finishes no_go/failed, append it as a
     # permanent bench regression case (bench.capture_regression_case) so a future
     # change must keep it green. Opt-in (default off) — capturing every failure can
@@ -401,6 +409,9 @@ class Settings(BaseSettings):
     # fed to the fix loop as a gap so a real backend can repair it.
     run_generated_build: bool = True
     generated_build_timeout: int = 300
+    # A go earned under degraded proof evidence (for example build skipped due to
+    # missing/offline tooling) remains go, but its success-looking score is capped.
+    degraded_proof_score_cap: float = Field(default=74.0, ge=0, le=100)
     # Convergence loop: keep re-running build -> feed the exact error to the improver
     # -> retry until the proof passes or these bounds hit. The cheap model emits a
     # different defect each build; a multi-error cascade (e.g. styled-jsx + a bad

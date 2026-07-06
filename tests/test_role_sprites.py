@@ -155,7 +155,7 @@ async def test_auto_without_token_uses_offline_assets(tmp_path):
 
 async def test_writes_a_role_map_manifest(tmp_path):
     brief = "a space game"
-    res = await generate_role_sprites(
+    await generate_role_sprites(
         str(tmp_path), brief, settings=_settings(), client=_StubClient(), seed=2
     )
     mf = tmp_path / "public" / "assets" / "sprites" / "assets.json"

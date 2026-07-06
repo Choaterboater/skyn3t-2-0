@@ -202,9 +202,18 @@ def test_boot_verifier_routes_fastapi_to_python(tmp_path, monkeypatch):
     agent = BootVerifierAgent(event_bus=bus)
     called = {}
 
-    async def fake_py(r, e): called["py"] = True; return True, "python", "ok"
-    def fake_node(r, e): called["node"] = True; return True, "node", "ok"
-    def fake_web(r, e): called["web"] = True; return True, "web", "ok"
+    async def fake_py(r, e):
+        called["py"] = True
+        return True, "python", "ok"
+
+    def fake_node(r, e):
+        called["node"] = True
+        return True, "node", "ok"
+
+    def fake_web(r, e):
+        called["web"] = True
+        return True, "web", "ok"
+
     monkeypatch.setattr(agent, "_boot_python", fake_py)
     monkeypatch.setattr(agent, "_boot_node", fake_node)
     monkeypatch.setattr(agent, "_boot_web", fake_web)

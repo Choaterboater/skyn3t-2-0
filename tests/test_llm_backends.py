@@ -43,6 +43,7 @@ def test_openrouter_codegen_model_pin_used_for_agentic(monkeypatch, tmp_path):
     c = _client(
         "openrouter",
         openrouter_api_key="sk-or-test",
+        free_only=False,
         openrouter_codegen_model="provider/custom-code-model",
     )
     captured = {}
@@ -62,6 +63,7 @@ def test_preferred_model_used_for_openrouter_agentic_codegen(monkeypatch, tmp_pa
     c = _client(
         "openrouter",
         openrouter_api_key="sk-or-test",
+        free_only=False,
         preferred_model="provider/selected-in-ui",
     )
     captured = {}

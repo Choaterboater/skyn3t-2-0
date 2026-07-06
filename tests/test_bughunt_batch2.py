@@ -31,6 +31,24 @@ def test_react_vite_brief_is_escaped_not_raw_jsx():
     assert "<title>Bob's <app>" not in html
 
 
+def test_react_weather_scaffold_delivers_forecast_ui():
+    files = scaffold_for(
+        "react_vite",
+        "weather",
+        "a React app that shows a 5-day weather forecast for a city",
+    )
+
+    app = files["src/App.jsx"]
+    css = files["src/styles.css"]
+
+    assert "count is" not in app
+    assert "generated offline" not in app.lower()
+    assert "5-day" in app.lower()
+    assert "forecastDays" in app
+    assert "<input" in app
+    assert "forecast-grid" in css
+
+
 # --- #2 static_html scaffold escapes the brief into valid HTML --------------
 
 def test_static_html_brief_is_html_escaped():

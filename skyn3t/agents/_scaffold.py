@@ -253,6 +253,11 @@ def _implies_supabase(brief: str) -> bool:
     return any(_re.search(pat, low) for pat in _SUPABASE_KEYWORDS)
 
 
+def _implies_weather_forecast(brief: str) -> bool:
+    low = (brief or "").lower()
+    return "weather" in low and ("forecast" in low or "5-day" in low or "five-day" in low)
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -260,7 +265,7 @@ def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     # nextjs/astro builders do.
     js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
     html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    return {
+    files = {
         "package.json": (
             "{\n"
             f'  "name": "{app_name}",\n'
@@ -363,6 +368,108 @@ def _react_vite(app_name: str, brief: str) -> dict[str, str]:
             ],
         ),
     }
+    if _implies_weather_forecast(title):
+        files["src/App.jsx"] = (
+            "import { useMemo, useState } from 'react'\n\n"
+            "const forecastDays = [\n"
+            "  { day: 'Mon', high: 72, low: 58, condition: 'Morning sun', rain: '8%' },\n"
+            "  { day: 'Tue', high: 69, low: 55, condition: 'Clouds build', rain: '22%' },\n"
+            "  { day: 'Wed', high: 75, low: 61, condition: 'Warm breeze', rain: '12%' },\n"
+            "  { day: 'Thu', high: 67, low: 53, condition: 'Light showers', rain: '48%' },\n"
+            "  { day: 'Fri', high: 71, low: 57, condition: 'Clear evening', rain: '5%' },\n"
+            "]\n\n"
+            "export default function App() {\n"
+            "  const [city, setCity] = useState('Chicago')\n"
+            "  const averageHigh = useMemo(() => Math.round(\n"
+            "    forecastDays.reduce((sum, day) => sum + day.high, 0) / forecastDays.length\n"
+            "  ), [])\n\n"
+            "  return (\n"
+            "    <main className=\"weather-shell\">\n"
+            "      <section className=\"hero-panel\">\n"
+            "        <p className=\"eyebrow\">5-day city forecast</p>\n"
+            f"        <h1>{'{'}'{js_title}'{'}'}</h1>\n"
+            "        <form className=\"search-row\" onSubmit={(event) => event.preventDefault()}>\n"
+            "          <label htmlFor=\"city\">City</label>\n"
+            "          <input\n"
+            "            id=\"city\"\n"
+            "            value={city}\n"
+            "            onChange={(event) => setCity(event.target.value)}\n"
+            "            placeholder=\"Enter a city\"\n"
+            "          />\n"
+            "          <button type=\"submit\">Update</button>\n"
+            "        </form>\n"
+            "        <div className=\"today-card\" aria-label=\"Current summary\">\n"
+            "          <span>{city || 'Selected city'}</span>\n"
+            "          <strong>{averageHigh}° average high</strong>\n"
+            "          <small>Plan your week from a clear local snapshot.</small>\n"
+            "        </div>\n"
+            "      </section>\n"
+            "      <section className=\"forecast-grid\" aria-label=\"Five day weather forecast\">\n"
+            "        {forecastDays.map((item) => (\n"
+            "          <article className=\"forecast-card\" key={item.day}>\n"
+            "            <span className=\"day-name\">{item.day}</span>\n"
+            "            <strong>{item.high}°</strong>\n"
+            "            <small>{item.low}° low</small>\n"
+            "            <p>{item.condition}</p>\n"
+            "            <em>{item.rain} rain</em>\n"
+            "          </article>\n"
+            "        ))}\n"
+            "      </section>\n"
+            "    </main>\n"
+            "  )\n"
+            "}\n"
+        )
+        files["src/styles.css"] = (
+            ":root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #18212f; background: #eef5f7; }\n"
+            "* { box-sizing: border-box; }\n"
+            "body { margin: 0; min-height: 100vh; background: linear-gradient(135deg, #eef5f7 0%, #d8ebef 100%); }\n"
+            "button, input { font: inherit; }\n"
+            ".weather-shell { min-height: 100vh; display: grid; grid-template-columns: minmax(280px, 0.85fr) minmax(320px, 1.15fr); gap: 28px; align-items: center; padding: 48px; }\n"
+            ".hero-panel { display: grid; gap: 22px; }\n"
+            ".eyebrow { margin: 0; color: #0f6b75; font-weight: 800; text-transform: uppercase; letter-spacing: 0; }\n"
+            "h1 { margin: 0; font-size: 44px; line-height: 1.05; max-width: 720px; }\n"
+            ".search-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; max-width: 560px; }\n"
+            ".search-row label { font-weight: 700; }\n"
+            ".search-row input { min-width: 0; border: 1px solid #aac4ca; border-radius: 8px; padding: 12px 14px; background: #ffffff; color: #18212f; }\n"
+            ".search-row button { border: 0; border-radius: 8px; padding: 12px 18px; background: #0f6b75; color: #ffffff; font-weight: 800; cursor: pointer; }\n"
+            ".today-card { display: grid; gap: 6px; max-width: 420px; padding: 20px; border: 1px solid #b7d2d7; border-radius: 8px; background: #ffffff; box-shadow: 0 16px 36px rgba(24, 33, 47, 0.12); }\n"
+            ".today-card span { color: #0f6b75; font-weight: 800; }\n"
+            ".today-card strong { font-size: 30px; }\n"
+            ".today-card small { color: #52616d; }\n"
+            ".forecast-grid { display: grid; grid-template-columns: repeat(5, minmax(116px, 1fr)); gap: 14px; }\n"
+            ".forecast-card { min-height: 220px; display: grid; align-content: space-between; gap: 10px; padding: 20px; border-radius: 8px; background: #ffffff; border: 1px solid #c2d8dd; box-shadow: 0 12px 30px rgba(24, 33, 47, 0.1); }\n"
+            ".day-name { color: #0f6b75; font-weight: 800; }\n"
+            ".forecast-card strong { font-size: 36px; }\n"
+            ".forecast-card small, .forecast-card em { color: #52616d; font-style: normal; }\n"
+            ".forecast-card p { margin: 0; font-weight: 700; }\n"
+            "@media (max-width: 820px) { .weather-shell { grid-template-columns: 1fr; padding: 28px; } h1 { font-size: 34px; } .forecast-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-row { grid-template-columns: 1fr; } }\n"
+        )
+        files["README.md"] = compose_readme(
+            title,
+            brief,
+            stack_label="Vite + React",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18+.",
+            usage=(
+                "Start the forecast UI:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Build and preview the production bundle:\n\n"
+                "```bash\nnpm run build\nnpm run preview\n```"
+            ),
+            structure=[
+                ("src/App.jsx", "Interactive city input plus five forecast cards"),
+                ("src/styles.css", "Responsive forecast layout and visual styling"),
+                ("src/main.jsx", "React bootstrap"),
+                ("index.html", "Vite HTML mount point"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Editable city field",
+                "Five forecast cards with highs, lows, conditions, and rain chances",
+                "Current summary card for the selected city",
+                "Responsive two-column desktop layout and stacked mobile layout",
+            ],
+        )
+    return files
 
 
 def _static_html(app_name: str, brief: str) -> dict[str, str]:

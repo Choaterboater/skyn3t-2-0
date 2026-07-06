@@ -154,6 +154,22 @@ def test_remix_scaffold_is_runnable_shape():
     assert "shop" in files["app/routes/_index.tsx"].lower()
 
 
+def test_remix_storefront_scaffold_has_products_and_cart_page():
+    files = scaffold_for(
+        "remix",
+        "shop",
+        "a Remix storefront with a product list page and a cart page",
+    )
+
+    index = files["app/routes/_index.tsx"]
+
+    assert "products" in index
+    assert "cart" in index.lower()
+    assert "Add to cart" in index
+    assert "product-grid" in index
+    assert "count is" not in index
+
+
 def test_new_scaffolds_have_no_vite_react_confusion():
     # None of the new stacks should accidentally emit the Vite web scaffold's
     # marker files (the silent fallback this whole task guards against).

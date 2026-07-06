@@ -265,6 +265,11 @@ def _implies_docs_site(brief: str) -> bool:
     )
 
 
+def _implies_storefront(brief: str) -> bool:
+    low = (brief or "").lower()
+    return ("storefront" in low or "shop" in low or "product list" in low) and "cart" in low
+
+
 def _react_vite(app_name: str, brief: str) -> dict[str, str]:
     title = brief.strip() or app_name
     # JSX-significant chars in the brief (<, >, {, }, ', \) otherwise produce an
@@ -1451,7 +1456,7 @@ def _remix(app_name: str, brief: str) -> dict[str, str]:
     """
     title = brief.strip() or app_name
     js_title = title.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$").replace("\n", " ").replace("\r", " ")
-    return {
+    files = {
         "package.json": (
             "{\n"
             f'  "name": "{app_name}",\n'
@@ -1578,6 +1583,99 @@ def _remix(app_name: str, brief: str) -> dict[str, str]:
             ],
         ),
     }
+    if _implies_storefront(title):
+        files["app/routes/_index.tsx"] = (
+            "import type { MetaFunction } from '@remix-run/node';\n"
+            "import { Link } from '@remix-run/react';\n\n"
+            "const products = [\n"
+            "  { name: 'Canvas Tote', price: '$38', tag: 'Everyday carry' },\n"
+            "  { name: 'Desk Lamp', price: '$84', tag: 'Warm task light' },\n"
+            "  { name: 'Wool Throw', price: '$112', tag: 'Soft texture' },\n"
+            "] as const;\n\n"
+            "export const meta: MetaFunction = () => {\n"
+            f"  return [{{ title: `{js_title}` }}];\n"
+            "};\n\n"
+            "export default function Index() {\n"
+            "  return (\n"
+            "    <main style={{ minHeight: '100vh', background: '#f6f8f4', color: '#182017', fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', padding: '48px' }}>\n"
+            "      <section style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 0.9fr) minmax(320px, 1.1fr)', gap: '32px', alignItems: 'start' }}>\n"
+            "        <div>\n"
+            "          <p style={{ color: '#5a7d35', fontWeight: 800, textTransform: 'uppercase', margin: '0 0 12px' }}>Remix storefront</p>\n"
+            f"          <h1 style={{{{ fontSize: '44px', lineHeight: 1.05, margin: 0 }}}}>{'{'}`{js_title}`{'}'}</h1>\n"
+            "          <p style={{ color: '#536154', fontSize: '18px', lineHeight: 1.7, maxWidth: '560px' }}>Browse a curated product list, review featured items, and jump to the cart page for checkout context.</p>\n"
+            "          <Link to=\"/cart\" style={{ display: 'inline-flex', marginTop: '16px', background: '#182017', color: '#fff', borderRadius: '8px', padding: '12px 16px', textDecoration: 'none', fontWeight: 800 }}>View cart page</Link>\n"
+            "        </div>\n"
+            "        <aside aria-label=\"Cart summary\" style={{ background: '#ffffff', border: '1px solid #d8e2d2', borderRadius: '8px', padding: '24px', boxShadow: '0 18px 44px rgba(24, 32, 23, 0.1)' }}>\n"
+            "          <span style={{ color: '#5a7d35', fontWeight: 800 }}>Cart preview</span>\n"
+            "          <h2 style={{ margin: '8px 0' }}>2 items ready</h2>\n"
+            "          <p style={{ color: '#536154' }}>Canvas Tote and Desk Lamp are staged for checkout.</p>\n"
+            "        </aside>\n"
+            "      </section>\n"
+            "      <section className=\"product-grid\" aria-label=\"Product list\" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(180px, 1fr))', gap: '18px', marginTop: '36px' }}>\n"
+            "        {products.map((product) => (\n"
+            "          <article key={product.name} style={{ background: '#ffffff', border: '1px solid #d8e2d2', borderRadius: '8px', padding: '22px', minHeight: '210px', display: 'grid', alignContent: 'space-between' }}>\n"
+            "            <div>\n"
+            "              <p style={{ color: '#5a7d35', fontWeight: 800, margin: 0 }}>{product.tag}</p>\n"
+            "              <h2>{product.name}</h2>\n"
+            "              <strong style={{ fontSize: '28px' }}>{product.price}</strong>\n"
+            "            </div>\n"
+            "            <button type=\"button\" style={{ border: 0, borderRadius: '8px', background: '#5a7d35', color: '#fff', cursor: 'pointer', fontWeight: 800, padding: '12px 14px' }}>Add to cart</button>\n"
+            "          </article>\n"
+            "        ))}\n"
+            "      </section>\n"
+            "    </main>\n"
+            "  );\n"
+            "}\n"
+        )
+        files["app/routes/cart.tsx"] = (
+            "import type { MetaFunction } from '@remix-run/node';\n"
+            "import { Link } from '@remix-run/react';\n\n"
+            "export const meta: MetaFunction = () => [{ title: 'Cart' }];\n\n"
+            "export default function Cart() {\n"
+            "  return (\n"
+            "    <main style={{ minHeight: '100vh', background: '#f6f8f4', color: '#182017', fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', padding: '48px' }}>\n"
+            "      <Link to=\"/\" style={{ color: '#5a7d35', fontWeight: 800 }}>Back to products</Link>\n"
+            "      <section style={{ maxWidth: '680px', marginTop: '24px', background: '#ffffff', border: '1px solid #d8e2d2', borderRadius: '8px', padding: '28px', boxShadow: '0 18px 44px rgba(24, 32, 23, 0.1)' }}>\n"
+            "        <p style={{ color: '#5a7d35', fontWeight: 800, textTransform: 'uppercase', margin: 0 }}>Cart page</p>\n"
+            "        <h1 style={{ fontSize: '40px', margin: '8px 0' }}>Review your cart</h1>\n"
+            "        <ul style={{ lineHeight: 1.9 }}>\n"
+            "          <li>Canvas Tote - $38</li>\n"
+            "          <li>Desk Lamp - $84</li>\n"
+            "        </ul>\n"
+            "        <strong style={{ display: 'block', fontSize: '28px', marginTop: '18px' }}>Total: $122</strong>\n"
+            "        <button type=\"button\" style={{ marginTop: '18px', border: 0, borderRadius: '8px', background: '#182017', color: '#fff', cursor: 'pointer', fontWeight: 800, padding: '12px 16px' }}>Checkout</button>\n"
+            "      </section>\n"
+            "    </main>\n"
+            "  );\n"
+            "}\n"
+        )
+        files["README.md"] = compose_readme(
+            title,
+            brief,
+            stack_label="Remix (Vite)",
+            install="```bash\nnpm install\n```\n\nRequires Node.js 18+.",
+            usage=(
+                "Start the storefront:\n\n"
+                "```bash\nnpm run dev\n```\n\n"
+                "Open `/` for the product list and `/cart` for the cart page. Build for production:\n\n"
+                "```bash\nnpm run build\nnpm start\n```"
+            ),
+            structure=[
+                ("app/root.tsx", "Root document with Remix outlet"),
+                ("app/routes/_index.tsx", "Product list page with cart preview"),
+                ("app/routes/cart.tsx", "Cart page route"),
+                ("vite.config.ts", "Vite config wiring the Remix plugin"),
+                ("tsconfig.json", "TypeScript configuration"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Product list page",
+                "Cart page route",
+                "Add-to-cart buttons and checkout summary",
+                "Responsive storefront layout",
+            ],
+        )
+    return files
 
 
 def _react_vite_threejs(app_name: str, brief: str) -> dict[str, str]:

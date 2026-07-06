@@ -10,7 +10,7 @@ from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio import runner as runner_mod
-from skyn3t.studio.liveness import LivenessOutcome, LivenessReport, RouteResult
+from skyn3t.studio.liveness import LivenessOutcome, LivenessReport, RouteResult, _extract_links
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.runner import StudioRunner
 
@@ -35,6 +35,17 @@ def _visually_broken():
         total=1, ok=1, dead=0, dead_routes=[], health=1.0,
         visual_total=1, visual_failed=1, visual_failed_routes=["/"],
         visual_health=0.0))
+
+
+def test_liveness_crawler_ignores_remix_dev_module_urls():
+    html = """
+    <script type="module" src="/@id/__x00__virtual:remix/browser-manifest"></script>
+    <script type="module" src="/app/root.tsx"></script>
+    <script type="module" src="/app/routes/_index.tsx"></script>
+    <a href="/cart">Cart</a>
+    """
+
+    assert _extract_links(html) == {"/cart"}
 
 
 def test_liveness_dampens_score_by_health(tmp_path, monkeypatch):

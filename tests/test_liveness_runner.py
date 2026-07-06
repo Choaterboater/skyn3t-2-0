@@ -82,6 +82,35 @@ def test_liveness_visual_failure_gates_ui_stack(tmp_path, monkeypatch):
     assert "visual liveness" in man.extra["liveness_gate"]
 
 
+def test_liveness_visual_success_clears_stale_visual_self_heal_gate(tmp_path, monkeypatch):
+    async def fake(*a, **k):
+        return LivenessOutcome(passed=True, report=LivenessReport(
+            results=[RouteResult("/", "GET", 200, True, "page",
+                                 {"matches": True, "issues": []})],
+            total=1, ok=1, dead=0, dead_routes=[], health=1.0,
+            visual_total=1, visual_failed=0, visual_failed_routes=[],
+            visual_health=1.0))
+
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+    man.extra["visual_self_heal_gate"] = "rendered UI still failed visual check after self-heal"
+    man.extra["visual_self_heal"] = {
+        "passed": False,
+        "skipped": False,
+        "reason": "visual issues remain after max rounds",
+    }
+
+    score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 80.0, "no_go"))
+
+    assert score == 80.0
+    assert verdict == "go"
+    assert man.extra["liveness_visual_health"] == 1.0
+    assert "visual_self_heal_gate" not in man.extra
+
+
 def test_liveness_skipped_leaves_score_and_verdict(tmp_path, monkeypatch):
     async def fake(*a, **k):
         return LivenessOutcome(skipped=True, reason="no live preview")

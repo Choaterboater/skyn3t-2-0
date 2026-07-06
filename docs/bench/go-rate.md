@@ -1,8 +1,8 @@
-# SkyN3t Go-Rate: product-audit-main
+# SkyN3t Go-Rate: stale-visual-gate-check
 
-- Cases: 10/17 go
-- Go-Rate: 58.8%
-- Mean Score: 57.32
+- Cases: 12/17 go
+- Go-Rate: 70.6%
+- Mean Score: 62.32
 
 | Stack | Go | Cases | Go-Rate | Mean Score |
 | --- | ---: | ---: | ---: | ---: |
@@ -11,14 +11,14 @@
 | astro | 0 | 1 | 0.0% | 37.0 |
 | express | 1 | 1 | 100.0% | 56.55 |
 | mcp | 1 | 1 | 100.0% | 74.0 |
-| nextjs | 0 | 1 | 0.0% | 49.0 |
-| phaser | 0 | 1 | 0.0% | 37.0 |
+| nextjs | 1 | 1 | 100.0% | 74.0 |
+| phaser | 0 | 1 | 0.0% | 49.0 |
 | python | 1 | 1 | 100.0% | 74.0 |
-| rag | 1 | 1 | 100.0% | 54.96 |
+| rag | 1 | 1 | 100.0% | 64.12 |
 | react | 0 | 1 | 0.0% | 37.0 |
 | react_native | 1 | 1 | 100.0% | 74.0 |
 | remix | 0 | 1 | 0.0% | 37.0 |
 | static | 1 | 1 | 100.0% | 74.0 |
 | swift | 0 | 1 | 0.0% | 44.0 |
-| tauri | 0 | 1 | 0.0% | 49.0 |
-| workflow | 1 | 1 | 100.0% | 54.96 |
+| tauri | 1 | 1 | 100.0% | 74.0 |
+| workflow | 1 | 1 | 100.0% | 68.7 |

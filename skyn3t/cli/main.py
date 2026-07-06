@@ -1066,6 +1066,23 @@ def bench_run(
         console.print(f"[green]Saved[/green] ledger to [cyan]{path}[/cyan]")
 
 
+@bench_app.command("publish")
+def bench_publish(
+    run_path: str = typer.Argument(..., help="Bench run JSON, e.g. data/bench/run-*.json."),
+    out: str = typer.Option("", "--out", help="Output directory (default: docs/bench)."),
+) -> None:
+    """Publish aggregate and per-stack go-rate from a saved bench ledger."""
+    from skyn3t.config.settings import REPO_ROOT
+    from skyn3t.studio.bench import load_run, publish_go_rate
+
+    console = _console()
+    run = load_run(run_path)
+    out_dir = Path(out) if out else REPO_ROOT / "docs" / "bench"
+    paths = publish_go_rate(run, out_dir)
+    console.print(f"[green]Published[/green] go-rate report to [cyan]{paths['markdown']}[/cyan]")
+    console.print(f"[dim]Machine summary: {paths['json']}[/dim]")
+
+
 @audit_app.command("product")
 def audit_product(
     out: str = typer.Option(
@@ -1531,7 +1548,11 @@ def _decide_build(build_id: str, *, approve: bool) -> None:
         from skyn3t.config.settings import get_settings
 
         settings = get_settings()
-        url = f"http://{settings.host}:{settings.port}/api/studio/approve"
+        host = str(settings.host or "127.0.0.1").strip()
+        connect_host = "127.0.0.1" if host in {"0.0.0.0", "::", "[::]"} else host
+        if ":" in connect_host and not connect_host.startswith("["):
+            connect_host = f"[{connect_host}]"
+        url = f"http://{connect_host}:{settings.port}/api/studio/approve"
         headers = {}
         token = settings.auth_token.strip()
         if token:
@@ -1547,7 +1568,7 @@ def _decide_build(build_id: str, *, approve: bool) -> None:
         except Exception:  # noqa: BLE001 - connection refused => no live process
             return False, (
                 "no live build process to receive this decision "
-                f"(is the control plane running at {settings.host}:{settings.port}?)"
+                f"(is the control plane running at {connect_host}:{settings.port}?)"
             )
         if resp.status_code == 404:
             return False, f"build {build_id} not found on the running control plane"
@@ -1696,7 +1717,7 @@ def deploy(
     from pathlib import Path as _Path
 
     from skyn3t.config.settings import get_settings
-    from skyn3t.studio.deploy import plan_deploy, write_deploy_artifacts
+    from skyn3t.studio.deploy import plan_deploy, record_deployment, write_deploy_artifacts
 
     console = _console()
     s = get_settings()
@@ -1785,6 +1806,7 @@ def deploy(
                       f"{result.get('error') or 'unknown error'}")
         raise typer.Exit(code=1)
     url = result["url"]
+    record_deployment(pdir, result=result, plan=plan, target=provider)
     console.print(f"[green]Live[/green] at [cyan]{url}[/cyan]")
 
     # Ship pillar's final rung: verify the LIVE url (opt-in via deploy_check_enabled).

@@ -135,6 +135,25 @@ print(f"hello {args.name}")
     assert v.checked["nonsense_exit"] == "not_probed_flat_cli"
 
 
+def test_cli_check_does_not_pass_host_secrets_to_generated_cli(tmp_path, monkeypatch):
+    import subprocess
+
+    captured = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-host-secret")
+
+    def fake_run(*args, **kwargs):
+        captured["env"] = dict(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(args[0], 0, stdout="usage: main.py {run} ...", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    v = check_cli(_project(tmp_path, _GOOD_SUBCOMMAND_CLI), stack="python_cli")
+
+    assert "OPENAI_API_KEY" not in captured["env"]
+    assert captured["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert not v.skipped
+
+
 # ---- live integrations: the real scaffolds pass the gate ---------------------
 
 

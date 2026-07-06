@@ -7,6 +7,8 @@ the corrected URL so it can't regress.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 
 from skyn3t.cli.main import _decide_build
@@ -39,3 +41,37 @@ def test_decide_build_posts_to_api_prefixed_route(monkeypatch):
     _decide_build("build-123", approve=True)  # 200 -> succeeds without raising
 
     assert captured["url"].endswith("/api/studio/approve"), captured["url"]
+
+
+def test_decide_build_uses_loopback_for_wildcard_bind_host(monkeypatch):
+    import skyn3t.config.settings as settings_mod
+
+    captured: dict[str, str] = {}
+
+    class _FakeResp:
+        status_code = 200
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *args) -> bool:
+            return False
+
+        async def post(self, url, **kwargs):
+            captured["url"] = url
+            return _FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    def fake_get_settings():
+        return SimpleNamespace(host="0.0.0.0", port=8765, auth_token="")
+
+    fake_get_settings.cache_clear = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setattr(settings_mod, "get_settings", fake_get_settings)
+
+    _decide_build("build-123", approve=True)
+
+    assert captured["url"].startswith("http://127.0.0.1:8765/"), captured["url"]

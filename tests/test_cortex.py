@@ -106,6 +106,35 @@ async def test_safe_tuning_auto_applies():
     assert cortex.handlers.overrides["best_of_n"] == 3
 
 
+async def test_safe_tuning_uses_ratchet_when_enabled():
+    bus = EventBus()
+    calls = []
+
+    async def ratchet(prop):
+        calls.append(prop.id)
+        return {"kept": False, "reasons": ["go-rate regressed"]}
+
+    cortex = Cortex(
+        bus,
+        settings=_settings(reliability_ratchet_enabled=True),
+        ratchet_evaluator=ratchet,
+    )
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.TUNING,
+            title="set best_of_n",
+            payload={"setting": "best_of_n", "value": 3},
+            confidence=0.9,
+            safe=True,
+        )
+    )
+
+    assert calls == [prop.id]
+    assert prop.status == ProposalStatus.FAILED
+    assert prop.result["ratchet"]["kept"] is False
+    assert cortex.handlers.overrides == {}
+
+
 async def test_apply_is_idempotent_no_double_apply():
     # Re-approving an already-APPLIED proposal must not re-run its handler
     # (the handler could duplicate a tuning change or emit conflicting events).

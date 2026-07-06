@@ -51,6 +51,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from skyn3t.security.secrets import filter_env
+
 # Default per-phase read budgets (seconds). Generous enough for a real SDK boot,
 # bounded so a wedged server can never hang a build. Overridable (the tests pass
 # small values for the hang case).
@@ -359,7 +361,7 @@ def _probe_server(
     list_timeout: float,
     call_timeout: float,
 ) -> McpVerdict:
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {**filter_env(os.environ), "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     try:
         # NOT `-I`: since Python 3.11 isolated mode implies -P (safe path), which
         # drops the script's directory from sys.path — the scaffold's own

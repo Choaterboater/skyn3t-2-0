@@ -11,6 +11,7 @@ from __future__ import annotations
 import mimetypes
 import os
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 
 import structlog
 
+from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
@@ -73,6 +75,8 @@ def code_is_stale(force_refresh: bool = False) -> bool:
 # Strong references to in-flight background build tasks (prevent GC mid-run).
 _BUILD_TASKS: set = set()
 _BUILD_TASKS_BY_ID: dict[str, Any] = {}
+_ENV_WRITE_LOCK = threading.RLock()
+_MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def _reap_build_task(task: Any) -> None:
@@ -231,10 +235,17 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
     try:
         header, _, b64 = s.partition(",")
         if not b64:
-            return s
+            return ""
         import base64
 
-        raw = base64.b64decode(b64, validate=False)
+        max_b64 = ((_MAX_REFERENCE_IMAGE_BYTES + 2) // 3) * 4 + 4
+        if len(b64) > max_b64:
+            log.warning("build.reference_image_rejected", note="reference_image too large")
+            return ""
+        raw = base64.b64decode(b64, validate=True)
+        if len(raw) > _MAX_REFERENCE_IMAGE_BYTES:
+            log.warning("build.reference_image_rejected", note="reference_image too large")
+            return ""
         ext = "png"
         if "image/jpeg" in header or "image/jpg" in header:
             ext = "jpg"
@@ -247,7 +258,7 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
         return str(out_path)
     except Exception as exc:  # noqa: BLE001 - never let an image break a build
         log.warning("build.reference_image_save_failed", error=str(exc)[:160])
-        return s  # a data: URL is safe inline data; the LLM client accepts it
+        return ""
 
 
 _BUILD_PROFILES = {
@@ -448,6 +459,19 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     )
     if not dispatched:
         rec.status = "queued_no_studio"
+        await state.event_bus.emit(
+            EventType.BUILD_FAILED,
+            source="web.api",
+            payload={
+                "build_id": build_id,
+                "brief": rec.brief,
+                "slug": rec.slug,
+                "stack": rec.stack,
+                "status": rec.status,
+                "error": "no StudioRunner is wired in this process",
+            },
+            correlation_id=build_id,
+        )
     return {
         "build_id": build_id,
         "status": rec.status,
@@ -1391,26 +1415,27 @@ def _persist_env_var(name: str, value: str) -> None:
         from skyn3t.config.settings import REPO_ROOT
 
         env = REPO_ROOT / ".env"
-        lines = env.read_text().splitlines() if env.exists() else []
-        out: list[str] = []
-        found = False
-        for ln in lines:
-            stripped = ln.strip()
-            # Only a real (non-comment) ``KEY=value`` assignment can match — a
-            # commented line (``# KEY=...``) must be preserved verbatim, never
-            # uncommented/overwritten.
-            if stripped.startswith("#") or "=" not in stripped:
-                out.append(ln)
-                continue
-            key = stripped.split("=", 1)[0].strip()
-            if key == name:
+        with _ENV_WRITE_LOCK:
+            lines = env.read_text().splitlines() if env.exists() else []
+            out: list[str] = []
+            found = False
+            for ln in lines:
+                stripped = ln.strip()
+                # Only a real (non-comment) ``KEY=value`` assignment can match — a
+                # commented line (``# KEY=...``) must be preserved verbatim, never
+                # uncommented/overwritten.
+                if stripped.startswith("#") or "=" not in stripped:
+                    out.append(ln)
+                    continue
+                key = stripped.split("=", 1)[0].strip()
+                if key == name:
+                    out.append(f"{name}={value}")
+                    found = True
+                else:
+                    out.append(ln)
+            if not found:
                 out.append(f"{name}={value}")
-                found = True
-            else:
-                out.append(ln)
-        if not found:
-            out.append(f"{name}={value}")
-        env.write_text("\n".join(out) + "\n")
+            atomic_write_text(env, "\n".join(out) + "\n")
     except Exception:  # noqa: BLE001
         pass
 

@@ -78,6 +78,8 @@ from skyn3t.studio.proof_run import (
     extract_error_gaps,
     proof_run,
 )
+from skyn3t.studio.security_check import check_security
+from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
@@ -488,9 +490,11 @@ class StudioRunner:
     ) -> None:
         if self.memory is None or not lessons:
             return
+        graded: set[int] = set()
         for les in lessons:
             lid = les.get("id")
-            if isinstance(lid, int):
+            if isinstance(lid, int) and lid not in graded:
+                graded.add(lid)
                 try:
                     await self.memory.grade_lesson(lid, helpful, quality=quality)
                 except Exception as exc:  # noqa: BLE001
@@ -747,8 +751,9 @@ class StudioRunner:
     # stub, not an app. We sum across source files (incl. __init__.py, which can
     # legitimately hold the whole implementation) and exclude only tests.
     _substance_floor = 1500
-    _SOURCE_EXTS = (".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
-                    ".go", ".rs", ".java", ".rb", ".php")
+    _SOURCE_EXTS = (".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+                    ".vue", ".svelte", ".astro", ".swift", ".go", ".rs",
+                    ".java", ".rb", ".php")
 
     # Minimum brief-intent match (0..100) for a "go" on a REAL backend — below
     # this the delivered content ignored the brief (a hollow scaffold). Stub
@@ -832,6 +837,18 @@ class StudioRunner:
         except OSError:
             pass
         return total
+
+    @staticmethod
+    def _code_backend_from_prior(prior: dict[str, Any]) -> str:
+        code = prior.get("code") if isinstance(prior, dict) else None
+        if not isinstance(code, dict):
+            return "stub"
+        backend = str(code.get("backend") or "").strip()
+        if backend:
+            return backend
+        if code.get("error"):
+            return "failed"
+        return "stub"
 
     def _delivered_scaffold_stub(self, project_dir: str) -> bool:
         """True when a delivered entry is the UNMODIFIED offline scaffold — it
@@ -1043,6 +1060,93 @@ class StudioRunner:
                 reasons.extend(str(issue) for issue in workflow.get("issues", [])[:3])
             manifest.extra["product_quality_gate"] = "; ".join(reasons)[:500]
         return final_score, verdict
+
+    def _apply_ai_native_gates(self, manifest, verdict: str) -> str:
+        if verdict != "go" or not bool(getattr(self.settings, "ai_native_gates_verdict", True)):
+            return verdict
+        blocking: list[str] = []
+        for key in ("mcp_check", "rag_check", "workflow_check"):
+            data = manifest.extra.get(key) if isinstance(manifest.extra, dict) else None
+            if not isinstance(data, dict):
+                continue
+            if data.get("skipped") is True or data.get("ok") is True:
+                continue
+            issues = data.get("issues")
+            if not isinstance(issues, list) or not issues:
+                continue
+            blocking.append(f"{key}: {issues[0]}")
+        if not blocking:
+            return verdict
+        manifest.extra["ai_native_gate"] = "; ".join(blocking[:3])
+        return "no_go"
+
+    def _apply_degraded_proof_score(self, manifest, proof, final_score: float, verdict: str) -> float:
+        if verdict != "go":
+            return final_score
+        detail = getattr(proof, "detail", None) or {}
+        env = detail.get("proof_environment") if isinstance(detail, dict) else None
+        if not isinstance(env, dict) or env.get("degraded") is not True:
+            return final_score
+        cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        manifest.extra["proof_environment_gate"] = {
+            "degraded": True,
+            "score_cap": cap,
+            "reasons": list(env.get("degraded_reasons") or []),
+        }
+        return min(float(final_score), cap)
+
+    def _run_security_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+        if not bool(getattr(self.settings, "security_check_enabled", True)):
+            return final_score, verdict
+        stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
+        try:
+            sec = check_security(project_dir, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("security_check.failed", error=str(exc))
+            sec = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
+        manifest.extra["security_check"] = sec
+        if sec.get("skipped") is not True and sec.get("ok") is False:
+            verdict = "no_go"
+            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            manifest.score = final_score
+            manifest.extra["security_gate"] = "; ".join(str(i) for i in sec.get("issues", [])[:3])[:500]
+        return final_score, verdict
+
+    def _run_web_polish_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+        if not bool(getattr(self.settings, "web_polish_gate_enabled", True)):
+            return final_score, verdict
+        stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
+        try:
+            polish = check_web_polish(project_dir, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("web_polish.failed", error=str(exc))
+            polish = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
+        manifest.extra["web_polish"] = polish
+        if polish.get("skipped") is not True and polish.get("ok") is False:
+            verdict = "no_go"
+            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            manifest.score = final_score
+            manifest.extra["web_polish_gate"] = "; ".join(str(i) for i in polish.get("issues", [])[:3])[:500]
+        return final_score, verdict
+
+    async def _reproof_after_post_proof_repairs(self, manifest, plan, project_dir, proof):
+        if not (isinstance(manifest.extra, dict)
+                and manifest.extra.get("post_proof_repair_changed") is True):
+            return proof
+        refreshed = await asyncio.to_thread(
+            proof_run,
+            project_dir,
+            checklist=plan.checklist,
+            execution_backend=self.settings.execution_backend,
+            stack=plan.stack,
+            run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+            test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+            run_build=bool(getattr(self.settings, "run_generated_build", True)),
+            build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+        )
+        manifest.extra["proof"] = refreshed.to_dict()
+        manifest.extra["proof_after_post_proof_repair"] = refreshed.to_dict()
+        return refreshed
 
     async def _run_liveness(self, manifest, project_dir, plan, proof,
                             final_score: float, verdict: str):
@@ -1607,6 +1711,7 @@ class StudioRunner:
                 break
             completed += 1
             manifest.files = list_files(project_dir)
+            manifest.extra["post_proof_repair_changed"] = True
             gate = await asyncio.to_thread(run_headless_gate, project_dir)
             wiring_gap = check_input_wiring(project_dir, gate=gate)
             await self.event_bus.emit(
@@ -1720,6 +1825,7 @@ class StudioRunner:
                             timeout=self.stage_exec_timeout,
                         )
                         manifest.files = list_files(project_dir)
+                        manifest.extra["post_proof_repair_changed"] = True
                     except Exception as exc:  # noqa: BLE001
                         log.warning("qa_playtest.improve_failed", error=str(exc))
                     else:
@@ -3092,7 +3198,12 @@ class StudioRunner:
                     record.error = result.error
                     record.agent_name = result.agent_name
                     record.output_summary = {"error": result.error}
-                    prior[spec.name] = {"error": result.error}
+                    failed = {"error": result.error}
+                    if spec.agent_type == "code":
+                        failed["backend"] = "failed"
+                        failed["degraded"] = True
+                        failed["degraded_reason"] = result.error or "code stage failed"
+                    prior[spec.name] = failed
 
                 # Capture the exact prompt(s) codegen sent the model, per-build, so
                 # they're inspectable in the dashboard's Prompts panel — built,
@@ -3304,7 +3415,7 @@ class StudioRunner:
             # Substance gate applies only to REAL LLM backends: a stub build's
             # minimal scaffold is acceptable degraded output, but a real model
             # that emitted a 559-byte stub genuinely under-delivered -> no_go.
-            code_backend = str((prior.get("code") or {}).get("backend", "stub"))
+            code_backend = self._code_backend_from_prior(prior)
             substantive = code_backend == "stub" or biggest >= self._substance_floor
             # Intent-honest gate (Spec 2): does the delivered CONTENT match the
             # brief's intent, not merely compile? A real model that shipped a
@@ -3466,6 +3577,8 @@ class StudioRunner:
                         "build_reverted": gv_res.build_reverted,
                         "rounds": [r.to_dict() for r in gv_res.rounds],
                     }
+                    if gv_res.repaired and not gv_res.build_reverted:
+                        manifest.extra["post_proof_repair_changed"] = True
                     if gv_res.final.gap():
                         log.info("game_visual_check.flagged", issues=gv_res.final.issues)
                     # Hard-gate: a REAL (non-skipped) visual failure blocks the verdict
@@ -3503,6 +3616,9 @@ class StudioRunner:
             # stacks.
             qa_playtest_ok = await self._run_qa_playtest_gate(
                 gate, manifest, plan, project_dir, correlation_id, extra
+            )
+            proof = await self._reproof_after_post_proof_repairs(
+                manifest, plan, project_dir, proof
             )
             verdict = (
                 "go"
@@ -3592,6 +3708,12 @@ class StudioRunner:
             final_score, verdict = self._run_product_quality_gates(
                 manifest, project_dir, plan, final_score, verdict
             )
+            final_score, verdict = self._run_security_gate(
+                manifest, project_dir, plan, final_score, verdict
+            )
+            final_score, verdict = self._run_web_polish_gate(
+                manifest, project_dir, plan, final_score, verdict
+            )
 
             # End-of-build SEO check (web/HTML stacks, ADVISORY): a deterministic static
             # scan of the delivered pages/metadata for the cheap, unambiguous SEO signals
@@ -3649,11 +3771,16 @@ class StudioRunner:
                 await self._run_cli_check(
                     manifest, plan, project_dir, correlation_id, extra)
 
+            verdict = self._apply_ai_native_gates(manifest, verdict)
+
             # Unconditional final consistency pass — see _final_consistency_check's
             # docstring: every stage above this point can mutate files with no
             # re-verification of import resolution against what IT leaves behind.
             # This is what "runs last" actually means.
             verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+            final_score = self._apply_degraded_proof_score(
+                manifest, proof, final_score, verdict
+            )
 
             # Verdict is now fully settled (post-liveness): a no_go must not read
             # like a success. Clamp before the score feeds lessons + _finalize.

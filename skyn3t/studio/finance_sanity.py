@@ -8,11 +8,21 @@ from typing import Any
 FINANCE_TERMS = (
     "paper trading",
     "alpaca",
+    "brokerage",
+    "broker",
     "portfolio",
     "backtest",
+    "strategies",
     "strategy",
+    "stocks",
+    "stock",
+    "equities",
+    "equity",
+    "market data",
     "trade",
+    "trades",
     "trading",
+    "orders",
     "order",
     "p&l",
     "pnl",
@@ -29,17 +39,55 @@ NON_FINANCE_PORTFOLIO_TERMS = (
 )
 
 STRONG_FINANCE_TERMS = tuple(term for term in FINANCE_TERMS if term != "portfolio")
+AMBIGUOUS_FINANCE_TERMS = {
+    "order",
+    "orders",
+    "position",
+    "positions",
+    "strategy",
+    "strategies",
+    "trade",
+    "trades",
+}
+FINANCE_CONTEXT_TERMS = {
+    "alpaca",
+    "backtest",
+    "broker",
+    "brokerage",
+    "buying power",
+    "equities",
+    "equity",
+    "market data",
+    "paper trading",
+    "p&l",
+    "pnl",
+    "portfolio",
+    "risk profile",
+    "stock",
+    "stocks",
+    "trading",
+}
+
+
+def _has_term(text: str, term: str) -> bool:
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text))
 
 
 def is_finance_brief(brief: str, stack: str = "") -> bool:
     text = f"{brief} {stack}".lower()
     if (
-        "portfolio" in text
+        _has_term(text, "portfolio")
         and any(term in text for term in NON_FINANCE_PORTFOLIO_TERMS)
-        and not any(term in text for term in STRONG_FINANCE_TERMS)
+        and not any(_has_term(text, term) for term in FINANCE_CONTEXT_TERMS - {"portfolio"})
     ):
         return False
-    return any(term in text for term in FINANCE_TERMS)
+    if any(_has_term(text, term) for term in FINANCE_CONTEXT_TERMS):
+        return True
+    ambiguous_hits = [term for term in AMBIGUOUS_FINANCE_TERMS if _has_term(text, term)]
+    if not ambiguous_hits:
+        return False
+    context = FINANCE_CONTEXT_TERMS - {"portfolio"}
+    return any(_has_term(text, term) for term in context)
 
 
 def _number(value: Any, field: str, issues: list[str]) -> float:
@@ -145,7 +193,35 @@ def scan_source_for_finance_smells(project_dir: str | Path) -> list[str]:
                 f"{path.relative_to(root)}: "
                 "unconstrained random filled trades can create impossible states"
             )
+        portfolio = _extract_portfolio_literal(compact)
+        if portfolio is not None:
+            result = check_portfolio_payload(portfolio)
+            for issue in result["issues"]:
+                issues.append(f"{path.relative_to(root)}: {issue}")
     return issues
+
+
+def _extract_portfolio_literal(text: str) -> dict[str, Any] | None:
+    if "portfolio" not in text:
+        return None
+    fields = {
+        "cash": r"\bcash\s*:\s*(-?\d+(?:\.\d+)?)",
+        "longExposure": r"\blongexposure\s*:\s*(-?\d+(?:\.\d+)?)",
+        "netLiquidity": r"\bnetliquidity\s*:\s*(-?\d+(?:\.\d+)?)",
+        "marketValue": r"\bmarketvalue\s*:\s*(-?\d+(?:\.\d+)?)",
+        "realizedPnl": r"\brealizedpnl\s*:\s*(-?\d+(?:\.\d+)?)",
+    }
+    out: dict[str, Any] = {}
+    for key, pattern in fields.items():
+        match = re.search(pattern, text)
+        if match:
+            out[key] = float(match.group(1))
+    if {"cash", "longExposure", "netLiquidity"} <= set(out):
+        out.setdefault("marketValue", out.get("longExposure", 0.0))
+        out.setdefault("realizedPnl", 0.0)
+        out.setdefault("positions", [])
+        return out
+    return None
 
 
 def check_finance_sanity(

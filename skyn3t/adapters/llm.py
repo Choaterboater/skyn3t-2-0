@@ -615,6 +615,27 @@ class LLMClient:
         if tl is not None:
             tl.append((tier, task_type, model))
 
+    def _record_openrouter_agentic_usage(
+        self, model: str, data: dict[str, Any], sent: list[dict[str, Any]], msg: dict[str, Any]
+    ) -> None:
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        if not model.endswith(":free") and pt == 0 and ct == 0:
+            pt = max(1, sum(self._msg_bytes(m) for m in sent) // 4)
+            ct = max(1, len(json.dumps(msg, sort_keys=True, default=str)) // 4)
+            log.warning("llm.openrouter_agentic_usage_missing", model=model, est_tokens=pt + ct)
+        cost = 0.0 if model.endswith(":free") else (pt + ct) / 1_000_000 * 0.5
+        result = LLMResult(
+            text=str(msg.get("content") or ""),
+            model=model,
+            backend="openrouter",
+            prompt_tokens=int(pt or 0),
+            completion_tokens=int(ct or 0),
+            cost_usd=cost,
+        )
+        self.budget.record(result)
+        self.budget.check()
+
     @property
     def last_model(self) -> str | None:
         """Model id of the most recent completion (real model for openrouter,
@@ -1135,6 +1156,7 @@ class LLMClient:
         max_turns = max(4, int(getattr(self.settings, "openrouter_agentic_max_turns", 60)))
         budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
         wrote, finished, start = 0, False, _t.time()
+        budget_error = ""
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
         verify_on_stop = bool(getattr(self.settings, "agentic_verify_on_stop", True))
         verify_denials, _MAX_VERIFY_DENIALS = 0, 2
@@ -1189,12 +1211,19 @@ class LLMClient:
                                 "tool_choice": "auto", "max_tokens": 16384}
                         resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
                         resp.raise_for_status()
-                        return resp.json()["choices"][0]["message"], m
+                        return resp.json(), m
 
                     # Retry + model failover: a mid-build retired model fails over to
                     # a live one and PINS it for the rest of the session (`model`),
                     # instead of the whole agentic build dying.
-                    msg, model = await self._resilient_call(model, Tier.BACKEND, _do)
+                    data, model = await self._resilient_call(model, Tier.BACKEND, _do)
+                    msg = data["choices"][0]["message"]
+                    try:
+                        self._record_openrouter_agentic_usage(model, data, sent, msg)
+                    except BudgetExceeded as exc:
+                        budget_error = str(exc)
+                        log.warning("llm.or_agentic_budget_exceeded", error=budget_error)
+                        break
                     messages.append({"role": "assistant", "content": msg.get("content") or "",
                                      "tool_calls": msg.get("tool_calls") or []})
                     tcs = msg.get("tool_calls") or []
@@ -1261,9 +1290,9 @@ class LLMClient:
             log.warning("llm.or_agentic_failed", error=str(exc)[:200], wrote=wrote)
         log.info("llm.or_agentic_done", model=model, files_written=wrote, finished=finished)
         self._record_completion("backend", "codegen", model)
-        return {"ok": wrote > 0, "backend": "openrouter",
+        return {"ok": wrote > 0 and not budget_error, "backend": "openrouter",
                 "model": model,
-                "error": "" if wrote > 0 else "agentic loop wrote no files"}
+                "error": budget_error or ("" if wrote > 0 else "agentic loop wrote no files")}
 
     @property
     def supports_agentic(self) -> bool:

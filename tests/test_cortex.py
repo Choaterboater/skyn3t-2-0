@@ -17,7 +17,7 @@ import pytest
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import Event, EventBus, EventType
 from skyn3t.cortex.autonomous_loop import AutonomousLoop, BuildHeartbeat, GuardrailState
-from skyn3t.cortex.bootstrap import Cortex
+from skyn3t.cortex.bootstrap import Cortex, build_cortex
 from skyn3t.cortex.components import ReviewWatcher
 from skyn3t.cortex.handlers import HandlerRegistry
 from skyn3t.cortex.prompt_evolver import PromptEvolver
@@ -133,6 +133,49 @@ async def test_safe_tuning_uses_ratchet_when_enabled():
     assert prop.status == ProposalStatus.FAILED
     assert prop.result["ratchet"]["kept"] is False
     assert cortex.handlers.overrides == {}
+
+
+async def test_build_cortex_wires_default_ratchet_when_enabled(monkeypatch):
+    from skyn3t.cortex.tuning_store import load_overrides
+
+    bus = EventBus()
+    settings = _settings(reliability_ratchet_enabled=True, best_of_n=1)
+    calls = []
+
+    class FakeOrchestrator:
+        @property
+        def agents(self):
+            return {}
+
+    async def fake_evaluate_change(**kwargs):
+        calls.append(kwargs["label"])
+        kwargs["apply_change"]()
+        return {
+            "kept": True,
+            "reasons": [],
+            "before": {"go_rate": 0.5},
+            "after": {"go_rate": 1.0},
+            "go_rate_delta": 0.5,
+        }
+
+    monkeypatch.setattr("skyn3t.cortex.ratchet.evaluate_change", fake_evaluate_change)
+
+    cortex = build_cortex(bus, settings=settings, orchestrator=FakeOrchestrator())
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.TUNING,
+            title="ratchet best_of_n",
+            payload={"setting": "best_of_n", "value": 2},
+            confidence=0.9,
+            safe=True,
+        )
+    )
+
+    assert calls == [f"ratchet-{prop.id[:8]}"]
+    assert prop.status == ProposalStatus.APPLIED
+    assert prop.result["ratchet"]["kept"] is True
+    assert settings.best_of_n == 2
+    assert load_overrides(settings.data_dir)["best_of_n"] == 2
 
 
 async def test_apply_is_idempotent_no_double_apply():

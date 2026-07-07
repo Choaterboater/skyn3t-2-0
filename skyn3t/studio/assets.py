@@ -620,13 +620,13 @@ async def _generate_role_image(cli: Any, prompt: str) -> tuple[bytes | None, str
 
 
 def _role_art_source(settings: Settings) -> str:
-    """Resolve where role sprites come from: ``replicate``, ``offline``, or
-    ``disabled`` — from ``game_art_enabled`` + ``game_art_source``. ``auto`` uses
-    replicate when a token is configured, else the free offline floor."""
+    """Resolve where role sprites come from: ``kenney``, ``replicate``,
+    ``offline``, or ``disabled`` — from ``game_art_enabled`` + ``game_art_source``.
+    ``auto`` uses replicate when a token is configured, else the free offline floor."""
     if not bool(getattr(settings, "game_art_enabled", True)):
         return "disabled"
     src = str(getattr(settings, "game_art_source", "auto")).lower()
-    if src in ("replicate", "offline"):
+    if src in ("kenney", "replicate", "offline"):
         return src
     return "replicate" if bool(getattr(settings, "replicate_available", False)) else "offline"
 
@@ -670,6 +670,17 @@ async def generate_role_sprites(
         from skyn3t.studio.offline_sprites import write_offline_role_sprites
 
         return write_offline_role_sprites(project_dir, plan)
+    if decision == "kenney":
+        from skyn3t.studio.kenney_assets import write_kenney_role_sprites
+        from skyn3t.studio.offline_sprites import write_offline_role_sprites
+
+        res = write_kenney_role_sprites(project_dir, plan, data_dir=getattr(settings, "data_dir", "data"))
+        if res.get("generated") or not plan.sprite_roles():
+            return res
+        fallback = write_offline_role_sprites(project_dir, plan)
+        fallback["requested_source"] = "kenney"
+        fallback["fallback_reason"] = res.get("reason") or "no_matches"
+        return fallback
 
     cli = client or ReplicateClient(settings)
     if not cli.available:

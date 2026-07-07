@@ -242,11 +242,12 @@ class Settings(BaseSettings):
     asset_gen: bool = False
     # Game art tier (#6): role sprites for game stacks. `game_art_enabled` on by
     # default (the floor degrades to clean colored primitives at $0). `game_art_source`
-    # picks where sprites come from: "offline" (primitives / bundled CC0, free),
-    # "replicate" (themed sprites generated at build time, ~cents), or "auto"
+    # picks where sprites come from: "offline" (deterministic local PNGs, free),
+    # "kenney" (installed CC0 packs in data/asset_packs, free), "replicate"
+    # (themed sprites generated at build time, ~cents), or "auto"
     # (replicate when a token is configured, else offline).
     game_art_enabled: bool = True
-    game_art_source: str = "auto"  # offline | replicate | auto
+    game_art_source: str = "auto"  # offline | kenney | replicate | auto
     # When on, a cheap LLM art-director (one call/build, gated here) tailors a game's
     # roles + palette to the brief for the long tail of games the deterministic
     # planner doesn't recognize (e.g. fishing -> boat/fish/hook). Off -> the

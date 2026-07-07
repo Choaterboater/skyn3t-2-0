@@ -16,6 +16,7 @@ data/model_router_paid_fallback.json
 data/model_tournament.json
 data/token_rollups.json
 data/reference_images/
+data/asset_packs/
 data/skills/
 data/cortex/
 data/proposals/

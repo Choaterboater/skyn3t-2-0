@@ -178,10 +178,42 @@ def discover_local_asset_packs(project_dir: str | Path) -> tuple[list[AssetItem]
     return items, sources
 
 
-def collect_project_catalog(project_dir: str | Path) -> tuple[list[AssetItem], list[str]]:
+def _discover_asset_pack_roots(
+    asset_pack_roots: list[str | Path] | tuple[str | Path, ...],
+) -> tuple[list[AssetItem], list[str]]:
+    items: list[AssetItem] = []
+    sources: list[str] = []
+    for base in asset_pack_roots:
+        root = Path(base)
+        if not root.is_dir():
+            continue
+        pack_roots = sorted(p for p in root.iterdir() if p.is_dir() and "kenney" in p.name.lower())
+        if not pack_roots and "kenney" in root.name.lower():
+            pack_roots = [root]
+        try:
+            from skyn3t.studio.kenney_assets import discover_kenney_assets
+
+            found, found_sources = discover_kenney_assets(root.parent, pack_roots=pack_roots)
+        except Exception as exc:  # noqa: BLE001 - global packs are optional
+            log.warning("asset_foundry.global_pack_failed", root=str(root), error=str(exc)[:180])
+            continue
+        items.extend(found)
+        sources.extend(found_sources)
+    return items, sources
+
+
+def collect_project_catalog(
+    project_dir: str | Path,
+    *,
+    asset_pack_roots: list[str | Path] | tuple[str | Path, ...] = (),
+) -> tuple[list[AssetItem], list[str]]:
     """Collect local packs plus any existing project assets as a catalog."""
     root = Path(project_dir)
     items, sources = discover_local_asset_packs(root)
+    if asset_pack_roots:
+        extra_items, extra_sources = _discover_asset_pack_roots(asset_pack_roots)
+        items.extend(extra_items)
+        sources.extend(extra_sources)
     sprite_dir = root / "public" / "assets" / "sprites"
     if sprite_dir.is_dir():
         for p in sorted(sprite_dir.glob("**/*")):
@@ -454,11 +486,12 @@ def build_asset_foundry(
     *,
     art_plan: ArtPlan | None = None,
     game_design: GameDesign | None = None,
+    asset_pack_roots: list[str | Path] | tuple[str | Path, ...] = (),
 ) -> dict[str, Any]:
     """Convenience wrapper for runner integration."""
     effective_art = art_plan or direct_art(brief)
     effective_design = game_design or design_game(brief)
-    catalog, sources = collect_project_catalog(project_dir)
+    catalog, sources = collect_project_catalog(project_dir, asset_pack_roots=asset_pack_roots)
     requirements = derive_asset_requirements(brief, effective_art, effective_design)
     plan = resolve_assets(requirements, catalog)
     written = write_asset_plan(project_dir, plan)

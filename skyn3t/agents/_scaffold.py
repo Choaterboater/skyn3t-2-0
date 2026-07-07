@@ -2734,11 +2734,14 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
         ),
         "src/main.js": _phaser_main_js(art),
         "src/styles.css": (
-            ":root { font-family: system-ui, sans-serif; }\n"
-            "body { margin: 0; background: #0f172a; display: grid; "
-            "place-items: center; min-height: 100vh; }\n"
-            "#game-container { line-height: 0; }\n"
-            "canvas { max-width: 100%; height: auto; }\n"
+            ":root { font-family: system-ui, sans-serif; background: #0f172a; }\n"
+            "html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; "
+            "background: #0f172a; touch-action: none; overscroll-behavior: none; }\n"
+            "#game-container { width: 100vw; height: 100svh; min-height: 100vh; "
+            "line-height: 0; background: #0f172a; }\n"
+            "canvas { display: block; max-width: 100vw; max-height: 100svh; "
+            "height: auto; margin-top: 0 !important; margin-left: auto !important; "
+            "margin-right: auto !important; }\n"
         ),
         ".gitignore": "node_modules\ndist\n",
         "README.md": compose_readme(
@@ -2772,10 +2775,12 @@ def _phaser(app_name: str, brief: str, *, art: bool = False) -> dict[str, str]:
         files["src/sim.js"] = _phaser_dino_sim_js()
         files["src/main.js"] = _phaser_dino_main_js(art)
         files["src/styles.css"] = (
-            ":root { font-family: system-ui, sans-serif; }\n"
-            "body { margin: 0; background: #7bcdf2; display: grid; place-items: center; min-height: 100vh; }\n"
-            "#game-container { width: min(100vw, 900px); line-height: 0; }\n"
-            "canvas { width: 100%; height: auto; border-radius: 8px; box-shadow: 0 18px 44px rgba(23, 50, 77, 0.18); }\n"
+            ":root { font-family: system-ui, sans-serif; background: #7bcdf2; }\n"
+            "html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; "
+            "background: #7bcdf2; touch-action: none; overscroll-behavior: none; }\n"
+            "#game-container { width: 100vw; height: 100svh; min-height: 100vh; line-height: 0; }\n"
+            "canvas { display: block; max-width: 100vw; max-height: 100svh; height: auto; "
+            "margin-top: 0 !important; margin-left: auto !important; margin-right: auto !important; }\n"
         )
         files["README.md"] = compose_readme(
             title,

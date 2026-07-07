@@ -56,3 +56,23 @@ jobs:
           --deselect tests/test_agent_pack_build_e2e.py::test_offline_agent_pack_build_end_to_end
           --deselect tests/test_fix_loop.py::test_proof_runs_generated_tests_pass
           --deselect tests/test_fix_loop.py::test_proof_runs_generated_tests_fail
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v6.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: skyn3t/web/ui/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: skyn3t/web/ui
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: skyn3t/web/ui
+        run: npm run build

@@ -760,6 +760,7 @@ async def cleanup_builds(
 
 async def list_projects(state: AppState) -> dict[str, Any]:
     from skyn3t.studio.cleanup import _dir_size, _load_manifest
+    from skyn3t.studio.proof_run import detect_offline_starter_stub
     pdir = Path(state.settings.projects_dir)
     out: list[dict[str, Any]] = []
     if pdir.is_dir():
@@ -780,6 +781,23 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 if isinstance(proof_detail, dict)
                 else None
             )
+            if not scaffold_stub_reason:
+                scaffold_stub_reason = detect_offline_starter_stub(
+                    d, str(m.get("stack", "") or "")
+                )
+            score = m.get("score") or 0.0
+            if (
+                not scaffold_stub_reason
+                and verdict == "go"
+                and str(extra.get("llm_backend", "")).lower() == "stub"
+                and isinstance(prompts, list)
+                and len(prompts) == 0
+                and float(score) >= 74.0
+            ):
+                scaffold_stub_reason = (
+                    "legacy build used the stub backend with zero model prompts; "
+                    "it was a deterministic fallback, not a completed model-built app"
+                )
             scaffold_stub_gate = (
                 {
                     "triggered": True,
@@ -790,7 +808,6 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 if scaffold_stub_reason
                 else {}
             )
-            score = m.get("score") or 0.0
             if scaffold_stub_reason:
                 verdict = "no_go"
                 status = "completed_no_go" if status == "completed" else status

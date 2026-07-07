@@ -1187,6 +1187,71 @@ async def test_list_projects_normalizes_legacy_scaffold_stub_success(tmp_path):
     assert row["scaffold_stub_gate"]["triggered"] is True
 
 
+async def test_list_projects_normalizes_legacy_counter_starter_success(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "counter-go"
+    project.mkdir(parents=True)
+    (project / "src").mkdir()
+    (project / "src" / "App.jsx").write_text(
+        "import { useState } from 'react'\n"
+        "export default function App(){\n"
+        "  const [count, setCount] = useState(0)\n"
+        "  return <main><p>A runnable Vite + React starter generated offline by SkyN3t.</p>"
+        "<button onClick={() => setCount((c) => c + 1)}>count is {count}</button></main>\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    BuildManifest(
+        slug="counter-go",
+        brief="weather forecast",
+        stack="react",
+        status="completed",
+        verdict="go",
+        score=74.0,
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "counter-go")
+
+    assert row["status"] == "completed_no_go"
+    assert row["verdict"] == "no_go"
+    assert row["score"] == 49.0
+    assert "count" in row["scaffold_stub_gate"]["reason"].lower()
+
+
+async def test_list_projects_normalizes_legacy_stub_backend_success(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "stub-backend-go"
+    project.mkdir(parents=True)
+    BuildManifest(
+        slug="stub-backend-go",
+        brief="todo app",
+        stack="python",
+        status="completed",
+        verdict="go",
+        score=74.0,
+        extra={"llm_backend": "stub", "prompts": []},
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "stub-backend-go")
+
+    assert row["status"] == "completed_no_go"
+    assert row["verdict"] == "no_go"
+    assert row["score"] == 49.0
+    assert "stub backend" in row["scaffold_stub_gate"]["reason"].lower()
+
+
 async def test_metrics_and_prometheus_render():
     st = _state()
     await st.event_bus.emit(EventType.SYSTEM, source="t", payload={})

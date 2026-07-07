@@ -1232,6 +1232,59 @@ def _shingle_overlap(a: str, b: str, n: int = 8) -> float:
     return (len(sa & sb) / union) if union else 0.0
 
 
+_OFFLINE_STARTER_MARKERS = (
+    "generated offline by skyn3t",
+    "runnable vite + react starter",
+    "runnable next.js",
+    "runnable static site",
+    "runnable astro site",
+    "runnable remix app",
+    "runnable expo app",
+)
+_OFFLINE_PLACEHOLDER_INTERACTIONS = (
+    "count is",
+    "setcount",
+    "click me",
+)
+
+
+def detect_offline_starter_stub(root: str | Path, stack: str = "") -> str | None:
+    """Flag the default offline starter UI even when extra files were added.
+
+    The shingle-based scaffold detector is intentionally conservative and skips
+    trees with extra files. A common bad delivery keeps the scaffold entrypoint
+    (counter button / "Click me" CTA / offline starter copy) while adding a
+    settings file or manifest; that still shipped the starter instead of the
+    brief.
+    """
+    root = Path(root)
+    try:
+        for f in _iter_files(root):
+            if f.suffix.lower() not in _ANTIFAKE_SUFFIXES:
+                continue
+            try:
+                if f.stat().st_size > 500_000:
+                    continue
+                txt = f.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            low = txt.lower()
+            if not any(marker in low for marker in _OFFLINE_STARTER_MARKERS):
+                continue
+            if not any(marker in low for marker in _OFFLINE_PLACEHOLDER_INTERACTIONS):
+                continue
+            rel = str(f.relative_to(root)).replace("\\", "/")
+            label = f" {stack}" if stack else ""
+            return (
+                f"delivered the offline{label} starter in {rel} "
+                "(counter/Click me placeholder) - the build shipped the starter "
+                "instead of implementing the brief"
+            )
+    except OSError:
+        return None
+    return None
+
+
 def detect_scaffold_stub(
     root: str | Path, stack: str, brief: str = "", *, threshold: float = 0.7
 ) -> str | None:
@@ -1243,6 +1296,9 @@ def detect_scaffold_stub(
     delivery adds NO substantial code beyond the scaffold AND its shared code
     files are near-identical to the scaffold — so a real app (which replaces or
     adds code) is never flagged. Never mutates anything; None on any error."""
+    starter_stub = detect_offline_starter_stub(root, stack)
+    if starter_stub:
+        return starter_stub
     try:
         from skyn3t.agents._common import slugify
         from skyn3t.agents._scaffold import scaffold_for

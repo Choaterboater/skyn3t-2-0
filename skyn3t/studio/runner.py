@@ -79,11 +79,11 @@ from skyn3t.studio.proof_run import (
     proof_run,
 )
 from skyn3t.studio.security_check import check_security
-from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
 from skyn3t.studio.visual_loop import visual_self_improve
+from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.workflow_depth import check_workflow_depth
 from skyn3t.worktree import (
     Worktree,

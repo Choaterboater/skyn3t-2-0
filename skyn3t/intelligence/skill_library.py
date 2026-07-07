@@ -53,6 +53,7 @@ _DESKTOP_TAGS = frozenset({"desktop", "tauri", "native"})
 _MOBILE_TAGS = frozenset({"mobile", "expo", "react-native", "react_native"})
 _GAME_TAGS = frozenset({"game", "gamedev", "phaser", "arcade", "shmup", "shooter"})
 _CLI_TAGS = frozenset({"cli", "command-line", "commandline"})
+_QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
 
 # Group equivalent stack vocabularies so a build's detected stack matches skills
 # tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
@@ -91,6 +92,8 @@ def _stack_aliases(stack: str) -> frozenset[str]:
 
 
 def _skill_tags_compatible(stack: str, sk_tags: set[str]) -> bool:
+    if sk_tags & _QUARANTINE_TAGS:
+        return False
     aliases = _stack_aliases(stack)
     if sk_tags & _DESKTOP_TAGS and not (aliases & {"desktop", "tauri"}):
         return False

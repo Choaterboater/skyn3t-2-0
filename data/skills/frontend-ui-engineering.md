@@ -2,7 +2,7 @@
 slug: frontend-ui-engineering
 title: frontend-ui-engineering
 stack: generic
-tags: frontend, design, ui, web
+tags: agent-skills, delivery, design, frontend, packaging, react, testing, ui, verification, web
 uses: 24
 helpful: 13
 quality_sum: 18.2580

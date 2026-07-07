@@ -69,11 +69,28 @@ def test_reset_bench_budget_preserves_daily_counters() -> None:
 # ---------------------------------------------------------------------------
 def test_build_agents_covers_stage_vocabulary() -> None:
     agents = build_agents(event_bus=EventBus())
-    assert len(agents) >= 15
+    assert len(agents) >= 23
     types = {a.agent_type for a in agents}
     # A representative slice of the canonical stage vocabulary.
-    for expected in ("brainstorm", "research", "architecture", "design", "codegen", "review", "documentation"):
+    for expected in (
+        "brainstorm",
+        "research",
+        "architecture",
+        "design",
+        "codegen",
+        "review",
+        "documentation",
+        "stack_detect",
+        "env_scan",
+        "config_ui",
+    ):
         assert expected in types
+
+
+def test_build_agents_registers_specialist_agent_names() -> None:
+    agents = build_agents(event_bus=EventBus())
+    names = {a.name for a in agents}
+    assert {"stack_detector", "env_scanner", "config_ui"} <= names
 
 
 def test_construct_agent_passes_only_accepted_kwargs() -> None:

@@ -5979,8 +5979,424 @@ def _agent_pack(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _vue_vite(app_name: str, brief: str) -> dict[str, str]:
+    title = brief.strip() or app_name
+    html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    vue_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "type": "module",\n'
+            '  "scripts": {\n'
+            '    "dev": "vite",\n'
+            '    "build": "vue-tsc --noEmit && vite build",\n'
+            '    "preview": "vite preview"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "vue": "^3.4.0"\n'
+            "  },\n"
+            '  "devDependencies": {\n'
+            '    "@vitejs/plugin-vue": "^5.0.0",\n'
+            '    "typescript": "^5.4.0",\n'
+            '    "vite": "^5.2.0",\n'
+            '    "vue-tsc": "^2.0.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "vite.config.ts": (
+            "import { defineConfig } from 'vite'\n"
+            "import vue from '@vitejs/plugin-vue'\n\n"
+            "export default defineConfig({ plugins: [vue()] })\n"
+        ),
+        "tsconfig.json": (
+            "{\n"
+            '  "compilerOptions": {\n'
+            '    "target": "ES2020",\n'
+            '    "useDefineForClassFields": true,\n'
+            '    "module": "ESNext",\n'
+            '    "moduleResolution": "Bundler",\n'
+            '    "strict": true,\n'
+            '    "jsx": "preserve",\n'
+            '    "resolveJsonModule": true,\n'
+            '    "isolatedModules": true,\n'
+            '    "noEmit": true,\n'
+            '    "lib": ["ES2020", "DOM", "DOM.Iterable"]\n'
+            "  },\n"
+            '  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue"]\n'
+            "}\n"
+        ),
+        "index.html": (
+            "<!doctype html>\n"
+            '<html lang="en">\n'
+            "  <head>\n"
+            '    <meta charset="UTF-8" />\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
+            f"    <title>{html_title}</title>\n"
+            "  </head>\n"
+            "  <body>\n"
+            '    <div id="app"></div>\n'
+            '    <script type="module" src="/src/main.ts"></script>\n'
+            "  </body>\n"
+            "</html>\n"
+        ),
+        "src/main.ts": (
+            "import { createApp } from 'vue'\n"
+            "import App from './App.vue'\n"
+            "import './styles.css'\n\n"
+            "createApp(App).mount('#app')\n"
+        ),
+        "src/App.vue": (
+            "<script setup lang=\"ts\">\n"
+            "import { ref } from 'vue'\n\n"
+            f"const title = '{vue_title}'\n"
+            "const owner = ref('SkyN3t')\n"
+            "const count = ref(0)\n"
+            "</script>\n\n"
+            "<template>\n"
+            "  <main class=\"shell\">\n"
+            "    <section class=\"hero\">\n"
+            "      <p class=\"eyebrow\">Vue 3 starter</p>\n"
+            "      <h1>{{ title }}</h1>\n"
+            "      <p>A TypeScript-first Vue app with a real Vite build and local state.</p>\n"
+            "      <button type=\"button\" @click=\"count += 1\">Count {{ count }}</button>\n"
+            "    </section>\n"
+            "    <section class=\"panel\" aria-label=\"Workspace\">\n"
+            "      <label>Owner<input v-model=\"owner\" /></label>\n"
+            "      <strong>{{ owner || 'Unassigned' }}</strong>\n"
+            "    </section>\n"
+            "  </main>\n"
+            "</template>\n"
+        ),
+        "src/styles.css": (
+            "* { box-sizing: border-box; }\n"
+            "body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #f5f7fb; color: #172033; }\n"
+            "button, input { font: inherit; }\n"
+            ".shell { min-height: 100vh; display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 0.7fr); gap: 32px; align-items: center; padding: 48px; }\n"
+            ".hero, .panel { display: grid; gap: 16px; }\n"
+            ".eyebrow { margin: 0; color: #116d6e; font-weight: 800; text-transform: uppercase; }\n"
+            "h1 { margin: 0; font-size: 52px; line-height: 1.05; }\n"
+            "p { color: #5d6678; line-height: 1.7; }\n"
+            "button { width: max-content; min-height: 44px; border: 0; border-radius: 8px; padding: 12px 16px; background: #116d6e; color: white; font-weight: 800; cursor: pointer; }\n"
+            ".panel { border: 1px solid #d8dee9; border-radius: 8px; background: white; box-shadow: 0 18px 48px rgba(23, 32, 51, 0.12); padding: 24px; }\n"
+            "label { display: grid; gap: 8px; color: #5d6678; font-weight: 700; }\n"
+            "input { border: 1px solid #d8dee9; border-radius: 8px; padding: 12px; }\n"
+            "@media (max-width: 760px) { .shell { grid-template-columns: 1fr; padding: 24px; } h1 { font-size: 36px; } }\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="Vue 3 + Vite + TypeScript",
+            install="```bash\nnpm install\n```",
+            usage="```bash\nnpm run dev\nnpm run build\nnpm run preview\n```",
+            structure=[
+                ("src/App.vue", "TypeScript-first Vue single-file component"),
+                ("src/main.ts", "Vue app bootstrap"),
+                ("vite.config.ts", "Vite config with @vitejs/plugin-vue"),
+                ("tsconfig.json", "Strict TypeScript configuration"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Vue 3 Composition API",
+                "TypeScript in .vue single-file components",
+                "Strict typecheck plus Vite production build",
+            ],
+        ),
+        ".gitignore": "node_modules\ndist\n",
+    }
+
+
+def _sveltekit(app_name: str, brief: str) -> dict[str, str]:
+    title = brief.strip() or app_name
+    svelte_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "type": "module",\n'
+            '  "scripts": {\n'
+            '    "dev": "vite dev",\n'
+            '    "build": "vite build",\n'
+            '    "preview": "vite preview",\n'
+            '    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"\n'
+            "  },\n"
+            '  "devDependencies": {\n'
+            '    "@sveltejs/adapter-auto": "^3.2.0",\n'
+            '    "@sveltejs/kit": "^2.5.0",\n'
+            '    "@sveltejs/vite-plugin-svelte": "^3.1.0",\n'
+            '    "svelte": "^4.2.0",\n'
+            '    "svelte-check": "^3.6.0",\n'
+            '    "typescript": "^5.4.0",\n'
+            '    "vite": "^5.2.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "svelte.config.js": (
+            "import adapter from '@sveltejs/adapter-auto'\n"
+            "import { vitePreprocess } from '@sveltejs/vite-plugin-svelte'\n\n"
+            "export default {\n"
+            "  preprocess: vitePreprocess(),\n"
+            "  kit: { adapter: adapter() },\n"
+            "}\n"
+        ),
+        "vite.config.ts": (
+            "import { sveltekit } from '@sveltejs/kit/vite'\n"
+            "import { defineConfig } from 'vite'\n\n"
+            "export default defineConfig({ plugins: [sveltekit()] })\n"
+        ),
+        "tsconfig.json": (
+            "{\n"
+            '  "extends": "./.svelte-kit/tsconfig.json",\n'
+            '  "compilerOptions": {\n'
+            '    "allowJs": true,\n'
+            '    "checkJs": true,\n'
+            '    "esModuleInterop": true,\n'
+            '    "forceConsistentCasingInFileNames": true,\n'
+            '    "resolveJsonModule": true,\n'
+            '    "skipLibCheck": true,\n'
+            '    "sourceMap": true,\n'
+            '    "strict": true,\n'
+            '    "moduleResolution": "bundler"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "src/routes/+page.svelte": (
+            "<script lang=\"ts\">\n"
+            f"  const title = '{svelte_title}'\n"
+            "  let owner = 'SkyN3t'\n"
+            "  let count = 0\n"
+            "</script>\n\n"
+            "<svelte:head><title>{title}</title></svelte:head>\n\n"
+            "<main class=\"shell\">\n"
+            "  <section class=\"hero\">\n"
+            "    <p class=\"eyebrow\">SvelteKit starter</p>\n"
+            "    <h1>{title}</h1>\n"
+            "    <p>A TypeScript-first SvelteKit route with local state and a production build.</p>\n"
+            "    <button type=\"button\" on:click={() => count += 1}>Count {count}</button>\n"
+            "  </section>\n"
+            "  <section class=\"panel\" aria-label=\"Workspace\">\n"
+            "    <label>Owner<input bind:value={owner} /></label>\n"
+            "    <strong>{owner || 'Unassigned'}</strong>\n"
+            "  </section>\n"
+            "</main>\n\n"
+            "<style>\n"
+            "  :global(body) { margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #f5f7fb; color: #172033; }\n"
+            "  * { box-sizing: border-box; }\n"
+            "  .shell { min-height: 100vh; display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 0.7fr); gap: 32px; align-items: center; padding: 48px; }\n"
+            "  .hero, .panel { display: grid; gap: 16px; }\n"
+            "  .eyebrow { margin: 0; color: #116d6e; font-weight: 800; text-transform: uppercase; }\n"
+            "  h1 { margin: 0; font-size: 52px; line-height: 1.05; }\n"
+            "  p { color: #5d6678; line-height: 1.7; }\n"
+            "  button { width: max-content; min-height: 44px; border: 0; border-radius: 8px; padding: 12px 16px; background: #116d6e; color: white; font-weight: 800; cursor: pointer; }\n"
+            "  .panel { border: 1px solid #d8dee9; border-radius: 8px; background: white; box-shadow: 0 18px 48px rgba(23, 32, 51, 0.12); padding: 24px; }\n"
+            "  label { display: grid; gap: 8px; color: #5d6678; font-weight: 700; }\n"
+            "  input { border: 1px solid #d8dee9; border-radius: 8px; padding: 12px; }\n"
+            "  @media (max-width: 760px) { .shell { grid-template-columns: 1fr; padding: 24px; } h1 { font-size: 36px; } }\n"
+            "</style>\n"
+        ),
+        "src/app.html": (
+            "<!doctype html>\n"
+            '<html lang="en">\n'
+            "  <head>\n"
+            '    <meta charset="utf-8" />\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1" />\n'
+            "    %sveltekit.head%\n"
+            "  </head>\n"
+            "  <body data-sveltekit-preload-data=\"hover\">\n"
+            "    <div style=\"display: contents\">%sveltekit.body%</div>\n"
+            "  </body>\n"
+            "</html>\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="SvelteKit + TypeScript",
+            install="```bash\nnpm install\n```",
+            usage="```bash\nnpm run dev\nnpm run build\nnpm run preview\n```",
+            structure=[
+                ("src/routes/+page.svelte", "TypeScript-first SvelteKit route"),
+                ("src/app.html", "HTML shell"),
+                ("svelte.config.js", "SvelteKit adapter/preprocess config"),
+                ("vite.config.ts", "Vite config with the SvelteKit plugin"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "SvelteKit file-based route",
+                "TypeScript in Svelte components",
+                "Production build and preview scripts",
+            ],
+        ),
+        ".gitignore": "node_modules\n.svelte-kit\nbuild\n",
+    }
+
+
+def _react_vite_ts(app_name: str, brief: str) -> dict[str, str]:
+    title = brief.strip() or app_name
+    js_title = title.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ").replace("\r", " ")
+    html_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return {
+        "package.json": (
+            "{\n"
+            f'  "name": "{app_name}",\n'
+            '  "private": true,\n'
+            '  "version": "0.1.0",\n'
+            f'  "description": "{_json_escape(title)}",\n'
+            '  "type": "module",\n'
+            '  "scripts": {\n'
+            '    "dev": "vite",\n'
+            '    "build": "tsc -b && vite build",\n'
+            '    "preview": "vite preview"\n'
+            "  },\n"
+            '  "dependencies": {\n'
+            '    "react": "^18.2.0",\n'
+            '    "react-dom": "^18.2.0"\n'
+            "  },\n"
+            '  "devDependencies": {\n'
+            '    "@types/react": "^18.2.0",\n'
+            '    "@types/react-dom": "^18.2.0",\n'
+            '    "@vitejs/plugin-react": "^4.2.0",\n'
+            '    "typescript": "^5.4.0",\n'
+            '    "vite": "^5.2.0"\n'
+            "  }\n"
+            "}\n"
+        ),
+        "vite.config.ts": (
+            "import { defineConfig } from 'vite'\n"
+            "import react from '@vitejs/plugin-react'\n\n"
+            "export default defineConfig({ plugins: [react()] })\n"
+        ),
+        "tsconfig.json": (
+            "{\n"
+            '  "compilerOptions": {\n'
+            '    "target": "ES2020",\n'
+            '    "useDefineForClassFields": true,\n'
+            '    "lib": ["DOM", "DOM.Iterable", "ES2020"],\n'
+            '    "allowJs": false,\n'
+            '    "skipLibCheck": true,\n'
+            '    "esModuleInterop": true,\n'
+            '    "allowSyntheticDefaultImports": true,\n'
+            '    "strict": true,\n'
+            '    "forceConsistentCasingInFileNames": true,\n'
+            '    "module": "ESNext",\n'
+            '    "moduleResolution": "Bundler",\n'
+            '    "resolveJsonModule": true,\n'
+            '    "isolatedModules": true,\n'
+            '    "noEmit": true,\n'
+            '    "jsx": "react-jsx"\n'
+            "  },\n"
+            '  "include": ["src"]\n'
+            "}\n"
+        ),
+        "index.html": (
+            "<!doctype html>\n"
+            '<html lang="en">\n'
+            "  <head>\n"
+            '    <meta charset="UTF-8" />\n'
+            '    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n'
+            f"    <title>{html_title}</title>\n"
+            "  </head>\n"
+            "  <body>\n"
+            '    <div id="root"></div>\n'
+            '    <script type="module" src="/src/main.tsx"></script>\n'
+            "  </body>\n"
+            "</html>\n"
+        ),
+        "src/main.tsx": (
+            "import React from 'react'\n"
+            "import ReactDOM from 'react-dom/client'\n"
+            "import App from './App'\n"
+            "import './styles.css'\n\n"
+            "ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(\n"
+            "  <React.StrictMode>\n"
+            "    <App />\n"
+            "  </React.StrictMode>,\n"
+            ")\n"
+        ),
+        "src/App.tsx": (
+            "import { useState } from 'react'\n\n"
+            "type Stat = { label: string; value: string }\n"
+            "const stats: Stat[] = [\n"
+            "  { label: 'Language', value: 'TypeScript' },\n"
+            "  { label: 'Build', value: 'Vite' },\n"
+            "  { label: 'UI', value: 'React' },\n"
+            "]\n\n"
+            "export default function App() {\n"
+            "  const [count, setCount] = useState<number>(0)\n"
+            "  const [owner, setOwner] = useState<string>('SkyN3t')\n"
+            "  return (\n"
+            "    <main className=\"shell\">\n"
+            "      <section className=\"hero\">\n"
+            "        <p className=\"eyebrow\">TypeScript React starter</p>\n"
+            f"        <h1>{js_title}</h1>\n"
+            "        <p>A strict TypeScript Vite app with typed state and a production build.</p>\n"
+            "        <button type=\"button\" onClick={() => setCount((value) => value + 1)}>\n"
+            "          Count {count}\n"
+            "        </button>\n"
+            "      </section>\n"
+            "      <section className=\"panel\" aria-label=\"Workspace\">\n"
+            "        <label>\n"
+            "          Owner\n"
+            "          <input value={owner} onChange={(event) => setOwner(event.target.value)} />\n"
+            "        </label>\n"
+            "        <div className=\"stats\">\n"
+            "          {stats.map((stat) => <article key={stat.label}><span>{stat.label}</span><strong>{stat.value}</strong></article>)}\n"
+            "        </div>\n"
+            "        <strong>{owner || 'Unassigned'}</strong>\n"
+            "      </section>\n"
+            "    </main>\n"
+            "  )\n"
+            "}\n"
+        ),
+        "src/styles.css": (
+            "* { box-sizing: border-box; }\n"
+            "body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #f5f7fb; color: #172033; }\n"
+            "button, input { font: inherit; }\n"
+            ".shell { min-height: 100vh; display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 0.8fr); gap: 32px; align-items: center; padding: 48px; }\n"
+            ".hero, .panel { display: grid; gap: 16px; }\n"
+            ".eyebrow { margin: 0; color: #116d6e; font-weight: 800; text-transform: uppercase; }\n"
+            "h1 { margin: 0; font-size: 52px; line-height: 1.05; }\n"
+            "p { color: #5d6678; line-height: 1.7; }\n"
+            "button { width: max-content; min-height: 44px; border: 0; border-radius: 8px; padding: 12px 16px; background: #116d6e; color: white; font-weight: 800; cursor: pointer; }\n"
+            ".panel { border: 1px solid #d8dee9; border-radius: 8px; background: white; box-shadow: 0 18px 48px rgba(23, 32, 51, 0.12); padding: 24px; }\n"
+            "label { display: grid; gap: 8px; color: #5d6678; font-weight: 700; }\n"
+            "input { border: 1px solid #d8dee9; border-radius: 8px; padding: 12px; }\n"
+            ".stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }\n"
+            ".stats article { display: grid; gap: 4px; border: 1px solid #d8dee9; border-radius: 8px; padding: 12px; }\n"
+            ".stats span { color: #5d6678; font-size: 14px; }\n"
+            "@media (max-width: 760px) { .shell { grid-template-columns: 1fr; padding: 24px; } h1 { font-size: 36px; } .stats { grid-template-columns: 1fr; } }\n"
+        ),
+        "README.md": compose_readme(
+            title,
+            brief,
+            stack_label="React + Vite + TypeScript",
+            install="```bash\nnpm install\n```",
+            usage="```bash\nnpm run dev\nnpm run build\nnpm run preview\n```",
+            structure=[
+                ("src/App.tsx", "Typed React application component"),
+                ("src/main.tsx", "React root bootstrap"),
+                ("vite.config.ts", "Vite config with React plugin"),
+                ("tsconfig.json", "Strict TypeScript configuration"),
+                ("package.json", "Dependencies and npm scripts"),
+            ],
+            features=[
+                "Strict TypeScript React",
+                "Typed component state and props",
+                "Typecheck plus Vite production build",
+            ],
+        ),
+        ".gitignore": "node_modules\ndist\n",
+    }
+
+
 _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "react_vite": _react_vite,
+    "react_ts": _react_vite_ts,
     "tauri": _tauri,
     "desktop": _tauri,
     "phaser": _phaser,
@@ -5993,6 +6409,8 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "nextjs": _nextjs,
     "astro": _astro,
     "remix": _remix,
+    "vue": _vue_vite,
+    "sveltekit": _sveltekit,
     "static_html": _static_html,
     "python_cli": _python_cli,
     "fastapi": _fastapi,

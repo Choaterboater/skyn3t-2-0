@@ -77,6 +77,48 @@ def test_check_auth_loopback_only_when_no_token():
     assert check_auth(s, authorization=None, client_host="8.8.8.8") is False
 
 
+async def test_auth_self_test_payload_reports_effective_method():
+    st = _state()
+    st.settings.auth_token = "secret"
+    out = await routes.auth_self_test_payload(
+        st,
+        authorization="Bearer secret",
+        client_host="8.8.8.8",
+    )
+    assert out["ok"] is True
+    assert out["token_configured"] is True
+    assert out["method"] == "bearer"
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated"
+)
+def test_auth_self_test_route_exercises_http_auth_flow():
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    st = _state()
+    st.settings.auth_token = "secret"
+    app = FastAPI()
+    app.include_router(routes.build_router(st))
+    client = TestClient(app)
+
+    missing = client.get("/api/auth/self-test")
+    assert missing.status_code == 401
+    wrong = client.get("/api/auth/self-test", headers={"Authorization": "Bearer wrong"})
+    assert wrong.status_code == 401
+
+    ok = client.get("/api/auth/self-test", headers={"Authorization": "Bearer secret"})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["ok"] is True
+    assert body["method"] == "bearer"
+    assert body["token_configured"] is True
+
+
 # ---- websocket auth (token via subprotocol, never query string) -----------
 class _FakeWS:
     def __init__(self, *, headers=None, subprotocols=None, client_host="127.0.0.1"):

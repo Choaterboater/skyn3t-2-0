@@ -262,6 +262,28 @@ def test_settings_explains_model_precedence() -> None:
     assert "keyMsg" in settings  # key-save feedback is shown in the API-key panel
 
 
+def test_gate_ladder_hero_contains_mobile_overflow() -> None:
+    ladder = (COMPONENTS / "GateLadder.jsx").read_text()
+    assert "overflow-x-auto" in ladder
+    assert "overscroll-x-contain" in ladder
+    assert "min-w-[720px]" in ladder
+    assert "[scrollbar-gutter:stable]" in ladder
+
+
+def test_studio_error_states_are_contained() -> None:
+    ui = (COMPONENTS / "ui.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "export function ErrorText" in ui
+    assert 'role="alert"' in ui
+    assert "[overflow-wrap:anywhere]" in ui
+    assert "overflow-auto" in ui
+    assert "ErrorText" in studio
+    assert "submit.isError" in studio
+    assert "fanoutMut.isError" in studio
+    assert "clearRoutingLocks.isError" in studio
+    assert "cleanupCompletedBuilds.isError" in studio
+
+
 def test_studio_wires_build_profiles_and_manual_model() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "Cheap + learned" in studio

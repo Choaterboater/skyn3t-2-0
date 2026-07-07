@@ -49,7 +49,10 @@ except ImportError:
 
 # Files that don't count as "substantive" deliverables on their own.
 _TRIVIAL_FILES = frozenset({"README.md", ".gitignore", "LICENSE", "skyn3t_manifest.json"})
-_SOURCE_SUFFIXES = (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs", ".java", ".astro", ".swift")
+_SOURCE_SUFFIXES = (
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".go", ".rs",
+    ".java", ".astro", ".vue", ".svelte", ".swift",
+)
 _MIN_SUBSTANTIVE_BYTES = 16
 
 # --- static boot-readiness: relative-import resolution -----------------------
@@ -2458,7 +2461,10 @@ def proof_run(
 
 
 # Stacks for which a runnable entrypoint is expected before we call it "proven".
-_CODE_STACKS = ("cli", "python", "fastapi", "flask", "django", "node", "express", "nextjs")
+_CODE_STACKS = (
+    "cli", "python", "fastapi", "flask", "django", "node", "express",
+    "nextjs", "vue", "sveltekit", "react_ts",
+)
 
 
 def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
@@ -2671,7 +2677,7 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
         # ---- nextjs / astro / remix (npm meta-frameworks) ----------------
         # Each needs a package.json declaring its framework dep AND a recognised
         # entry/config artifact, mirroring the react/node checks above.
-        if low in ("nextjs", "astro", "remix"):
+        if low in ("nextjs", "astro", "remix", "vue", "sveltekit", "react_ts"):
             pkg = pdir / "package.json"
             if not pkg.exists():
                 return (True, False, f"{low} stack: package.json missing")
@@ -2679,7 +2685,14 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 pkg_text = pkg.read_text(encoding="utf-8", errors="replace").lower()
             except OSError:
                 pkg_text = ""
-            framework_dep = {"nextjs": "next", "astro": "astro", "remix": "@remix-run"}[low]
+            framework_dep = {
+                "nextjs": "next",
+                "astro": "astro",
+                "remix": "@remix-run",
+                "vue": "vue",
+                "sveltekit": "@sveltejs/kit",
+                "react_ts": "typescript",
+            }[low]
             if framework_dep not in pkg_text:
                 return (True, False, f"{low} stack: package.json does not depend on {framework_dep}")
             names = {f.name for f in _iter_files(pdir) if f.stat().st_size >= _NONEMPTY}
@@ -2688,6 +2701,9 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 "nextjs": ("page.jsx", "page.tsx", "next.config.js", "next.config.mjs"),
                 "astro": ("astro.config.mjs", "astro.config.ts", "index.astro"),
                 "remix": ("root.tsx", "root.jsx", "_index.tsx", "vite.config.ts"),
+                "vue": ("App.vue", "main.ts", "vite.config.ts"),
+                "sveltekit": ("+page.svelte", "svelte.config.js", "vite.config.ts"),
+                "react_ts": ("App.tsx", "main.tsx", "vite.config.ts"),
             }[low]
             if not any(m in names for m in markers):
                 return (True, False, f"{low} stack: no entry/config artifact ({', '.join(markers)}) found")
@@ -2887,7 +2903,7 @@ def _run_generated_tests(
 # check rather than a long-running Expo dev server.
 _NODE_STACKS = (
     "react", "react_vite", "react_native", "node", "node_express", "express",
-    "nextjs", "astro", "remix", "static",
+    "nextjs", "astro", "remix", "vue", "sveltekit", "react_ts", "static",
     # Tauri desktop: the frontend is a Vite/React app — `npm run build` builds it
     # (the proof); the fixed src-tauri/ Rust shell is bundled separately.
     "tauri", "desktop",

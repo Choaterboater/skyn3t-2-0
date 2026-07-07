@@ -34,6 +34,10 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # briefs don't collapse to the Vite or plain-HTML scaffold.
     ("astro", ("astro",)),
     ("remix", ("remix",)),
+    ("sveltekit", ("sveltekit", "svelte kit", "svelte")),
+    ("vue", ("vue.js", "vuejs", "vue")),
+    ("react_ts", ("react typescript", "typescript react", "vite typescript",
+                  "typescript spa", "typescript web app", "tsx app")),
     # MCP server (Model Context Protocol, wave-2 §3.3): a Python stdio tool server
     # exposing tools to AI assistants — NOT a web/HTTP app. Placed HIGH (before
     # react_native / swift / tauri / phaser / react / fastapi / static): an "mcp
@@ -218,6 +222,15 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     "astro": ("README.md", "package.json", "src/pages/index.astro", "astro.config.mjs"),
     # Remix (Vite): the manifest, the root document, and the index route.
     "remix": ("README.md", "package.json", "app/root.tsx", "app/routes/_index.tsx"),
+    # Vue 3 + Vite, TypeScript-first.
+    "vue": ("README.md", "package.json", "index.html", "vite.config.ts",
+            "src/main.ts", "src/App.vue"),
+    # SvelteKit, TypeScript-first.
+    "sveltekit": ("README.md", "package.json", "svelte.config.js",
+                  "vite.config.ts", "src/routes/+page.svelte"),
+    # React + Vite, TypeScript-first alternative to the default JSX React stack.
+    "react_ts": ("README.md", "package.json", "index.html", "vite.config.ts",
+                 "tsconfig.json", "src/main.tsx", "src/App.tsx"),
     # Expo mobile app: the manifest (package.json), the Expo config (app.json),
     # and the root screen (App.tsx). No index.html — mobile has no DOM root and
     # cannot be iframe-previewed like the web stacks. (No jest test in the
@@ -278,7 +291,7 @@ def detect_stack(brief: str, hint: str | None = None) -> str:
 # only as whole words so "astrology"/"astronomy"/"gastro" don't route to astro
 # and "remixing" doesn't route to remix.
 _WORD_BOUNDED_KEYWORDS = frozenset({
-    "astro", "remix",
+    "astro", "remix", "vue", "svelte",
     # Single-word game genres: match whole words so "troubleshooter" (≠ shooter),
     # "endgame" (≠ game) and "barcade" (≠ arcade) don't false-route to phaser.
     "arcade", "platformer", "shooter",

@@ -20,6 +20,9 @@ KNOWN_STACKS = (
     "nextjs",
     "astro",
     "remix",
+    "vue",
+    "sveltekit",
+    "react_ts",
     "static_html",
     "python_cli",
     "fastapi",
@@ -132,6 +135,11 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         "side-scroller", "endless runner", "tower defense", "tilemap",
     )) or any(re.search(rf"\b{k}\b", text) for k in ("arcade", "platformer", "shooter")):
         return "phaser"
+    if any(k in text for k in (
+        "react typescript", "typescript react", "vite react typescript",
+        "vite typescript", "typescript spa", "typescript web app", "tsx app",
+    )):
+        return "react_ts"
     if any(k in text for k in ("cli", "command line", "command-line", "terminal tool", "script")):
         return "python_cli"
     # Mobile must precede react_vite: "mobile app" / "react native" / "ios app"
@@ -166,6 +174,15 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
     # their own real builder now (not the plain Vite scaffold).
     if any(k in text for k in ("next.js", "nextjs", "next js")):
         return "nextjs"
+    if any(k in text for k in ("sveltekit", "svelte kit")) or re.search(r"\bsvelte\b", text):
+        return "sveltekit"
+    if re.search(r"\bvue(?:\.js|js)?\b", text):
+        return "vue"
+    if any(k in text for k in (
+        "react typescript", "typescript react", "vite typescript",
+        "typescript spa", "typescript web app", "tsx app",
+    )):
+        return "react_ts"
     # Whole-word only: "astrology"/"astronomy"/"gastro" must not route to astro,
     # nor "remixing" to remix.
     if re.search(r"\bastro\b", text):
@@ -187,6 +204,13 @@ def _normalize_stack(value: str) -> str:
         "react_vite": "react_vite",
         "vite_react": "react_vite",
         "spa": "react_vite",
+        "react_ts": "react_ts",
+        "react_typescript": "react_ts",
+        "typescript_react": "react_ts",
+        "vite_ts": "react_ts",
+        "vite_typescript": "react_ts",
+        "tsx": "react_ts",
+        "typescript": "react_ts",
         # Tauri cross-platform desktop (Vite/React frontend + Rust shell).
         "tauri": "tauri",
         "desktop": "tauri",
@@ -257,6 +281,13 @@ def _normalize_stack(value: str) -> str:
         "next_js": "nextjs",
         "astro": "astro",
         "remix": "remix",
+        "vue": "vue",
+        "vuejs": "vue",
+        "vue.js": "vue",
+        "vue_3": "vue",
+        "svelte": "sveltekit",
+        "sveltekit": "sveltekit",
+        "svelte_kit": "sveltekit",
         "html": "static_html",
         "static": "static_html",
         "static_html": "static_html",

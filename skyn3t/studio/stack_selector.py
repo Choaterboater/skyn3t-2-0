@@ -18,6 +18,9 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "nextjs": "a full-stack React web app with routing/SSR (Next.js App Router)",
     "astro": "a fast content-focused site / blog / docs (Astro)",
     "remix": "a full-stack web app with nested routes + data loading (Remix)",
+    "vue": "a Vue 3 browser web app / dashboard (Vite + TypeScript)",
+    "sveltekit": "a SvelteKit full-stack web app with file-based routes",
+    "react_ts": "a TypeScript-first React browser web app (Vite + React + TS)",
     "fastapi": "a Python web app or HTTP/REST API with a server + storage",
     "static": "a static website / landing page (HTML/CSS/JS, no backend)",
     "python": "a Python CLI tool, script, or library (no web UI)",
@@ -45,6 +48,7 @@ _COLLAPSE = {"flask": "fastapi", "django": "fastapi", "cli": "python"}
 # unverified delivery from a missing toolchain.
 _TOOLCHAIN_EXE = {
     "react": "npm", "nextjs": "npm", "astro": "npm", "remix": "npm",
+    "vue": "npm", "sveltekit": "npm", "react_ts": "npm",
     "express": "npm", "tauri": "npm", "phaser": "npm", "react_native": "npm",
     "swift": "swift",
 }
@@ -56,7 +60,8 @@ _TOOLCHAIN_EXE = {
 # exists. Explicit PINS are never demoted — a pin is user intent.
 _TOOLCHAIN_FALLBACK = {
     "react": ("static",), "nextjs": ("static",), "astro": ("static",),
-    "remix": ("static",), "express": ("fastapi",), "tauri": ("static",),
+    "remix": ("static",), "vue": ("static",), "sveltekit": ("static",),
+    "react_ts": ("static",), "express": ("fastapi",), "tauri": ("static",),
     "phaser": ("static",), "react_native": ("static",),
     "swift": ("tauri", "python"),
 }

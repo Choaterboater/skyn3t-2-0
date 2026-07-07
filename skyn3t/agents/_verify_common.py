@@ -41,6 +41,7 @@ ENTRYPOINT_NAMES = {
     "next.config.js", "next.config.mjs",
     "index.astro",
     "root.tsx", "root.jsx", "_index.tsx", "_index.jsx",
+    "App.vue", "+page.svelte", "svelte.config.js",
     # Swift / SwiftUI (Swift Package Manager): the manifest declares the executable
     # target, so it is the stack's runnable-root marker (like next.config.js /
     # manage.py above). Codegen names the @main file inconsistently, but

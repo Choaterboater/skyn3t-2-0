@@ -22,7 +22,14 @@ import structlog
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
 from skyn3t.studio.manifest import BuildManifest
-from skyn3t.web.deps import AppState, BuildRecord, ProposalRecord, check_auth
+from skyn3t.web.deps import (
+    AppState,
+    BuildRecord,
+    ProposalRecord,
+    check_auth,
+    extract_bearer,
+    is_loopback,
+)
 from skyn3t.worktree import PREVIEW_SUBDIR, list_files
 
 log = structlog.get_logger(__name__)
@@ -1495,6 +1502,27 @@ def render_prometheus(metrics: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+async def auth_self_test_payload(
+    state: AppState,
+    *,
+    authorization: str | None = None,
+    client_host: str | None = None,
+) -> dict[str, Any]:
+    """Report the effective auth path for a request that already passed auth."""
+    bearer = extract_bearer(authorization)
+    token_configured = bool(getattr(state.settings, "auth_token", "").strip())
+    return {
+        "ok": check_auth(
+            state.settings,
+            authorization=authorization,
+            client_host=client_host,
+        ),
+        "token_configured": token_configured,
+        "method": "bearer" if bearer else "loopback" if is_loopback(client_host) else "none",
+        "client_host": client_host or "",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Runtime LLM configuration (set keys / switch backend from the dashboard).
 # ---------------------------------------------------------------------------
@@ -2635,6 +2663,15 @@ def build_router(state: AppState) -> Any:
 
     auth = Depends(require_auth)
     empty_body: Any = Body(default_factory=dict)
+
+    @router.get("/auth/self-test", dependencies=[auth])
+    async def _auth_self_test(request: Request) -> dict[str, Any]:
+        client_host = request.client.host if request.client else None
+        return await auth_self_test_payload(
+            state,
+            authorization=request.headers.get("authorization"),
+            client_host=client_host,
+        )
 
     @router.get("/status", dependencies=[auth])
     async def _status() -> dict[str, Any]:

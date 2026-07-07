@@ -182,6 +182,70 @@ def summarize_by_stack(results: list[BenchResult]) -> dict[str, dict[str, Any]]:
     return {stack: summarize(group) for stack, group in ordered}
 
 
+def scorecard(run: BenchRun) -> dict[str, Any]:
+    """Human/product-facing scorecard for a measured factory bench run.
+
+    ``summary`` is good for math; this scorecard is good for decisions: headline
+    health, weakest stacks, and the exact failed/error cases to attack next.
+    """
+    results = list(run.results)
+    summary = run.summary or summarize(results)
+    by_stack = summarize_by_stack(results)
+    proof_known = [r for r in results if r.status != "error"]
+    proof_passed = sum(1 for r in proof_known if r.proof_passed)
+    weak_stacks = []
+    for stack, row in by_stack.items():
+        if row.get("go_rate", 0.0) < 1.0 or row.get("n_error", 0):
+            weak_stacks.append({
+                "stack": stack,
+                "go": row.get("go", 0),
+                "n": row.get("n", 0),
+                "go_rate": row.get("go_rate", 0.0),
+                "n_error": row.get("n_error", 0),
+                "mean_score": row.get("mean_score", 0.0),
+            })
+    weak_stacks.sort(key=lambda row: (
+        -int(row.get("n_error", 0)),
+        float(row.get("go_rate", 0.0)),
+        float(row.get("mean_score", 0.0)),
+        str(row.get("stack", "")),
+    ))
+    failures = [
+        {
+            "case_id": r.case_id,
+            "stack": r.stack or "unknown",
+            "status": r.status,
+            "score": r.score,
+        }
+        for r in sorted(
+            results,
+            key=lambda item: (
+                item.status != "error",
+                item.stack or "unknown",
+                item.case_id,
+            ),
+        )
+        if r.verdict != "go" or r.status == "error"
+    ]
+    return {
+        "label": run.label or "latest",
+        "headline": {
+            "cases": summary.get("n", 0),
+            "go": summary.get("go", 0),
+            "go_rate": summary.get("go_rate", 0.0),
+            "errors": summary.get("n_error", 0),
+            "mean_score": summary.get("mean_score", 0.0),
+            "mean_score_go": summary.get("mean_score_go", 0.0),
+            "proof_pass_rate": round(proof_passed / len(proof_known), 4)
+            if proof_known else 0.0,
+            "total_cost_usd": summary.get("total_cost_usd", 0.0),
+            "cost_per_go_usd": summary.get("cost_per_go_usd"),
+        },
+        "weak_stacks": weak_stacks,
+        "case_failures": failures,
+    }
+
+
 BuildFn = Callable[[BenchCase], Awaitable[Any]]
 
 
@@ -229,6 +293,8 @@ def publish_go_rate(run: BenchRun, out_dir) -> dict[str, Path]:
     data = run.to_dict()
     summary = data.get("summary") or {}
     by_stack = data.get("by_stack") or {}
+    card = scorecard(run)
+    headline = card.get("headline") or {}
     label = run.label or "latest"
     md_lines = [
         f"# SkyN3t Go-Rate: {label}",
@@ -236,6 +302,14 @@ def publish_go_rate(run: BenchRun, out_dir) -> dict[str, Path]:
         f"- Cases: {summary.get('go', 0)}/{summary.get('n', 0)} go",
         f"- Go-Rate: {float(summary.get('go_rate', 0.0)) * 100:.1f}%",
         f"- Mean Score: {summary.get('mean_score', 0)}",
+        f"- Errors: {headline.get('errors', 0)}",
+        f"- Proof Pass-Rate: {float(headline.get('proof_pass_rate', 0.0)) * 100:.1f}%",
+        f"- Cost / Go: {headline.get('cost_per_go_usd')}",
+        "",
+        "## Factory Scorecard",
+        "",
+        f"- Weak Stacks: {len(card.get('weak_stacks') or [])}",
+        f"- Failed/Error Cases: {len(card.get('case_failures') or [])}",
         "",
         "| Stack | Go | Cases | Go-Rate | Mean Score |",
         "| --- | ---: | ---: | ---: | ---: |",
@@ -245,6 +319,36 @@ def publish_go_rate(run: BenchRun, out_dir) -> dict[str, Path]:
             f"| {stack} | {row.get('go', 0)} | {row.get('n', 0)} | "
             f"{float(row.get('go_rate', 0.0)) * 100:.1f}% | {row.get('mean_score', 0)} |"
         )
+    weak = card.get("weak_stacks") or []
+    if weak:
+        md_lines.extend([
+            "",
+            "## Weak Stacks",
+            "",
+            "| Stack | Go | Cases | Errors | Go-Rate | Mean Score |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for row in weak:
+            md_lines.append(
+                f"| {row.get('stack', '')} | {row.get('go', 0)} | {row.get('n', 0)} | "
+                f"{row.get('n_error', 0)} | "
+                f"{float(row.get('go_rate', 0.0)) * 100:.1f}% | "
+                f"{row.get('mean_score', 0)} |"
+            )
+    failures = card.get("case_failures") or []
+    if failures:
+        md_lines.extend([
+            "",
+            "## Failed/Error Cases",
+            "",
+            "| Case | Stack | Status | Score |",
+            "| --- | --- | --- | ---: |",
+        ])
+        for row in failures:
+            md_lines.append(
+                f"| {row.get('case_id', '')} | {row.get('stack', '')} | "
+                f"{row.get('status', '')} | {row.get('score')} |"
+            )
     from skyn3t.atomic_io import atomic_write_text
 
     md_path = base / "go-rate.md"
@@ -258,6 +362,7 @@ def publish_go_rate(run: BenchRun, out_dir) -> dict[str, Path]:
                 "created_at": run.created_at,
                 "summary": summary,
                 "by_stack": by_stack,
+                "scorecard": card,
             },
             indent=2,
             sort_keys=True,

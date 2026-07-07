@@ -19,6 +19,7 @@ from skyn3t.studio.bench import (
     publish_go_rate,
     run_bench,
     save_run,
+    scorecard,
     summarize,
     summarize_by_stack,
 )
@@ -156,6 +157,48 @@ def test_publish_go_rate_writes_markdown_and_json(tmp_path):
     assert "Go-Rate" in text
     assert "python" in text and "phaser" in text
     assert '"go_rate": 0.5' in js.read_text(encoding="utf-8")
+
+
+def test_scorecard_surfaces_weak_stacks_errors_and_costs():
+    results = [
+        _stacked("cli1", "python", verdict="go", score=92),
+        _stacked("game1", "phaser", verdict="no_go", score=30),
+        BenchResult(
+            case_id="api1", brief="b", slug="", verdict="no_go", score=None,
+            intent_score=None, proof_passed=False, status="error", stack="fastapi",
+            cost_usd=0.25,
+        ),
+    ]
+    run = BenchRun(label="factory-exam", results=results)
+
+    card = scorecard(run)
+
+    assert card["label"] == "factory-exam"
+    assert card["headline"]["go_rate"] == round(1 / 3, 4)
+    assert card["headline"]["errors"] == 1
+    assert card["headline"]["cost_per_go_usd"] == 0.35
+    assert card["weak_stacks"][0]["stack"] == "fastapi"
+    assert {row["stack"] for row in card["weak_stacks"]} == {"fastapi", "phaser"}
+    assert card["case_failures"] == [
+        {"case_id": "api1", "stack": "fastapi", "status": "error", "score": None},
+        {"case_id": "game1", "stack": "phaser", "status": "completed", "score": 30},
+    ]
+
+
+def test_publish_go_rate_writes_factory_scorecard(tmp_path):
+    run = BenchRun(label="r", results=[
+        _stacked("cli1", "python", verdict="go", score=92),
+        _stacked("game1", "phaser", verdict="no_go", score=30),
+    ])
+
+    paths = publish_go_rate(run, tmp_path)
+
+    md_text = paths["markdown"].read_text(encoding="utf-8")
+    json_text = paths["json"].read_text(encoding="utf-8")
+    assert "Factory Scorecard" in md_text
+    assert "Weak Stacks" in md_text
+    assert "phaser" in md_text
+    assert '"scorecard"' in json_text
 
 
 # --------------------------------------------------------------------------

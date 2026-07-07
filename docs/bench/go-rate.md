@@ -3,6 +3,14 @@
 - Cases: 17/17 go
 - Go-Rate: 100.0%
 - Mean Score: 70.16
+- Errors: 0
+- Proof Pass-Rate: 100.0%
+- Cost / Go: 0.0
+
+## Factory Scorecard
+
+- Weak Stacks: 0
+- Failed/Error Cases: 0
 
 | Stack | Go | Cases | Go-Rate | Mean Score |
 | --- | ---: | ---: | ---: | ---: |

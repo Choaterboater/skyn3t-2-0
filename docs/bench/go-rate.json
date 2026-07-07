@@ -195,6 +195,22 @@
   },
   "created_at": 1783381188.191473,
   "label": "all-stacks-docker-sandbox-17of17",
+  "scorecard": {
+    "case_failures": [],
+    "headline": {
+      "cases": 17,
+      "cost_per_go_usd": 0.0,
+      "errors": 0,
+      "go": 17,
+      "go_rate": 1.0,
+      "mean_score": 70.16,
+      "mean_score_go": 70.16,
+      "proof_pass_rate": 1.0,
+      "total_cost_usd": 0.0
+    },
+    "label": "all-stacks-docker-sandbox-17of17",
+    "weak_stacks": []
+  },
   "summary": {
     "cost_per_go_usd": 0.0,
     "go": 17,

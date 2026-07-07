@@ -22,6 +22,7 @@ import structlog
 
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
+from skyn3t.core.model_router import newest_paid_model
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import (
     AppState,
@@ -290,6 +291,9 @@ _BUILD_TERMINAL_STATUSES = {
     "approved",
     "interrupted",
 }
+_BUILD_FAILOVER_STATUSES = {"failed", "completed_no_go"}
+_BUILD_FAILOVER_THRESHOLD = 2
+_DEEPSEEK_FAILOVER_FALLBACK = "deepseek/deepseek-v3.2"
 
 
 def _normalize_status(value: str) -> str:
@@ -298,6 +302,63 @@ def _normalize_status(value: str) -> str:
 
 def _build_is_terminal(value: str) -> bool:
     return _normalize_status(value) in _BUILD_TERMINAL_STATUSES
+
+
+def _normalize_build_key(value: str) -> str:
+    return " ".join((value or "").strip().lower().split())
+
+
+def _row_target_values(row: dict[str, Any]) -> tuple[str, str, str]:
+    manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+    return (
+        str(row.get("brief") or manifest.get("brief") or ""),
+        str(row.get("stack") or manifest.get("stack") or ""),
+        str(row.get("slug") or manifest.get("slug") or ""),
+    )
+
+
+def _row_matches_build_target(row: dict[str, Any], *, brief: str, stack: str, slug: str) -> bool:
+    row_brief, row_stack, row_slug = _row_target_values(row)
+    target_slug = _normalize_build_key(slug)
+    if target_slug:
+        return _normalize_build_key(row_slug) == target_slug
+    return (
+        _normalize_build_key(row_brief) == _normalize_build_key(brief)
+        and _normalize_build_key(row_stack) == _normalize_build_key(stack)
+    )
+
+
+async def _matching_failure_count(state: AppState, *, brief: str, stack: str, slug: str) -> int:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rec in state.builds.values():
+        row = rec.to_dict()
+        bid = str(row.get("build_id") or "")
+        rows.append(row)
+        if bid:
+            seen.add(bid)
+    memory = getattr(state, "memory", None)
+    if memory is not None and hasattr(memory, "recent_builds"):
+        try:
+            for row in await memory.recent_builds(limit=200):
+                bid = str(row.get("build_id") or "")
+                if bid and bid in seen:
+                    continue
+                rows.append(row)
+                if bid:
+                    seen.add(bid)
+        except Exception:  # noqa: BLE001 - failover should never break submit
+            pass
+    return sum(
+        1
+        for row in rows
+        if _normalize_status(str(row.get("status") or "")) in _BUILD_FAILOVER_STATUSES
+        and _row_matches_build_target(row, brief=brief, stack=stack, slug=slug)
+    )
+
+
+def _deepseek_failover_model() -> str:
+    return newest_paid_model("deepseek-v3") or _DEEPSEEK_FAILOVER_FALLBACK
 
 
 def _normalize_build_profile(profile: str) -> str:
@@ -385,7 +446,19 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         raise ValueError("brief is required")
     build_id = state.new_build_id()
     profile = _normalize_build_profile(build_profile)
-    model = _normalize_model_override(model_override)
+    requested_model = _normalize_model_override(model_override)
+    failure_count = await _matching_failure_count(
+        state,
+        brief=brief,
+        stack=stack,
+        slug=slug,
+    )
+    auto_failover = ""
+    model = requested_model
+    if not model and failure_count >= _BUILD_FAILOVER_THRESHOLD:
+        model = _normalize_model_override(_deepseek_failover_model())
+        if model:
+            auto_failover = "deepseek_after_repeated_failures"
     full_app_requested = bool(full_app) or profile == "full_app"
     rec = BuildRecord(
         build_id=build_id,
@@ -397,6 +470,10 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         model_trace={
             "profile": profile,
             "model_override": model,
+            "requested_model_override": requested_model,
+            "auto_failover": auto_failover,
+            "failure_count": failure_count,
+            "failure_threshold": _BUILD_FAILOVER_THRESHOLD,
             "backend": getattr(state.settings, "llm_backend", ""),
             "full_app": full_app_requested,
         },

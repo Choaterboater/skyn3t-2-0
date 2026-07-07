@@ -495,6 +495,112 @@ async def test_submit_build_normalizes_model_override():
     assert studio.extra["model_override"] == "openrouter/gpt-4o-mini"
 
 
+async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeypatch):
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = dict(extra or {})
+
+    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v3.2")
+    studio = _Studio()
+    st = _state(studio=studio)
+    for idx, status in enumerate(("failed", "completed_no_go"), start=1):
+        st.builds[f"old-{idx}"] = BuildRecord(
+            build_id=f"old-{idx}",
+            brief="a tile platformer",
+            stack="phaser",
+            slug="tile-platformer",
+            status=status,
+        )
+
+    res = await routes.submit_build(
+        st,
+        brief="a tile platformer",
+        stack="phaser",
+        slug="tile-platformer",
+    )
+
+    row = st.builds[res["build_id"]]
+    assert res["model_override"] == "deepseek/deepseek-v3.2"
+    assert studio.extra["model_override"] == "deepseek/deepseek-v3.2"
+    assert row.model_trace["model_override"] == "deepseek/deepseek-v3.2"
+    assert row.model_trace["auto_failover"] == "deepseek_after_repeated_failures"
+    assert row.model_trace["failure_count"] == 2
+
+
+async def test_submit_build_does_not_failover_after_one_failure(monkeypatch):
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = dict(extra or {})
+
+    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v3.2")
+    studio = _Studio()
+    st = _state(studio=studio)
+    st.builds["old-1"] = BuildRecord(
+        build_id="old-1",
+        brief="a tile platformer",
+        stack="phaser",
+        slug="tile-platformer",
+        status="failed",
+    )
+
+    res = await routes.submit_build(
+        st,
+        brief="a tile platformer",
+        stack="phaser",
+        slug="tile-platformer",
+    )
+
+    row = st.builds[res["build_id"]]
+    assert res["model_override"] == ""
+    assert "model_override" not in studio.extra
+    assert row.model_trace["model_override"] == ""
+    assert row.model_trace["auto_failover"] == ""
+    assert row.model_trace["failure_count"] == 1
+
+
+async def test_submit_build_manual_model_override_skips_failover(monkeypatch):
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = dict(extra or {})
+
+    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v3.2")
+    studio = _Studio()
+    st = _state(studio=studio)
+    for idx in range(2):
+        st.builds[f"old-{idx}"] = BuildRecord(
+            build_id=f"old-{idx}",
+            brief="a tile platformer",
+            stack="phaser",
+            slug="tile-platformer",
+            status="failed",
+        )
+
+    res = await routes.submit_build(
+        st,
+        brief="a tile platformer",
+        stack="phaser",
+        slug="tile-platformer",
+        build_profile="manual",
+        model_override="openrouter/manual-model",
+    )
+
+    row = st.builds[res["build_id"]]
+    assert res["model_override"] == "openrouter/manual-model"
+    assert studio.extra["model_override"] == "openrouter/manual-model"
+    assert row.model_trace["model_override"] == "openrouter/manual-model"
+    assert row.model_trace["auto_failover"] == ""
+    assert row.model_trace["failure_count"] == 2
+
+
 async def test_submit_build_legacy_submit_receives_live_build_extra():
     class _Studio:
         def __init__(self):

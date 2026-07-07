@@ -29,8 +29,8 @@ async def _run_agentic(tmp_path, agentic_result: dict, *, write_code: bool = Fal
     """Run CodeAgent with the agentic branch active and a stubbed agentic_build.
 
     Patches `llm.backend` to "claude_cli" so `supports_agentic` becomes True.
-    If write_code=True, the stub writes > 800 bytes of Python into the worktree
-    (simulates a successful delivery).
+    If write_code=True, the stub writes enough Python to exceed the scaffold-based
+    under-delivery threshold (simulates a successful delivery).
     """
     bus = EventBus()
     agent = CodeAgent(event_bus=bus)
@@ -38,7 +38,7 @@ async def _run_agentic(tmp_path, agentic_result: dict, *, write_code: bool = Fal
 
     async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
         if write_code:
-            code = "# Generated app\n" + ("x = 1  # padding line\n" * 80)  # ~1700 bytes, well over 800
+            code = "# Generated app\n" + ("x = 1  # substantial padding line\n" * 240)
             pathlib.Path(workdir, "main.py").write_text(code)
         return agentic_result
 
@@ -142,7 +142,7 @@ async def test_agentic_success_with_real_code_not_flagged(tmp_path):
     result = await _run_agentic(
         tmp_path,
         {"ok": True, "backend": "claude_cli"},
-        write_code=True,  # writes > 800 bytes of .py
+        write_code=True,
     )
     assert result.success
     assert "degraded" not in result.output, "successful agentic build must NOT set degraded"

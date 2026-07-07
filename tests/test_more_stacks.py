@@ -99,7 +99,7 @@ def test_existing_detection_unchanged_by_new_stacks():
 def test_nextjs_scaffold_is_runnable_shape():
     files = scaffold_for("nextjs", "blog-app", "A blog about cats")
     for required in ("package.json", "app/page.jsx", "app/layout.jsx",
-                     "next.config.js", "README.md"):
+                     "next.config.js", "components/ui.jsx", "README.md"):
         assert required in files, f"{required} missing from nextjs scaffold"
     pkg = json.loads(files["package.json"])
     assert "next" in pkg.get("dependencies", {})
@@ -110,6 +110,26 @@ def test_nextjs_scaffold_is_runnable_shape():
     assert "cats" in files["app/page.jsx"].lower() or "blog" in files["app/page.jsx"].lower()
     assert "export default" in files["app/page.jsx"]
     assert "export default" in files["app/layout.jsx"]
+
+
+def test_default_web_scaffolds_ship_design_system_primitives():
+    react = scaffold_for("react_vite", "demo", "A product dashboard")
+    for required in ("src/components/ui.jsx", "src/design-tokens.css"):
+        assert required in react, f"react_vite missing {required}"
+    assert "export function Button" in react["src/components/ui.jsx"]
+    assert "export function Panel" in react["src/components/ui.jsx"]
+    assert "export function StatCard" in react["src/components/ui.jsx"]
+    assert "var(--color-primary)" in react["src/styles.css"]
+    assert "from './components/ui.jsx'" in react["src/App.jsx"]
+    assert "design-system starter" in react["src/App.jsx"].lower()
+
+    nextjs = scaffold_for("nextjs", "demo", "A product dashboard")
+    assert "components/ui.jsx" in nextjs
+    assert "export function Button" in nextjs["components/ui.jsx"]
+    assert "export function Panel" in nextjs["components/ui.jsx"]
+    assert "--color-primary" in nextjs["app/globals.css"]
+    assert "from '../components/ui'" in nextjs["app/page.jsx"]
+    assert "design-system starter" in nextjs["app/page.jsx"].lower()
 
 
 def test_astro_scaffold_is_runnable_shape():

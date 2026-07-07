@@ -24,6 +24,9 @@ _BRIEF = "A task manager that tracks todos with due dates and priorities"
 # The dependency manifest filename(s) that count as a real manifest per stack.
 _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "react_vite": ("package.json",),
+    "react_ts": ("package.json",),
+    "vue": ("package.json",),
+    "sveltekit": ("package.json",),
     "static_html": ("package.json",),
     "python_cli": ("requirements.txt", "pyproject.toml"),
     "fastapi": ("requirements.txt",),

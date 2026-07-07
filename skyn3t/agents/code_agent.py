@@ -604,7 +604,7 @@ class CodeAgent(BaseAgent):
         # paying for the CLI on every other stage.
         model_override = p.get("model_override")
         _codegen_cli_ok, _agentic_kwargs, _codegen_unavailable = self._codegen_agentic_routing(
-            stack, model_override)
+            stack, model_override, p)
         if _codegen_unavailable:
             self.metadata["codegen_override_unavailable"] = _codegen_unavailable
         if self.llm.backend == "stub" and not _codegen_cli_ok:
@@ -1091,8 +1091,16 @@ class CodeAgent(BaseAgent):
         )
 
     def _codegen_agentic_routing(
-        self, stack: str, model_override: Any,
+        self, stack: str, model_override: Any, payload: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any], str]:
+        payload = payload if isinstance(payload, dict) else {}
+        extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+        timeout = payload.get("agentic_timeout") or extra.get("agentic_timeout")
+        try:
+            timeout = int(timeout) if timeout else None
+        except (TypeError, ValueError):
+            timeout = None
+        runtime = {"timeout": timeout} if timeout else {}
         live_settings = getattr(self.llm, "settings", None)
         codegen_provider = str(
             getattr(live_settings, "codegen_cli_provider", "") or "").strip().lower()
@@ -1101,9 +1109,14 @@ class CodeAgent(BaseAgent):
         )
         codegen_cli_ok = bool(codegen_provider) and self.llm._cli_available(codegen_provider)
         if codegen_cli_ok:
-            return True, {"provider": codegen_provider, "model": codegen_model, "stack": stack}, ""
+            return True, {
+                "provider": codegen_provider,
+                "model": codegen_model,
+                "stack": stack,
+                **runtime,
+            }, ""
         unavailable = codegen_provider if codegen_provider else ""
-        return False, {"model": model_override, "stack": stack}, unavailable
+        return False, {"model": model_override, "stack": stack, **runtime}, unavailable
 
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
     async def _execute_slice(
@@ -1121,7 +1134,7 @@ class CodeAgent(BaseAgent):
         manifest = str(slice_scope.get("manifest") or "")
         model_override = p.get("model_override")
         codegen_cli_ok, agentic_kwargs, codegen_unavailable = self._codegen_agentic_routing(
-            stack, model_override)
+            stack, model_override, p)
         if codegen_unavailable:
             self.metadata["codegen_override_unavailable"] = codegen_unavailable
         knowledge = knowledge_block(p)

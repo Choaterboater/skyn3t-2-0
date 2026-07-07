@@ -127,3 +127,13 @@ def test_game_stack_directive_forbids_infinity_in_state() -> None:
     # the encoding guidance for "never fires / no cooldown"
     assert "cooldown" in low or "never fires" in low
     assert "null" in low
+
+
+def test_game_stack_directive_requires_tablet_touch_controls() -> None:
+    from skyn3t.agents.code_agent import _GAME_STACK_DIRECTIVE
+
+    low = _GAME_STACK_DIRECTIVE.lower()
+    assert "tablet" in low
+    assert "tap" in low
+    assert "pointer" in low
+    assert "touch" in low

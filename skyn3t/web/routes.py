@@ -772,6 +772,11 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 if isinstance(stage_skills_used, dict) else {},
                 "quality_scorecard": dict(extra.get("quality_scorecard") or {})
                 if isinstance(extra.get("quality_scorecard"), dict) else {},
+                "deploy_plan": dict(extra.get("deploy_plan") or {})
+                if isinstance(extra.get("deploy_plan"), dict) else {},
+                "deployments": list(extra.get("deployments") or [])
+                if isinstance(extra.get("deployments"), list) else [],
+                "live_url": str(extra.get("live_url") or ""),
             })
     return {"projects": out}
 
@@ -963,6 +968,98 @@ async def serve_status(state: AppState) -> dict[str, Any]:
             continue
         running.append({**app.to_dict(), "slug": slug})
     return {"running": running}
+
+
+async def deploy_plan_project(
+    state: AppState,
+    slug: str,
+    *,
+    target: str = "",
+) -> dict[str, Any]:
+    """Return the deploy plan for a delivered project without firing a deploy."""
+    pdir = _resolve_project_dir(state, slug)
+    man = BuildManifest.load(pdir)
+    stack = man.stack if man is not None else ""
+    from skyn3t.studio.deploy import plan_deploy
+
+    plan = plan_deploy(pdir, stack, target=target or None)
+    extra = man.extra if man is not None and isinstance(man.extra, dict) else {}
+    return {
+        "slug": slug,
+        "stack": stack,
+        "plan": plan.to_dict(),
+        "live_url": str(extra.get("live_url") or ""),
+        "deployments": list(extra.get("deployments") or [])
+        if isinstance(extra.get("deployments"), list) else [],
+    }
+
+
+async def deploy_project(
+    state: AppState,
+    slug: str,
+    *,
+    target: str = "",
+    write: bool = False,
+) -> dict[str, Any]:
+    """Fire the existing token-gated deploy path from the web surface."""
+    pdir = _resolve_project_dir(state, slug)
+    man = BuildManifest.load(pdir)
+    stack = man.stack if man is not None else ""
+    from skyn3t.agents.deploy_agent import DeployAgent
+    from skyn3t.studio.deploy import plan_deploy, record_deployment, write_deploy_artifacts
+
+    plan = plan_deploy(pdir, stack, target=target or None)
+    if write:
+        write_deploy_artifacts(plan, pdir)
+    if not plan.deployable:
+        return {
+            "slug": slug,
+            "ok": False,
+            "plan": plan.to_dict(),
+            "result": {"ok": False, "url": None, "error": plan.notes},
+        }
+    if not plan.serves_url:
+        return {
+            "slug": slug,
+            "ok": False,
+            "plan": plan.to_dict(),
+            "result": {
+                "ok": False,
+                "url": None,
+                "error": "deploy plan creates an artifact, not a live URL",
+            },
+        }
+    provider = target or (plan.targets[0] if plan.targets else "")
+    if not provider:
+        return {
+            "slug": slug,
+            "ok": False,
+            "plan": plan.to_dict(),
+            "result": {"ok": False, "url": None, "error": "no deploy target available"},
+        }
+    agent = DeployAgent(event_bus=state.event_bus)
+    result = agent.deploy(pdir, target=provider, plan=plan)
+    record: dict[str, Any] | None = None
+    if result.get("ok") and result.get("url"):
+        record = record_deployment(pdir, result=result, plan=plan, target=provider)
+        await state.event_bus.emit(
+            EventType.SYSTEM,
+            source="web.api",
+            payload={
+                "event": "deploy.completed",
+                "slug": slug,
+                "url": result.get("url"),
+                "target": provider,
+            },
+        )
+    return {
+        "slug": slug,
+        "ok": bool(result.get("ok") and result.get("url")),
+        "plan": plan.to_dict(),
+        "target": provider,
+        "result": result,
+        "deployment": record,
+    }
 
 
 async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, Any]:
@@ -2983,6 +3080,29 @@ def build_router(state: AppState) -> Any:
     @router.get("/studio/serve", dependencies=[auth])
     async def _serve_status() -> dict[str, Any]:
         return await serve_status(state)
+
+    @router.get("/studio/deploy/plan", dependencies=[auth])
+    async def _deploy_plan(slug: str, target: str = "") -> dict[str, Any]:
+        try:
+            return await deploy_plan_project(state, slug, target=target)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid slug") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
+
+    @router.post("/studio/deploy", dependencies=[auth])
+    async def _deploy(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            return await deploy_project(
+                state,
+                str(body.get("slug", "")),
+                target=str(body.get("target") or ""),
+                write=bool(body.get("write", False)),
+            )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid slug") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
 
     @router.post("/studio/improve", dependencies=[auth])
     async def _improve(body: dict[str, Any] = empty_body) -> dict[str, Any]:

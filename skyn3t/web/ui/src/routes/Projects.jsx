@@ -450,6 +450,94 @@ function ServeCell({ slug, served, busy, err, onServe, onStop }) {
   );
 }
 
+function ShipCell({ project }) {
+  const qc = useQueryClient();
+  const [plan, setPlan] = useState(null);
+  const [err, setErr] = useState(null);
+  const slug = project.slug;
+  const deployments = Array.isArray(project.deployments) ? project.deployments : [];
+  const latest = deployments.length ? deployments[deployments.length - 1] : null;
+  const liveUrl = project.live_url || latest?.url || "";
+  const manifestPlan = project.deploy_plan?.deployable ? project.deploy_plan : null;
+  const visiblePlan = plan?.plan || manifestPlan;
+  const defaultTarget = visiblePlan?.targets?.[0] || "";
+
+  const deploy = useMutation({
+    mutationFn: () => apiPost("/studio/deploy", { slug, target: defaultTarget }),
+    onSuccess: (result) => {
+      setPlan(result);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (e) => setErr(String(e.message || e)),
+  });
+
+  async function loadPlan() {
+    setErr(null);
+    try {
+      const result = await apiFetch(`/studio/deploy/plan?slug=${encodeURIComponent(slug)}`);
+      setPlan(result);
+    } catch (e) {
+      setErr(String(e.message || e));
+    }
+  }
+
+  return (
+    <div className="flex max-w-[240px] flex-col gap-1">
+      {liveUrl ? (
+        <a
+          href={liveUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="truncate font-mono text-[11px] text-plasma underline hover:text-plasma/70"
+          title={liveUrl}
+        >
+          live ↗
+        </a>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={loadPlan}
+          className="btn-ghost text-plasma/80 hover:text-plasma"
+          title="View deploy plan"
+        >
+          Plan
+        </button>
+        {visiblePlan?.serves_url ? (
+          <button
+            onClick={() => deploy.mutate()}
+            disabled={deploy.isPending || !defaultTarget}
+            className="btn-ghost text-ember/80 hover:text-ember disabled:opacity-50"
+            title="Deploy using the first available target"
+          >
+            {deploy.isPending ? "…" : "Ship"}
+          </button>
+        ) : null}
+      </div>
+      {visiblePlan ? (
+        <div className="font-mono text-[10px] leading-snug text-ash/70">
+          <div className="truncate" title={visiblePlan.command || visiblePlan.notes}>
+            {visiblePlan.kind || "deploy"} · {defaultTarget || "no target"}
+          </div>
+          {visiblePlan.command ? (
+            <div className="truncate text-ash/50" title={visiblePlan.command}>
+              {visiblePlan.command}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {deploy.data?.result?.error ? (
+        <span className="truncate font-mono text-[10px] text-ember" title={deploy.data.result.error}>
+          {deploy.data.result.error}
+        </span>
+      ) : err ? (
+        <span className="truncate font-mono text-[10px] text-ember" title={err}>
+          {err}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export default function Projects({ stream }) {
   const qc = useQueryClient();
   const [confirmSlug, setConfirmSlug] = useState(null);
@@ -608,6 +696,7 @@ export default function Projects({ stream }) {
                   <SortHeader label="Size" sortKey="size_bytes" sort={sort} setSort={setSort} />
                   <SortHeader label="Updated" sortKey="updated_at" sort={sort} setSort={setSort} />
                   <th className="px-4 py-2 font-normal">Serve</th>
+                  <th className="px-4 py-2 font-normal">Ship</th>
                   <th className="px-4 py-2 font-normal">Preview</th>
                   <th className="px-4 py-2 font-normal"></th>
                 </tr>
@@ -680,6 +769,9 @@ export default function Projects({ stream }) {
                             onServe={serve}
                             onStop={stopServe}
                           />
+                        </td>
+                        <td className="px-4 py-2">
+                          <ShipCell project={p} />
                         </td>
                         <td className="px-4 py-2">
                           <div className="flex items-center gap-3">
@@ -773,14 +865,14 @@ export default function Projects({ stream }) {
                       </tr>
                       {isImproving ? (
                         <tr>
-                          <td colSpan={10} className="p-0">
+                          <td colSpan={12} className="p-0">
                             <ImproveInline slug={p.slug} stream={stream} />
                           </td>
                         </tr>
                       ) : null}
                       {isShowingPrompts ? (
                         <tr>
-                          <td colSpan={10} className="p-0">
+                          <td colSpan={12} className="p-0">
                             <PromptsInline slug={p.slug} />
                           </td>
                         </tr>

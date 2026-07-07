@@ -51,6 +51,36 @@ def test_sandbox_hardening_adds_workdir_tmpfs(tmp_path):
     assert "--tmpfs" in cmd and any("/work/.tmp" in c for c in cmd)
 
 
+def test_sandbox_docker_timeout_removes_named_container(tmp_path, monkeypatch):
+    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
+    import skyn3t.security.sandbox as sandbox_mod
+
+    runner = SandboxRunner(settings=_docker_settings())
+    captured = {"cleanup": []}
+
+    async def fake_exec(cmd, *, cwd, timeout, backend):
+        captured["cmd"] = cmd
+        return SandboxResult(124, "", "timeout", backend, 0.0, timed_out=True)
+
+    def fake_run(cmd, **_kwargs):
+        captured["cleanup"].append(cmd)
+
+        class _R:
+            returncode = 0
+        return _R()
+
+    runner._exec = fake_exec  # type: ignore[method-assign]
+    monkeypatch.setattr(sandbox_mod.subprocess, "run", fake_run)
+
+    asyncio.run(runner._run_docker("sleep 30", cwd=tmp_path, timeout=1,
+                                   image=None, stack=None, env={}, network=False))
+
+    cmd = captured["cmd"]
+    name = cmd[cmd.index("--name") + 1]
+    assert name.startswith("skyn3t-")
+    assert ["docker", "rm", "-f", name] in captured["cleanup"]
+
+
 def test_sandbox_subprocess_fallback_warns_about_network(tmp_path):
     from skyn3t.security.sandbox import SandboxRunner
 

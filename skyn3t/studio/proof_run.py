@@ -17,6 +17,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -28,6 +29,7 @@ from skyn3t.npm_utils import (
     mark_npm_install_current,
     npm_build_current,
     npm_env,
+    npm_install_fingerprint,
     npm_install_args,
     npm_install_current,
 )
@@ -1020,6 +1022,7 @@ def extract_error_gaps(
 _NON_SOURCE_DIRS = frozenset({
     ".git", "__pycache__", ".venv", "node_modules", ".next", "dist", "build",
     ".vite", "out", "coverage", ".turbo", ".cache", "vendor", ".svelte-kit",
+    ".skyn3t-pytest",
     # Swift Package Manager build output / caches — not the app's own source.
     ".build", ".swiftpm",
 })
@@ -2820,7 +2823,39 @@ def _run_generated_tests(
     if probe.timed_out or probe.returncode == 127:
         return (False, False, "")
     if probe.returncode != 0:
-        return (False, False, "pytest not installed — tests skipped")
+        if use_container_names:
+            target = "/work/.skyn3t-pytest"
+            host_target = pdir / ".skyn3t-pytest"
+            if not host_target.exists():
+                install = _run_proof_command(
+                    cmd_ctx,
+                    [
+                        py_cmd,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--target",
+                        target,
+                        "pytest",
+                    ],
+                    cwd=pdir,
+                    timeout=120,
+                    env=env,
+                    network=True,
+                )
+                if install.timed_out:
+                    return (False, False, "pytest install timed out — tests skipped")
+                if install.returncode != 0:
+                    out = ((install.stdout or "") + (install.stderr or "")).strip()
+                    return (False, False, (out[-500:] or "pytest install failed — tests skipped"))
+            env["PYTHONPATH"] = f"{target}:{env.get('PYTHONPATH', '.')}"
+            probe = _run_proof_command(
+                cmd_ctx, [py_cmd, "-c", "import pytest"], cwd=pdir, timeout=15, env=env)
+            if probe.returncode != 0:
+                return (False, False, "pytest not installed — tests skipped")
+        else:
+            return (False, False, "pytest not installed — tests skipped")
 
     proc = _run_proof_command(
         cmd_ctx,
@@ -2959,13 +2994,90 @@ _BUILD_PLACEHOLDER_KEYS = (
 )
 
 
-def _node_build_env() -> dict:
+_CONTAINER_HOME = "/work/node_modules/.skyn3t-home"
+_CONTAINER_CACHE_HOME = "/work/node_modules/.skyn3t-cache"
+_CONTAINER_NPM_CACHE = "/work/node_modules/.skyn3t-npm-cache"
+_CONTAINER_NPM_TMP = "/work/node_modules/.skyn3t-tmp"
+
+
+def _node_build_env(*, container: bool = False) -> dict:
     """Build-time env for npm: CI flags + placeholder provider keys so a top-level
     SDK client init doesn't crash the build on a missing key (real key set at serve)."""
     env = npm_env()
+    if container:
+        # Host paths such as /Users/... do not exist inside linux containers.
+        # Keep npm/Next/Rollup cache writes under node_modules so failed installs
+        # can be discarded with the partial dependency tree.
+        env["HOME"] = _CONTAINER_HOME
+        env["XDG_CACHE_HOME"] = _CONTAINER_CACHE_HOME
+        env["npm_config_cache"] = _CONTAINER_NPM_CACHE
+        env["npm_config_tmp"] = _CONTAINER_NPM_TMP
     for k in _BUILD_PLACEHOLDER_KEYS:
         env.setdefault(k, "sk-build-placeholder")
     return env
+
+
+def _node_npm_install_args(npm_cmd: str, action: str = "install", *, container: bool = False) -> list[str]:
+    args = npm_install_args(npm_cmd, action)
+    if not container:
+        return args
+    out: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--cache":
+            skip_next = True
+            continue
+        out.append(arg)
+    out += ["--cache", _CONTAINER_NPM_CACHE]
+    return out
+
+
+def _docker_npm_install_stamp_path(pdir: Path) -> Path:
+    return pdir / "node_modules" / ".skyn3t-docker-install.json"
+
+
+def _node_install_current(pdir: Path, *, container: bool = False) -> bool:
+    if not container:
+        return npm_install_current(pdir)
+    stamp = _docker_npm_install_stamp_path(pdir)
+    if not (pdir / "package.json").is_file() or not (pdir / "node_modules").is_dir():
+        return False
+    try:
+        data = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return data.get("fingerprint") == npm_install_fingerprint(pdir)
+
+
+def _mark_node_install_current(pdir: Path, *, container: bool = False) -> None:
+    if not container:
+        mark_npm_install_current(pdir)
+        return
+    stamp = _docker_npm_install_stamp_path(pdir)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(
+        json.dumps(
+            {
+                "fingerprint": npm_install_fingerprint(pdir),
+                "backend": "docker",
+                "container_os": "linux",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _discard_node_modules(pdir: Path) -> None:
+    try:
+        shutil.rmtree(pdir / "node_modules")
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001 - cleanup must not hide the install failure
+        pass
 
 
 def _run_node_build(
@@ -3007,7 +3119,7 @@ def _run_node_build(
     if build_cmd is None:
         return (False, False, "no build/typecheck script — skipped")
 
-    env = _node_build_env()
+    env = _node_build_env(container=use_container_names)
     npm_cmd = "npm" if use_container_names else str(npm)
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
@@ -3016,10 +3128,10 @@ def _run_node_build(
     # isn't starved into a false timeout.
     install_budget = max(120, int(timeout * 0.6))
     install_summary = "npm install skipped (dependencies current)"
-    if not npm_install_current(pdir):
+    if not _node_install_current(pdir, container=use_container_names):
         inst = _run_proof_command(
             cmd_ctx,
-            npm_install_args(npm_cmd, "install"),
+            _node_npm_install_args(npm_cmd, "install", container=use_container_names),
             cwd=pdir,
             timeout=install_budget,
             env=env,
@@ -3027,16 +3139,18 @@ def _run_node_build(
         )
         if inst.timed_out:
             # A hang/too-slow install is a delivery problem, not a free pass.
+            _discard_node_modules(pdir)
             return (True, False, f"npm install timed out after {install_budget}s")
         if inst.returncode == 127:
             # npm could not even be launched -> environmental, soft-skip.
             return (False, False, "npm install could not be launched — build skipped")
         if inst.returncode != 0:
             out = ((inst.stdout or "") + (inst.stderr or "")).strip()
+            _discard_node_modules(pdir)
             if _npm_install_is_offline(out):
                 return (False, False, "npm install failed (offline registry) — build skipped")
             return (True, False, out[-700:])
-        mark_npm_install_current(pdir)
+        _mark_node_install_current(pdir, container=use_container_names)
         install_summary = "npm install ok"
 
     if npm_build_current(pdir, build_cmd):

@@ -1085,6 +1085,31 @@ async def test_web_deploy_is_token_gated(tmp_path):
     assert "remote deploy is gated" in out["result"]["error"]
 
 
+async def test_web_deploy_records_live_check_when_enabled(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "site"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
+    BuildManifest(slug="site", brief="site", stack="static", verdict="go").save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        deploy_check_enabled=True,
+    ))
+
+    out = await routes.deploy_project(st, "site", target="static")
+
+    assert out["ok"] is True
+    assert out["deploy_check"]["ok"] is True
+    assert out["deploy_check"]["checked"]["url"].startswith("http://127.0.0.1:")
+    man = BuildManifest.load(project)
+    assert man.extra["deploy_check"]["ok"] is True
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "site")
+    assert row["deploy_check"]["ok"] is True
+
+
 async def test_metrics_and_prometheus_render():
     st = _state()
     await st.event_bus.emit(EventType.SYSTEM, source="t", payload={})

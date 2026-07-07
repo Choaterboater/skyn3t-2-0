@@ -214,6 +214,9 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert 'apiFetch(`/studio/deploy/plan?slug=${encodeURIComponent(slug)}`)' in projects
     assert 'apiPost("/studio/deploy", { slug, target: defaultTarget })' in projects
     assert "live ↗" in projects
+    assert "deployCheck" in projects
+    assert "verified" in projects
+    assert "deploy check skipped" in projects
 
 
 def test_workspace_surfaces_selected_project_signals() -> None:

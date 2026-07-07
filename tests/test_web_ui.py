@@ -171,6 +171,10 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert "Projects cockpit" in projects
     assert 'label: "shippable"' in projects
     assert 'label: "wasted"' in projects
+    assert "function ShipCell" in projects
+    assert 'apiFetch(`/studio/deploy/plan?slug=${encodeURIComponent(slug)}`)' in projects
+    assert 'apiPost("/studio/deploy", { slug, target: defaultTarget })' in projects
+    assert "live ↗" in projects
 
 
 def test_workspace_surfaces_selected_project_signals() -> None:

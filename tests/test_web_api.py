@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from skyn3t.config.settings import Settings
 from skyn3t.core.events import Event, EventBus, EventType
+from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.web import app as web_app
 from skyn3t.web import routes
@@ -1008,6 +1010,37 @@ async def test_proposal_capture_and_decide():
     assert any(p["proposal_id"] == "p1" for p in proposals["proposals"])
     decided = await routes.decide_proposal(st, proposal_id="p1", approved=True, reason="ok")
     assert decided["status"] == "approved"
+
+
+async def test_web_deploy_plan_for_project(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "site"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
+    BuildManifest(slug="site", brief="site", stack="static", verdict="go").save(project)
+    st = _state(settings=Settings(projects_dir=projects, data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"))
+
+    out = await routes.deploy_plan_project(st, "site")
+
+    assert out["slug"] == "site"
+    assert out["plan"]["deployable"] is True
+    assert out["plan"]["serves_url"] is True
+    assert "cloudflare-pages" in out["plan"]["targets"]
+
+
+async def test_web_deploy_is_token_gated(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "site"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
+    BuildManifest(slug="site", brief="site", stack="static", verdict="go").save(project)
+    st = _state(settings=Settings(projects_dir=projects, data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"))
+
+    out = await routes.deploy_project(st, "site", target="cloudflare-pages")
+
+    assert out["ok"] is False
+    assert out["target"] == "cloudflare-pages"
+    assert "remote deploy is gated" in out["result"]["error"]
 
 
 async def test_metrics_and_prometheus_render():

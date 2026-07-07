@@ -3,7 +3,9 @@
 Stack detection is deterministic and offline (keyword heuristics over the brief).
 The planner supports an optional *test-first* ordering (P1): when ``test_first``
 is requested or ``settings.best_of_n > 1``, a ``test_author`` stage is placed
-immediately before the ``code`` stage so tests anchor the implementation.
+immediately before the ``code`` stage so tests anchor the implementation. Stacks
+with deterministic scaffold-owned proof suites can opt out of the implicit
+best-of-N insertion while still honoring an explicit ``test_first=True``.
 
 It also produces a *file-level plan checklist* (P2): a deterministic list of the
 files the build is expected to deliver for the detected stack. The checklist is
@@ -20,6 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from skyn3t.studio.stages import StageSpec, default_pipeline, test_author_spec
+
+_SELF_TESTED_STACKS = frozenset({"agent_pack", "mcp", "rag", "workflow"})
 
 # ---- stack detection -----------------------------------------------------
 # Ordered: first matching signature wins. Each entry: (stack, keywords).
@@ -385,6 +389,8 @@ class Planner:
         stack = detect_stack(brief, stack_hint)
         bon = self._resolve_best_of_n(best_of_n)
         tf = self._resolve_test_first(test_first, bon)
+        if test_first is None and stack in _SELF_TESTED_STACKS:
+            tf = False
 
         stages = default_pipeline()
 

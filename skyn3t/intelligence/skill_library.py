@@ -43,6 +43,17 @@ PROMOTE_MIN_USES = 4
 PROMOTE_MIN_RATE = 0.66
 _SCORES_FILENAME = ".skill_scores.json"
 
+_UNIVERSAL_GENERIC_TAGS = frozenset({
+    "quality", "verification", "testing", "ci", "delivery", "security",
+    "smoke-test", "healthcheck", "build-pattern", "reproducibility",
+    "dependencies", "secrets", "docs", "documentation", "packaging",
+})
+
+_DESKTOP_TAGS = frozenset({"desktop", "tauri", "native"})
+_MOBILE_TAGS = frozenset({"mobile", "expo", "react-native", "react_native"})
+_GAME_TAGS = frozenset({"game", "gamedev", "phaser", "arcade", "shmup", "shooter"})
+_CLI_TAGS = frozenset({"cli", "command-line", "commandline"})
+
 # Group equivalent stack vocabularies so a build's detected stack matches skills
 # tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
 _STACK_GROUPS: tuple[frozenset[str], ...] = (
@@ -77,6 +88,19 @@ def _stack_aliases(stack: str) -> frozenset[str]:
         if s in group:
             return group
     return frozenset({s}) if s else frozenset()
+
+
+def _skill_tags_compatible(stack: str, sk_tags: set[str]) -> bool:
+    aliases = _stack_aliases(stack)
+    if sk_tags & _DESKTOP_TAGS and not (aliases & {"desktop", "tauri"}):
+        return False
+    if sk_tags & _MOBILE_TAGS and not (aliases & {"react_native", "mobile", "expo"}):
+        return False
+    if sk_tags & _GAME_TAGS and not (aliases & {"phaser", "game", "arcade"}):
+        return False
+    if sk_tags & _CLI_TAGS and not (aliases & {"python", "python_cli", "cli", "script"}):
+        return False
+    return True
 
 
 @dataclass(slots=True)
@@ -279,6 +303,26 @@ class SkillLibrary:
     def all(self) -> list[Skill]:
         return list(self._skills.values())
 
+    def applies_to(self, skill: Skill, stack: str, tags: list[str] | None = None) -> bool:
+        """Whether a skill is safe to inject for this stack/tag context.
+
+        Generic skills are not a free-for-all: they need either an explicit tag
+        overlap (for design/front-end requests) or a universal build-quality tag.
+        This keeps broad imported docs and wrong-domain repo patterns from
+        crowding out stack-native guidance.
+        """
+        tagset = {t.lower() for t in (tags or [])}
+        aliases = _stack_aliases(stack)
+        sk_stack = (skill.stack or "").strip().lower()
+        sk_tags = {t.lower() for t in skill.tags}
+        if not _skill_tags_compatible(stack, sk_tags):
+            return False
+        if sk_stack in aliases or sk_stack == (stack or "").strip().lower():
+            return True
+        if sk_stack != "generic":
+            return False
+        return bool((tagset & sk_tags) or (_UNIVERSAL_GENERIC_TAGS & sk_tags))
+
     def import_directory(
         self, path: Path | str, *, stack: str = "generic", source: str = "imported"
     ) -> int:
@@ -320,13 +364,17 @@ class SkillLibrary:
         tagset = {t.lower() for t in (tags or [])}
         aliases = _stack_aliases(stack)
 
-        def _match(sk: Skill) -> tuple[int, float]:
-            stack_hit = 1 if (sk.stack in aliases or sk.stack == "generic"
-                              or sk.stack == stack) else 0
+        def _match(sk: Skill) -> tuple[int, int, float]:
+            if not self.applies_to(sk, stack, tags=tags):
+                return (0, 0, sk.score)
+            sk_stack = (sk.stack or "").strip().lower()
+            stack_hit = 3 if (sk_stack in aliases or sk_stack == stack) else 1
             tag_hit = len(tagset & {t.lower() for t in sk.tags})
-            return (stack_hit + tag_hit, sk.score)
+            # When the caller asks for design/front-end tags, tag fit matters most.
+            # Otherwise stack-native skills should beat generic process advice.
+            return ((tag_hit, stack_hit, sk.score) if tagset else (stack_hit, tag_hit, sk.score))
 
-        cands = [s for s in self._skills.values() if _match(s)[0] > 0]
+        cands = [s for s in self._skills.values() if self.applies_to(s, stack, tags=tags)]
         cands.sort(key=_match, reverse=True)
         return cands[:limit]
 
@@ -369,18 +417,19 @@ class SkillLibrary:
         tagset = {t.lower() for t in (tags or [])}
         aliases = _stack_aliases(stack)
 
-        def _match(sk: Skill) -> tuple[int, float]:
+        def _match(sk: Skill) -> tuple[int, int, int, float]:
             sk_tags = {t.lower() for t in sk.tags}
             stage_hit = len(stage_tags & sk_tags)
             if stage_hit <= 0:
-                return (0, sk.score)
-            stack_hit = 1 if (
-                sk.stack in aliases or sk.stack == "generic" or sk.stack == stack
-            ) else 0
+                return (0, 0, 0, sk.score)
+            if not self.applies_to(sk, stack, tags=tags):
+                return (0, 0, 0, sk.score)
+            sk_stack = (sk.stack or "").strip().lower()
+            stack_hit = 3 if (sk_stack in aliases or sk_stack == stack) else 1
             if not stack_hit:
-                return (0, sk.score)
+                return (0, 0, 0, sk.score)
             tag_hit = len(tagset & sk_tags)
-            return (stage_hit + tag_hit + stack_hit, sk.score)
+            return (stage_hit, stack_hit, tag_hit, sk.score)
 
         cands = [s for s in self._skills.values() if _match(s)[0] > 0]
         cands.sort(key=_match, reverse=True)
@@ -490,6 +539,38 @@ _SEED_SKILLS = [
      "src/__init__.py, pyproject.toml with name+version, and at least one real "
      "test under tests/. Code must import and `python -m` run without errors.",
      ["python", "cli"]),
+    ("Static website shape", "static",
+     "Deliver a complete static site, not a placeholder: index.html with real "
+     "sections matching the brief, local CSS/JS assets, accessible headings, "
+     "responsive layout, favicon/metadata, and at least one real interaction or "
+     "form when the brief implies it. No external stock/CDN dependencies; use "
+     "generated /assets paths when provided.", ["static", "html", "frontend", "web"]),
+    ("Phaser playable game shape", "phaser",
+     "Deliver a real Phaser game with src/sim.js pure game logic, src/main.js "
+     "renderer, preload for generated sprites, keyboard/touch controls, win/lose "
+     "state, scoring, restart/pause, and enough entities/levels to be playable. "
+     "Never ship only a counter, flat canvas, or landing page.", ["phaser", "game", "gamedev"]),
+    ("RAG app contract", "rag",
+     "Deliver a runnable retrieval app: ingest endpoint, query/chat endpoints, "
+     "persistent document store, chunking + retrieval, citations/source IDs in "
+     "answers, malformed-input handling, README curl examples, and a tiny UI or "
+     "API docs page. It must retrieve an ingested marker document in proof.",
+     ["rag", "retrieval", "vector", "fastapi"]),
+    ("MCP server contract", "mcp",
+     "Deliver an MCP stdio server with explicit tool schemas, initialize/list/call "
+     "support, read-only safety for inspection tools, structured errors for bad "
+     "arguments, README integration instructions, and tests that exercise each "
+     "tool without requiring network or secrets.", ["mcp", "tools", "stdio"]),
+    ("Agent workflow contract", "workflow",
+     "Deliver a real workflow runner: /trigger or CLI entrypoint, typed input, "
+     "multi-step execution state, retries/timeouts, dry-run mode, webhook/email "
+     "adapters behind env config, structured logs, and tests for success plus "
+     "malformed input. Do not ship a single no-op endpoint.", ["workflow", "automation", "orchestration"]),
+    ("Agent persona pack contract", "agent_pack",
+     "Deliver a structured agent pack: catalog.json plus role markdown files with "
+     "goals, tools, handoff rules, prompt templates, evaluation checklist, and "
+     "example tasks. The pack is an artifact, so completeness is the content "
+     "contract, not a web entrypoint.", ["agent_pack", "agents", "personas"]),
     ("Delivered != empty", "generic",
      "Every delivered project needs a real entrypoint, a README, and a manifest, "
      "and must pass install + build + boot. Never ship a config-puzzle or an "

@@ -52,8 +52,8 @@ def test_sandbox_hardening_adds_workdir_tmpfs(tmp_path):
 
 
 def test_sandbox_docker_timeout_removes_named_container(tmp_path, monkeypatch):
-    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
     import skyn3t.security.sandbox as sandbox_mod
+    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
 
     runner = SandboxRunner(settings=_docker_settings())
     captured = {"cleanup": []}

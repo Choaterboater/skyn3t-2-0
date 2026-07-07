@@ -338,6 +338,7 @@ def test_node_build_uses_node_sandbox_and_network_only_for_install(tmp_path):
 
 def test_proof_command_uses_sandbox_from_inside_running_event_loop(tmp_path):
     import asyncio
+
     import skyn3t.studio.proof_run as proof_mod
 
     calls = []

@@ -29,9 +29,9 @@ from skyn3t.npm_utils import (
     mark_npm_install_current,
     npm_build_current,
     npm_env,
-    npm_install_fingerprint,
     npm_install_args,
     npm_install_current,
+    npm_install_fingerprint,
 )
 
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
@@ -849,7 +849,7 @@ def _safe_requirement_names(pdir: Path) -> list[str]:
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        name = re.split(r"[<>=!~;\[]", line, 1)[0].strip()
+        name = re.split(r"[<>=!~;\[]", line, maxsplit=1)[0].strip()
         if name:
             names.append(name.replace("-", "_").lower())
     return names

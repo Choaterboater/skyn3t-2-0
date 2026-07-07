@@ -768,11 +768,15 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             recall_used = extra.get("recall_used") or []
             stage_skills_used = extra.get("stage_skills_used") or {}
             prompts = extra.get("prompts") or []
+            status = str(m.get("status", "") or "")
+            verdict = str(m.get("verdict", "") or "")
+            if status == "completed" and verdict == "no_go":
+                status = "completed_no_go"
             out.append({
                 "slug": m.get("slug", d.name),
                 "stack": m.get("stack", ""),
-                "status": m.get("status", ""),
-                "verdict": m.get("verdict", ""),
+                "status": status,
+                "verdict": verdict,
                 "score": m.get("score") or 0.0,
                 "created_at": m.get("created_at", ""),
                 "updated_at": m.get("updated_at", ""),

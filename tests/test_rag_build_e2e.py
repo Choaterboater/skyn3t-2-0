@@ -62,8 +62,12 @@ def test_offline_rag_build_end_to_end(tmp_path):
         # The delivery is the runnable scaffold shape, not a web fallback.
         assert "main.py" in outcome.files and "rag_core.py" in outcome.files
         assert "package.json" not in outcome.files
-        # The build verifies end to end.
-        assert outcome.verdict == "go", (outcome.verdict, outcome.status)
+        # The scaffold verifies, but it is still not an implemented brief.
+        assert outcome.verdict == "no_go", (outcome.verdict, outcome.status)
+        assert outcome.status == "completed_no_go"
+        gate = (outcome.manifest.get("extra") or {}).get("scaffold_stub_gate") or {}
+        assert gate.get("triggered") is True
+        assert "shipped the stub" in gate.get("reason", "")
 
         # The rag_check gate RAN (not skipped) against the delivered app and
         # recorded a clean verdict — including the mock-LLM generation phase.

@@ -329,6 +329,26 @@ def test_degraded_proof_caps_success_score(tmp_path):
     assert man.extra["proof_environment_gate"]["degraded"] is True
 
 
+def test_scaffold_stub_proof_blocks_success_verdict(tmp_path):
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="chat with docs", stack="rag")
+    proof = SimpleNamespace(detail={
+        "scaffold_stub": (
+            "delivered tree is essentially the pristine rag scaffold "
+            "(mean 8-word-shingle overlap 1.00 across 3 source file(s), "
+            "no app code added) - the build shipped the stub instead of "
+            "implementing the brief"
+        )
+    })
+
+    score, verdict = r._apply_scaffold_stub_proof_gate(man, proof, 86.0, "go")
+
+    assert verdict == "no_go"
+    assert score == 49.0
+    assert man.extra["scaffold_stub_gate"]["triggered"] is True
+    assert "pristine rag scaffold" in man.extra["scaffold_stub_gate"]["reason"]
+
+
 def test_post_proof_repair_triggers_full_reproof(tmp_path, monkeypatch):
     r = _runner(tmp_path)
     man = BuildManifest(slug="x", brief="game", stack="phaser")

@@ -43,7 +43,11 @@ def test_offline_mcp_build_end_to_end(tmp_path):
         assert outcome.stack == "mcp", outcome.stack
         assert "server.py" in outcome.files and "tools.py" in outcome.files
         assert "package.json" not in outcome.files
-        assert outcome.verdict == "go", (outcome.verdict, outcome.status)
+        assert outcome.verdict == "no_go", (outcome.verdict, outcome.status)
+        assert outcome.status == "completed_no_go"
+        gate = (outcome.manifest.get("extra") or {}).get("scaffold_stub_gate") or {}
+        assert gate.get("triggered") is True
+        assert "shipped the stub" in gate.get("reason", "")
 
         # The gate always records a verdict: a REAL pass with the SDK installed,
         # else a degrade-open skip whose reason names the SDK (never silence,

@@ -768,6 +768,7 @@ class StudioRunner:
                     brief,
                     art_plan=art_plan,
                     game_design=game_design,
+                    asset_pack_roots=[self.settings.data_dir / "asset_packs"],
                 )
                 manifest.extra["asset_foundry"] = foundry
                 extra = {

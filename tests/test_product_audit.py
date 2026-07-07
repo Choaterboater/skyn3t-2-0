@@ -98,6 +98,7 @@ def test_product_audit_excludes_local_agent_worktrees(tmp_path: Path) -> None:
 
 def test_audit_product_cli_writes_explicit_report_paths(monkeypatch, tmp_path: Path) -> None:
     from skyn3t.config import settings as settings_mod
+    from skyn3t.config.settings import REPO_ROOT
 
     settings_mod.get_settings.cache_clear()
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
@@ -126,7 +127,7 @@ def test_audit_product_cli_writes_explicit_report_paths(monkeypatch, tmp_path: P
 
     assert result.exit_code == 0, result.output
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    assert data["repo_state"]["repo_root"] == "skyn3t 2.0"
+    assert data["repo_state"]["repo_root"] == REPO_ROOT.name
     assert md_path.is_file()
     assert json_path.is_file()
     assert "Product audit written" in result.output
@@ -139,6 +140,7 @@ def test_audit_product_cli_writes_explicit_report_paths(monkeypatch, tmp_path: P
 
 def test_audit_product_cli_anchors_repo_root_to_checkout(monkeypatch, tmp_path: Path) -> None:
     from skyn3t.config import settings as settings_mod
+    from skyn3t.config.settings import REPO_ROOT
 
     settings_mod.get_settings.cache_clear()
     outside = tmp_path / "outside"
@@ -170,7 +172,7 @@ def test_audit_product_cli_anchors_repo_root_to_checkout(monkeypatch, tmp_path: 
 
     assert result.exit_code == 0, result.output
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    assert data["repo_state"]["repo_root"] == "skyn3t 2.0"
+    assert data["repo_state"]["repo_root"] == REPO_ROOT.name
     assert str(outside) not in json.dumps(data)
     assert md_path.is_file()
     assert json_path.is_file()

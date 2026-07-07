@@ -1110,6 +1110,31 @@ async def test_web_deploy_records_live_check_when_enabled(tmp_path):
     assert row["deploy_check"]["ok"] is True
 
 
+async def test_list_projects_normalizes_legacy_no_go_status(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "stub"
+    project.mkdir(parents=True)
+    BuildManifest(
+        slug="stub",
+        brief="chat with docs",
+        stack="rag",
+        status="completed",
+        verdict="no_go",
+        score=49.0,
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "stub")
+
+    assert row["status"] == "completed_no_go"
+    assert row["verdict"] == "no_go"
+
+
 async def test_metrics_and_prometheus_render():
     st = _state()
     await st.event_bus.emit(EventType.SYSTEM, source="t", payload={})

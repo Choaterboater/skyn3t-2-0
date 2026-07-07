@@ -45,7 +45,8 @@ def test_offline_agent_pack_build_end_to_end(tmp_path):
         assert "catalog.json" in outcome.files and "pack_tools.py" in outcome.files
         assert any(f.startswith("agents/") for f in outcome.files), outcome.files
         assert "package.json" not in outcome.files
-        assert outcome.verdict == "go", (outcome.verdict, outcome.status)
+        assert outcome.verdict == "no_go", (outcome.verdict, outcome.status)
+        assert outcome.status == "completed_no_go"
 
         proof = (outcome.manifest.get("extra") or {}).get("proof") or {}
         detail = proof.get("detail") or {}
@@ -53,5 +54,8 @@ def test_offline_agent_pack_build_end_to_end(tmp_path):
         assert detail.get("stack_check") == "pass", detail
         # ...and the pack's own deterministic pytest ran and passed.
         assert detail.get("tests") == "passed", detail
+        gate = (outcome.manifest.get("extra") or {}).get("scaffold_stub_gate") or {}
+        assert gate.get("triggered") is True
+        assert "shipped the stub" in gate.get("reason", "")
 
     asyncio.run(run())

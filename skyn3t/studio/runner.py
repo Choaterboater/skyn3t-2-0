@@ -1128,6 +1128,22 @@ class StudioRunner:
         }
         return min(float(final_score), cap)
 
+    def _apply_scaffold_stub_proof_gate(self, manifest, proof, final_score: float, verdict: str):
+        detail = getattr(proof, "detail", None) or {}
+        reason = detail.get("scaffold_stub") if isinstance(detail, dict) else None
+        if not reason:
+            return final_score, verdict
+        verdict = "no_go"
+        final_score = self._clamp_score_to_verdict(final_score, verdict)
+        manifest.score = final_score
+        manifest.extra["scaffold_stub_gate"] = {
+            "triggered": True,
+            "source": "proof_run",
+            "score_cap": 49.0,
+            "reason": str(reason),
+        }
+        return final_score, verdict
+
     def _run_security_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
         if not bool(getattr(self.settings, "security_check_enabled", True)):
             return final_score, verdict
@@ -3853,6 +3869,9 @@ class StudioRunner:
             # re-verification of import resolution against what IT leaves behind.
             # This is what "runs last" actually means.
             verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+            final_score, verdict = self._apply_scaffold_stub_proof_gate(
+                manifest, proof, final_score, verdict
+            )
             final_score = self._apply_degraded_proof_score(
                 manifest, proof, final_score, verdict
             )

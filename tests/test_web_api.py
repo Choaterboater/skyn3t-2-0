@@ -8,6 +8,8 @@ hooks) is always tested.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from skyn3t.config.settings import Settings
@@ -1250,6 +1252,63 @@ async def test_list_projects_normalizes_legacy_stub_backend_success(tmp_path):
     assert row["verdict"] == "no_go"
     assert row["score"] == 49.0
     assert "stub backend" in row["scaffold_stub_gate"]["reason"].lower()
+
+
+async def test_list_projects_reports_serve_capability_for_node_app_without_index(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "remix-app"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text(
+        json.dumps({"scripts": {"dev": "remix vite:dev"}}),
+        encoding="utf-8",
+    )
+    BuildManifest(
+        slug="remix-app",
+        brief="storefront",
+        stack="remix",
+        status="completed",
+        verdict="go",
+        score=80.0,
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "remix-app")
+
+    assert row["has_preview"] is False
+    assert row["has_serve"] is True
+    assert row["serve_kind"] == "node"
+    assert row["serve_reason"] == ""
+
+
+async def test_list_projects_reports_no_serve_for_artifact_only_project(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "persona-pack"
+    project.mkdir(parents=True)
+    BuildManifest(
+        slug="persona-pack",
+        brief="agent persona pack",
+        stack="agent_pack",
+        status="completed_no_go",
+        verdict="no_go",
+        score=49.0,
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "persona-pack")
+
+    assert row["has_serve"] is False
+    assert row["serve_kind"] == ""
+    assert row["serve_reason"] == "no web entrypoint"
 
 
 async def test_metrics_and_prometheus_render():

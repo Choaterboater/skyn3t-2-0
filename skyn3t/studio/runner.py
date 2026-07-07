@@ -1724,7 +1724,8 @@ class StudioRunner:
             log.warning("runner.final_consistency_repairs_failed", error=str(exc))
             final_repairs = {}
         changed_keys = ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
-                        "imports_scaffolded", "use_client_added")
+                        "imports_scaffolded", "use_client_added",
+                        "phaser_entrypoint_repaired")
         if any(final_repairs.get(k) for k in changed_keys):
             manifest.files = list_files(project_dir)
             manifest.extra["final_consistency_repairs"] = {
@@ -3509,6 +3510,10 @@ class StudioRunner:
             if repairs["use_client_added"]:
                 manifest.extra["use_client_added"] = repairs["use_client_added"]
                 log.info("runner.use_client_added", files=repairs["use_client_added"])
+            if repairs.get("phaser_entrypoint_repaired"):
+                manifest.extra["phaser_entrypoint_repaired"] = repairs["phaser_entrypoint_repaired"]
+                log.info("runner.phaser_entrypoint_repaired",
+                         files=repairs["phaser_entrypoint_repaired"])
             self._record_contrast_issues(manifest, repairs)
             if isinstance(manifest.extra.get("asset_foundry"), dict):
                 try:
@@ -3570,7 +3575,8 @@ class StudioRunner:
                 recovery_repairs = self._deterministic_repairs(project_dir, plan)
                 if any(recovery_repairs.get(k) for k in
                        ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
-                        "imports_scaffolded", "use_client_added")):
+                        "imports_scaffolded", "use_client_added",
+                        "phaser_entrypoint_repaired")):
                     manifest.files = list_files(project_dir)
                     proof = await asyncio.to_thread(
                         proof_run, project_dir, checklist=plan.checklist,

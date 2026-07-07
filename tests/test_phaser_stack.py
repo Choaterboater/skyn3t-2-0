@@ -201,6 +201,35 @@ def test_scaffold_phaser_has_no_react_confusion():
     assert "react-dom" not in pkg.get("dependencies", {})
 
 
+def test_phaser_contract_rejects_react_site_shell():
+    # The agent can produce a large React marketing/site shell while the selected
+    # stack is still "phaser". Size alone must not make that deliverable: the
+    # contract has to require a real Phaser game entrypoint.
+    from skyn3t.agents.code_agent import CodeAgent
+
+    files = {
+        "package.json": json.dumps({
+            "dependencies": {
+                "react": "^19.0.0",
+                "react-dom": "^19.0.0",
+                "react-router-dom": "^7.0.0",
+                "phaser": "^3.90.0",
+            },
+            "devDependencies": {"vite": "^7.0.0"},
+        }),
+        "index.html": '<div id="root"></div><script type="module" src="/src/main.jsx"></script>',
+        "src/main.js": "export const stack = 'phaser';\n",
+        "src/main.jsx": "import React from 'react';\nimport { createRoot } from 'react-dom/client';\n",
+        "src/App.jsx": "import { Routes, Route } from 'react-router-dom';\nexport default function App(){return <Routes />}\n",
+        "src/pages/Play.jsx": "export default function Play(){return <main>Coming soon</main>}\n",
+        "src/sim.js": "export function createState(){return {}}\nexport function step(s){return s}\nexport function isWin(){return false}\nexport function isLose(){return false}\n",
+    }
+
+    gap = CodeAgent._agentic_contract_gap("phaser", files)
+    assert gap
+    assert "Phaser game" in gap
+
+
 # ---- 4. proof-run handles phaser as a node stack -------------------------
 def test_proof_run_passes_phaser_scaffold(tmp_path):
     files = scaffold_for("phaser", "demo", "a browser game")

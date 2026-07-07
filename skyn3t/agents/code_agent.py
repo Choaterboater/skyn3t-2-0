@@ -1293,8 +1293,34 @@ class CodeAgent(BaseAgent):
         preserves the pure simulation split; a large scene-only game is still
         unverifiable and should get another codegen attempt before fallback.
         """
-        if (stack or "").lower() == "phaser" and "src/sim.js" not in files:
-            return "missing pure src/sim.js simulation core"
+        if (stack or "").lower() == "phaser":
+            if "src/sim.js" not in files:
+                return "missing pure src/sim.js simulation core"
+
+            source = "\n".join(
+                content for rel, content in files.items()
+                if rel.rsplit(".", 1)[-1].lower() in {"js", "jsx", "ts", "tsx"}
+            )
+            has_phaser_boot = "new Phaser.Game" in source
+            has_scene_shape = bool(
+                re.search(r"\bPhaser\.Scene\b|extends\s+Phaser\.Scene\b", source)
+            )
+            looks_like_react_shell = bool(
+                re.search(
+                    r"react-router-dom|ReactDOM\.createRoot|createRoot\(|<Routes\b|"
+                    r"src/App\.(jsx|tsx)|src/pages/",
+                    "\n".join(f"{rel}\n{content}" for rel, content in files.items()),
+                )
+            )
+            if looks_like_react_shell and not has_phaser_boot:
+                return (
+                    "Phaser game contract violated: output looks like a React "
+                    "website shell and lacks new Phaser.Game"
+                )
+            if not has_phaser_boot:
+                return "missing Phaser game boot: new Phaser.Game"
+            if not has_scene_shape:
+                return "missing Phaser game scene: Phaser.Scene"
         return ""
 
     def _agentic_retry_prompt(
@@ -1368,6 +1394,24 @@ class CodeAgent(BaseAgent):
                 return True
         return False
 
+    @staticmethod
+    def _phaser_entrypoint_intact(html: str, files: dict[str, str]) -> bool:
+        """True when ``index.html`` loads the Phaser boot module, not merely any
+        existing JS/JSX file. A stale React shell can have a valid
+        ``/src/main.jsx`` module while the real game lives dead in
+        ``/src/main.js``."""
+        for m in re.finditer(
+            r'<script\b[^>]*\btype=["\']module["\'][^>]*\bsrc=["\']([^"\']+)["\']',
+            html, re.IGNORECASE,
+        ):
+            src = m.group(1).split("?")[0].lstrip("/")
+            if src.startswith("./"):
+                src = src[2:]
+            entry = files.get(src)
+            if entry is not None and "new Phaser.Game" in entry:
+                return True
+        return False
+
     def _repair_html_entrypoint(
         self, worktree: Path, files: dict[str, str], stack: str, scaffold: dict[str, str]
     ) -> dict[str, str]:
@@ -1385,9 +1429,14 @@ class CodeAgent(BaseAgent):
         scaffold_html = scaffold.get("index.html")
         if not html or not scaffold_html:
             return files  # not an HTML stack / nothing to restore
-        if self._html_entrypoint_intact(html, files):
+        intact = (
+            self._phaser_entrypoint_intact
+            if (stack or "").lower() == "phaser"
+            else self._html_entrypoint_intact
+        )
+        if intact(html, files):
             return files  # delivered index.html already loads a real entrypoint
-        if not self._html_entrypoint_intact(scaffold_html, files):
+        if not intact(scaffold_html, files):
             return files  # scaffold entrypoint absent (renamed) -> can't safely repair
         (Path(worktree) / "index.html").write_text(scaffold_html, encoding="utf-8")
         files = dict(files)

@@ -561,7 +561,7 @@ class StudioRunner:
             relevant = self.skills.relevant(stack, tags=tags, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
             advice = self.skills.inject(stack, tags=tags, limit=limit)
-            return self._augment_semantic_skills(advice, slugs, brief)
+            return self._augment_semantic_skills(advice, slugs, brief, stack, tags)
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
             return "", []
@@ -580,8 +580,14 @@ class StudioRunner:
             self._skill_embedder_cached = emb
         return emb or None
 
-    def _augment_semantic_skills(self, advice: str, slugs: list[str],
-                                 brief: str) -> tuple[str, list[str]]:
+    def _augment_semantic_skills(
+        self,
+        advice: str,
+        slugs: list[str],
+        brief: str,
+        stack: str,
+        tags: list[str] | None,
+    ) -> tuple[str, list[str]]:
         """Additively merge brief-relevant skills the keyword/tag path missed.
         Best-effort — never raises, never drops the keyword result."""
         if not brief:
@@ -602,6 +608,9 @@ class StudioRunner:
                     continue
                 sk = skills.get(sl)
                 if sk is None:
+                    continue
+                applies = getattr(skills, "applies_to", None)
+                if applies is not None and not applies(sk, stack, tags=tags):
                     continue
                 slugs.append(sl)
                 title = getattr(sk, "title", sl)

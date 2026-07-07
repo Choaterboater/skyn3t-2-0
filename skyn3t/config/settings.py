@@ -449,7 +449,8 @@ class Settings(BaseSettings):
     # Reliability ratchet (the flywheel's decision brain): keep a proposed
     # tuning/prompt change only if a bench run measurably raises the go-rate (no
     # aggregate OR per-app-type regression), else revert. Opt-in (default off) —
-    # running it does real builds (cost/time); it's a manual `cortex ratchet`.
+    # running it does real builds (cost/time). When enabled, Cortex routes
+    # auto-applyable tuning through it; `cortex ratchet` can also run it manually.
     reliability_ratchet_enabled: bool = False
 
     # ---- Sandbox ---------------------------------------------------------

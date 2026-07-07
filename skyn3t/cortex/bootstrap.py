@@ -44,6 +44,96 @@ except Exception:  # pragma: no cover - logging is best-effort
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.75
 
 
+def _proposal_tuning_overrides(prop: Proposal) -> dict[str, Any]:
+    """Extract the persistable Settings overrides from a tuning proposal."""
+    from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING
+
+    payload = prop.payload or {}
+    applied: dict[str, Any] = {}
+    if "setting" in payload:
+        applied[str(payload["setting"])] = payload.get("value")
+    for key, value in (payload.get("overrides") or {}).items():
+        applied[str(key)] = value
+    return {key: value for key, value in applied.items() if key in PERSISTABLE_TUNING}
+
+
+def _set_live_overrides(settings: Settings, overrides: dict[str, Any]) -> None:
+    fields = getattr(type(settings), "model_fields", {}) or {}
+    for key, value in overrides.items():
+        if key not in fields:
+            continue
+        try:
+            setattr(settings, key, value)
+        except Exception:  # noqa: BLE001 - bad tuning is data; the ratchet can reject it
+            continue
+
+
+def _make_default_ratchet_evaluator(
+    event_bus: EventBus,
+    settings: Settings,
+    orchestrator: Any | None,
+    memory: Any | None,
+    rag: Any | None,
+    skills: Any | None,
+) -> Callable[[Proposal], Awaitable[dict[str, Any]]] | None:
+    if orchestrator is None:
+        return None
+
+    async def evaluate(prop: Proposal) -> dict[str, Any]:
+        overrides = _proposal_tuning_overrides(prop)
+        if not overrides:
+            return {
+                "kept": False,
+                "reasons": ["tuning proposal had no persistable ratchet-safe settings"],
+            }
+
+        from skyn3t.config.settings import get_settings
+        from skyn3t.cortex.ratchet import evaluate_change, restore_overrides, snapshot_overrides
+        from skyn3t.cortex.tuning_store import persist_overrides
+
+        data_dir = settings.data_dir
+        snapshot = snapshot_overrides(data_dir)
+        had_live = {key: hasattr(settings, key) for key in overrides}
+        live_before = {key: getattr(settings, key, None) for key in overrides}
+
+        def apply_change() -> None:
+            persist_overrides(data_dir, overrides)
+            _set_live_overrides(settings, overrides)
+            get_settings.cache_clear()
+
+        def revert_change() -> None:
+            restore_overrides(data_dir, snapshot)
+            restore = {key: live_before[key] for key, had in had_live.items() if had}
+            _set_live_overrides(settings, restore)
+            get_settings.cache_clear()
+
+        def make_build_fn():
+            async def build_fn(case: Any) -> Any:
+                from skyn3t.studio.runner import StudioRunner
+
+                runner = StudioRunner(
+                    event_bus,
+                    orchestrator,
+                    settings=settings,
+                    memory=memory,
+                    rag=rag,
+                    skills=skills,
+                )
+                extra = {"stack": case.stack} if getattr(case, "stack", "") else {}
+                return await runner.start(case.brief, slug=None, extra=extra)
+
+            return build_fn
+
+        return await evaluate_change(
+            apply_change=apply_change,
+            revert_change=revert_change,
+            make_build_fn=make_build_fn,
+            label=f"ratchet-{prop.id[:8]}",
+        )
+
+    return evaluate
+
+
 class Cortex:
     """Facade over the proposal store + triage + apply handlers.
 
@@ -301,6 +391,10 @@ def build_cortex(
     optional deps in any single component never block the others.
     """
     settings = settings or get_settings()
+    if ratchet_evaluator is None and getattr(settings, "reliability_ratchet_enabled", False):
+        ratchet_evaluator = _make_default_ratchet_evaluator(
+            event_bus, settings, orchestrator, memory, rag, skills
+        )
     # Pass the live orchestrator agents so approved PROMPT proposals can write
     # their evolved instruction onto the matching agent (closes the prompt loop).
     agents = orchestrator.agents if orchestrator is not None else None

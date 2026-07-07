@@ -1128,6 +1128,126 @@ class StudioRunner:
         }
         return min(float(final_score), cap)
 
+    @staticmethod
+    def _shape_final_score(manifest, proof, final_score: float, verdict: str) -> float:
+        """Turn hard pass/fail scoring into a more informative final score.
+
+        Safety gates still own the verdict: no_go stays capped below 50, degraded
+        proof stays capped by ``_apply_degraded_proof_score``. This pass uses
+        evidence already collected during the run to avoid the old score collapse
+        where most rows landed exactly on 49/74/100.
+        """
+        score = float(final_score)
+        extra = getattr(manifest, "extra", {}) if manifest is not None else {}
+        extra = extra if isinstance(extra, dict) else {}
+        reasons: list[str] = []
+
+        def cap(value: float, reason: str) -> None:
+            nonlocal score
+            value = float(value)
+            if score > value:
+                score = value
+                reasons.append(reason)
+
+        def gate_ok(name: str) -> bool | None:
+            data = extra.get(name)
+            if not isinstance(data, dict):
+                return None
+            if data.get("skipped") is True:
+                return None
+            if "passed" in data:
+                return bool(data.get("passed"))
+            if "ok" in data:
+                return bool(data.get("ok"))
+            return None
+
+        proof_detail = getattr(proof, "detail", None) or {}
+        proof_detail = proof_detail if isinstance(proof_detail, dict) else {}
+        raw_proof_passed = getattr(proof, "passed", None)
+        env = proof_detail.get("proof_environment")
+        env = env if isinstance(env, dict) else {}
+        raw_files_substantive = getattr(proof, "files_substantive", None)
+        raw_files_total = getattr(proof, "files_total", None)
+        file_counts_known = raw_files_substantive is not None or raw_files_total is not None
+        files_substantive = int(raw_files_substantive or 0)
+        files_total = int(raw_files_total or 0)
+        largest = int(extra.get("largest_source_bytes") or 0)
+
+        if verdict == "go":
+            cap(97.0, "reserve perfect scores for exceptional evidence")
+            degraded_reasons = list(env.get("degraded_reasons") or []) if env.get("degraded") else []
+            if env.get("degraded") is True:
+                # The degraded proof cap is a maximum, not a bucket. More degraded
+                # reasons shave the ceiling so these do not all land exactly on 74.
+                degraded_cap = float(extra.get("proof_environment_gate", {}).get("score_cap", 74.0))
+                cap(max(60.0, degraded_cap - max(2.0, min(10.0, 2.0 * len(degraded_reasons or [1])))),
+                    "degraded proof environment")
+            if file_counts_known and files_substantive < 3:
+                cap(72.0 + files_substantive * 5.0, "thin substantive file count")
+            elif file_counts_known and files_substantive < 8:
+                cap(86.0 + files_substantive, "modest substantive file count")
+            if file_counts_known and files_total and files_total < 8:
+                cap(88.0 + min(files_total, 4), "small delivered tree")
+            if largest and largest < 3500:
+                cap(88.0, "largest source file is small")
+            if str(extra.get("llm_backend", "")).lower() == "stub":
+                cap(68.0, "stub backend")
+            if isinstance(extra.get("prompts"), list) and not extra.get("prompts"):
+                cap(92.0, "no captured model prompts")
+            liveness = extra.get("liveness_effective_health", extra.get("liveness_health"))
+            if isinstance(liveness, (int, float)):
+                cap(70.0 + 27.0 * max(0.0, min(1.0, float(liveness))), "liveness health")
+            visual = extra.get("liveness_visual_health")
+            if isinstance(visual, (int, float)):
+                cap(70.0 + 25.0 * max(0.0, min(1.0, float(visual))), "visual liveness health")
+            if gate_ok("headless_gate") is False:
+                cap(80.0, "headless gameplay gate failed")
+            if gate_ok("qa_playtest") is False:
+                cap(78.0, "browser playtest failed")
+            if gate_ok("game_visual") is False:
+                cap(82.0, "game visual check failed")
+            if gate_ok("security_check") is False:
+                cap(79.0, "security check failed")
+            if gate_ok("web_polish") is False:
+                cap(86.0, "web polish check failed")
+            if proof_detail.get("build") == "skipped":
+                cap(90.0, "build proof skipped")
+            if proof_detail.get("tests") == "skipped":
+                cap(93.0, "tests skipped")
+        else:
+            cap(49.0, "no_go verdict")
+            if raw_proof_passed is False:
+                cap(max(12.0, min(44.0, float(getattr(proof, "score", 0.0) or 0.0) * 0.44)),
+                    "proof failed")
+            if file_counts_known and files_substantive <= 0:
+                cap(15.0, "no substantive files")
+            elif file_counts_known and files_substantive < 3:
+                cap(28.0 + files_substantive * 4.0, "thin substantive file count")
+            if extra.get("scaffold_stub_gate") or proof_detail.get("scaffold_stub"):
+                cap(35.0, "scaffold/starter stub")
+            if extra.get("code_degraded") or extra.get("code_degraded_reason"):
+                cap(37.0, "code generation degraded")
+            if extra.get("intent_gate"):
+                cap(42.0, "intent gate failed")
+            if extra.get("liveness_gate"):
+                cap(38.0, "liveness gate failed")
+            if extra.get("security_gate"):
+                cap(30.0, "security gate failed")
+            if extra.get("web_polish_gate"):
+                cap(44.0, "web polish gate failed")
+            if str(extra.get("llm_backend", "")).lower() == "stub":
+                cap(34.0, "stub backend")
+
+        shaped = round(max(0.0, min(100.0, score)), 2)
+        if shaped != float(final_score):
+            extra["final_score_shape"] = {
+                "input": float(final_score),
+                "output": shaped,
+                "verdict": verdict,
+                "reasons": reasons[:8],
+            }
+        return shaped
+
     def _apply_scaffold_stub_proof_gate(self, manifest, proof, final_score: float, verdict: str):
         detail = getattr(proof, "detail", None) or {}
         reason = detail.get("scaffold_stub") if isinstance(detail, dict) else None
@@ -3380,6 +3500,22 @@ class StudioRunner:
                 manifest.extra["use_client_added"] = repairs["use_client_added"]
                 log.info("runner.use_client_added", files=repairs["use_client_added"])
             self._record_contrast_issues(manifest, repairs)
+            if isinstance(manifest.extra.get("asset_foundry"), dict):
+                try:
+                    from skyn3t.studio.assets import apply_web_asset_foundry
+
+                    web_assets = apply_web_asset_foundry(
+                        project_dir, manifest.extra["asset_foundry"]
+                    )
+                    manifest.extra["web_assets_applied"] = web_assets
+                    if web_assets.get("changed"):
+                        manifest.files = list_files(project_dir)
+                        log.info(
+                            "runner.web_assets_applied",
+                            files=web_assets.get("files") or [],
+                        )
+                except Exception as exc:  # noqa: BLE001 - visual asset wiring must not break builds
+                    log.warning("runner.web_assets_apply_failed", error=str(exc)[:160])
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous
@@ -3875,6 +4011,7 @@ class StudioRunner:
             final_score = self._apply_degraded_proof_score(
                 manifest, proof, final_score, verdict
             )
+            final_score = self._shape_final_score(manifest, proof, final_score, verdict)
 
             # Verdict is now fully settled (post-liveness): a no_go must not read
             # like a success. Clamp before the score feeds lessons + _finalize.

@@ -14,9 +14,11 @@ from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.assets import (
     _extract_subjects,
     _wants_images,
+    apply_web_asset_foundry,
     asset_gen_enabled,
     asset_subject_relevant,
     filter_assets_for_brief,
+    generate_offline_web_assets,
     generate_assets,
 )
 from skyn3t.studio.planner import Planner
@@ -283,6 +285,44 @@ async def test_runner_writes_offline_web_asset_foundry_for_ui_stack(tmp_path):
     assert (tmp_path / "public" / "assets" / "og.png").is_file()
     assert (tmp_path / "public" / "assets" / "favicon.png").is_file()
     assert out["asset_foundry"]["selected"]["web/hero"]["path"] == "/assets/hero.png"
+
+
+def test_offline_web_assets_use_root_assets_for_static_html(tmp_path):
+    foundry = generate_offline_web_assets(
+        tmp_path,
+        "a neighborhood bakery landing page",
+        stack="static",
+    )
+
+    assert foundry["source"] == "offline"
+    assert (tmp_path / "assets" / "hero.png").is_file()
+    assert (tmp_path / "assets" / "favicon.png").is_file()
+    assert not (tmp_path / "public" / "assets" / "hero.png").exists()
+    assert foundry["selected"]["web/hero"]["path"] == "/assets/hero.png"
+
+
+def test_apply_web_asset_foundry_wires_html_when_codegen_ignored_assets(tmp_path):
+    foundry = generate_offline_web_assets(
+        tmp_path,
+        "a neighborhood bakery landing page",
+        stack="static",
+    )
+    (tmp_path / "index.html").write_text(
+        "<!doctype html><html><head><title>Bakery</title></head>"
+        "<body><main><h1>Bakery</h1></main></body></html>",
+        encoding="utf-8",
+    )
+
+    out = apply_web_asset_foundry(tmp_path, foundry)
+
+    html = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert out["changed"] is True
+    assert out["hero_applied"] is True
+    assert out["favicon_applied"] is True
+    assert out["og_applied"] is True
+    assert '<img src="/assets/hero.png"' in html
+    assert '<link rel="icon" href="/assets/favicon.png">' in html
+    assert '<meta property="og:image" content="/assets/og.png">' in html
 
 
 async def test_runner_asset_step_honors_per_build_asset_gen_override(tmp_path, monkeypatch):

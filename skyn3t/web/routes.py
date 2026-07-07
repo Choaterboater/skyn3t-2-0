@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -762,6 +763,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
     from skyn3t.studio.cleanup import _dir_size, _load_manifest
     from skyn3t.studio.app_runner import build_run_spec
     from skyn3t.studio.proof_run import detect_offline_starter_stub
+    from skyn3t.studio.runner import StudioRunner
     pdir = Path(state.settings.projects_dir)
     out: list[dict[str, Any]] = []
     if pdir.is_dir():
@@ -815,6 +817,30 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 score = min(float(score), 49.0)
             elif status == "completed" and verdict == "no_go":
                 status = "completed_no_go"
+            display_extra = dict(extra)
+            if scaffold_stub_gate:
+                display_extra["scaffold_stub_gate"] = scaffold_stub_gate
+            proof_dict = display_extra.get("proof") if isinstance(display_extra, dict) else None
+            proof_dict = proof_dict if isinstance(proof_dict, dict) else {}
+            try:
+                score = StudioRunner._shape_final_score(
+                    SimpleNamespace(extra=display_extra),
+                    SimpleNamespace(
+                        passed=proof_dict.get("passed") if "passed" in proof_dict else None,
+                        score=float(proof_dict.get("score", score) or 0.0),
+                        files_total=proof_dict.get("files_total"),
+                        files_substantive=proof_dict.get("files_substantive"),
+                        detail=proof_dict.get("detail") or {},
+                    ),
+                    float(score),
+                    verdict or "no_go",
+                )
+            except Exception as exc:  # noqa: BLE001 - score display must never break listing
+                log.warning(
+                    "project_score_shape_error",
+                    slug=m.get("slug", d.name),
+                    error=str(exc)[:200],
+                )
             serve_kind = ""
             serve_reason = "no web entrypoint"
             try:

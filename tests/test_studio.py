@@ -308,6 +308,24 @@ def test_final_build_status_marks_no_go_distinctly():
     assert _final_build_status(False, "no_go") == "failed"
 
 
+def test_studio_runner_wires_security_and_self_healing(tmp_path):
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        approval_gates=False,
+    )
+    bus = EventBus()
+    orch = Orchestrator(bus)
+    runner = StudioRunner(bus, orch, settings=settings, memory=None)
+
+    assert runner.audit_log is not None
+    assert runner.permission_manager is not None
+    assert runner.permission_manager.audit_log is runner.audit_log
+    assert runner.approval_gate.audit_log is runner.audit_log
+    assert getattr(orch, "_self_healing", None) is not None
+
+
 def test_studio_runner_end_to_end_offline(tmp_path):
     async def run():
         settings = Settings(

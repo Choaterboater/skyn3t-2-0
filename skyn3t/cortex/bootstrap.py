@@ -90,6 +90,7 @@ def _make_default_ratchet_evaluator(
         from skyn3t.config.settings import get_settings
         from skyn3t.cortex.ratchet import evaluate_change, restore_overrides, snapshot_overrides
         from skyn3t.cortex.tuning_store import persist_overrides
+        from skyn3t.studio.bench import all_cases
 
         data_dir = settings.data_dir
         snapshot = snapshot_overrides(data_dir)
@@ -128,6 +129,7 @@ def _make_default_ratchet_evaluator(
             apply_change=apply_change,
             revert_change=revert_change,
             make_build_fn=make_build_fn,
+            cases=all_cases(data_dir),
             label=f"ratchet-{prop.id[:8]}",
         )
 
@@ -230,6 +232,8 @@ class Cortex:
         """Return one of: 'apply', 'gate', 'hold'."""
         gates_on = self.settings.approval_gates
         is_gated_type = prop.type in GATED_TYPES
+        if gates_on and is_gated_type and self._can_auto_ratchet_gated(prop):
+            return "apply"
         if gates_on and (is_gated_type or not prop.safe):
             return "gate"
         if (
@@ -243,7 +247,25 @@ class Cortex:
 
     def _should_ratchet(self, prop: Proposal) -> bool:
         return (
-            prop.type is ProposalType.TUNING
+            (prop.type is ProposalType.TUNING or self._can_auto_ratchet_gated(prop))
+            and bool(getattr(self.settings, "reliability_ratchet_enabled", False))
+            and self.ratchet_evaluator is not None
+        )
+
+    def _can_auto_ratchet_gated(self, prop: Proposal) -> bool:
+        if prop.type not in GATED_TYPES:
+            return False
+        payload = prop.payload or {}
+        proven_safe = bool(
+            payload.get("proven_safe")
+            or payload.get("ratchet_safe")
+            or payload.get("proof_passed")
+        )
+        return (
+            proven_safe
+            and prop.safe
+            and prop.confidence >= self.auto_approve_threshold
+            and bool(getattr(self.settings, "cortex_auto_approve_safe", False))
             and bool(getattr(self.settings, "reliability_ratchet_enabled", False))
             and self.ratchet_evaluator is not None
         )

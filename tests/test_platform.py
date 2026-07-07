@@ -101,6 +101,23 @@ def test_permissions_check_writes_audit_record(tmp_path):
     assert records[-1]["detail"]["permission_action"] == "delete_path"
 
 
+def test_approval_gate_writes_audit_record(tmp_path):
+    from skyn3t.security.audit import AuditLog
+    from skyn3t.studio.approval_gate import ApprovalGate
+
+    audit = AuditLog(path=tmp_path / "audit.jsonl")
+    gate = ApprovalGate(enabled=True, auto_approve=True, audit_log=audit)
+
+    approval = gate.request("build-1", "deploy", {"dangerous": True})
+
+    records = audit.read()
+    assert approval.decision.value == "approved"
+    assert records
+    assert records[-1]["action"] == "approval"
+    assert records[-1]["outcome"] == "approved"
+    assert records[-1]["detail"]["stage"] == "deploy"
+
+
 # ---- security: sandbox ---------------------------------------------------
 def test_sandbox_runs_offline():
     from skyn3t.security.sandbox import SandboxRunner, available_stacks

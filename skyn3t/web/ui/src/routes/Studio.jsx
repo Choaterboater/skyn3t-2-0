@@ -9,6 +9,7 @@ import {
   Pill,
   Empty,
   SignalGrid,
+  ErrorText,
   verdictTone,
 } from "../components/ui.jsx";
 import {
@@ -1035,9 +1036,9 @@ export default function Studio({ stream }) {
               </button>
             </form>
             {submit.isError ? (
-              <p className="mt-3 font-mono text-xs text-ember">
+              <ErrorText className="mt-3 max-h-28">
                 {String(submit.error.message)}
-              </p>
+              </ErrorText>
             ) : null}
 
             <div className="mt-3 border-t border-hairline pt-3">
@@ -1325,14 +1326,14 @@ export default function Studio({ stream }) {
               </div>
             </div>
             {fanoutMut.isError ? (
-              <p className="mt-2 font-mono text-[11px] text-ember">
+              <ErrorText className="mt-2 max-h-24 text-[11px]">
                 {String(fanoutMut.error.message)}
-              </p>
+              </ErrorText>
             ) : null}
             {fanoutMut.data && fanoutMut.data.accepted === false ? (
-              <p className="mt-2 font-mono text-[11px] text-ember">
+              <ErrorText className="mt-2 max-h-24 text-[11px]">
                 {fanoutMut.data.reason || "fan-out unavailable"}
-              </p>
+              </ErrorText>
             ) : null}
           </div>
           </Panel>
@@ -1407,9 +1408,9 @@ export default function Studio({ stream }) {
                 </div>
               ) : null}
               {clearRoutingLocks.isError ? (
-                <div className="mt-1 break-words text-[9px] text-ember">
+                <ErrorText className="mt-1 max-h-20 text-[9px]">
                   {String(clearRoutingLocks.error?.message || clearRoutingLocks.error)}
-                </div>
+                </ErrorText>
               ) : null}
               <div className="mt-1 text-[9px] text-ash/80">{routingPolicy}</div>
             </div>
@@ -1578,24 +1579,24 @@ export default function Studio({ stream }) {
           }
         />
         {approve.isError ? (
-          <p className="px-4 py-3 font-mono text-xs text-ember">
+          <ErrorText className="mx-4 my-3 max-h-24">
             {String(approve.error?.message || approve.error)}
-          </p>
+          </ErrorText>
         ) : null}
         {cancelBuild.isError ? (
-          <p className="px-4 py-3 font-mono text-xs text-ember">
+          <ErrorText className="mx-4 my-3 max-h-24">
             {String(cancelBuild.error?.message || cancelBuild.error)}
-          </p>
+          </ErrorText>
         ) : null}
         {cleanupBuild.isError ? (
-          <p className="px-4 py-3 font-mono text-xs text-ember">
+          <ErrorText className="mx-4 my-3 max-h-24">
             {String(cleanupBuild.error?.message || cleanupBuild.error)}
-          </p>
+          </ErrorText>
         ) : null}
         {cleanupCompletedBuilds.isError ? (
-          <p className="px-4 py-3 font-mono text-xs text-ember">
+          <ErrorText className="mx-4 my-3 max-h-24">
             {String(cleanupCompletedBuilds.error?.message || cleanupCompletedBuilds.error)}
-          </p>
+          </ErrorText>
         ) : null}
         {recentBuilds.length === 0 ? (
           <Empty icon="⬡">No builds yet. Submit a brief to fire the forge.</Empty>

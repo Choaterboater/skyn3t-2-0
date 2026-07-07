@@ -30,6 +30,7 @@ GAME_STACKS = frozenset({"phaser"})
 # and always have API/interface-design concerns; the design skills are advisory.
 WEB_STACKS = frozenset({
     "react", "react_vite", "nextjs", "next", "astro", "remix",
+    "vue", "vuejs", "sveltekit", "svelte", "react_ts", "typescript",
     "static", "static_html", "fastapi", "node_express", "express",
     "tauri", "desktop",  # Tauri desktop: frontend is a Vite/React web app
     "phaser",  # Phaser 3 game: a Vite-built web app served (canvas) at '/'
@@ -47,7 +48,8 @@ DESIGN_STACKS = WEB_STACKS | frozenset({"react_native"})
 # legitimately 404, so we never falsely no_go a working API.
 UI_WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next",
-    "astro", "remix", "static", "static_html",
+    "astro", "remix", "vue", "vuejs", "sveltekit", "svelte",
+    "react_ts", "typescript", "static", "static_html",
     "tauri", "desktop", "phaser",
 })
 
@@ -82,6 +84,7 @@ CLI_STACKS = frozenset({"python", "cli", "python_cli"})
 # hosted URL to check.
 DEPLOYABLE_URL_STACKS = frozenset({
     "react", "react_vite", "nextjs", "next", "astro", "remix",
+    "vue", "vuejs", "sveltekit", "svelte", "react_ts", "typescript",
     "static", "static_html", "phaser",
     "fastapi", "node_express", "express", "rag", "workflow",
 })

@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from skyn3t.security.audit import AuditLog
+
 
 class GateDecision(StrEnum):
     PENDING = "pending"
@@ -60,12 +62,14 @@ class ApprovalGate:
         enabled: bool = True,
         auto_approve: bool = False,
         default_timeout: float = 0.0,
+        audit_log: AuditLog | None = None,
     ) -> None:
         # enabled=False -> gates never block (decisions resolve immediately).
         # auto_approve -> unattended approvals resolve to APPROVED.
         self.enabled = enabled
         self.auto_approve = auto_approve
         self.default_timeout = default_timeout
+        self.audit_log = audit_log
         self._pending: dict[str, PendingApproval] = {}
 
     # ---- registration ----------------------------------------------------
@@ -103,6 +107,26 @@ class ApprovalGate:
         approval.decision = decision
         approval.reason = reason
         approval._event.set()
+        self._audit(approval)
+
+    def _audit(self, approval: PendingApproval) -> None:
+        if self.audit_log is None:
+            return
+        try:
+            self.audit_log.record(
+                "approval",
+                actor="studio",
+                outcome=approval.decision.value,
+                detail={
+                    "approval_id": approval.approval_id,
+                    "build_id": approval.build_id,
+                    "stage": approval.stage,
+                    "reason": approval.reason,
+                    "context": dict(approval.context),
+                },
+            )
+        except Exception:
+            return
 
     # ---- waiting ---------------------------------------------------------
     async def wait(

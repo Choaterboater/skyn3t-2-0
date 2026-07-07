@@ -100,6 +100,17 @@ export function Empty({ icon = "◇", children }) {
   );
 }
 
+export function ErrorText({ children, className = "" }) {
+  return (
+    <p
+      role="alert"
+      className={`min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border border-ember/30 bg-ember/5 px-3 py-2 font-mono text-xs leading-relaxed text-ember [overflow-wrap:anywhere] ${className}`}
+    >
+      {children}
+    </p>
+  );
+}
+
 // Verdict / status -> tone.
 export function verdictTone(v) {
   const s = String(v || "").toLowerCase();

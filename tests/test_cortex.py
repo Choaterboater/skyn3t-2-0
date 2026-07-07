@@ -137,9 +137,16 @@ async def test_safe_tuning_uses_ratchet_when_enabled():
 
 async def test_build_cortex_wires_default_ratchet_when_enabled(monkeypatch):
     from skyn3t.cortex.tuning_store import load_overrides
+    from skyn3t.studio.bench import capture_regression_case
 
     bus = EventBus()
     settings = _settings(reliability_ratchet_enabled=True, best_of_n=1)
+    capture_regression_case(
+        settings.data_dir,
+        "prior-failed-build",
+        "a captured failure that must stay green",
+        "python",
+    )
     calls = []
 
     class FakeOrchestrator:
@@ -149,6 +156,7 @@ async def test_build_cortex_wires_default_ratchet_when_enabled(monkeypatch):
 
     async def fake_evaluate_change(**kwargs):
         calls.append(kwargs["label"])
+        assert any(c.id == "prior-failed-build" for c in kwargs["cases"])
         kwargs["apply_change"]()
         return {
             "kept": True,
@@ -235,6 +243,59 @@ async def test_feature_is_gated():
     )
     # Feature type is always gated regardless of safe/confidence.
     assert prop.status == ProposalStatus.GATED
+
+
+async def test_proven_safe_gated_feature_auto_applies_only_when_ratchet_keeps():
+    bus = EventBus()
+    calls = []
+
+    async def ratchet(prop):
+        calls.append(prop.id)
+        return {"kept": True, "reasons": ["bench improved"]}
+
+    cortex = Cortex(
+        bus,
+        settings=_settings(reliability_ratchet_enabled=True),
+        ratchet_evaluator=ratchet,
+    )
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.FEATURE,
+            title="enable safe proven feature",
+            payload={"proven_safe": True},
+            confidence=0.95,
+            safe=True,
+        )
+    )
+
+    assert calls == [prop.id]
+    assert prop.status == ProposalStatus.APPLIED
+    assert prop.result["ratchet"]["kept"] is True
+
+
+async def test_proven_safe_gated_feature_fails_when_ratchet_rejects():
+    bus = EventBus()
+
+    async def ratchet(prop):
+        return {"kept": False, "reasons": ["go-rate regressed"]}
+
+    cortex = Cortex(
+        bus,
+        settings=_settings(reliability_ratchet_enabled=True),
+        ratchet_evaluator=ratchet,
+    )
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.FEATURE,
+            title="reject unsafe regression",
+            payload={"proven_safe": True},
+            confidence=0.95,
+            safe=True,
+        )
+    )
+
+    assert prop.status == ProposalStatus.FAILED
+    assert prop.result["ratchet"]["kept"] is False
 
 
 async def test_unsafe_tuning_is_gated():

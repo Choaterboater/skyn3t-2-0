@@ -343,6 +343,12 @@ def test_capture_regression_case_appends_dedupes_and_loads(tmp_path):
     assert len(all_cases(tmp_path)) == len(DEFAULT_CASES) + 1
 
 
+def test_bench_capture_failures_defaults_on():
+    from skyn3t.config.settings import Settings
+
+    assert Settings().bench_capture_failures is True
+
+
 def test_capture_regression_case_ignores_empties_and_default_ids(tmp_path):
     from skyn3t.studio.bench import capture_regression_case, load_regression_cases
 

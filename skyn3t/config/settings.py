@@ -390,9 +390,9 @@ class Settings(BaseSettings):
     proof_python_deps_timeout: int = 120
     # Reliability flywheel: when a REAL build finishes no_go/failed, append it as a
     # permanent bench regression case (bench.capture_regression_case) so a future
-    # change must keep it green. Opt-in (default off) — capturing every failure can
-    # be noisy; enable when running the factory as a self-improving loop.
-    bench_capture_failures: bool = False
+    # ratchet run must keep it green. On by default: captured failures feed the
+    # autonomy gate via bench.all_cases().
+    bench_capture_failures: bool = True
     generated_test_timeout: int = 90
     # Mock-LLM proof seam (research item 42): when the generated project CALLS an
     # LLM (openai/anthropic client dep or an OPENAI_BASE_URL/OPENROUTER_API_KEY

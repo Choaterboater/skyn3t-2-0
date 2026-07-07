@@ -35,7 +35,7 @@ import structlog
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
 from skyn3t.core.events import EventBus, EventType
-from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.core.orchestrator import Orchestrator, SelfHealingManager
 
 # Stack-group membership + gate applicability live in the registry
 # (skyn3t/core/stacks.py — the single source of truth; see
@@ -59,6 +59,8 @@ from skyn3t.core.stacks import (
 from skyn3t.intelligence.learning_loop import (
     extract_gate_findings as _extract_gate_findings,
 )
+from skyn3t.security.audit import AuditLog
+from skyn3t.security.permissions import PermissionManager, auto_approve_safe_fn
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.build_summary import build_summary
@@ -225,10 +227,27 @@ class StudioRunner:
         self.cost_tracker = cost_tracker  # observability.CostTracker | None
         self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
         self.rag = rag                    # rag.RagEngine | None — recall into prompts
+        self.audit_log = AuditLog(path=self.settings.logs_dir / "audit.jsonl")
+        if bool(self.settings.cortex_auto_approve_safe):
+            self.permission_manager = PermissionManager(
+                settings=self.settings,
+                approval_fn=auto_approve_safe_fn(),
+                audit_log=self.audit_log,
+            )
+        else:
+            self.permission_manager = PermissionManager(
+                settings=self.settings,
+                audit_log=self.audit_log,
+            )
         self.approval_gate = approval_gate or ApprovalGate(
             enabled=bool(self.settings.approval_gates),
             auto_approve=bool(self.settings.cortex_auto_approve_safe),
+            audit_log=self.audit_log,
         )
+        if self.orchestrator is not None and getattr(self.orchestrator, "_self_healing", None) is None:
+            self.orchestrator.attach_self_healing(
+                SelfHealingManager(self.orchestrator, self.event_bus)
+            )
         # ModelTournament that the learned router reads. Fed per successful stage
         # so real build traffic — not only the rarely-run debate path — builds the
         # leaderboard (closes swarm #16). Lazily built; never breaks a build.

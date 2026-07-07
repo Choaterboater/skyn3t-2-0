@@ -34,7 +34,8 @@ from typing import Any
 # so it double-guards even if a caller passes a broader stack.
 _SEO_WEB_STACKS = frozenset({
     "react", "react_vite", "vite", "nextjs", "next",
-    "astro", "remix", "static", "static_html",
+    "astro", "remix", "vue", "vuejs", "sveltekit", "svelte",
+    "react_ts", "typescript", "static", "static_html",
 })
 
 # Source files that can carry HTML or the framework metadata idioms.

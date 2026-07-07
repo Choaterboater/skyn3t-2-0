@@ -131,39 +131,41 @@ export default function GateLadder({ stream }) {
         <Empty icon="▰">No gates registered. Submit a build to arm the ladder.</Empty>
       ) : (
         <div className="px-5 pb-6 pt-5">
-          <div className="relative">
-            {/* the molten rail — threads the node centers at a fixed offset */}
-            <div className={railCls} aria-hidden="true" />
-            <ol className="relative flex items-start justify-between gap-1.5">
-              {gates.map((g, i) => {
-                const state = stationState(g.gate, g.enabled, heat);
-                const s = STATE_STYLES[state] || STATE_STYLES.armed;
-                return (
-                  <Column
-                    key={g.gate}
-                    rung={g.meta.rung}
-                    proves={g.meta.proves}
-                    glyph={state === "proven" ? "✓" : g.meta.glyph}
-                    labelCls={s.label}
-                    nodeCls={s.node}
-                    tagCls={s.tag}
-                    name={g.gate}
-                    index={i}
-                  />
-                );
-              })}
-              {/* the payoff seal at the top of the climb */}
-              <Column
-                rung="Proven"
-                proves="ships"
-                glyph="⬢"
-                index={gates.length}
-                labelCls={sealed ? "text-plasma" : "text-ash/60"}
-                nodeCls={sealed ? "border-plasma/60 bg-plasma/15 text-plasma shadow-plasma" : "border-hairline bg-void/70 text-ash/50"}
-                tagCls="text-ash/60"
-                name="verdict"
-              />
-            </ol>
+          <div className="overflow-x-auto overscroll-x-contain pb-2 [scrollbar-gutter:stable]">
+            <div className="relative min-w-[720px] sm:min-w-0">
+              {/* the molten rail — threads the node centers at a fixed offset */}
+              <div className={railCls} aria-hidden="true" />
+              <ol className="relative flex items-start justify-between gap-1.5">
+                {gates.map((g, i) => {
+                  const state = stationState(g.gate, g.enabled, heat);
+                  const s = STATE_STYLES[state] || STATE_STYLES.armed;
+                  return (
+                    <Column
+                      key={g.gate}
+                      rung={g.meta.rung}
+                      proves={g.meta.proves}
+                      glyph={state === "proven" ? "✓" : g.meta.glyph}
+                      labelCls={s.label}
+                      nodeCls={s.node}
+                      tagCls={s.tag}
+                      name={g.gate}
+                      index={i}
+                    />
+                  );
+                })}
+                {/* the payoff seal at the top of the climb */}
+                <Column
+                  rung="Proven"
+                  proves="ships"
+                  glyph="⬢"
+                  index={gates.length}
+                  labelCls={sealed ? "text-plasma" : "text-ash/60"}
+                  nodeCls={sealed ? "border-plasma/60 bg-plasma/15 text-plasma shadow-plasma" : "border-hairline bg-void/70 text-ash/50"}
+                  tagCls="text-ash/60"
+                  name="verdict"
+                />
+              </ol>
+            </div>
           </div>
           <p className="mt-5 max-w-2xl font-mono text-[11px] leading-relaxed text-ash">
             Any stack — web, API, mobile, desktop, games, RAG, agents, MCP, CLIs — is forged, then

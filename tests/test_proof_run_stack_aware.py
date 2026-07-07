@@ -312,6 +312,33 @@ def test_python_deps_install_is_bounded_and_sandboxed(tmp_path, monkeypatch):
     assert calls[0]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+def test_proof_run_installs_python_deps_before_generated_tests(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "main.py").write_text("def main():\n    return 1\n")
+    (tmp_path / "requirements.txt").write_text("definitely-missing-local-proof-package==1.0\n")
+    installed = []
+
+    def fake_install(pdir, cmd_ctx, *, timeout):
+        installed.append({"pdir": pdir, "stack": cmd_ctx.stack, "timeout": timeout})
+        return (True, True, "installed")
+
+    monkeypatch.setattr(proof_mod, "_install_python_deps", fake_install)
+    monkeypatch.setattr(proof_mod, "_python_requirements_importable", lambda _pdir: False)
+
+    res = proof_mod.proof_run(
+        tmp_path,
+        stack="python",
+        run_tests=True,
+        execution_backend="inline",
+        python_deps_timeout=17,
+    )
+
+    assert installed == [{"pdir": tmp_path, "stack": "python", "timeout": 17}]
+    assert res.detail["python_deps"] == "installed"
+    assert res.detail["python_deps_summary"] == "installed"
+
+
 def test_node_build_uses_node_sandbox_and_network_only_for_install(tmp_path):
     import skyn3t.studio.proof_run as proof_mod
 

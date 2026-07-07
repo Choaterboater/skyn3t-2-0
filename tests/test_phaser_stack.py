@@ -190,6 +190,19 @@ def test_phaser_scaffold_wires_the_action_control(tmp_path):
     assert "this.space.isDown" in main or "pointerDown" in main, "action must read the bound key/pointer"
 
 
+def test_phaser_scaffold_supports_tablet_tap_movement():
+    # A tablet has no keyboard. The generic Phaser floor must let a player tap
+    # the canvas and move toward that point, not only treat touch as action.
+    main = scaffold_for("phaser", "tablet-game", "a top-down collect-the-coins game")["src/main.js"]
+
+    assert "touchTarget" in main
+    assert "pointer.worldX" in main
+    assert "tap anywhere" in main.lower()
+    assert "Math.abs(dx)" in main
+    assert "left:" in main and "touchLeft" in main
+    assert "right:" in main and "touchRight" in main
+
+
 def test_scaffold_phaser_has_no_react_confusion():
     # A Phaser game must NOT accidentally produce the React Vite scaffold (the
     # silent fallback this whole stack guards against).

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from skyn3t.agents._scaffold import scaffold_for
 from skyn3t.studio.proof_run import (
+    detect_offline_starter_stub,
     detect_scaffold_stub,
     extract_error_gaps,
     missing_brief_features,
@@ -116,6 +117,26 @@ def test_detect_scaffold_stub_none_for_real_app(tmp_path) -> None:
         f"k{i}:{i}" for i in range(80)) + "}\n"
     _write(tmp_path, files)
     assert detect_scaffold_stub(tmp_path, "react_vite", brief) is None
+
+
+def test_detect_offline_starter_stub_flags_counter_entrypoint(tmp_path) -> None:
+    _write(tmp_path, {
+        "src/App.jsx": (
+            "import { useState } from 'react'\n"
+            "export default function App(){\n"
+            "  const [count, setCount] = useState(0)\n"
+            "  return <main><p>A runnable Vite + React starter generated offline by SkyN3t.</p>"
+            "<button onClick={() => setCount((c) => c + 1)}>count is {count}</button></main>\n"
+            "}\n"
+        ),
+        "src/Settings.jsx": "export default function Settings(){ return <button>Save</button> }\n",
+    })
+
+    note = detect_offline_starter_stub(tmp_path, "react")
+
+    assert note is not None
+    assert "offline" in note.lower()
+    assert "starter" in note.lower()
 
 
 # --- surfacing through extract_error_gaps + proof_run integration -------------

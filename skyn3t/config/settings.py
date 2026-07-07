@@ -245,7 +245,7 @@ class Settings(BaseSettings):
     # picks where sprites come from: "offline" (deterministic local PNGs, free),
     # "kenney" (installed CC0 packs in data/asset_packs, free), "replicate"
     # (themed sprites generated at build time, ~cents), or "auto"
-    # (replicate when a token is configured, else offline).
+    # (Kenney when installed, else replicate when configured, else offline).
     game_art_enabled: bool = True
     game_art_source: str = "auto"  # offline | kenney | replicate | auto
     # When on, a cheap LLM art-director (one call/build, gated here) tailors a game's

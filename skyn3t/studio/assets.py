@@ -622,12 +622,21 @@ async def _generate_role_image(cli: Any, prompt: str) -> tuple[bytes | None, str
 def _role_art_source(settings: Settings) -> str:
     """Resolve where role sprites come from: ``kenney``, ``replicate``,
     ``offline``, or ``disabled`` — from ``game_art_enabled`` + ``game_art_source``.
-    ``auto`` uses replicate when a token is configured, else the free offline floor."""
+    ``auto`` uses an installed Kenney pack first, then replicate when a token is
+    configured, else the free offline floor."""
     if not bool(getattr(settings, "game_art_enabled", True)):
         return "disabled"
     src = str(getattr(settings, "game_art_source", "auto")).lower()
     if src in ("kenney", "replicate", "offline"):
         return src
+    if src == "auto":
+        try:
+            from skyn3t.studio.kenney_assets import has_kenney_pack
+
+            if has_kenney_pack(getattr(settings, "data_dir", "data")):
+                return "kenney"
+        except Exception:  # noqa: BLE001 - optional local packs must never block art fallback
+            pass
     return "replicate" if bool(getattr(settings, "replicate_available", False)) else "offline"
 
 

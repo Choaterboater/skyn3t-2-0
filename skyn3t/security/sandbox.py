@@ -18,6 +18,7 @@ import asyncio
 import os
 import shutil
 import subprocess
+import uuid
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -192,7 +193,8 @@ class SandboxRunner:
         else:
             argv = list(command)
         img = self._resolve_image(image, stack)
-        docker_cmd = ["docker", "run", "--rm", "-i"]
+        container_name = f"skyn3t-{uuid.uuid4().hex[:12]}"
+        docker_cmd = ["docker", "run", "--name", container_name, "--rm", "-i"]
         if not network:
             docker_cmd += ["--network", "none"]
         if self.settings.sandbox_drop_caps:
@@ -210,7 +212,19 @@ class SandboxRunner:
         for k, v in (env or {}).items():
             docker_cmd += ["-e", f"{k}={v}"]
         docker_cmd += [img, *argv]
-        return await self._exec(docker_cmd, cwd=None, timeout=timeout, backend="docker")
+        res = await self._exec(docker_cmd, cwd=None, timeout=timeout, backend="docker")
+        if res.timed_out:
+            try:
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["docker", "rm", "-f", container_name],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            except Exception:  # noqa: BLE001 - preserve the original timeout result
+                pass
+        return res
 
     # ---- subprocess (hardened local) ------------------------------------
     async def _run_subprocess(self, command, *, cwd, timeout, env, network: bool = False) -> SandboxResult:

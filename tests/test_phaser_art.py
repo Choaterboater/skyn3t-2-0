@@ -46,5 +46,6 @@ def test_art_on_still_drives_the_pure_sim():
 def test_art_off_main_js_unchanged_from_primitive_baseline():
     # art=False must reproduce the exact primitive create() (no behavior drift).
     main = scaffold_for("phaser", "dino", "a dino runner")["src/main.js"]
-    assert "this.playerView = this.add.rectangle(0, 0, 36, 36, 0x4ade80)" in main
-    assert "this.coinView = this.add.circle(0, 0, 12, 0xfbbf24)" in main
+    assert "this.dinoView = this.add.rectangle(0, 0, 58, 58, 0x7ddc5c)" in main
+    assert "this.add.rectangle(0, 0, 38, 72, 0x4ade80)" in main
+    assert "this.coinView = this.add.circle(0, 0, 16, 0xfacc15)" in main

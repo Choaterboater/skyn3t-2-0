@@ -4,6 +4,7 @@ Open this folder as an Obsidian vault if you want backlinks and graph navigation
 
 | Doc | Purpose |
 | --- | --- |
+| [`FIRST_RUN.md`](FIRST_RUN.md) | First-run setup for users |
 | [`START_HERE.md`](START_HERE.md) | Reconnect/resume order |
 | [`WORKFLOW.md`](WORKFLOW.md) | How work moves through SkyN3t |
 | [`FILE_MAP.md`](FILE_MAP.md) | Owner map for important code |

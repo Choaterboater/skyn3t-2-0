@@ -259,6 +259,32 @@ async def test_runner_asset_step_clears_stale_extra_assets(tmp_path):
     assert out["model_override"] == "openrouter/test"
 
 
+async def test_runner_writes_offline_web_asset_foundry_for_ui_stack(tmp_path):
+    runner = StudioRunner(
+        EventBus(),
+        Orchestrator(EventBus()),
+        settings=Settings(replicate_api_token="", asset_gen=False),
+    )
+    manifest = SimpleNamespace(extra={})
+
+    out = await runner._generate_assets(
+        str(tmp_path),
+        "a modern golf course website with tee times",
+        manifest,
+        {},
+        stack="nextjs",
+    )
+
+    foundry = manifest.extra["asset_foundry"]
+    assert foundry["type"] == "web"
+    assert foundry["source"] == "offline"
+    assert set(foundry["selected"]) == {"web/hero", "web/og", "web/favicon"}
+    assert (tmp_path / "public" / "assets" / "hero.png").is_file()
+    assert (tmp_path / "public" / "assets" / "og.png").is_file()
+    assert (tmp_path / "public" / "assets" / "favicon.png").is_file()
+    assert out["asset_foundry"]["selected"]["web/hero"]["path"] == "/assets/hero.png"
+
+
 async def test_runner_asset_step_honors_per_build_asset_gen_override(tmp_path, monkeypatch):
     captured = {}
 

@@ -711,6 +711,20 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - asset-gen must never break a build
             log.warning("assets.step_failed", error=str(exc)[:160])
 
+        # 1b) Web Asset Foundry floor — UI web stacks get a deterministic $0
+        # hero/Open Graph/favicon set even when paid image generation is disabled.
+        if stack in _UI_WEB_STACKS and stack not in _GAME_STACKS:
+            try:
+                from skyn3t.studio.assets import generate_offline_web_assets
+
+                foundry = generate_offline_web_assets(worktree_dir, brief, stack=stack)
+                manifest.extra["asset_foundry"] = foundry
+                if foundry.get("selected"):
+                    extra = {**extra, "asset_foundry": foundry}
+                    log.info("web_asset_foundry.step", count=foundry.get("generated", 0))
+            except Exception as exc:  # noqa: BLE001 - assets must never block a build
+                log.warning("web_asset_foundry.step_failed", error=str(exc)[:160])
+
         # 2) Game role sprites (#6) — game stacks only, independently gated. Writes
         #    public/assets/sprites/{role}.png that the scaffold's preload() consumes;
         #    a missing/failed sprite degrades to a colored primitive in the scene.
@@ -2547,6 +2561,16 @@ class StudioRunner:
         budget_s = int(getattr(self.settings, "fix_loop_budget_s", 720))
         loop_start = _t.time()
         attempt = 0
+        runtime_self_heal = str(getattr(plan, "stack", "") or "") not in _GAME_STACKS
+        if runtime_self_heal:
+            manifest.extra["runtime_self_heal"] = {
+                "stack": str(getattr(plan, "stack", "") or ""),
+                "attempts": 0,
+                "passed": False,
+                "gated": True,
+                "rounds": [],
+                "initial_proof": proof.to_dict(),
+            }
         while not proof.passed and attempt < max_attempts:
             if _t.time() - loop_start > budget_s:
                 log.info("fix.budget_exhausted", attempts=attempt, elapsed=int(_t.time() - loop_start))
@@ -2626,6 +2650,18 @@ class StudioRunner:
                 "filled": filled,
                 "stubbed": len(repairs.get("imports_scaffolded", [])),
                 "passed": proof.passed, "repairs": repairs}
+            if runtime_self_heal:
+                heal = manifest.extra.get("runtime_self_heal")
+                if isinstance(heal, dict):
+                    heal["attempts"] = attempt
+                    heal["passed"] = bool(proof.passed)
+                    heal.setdefault("rounds", []).append({
+                        "attempt": attempt,
+                        "filled": filled,
+                        "stubbed": len(repairs.get("imports_scaffolded", [])),
+                        "passed": bool(proof.passed),
+                        "repairs": repairs,
+                    })
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
                 {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "passed": proof.passed},
@@ -2635,6 +2671,12 @@ class StudioRunner:
         log.info("fix.converged" if proof.passed else "fix.unconverged",
                  attempts=attempt, passed=proof.passed,
                  elapsed=int(_t.time() - loop_start))
+        if runtime_self_heal:
+            heal = manifest.extra.get("runtime_self_heal")
+            if isinstance(heal, dict):
+                heal["attempts"] = attempt
+                heal["passed"] = bool(proof.passed)
+                heal["final_proof"] = proof.to_dict()
         return proof
 
     # ---- self-improvement: capture lessons, record pattern, promote skill
@@ -2860,12 +2902,14 @@ class StudioRunner:
         if extra:
             extra = self._sanitize_assets_for_worktree(extra, worktree_dir, plan.brief)
             payload["extra"] = extra
-            # "Build from a picture": surface an optional reference image at the
-            # top level so the designer/architect agents can read it directly
-            # (they pass it to complete(images=...)). A path or data URL; absent
-            # extra -> unchanged behavior.
+            # "Build from a picture": surface optional reference images at the
+            # top level so the designer/architect agents can read them directly.
             ref = extra.get("reference_image")
-            if ref:
+            refs = [str(item) for item in extra.get("reference_images") or [] if str(item)]
+            if refs:
+                payload["reference_images"] = refs
+                payload["reference_image"] = str(ref or refs[0])
+            elif ref:
                 payload["reference_image"] = ref
             model_override = extra.get("model_override")
             if model_override:
@@ -4353,6 +4397,33 @@ class StudioRunner:
         summary = build_summary(manifest.to_dict())
         manifest.extra["model_trace"] = summary["model_trace"]
         manifest.extra["quality_scorecard"] = summary["quality_scorecard"]
+        try:
+            from skyn3t.studio.app_observability import (
+                OBSERVABILITY_FILENAME,
+                write_app_observability,
+            )
+
+            obs = write_app_observability(project_dir, manifest)
+            manifest.extra["app_observability"] = {
+                "path": OBSERVABILITY_FILENAME,
+                "status": obs.get("status"),
+                "verdict": obs.get("verdict"),
+                "score": obs.get("score"),
+            }
+        except Exception as exc:  # noqa: BLE001 - observability must never break delivery
+            log.warning("studio.app_observability_failed", error=str(exc))
+        if plan.stack == "workflow":
+            try:
+                from skyn3t.studio.flow_canvas import FLOW_CANVAS_FILENAME, write_flow_canvas
+
+                flow = write_flow_canvas(project_dir, plan)
+                manifest.extra["flow_canvas"] = {
+                    "path": FLOW_CANVAS_FILENAME,
+                    "nodes": len(flow.get("nodes") or []),
+                    "edges": len(flow.get("edges") or []),
+                }
+            except Exception as exc:  # noqa: BLE001 - flow export must not break delivery
+                log.warning("studio.flow_canvas_failed", error=str(exc))
         manifest.save(project_dir)
         await self._save_build(manifest)
         summary = build_summary(manifest.to_dict())

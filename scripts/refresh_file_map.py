@@ -11,7 +11,6 @@ from pathlib import Path
 
 from skyn3t.rag.repo_map import RepoMapIndex
 
-
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "FILE_MAP.md"
 

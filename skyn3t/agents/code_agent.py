@@ -320,8 +320,9 @@ _GAME_WIRING_DIRECTIVE = (
 
 # Stacks for which the design bar applies.
 _WEB_STACKS = frozenset({
-    "react", "react_vite", "vite", "nextjs", "next", "astro", "remix",
-    "static", "html", "node", "node_express", "express", "vue", "svelte",
+    "react", "react_vite", "react_ts", "vite", "nextjs", "next", "astro",
+    "remix", "static", "html", "node", "node_express", "express", "vue",
+    "svelte", "sveltekit",
     "phaser",  # a Phaser game has real HUD/menu visual-design concerns
 })
 
@@ -860,6 +861,10 @@ class CodeAgent(BaseAgent):
                 f"{self._game_art_directive(brief, art_plan, asset_foundry)}\n"
                 if self._game_art_on(stack) else ""
             )
+            + (
+                f"{self._web_asset_directive(asset_foundry)}\n"
+                if (stack or "").lower() in (_WEB_STACKS - {"phaser"}) else ""
+            )
             + (f"{_DATA_DIRECTIVE}\n" if (stack or "").lower() in _DATA_STACKS else "")
             + (f"{_AGENT_APP_DIRECTIVE}\n" if _implies_agent_app(brief) else "")
             + f"{_FULL_FILE_CONTRACT}\n"
@@ -1024,6 +1029,35 @@ class CodeAgent(BaseAgent):
             "do NOT create them yourself, just reference them. Art is a RENDER concern "
             "in src/main.js ONLY; keep ALL game logic in the pure src/sim.js unchanged."
         )
+
+    @staticmethod
+    def _web_asset_directive(asset_foundry: dict[str, Any] | None = None) -> str:
+        if not isinstance(asset_foundry, dict) or asset_foundry.get("type") != "web":
+            return ""
+        selected = asset_foundry.get("selected")
+        if not isinstance(selected, dict):
+            return ""
+        paths = {
+            key: str(value.get("path") or "")
+            for key, value in selected.items()
+            if isinstance(value, dict) and value.get("path")
+        }
+        hero = paths.get("web/hero")
+        og = paths.get("web/og")
+        favicon = paths.get("web/favicon")
+        if not any((hero, og, favicon)):
+            return ""
+        parts = [
+            "WEB ASSET FOUNDRY — exact served image paths already exist for this build.",
+            "Use these real assets; do not invent stock-image URLs, remote CDNs, or missing /assets paths.",
+        ]
+        if hero:
+            parts.append(f"Hero image: `{hero}`. Render it visibly on the primary page.")
+        if og:
+            parts.append(f"Open Graph image: `{og}`. Wire it into metadata when the stack supports it.")
+        if favicon:
+            parts.append(f"Favicon: `{favicon}`. Reference it from the app metadata/head.")
+        return " ".join(parts)
 
     @staticmethod
     def _game_depth_directive(brief: str, game_design: dict[str, Any] | None = None) -> str:

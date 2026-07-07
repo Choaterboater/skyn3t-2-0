@@ -16,9 +16,9 @@ export function PageHeader({ eyebrow, title, sub, actions }) {
   );
 }
 
-export function Panel({ children, className = "", glow = false }) {
+export function Panel({ children, className = "", glow = false, id }) {
   return (
-    <section className={`panel ${glow ? "ring-heat" : ""} ${className}`}>{children}</section>
+    <section id={id} className={`panel ${glow ? "ring-heat" : ""} ${className}`}>{children}</section>
   );
 }
 

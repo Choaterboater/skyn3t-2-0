@@ -343,3 +343,89 @@ def record_deployment(
     except Exception:  # noqa: BLE001 - recording must not make deploy fail
         pass
     return record
+
+
+def rollback_deployment(
+    project_dir: str | Path,
+    *,
+    reason: str = "",
+    deployment_index: int | None = None,
+) -> dict[str, Any]:
+    """Mark the current deployment as rolled back and restore the previous URL.
+
+    This records intent only; provider-specific rollback commands stay outside
+    this offline manifest layer. Never raises, and returns an ``ok`` record so
+    callers can expose the result directly.
+    """
+    ts = time()
+    record: dict[str, Any] = {
+        "ok": False,
+        "ts": ts,
+        "reason": str(reason or ""),
+        "from_url": "",
+        "to_url": "",
+    }
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+
+        pdir = Path(project_dir)
+        manifest = BuildManifest.load(pdir)
+        if manifest is None:
+            record["error"] = "manifest not found"
+            return record
+        deployments = manifest.extra.get("deployments")
+        if not isinstance(deployments, list) or len(deployments) < 2:
+            record["error"] = "at least two deployments are required to roll back"
+            return record
+
+        candidates = [
+            idx for idx, dep in enumerate(deployments)
+            if isinstance(dep, dict) and dep.get("url") and not dep.get("rolled_back")
+        ]
+        if not candidates:
+            record["error"] = "no active deployment found"
+            return record
+        current_idx = (
+            deployment_index
+            if deployment_index is not None and 0 <= deployment_index < len(deployments)
+            else candidates[-1]
+        )
+        current = deployments[current_idx]
+        if not isinstance(current, dict) or not current.get("url"):
+            record["error"] = "selected deployment has no URL"
+            return record
+        previous = None
+        previous_idx = -1
+        for idx in reversed(candidates):
+            if idx < current_idx:
+                previous = deployments[idx]
+                previous_idx = idx
+                break
+        if not isinstance(previous, dict) or not previous.get("url"):
+            record["error"] = "no previous live deployment found"
+            return record
+
+        current["rolled_back"] = True
+        current["rolled_back_at"] = ts
+        if reason:
+            current["rollback_reason"] = str(reason)
+
+        record.update({
+            "ok": True,
+            "from_index": current_idx,
+            "to_index": previous_idx,
+            "from_url": str(current.get("url") or ""),
+            "to_url": str(previous.get("url") or ""),
+            "target": str(previous.get("target") or ""),
+        })
+        rollbacks = manifest.extra.get("deployment_rollbacks")
+        if not isinstance(rollbacks, list):
+            rollbacks = []
+        rollbacks.append(record)
+        manifest.extra["deployment_rollbacks"] = rollbacks[-20:]
+        manifest.extra["deployments"] = deployments[-20:]
+        manifest.extra["live_url"] = record["to_url"]
+        manifest.save(pdir)
+    except Exception as exc:  # noqa: BLE001 - rollback records must not crash callers
+        record["error"] = str(exc)[:160]
+    return record

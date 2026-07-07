@@ -151,6 +151,7 @@ class PromptEvolver:
         baseline. Never adopts it directly.
         """
         tasks = tasks or []
+        self._last_tasks = list(tasks)
         base_score = await self.evaluator(base_prompt, tasks)
         best = PromptCandidate(text=base_prompt, score=base_score, generation=0, notes="baseline")
 
@@ -166,6 +167,52 @@ class PromptEvolver:
         if best.text != base_prompt and best.score > base_score:
             await self._propose(best, base_prompt, base_score, prompt_key)
         return best
+
+    async def evolve_from_manifest(self, manifest: Any) -> PromptCandidate | None:
+        """Use a completed build manifest's captured prompts as evolution input.
+
+        ``StudioRunner`` records exact code prompts under ``extra.prompts``. This
+        bridge turns that real build evidence plus reviewer gaps into the task
+        set consumed by ``evolve``. It returns ``None`` when no prompt was
+        captured, keeping old builds harmless.
+        """
+        raw = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
+        extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
+        prompts = extra.get("prompts") if isinstance(extra.get("prompts"), list) else []
+        prompt_row = next(
+            (p for p in prompts if isinstance(p, dict) and str(p.get("text") or "").strip()),
+            None,
+        )
+        if prompt_row is None:
+            return None
+        stage = str(prompt_row.get("stage") or "prompt")
+        slug = str(raw.get("slug") or raw.get("build_id") or "build")
+        tasks = [self._task_from_manifest(raw)]
+        return await self.evolve(
+            str(prompt_row.get("text") or ""),
+            tasks=tasks,
+            prompt_key=f"{slug}:{stage}",
+        )
+
+    @staticmethod
+    def _task_from_manifest(raw: dict[str, Any]) -> dict[str, Any]:
+        gaps: list[str] = []
+        stages = raw.get("stages") if isinstance(raw.get("stages"), list) else []
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+            summary = stage.get("output_summary")
+            if not isinstance(summary, dict):
+                continue
+            gaps.extend(str(g) for g in (summary.get("gaps") or []) if str(g))
+        return {
+            "slug": raw.get("slug"),
+            "brief": raw.get("brief"),
+            "stack": raw.get("stack"),
+            "score": raw.get("score"),
+            "verdict": raw.get("verdict"),
+            "gaps": gaps,
+        }
 
     async def _spawn(
         self, parent: PromptCandidate, tasks: list[dict[str, Any]], generation: int
@@ -203,12 +250,14 @@ class PromptEvolver:
                 f"baseline={base_score:.2f} -> candidate={cand.score:.2f}"
             ),
             payload={
+                "prompt_key": prompt_key,
                 "setting": f"prompt::{prompt_key}",
                 "value": cand.text,
                 "base_score": base_score,
                 "candidate_score": cand.score,
                 "generation": cand.generation,
                 "mutation": cand.notes,
+                "tasks": list(getattr(self, "_last_tasks", [])),
             },
             confidence=min(0.5 + (cand.score - base_score), 0.95),
             # Prompt changes alter behavior broadly -> never auto-apply.

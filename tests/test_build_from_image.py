@@ -242,6 +242,24 @@ async def test_designer_forwards_reference_image():
     assert fake.calls[0].get("images") == [_DATA_URL]
 
 
+async def test_designer_forwards_multiple_reference_images():
+    bus = EventBus()
+    fake = _FakeLLM()
+    agent = DesignerAgent(event_bus=bus, llm=fake)
+    await agent.start()
+    result = await agent.run(TaskRequest(
+        type="design",
+        payload={
+            "brief": "a dashboard",
+            "slug": "dash",
+            "reference_image": "legacy-first",
+            "reference_images": [_DATA_URL, _DATA_URL],
+        },
+    ))
+    assert result.success
+    assert fake.calls[0].get("images") == [_DATA_URL, _DATA_URL]
+
+
 async def test_architect_does_not_attach_image():
     # Attaching an image would force the Tier.STRONG plan call onto a weaker
     # generic vision model — the architect keeps full strength, no images.
@@ -320,6 +338,15 @@ def test_base_payload_threads_reference_image():
     assert payload.get("reference_image") == _DATA_URL
 
 
+def test_base_payload_threads_reference_images():
+    runner = StudioRunner(EventBus(), MagicMock())
+    plan = _make_plan()
+    payload = runner._base_payload(
+        plan, "/proj", "/wt", {}, [], {"reference_images": ["one.png", "two.png"]})
+    assert payload.get("reference_images") == ["one.png", "two.png"]
+    assert payload.get("reference_image") == "one.png"
+
+
 def test_base_payload_threads_model_override():
     runner = StudioRunner(EventBus(), MagicMock())
     plan = _make_plan()
@@ -383,6 +410,24 @@ async def test_submit_build_decodes_and_passes_reference_image():
     if ref.startswith("data:"):
         assert ref == _DATA_URL
     else:
+        with open(ref, "rb") as f:
+            assert f.read() == _PNG_BYTES
+
+
+async def test_submit_build_decodes_and_passes_multiple_reference_images():
+    studio = _FakeStudio()
+    state = _FakeState(studio)
+    res = await routes.submit_build(
+        state, brief="a dashboard", reference_images=[_DATA_URL, _DATA_URL])
+    assert res["dispatched"] is True
+    import asyncio
+    await asyncio.sleep(0)
+    extra = studio.extra or {}
+    refs = extra.get("reference_images")
+    assert refs and len(refs) == 2
+    assert extra.get("reference_image") == refs[0]
+    assert refs[0] != refs[1]
+    for ref in refs:
         with open(ref, "rb") as f:
             assert f.read() == _PNG_BYTES
 

@@ -325,10 +325,10 @@ def _normalize_model_override(model: str) -> str:
 
 def _profile_extra(profile: str) -> dict[str, Any]:
     if profile == "fast":
-        return {"max_debug_attempts": 1}
+        return {"best_of_n": 1, "max_debug_attempts": 1}
     if profile == "balanced":
         return {
-            "best_of_n": 1,
+            "best_of_n": 2,
             "max_debug_attempts": 2,
             "asset_gen": False,
             "visual_self_heal": False,

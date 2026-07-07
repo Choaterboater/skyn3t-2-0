@@ -293,7 +293,7 @@ class Settings(BaseSettings):
     # model / no Playwright) never blocks, so offline builds are unaffected. Default ON
     # — this is the fix for "a broken game still scored go". Set 0 to restore advisory.
     game_quality_gates_verdict: bool = True
-    best_of_n: int = Field(default=1, ge=1, le=8)  # 2.0: trajectory sampling
+    best_of_n: int = Field(default=2, ge=1, le=8)  # 2.0: default best-of-2 trajectory sampling
     # opt-in: when best_of_n>1, pin each trajectory to a DIFFERENT model from
     # tournament_model_pool so the run is a real cross-model contest (genuine
     # comparative Elo + best output), not the same model N times.

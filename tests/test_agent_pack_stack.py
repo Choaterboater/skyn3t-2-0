@@ -25,8 +25,9 @@ from skyn3t.agents._common import (
     detect_stack as agent_detect_stack,
 )
 from skyn3t.agents._scaffold import scaffold_for
+from skyn3t.config.settings import Settings
+from skyn3t.studio.planner import Planner, file_checklist
 from skyn3t.studio.planner import detect_stack as plan_detect_stack
-from skyn3t.studio.planner import file_checklist
 from skyn3t.studio.proof_run import _NODE_STACKS, _SWIFT_STACKS, proof_run
 from skyn3t.studio.stack_selector import _COLLAPSE, REAL_BUILDER_STACKS, classify_build
 
@@ -43,6 +44,20 @@ def test_planner_checklist_for_pack():
     cl = file_checklist("agent_pack")
     for required in ("README.md", "main.py", "catalog.json", "pack_tools.py"):
         assert required in cl, f"{required} missing from agent_pack checklist"
+
+
+def test_default_best_of_two_does_not_inject_pack_acceptance_tests(tmp_path):
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    )
+    plan = Planner(settings).plan("an agent team pack for my law firm", "lawpack")
+
+    assert plan.stack == "agent_pack"
+    assert plan.best_of_n == 2
+    assert plan.test_first is False
+    assert "test_author" not in plan.stage_names
 
 
 # ---- keyword NON-theft, both directions ----------------------------------

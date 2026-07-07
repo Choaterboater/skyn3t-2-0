@@ -57,6 +57,32 @@ def test_planner_best_of_n_implies_test_first():
     assert "test_author" in plan.stage_names
 
 
+def test_planner_uses_default_best_of_two_from_settings(tmp_path):
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    )
+    plan = Planner(settings).plan("Build a thing", "thing")
+    assert plan.best_of_n == 2
+    assert plan.test_first is True
+    assert "test_author" in plan.stage_names
+
+
+def test_planner_skips_generated_tests_for_self_tested_stacks(tmp_path):
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    )
+    for stack in ("agent_pack", "mcp", "rag", "workflow"):
+        plan = Planner(settings).plan("Build a thing", "thing", stack_hint=stack)
+        assert plan.stack == stack
+        assert plan.best_of_n == 2
+        assert plan.test_first is False
+        assert "test_author" not in plan.stage_names
+
+
 def test_checklist_injected_into_code_stage():
     p = Planner()
     plan = p.plan("fastapi service", "svc")

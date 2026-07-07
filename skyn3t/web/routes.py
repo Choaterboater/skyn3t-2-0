@@ -800,6 +800,8 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "deployments": list(extra.get("deployments") or [])
                 if isinstance(extra.get("deployments"), list) else [],
                 "live_url": str(extra.get("live_url") or ""),
+                "deploy_check": dict(extra.get("deploy_check") or {})
+                if isinstance(extra.get("deploy_check"), dict) else {},
             })
     return {"projects": out}
 
@@ -1063,8 +1065,28 @@ async def deploy_project(
     agent = DeployAgent(event_bus=state.event_bus)
     result = agent.deploy(pdir, target=provider, plan=plan)
     record: dict[str, Any] | None = None
+    deploy_check: dict[str, Any] | None = None
     if result.get("ok") and result.get("url"):
         record = record_deployment(pdir, result=result, plan=plan, target=provider)
+        if getattr(state.settings, "deploy_check_enabled", False):
+            try:
+                from skyn3t.studio.deploy_check import check_deploy
+
+                verdict = await check_deploy(str(result.get("url") or ""), stack)
+                deploy_check = verdict.to_dict()
+                manifest = BuildManifest.load(pdir)
+                if manifest is not None:
+                    manifest.extra["deploy_check"] = deploy_check
+                    manifest.save(pdir)
+            except Exception as exc:  # noqa: BLE001 - deploy check is advisory
+                deploy_check = {
+                    "ok": False,
+                    "skipped": True,
+                    "issues": [],
+                    "checked": {},
+                    "reason": f"deploy check unavailable: {str(exc)[:160]}",
+                    "gaps": [],
+                }
         await state.event_bus.emit(
             EventType.SYSTEM,
             source="web.api",
@@ -1082,6 +1104,7 @@ async def deploy_project(
         "target": provider,
         "result": result,
         "deployment": record,
+        "deploy_check": deploy_check,
     }
 
 

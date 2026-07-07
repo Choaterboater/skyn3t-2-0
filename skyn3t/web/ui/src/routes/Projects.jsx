@@ -470,6 +470,14 @@ function ShipCell({ project }) {
     },
     onError: (e) => setErr(String(e.message || e)),
   });
+  const deployCheck = deploy.data?.deploy_check || project.deploy_check || null;
+  const deployCheckLabel = deployCheck?.ok
+    ? "verified"
+    : deployCheck?.skipped
+      ? "deploy check skipped"
+      : Array.isArray(deployCheck?.issues) && deployCheck.issues.length
+        ? "deploy issues"
+        : "";
 
   async function loadPlan() {
     setErr(null);
@@ -524,6 +532,18 @@ function ShipCell({ project }) {
             </div>
           ) : null}
         </div>
+      ) : null}
+      {deployCheckLabel ? (
+        <span
+          className={
+            deployCheck?.ok
+              ? "font-mono text-[10px] text-mint"
+              : "font-mono text-[10px] text-ember"
+          }
+          title={deployCheck?.reason || deployCheckLabel}
+        >
+          {deployCheckLabel}
+        </span>
       ) : null}
       {deploy.data?.result?.error ? (
         <span className="truncate font-mono text-[10px] text-ember" title={deploy.data.result.error}>

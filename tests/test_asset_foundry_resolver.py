@@ -43,6 +43,36 @@ def test_resolve_prefers_exact_direction_over_generic_fallback():
     assert plan.missing == []
 
 
+def test_resolve_prefers_tag_match_over_same_kind_fallback():
+    catalog = [
+        AssetItem(
+            "sprite/enemy/fish",
+            "sprite",
+            "sprites/enemies/fish_blue_swim_a.png",
+            ("enemy", "fish", "blue", "swim", "double", "platformer", "animated"),
+            "CC0-1.0",
+            "Kenney",
+            source_path="/tmp/fish.png",
+        ),
+        AssetItem(
+            "sprite/coin/gold",
+            "sprite",
+            "sprites/items/gold_1.png",
+            ("coin", "gold", "item"),
+            "CC0-1.0",
+            "Kenney",
+            source_path="/tmp/gold.png",
+        ),
+    ]
+
+    plan = resolve_assets(
+        [AssetRequirement("sprite/coin/idle", "sprite", 90, ("coin",))],
+        catalog,
+    )
+
+    assert plan.selected["sprite/coin/idle"].asset_id == "sprite/coin/gold"
+
+
 def test_write_asset_plan_emits_assets_audio_and_credits(tmp_path: Path):
     source_root = tmp_path / "source"
     source_root.mkdir()

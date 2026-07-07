@@ -326,12 +326,15 @@ def _score_match(req: AssetRequirement, item: AssetItem) -> tuple[int, int, int]
     req_tags = set(req.tags)
     item_tags = set(item.tags)
     overlap = len(req_tags & item_tags)
+    generic_same_family = False
     if overlap == 0 and req.kind in _IMAGE_KINDS | _AUDIO_KINDS:
         # Generic fallback matching by same kind, e.g. any coin sprite.
         if req.asset_id.split("/")[0] == item.asset_id.split("/")[0]:
-            overlap = 1
+            generic_same_family = True
     if overlap == 0 and req.kind in {"sprite", "tile", "ui"}:
-        return (-1, 0, 0)
+        if not generic_same_family:
+            return (-1, 0, 0)
+        return (10 + item.fps, -len(item.path), -len(item.tags))
     return (overlap * 100 + item.fps, len(item.tags), -len(item.path))
 
 

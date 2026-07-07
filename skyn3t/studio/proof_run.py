@@ -2028,6 +2028,74 @@ def reconcile_lucide_icons(root: str | Path) -> list[str]:
     return changed
 
 
+def repair_phaser_html_entrypoint(project_dir: str | Path, stack: str = "") -> list[str]:
+    """Ensure a Phaser project boots the Phaser entry module.
+
+    Generic Vite HTML can be "valid" while still loading a stale React shell
+    (`/src/main.jsx`) and leaving the real game in `/src/main.js` as dead code.
+    This repair is intentionally Phaser-only and only fires when `src/main.js`
+    actually contains the game boot.
+    """
+    if (stack or "").lower() != "phaser":
+        return []
+    root = Path(project_dir)
+    index = root / "index.html"
+    main = root / "src" / "main.js"
+    try:
+        html = index.read_text(encoding="utf-8", errors="replace")
+        main_js = main.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if "new Phaser.Game" not in main_js:
+        return []
+
+    module_re = re.compile(
+        r'<script\b[^>]*\btype=["\']module["\'][^>]*\bsrc=["\']([^"\']+)["\'][^>]*>\s*</script>',
+        re.IGNORECASE,
+    )
+
+    def _loaded_boot_module(match: re.Match[str]) -> bool:
+        src = match.group(1).split("?", 1)[0].lstrip("/")
+        if src.startswith("./"):
+            src = src[2:]
+        try:
+            text = (root / src).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return "new Phaser.Game" in text
+
+    if any(_loaded_boot_module(m) for m in module_re.finditer(html)):
+        return []
+
+    new_html, n = module_re.subn(
+        '<script type="module" src="/src/main.js"></script>',
+        html,
+        count=1,
+    )
+    if n == 0:
+        if "</body>" in html:
+            new_html = html.replace(
+                "</body>",
+                '  <script type="module" src="/src/main.js"></script>\n  </body>',
+            )
+        else:
+            new_html = html + '\n<script type="module" src="/src/main.js"></script>\n'
+    if 'id="game-container"' not in new_html and "id='game-container'" not in new_html:
+        if '<div id="root"></div>' in new_html:
+            new_html = new_html.replace('<div id="root"></div>', '<div id="game-container"></div>')
+        elif "<body>" in new_html:
+            new_html = new_html.replace("<body>", '<body><div id="game-container"></div>', 1)
+        else:
+            new_html = '<div id="game-container"></div>\n' + new_html
+    if new_html == html:
+        return []
+    try:
+        index.write_text(new_html, encoding="utf-8")
+    except OSError:
+        return []
+    return ["index.html"]
+
+
 def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
     """Run every deterministic, idempotent, code-MUTATING build repair in one
     pass and return what changed. This is the single source of truth for the
@@ -2060,6 +2128,9 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     lucide = reconcile_lucide_icons(project_dir)
     # Tauri desktop: fix hallucinated Cargo feature names so the Rust shell builds.
     tauri_cargo = reconcile_tauri_cargo_features(project_dir)
+    # Phaser game builds: make sure index.html loads the game boot, not a stale
+    # React/Vite shell that happens to compile.
+    phaser_entry = repair_phaser_html_entrypoint(project_dir, stack=stack)
     # Game stacks: synthesize a placeholder PNG for any referenced-but-missing
     # image asset (codegen loading an invented '/assets/sprites/gold.png' 404s at
     # runtime and CRASHES the scene — the tower-defence-retry-2 no_go). Creates
@@ -2083,6 +2154,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "ts_in_js_stripped": ts_stripped,
         "lucide_icons_fixed": lucide,
         "tauri_cargo_fixed": tauri_cargo,
+        "phaser_entrypoint_repaired": phaser_entry,
         "assets_reconciled": assets.get("images_created", []),
         "assets_missing_audio": assets.get("missing_audio", []),
         "textures_loaded_added": textures.get("textures_loaded_added", []),

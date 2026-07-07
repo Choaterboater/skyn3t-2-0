@@ -69,6 +69,51 @@ def test_repair_noop_when_entrypoint_intact(tmp_path):
     assert a.metadata.get("index_html_repaired") is not True
 
 
+def test_repair_restores_phaser_entry_when_html_loads_react_shell(tmp_path):
+    # A stale React Vite shell can coexist with a real Phaser src/main.js. For
+    # Phaser, "module src exists" is not enough: index.html must load the Phaser
+    # boot file, or the delivered app is a website with dead game code.
+    a = _agent()
+    react_index = (
+        '<!doctype html><html><body><div id="root"></div>'
+        '<script type="module" src="/src/main.jsx"></script></body></html>'
+    )
+    files = {
+        "index.html": react_index,
+        "src/main.jsx": "import React from 'react';\n",
+        "src/main.js": "class MainScene extends Phaser.Scene {}\nnew Phaser.Game({ scene: [MainScene] })\n",
+    }
+    (tmp_path / "src").mkdir()
+    (tmp_path / "index.html").write_text(react_index)
+    (tmp_path / "src" / "main.js").write_text(files["src/main.js"])
+
+    out = a._repair_html_entrypoint(tmp_path, files, "phaser", _SCAFFOLD)
+
+    assert out["index.html"] == _GOOD_INDEX
+    assert (tmp_path / "index.html").read_text() == _GOOD_INDEX
+    assert a.metadata.get("index_html_repaired") is True
+
+
+def test_deterministic_repairs_restore_phaser_entrypoint_on_disk(tmp_path):
+    from skyn3t.studio.proof_run import apply_deterministic_repairs
+
+    react_index = (
+        '<!doctype html><html><body><div id="root"></div>'
+        '<script type="module" src="/src/main.jsx"></script></body></html>'
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "index.html").write_text(react_index)
+    (tmp_path / "src" / "main.jsx").write_text("import React from 'react';\n")
+    (tmp_path / "src" / "main.js").write_text(
+        "class MainScene extends Phaser.Scene {}\nnew Phaser.Game({ scene: [MainScene] })\n"
+    )
+
+    repairs = apply_deterministic_repairs(tmp_path, stack="phaser")
+
+    assert repairs["phaser_entrypoint_repaired"] == ["index.html"]
+    assert 'src="/src/main.js"' in (tmp_path / "index.html").read_text()
+
+
 def test_repair_skips_when_scaffold_entry_renamed(tmp_path):
     # Delivered index is broken (inline only) but the scaffold's entrypoint file
     # (src/main.js) was NOT delivered — the agent renamed it. Restoring the

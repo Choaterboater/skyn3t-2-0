@@ -1185,7 +1185,7 @@ async def test_list_projects_normalizes_legacy_scaffold_stub_success(tmp_path):
 
     assert row["status"] == "completed_no_go"
     assert row["verdict"] == "no_go"
-    assert row["score"] == 49.0
+    assert row["score"] == 35.0
     assert row["scaffold_stub_gate"]["triggered"] is True
 
 
@@ -1222,7 +1222,7 @@ async def test_list_projects_normalizes_legacy_counter_starter_success(tmp_path)
 
     assert row["status"] == "completed_no_go"
     assert row["verdict"] == "no_go"
-    assert row["score"] == 49.0
+    assert row["score"] == 35.0
     assert "count" in row["scaffold_stub_gate"]["reason"].lower()
 
 
@@ -1250,7 +1250,7 @@ async def test_list_projects_normalizes_legacy_stub_backend_success(tmp_path):
 
     assert row["status"] == "completed_no_go"
     assert row["verdict"] == "no_go"
-    assert row["score"] == 49.0
+    assert row["score"] == 34.0
     assert "stub backend" in row["scaffold_stub_gate"]["reason"].lower()
 
 

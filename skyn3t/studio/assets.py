@@ -379,7 +379,10 @@ def generate_offline_web_assets(project_dir: str | Path, brief: str, *, stack: s
     served paths to use even when paid image generation is disabled.
     """
     root = Path(project_dir)
-    assets_dir = root / "public" / "assets"
+    # Framework apps serve public/assets at /assets. Plain static HTML is served
+    # from the project root, so its /assets path must be root/assets instead.
+    web_framework = (stack or "").lower() in _WEB_STACKS or (root / "package.json").is_file()
+    assets_dir = root / "public" / "assets" if web_framework else root / "assets"
     try:
         assets_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -444,6 +447,101 @@ def generate_offline_web_assets(project_dir: str | Path, brief: str, *, stack: s
     except OSError as exc:
         log.warning("web_assets.manifest_failed", error=str(exc)[:160])
     return manifest
+
+
+def apply_web_asset_foundry(project_dir: str | Path, foundry: dict[str, Any]) -> dict[str, Any]:
+    """Wire generated web assets into plain HTML entrypoints.
+
+    Codegen receives an instruction to use the assets, but models can ignore it.
+    This deterministic pass is deliberately narrow: it only edits existing HTML
+    files, adds favicon/Open Graph metadata to <head>, and injects a visible hero
+    image after <body> when the page has no reference to the generated hero.
+    """
+    if not isinstance(foundry, dict) or foundry.get("type") != "web":
+        return {"changed": False, "reason": "not_web_foundry", "files": []}
+    selected = foundry.get("selected")
+    if not isinstance(selected, dict):
+        return {"changed": False, "reason": "no_selected_assets", "files": []}
+    paths = {
+        key: str(value.get("path") or "")
+        for key, value in selected.items()
+        if isinstance(value, dict) and value.get("path")
+    }
+    hero = paths.get("web/hero", "")
+    og = paths.get("web/og", "")
+    favicon = paths.get("web/favicon", "")
+    if not any((hero, og, favicon)):
+        return {"changed": False, "reason": "no_paths", "files": []}
+
+    root = Path(project_dir)
+    candidates = []
+    for rel in ("index.html", "public/index.html"):
+        p = root / rel
+        if p.is_file():
+            candidates.append(p)
+    changed_files: list[str] = []
+    hero_applied = favicon_applied = og_applied = False
+
+    style = (
+        '<style id="skyn3t-web-assets">'
+        ".skyn3t-asset-hero{margin:0;overflow:hidden;background:#111827}"
+        ".skyn3t-asset-hero img{display:block;width:100%;height:min(34vh,420px);"
+        "object-fit:cover}"
+        "</style>"
+    )
+    for html_path in candidates:
+        try:
+            html = html_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        original = html
+        if favicon and favicon not in html and re.search(r"</head\s*>", html, flags=re.I):
+            html = re.sub(
+                r"</head\s*>",
+                f'  <link rel="icon" href="{favicon}">\n</head>',
+                html,
+                count=1,
+                flags=re.I,
+            )
+            favicon_applied = True
+        if og and og not in html and re.search(r"</head\s*>", html, flags=re.I):
+            html = re.sub(
+                r"</head\s*>",
+                f'  <meta property="og:image" content="{og}">\n</head>',
+                html,
+                count=1,
+                flags=re.I,
+            )
+            og_applied = True
+        if hero and hero not in html and re.search(r"<body(?:\\s[^>]*)?>", html, flags=re.I):
+            if "skyn3t-web-assets" not in html and re.search(r"</head\s*>", html, flags=re.I):
+                html = re.sub(r"</head\s*>", f"  {style}\n</head>", html, count=1, flags=re.I)
+            hero_markup = (
+                f'\n<section class="skyn3t-asset-hero" aria-label="Generated visual">'
+                f'<img src="{hero}" alt="" loading="eager"></section>'
+            )
+            html = re.sub(
+                r"(<body(?:\s[^>]*)?>)",
+                r"\1" + hero_markup,
+                html,
+                count=1,
+                flags=re.I,
+            )
+            hero_applied = True
+        if html != original:
+            try:
+                html_path.write_text(html, encoding="utf-8")
+            except OSError:
+                continue
+            changed_files.append(str(html_path.relative_to(root)))
+
+    return {
+        "changed": bool(changed_files),
+        "files": changed_files,
+        "hero_applied": hero_applied,
+        "favicon_applied": favicon_applied,
+        "og_applied": og_applied,
+    }
 
 
 # The role-sprite model. retro-diffusion/rd-fast is an OFFICIAL Replicate model

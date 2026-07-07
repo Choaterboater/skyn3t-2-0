@@ -30,7 +30,8 @@ from typing import Any
 #   mobile    — an app binary → Expo EAS
 DEPLOY_KIND: dict[str, str] = {
     # static-hostable web builds
-    "react_vite": "static", "react": "static",
+    "react_vite": "static", "react": "static", "react_ts": "static",
+    "vue": "static", "sveltekit": "static",
     "static_html": "static", "static": "static",
     "astro": "static", "phaser": "static",
     # full-stack Node (SSR/routing) — not a plain static drop

@@ -1135,6 +1135,41 @@ async def test_list_projects_normalizes_legacy_no_go_status(tmp_path):
     assert row["verdict"] == "no_go"
 
 
+async def test_list_projects_normalizes_legacy_scaffold_stub_success(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "stub-go"
+    project.mkdir(parents=True)
+    BuildManifest(
+        slug="stub-go",
+        brief="chat with docs",
+        stack="rag",
+        status="completed",
+        verdict="go",
+        score=74.0,
+        extra={
+            "proof": {
+                "passed": True,
+                "detail": {
+                    "scaffold_stub": "delivered tree is essentially the pristine rag scaffold"
+                },
+            },
+        },
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "stub-go")
+
+    assert row["status"] == "completed_no_go"
+    assert row["verdict"] == "no_go"
+    assert row["score"] == 49.0
+    assert row["scaffold_stub_gate"]["triggered"] is True
+
+
 async def test_metrics_and_prometheus_render():
     st = _state()
     await st.event_bus.emit(EventType.SYSTEM, source="t", payload={})

@@ -12,8 +12,8 @@ import pytest
 
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import Event, EventBus, EventType
-from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.build_summary import build_summary
+from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web import app as web_app
 from skyn3t.web import routes
 from skyn3t.web.deps import (

@@ -128,6 +128,28 @@ async def test_generate_role_sprites_uses_kenney_without_replicate(tmp_path: Pat
     assert client.prompts == []
 
 
+async def test_auto_source_prefers_installed_kenney_pack(tmp_path: Path):
+    _fake_kenney_pack(tmp_path)
+    client = _StubClient()
+
+    res = await generate_role_sprites(
+        str(tmp_path / "project"),
+        "a platformer",
+        settings=Settings(
+            llm_backend="stub",
+            game_art_source="auto",
+            replicate_api_token="tok",
+            data_dir=tmp_path,
+        ),
+        client=client,
+        art_plan=_platformer_plan(),
+    )
+
+    assert res["source"] == "kenney"
+    assert res["generated"] == 3
+    assert client.prompts == []
+
+
 def test_asset_foundry_uses_kenney_pack_roots(tmp_path: Path):
     pack = _fake_kenney_pack(tmp_path)
     project = tmp_path / "project"

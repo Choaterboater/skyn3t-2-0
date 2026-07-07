@@ -335,11 +335,12 @@ def _normalize_model_override(model: str) -> str:
 
 def _profile_extra(profile: str) -> dict[str, Any]:
     if profile == "fast":
-        return {"best_of_n": 1, "max_debug_attempts": 1}
+        return {"best_of_n": 1, "max_debug_attempts": 1, "agentic_timeout": 240}
     if profile == "balanced":
         return {
             "best_of_n": 2,
             "max_debug_attempts": 2,
+            "agentic_timeout": 600,
             "asset_gen": False,
             "visual_self_heal": False,
         }
@@ -348,6 +349,7 @@ def _profile_extra(profile: str) -> dict[str, Any]:
             "best_of_n": 2,
             "best_of_n_across_models": True,
             "max_debug_attempts": 3,
+            "agentic_timeout": 900,
             "asset_gen": True,
             "visual_self_heal": True,
         }
@@ -363,6 +365,7 @@ def _full_app_extra() -> dict[str, Any]:
         "best_of_n": 2,
         "best_of_n_across_models": True,
         "max_debug_attempts": 4,
+        "agentic_timeout": 1200,
         "visual_self_heal": True,
     }
 

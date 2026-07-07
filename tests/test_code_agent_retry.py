@@ -111,6 +111,38 @@ async def test_no_retry_when_first_pass_delivers(tmp_path):
     assert "degraded" not in result.output
 
 
+async def test_extra_agentic_timeout_reaches_agentic_build(tmp_path):
+    bus = EventBus()
+    agent = CodeAgent(event_bus=bus)
+    await agent.start()
+    seen = {}
+
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
+        seen["timeout"] = timeout
+        pathlib.Path(workdir, "App.jsx").write_text(_REAL_APP)
+        return {"ok": True, "backend": "claude_cli"}
+
+    agent.llm._backend = "claude_cli"  # type: ignore[attr-defined]
+    with patch.object(type(agent.llm), "backend", new_callable=lambda: property(
+        lambda self: getattr(self, "_backend", "stub")
+    )):
+        agent.llm.agentic_build = fake_agentic_build  # type: ignore[method-assign]
+        task = TaskRequest(
+            type="codegen",
+            payload={
+                "brief": "a react counter app",
+                "slug": "counter",
+                "worktree_dir": str(tmp_path),
+                "extra": {"agentic_timeout": 240},
+            },
+            capabilities_required=("codegen",),
+        )
+        result = await agent.run(task)
+
+    assert seen["timeout"] == 240
+    assert "degraded" not in result.output
+
+
 async def test_phaser_missing_sim_core_retries_then_recovers(tmp_path):
     result, n = await _run_phaser_with_attempts(tmp_path, [False, True])
 

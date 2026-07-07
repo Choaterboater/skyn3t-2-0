@@ -234,3 +234,23 @@ def test_agentic_prompt_mentions_asset_foundry_paths():
         asset_foundry={"selected": {"sprite/player/idle/down": {"path": "player/idle/down.png"}}},
     )
     assert "player/idle/down.png" in prompt
+
+
+def test_non_game_agentic_prompt_mentions_web_asset_foundry_paths():
+    prompt = _agent()._agentic_prompt(
+        "a golf course website",
+        "nextjs",
+        _plan(),
+        "",
+        asset_foundry={
+            "type": "web",
+            "selected": {
+                "web/hero": {"path": "/assets/hero.png"},
+                "web/og": {"path": "/assets/og.png"},
+                "web/favicon": {"path": "/assets/favicon.png"},
+            },
+        },
+    )
+    assert "/assets/hero.png" in prompt
+    assert "Open Graph" in prompt
+    assert "favicon" in prompt

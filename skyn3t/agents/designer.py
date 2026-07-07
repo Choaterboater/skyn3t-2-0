@@ -57,6 +57,9 @@ class DesignerAgent(BaseAgent):
         # vision OR the claude/kimi CLI, which reads the image file). On the stub
         # backend we say nothing and behave exactly as today.
         ref = p.get("reference_image")
+        refs = [str(item) for item in p.get("reference_images") or [] if str(item)]
+        if ref and not refs:
+            refs = [str(ref)]
         knowledge = knowledge_block(p)
         prompt = "\n\n".join(
             part for part in (
@@ -70,10 +73,10 @@ class DesignerAgent(BaseAgent):
             if part
         )
         images = None
-        if ref and getattr(self.llm, "supports_image_input", False):
+        if refs and getattr(self.llm, "supports_image_input", False):
             prompt += ("\n\nA reference image is attached — match its layout, "
                        "palette, and visual style where it makes sense.")
-            images = [ref]
+            images = refs
         result = await self.llm.complete(
             prompt,
             tier=Tier.UI, system=self.system_prompt(_SYSTEM), json_mode=True,

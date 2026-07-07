@@ -26,6 +26,20 @@ const MODEL_TIERS = ["cheap", "ui", "backend", "strong", "docs"];
 const CHANNELS = ["telegram", "discord", "slack"];
 const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app", "saas_product", "game", "api_service", "developer_tool", "data_viz", "mobile_app", "desktop_app"];
 const ENGINES = ["auto", "dom", "browser_native", "phaser", "godot", "bevy", "raylib", "expo", "tauri", "server", "python", "none"];
+const SETTINGS_SECTIONS = [
+  ["backend", "Backend"],
+  ["routing", "Routing"],
+  ["metadata", "Build"],
+  ["keys", "Keys"],
+  ["github", "GitHub"],
+  ["images", "Images"],
+  ["visual", "Visual"],
+  ["improve", "Improve"],
+  ["gates", "Gates"],
+  ["messaging", "Messaging"],
+  ["auth", "Auth"],
+  ["runtime", "Runtime"],
+];
 
 export default function Settings() {
   const queryClient = useQueryClient();
@@ -423,7 +437,15 @@ export default function Settings() {
       />
 
       <div className="space-y-6">
-        <Panel>
+        <nav className="panel flex flex-wrap gap-2 p-3" aria-label="Settings sections">
+          {SETTINGS_SECTIONS.map(([id, label]) => (
+            <a key={id} href={`#${id}`} className="badge border-hairline text-ash hover:border-ember/40 hover:text-bone">
+              {label}
+            </a>
+          ))}
+        </nav>
+
+        <Panel id="backend">
           <PanelHead
             label="LLM backend"
             right={
@@ -460,7 +482,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="routing">
           <PanelHead
             label="Model routing"
             right={
@@ -615,7 +637,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="metadata">
           <PanelHead label="Build metadata defaults" />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
@@ -657,7 +679,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="keys">
           <PanelHead
             label="API key"
             right={
@@ -709,7 +731,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="github">
           <PanelHead
             label="GitHub token"
             right={
@@ -744,7 +766,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="images">
           <PanelHead
             label="Replicate (image generation)"
             right={
@@ -813,7 +835,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="visual">
           <PanelHead
             label="Visual self-heal"
             right={
@@ -851,7 +873,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="improve">
           <PanelHead
             label="Agentic improve"
             right={
@@ -890,7 +912,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="gates">
           <PanelHead
             label="Verification gates"
             right={
@@ -941,7 +963,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="messaging">
           <PanelHead
             label="Messaging channels"
             right={
@@ -1022,7 +1044,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="auth">
           <PanelHead label="API auth token" />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
@@ -1043,7 +1065,7 @@ export default function Settings() {
           </div>
         </Panel>
 
-        <Panel>
+        <Panel id="runtime">
           <PanelHead
             label="Runtime"
             right={<span className="font-mono text-[11px] text-ash">read-only</span>}

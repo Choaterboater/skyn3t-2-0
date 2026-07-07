@@ -105,6 +105,45 @@ def test_styles_has_tailwind_directives() -> None:
         assert directive in css
 
 
+def test_dashboard_self_hosts_fonts() -> None:
+    html = (UI_DIR / "index.html").read_text()
+    fonts = UI_DIR / "public" / "fonts" / "fonts.css"
+    assert "fonts.googleapis.com" not in html
+    assert "fonts.gstatic.com" not in html
+    assert '/fonts/fonts.css' in html
+    css = fonts.read_text()
+    for family in ("Inter", "JetBrains Mono", "Space Grotesk"):
+        assert family in css
+    for file_name in (
+        "Inter-400.ttf",
+        "JetBrainsMono-400.ttf",
+        "SpaceGrotesk-400.ttf",
+    ):
+        assert (UI_DIR / "public" / "fonts" / file_name).is_file()
+
+
+def test_settings_page_has_section_navigation() -> None:
+    settings = (ROUTES / "Settings.jsx").read_text()
+    assert "SETTINGS_SECTIONS" in settings
+    assert 'aria-label="Settings sections"' in settings
+    for anchor in (
+        'href={`#${id}`}',
+        'id="backend"',
+        'id="routing"',
+        'id="keys"',
+        'id="runtime"',
+    ):
+        assert anchor in settings
+
+
+def test_first_run_user_doc_is_indexed() -> None:
+    doc = (REPO_ROOT / "docs" / "FIRST_RUN.md").read_text()
+    index = (REPO_ROOT / "docs" / "INDEX.md").read_text()
+    assert "SkyN3t First Run" in doc
+    assert "Settings" in doc and "Foundry" in doc and "Projects" in doc
+    assert "FIRST_RUN.md" in index
+
+
 def test_api_exposes_fetch_wrapper_and_ws_hook() -> None:
     api = (SRC / "api.js").read_text()
     assert "export async function apiFetch" in api

@@ -223,7 +223,9 @@ def project_file_response(path: Path, slug: str) -> Any:
     return Response(content=text, media_type=media_type)
 
 
-def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
+def _save_reference_image(
+    state: AppState, build_id: str, data_url: str, *, index: int | None = None
+) -> str:
     """Decode a base64 ``data:`` image URL and save it under data_dir so the
     build's agents can read it as a file path. Returns the saved PATH, or ``""``.
 
@@ -260,7 +262,8 @@ def _save_reference_image(state: AppState, build_id: str, data_url: str) -> str:
             ext = "webp"
         out_dir = Path(state.settings.data_dir) / "reference_images"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{build_id}.{ext}"
+        suffix = f"-{index}" if index is not None else ""
+        out_path = out_dir / f"{build_id}{suffix}.{ext}"
         out_path.write_bytes(raw)
         return str(out_path)
     except Exception as exc:  # noqa: BLE001 - never let an image break a build
@@ -365,13 +368,14 @@ def _full_app_extra() -> dict[str, Any]:
 
 
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
-                       reference_image: str = "", build_profile: str = "cheap_learned",
+                       reference_image: str = "", reference_images: list[str] | None = None,
+                       build_profile: str = "cheap_learned",
                        model_override: str = "", full_app: bool = False) -> dict[str, Any]:
     """Queue a build. Uses the studio if wired, else records + emits an event.
 
-    ``reference_image`` is an optional base64 ``data:`` URL (or path); when
-    present it is saved and threaded into the build so the design/architecture
-    agents can match it ("build from a picture"). Absent -> unchanged behavior.
+    ``reference_image`` is an optional base64 ``data:`` URL; ``reference_images``
+    accepts a small ordered list. Valid images are saved and threaded into the
+    build so the design agent can match them. Absent -> unchanged behavior.
     """
     if not brief or not brief.strip():
         raise ValueError("brief is required")
@@ -401,8 +405,18 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     # background task so the endpoint returns immediately with the build_id.
     # Optional reference image: decode + save (degrades to data-URL pass-through).
     ref_path = ""
+    ref_paths: list[str] = []
     if reference_image and reference_image.strip():
         ref_path = _save_reference_image(state, build_id, reference_image.strip())
+    raw_refs = [str(item) for item in (reference_images or [])[:4] if str(item).strip()]
+    for idx, raw_ref in enumerate(raw_refs, start=1):
+        saved = _save_reference_image(state, build_id, raw_ref.strip(), index=idx)
+        if saved:
+            ref_paths.append(saved)
+    if ref_path and ref_path not in ref_paths:
+        ref_paths.insert(0, ref_path)
+    if ref_paths and not ref_path:
+        ref_path = ref_paths[0]
 
     studio = state.studio
     dispatched = False
@@ -417,6 +431,8 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         build_extra = {**build_extra, **_full_app_extra()}
     if model:
         build_extra["model_override"] = model
+    if ref_paths:
+        build_extra["reference_images"] = ref_paths
     if ref_path:
         build_extra["reference_image"] = ref_path
     if studio is not None:
@@ -2715,6 +2731,8 @@ def build_router(state: AppState) -> Any:
                 stack=str(body.get("stack", "")),
                 slug=str(body.get("slug", "")),
                 reference_image=str(body.get("reference_image", "")),
+                reference_images=body.get("reference_images")
+                if isinstance(body.get("reference_images"), list) else None,
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=bool(body.get("full_app", False)),
@@ -3040,6 +3058,8 @@ def build_router(state: AppState) -> Any:
                 stack=str(body.get("stack", "")),
                 slug=str(body.get("slug", "")),
                 reference_image=str(body.get("reference_image", "")),
+                reference_images=body.get("reference_images")
+                if isinstance(body.get("reference_images"), list) else None,
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=bool(body.get("full_app", False)),

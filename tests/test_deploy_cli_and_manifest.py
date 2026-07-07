@@ -170,6 +170,39 @@ def test_record_deployment_persists_live_url(tmp_path):
     assert man.extra["deployments"][-1]["target"] == "cloudflare-pages"
 
 
+def test_rollback_deployment_restores_previous_live_url(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment, rollback_deployment
+
+    proj = _seed_project(
+        tmp_path / "site-rollback",
+        {"index.html": "<h1>hi</h1>"},
+        stack="static",
+    )
+    plan = plan_deploy(proj, "static")
+    record_deployment(
+        proj,
+        result={"ok": True, "url": "https://v1.pages.dev", "target": "cloudflare"},
+        plan=plan,
+        target="cloudflare-pages",
+    )
+    record_deployment(
+        proj,
+        result={"ok": True, "url": "https://v2.pages.dev", "target": "cloudflare"},
+        plan=plan,
+        target="cloudflare-pages",
+    )
+
+    rollback = rollback_deployment(proj, reason="smoke check failed")
+
+    assert rollback["ok"] is True
+    assert rollback["from_url"] == "https://v2.pages.dev"
+    assert rollback["to_url"] == "https://v1.pages.dev"
+    man = BuildManifest.load(proj)
+    assert man.extra["live_url"] == "https://v1.pages.dev"
+    assert man.extra["deployments"][-1]["rolled_back"] is True
+    assert man.extra["deployment_rollbacks"][-1]["reason"] == "smoke check failed"
+
+
 # ---------------------------------------------------------------------------
 # _finalize wiring: a finished build records its deploy plan
 # ---------------------------------------------------------------------------

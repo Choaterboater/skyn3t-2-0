@@ -253,6 +253,29 @@ def _implies_supabase(brief: str) -> bool:
     return any(_re.search(pat, low) for pat in _SUPABASE_KEYWORDS)
 
 
+_LOCAL_BACKEND_KEYWORDS = (
+    r"\bdatabase[- ]backed\b",
+    r"\bauth dashboard\b",
+    r"\bmember portal\b",
+    r"\blogin\b",
+    r"\bsign ?in\b",
+    r"\buser accounts?\b",
+    r"\bsaved projects?\b",
+    r"\bpostgres\b",
+    r"\bsqlite\b",
+    r"\bdatabase\b",
+    r"\bbackend\b",
+)
+
+
+def _implies_local_backend(brief: str) -> bool:
+    """True when a generic Next.js brief needs local DB/auth provisioning."""
+    low = (brief or "").lower()
+    if _implies_supabase(low):
+        return False
+    return any(_re.search(pat, low) for pat in _LOCAL_BACKEND_KEYWORDS)
+
+
 def _implies_weather_forecast(brief: str) -> bool:
     low = (brief or "").lower()
     return "weather" in low and ("forecast" in low or "5-day" in low or "five-day" in low)
@@ -1483,6 +1506,164 @@ def _nextjs_supabase(app_name: str, brief: str) -> dict[str, str]:
             ),
         ),
     }
+
+
+def _nextjs_local_backend(app_name: str, brief: str) -> dict[str, str]:
+    """Next.js App Router scaffold augmented with local file DB + auth routes."""
+    files = _nextjs(app_name, brief)
+    title = brief.strip() or app_name
+    files[".env.example"] = (
+        "AUTH_SECRET=replace-with-a-long-random-string\n"
+        "SKYN3T_LOCAL_DB=.data/app-db.json\n"
+    )
+    files["skyn3t-backend.json"] = (
+        "{\n"
+        '  "provider": "local-file",\n'
+        '  "database": ".data/app-db.json",\n'
+        '  "auth": "password-hash-session-token",\n'
+        '  "capabilities": ["auth", "database"],\n'
+        '  "routes": ["/api/auth/register", "/api/auth/login", "/api/items"],\n'
+        '  "notes": "Offline local backend floor for generated development builds; swap for a managed DB before production scale."\n'
+        "}\n"
+    )
+    files["lib/localBackend.js"] = (
+        "import { promises as fs } from 'node:fs';\n"
+        "import path from 'node:path';\n"
+        "import crypto from 'node:crypto';\n\n"
+        "const DB_FILE = process.env.SKYN3T_LOCAL_DB || '.data/app-db.json';\n"
+        "const AUTH_SECRET = process.env.AUTH_SECRET || 'dev-only-change-me';\n\n"
+        "async function ensureDb() {\n"
+        "  const file = path.resolve(process.cwd(), DB_FILE);\n"
+        "  await fs.mkdir(path.dirname(file), { recursive: true });\n"
+        "  try {\n"
+        "    return JSON.parse(await fs.readFile(file, 'utf8'));\n"
+        "  } catch (error) {\n"
+        "    if (error.code !== 'ENOENT') throw error;\n"
+        "    return { users: [], sessions: [], items: [] };\n"
+        "  }\n"
+        "}\n\n"
+        "async function saveDb(db) {\n"
+        "  const file = path.resolve(process.cwd(), DB_FILE);\n"
+        "  await fs.mkdir(path.dirname(file), { recursive: true });\n"
+        "  await fs.writeFile(file, JSON.stringify(db, null, 2) + '\\n');\n"
+        "}\n\n"
+        "function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {\n"
+        "  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');\n"
+        "  return `${salt}:${hash}`;\n"
+        "}\n\n"
+        "function verifyPassword(password, stored) {\n"
+        "  const [salt, hash] = String(stored || '').split(':');\n"
+        "  if (!salt || !hash) return false;\n"
+        "  const check = crypto.scryptSync(String(password), salt, 64).toString('hex');\n"
+        "  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(check, 'hex'));\n"
+        "}\n\n"
+        "function sessionToken(userId) {\n"
+        "  const nonce = crypto.randomBytes(18).toString('hex');\n"
+        "  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(`${userId}:${nonce}`).digest('hex');\n"
+        "  return `${userId}:${nonce}:${sig}`;\n"
+        "}\n\n"
+        "export async function registerUser(email, password) {\n"
+        "  const db = await ensureDb();\n"
+        "  const normalized = String(email || '').trim().toLowerCase();\n"
+        "  if (!normalized || String(password || '').length < 8) {\n"
+        "    return { ok: false, status: 400, error: 'email and 8+ character password required' };\n"
+        "  }\n"
+        "  if (db.users.some((user) => user.email === normalized)) {\n"
+        "    return { ok: false, status: 409, error: 'email already registered' };\n"
+        "  }\n"
+        "  const user = { id: crypto.randomUUID(), email: normalized, passwordHash: hashPassword(password), createdAt: new Date().toISOString() };\n"
+        "  db.users.push(user);\n"
+        "  await saveDb(db);\n"
+        "  return { ok: true, user: { id: user.id, email: user.email } };\n"
+        "}\n\n"
+        "export async function loginUser(email, password) {\n"
+        "  const db = await ensureDb();\n"
+        "  const user = db.users.find((entry) => entry.email === String(email || '').trim().toLowerCase());\n"
+        "  if (!user || !verifyPassword(password, user.passwordHash)) {\n"
+        "    return { ok: false, status: 401, error: 'invalid credentials' };\n"
+        "  }\n"
+        "  const token = sessionToken(user.id);\n"
+        "  db.sessions.push({ token, userId: user.id, createdAt: new Date().toISOString() });\n"
+        "  await saveDb(db);\n"
+        "  return { ok: true, token, user: { id: user.id, email: user.email } };\n"
+        "}\n\n"
+        "export async function listItems() {\n"
+        "  const db = await ensureDb();\n"
+        "  return db.items;\n"
+        "}\n\n"
+        "export async function createItem(title) {\n"
+        "  const db = await ensureDb();\n"
+        "  const text = String(title || '').trim();\n"
+        "  if (!text) return { ok: false, status: 400, error: 'title required' };\n"
+        "  const item = { id: crypto.randomUUID(), title: text, done: false, createdAt: new Date().toISOString() };\n"
+        "  db.items.push(item);\n"
+        "  await saveDb(db);\n"
+        "  return { ok: true, item };\n"
+        "}\n"
+    )
+    files["app/api/auth/register/route.js"] = (
+        "import { NextResponse } from 'next/server';\n"
+        "import { registerUser } from '../../../../lib/localBackend';\n\n"
+        "export async function POST(request) {\n"
+        "  const body = await request.json().catch(() => ({}));\n"
+        "  const result = await registerUser(body.email, body.password);\n"
+        "  return NextResponse.json(result, { status: result.ok ? 201 : result.status });\n"
+        "}\n"
+    )
+    files["app/api/auth/login/route.js"] = (
+        "import { NextResponse } from 'next/server';\n"
+        "import { loginUser } from '../../../../lib/localBackend';\n\n"
+        "export async function POST(request) {\n"
+        "  const body = await request.json().catch(() => ({}));\n"
+        "  const result = await loginUser(body.email, body.password);\n"
+        "  return NextResponse.json(result, { status: result.ok ? 200 : result.status });\n"
+        "}\n"
+    )
+    files["app/api/items/route.js"] = (
+        "import { NextResponse } from 'next/server';\n"
+        "import { createItem, listItems } from '../../../lib/localBackend';\n\n"
+        "export async function GET() {\n"
+        "  return NextResponse.json({ items: await listItems() });\n"
+        "}\n\n"
+        "export async function POST(request) {\n"
+        "  const body = await request.json().catch(() => ({}));\n"
+        "  const result = await createItem(body.title);\n"
+        "  return NextResponse.json(result, { status: result.ok ? 201 : result.status });\n"
+        "}\n"
+    )
+    files["README.md"] = compose_readme(
+        title,
+        brief,
+        stack_label="Next.js (App Router) + local DB/auth backend",
+        install="```bash\nnpm install\n```\n\nRequires Node.js 18.18+.",
+        usage=(
+            "Copy `.env.example`, choose an `AUTH_SECRET`, then start the dev server:\n\n"
+            "```bash\ncp .env.example .env.local\nnpm run dev\n```\n\n"
+            "API routes are available at `/api/auth/register`, `/api/auth/login`, and `/api/items`."
+        ),
+        structure=[
+            ("app/page.jsx", "Home page — default-exported route component"),
+            ("app/api/auth/register/route.js", "Registration endpoint backed by local storage"),
+            ("app/api/auth/login/route.js", "Login endpoint issuing signed session tokens"),
+            ("app/api/items/route.js", "Example database collection endpoint"),
+            ("lib/localBackend.js", "Server-only local file database and auth helper"),
+            ("skyn3t-backend.json", "Provisioned backend manifest"),
+            (".env.example", "Local backend configuration template"),
+            ("package.json", "Dependencies and npm scripts"),
+        ],
+        features=[
+            "Next.js App Router frontend",
+            "Server API routes for auth and persisted items",
+            "Password hashing with scrypt and signed session tokens",
+            "Local file database for offline development delivery",
+        ],
+        configuration=(
+            "`AUTH_SECRET` signs session tokens. `SKYN3T_LOCAL_DB` controls the local "
+            "JSON database path. This is a real offline backend floor for development; "
+            "replace it with managed Postgres/Supabase/etc. before production scale."
+        ),
+    )
+    return files
 
 
 def _astro(app_name: str, brief: str) -> dict[str, str]:
@@ -6464,6 +6645,10 @@ def scaffold_for(
     # nextjs stack gets client-safe Supabase env wiring.
     if stack == "nextjs" and _implies_supabase(brief):
         return _nextjs_supabase(safe_name, brief)
+    # Local backend variant: generic DB/auth/backend Next.js briefs get an
+    # offline-provisioned server route + file database floor, not a fake UI-only app.
+    if stack == "nextjs" and _implies_local_backend(brief):
+        return _nextjs_local_backend(safe_name, brief)
     if stack == "phaser":
         return _phaser(safe_name, brief, art=art)
     builder = _BUILDERS.get(stack, _react_vite)

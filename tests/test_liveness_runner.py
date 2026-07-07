@@ -358,3 +358,40 @@ def test_post_proof_repair_triggers_full_reproof(tmp_path, monkeypatch):
     assert calls and calls[0]["run_build"] is True
     assert man.extra["proof"]["passed"] is False
     assert man.extra["proof_after_post_proof_repair"]["passed"] is False
+
+
+def test_non_game_fix_loop_records_runtime_self_heal(tmp_path, monkeypatch):
+    r = _runner(tmp_path, max_fix_attempts=1)
+    man = BuildManifest(slug="x", brief="dashboard", stack="fastapi")
+    plan = SimpleNamespace(
+        stack="fastapi",
+        checklist=["main.py"],
+        to_dict=lambda: {"stack": "fastapi", "checklist": ["main.py"]},
+    )
+
+    class _Proof:
+        def __init__(self, passed):
+            self.passed = passed
+            self.missing = []
+            self.detail = {"runtime": "failed" if not passed else "passed"}
+
+        def error_gaps(self):
+            return ["server raised RuntimeError on boot"]
+
+        def to_dict(self):
+            return {"passed": self.passed, "detail": dict(self.detail)}
+
+    def fake_proof(project_dir, **kwargs):
+        return _Proof(True)
+
+    monkeypatch.setattr(runner_mod, "proof_run", fake_proof)
+
+    proof = asyncio.run(
+        r._fix_loop(man, plan, str(tmp_path), _Proof(False), "corr", {})
+    )
+
+    assert proof.passed is True
+    assert man.extra["runtime_self_heal"]["stack"] == "fastapi"
+    assert man.extra["runtime_self_heal"]["attempts"] == 1
+    assert man.extra["runtime_self_heal"]["passed"] is True
+    assert man.extra["runtime_self_heal"]["gated"] is True

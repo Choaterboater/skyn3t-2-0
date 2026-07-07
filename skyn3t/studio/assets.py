@@ -36,8 +36,9 @@ log = structlog.get_logger(__name__)
 # Hard cap on images per build — bounded + cost-aware (each is a paid prediction).
 MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 -> last services fell back to icon tiles)
 # Web frameworks that serve static files from public/ (vs ./assets/ for static html).
-_WEB_STACKS = {"nextjs", "next", "react", "vite", "remix", "astro", "svelte",
-               "sveltekit", "vue", "nuxt", "solid", "node", "phaser"}
+_WEB_STACKS = {"nextjs", "next", "react", "react_vite", "react_ts", "vite",
+               "remix", "astro", "svelte", "sveltekit", "vue", "nuxt",
+               "solid", "node", "phaser"}
 
 # Words that imply the app SHOWS pictures / art, so generating real assets pays
 # off. Absent these, we skip (no point spending predictions on a calculator).
@@ -304,6 +305,144 @@ async def generate_assets(
         except OSError as exc:
             log.warning("assets.manifest_write_failed", error=str(exc)[:160])
     log.info("assets.generated", count=len(written), subjects=[a["subject"] for a in written])
+    return manifest
+
+
+def _brief_theme(brief: str) -> tuple[str, tuple[int, int, int], tuple[int, int, int]]:
+    low = (brief or "").lower()
+    if any(w in low for w in ("golf", "course", "clubhouse", "tee")):
+        return "golf", (29, 107, 77), (240, 200, 84)
+    if any(w in low for w in ("restaurant", "cafe", "bakery", "coffee")):
+        return "hospitality", (132, 61, 42), (244, 164, 96)
+    if any(w in low for w in ("fitness", "gym", "trainer", "yoga")):
+        return "fitness", (36, 72, 110), (96, 190, 174)
+    if any(w in low for w in ("portfolio", "studio", "photography", "gallery")):
+        return "creative", (83, 55, 109), (236, 138, 92)
+    return "web", (45, 74, 102), (95, 179, 168)
+
+
+def _draw_web_asset_png(
+    brief: str,
+    *,
+    size: tuple[int, int],
+    label: str,
+    compact: bool = False,
+) -> bytes:
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    theme, base, accent = _brief_theme(brief)
+    width, height = size
+    im = Image.new("RGB", (width, height), base)
+    draw = ImageDraw.Draw(im)
+    for y in range(height):
+        t = y / max(1, height - 1)
+        shade = tuple(int(base[i] * (1 - t) + max(0, base[i] - 34) * t) for i in range(3))
+        draw.line((0, y, width, y), fill=shade)
+
+    if compact:
+        margin = max(4, width // 8)
+        draw.rounded_rectangle(
+            (margin, margin, width - margin, height - margin),
+            radius=max(4, width // 7),
+            fill=accent,
+        )
+    else:
+        horizon = int(height * 0.63)
+        draw.rectangle((0, horizon, width, height), fill=tuple(max(0, c - 38) for c in base))
+        for i in range(7):
+            x = int(width * (0.1 + i * 0.14))
+            r = int(width * (0.05 + (i % 3) * 0.012))
+            draw.ellipse((x - r, horizon - r, x + r, horizon + r), fill=accent)
+        draw.rounded_rectangle(
+            (int(width * 0.08), int(height * 0.16), int(width * 0.58), int(height * 0.32)),
+            radius=max(8, height // 24),
+            fill=(255, 255, 255),
+        )
+
+    font = ImageFont.load_default()
+    text = label if compact else f"{theme.upper()} / {label}"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    x = (width - (bbox[2] - bbox[0])) / 2 if compact else int(width * 0.11)
+    y = (height - (bbox[3] - bbox[1])) / 2 if compact else int(height * 0.21)
+    draw.text((x, y), text, font=font, fill=(16, 24, 39))
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+def generate_offline_web_assets(project_dir: str | Path, brief: str, *, stack: str = "") -> dict[str, Any]:
+    """Write a $0 web asset floor: hero, Open Graph image, and favicon.
+
+    These are deterministic local PNGs, not stock art. They give web codegen real
+    served paths to use even when paid image generation is disabled.
+    """
+    root = Path(project_dir)
+    assets_dir = root / "public" / "assets"
+    try:
+        assets_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning("web_assets.mkdir_failed", error=str(exc)[:160])
+        return {"type": "web", "source": "offline", "generated": 0, "skipped": True,
+                "reason": "mkdir_failed", "selected": {}, "requirements": []}
+
+    specs = {
+        "web/hero": ("hero.png", (1440, 720), "HERO", False),
+        "web/og": ("og.png", (1200, 630), "OPEN GRAPH", False),
+        "web/favicon": ("favicon.png", (96, 96), "SKY", True),
+    }
+    selected: dict[str, dict[str, Any]] = {}
+    for asset_id, (filename, size, label, compact) in specs.items():
+        target = assets_dir / filename
+        try:
+            target.write_bytes(
+                _draw_web_asset_png(brief, size=size, label=label, compact=compact)
+            )
+        except Exception as exc:  # noqa: BLE001 - web assets must never block delivery
+            log.warning("web_assets.write_failed", file=filename, error=str(exc)[:160])
+            continue
+        selected[asset_id] = {
+            "asset_id": asset_id,
+            "kind": "image",
+            "path": f"/assets/{filename}",
+            "tags": ["web", filename.rsplit(".", 1)[0]],
+            "license": "CC0-1.0",
+            "credit": "Generated locally by SkyN3t offline web asset floor",
+            "source": "offline",
+        }
+
+    requirements = [
+        {"asset_id": asset_id, "kind": "image", "priority": priority,
+         "tags": ["web"], "optional": False}
+        for priority, asset_id in enumerate(specs, start=1)
+    ]
+    manifest = {
+        "type": "web",
+        "source": "offline",
+        "stack": stack,
+        "generated": len(selected),
+        "skipped": len(selected) == 0,
+        "reason": "" if selected else "write_failed",
+        "requirements": requirements,
+        "selected": selected,
+        "assets_path": str(assets_dir / "web-assets.json"),
+        "credits_path": str(root / "CREDITS.md"),
+    }
+    try:
+        (assets_dir / "web-assets.json").write_text(
+            json.dumps(list(selected.values()), indent=2) + "\n", encoding="utf-8"
+        )
+        credits = root / "CREDITS.md"
+        existing = credits.read_text(encoding="utf-8") if credits.exists() else "# Credits\n"
+        if "SkyN3t offline web asset floor" not in existing:
+            credits.write_text(
+                existing.rstrip()
+                + "\n- `web/*`: CC0-1.0 - SkyN3t offline web asset floor\n",
+                encoding="utf-8",
+            )
+    except OSError as exc:
+        log.warning("web_assets.manifest_failed", error=str(exc)[:160])
     return manifest
 
 

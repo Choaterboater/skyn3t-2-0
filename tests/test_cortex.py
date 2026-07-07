@@ -368,6 +368,38 @@ async def test_prompt_evolver_improves_and_gates():
     assert any(p.type == ProposalType.TUNING for p in gated)
 
 
+async def test_prompt_evolver_uses_completed_build_manifest_prompts():
+    bus = EventBus()
+    cortex = Cortex(bus, settings=_settings())
+    ev = PromptEvolver(cortex=cortex)
+    manifest = {
+        "slug": "demo",
+        "brief": "Build a polished dashboard",
+        "stack": "react_vite",
+        "score": 58.0,
+        "verdict": "no_go",
+        "extra": {
+            "prompts": [{"stage": "codegen", "text": "Write code."}],
+        },
+        "stages": [
+            {
+                "name": "review",
+                "status": "completed",
+                "output_summary": {"gaps": ["missing empty states", "no tests"]},
+            }
+        ],
+    }
+
+    best = await ev.evolve_from_manifest(manifest)
+
+    assert best is not None
+    assert best.text != "Write code."
+    gated = cortex.store.gated()
+    prop = next(p for p in gated if p.source == "prompt_evolver")
+    assert prop.payload["prompt_key"] == "demo:codegen"
+    assert prop.payload["tasks"][0]["gaps"] == ["missing empty states", "no tests"]
+
+
 # ---- repo scout ------------------------------------------------------------
 async def test_repo_scout_offline():
     scout = RepoScout(settings=_settings())

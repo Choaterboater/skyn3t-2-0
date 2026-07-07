@@ -495,6 +495,34 @@ async def test_submit_build_normalizes_model_override():
     assert studio.extra["model_override"] == "openrouter/gpt-4o-mini"
 
 
+def test_deepseek_failover_prefers_v4_flash_and_skips_32(monkeypatch):
+    monkeypatch.setattr(routes, "live_catalog", lambda: [
+        {
+            "id": "deepseek/deepseek-v3.2",
+            "created": 200,
+            "pricing": {"prompt": "0.00000001", "completion": "0.00000001"},
+        },
+        {
+            "id": "deepseek/deepseek-v4-pro",
+            "created": 300,
+            "pricing": {"prompt": "0.000000435", "completion": "0.00000087"},
+        },
+        {
+            "id": "deepseek/deepseek-v4-flash",
+            "created": 250,
+            "pricing": {"prompt": "0.00000009", "completion": "0.00000018"},
+        },
+    ])
+
+    assert routes._deepseek_failover_model() == "deepseek/deepseek-v4-flash"
+
+
+def test_deepseek_failover_static_fallback_is_not_32(monkeypatch):
+    monkeypatch.setattr(routes, "live_catalog", lambda: [])
+
+    assert routes._deepseek_failover_model() == "deepseek/deepseek-v4-flash"
+
+
 async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeypatch):
     class _Studio:
         def __init__(self):
@@ -503,7 +531,7 @@ async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeyp
         def start(self, brief, slug=None, extra=None):
             self.extra = dict(extra or {})
 
-    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v3.2")
+    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v4-flash")
     studio = _Studio()
     st = _state(studio=studio)
     for idx, status in enumerate(("failed", "completed_no_go"), start=1):
@@ -523,9 +551,9 @@ async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeyp
     )
 
     row = st.builds[res["build_id"]]
-    assert res["model_override"] == "deepseek/deepseek-v3.2"
-    assert studio.extra["model_override"] == "deepseek/deepseek-v3.2"
-    assert row.model_trace["model_override"] == "deepseek/deepseek-v3.2"
+    assert res["model_override"] == "deepseek/deepseek-v4-flash"
+    assert studio.extra["model_override"] == "deepseek/deepseek-v4-flash"
+    assert row.model_trace["model_override"] == "deepseek/deepseek-v4-flash"
     assert row.model_trace["auto_failover"] == "deepseek_after_repeated_failures"
     assert row.model_trace["failure_count"] == 2
 
@@ -538,7 +566,7 @@ async def test_submit_build_does_not_failover_after_one_failure(monkeypatch):
         def start(self, brief, slug=None, extra=None):
             self.extra = dict(extra or {})
 
-    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v3.2")
+    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v4-flash")
     studio = _Studio()
     st = _state(studio=studio)
     st.builds["old-1"] = BuildRecord(
@@ -572,7 +600,7 @@ async def test_submit_build_manual_model_override_skips_failover(monkeypatch):
         def start(self, brief, slug=None, extra=None):
             self.extra = dict(extra or {})
 
-    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v3.2")
+    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v4-flash")
     studio = _Studio()
     st = _state(studio=studio)
     for idx in range(2):

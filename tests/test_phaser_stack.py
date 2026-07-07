@@ -203,6 +203,15 @@ def test_phaser_scaffold_supports_tablet_tap_movement():
     assert "right:" in main and "touchRight" in main
 
 
+def test_phaser_scaffold_styles_do_not_double_center_canvas():
+    files = scaffold_for("phaser", "tablet-game", "a top-down collect-the-coins game")
+    css = files["src/styles.css"]
+
+    assert "place-items: center" not in css
+    assert "height: 100svh" in css
+    assert "margin-top: 0 !important" in css
+
+
 def test_scaffold_phaser_has_no_react_confusion():
     # A Phaser game must NOT accidentally produce the React Vite scaffold (the
     # silent fallback this whole stack guards against).

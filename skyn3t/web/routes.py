@@ -770,14 +770,36 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             prompts = extra.get("prompts") or []
             status = str(m.get("status", "") or "")
             verdict = str(m.get("verdict", "") or "")
-            if status == "completed" and verdict == "no_go":
+            proof = extra.get("proof") if isinstance(extra, dict) else None
+            proof_detail = proof.get("detail") if isinstance(proof, dict) else None
+            scaffold_stub_reason = (
+                proof_detail.get("scaffold_stub")
+                if isinstance(proof_detail, dict)
+                else None
+            )
+            scaffold_stub_gate = (
+                {
+                    "triggered": True,
+                    "source": "legacy_project_list",
+                    "score_cap": 49.0,
+                    "reason": str(scaffold_stub_reason),
+                }
+                if scaffold_stub_reason
+                else {}
+            )
+            score = m.get("score") or 0.0
+            if scaffold_stub_reason:
+                verdict = "no_go"
+                status = "completed_no_go" if status == "completed" else status
+                score = min(float(score), 49.0)
+            elif status == "completed" and verdict == "no_go":
                 status = "completed_no_go"
             out.append({
                 "slug": m.get("slug", d.name),
                 "stack": m.get("stack", ""),
                 "status": status,
                 "verdict": verdict,
-                "score": m.get("score") or 0.0,
+                "score": score,
                 "created_at": m.get("created_at", ""),
                 "updated_at": m.get("updated_at", ""),
                 "size_bytes": _dir_size(d),
@@ -799,6 +821,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 if isinstance(stage_skills_used, dict) else {},
                 "quality_scorecard": dict(extra.get("quality_scorecard") or {})
                 if isinstance(extra.get("quality_scorecard"), dict) else {},
+                "scaffold_stub_gate": scaffold_stub_gate,
                 "deploy_plan": dict(extra.get("deploy_plan") or {})
                 if isinstance(extra.get("deploy_plan"), dict) else {},
                 "deployments": list(extra.get("deployments") or [])

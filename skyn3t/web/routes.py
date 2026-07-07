@@ -22,7 +22,7 @@ import structlog
 
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
-from skyn3t.core.model_router import newest_paid_model
+from skyn3t.core.model_router import live_catalog
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import (
     AppState,
@@ -293,7 +293,12 @@ _BUILD_TERMINAL_STATUSES = {
 }
 _BUILD_FAILOVER_STATUSES = {"failed", "completed_no_go"}
 _BUILD_FAILOVER_THRESHOLD = 2
-_DEEPSEEK_FAILOVER_FALLBACK = "deepseek/deepseek-v3.2"
+_DEEPSEEK_FAILOVER_FALLBACK = "deepseek/deepseek-v4-flash"
+_DEEPSEEK_FAILOVER_EXACT_EXCLUDE = {
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v3.2-exp",
+}
+_DEEPSEEK_FAILOVER_MARKER_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp")
 
 
 def _normalize_status(value: str) -> str:
@@ -357,8 +362,43 @@ async def _matching_failure_count(state: AppState, *, brief: str, stack: str, sl
     )
 
 
+def _pricing_value(raw: object) -> float | None:
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _catalog_token_cost(model: dict[str, Any]) -> float | None:
+    pricing = model.get("pricing")
+    if not isinstance(pricing, dict):
+        return None
+    prompt = _pricing_value(pricing.get("prompt") or pricing.get("input"))
+    completion = _pricing_value(pricing.get("completion") or pricing.get("output"))
+    if prompt is None and completion is None:
+        return _pricing_value(pricing.get("request"))
+    return float(prompt or 0.0) * 0.55 + float(completion or 0.0) * 0.45
+
+
 def _deepseek_failover_model() -> str:
-    return newest_paid_model("deepseek-v3") or _DEEPSEEK_FAILOVER_FALLBACK
+    scored: list[tuple[int, float, int, str]] = []
+    for model in live_catalog():
+        model_id = str(model.get("id") or "").strip()
+        low = model_id.lower()
+        if not model_id or "deepseek" not in low or model_id.endswith(":free"):
+            continue
+        if low in _DEEPSEEK_FAILOVER_EXACT_EXCLUDE:
+            continue
+        if any(marker in low for marker in _DEEPSEEK_FAILOVER_MARKER_EXCLUDE):
+            continue
+        cost = _catalog_token_cost(model)
+        if cost is None:
+            continue
+        v4_rank = 0 if "deepseek-v4" in low else 1
+        scored.append((v4_rank, cost, -int(model.get("created", 0) or 0), model_id))
+    scored.sort()
+    return scored[0][3] if scored else _DEEPSEEK_FAILOVER_FALLBACK
 
 
 def _normalize_build_profile(profile: str) -> str:

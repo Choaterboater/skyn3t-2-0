@@ -760,6 +760,7 @@ async def cleanup_builds(
 
 async def list_projects(state: AppState) -> dict[str, Any]:
     from skyn3t.studio.cleanup import _dir_size, _load_manifest
+    from skyn3t.studio.app_runner import build_run_spec
     from skyn3t.studio.proof_run import detect_offline_starter_stub
     pdir = Path(state.settings.projects_dir)
     out: list[dict[str, Any]] = []
@@ -814,6 +815,21 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 score = min(float(score), 49.0)
             elif status == "completed" and verdict == "no_go":
                 status = "completed_no_go"
+            serve_kind = ""
+            serve_reason = "no web entrypoint"
+            try:
+                spec = build_run_spec(d, str(m.get("stack", "") or ""), port=0)
+            except Exception as exc:  # noqa: BLE001 - one bad project must not break the list
+                log.warning(
+                    "project_serve_capability_error",
+                    slug=m.get("slug", d.name),
+                    error=str(exc)[:200],
+                )
+                spec = None
+                serve_reason = "serve capability check failed"
+            if spec is not None:
+                serve_kind = spec.kind
+                serve_reason = ""
             out.append({
                 "slug": m.get("slug", d.name),
                 "stack": m.get("stack", ""),
@@ -824,6 +840,9 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "updated_at": m.get("updated_at", ""),
                 "size_bytes": _dir_size(d),
                 "has_preview": (d / "index.html").exists(),
+                "has_serve": bool(serve_kind),
+                "serve_kind": serve_kind,
+                "serve_reason": serve_reason,
                 "has_manifest": man is not None,
                 # Spec 2 cost attribution (None when a build predates it).
                 "cost_usd": extra.get("build_cost_usd"),

@@ -403,8 +403,9 @@ function PromptsInline({ slug }) {
   );
 }
 
-function ServeCell({ slug, served, busy, err, onServe, onStop }) {
+function ServeCell({ slug, served, busy, err, canServe = true, serveReason = "", onServe, onStop }) {
   const running = !!served && (served.status === "running" || !!served.url);
+  const disabledReason = canServe ? "" : serveReason || "no web entrypoint";
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
@@ -431,10 +432,11 @@ function ServeCell({ slug, served, busy, err, onServe, onStop }) {
         ) : (
           <button
             onClick={() => onServe(slug)}
-            disabled={!!busy}
+            disabled={!!busy || !canServe}
             className="btn-ghost text-plasma/80 hover:text-plasma disabled:opacity-50"
+            title={disabledReason}
           >
-            {busy === "serving" ? "Starting…" : "Serve"}
+            {busy === "serving" ? "Starting…" : canServe ? "Serve" : "No serve"}
           </button>
         )}
       </div>
@@ -444,6 +446,13 @@ function ServeCell({ slug, served, busy, err, onServe, onStop }) {
           title={err}
         >
           {err}
+        </span>
+      ) : disabledReason ? (
+        <span
+          className="max-w-[180px] truncate font-mono text-[10px] text-ash/45"
+          title={disabledReason}
+        >
+          {disabledReason}
         </span>
       ) : null}
     </div>
@@ -786,6 +795,8 @@ export default function Projects({ stream }) {
                             served={served[p.slug]}
                             busy={busy[p.slug]}
                             err={serveErr[p.slug]}
+                            canServe={p.has_serve !== false}
+                            serveReason={p.serve_reason}
                             onServe={serve}
                             onStop={stopServe}
                           />

@@ -1391,6 +1391,55 @@ _KNOWN_NPM_VERSIONS = {
 }
 
 
+def _js_keyword_is_code(text: str, pos: int) -> bool:
+    """True when ``pos`` is outside JS strings and comments.
+
+    The npm reconciler intentionally uses lightweight regexes, but generated apps
+    often include prose like ``"click import '" + name + "'"``. Without this guard,
+    that copy looks like a real import specifier.
+    """
+    state: str | None = None
+    escaped = False
+    i = 0
+    while i < pos:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if state == "line_comment":
+            if ch in "\r\n":
+                state = None
+            i += 1
+            continue
+        if state == "block_comment":
+            if ch == "*" and nxt == "/":
+                state = None
+                i += 2
+            else:
+                i += 1
+            continue
+        if state in {"'", '"', "`"}:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == state:
+                state = None
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            state = "line_comment"
+            i += 2
+        elif ch == "/" and nxt == "*":
+            state = "block_comment"
+            i += 2
+        elif ch in {"'", '"', "`"}:
+            state = ch
+            i += 1
+        else:
+            i += 1
+    return state is None
+
+
 def _pkg_name(spec: str) -> str:
     """Bare specifier -> npm package name ('react-dom/client'->'react-dom',
     '@scope/pkg/sub'->'@scope/pkg')."""
@@ -1549,11 +1598,18 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for spec in _BARE_IMPORT_RE.findall(text):
+        for match in _BARE_IMPORT_RE.finditer(text):
+            if not _js_keyword_is_code(text, match.start()):
+                continue
+            spec = match.group(1)
             if spec.startswith(("node:", "virtual:")):
                 continue
             name = _pkg_name(spec)
-            if name and name not in _NODE_BUILTINS:
+            if (
+                name
+                and name not in _NODE_BUILTINS
+                and not _invalid_npm_package_names({"dependencies": {name: "latest"}})
+            ):
                 used.add(name)
     missing = sorted(u for u in used if u not in declared)
     deps = pkg.setdefault("dependencies", {})

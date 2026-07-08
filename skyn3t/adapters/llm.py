@@ -405,11 +405,17 @@ def _err_reason(exc: BaseException | None) -> str:
     return f"http_{s}" if s is not None else type(exc).__name__
 
 
+class _AgenticTurnStall(TimeoutError):
+    """A single agentic OpenRouter turn exceeded the no-progress watchdog."""
+
+
 def classify_llm_error(exc: BaseException) -> str:
     """Pure recovery-strategy classifier for a failed LLM call.
 
     Returns ``"transient"`` (retry same model), ``"model"`` (fail over to the next
     candidate), or ``"fatal"`` (fail fast)."""
+    if isinstance(exc, _AgenticTurnStall):
+        return "model"
     # Connection resets / timeouts / read errors (all httpx.TransportError) are
     # transient by nature; a bounded retry usually clears them.
     if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
@@ -1158,6 +1164,11 @@ class LLMClient:
         budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
         wrote, finished, start = 0, False, _t.time()
         budget_error = ""
+        attempted_model = model
+        fallback_model = ""
+        turn_timeouts = 0
+        stall_reason = ""
+        idle_timeout = float(getattr(self.settings, "agentic_idle_timeout", 0) or 0)
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
         verify_on_stop = bool(getattr(self.settings, "agentic_verify_on_stop", True))
         verify_denials, _MAX_VERIFY_DENIALS = 0, 2
@@ -1208,16 +1219,38 @@ class LLMClient:
                     sent = self._edit_context(messages)
 
                     async def _do(m, _sent=sent):
-                        body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
-                                "tool_choice": "auto", "max_tokens": 16384}
-                        resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
-                        resp.raise_for_status()
-                        return resp.json(), m
+                        async def _post():
+                            body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
+                                    "tool_choice": "auto", "max_tokens": 16384}
+                            resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                            resp.raise_for_status()
+                            return resp.json(), m
+
+                        if idle_timeout > 0:
+                            try:
+                                return await asyncio.wait_for(_post(), timeout=idle_timeout)
+                            except TimeoutError as exc:
+                                nonlocal turn_timeouts, stall_reason
+                                turn_timeouts += 1
+                                stall_reason = (
+                                    f"OpenRouter agentic turn stalled after {idle_timeout:g}s"
+                                )
+                                log.warning(
+                                    "llm.or_agentic_stalled",
+                                    model=m,
+                                    turn=turn,
+                                    idle_s=idle_timeout,
+                                    wrote=wrote,
+                                )
+                                raise _AgenticTurnStall(stall_reason) from exc
+                        return await _post()
 
                     # Retry + model failover: a mid-build retired model fails over to
                     # a live one and PINS it for the rest of the session (`model`),
                     # instead of the whole agentic build dying.
-                    data, model = await self._resilient_call(model, Tier.BACKEND, _do)
+                    data, model = await self._resilient_call(model, Tier.CHEAP, _do)
+                    if model != attempted_model:
+                        fallback_model = model
                     msg = data["choices"][0]["message"]
                     try:
                         self._record_openrouter_agentic_usage(model, data, sent, msg)
@@ -1292,7 +1325,9 @@ class LLMClient:
         log.info("llm.or_agentic_done", model=model, files_written=wrote, finished=finished)
         self._record_completion("backend", "codegen", model)
         return {"ok": wrote > 0 and not budget_error, "backend": "openrouter",
-                "model": model,
+                "model": model, "attempted_model": attempted_model,
+                "fallback_model": fallback_model, "stalled": bool(turn_timeouts),
+                "stall_reason": stall_reason, "turn_timeouts": turn_timeouts,
                 "error": budget_error or ("" if wrote > 0 else "agentic loop wrote no files")}
 
     @property

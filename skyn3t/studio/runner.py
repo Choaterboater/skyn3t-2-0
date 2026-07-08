@@ -3447,6 +3447,23 @@ class StudioRunner:
                     _prompts = result.output.get("prompts")
                     if _prompts:
                         manifest.extra["prompts"] = _prompts
+                    _agentic = result.output.get("agentic")
+                    if isinstance(_agentic, dict):
+                        manifest.extra["agentic"] = {
+                            k: _agentic.get(k)
+                            for k in (
+                                "ok",
+                                "backend",
+                                "model",
+                                "attempted_model",
+                                "fallback_model",
+                                "stalled",
+                                "stall_reason",
+                                "turn_timeouts",
+                                "error",
+                            )
+                            if _agentic.get(k) not in (None, "")
+                        }
 
                 # Codegen degradation: if the agentic code path failed or under-
                 # delivered, surface that in the manifest so verdict/scoring has

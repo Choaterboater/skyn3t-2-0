@@ -774,6 +774,23 @@ class CodeAgent(BaseAgent):
             # scaffold path). The runner lifts these into manifest.extra["prompts"].
             "prompts": self.metadata.get("prompts", []),
         }
+        agentic = self.metadata.get("agentic")
+        if isinstance(agentic, dict):
+            out["agentic"] = {
+                k: agentic.get(k)
+                for k in (
+                    "ok",
+                    "backend",
+                    "model",
+                    "attempted_model",
+                    "fallback_model",
+                    "stalled",
+                    "stall_reason",
+                    "turn_timeouts",
+                    "error",
+                )
+                if agentic.get(k) not in (None, "")
+            }
         # Propagate degradation signal from the agentic path so downstream
         # scoring/verdict can see it. Never set on the stub or completion paths.
         if self.metadata.get("degraded"):

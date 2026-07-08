@@ -429,6 +429,7 @@ function aiCostMeta(build) {
 
 function buildDiagnostics(build) {
   const trace = build.model_trace || {};
+  const agentic = trace.agentic || {};
   const scorecard = build.quality_scorecard || {};
   const skills = Array.isArray(build.skills_used)
     ? build.skills_used.length
@@ -467,6 +468,13 @@ function buildDiagnostics(build) {
         ? `workflow depth: ${workflowIssue}`
         : "workflow depth failed";
     issues.push(workflowMessage);
+  }
+  if (agentic.stalled) {
+    const stallReason = String(agentic.stall_reason || agentic.error || "").trim();
+    issues.push(stallReason ? `agentic stalled: ${stallReason}` : "agentic stalled");
+  }
+  if (agentic.fallback_model) {
+    issues.push(`agentic fallback: ${agentic.fallback_model}`);
   }
   if (build.status === "failed") issues.push("failed");
   if (skills === 0) issues.push("skills 0");

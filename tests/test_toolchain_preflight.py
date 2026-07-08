@@ -24,6 +24,22 @@ def test_available_toolchain_keeps_the_choice(monkeypatch):
     assert _select("a react dashboard for my metrics").stack == "react"
 
 
+def test_client_portal_defaults_to_web_app_not_python_cli(monkeypatch):
+    monkeypatch.setattr(ss.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    brief = (
+        "A client portal web app for a small marketing agency: projects, "
+        "approvals, invoices, messages, and admin settings"
+    )
+    choice = _select(brief)
+    assert choice.stack == "react"
+    assert choice.method == "keyword"
+
+
+def test_client_library_still_routes_to_python(monkeypatch):
+    monkeypatch.setattr(ss.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+    assert _select("a python client library for an API").stack == "python"
+
+
 def test_missing_npm_demotes_node_web_to_static(monkeypatch):
     monkeypatch.setattr(ss.shutil, "which", lambda exe: None)
     choice = _select("a react dashboard for my metrics")

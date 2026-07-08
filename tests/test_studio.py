@@ -32,6 +32,16 @@ def test_detect_stack():
     assert detect_stack("something vague") == "python"
 
 
+def test_detect_stack_routes_portals_and_dashboards_to_web_app():
+    assert detect_stack("a client portal web app for approvals and invoices") == "react"
+    assert detect_stack("an admin settings dashboard for approvals") == "react"
+
+
+def test_detect_stack_does_not_read_client_as_cli():
+    assert detect_stack("a client portal web app") != "cli"
+    assert detect_stack("a python client library for an API") == "python"
+
+
 def test_planner_default_order():
     p = Planner()
     plan = p.plan("Build a python library", "lib")

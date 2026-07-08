@@ -155,9 +155,10 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # on the standalone token, never inside "penguin"/"arguing"/"roguish". An
     # AI-bearing gui/ui brief is then bumped to nextjs below (a server route holds
     # the key) — exactly right for "a trading app with AI, configured in a GUI".
-    ("react", ("react", "vite", "spa", "single page", "frontend", "dashboard ui",
-               "gui", "ui", "graphical interface", "graphical ui",
-               "graphical user interface")),
+    ("react", ("react", "vite", "spa", "single page", "frontend", "dashboard",
+               "dashboard ui", "portal", "client portal", "customer portal",
+               "member portal", "admin app", "admin dashboard", "gui", "ui",
+               "graphical interface", "graphical ui", "graphical user interface")),
     ("fastapi", ("fastapi", "rest api", "http api", "backend api", "endpoint")),
     ("flask", ("flask",)),
     ("django", ("django",)),
@@ -309,8 +310,8 @@ _WORD_BOUNDED_KEYWORDS = frozenset({
     "mcp",
     # GUI/UI/app-default terms: whole-word so these only route on standalone
     # tokens, never inside "penguin"/"arguing"/"suitable"/"happy".
-    "gui", "ui", "app", "apps", "application", "project", "repo", "repository",
-    "rebuild", "remake",
+    "cli", "dashboard", "portal", "gui", "ui", "app", "apps", "application",
+    "project", "repo", "repository", "rebuild", "remake",
     # Mobile target names: whole-word so "bios"/"dandroid" don't false-route.
     "ios", "android",
     # Swift phrases that END in "swift": whole-word so the trailing token can't be

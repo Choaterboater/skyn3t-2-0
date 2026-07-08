@@ -84,8 +84,10 @@ answer. Token-gated one-command execution is the next slice.
 - **Adversarial critic gate.** A critic tries to break the result before delivery.
 - **Closed learning loop.** Lessons are injected into stage prompts and graded by
   build outcome, so the factory gets measurably better over time.
-- **Reliability as a number.** A per-app-type GO-rate bench + before/after gating
-  keeps a change from lifting the average while silently regressing one stack.
+- **Reliability as a number.** The default bench is app-factory focused; use
+  `skyn3t bench run --suite all` or `--suite games` when you intentionally want
+  game/full-stack coverage. Before/after gating keeps a change from lifting the
+  average while silently regressing one app type.
 - **Safe + cheap by default.** Offline stub on, autonomy gated behind approval,
   hard per-build/daily USD + token caps, loopback-only web access.
 - **Degrade, don't crash.** Every optional dependency (FastAPI, Docker, ChromaDB,

@@ -15,13 +15,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-# The factory's exam: one concrete case per REAL builder stack, so a per-app-type
-# GO-rate (summarize_by_stack) can never go blind on a stack. Briefs are concrete
-# so intent scoring has real signal. A case's `stack` must be a valid selector pin
-# (studio.stack_selector._validate_pin = the REAL_BUILDER_STACKS set, with the
-# flask->fastapi / cli->python collapses); an invalid pin silently drops to
-# selector choice. `test_bench_covers_every_builder_stack` locks the coverage.
-DEFAULT_CASES_RAW = [
+# The all-stacks exam: one concrete case per REAL builder stack, so a per-app-type
+# GO-rate (summarize_by_stack) can never go blind on a stack when this broader
+# suite is requested. Briefs are concrete so intent scoring has real signal. A
+# case's `stack` must be a valid selector pin (studio.stack_selector._validate_pin
+# = the REAL_BUILDER_STACKS set, with the flask->fastapi / cli->python collapses);
+# an invalid pin silently drops to selector choice.
+ALL_STACK_CASES_RAW = [
     ("coloring-site", "a website with printable coloring pages for kids", "static"),
     ("todo-cli", "a python command-line to-do list that saves tasks to a file", "python"),
     ("notes-api", "a FastAPI service to create and list short text notes", "fastapi"),
@@ -56,7 +56,27 @@ class BenchCase:
         return asdict(self)
 
 
-DEFAULT_CASES = [BenchCase(id=i, brief=b, stack=s) for (i, b, s) in DEFAULT_CASES_RAW]
+ALL_STACK_CASES = [BenchCase(id=i, brief=b, stack=s) for (i, b, s) in ALL_STACK_CASES_RAW]
+GAME_CASES = [c for c in ALL_STACK_CASES if c.stack == "phaser"]
+
+# The day-to-day factory exam is app-first. Games remain buildable and benchmarkable
+# through ALL_STACK_CASES/GAME_CASES, but they are no longer part of the default
+# ratchet loop while the app factory is being stabilized.
+DEFAULT_CASES = [c for c in ALL_STACK_CASES if c.stack != "phaser"]
+
+
+def built_in_cases(suite: str = "apps") -> list[BenchCase]:
+    """Return a built-in bench suite.
+
+    ``apps`` is the default reliability loop, ``all`` restores one case per
+    builder stack, and ``games`` isolates the Phaser game suite.
+    """
+    key = (suite or "apps").strip().lower().replace("_", "-")
+    if key in {"all", "all-stacks", "full"}:
+        return list(ALL_STACK_CASES)
+    if key in {"game", "games", "phaser"}:
+        return list(GAME_CASES)
+    return list(DEFAULT_CASES)
 
 
 @dataclass(slots=True)

@@ -12,7 +12,7 @@ layout, interaction style, and UI strategy.
 | CRUD app | Forms, lists, sidebars, modal dialogs | Prefer predictable navigation and validation |
 | SaaS product | Nav shell, settings pages, empty states, onboarding | Needs a durable design system |
 | CLI / developer tool | Minimal web UI or terminal-first output | Keep friction low, emphasize speed |
-| Game | Canvas/engine surface plus HUD and overlays | UI must not fight the playfield |
+| Game | Canvas/engine surface plus HUD and overlays | Experimental track; run explicit game/all-stack bench suites |
 | Data viz / analytics | Charts, legends, drilldowns, export actions | Surface scale and filtering clearly |
 | Utility / one-off tool | Single-purpose form and result area | Reduce clutter; one screen is often enough |
 
@@ -21,6 +21,8 @@ layout, interaction style, and UI strategy.
 - Prefer **auto-detection from the brief and code context**.
 - Let the user override the choice in Settings or with `SKYN3T_APP_TYPE_OVERRIDE`.
 - Only fall back to a default if the brief is ambiguous.
+- Day-to-day reliability work should use the app-focused bench. Use the explicit
+  `games` or `all` bench suite when changing game routing, assets, or playability.
 
 ## Style rules
 

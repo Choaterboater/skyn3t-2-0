@@ -31,6 +31,20 @@ def test_phaser_prompt_demands_depth():
     assert any(p in low for p in ("rapid fire", "spread", "shield", "bomb"))
 
 
+def test_phaser_prompt_treats_explicit_counts_as_hard_contracts():
+    prompt = _agent()._agentic_prompt(
+        "Code Islands: a 120-level journey across 12 islands and 4 phases",
+        "phaser",
+        _plan(),
+        "",
+    )
+    low = prompt.lower()
+    assert "explicit brief counts are hard contracts" in low
+    assert "120 levels" in low
+    assert "src/sim.js" in low
+    assert "do not shrink" in low
+
+
 def test_non_game_prompt_has_no_depth_directive():
     prompt = _agent()._agentic_prompt("a marketing site", "nextjs", _plan(), "")
     assert "GAME DEPTH" not in prompt

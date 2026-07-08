@@ -424,6 +424,13 @@ def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None
     assert "workflow depth:" in studio
 
 
+def test_studio_recent_build_diagnostics_surface_agentic_stalls() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "trace.agentic" in studio
+    assert "agentic stalled:" in studio
+    assert "agentic fallback:" in studio
+
+
 def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "function rebuildFields(build)" in studio

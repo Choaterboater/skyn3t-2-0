@@ -715,6 +715,29 @@ def test_build_summary_preserves_full_app_contract_in_model_trace():
     assert summary["model_trace"]["full_app"] is True
 
 
+def test_build_summary_exposes_agentic_watchdog_metadata():
+    summary = build_summary({
+        "status": "completed",
+        "extra": {
+            "agentic": {
+                "ok": True,
+                "backend": "openrouter",
+                "model": "fallback/fast",
+                "attempted_model": "primary/slow",
+                "fallback_model": "fallback/fast",
+                "stalled": True,
+                "stall_reason": "OpenRouter agentic turn stalled after 0.01s",
+                "turn_timeouts": 1,
+            }
+        },
+    })
+
+    agentic = summary["model_trace"]["agentic"]
+    assert agentic["stalled"] is True
+    assert agentic["fallback_model"] == "fallback/fast"
+    assert agentic["turn_timeouts"] == 1
+
+
 async def test_completed_build_summary_preserves_full_app_for_rebuild_replay():
     class _Studio:
         def __init__(self):

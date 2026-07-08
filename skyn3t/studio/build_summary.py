@@ -24,6 +24,26 @@ def _ok(value: Any) -> bool | None:
     return None
 
 
+def _compact_agentic(value: Any) -> dict[str, Any]:
+    data = _as_dict(value)
+    keys = (
+        "ok",
+        "backend",
+        "model",
+        "attempted_model",
+        "fallback_model",
+        "stalled",
+        "stall_reason",
+        "turn_timeouts",
+        "error",
+    )
+    return {
+        k: data.get(k)
+        for k in keys
+        if data.get(k) not in (None, "")
+    }
+
+
 def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     """Return compact model/profile/quality fields from a manifest dict."""
 
@@ -52,6 +72,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
             if isinstance(s, dict)
         ],
         "stage_costs": stage_costs,
+        "agentic": _compact_agentic(extra.get("agentic")),
     }
     quality_scorecard = {
         "status": manifest.get("status", ""),

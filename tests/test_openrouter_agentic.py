@@ -41,6 +41,34 @@ class _FakeClient:
         return _FakeResp(p)
 
 
+class _StallPrimaryThenFallbackClient:
+    """Primary model stalls once; fallback model then writes and finishes."""
+
+    def __init__(self):
+        self.models: list[str] = []
+        self.fallback_turn = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        model = (json or {}).get("model", "")
+        self.models.append(model)
+        if model == "primary/slow":
+            await asyncio.sleep(0.05)
+            return _FakeResp({"choices": [{"message": {"content": "too late"}}]})
+        self.fallback_turn += 1
+        if self.fallback_turn == 1:
+            return _FakeResp(_tool_turn(
+                "write_file",
+                {"path": "server.py", "content": "def app():\n    return 'ok'\n"},
+            ))
+        return _FakeResp(_tool_turn("finish", {}, "t2"))
+
+
 def _tool_turn(name, args, tcid="t1"):
     return {"choices": [{"message": {"content": "", "tool_calls": [
         {"id": tcid, "type": "function",
@@ -75,6 +103,34 @@ def test_agentic_loop_records_effective_model(tmp_path, monkeypatch):
     assert res["model"] == "openrouter/selected"
     assert client.last_model == "openrouter/selected"
     assert client.routes[-1] == ("backend", "codegen", "openrouter/selected")
+
+
+def test_agentic_loop_stall_falls_over_to_configured_fast_model(tmp_path, monkeypatch):
+    fake = _StallPrimaryThenFallbackClient()
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+    client = LLMClient(Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        llm_max_retries=0,
+        llm_fallback_models="fallback/fast",
+        agentic_verify_on_stop=False,
+    ))
+    client.settings.agentic_idle_timeout = 0.01
+
+    res = asyncio.run(client._openrouter_agentic(
+        "build",
+        str(tmp_path),
+        "primary/slow",
+        stack="fastapi",
+    ))
+
+    assert res["ok"] is True
+    assert res["stalled"] is True
+    assert res["attempted_model"] == "primary/slow"
+    assert res["fallback_model"] == "fallback/fast"
+    assert res["turn_timeouts"] == 1
+    assert fake.models[:2] == ["primary/slow", "fallback/fast"]
+    assert (tmp_path / "server.py").exists()
 
 
 def test_agentic_loop_records_openrouter_usage_for_budget(tmp_path, monkeypatch):

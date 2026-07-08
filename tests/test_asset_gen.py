@@ -232,6 +232,24 @@ async def test_empty_images_yields_zero(tmp_path):
     assert res["generated"] == 0 and res["skipped"] is True
 
 
+async def test_repeated_empty_images_open_provider_circuit(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    client = _FakeClient(images=[])
+    s = _settings(replicate_api_token="r8_x", asset_gen=True)
+
+    res = await generate_assets(
+        str(proj),
+        "a kids coloring app with animals",
+        settings=s,
+        client=client,
+        max_assets=5,
+    )
+
+    assert res["generated"] == 0 and res["skipped"] is True
+    assert len(client.calls) == 2
+
+
 async def test_runner_asset_step_clears_stale_extra_assets(tmp_path):
     runner = StudioRunner(
         EventBus(),

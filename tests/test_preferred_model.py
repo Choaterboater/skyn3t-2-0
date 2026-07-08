@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.config.settings import Settings
-from skyn3t.core.model_router import _FREE_DEFAULTS, Tier
+from skyn3t.core.model_router import _FREE_DEFAULTS, Tier, is_free_model_id
 
 
 async def test_preferred_model_pins_the_model_used():
@@ -47,6 +47,12 @@ async def test_free_only_allows_free_manual_model():
     c = LLMClient(Settings(llm_backend="stub", free_only=True, preferred_model="openai/gpt-4o"))
     res = await c.complete("hi", tier=Tier.BACKEND, model_override="qwen/manual:free")
     assert res.model == "qwen/manual:free"
+
+
+async def test_free_only_allows_openrouter_free_router_manual_model():
+    c = LLMClient(Settings(llm_backend="stub", free_only=True, preferred_model="openai/gpt-4o"))
+    res = await c.complete("hi", tier=Tier.BACKEND, model_override="openrouter/free")
+    assert res.model == "openrouter/free"
 
 
 async def test_list_models_uses_public_endpoint_without_key(monkeypatch):
@@ -356,7 +362,7 @@ async def test_model_routing_preview_free_only_blocks_paid_manual_override(monke
 
     assert out["model_override"] == "manual/paid"
     assert out["free_only"] is True
-    assert all(entry["model"].endswith(":free") for entry in out["tiers"])
+    assert all(is_free_model_id(entry["model"]) for entry in out["tiers"])
     assert all(entry["source"] == "free_only" for entry in out["tiers"])
 
 
@@ -410,6 +416,10 @@ async def test_model_catalog_filters_and_sorts(monkeypatch):
                     "id": "openrouter/deepseek-v3:free",
                     "pricing": {"prompt": 0.0, "completion": 0.0},
                 },
+                {
+                    "id": "openrouter/free",
+                    "pricing": {"prompt": 0.0, "completion": 0.0},
+                },
             ],
             "ok",
         )
@@ -441,5 +451,7 @@ async def test_model_catalog_filters_and_sorts(monkeypatch):
         only_free=True,
         limit=10,
     )
-    assert out_free["count"] == 1
-    assert out_free["items"][0]["is_free"] is True
+    assert out_free["count"] == 2
+    assert {item["id"] for item in out_free["items"]} == {"openrouter/deepseek-v3:free", "openrouter/free"}
+    assert all(item["is_free"] is True for item in out_free["items"])
+    assert all(item["pricing_summary"] == "free" for item in out_free["items"])

@@ -43,6 +43,15 @@ _FREE_DEFAULTS: dict[Tier, str] = {
     Tier.DOCS: "qwen/qwen3-coder:free",
 }
 
+_OPENROUTER_FREE_ROUTER = "openrouter/free"
+_FREE_FAILOVER_LIMIT = 18
+
+
+def is_free_model_id(model: str) -> bool:
+    """Whether a model id is allowed under the free-only cost guard."""
+    low = (model or "").strip().lower()
+    return low.endswith(":free") or low == _OPENROUTER_FREE_ROUTER
+
 # Paid defaults used when free_only=0.
 # Use ``newest:<family>`` so each tier can drift toward a different family
 # automatically without hardcoding one fixed model to every tier forever.
@@ -59,12 +68,38 @@ _PAID_FALLBACK_CACHE = "model_router_paid_fallback.json"
 # When a configured :free model is no longer in the live catalog, substitute a
 # valid one preferring these markers per tier (best-for-purpose first).
 _FREE_TIER_PREFS: dict[Tier, tuple[str, ...]] = {
-    Tier.CHEAP: ("qwen3-coder", "coder", "qwen3", "llama-3.3", "deepseek", "qwen"),
-    Tier.UI: ("qwen3-coder", "coder", "qwen3", "llama-3.3", "deepseek", "qwen"),
-    Tier.BACKEND: ("qwen3-coder", "coder", "qwen3", "deepseek", "llama-3.3", "qwen"),
-    Tier.DOCS: ("qwen3-coder", "qwen3", "llama-3.3", "deepseek", "qwen"),
-    Tier.STRONG: ("qwen3-next", "llama-3.3-70b", "deepseek-r1", "qwen3", "deepseek", "qwen"),
+    Tier.CHEAP: (
+        "qwen3-coder", "north-mini-code", "laguna-xs-2.1", "laguna",
+        "hy3", "nemotron-3-ultra", "nemotron-3-super", "qwen3-next",
+        "gpt-oss-120b", "gemma-4", "llama-3.3", "deepseek", "qwen",
+    ),
+    Tier.UI: (
+        "qwen3-coder", "north-mini-code", "laguna-xs-2.1", "laguna",
+        "hy3", "nemotron-3-ultra", "gemma-4", "qwen3-next",
+        "gpt-oss-120b", "llama-3.3", "deepseek", "qwen",
+    ),
+    Tier.BACKEND: (
+        "qwen3-coder", "north-mini-code", "laguna-xs-2.1", "laguna",
+        "hy3", "nemotron-3-ultra", "nemotron-3-super", "qwen3-next",
+        "gpt-oss-120b", "deepseek", "llama-3.3", "qwen",
+    ),
+    Tier.DOCS: (
+        "hy3", "qwen3-coder", "north-mini-code", "qwen3-next",
+        "gpt-oss-120b", "gemma-4", "llama-3.3", "deepseek", "qwen",
+    ),
+    Tier.STRONG: (
+        "hy3", "qwen3-next", "nemotron-3-ultra", "nemotron-3-super",
+        "gpt-oss-120b", "llama-3.3-70b", "qwen3-coder",
+        "north-mini-code", "laguna", "deepseek-r1", "qwen3", "deepseek", "qwen",
+    ),
 }
+
+_FREE_FAILOVER_EXCLUDE = (
+    "content-safety",
+    "moderation",
+    "guard",
+    "embedding",
+)
 
 # Live ":free" catalog cache (id list), refreshed at most every _LIVE_TTL seconds.
 _LIVE_FREE_IDS: list[str] | None = None
@@ -87,8 +122,16 @@ def live_free_model_ids(timeout: float = 8.0) -> list[str]:
         req = _u.Request("https://openrouter.ai/api/v1/models",
                          headers={"User-Agent": "skyn3t"})
         data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
-        fresh = [m["id"] for m in data
-                 if isinstance(m.get("id"), str) and m["id"].endswith(":free")]
+        for m in data:
+            model_id = str(m.get("id") or "").strip() if isinstance(m, dict) else ""
+            if not model_id or not is_free_model_id(model_id):
+                continue
+            if not _model_accepts_text(m) or not _model_supports_text(m):
+                continue
+            if any(marker in model_id.lower() for marker in _FREE_FAILOVER_EXCLUDE):
+                continue
+            if model_id not in fresh:
+                fresh.append(model_id)
     except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
         log.warning("router.live_models_unavailable", error=str(exc)[:120])
     _LIVE_FREE_IDS = fresh
@@ -262,6 +305,16 @@ def _model_supports_text(model: dict) -> bool:
     return "text" in {str(o).lower() for o in outputs}
 
 
+def _model_accepts_text(model: dict) -> bool:
+    arch = model.get("architecture")
+    if not isinstance(arch, dict):
+        return True
+    inputs = arch.get("input_modalities")
+    if not isinstance(inputs, list):
+        return True
+    return "text" in {str(i).lower() for i in inputs}
+
+
 def _arena_quality(model: dict, tier: Tier) -> float:
     benchmarks = model.get("benchmarks")
     if not isinstance(benchmarks, dict):
@@ -343,9 +396,92 @@ def _heuristic_quality(model_id: str, tier: Tier) -> float:
     return min(score, 58.0)
 
 
+def _free_marker_quality(model_id: str, tier: Tier) -> float:
+    low = model_id.lower()
+    prefs = _FREE_TIER_PREFS.get(tier, ())
+    for idx, marker in enumerate(prefs):
+        if marker in low:
+            return max(42.0, 112.0 - idx * 5.0)
+    if low == _OPENROUTER_FREE_ROUTER:
+        return 74.0
+    if "coder" in low or "code" in low:
+        return 62.0
+    if "instruct" in low:
+        return 50.0
+    return 40.0
+
+
+def _free_catalog_score(model: dict, tier: Tier, newest_created: int) -> float | None:
+    model_id = str(model.get("id") or "").strip()
+    if not model_id or not is_free_model_id(model_id):
+        return None
+    low = model_id.lower()
+    if any(marker in low for marker in _FREE_FAILOVER_EXCLUDE):
+        return None
+    if not _model_accepts_text(model) or not _model_supports_text(model):
+        return None
+
+    created = int(model.get("created", 0) or 0)
+    recency = 0.0 if not newest_created or not created else max(
+        0.0,
+        min(100.0, 100.0 - ((newest_created - created) / 86400.0) * 0.6),
+    )
+    context = int(model.get("context_length", 0) or 0)
+    context_score = min(100.0, math.log10(max(context, 1)) * 18.0)
+    quality = max(_arena_quality(model, tier), _index_quality(model, tier), _heuristic_quality(model_id, tier))
+    return (
+        _free_marker_quality(model_id, tier)
+        + quality * 0.24
+        + recency * 0.18
+        + context_score * 0.08
+    )
+
+
+def ranked_live_free_model_ids(tier: Tier, limit: int = _FREE_FAILOVER_LIMIT) -> list[str]:
+    """Current free OpenRouter models ranked for this tier.
+
+    This intentionally uses the full live catalog, not only the handful of
+    hardcoded defaults, so newly-released free models become fallback candidates
+    without a code change. ``openrouter/free`` is kept in the pool as a free
+    router after stronger named code models.
+    """
+    limit = max(0, int(limit or 0))
+    if limit <= 0:
+        return []
+    catalog = live_catalog()
+    newest_created = max((int(m.get("created", 0) or 0) for m in catalog), default=0)
+    scored: list[tuple[float, int, int, str]] = []
+    for m in catalog:
+        if not isinstance(m, dict):
+            continue
+        score = _free_catalog_score(m, tier, newest_created)
+        if score is None:
+            continue
+        scored.append((
+            score,
+            int(m.get("created", 0) or 0),
+            int(m.get("context_length", 0) or 0),
+            str(m.get("id") or "").strip(),
+        ))
+    scored.sort(reverse=True)
+    out: list[str] = []
+    for _, _, _, model_id in scored:
+        if model_id and model_id not in out:
+            out.append(model_id)
+            if len(out) >= limit:
+                return out
+
+    for model_id in live_free_model_ids():
+        if model_id not in out:
+            out.append(model_id)
+            if len(out) >= limit:
+                break
+    return out
+
+
 def _catalog_model_score(model: dict, tier: Tier, profile: str, newest_created: int) -> float | None:
     model_id = str(model.get("id") or "").strip()
-    if not model_id or model_id.endswith(":free"):
+    if not model_id or is_free_model_id(model_id):
         return None
     low = model_id.lower()
     if model_id.startswith("~") or any(x in low for x in _AUTO_ROUTE_EXCLUDE):
@@ -417,7 +553,7 @@ def newest_paid_model(family: str) -> str | None:
     fam = family.lower()
     families = _CODER_FAMILIES if fam == "coder" else (fam,)
     cands = [(m["id"], m["created"]) for m in live_catalog()
-             if any(f in m["id"].lower() for f in families) and not m["id"].endswith(":free")
+             if any(f in m["id"].lower() for f in families) and not is_free_model_id(m["id"])
              and (m["id"] in _NEWEST_ALLOW
                   or not any(x in m["id"].lower() for x in _NEWEST_EXCLUDE))]
     return max(cands, key=lambda c: c[1])[0] if cands else None
@@ -425,7 +561,7 @@ def newest_paid_model(family: str) -> str | None:
 
 def _fallback_free_model(tier: Tier) -> str:
     """Best-effort :free model substitute used when paid resolution fails."""
-    live = live_free_model_ids()
+    live = ranked_live_free_model_ids(tier, limit=1) or live_free_model_ids()
     if not live:
         return _FREE_DEFAULTS[tier]
     for marker in _FREE_TIER_PREFS.get(tier, ()):
@@ -570,7 +706,7 @@ class ModelRouter:
         # Self-heal a retired :free id against OpenRouter's LIVE catalog (only
         # worth a fetch when an OpenRouter key is configured — otherwise the
         # backend is claude/stub and the model id is unused).
-        if (self.settings.free_only and model.endswith(":free")
+        if (self.settings.free_only and is_free_model_id(model)
                 and str(getattr(self.settings, "openrouter_api_key", "") or "").strip()):
             model = self._valid_free_model(model, tier)
         return model
@@ -603,7 +739,7 @@ class ModelRouter:
             )
             log.info("router.rewrote_claude", tier=tier.value, to=model)
         # free-only: force a :free model.
-        if self.settings.free_only and not model.endswith(":free"):
+        if self.settings.free_only and not is_free_model_id(model):
             model = _FREE_DEFAULTS[tier]
         return model
 
@@ -621,11 +757,10 @@ class ModelRouter:
         cands: list[str] = []
         try:
             if self.settings.free_only:
-                live = live_free_model_ids()  # [] when offline -> static backstop only
-                for marker in _FREE_TIER_PREFS.get(tier, ()):  # best-for-tier first
-                    for m in live:
-                        if marker in m.lower() and m not in cands:
-                            cands.append(m)
+                live = ranked_live_free_model_ids(tier)
+                for m in live:
+                    if m not in cands:
+                        cands.append(m)
                 for t in Tier:  # static offline backstop across every tier
                     d = _FREE_DEFAULTS[t]
                     if d not in cands:

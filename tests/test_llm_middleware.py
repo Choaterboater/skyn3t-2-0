@@ -27,7 +27,7 @@ import skyn3t.adapters.llm as llm
 import skyn3t.core.model_router as mr
 from skyn3t.adapters.llm import LLMClient, classify_llm_error
 from skyn3t.config.settings import Settings
-from skyn3t.core.model_router import ModelRouter, Tier
+from skyn3t.core.model_router import ModelRouter, Tier, is_free_model_id
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +147,76 @@ def test_fallback_candidates_free_offline(no_router_network):
     cands = r.fallback_candidates(Tier.CHEAP, primary="qwen/qwen3-coder:free")
     assert cands  # at least one alternative to the dead primary
     assert "qwen/qwen3-coder:free" not in cands  # primary removed
-    assert all(m.endswith(":free") for m in cands)  # free_only honored
+    assert all(is_free_model_id(m) for m in cands)  # free_only honored
+
+
+def test_fallback_candidates_include_new_live_free_catalog(monkeypatch):
+    def fake_catalog():
+        return [
+            {
+                "id": "qwen/qwen3-coder:free",
+                "created": 10,
+                "context_length": 1_000_000,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "tencent/hy3:free",
+                "created": 50,
+                "context_length": 262_144,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "poolside/laguna-xs-2.1:free",
+                "created": 45,
+                "context_length": 262_144,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "cohere/north-mini-code:free",
+                "created": 40,
+                "context_length": 256_000,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "nvidia/nemotron-3.5-content-safety:free",
+                "created": 60,
+                "context_length": 128_000,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "openrouter/free",
+                "created": 30,
+                "context_length": 200_000,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0", "completion": "0"},
+            },
+            {
+                "id": "openai/gpt-4o",
+                "created": 20,
+                "context_length": 128_000,
+                "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+                "pricing": {"prompt": "0.0000025", "completion": "0.00001"},
+            },
+        ]
+
+    monkeypatch.setattr(mr, "live_catalog", fake_catalog)
+    monkeypatch.setattr(mr, "live_free_model_ids", lambda *a, **k: [])
+    r = ModelRouter(Settings(free_only=True))
+    cands = r.fallback_candidates(Tier.BACKEND, primary="qwen/qwen3-coder:free")
+
+    assert "qwen/qwen3-coder:free" not in cands
+    assert "tencent/hy3:free" in cands
+    assert "poolside/laguna-xs-2.1:free" in cands
+    assert "cohere/north-mini-code:free" in cands
+    assert "openrouter/free" in cands
+    assert "openai/gpt-4o" not in cands
+    assert "nvidia/nemotron-3.5-content-safety:free" not in cands
+    assert all(is_free_model_id(m) for m in cands)
 
 
 def test_fallback_candidates_dedupes_and_drops_primary(no_router_network):
@@ -155,6 +224,19 @@ def test_fallback_candidates_dedupes_and_drops_primary(no_router_network):
     cands = r.fallback_candidates(Tier.STRONG, primary="qwen/qwen3-next-80b-a3b-instruct:free")
     assert len(cands) == len(set(cands))
     assert "qwen/qwen3-next-80b-a3b-instruct:free" not in cands
+
+
+def test_configured_fallbacks_obey_free_only(no_router_network):
+    c = _or_client(
+        llm_fallback_models="paid/provider-model, openrouter/free, qwen/manual:free",
+        llm_max_retries=0,
+    )
+    cands = c._fallback_models("qwen/qwen3-coder:free", Tier.BACKEND)
+
+    assert "paid/provider-model" not in cands
+    assert "openrouter/free" in cands
+    assert "qwen/manual:free" in cands
+    assert all(is_free_model_id(m) for m in cands)
 
 
 # ---------------------------------------------------------------------------

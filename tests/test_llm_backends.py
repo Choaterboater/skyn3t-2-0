@@ -120,6 +120,23 @@ def test_budget_tracker_persists_daily_usage_across_clients(tmp_path):
     assert second.budget.tokens_day == 150
 
 
+def test_budget_tracker_per_build_zero_disables_build_cap(tmp_path):
+    settings = Settings(
+        llm_backend="stub",
+        data_dir=tmp_path,
+        per_build_usd_cap=0.0,
+        daily_usd_cap=10.0,
+        daily_token_cap=10_000,
+    )
+    client = LLMClient(settings)
+    client.budget.record(LLMResult(
+        text="ok", model="m", backend="openrouter",
+        prompt_tokens=100, completion_tokens=50, cost_usd=2.50,
+    ))
+
+    client.budget.check()
+
+
 def test_auto_prefers_cli_when_available(monkeypatch):
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
     monkeypatch.setattr(llm_mod.shutil, "which", lambda b: f"/usr/bin/{b}")

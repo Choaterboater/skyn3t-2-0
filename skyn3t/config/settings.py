@@ -229,7 +229,8 @@ class Settings(BaseSettings):
     openrouter_max_concurrency: int = Field(default=4, ge=1)
 
     # ---- Cost caps (hard backstops) -------------------------------------
-    per_build_usd_cap: float = 0.50
+    # 0 disables the per-build cap; daily USD and token caps still apply.
+    per_build_usd_cap: float = 0.0
     daily_usd_cap: float = 5.00
     daily_token_cap: int = 5_000_000
     autonomous_daily_build_cap: int = 10

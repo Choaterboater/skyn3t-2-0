@@ -117,7 +117,7 @@ class BudgetGuard:
         """Evaluate all guardrails. Raises :class:`GuardTripped` on hard stop."""
         spent_build, spent_day, tokens_day = self._spend()
 
-        if spent_build > self.settings.per_build_usd_cap:
+        if self.settings.per_build_usd_cap > 0 and spent_build > self.settings.per_build_usd_cap:
             self._trip("budget", f"per-build cap ${self.settings.per_build_usd_cap} exceeded (${spent_build:.4f})")
         if spent_day > self.settings.daily_usd_cap:
             self._trip("budget", f"daily cap ${self.settings.daily_usd_cap} exceeded (${spent_day:.4f})")

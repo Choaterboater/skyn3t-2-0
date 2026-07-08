@@ -285,6 +285,23 @@ def test_budget_guard_stall():
     assert ei.value.kind in ("stall", "loop", "budget")
 
 
+def test_budget_guard_per_build_zero_disables_build_cap():
+    from skyn3t.config.settings import Settings
+    from skyn3t.self_healing.budget import BudgetGuard, GuardState
+
+    class _Budget:
+        spent_build = 2.50
+        spent_day = 2.50
+        tokens_day = 100
+
+    guard = BudgetGuard(
+        settings=Settings(per_build_usd_cap=0.0, daily_usd_cap=10.0, daily_token_cap=10_000),
+        budget=_Budget(),
+    )
+
+    assert guard.check() is GuardState.OK
+
+
 def test_budget_guard_event_attach():
     from skyn3t.self_healing.budget import BudgetGuard
 

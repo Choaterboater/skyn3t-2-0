@@ -9,10 +9,12 @@ import asyncio
 from types import SimpleNamespace
 
 from skyn3t.studio.bench import (
+    ALL_STACK_CASES,
     DEFAULT_CASES,
     BenchCase,
     BenchResult,
     BenchRun,
+    built_in_cases,
     diff_runs,
     gate_change,
     load_run,
@@ -338,6 +340,12 @@ def test_default_cases_use_valid_pin_keys():
             assert _validate_pin(c.stack), f"{c.id}: {c.stack!r} is not a valid pin"
 
 
+def test_default_cases_are_app_factory_focused_not_game_first():
+    assert DEFAULT_CASES
+    assert all(c.stack != "phaser" for c in DEFAULT_CASES)
+    assert all("game" not in c.brief.lower() for c in DEFAULT_CASES)
+
+
 def test_cli_load_bench_cases_accepts_inline_json():
     from skyn3t.cli.main import _load_bench_cases
 
@@ -358,12 +366,23 @@ def test_cli_load_bench_cases_accepts_inline_json():
 
 def test_bench_covers_every_builder_stack():
     # Every real builder stack must have at least one exam case, so a per-app-type
-    # GO-rate can never go blind on a stack.
+    # GO-rate can never go blind on a stack when the explicit all-stacks exam is run.
     from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS, _validate_pin
 
-    covered = {_validate_pin(c.stack) for c in DEFAULT_CASES if c.stack}
+    covered = {_validate_pin(c.stack) for c in ALL_STACK_CASES if c.stack}
     missing = set(REAL_BUILDER_STACKS) - covered
     assert not missing, f"bench has no case for: {sorted(missing)}"
+
+
+def test_all_stack_cases_keep_explicit_game_coverage():
+    assert any(c.stack == "phaser" for c in ALL_STACK_CASES)
+
+
+def test_built_in_case_suites_are_explicit():
+    assert built_in_cases("apps") == DEFAULT_CASES
+    assert built_in_cases("all") == ALL_STACK_CASES
+    assert built_in_cases("games")
+    assert all(c.stack == "phaser" for c in built_in_cases("games"))
 
 
 def test_capture_regression_case_appends_dedupes_and_loads(tmp_path):

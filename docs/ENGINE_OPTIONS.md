@@ -1,6 +1,9 @@
 # Engine Options
 
-SkyN3t does not have to stay Phaser-only. For AI-driven game generation, the best stack depends on what matters most.
+SkyN3t does not have to stay Phaser-only. Game generation is an explicit
+experimental track; the day-to-day factory loop should stay app-focused unless
+you are intentionally working on game routing, assets, or playability. For
+AI-driven game generation, the best stack depends on what matters most.
 
 ## Fast ranking
 

@@ -589,6 +589,7 @@ _RATCHET_SET_OPTION = typer.Option(
 def cortex_ratchet(
     set_kv: list[str] | None = _RATCHET_SET_OPTION,
     cases: str = typer.Option("", "--cases", help="Path to a JSON bench-case list (default: the built-in exam)."),
+    suite: str = typer.Option("apps", "--suite", help="Built-in suite when --cases is omitted: apps|all|games."),
     min_score_delta: float = typer.Option(0.0, "--min-score-delta", help="Required go-only mean-score improvement to keep."),
 ) -> None:
     """Keep a proposed tuning change ONLY if a bench run measurably raises the
@@ -601,7 +602,7 @@ def cortex_ratchet(
     from skyn3t.config.settings import get_settings
     from skyn3t.cortex.ratchet import evaluate_change, restore_overrides, snapshot_overrides
     from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING, persist_overrides
-    from skyn3t.studio.bench import DEFAULT_CASES
+    from skyn3t.studio.bench import built_in_cases
 
     s = get_settings()
     if not getattr(s, "reliability_ratchet_enabled", False):
@@ -634,7 +635,7 @@ def cortex_ratchet(
         restore_overrides(data_dir, snap)
         get_settings.cache_clear()
 
-    bench_cases = _load_bench_cases(cases) or list(DEFAULT_CASES)
+    bench_cases = _load_bench_cases(cases) or built_in_cases(suite)
     console.print(f"[yellow]Ratchet[/yellow] testing {overrides} across "
                   f"{len(bench_cases)} cases (before + after — real builds)…")
     res = asyncio.run(evaluate_change(
@@ -1055,14 +1056,15 @@ def fanout_cmd(
 def bench_run(
     label: str = typer.Option("", "--label", "-l", help="Run label (default: timestamp)."),
     cases_file: str = typer.Option("", "--cases", help="JSON [{id,brief,stack}] (default: built-in set)."),
+    suite: str = typer.Option("apps", "--suite", help="Built-in suite when --cases is omitted: apps|all|games."),
     no_save: bool = typer.Option(False, "--no-save", help="Don't write the ledger."),
 ) -> None:
     """Build the brief-set and record a scored ledger under data/bench/."""
     import time as _time
 
-    from skyn3t.studio.bench import DEFAULT_CASES, save_run
+    from skyn3t.studio.bench import built_in_cases, save_run
     console = _console()
-    cases = _load_bench_cases(cases_file) or DEFAULT_CASES
+    cases = _load_bench_cases(cases_file) or built_in_cases(suite)
     lbl = label or _time.strftime("%Y%m%d-%H%M%S", _time.gmtime())
     console.print(f"[cyan]Benchmark[/cyan] '{lbl}' — building {len(cases)} case(s); "
                   "these are REAL builds and can take a while.")

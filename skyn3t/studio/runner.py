@@ -1226,6 +1226,19 @@ class StudioRunner:
                 cap(93.0, "tests skipped")
         else:
             cap(49.0, "no_go verdict")
+            stack = str(getattr(manifest, "stack", "") or "").strip().lower()
+            is_game = stack == "phaser" or extra.get("app_type") == "game"
+            if is_game and (
+                gate_ok("headless_gate") is False
+                or gate_ok("qa_playtest") is False
+                or extra.get("headless_gate_gate")
+                or extra.get("qa_playtest_gate")
+            ):
+                cap(29.0, "game playability gate failed")
+            elif is_game and (gate_ok("game_visual") is False or extra.get("game_visual_gate")):
+                cap(33.0, "game visual gate failed")
+            elif is_game:
+                cap(39.0, "game build no_go")
             if raw_proof_passed is False:
                 cap(max(12.0, min(44.0, float(getattr(proof, "score", 0.0) or 0.0) * 0.44)),
                     "proof failed")

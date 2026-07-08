@@ -103,3 +103,25 @@ def test_final_score_shape_dampens_go_when_advisory_quality_failed():
 
     assert score == 82.0
     assert "game visual check failed" in man.extra["final_score_shape"]["reasons"]
+
+
+def test_final_score_shape_game_no_go_stays_visibly_low():
+    man = BuildManifest(slug="game", brief="game", stack="phaser")
+    man.extra["largest_source_bytes"] = 58000
+    man.extra["qa_playtest"] = {
+        "ok": False,
+        "skipped": False,
+        "gaps": ["game did not reach play state"],
+    }
+    proof = SimpleNamespace(
+        passed=True,
+        score=100.0,
+        files_total=28,
+        files_substantive=26,
+        detail={"build": "passed", "tests": "passed"},
+    )
+
+    score = StudioRunner._shape_final_score(man, proof, 49.0, "no_go")
+
+    assert score == 29.0
+    assert "game playability gate failed" in man.extra["final_score_shape"]["reasons"]

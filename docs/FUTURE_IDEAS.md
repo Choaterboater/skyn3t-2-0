@@ -34,9 +34,9 @@ several top items are "activate the dormant organ," not "grow a new one."
    "delivered == what you meant": `test_author` derives executable acceptance
    checks from the clarified brief and blends brief-fit into go/no_go. Builds on
    `studio/intent_score.py`, `agents/test_author.py`, `studio/proof_run.py`.
-3. **Bench = the factory's exam (S).** Extend `DEFAULT_CASES` to every registry
-   stack (rag/workflow/mcp/agent_pack/swift/cli-copilot are invisible today) and
-   auto-append every failed real build as a permanent regression case. Builds on
+3. **Bench = the factory's exam (S).** Keep the default bench app-factory focused,
+   keep `ALL_STACK_CASES` as the explicit full coverage suite, and auto-append
+   every failed real build as a permanent regression case. Builds on
    `studio/bench.py`, `core/stacks.py`.
 4. **Activate divergent fan-out (S–M).** `studio/fanout.py` already runs N
    divergent candidates refereed by proof — surface it as `--fanout` and feed

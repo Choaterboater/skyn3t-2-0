@@ -405,6 +405,26 @@ def test_capture_regression_case_appends_dedupes_and_loads(tmp_path):
     assert len(all_cases(tmp_path)) == len(DEFAULT_CASES) + 1
 
 
+def test_default_app_exam_ignores_captured_game_regressions(tmp_path):
+    from skyn3t.studio.bench import (
+        all_cases,
+        capture_regression_case,
+        load_regression_cases,
+    )
+
+    assert capture_regression_case(tmp_path, "broken app", "a broken dashboard", "react")
+    assert capture_regression_case(tmp_path, "broken game", "a broken platform game", "phaser")
+
+    assert len(load_regression_cases(tmp_path)) == 2
+    app_cases = all_cases(tmp_path)
+    assert len(app_cases) == len(DEFAULT_CASES) + 1
+    assert "broken-app" in {c.id for c in app_cases}
+    assert "broken-game" not in {c.id for c in app_cases}
+
+    full_cases = all_cases(tmp_path, include_games=True)
+    assert "broken-game" in {c.id for c in full_cases}
+
+
 def test_bench_capture_failures_defaults_on():
     from skyn3t.config.settings import Settings
 

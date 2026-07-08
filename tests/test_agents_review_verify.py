@@ -288,6 +288,17 @@ def test_test_author_derives_and_writes(tmp_path):
     assert written.read_text().strip()
 
 
+def test_test_author_promotes_explicit_game_counts_to_real_checks():
+    brief = "Code Islands is a 120-level journey with 12 islands and 4 phases."
+    crit = derive_acceptance(brief, {})
+    assert "include exact brief count: 120 levels" in crit
+    assert "include exact brief count: 12 islands" in crit
+    assert "include exact brief count: 4 phases" in crit
+    src = render_test_file(crit, brief, "code-islands")
+    assert "EXACT_COUNT_PHRASES" in src
+    assert '"120 levels"' in src
+
+
 def test_modules_import_without_side_effects():
     # importing the package modules must not require any heavy dep or network
     import skyn3t.agents.build_verifier  # noqa: F401

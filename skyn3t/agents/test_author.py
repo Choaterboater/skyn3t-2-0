@@ -23,6 +23,10 @@ from skyn3t.core.model_router import Tier
 
 # Sentence-ish splitter for turning a brief into discrete acceptance criteria.
 _SPLIT = re.compile(r"[.\n;]|(?:\band\b)|(?:\bthen\b)")
+_EXPLICIT_COUNT = re.compile(
+    r"\b(\d{1,4})\s*(?:-| )?\s*(levels?|islands?|phases?|worlds?|stages?|waves?)\b",
+    re.IGNORECASE,
+)
 
 
 def derive_acceptance(brief: str, plan: dict[str, Any] | None = None) -> list[str]:
@@ -46,6 +50,14 @@ def derive_acceptance(brief: str, plan: dict[str, Any] | None = None) -> list[st
                     t = item.get("text") or item.get("name") or item.get("description")
                     if t:
                         add(str(t))
+
+    # Product briefs often carry numeric scope promises ("120 levels", "12 islands").
+    # These must become machine-visible contracts, not skipped prose.
+    for match in _EXPLICIT_COUNT.finditer(brief or ""):
+        count, unit = match.group(1), match.group(2).lower()
+        if count != "1" and not unit.endswith("s"):
+            unit += "s"
+        add(f"include exact brief count: {count} {unit}")
 
     # split the brief into clauses with imperative verbs
     for clause in _SPLIT.split(brief or ""):
@@ -136,6 +148,24 @@ def render_test_file(acceptance: list[str], brief: str, slug: str = "app") -> st
         "    yet behaviorally verified) so it never reads as a passing acceptance.",
         '    """',
         "    assert isinstance(criterion, str) and len(criterion.split()) >= 2",
+        "",
+        "",
+        "EXACT_COUNT_PHRASES = [",
+    ]
+    for c in acceptance:
+        prefix = "include exact brief count: "
+        if str(c).lower().startswith(prefix):
+            lines.append(f"    {json.dumps(str(c)[len(prefix):])},")
+    lines += [
+        "]",
+        "",
+        "",
+        "def test_exact_count_phrases_are_implemented_or_documented():",
+        "    if not EXACT_COUNT_PHRASES:",
+        "        return",
+        "    corpus = '\\n'.join(p.read_text(encoding='utf-8', errors='ignore').lower() for p in _sources())",
+        "    missing = [phrase for phrase in EXACT_COUNT_PHRASES if phrase.lower() not in corpus]",
+        "    assert not missing, f'exact brief count phrases missing from source: {missing}'",
         "",
     ]
     return "\n".join(lines)

@@ -468,7 +468,7 @@ class BudgetTracker:
 
     def check(self) -> None:
         self._rollover_if_needed()
-        if self.spent_build > self.per_build_cap:
+        if self.per_build_cap > 0 and self.spent_build > self.per_build_cap:
             raise BudgetExceeded(f"per-build cap ${self.per_build_cap} exceeded (${self.spent_build:.4f})")
         if self.spent_day > self.daily_cap:
             raise BudgetExceeded(f"daily cap ${self.daily_cap} exceeded (${self.spent_day:.4f})")

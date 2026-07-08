@@ -111,6 +111,7 @@ def test_agentic_loop_stall_falls_over_to_configured_fast_model(tmp_path, monkey
     client = LLMClient(Settings(
         llm_backend="openrouter",
         openrouter_api_key="x",
+        free_only=False,
         llm_max_retries=0,
         llm_fallback_models="fallback/fast",
         agentic_verify_on_stop=False,

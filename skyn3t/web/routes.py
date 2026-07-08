@@ -22,7 +22,7 @@ import structlog
 
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
-from skyn3t.core.model_router import live_catalog
+from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id, live_catalog
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import (
     AppState,
@@ -415,7 +415,7 @@ def _normalize_model_id(model: str, *, max_len: int = 240) -> str:
 
 
 def _is_free_model_id(model: str) -> bool:
-    return (model or "").strip().lower().endswith(":free")
+    return router_is_free_model_id(model)
 
 
 def _coerce_bool(value: Any) -> bool:
@@ -2115,7 +2115,7 @@ def _model_pricing_summary(model_record: dict[str, Any] | None) -> str:
     if not isinstance(model_record, dict):
         return "price unknown"
     model_id = str(model_record.get("id") or "")
-    if model_id.endswith(":free"):
+    if _is_free_model_id(model_id):
         return "free"
 
     pricing = model_record.get("pricing")
@@ -2165,7 +2165,7 @@ def _build_model_catalog_item(model_record: dict[str, Any]) -> dict[str, Any]:
         "provider": _catalog_model_provider(model_id),
         "family": _catalog_model_family(model_id),
         "created": int(model_record.get("created", 0) or 0),
-        "is_free": model_id.endswith(":free"),
+        "is_free": _is_free_model_id(model_id),
         "pricing_summary": _model_pricing_summary(model_record),
         "pricing_raw": pricing,
         "prompt_rate": prompt_rate,
@@ -2293,7 +2293,7 @@ async def list_openrouter_model_catalog(
         model_id_l = model_id.lower()
         provider_name = _catalog_model_provider(model_id)
         family_name = _catalog_model_family(model_id)
-        if only_free and not model_id_l.endswith(":free"):
+        if only_free and not _is_free_model_id(model_id_l):
             continue
         if normalized_query and normalized_query not in model_id_l:
             continue

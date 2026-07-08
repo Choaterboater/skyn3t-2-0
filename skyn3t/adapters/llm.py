@@ -37,7 +37,7 @@ import httpx
 import structlog
 
 from skyn3t.config.settings import Settings, get_settings
-from skyn3t.core.model_router import ModelRouter, Tier
+from skyn3t.core.model_router import ModelRouter, Tier, is_free_model_id as router_is_free_model_id
 
 # Per-asyncio-task LLM route capture. The LLMClient is SHARED across agents, but
 # each agent's run() is its own task; task-local vars isolate "the completions
@@ -335,7 +335,7 @@ def _is_vision_model(model: str) -> bool:
 
 
 def _is_free_model_id(model: str) -> bool:
-    return (model or "").strip().lower().endswith(":free")
+    return router_is_free_model_id(model)
 
 
 def _strip_code_fences(text: str) -> str:
@@ -627,11 +627,11 @@ class LLMClient:
     ) -> None:
         usage = data.get("usage", {}) if isinstance(data, dict) else {}
         pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-        if not model.endswith(":free") and pt == 0 and ct == 0:
+        if not _is_free_model_id(model) and pt == 0 and ct == 0:
             pt = max(1, sum(self._msg_bytes(m) for m in sent) // 4)
             ct = max(1, len(json.dumps(msg, sort_keys=True, default=str)) // 4)
             log.warning("llm.openrouter_agentic_usage_missing", model=model, est_tokens=pt + ct)
-        cost = 0.0 if model.endswith(":free") else (pt + ct) / 1_000_000 * 0.5
+        cost = 0.0 if _is_free_model_id(model) else (pt + ct) / 1_000_000 * 0.5
         result = LLMResult(
             text=str(msg.get("content") or ""),
             model=model,
@@ -798,8 +798,12 @@ class LLMClient:
         if not getattr(self.settings, "llm_fallback_enabled", True):
             return []
         out: list[str] = []
+        free_only = bool(getattr(self.settings, "free_only", False))
         for m in str(getattr(self.settings, "llm_fallback_models", "") or "").split(","):
             m = m.strip()
+            if free_only and not _is_free_model_id(m):
+                log.warning("llm.free_only_ignored_paid_fallback", model=m)
+                continue
             if m and m != primary and m not in out:
                 out.append(m)
         try:
@@ -974,8 +978,7 @@ class LLMClient:
             return "claude" in ml or "anthropic" in ml
 
         def _is_free(m: str) -> bool:
-            ml = m.lower()
-            return ml.endswith(":free") or "free" in ml
+            return _is_free_model_id(m)
 
         configured = str(getattr(self.settings, "vision_model", "") or "").strip()
         no_claude = bool(getattr(self.settings, "no_claude", False))
@@ -1616,12 +1619,12 @@ class LLMClient:
         # OpenRouter sometimes omits `usage` on a 200. Defaulting to 0 made PAID
         # models report $0 — corrupting cost tracking + budget caps. Estimate
         # tokens from text length (~4 chars/token) so a paid call is never free.
-        if not model.endswith(":free") and pt == 0 and ct == 0:
+        if not _is_free_model_id(model) and pt == 0 and ct == 0:
             pt = max(1, (len(system or "") + len(prompt or "")) // 4)
             ct = max(1, len(text or "") // 4)
             log.warning("llm.openrouter_usage_missing", model=model, est_tokens=pt + ct)
         # :free models cost $0; otherwise rough estimate.
-        cost = 0.0 if model.endswith(":free") else (pt + ct) / 1_000_000 * 0.5
+        cost = 0.0 if _is_free_model_id(model) else (pt + ct) / 1_000_000 * 0.5
         return LLMResult(text=text, model=model, backend="openrouter",
                          prompt_tokens=pt, completion_tokens=ct, cost_usd=cost)
 

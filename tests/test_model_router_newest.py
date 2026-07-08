@@ -170,6 +170,7 @@ def test_resolve_newest_sentinel(monkeypatch):
 
 def test_resolve_newest_falls_back_to_paid_default_offline(monkeypatch):
     monkeypatch.setattr(mr, "live_catalog", lambda *a, **k: [])
+    monkeypatch.setattr(mr, "live_free_model_ids", lambda *a, **k: [])
     monkeypatch.setattr(ModelRouter, "_load_overrides", lambda self: {"ui": "newest:deepseek-v3"})
     r = ModelRouter(Settings(free_only=False, no_claude=False))
     model = r.resolve(Tier.UI)

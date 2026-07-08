@@ -35,6 +35,9 @@ log = structlog.get_logger(__name__)
 
 # Hard cap on images per build — bounded + cost-aware (each is a paid prediction).
 MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 -> last services fell back to icon tiles)
+# Provider failures should not fan out into a pile of paid/stalled predictions.
+ASSET_PROVIDER_BATCH_SIZE = 2
+ASSET_PROVIDER_FAILURE_LIMIT = 2
 # Web frameworks that serve static files from public/ (vs ./assets/ for static html).
 _WEB_STACKS = {"nextjs", "next", "react", "react_vite", "react_ts", "vite",
                "remix", "astro", "svelte", "sveltekit", "vue", "nuxt",
@@ -266,8 +269,9 @@ async def generate_assets(
         log.warning("assets.mkdir_failed", error=str(exc)[:160])
         return {"generated": 0, "skipped": True, "reason": "mkdir_failed", "assets": []}
 
-    # Generate all subjects CONCURRENTLY (each is an independent prediction) so a
-    # multi-subject set isn't serialized at ~90s/subject on the build hot path.
+    # Generate in tiny batches. Full fan-out made a failing provider spend one
+    # prediction per subject before the build could fall back; batching keeps good
+    # providers reasonably quick while opening the circuit after repeated misses.
     async def _gen(subject: str) -> tuple[str, bytes | None]:
         try:
             images = await cli.generate_images(
@@ -277,7 +281,28 @@ async def generate_assets(
             log.warning("assets.subject_failed", subject=subject, error=str(exc)[:160])
             return subject, None
 
-    results = await asyncio.gather(*(_gen(s) for s in subjects))
+    results: list[tuple[str, bytes | None]] = []
+    failures = 0
+    batch_size = max(1, ASSET_PROVIDER_BATCH_SIZE)
+    for i in range(0, len(subjects), batch_size):
+        batch = subjects[i:i + batch_size]
+        batch_results = await asyncio.gather(*(_gen(s) for s in batch))
+        results.extend(batch_results)
+        batch_failures = sum(1 for _, data in batch_results if not data)
+        failures += batch_failures
+        if failures >= ASSET_PROVIDER_FAILURE_LIMIT:
+            log.warning(
+                "assets.provider_circuit_open",
+                failures=failures,
+                attempted=len(results),
+                remaining=max(0, len(subjects) - len(results)),
+            )
+            break
+        if i == 0 and batch_failures == 0:
+            rest = subjects[i + batch_size:]
+            if rest:
+                results.extend(await asyncio.gather(*(_gen(s) for s in rest)))
+            break
     for subject, data in results:
         if not data:
             continue

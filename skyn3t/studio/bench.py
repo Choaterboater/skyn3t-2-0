@@ -470,9 +470,16 @@ def capture_regression_case(data_dir, case_id: str, brief: str, stack: str = "",
         return False
 
 
-def all_cases(data_dir) -> list[BenchCase]:
-    """The full exam: the built-in DEFAULT_CASES plus captured regression cases."""
-    return list(DEFAULT_CASES) + load_regression_cases(data_dir)
+def all_cases(data_dir, *, include_games: bool = False) -> list[BenchCase]:
+    """The app exam: built-in app cases plus captured app regressions.
+
+    Captured game regressions are still stored, but the default autonomy/ratchet
+    loop is app-first; callers must opt in before Phaser failures re-enter it.
+    """
+    regressions = load_regression_cases(data_dir)
+    if not include_games:
+        regressions = [c for c in regressions if c.stack.strip().lower() != "phaser"]
+    return list(DEFAULT_CASES) + regressions
 
 
 # ---------------------------------------------------------------------------

@@ -496,7 +496,7 @@ function rebuildFields(build) {
     "cheap_learned";
   return {
     brief: String(manifest.brief || build.brief || ""),
-    stack: String(manifest.stack || build.stack || build.stack_selection?.stack || ""),
+    stack: "",
     slug: String(manifest.slug || build.slug || ""),
     buildProfile: BUILD_PROFILES.some((p) => p.id === profile)
       ? profile

@@ -444,6 +444,13 @@ def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
     assert "apiPost(\"/builds/rebuild\"" not in studio
 
 
+def test_studio_rebuild_variants_default_back_to_auto_stack() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text()
+    assert "function rebuildFields(build)" in studio
+    assert 'stack: "",' in studio
+    assert "variant · {variantSource.stack || \"auto stack\"}" in studio
+
+
 def test_studio_rebuild_full_app_variant_only_preserves_source_profile_while_checked() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert 'sourceBuildProfile: profile === "full_app" ? "full_app" : null' in studio

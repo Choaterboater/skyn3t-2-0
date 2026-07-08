@@ -211,6 +211,23 @@ def test_virtual_imports_are_not_npm_dependencies(tmp_path):
     assert deps["vite-plugin-pwa"] == "^0.20.5"
 
 
+def test_import_word_inside_generated_copy_is_not_a_dependency(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "x", "dependencies": {}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "print.js").write_text(
+        "const html = \"Print help: import '\" +\n"
+        "  global.ColoringConfig.siteName +\n"
+        "  \"' before sharing.\";\n",
+        encoding="utf-8",
+    )
+
+    assert reconcile_npm_deps(tmp_path) == []
+    deps = json.load(open(tmp_path / "package.json"))["dependencies"]
+    assert deps == {}
+
+
 @pytest.mark.skipif(shutil.which("npm") is None, reason="npm not installed")
 def test_invalid_npm_dependency_names_fail_proof(tmp_path):
     (tmp_path / "package.json").write_text(

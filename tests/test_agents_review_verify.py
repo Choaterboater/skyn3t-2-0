@@ -429,7 +429,10 @@ def test_test_author_enforces_exact_hvac_pages_and_generated_assets(tmp_path):
     for relative in result.output["asset_paths"]:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"image")
+        if target.suffix == ".webp":
+            target.write_bytes(b"RIFF\x10\x00\x00\x00WEBPtest-photo")
+        else:
+            target.write_bytes(b"\x89PNG\r\n\x1a\ntest-image")
     (root / "index.html").write_text(
         '<img src="/assets/air-conditioning-condenser-unit-beside-a-house.webp">'
         '<img src="/assets/hero.png"><meta content="/assets/og.png">'
@@ -449,6 +452,11 @@ def test_test_author_enforces_exact_hvac_pages_and_generated_assets(tmp_path):
     (root / "financing.html").unlink()
     with pytest.raises(AssertionError, match="planned feature page is missing"):
         namespace["test_planned_feature_page_exists"]("financing.html")
+
+    paid = root / paid_asset
+    paid.write_text("<svg>not webp</svg>", encoding="utf-8")
+    with pytest.raises(AssertionError, match="bytes do not match"):
+        namespace["test_generated_asset_exists"](paid_asset)
 
 
 def test_test_author_uses_astro_routes_not_components_for_golf_contract(tmp_path):

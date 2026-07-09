@@ -34,6 +34,12 @@ _SYSTEM = (
 _FULL_APP_ARCHITECT_TOKENS = 12_000
 _STANDARD_ARCHITECT_TOKENS = 4_096
 
+_BINARY_ASSET_SUFFIXES = frozenset({
+    ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".mp3", ".mp4",
+    ".ogg", ".otf", ".pdf", ".png", ".ttf", ".wav", ".webm", ".webp",
+    ".woff", ".woff2",
+})
+
 # A model plan remains the primary architecture. These entries are the deterministic
 # recovery contract when structured output is truncated or omits an explicit feature
 # named in the brief. Keeping the map small and product-oriented avoids guessing an
@@ -73,6 +79,19 @@ def _merge_file_plans(*groups: list[Any]) -> list[dict[str, str]]:
             seen.add(key)
             merged.append({"path": path, "purpose": purpose})
     return merged
+
+
+def _drop_binary_asset_plans(files: list[Any]) -> list[Any]:
+    """Binary media is generated upstream, never authored by text codegen."""
+    out: list[Any] = []
+    for item in files:
+        raw = item.get("path") if isinstance(item, dict) else item
+        path = str(raw or "").replace("\\", "/").split("?", 1)[0]
+        suffix = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        if suffix in _BINARY_ASSET_SUFFIXES:
+            continue
+        out.append(item)
+    return out
 
 
 def _page_route_identity(raw: Any, stack: str) -> str | None:
@@ -279,6 +298,9 @@ class ArchitectAgent(BaseAgent):
             + "Design the COMPLETE, multi-file build plan as JSON — every module, "
             + "component, model, utility, config, and test needed for a real, "
             + "fully-featured implementation of the brief. Not a minimal stub."
+            + " Do NOT plan binary image, font, audio, video, or PDF files: those "
+            + "are generated upstream and codegen must use the exact asset paths "
+            + "listed in prior knowledge instead of fabricating media bytes."
         )
         # Reference image ("build from a picture") is intentionally NOT attached
         # here: forcing a vision model would downgrade this Tier.STRONG planning
@@ -371,11 +393,12 @@ class ArchitectAgent(BaseAgent):
             files = _jsx_only(files)
         elif parsed["stack"] in _GAME_STACKS:
             files = _plain_js(files)
+        files = _drop_binary_asset_plans(files)
         plan = {
             "stack": parsed["stack"],
             "summary": parsed.get("summary", f"Plan for {stack}: {brief}"),
             "files": files,
-            "build_order": parsed.get("build_order") or [f.get("path") for f in files if isinstance(f, dict)],
+            "build_order": [f.get("path") for f in files if isinstance(f, dict)],
             "components": parsed.get("components", []),
         }
         return TaskResult(task_id=task.task_id, success=True,

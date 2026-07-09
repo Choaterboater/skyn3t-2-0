@@ -190,6 +190,50 @@ def test_best_of_n_prefers_richer_over_more_files():
     assert res.winner is rich  # substance beats raw file count
 
 
+def test_best_of_n_does_not_treat_incomplete_architecture_as_passing():
+    from skyn3t.core.agent import TaskResult
+    from skyn3t.studio.best_of_n import Candidate, select
+
+    class _Proof:
+        passed = True
+        score = 99.0
+        files_substantive = 20
+
+        def to_dict(self):
+            return {"passed": self.passed, "score": self.score}
+
+    incomplete = Candidate(
+        index=0,
+        worktree=None,
+        result=TaskResult(
+            task_id="incomplete",
+            success=True,
+            output={
+                "degraded": True,
+                "degraded_reason": "missing 6 planned files",
+                "agentic": {"complete": False, "missing_files": ["src/page.astro"]},
+            },
+        ),
+        proof=_Proof(),
+        source_bytes=100_000,
+    )
+    complete = Candidate(
+        index=1,
+        worktree=None,
+        result=TaskResult(task_id="complete", success=True, output={}),
+        proof=_Proof(),
+        source_bytes=50_000,
+    )
+
+    selection = select([incomplete, complete])
+
+    assert incomplete.degraded is True
+    assert incomplete.passed is False
+    assert complete.passed is True
+    assert selection.any_passed is True
+    assert selection.winner is complete
+
+
 # ---- proof gating: runnable entrypoint + the generated suite -------------
 def test_proof_rejects_package_with_no_entrypoint(tmp_path):
     # Real package code but no runnable root: NOT proven (the taskcli failure).

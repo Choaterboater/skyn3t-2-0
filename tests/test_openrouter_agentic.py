@@ -228,6 +228,34 @@ def test_agentic_slice_skips_whole_app_antistub_nudge(tmp_path, monkeypatch):
     assert not (tmp_path / "src" / "unwanted-app.astro").exists()
 
 
+def test_agentic_text_tool_rejects_binary_asset_overwrite(tmp_path, monkeypatch):
+    original = b"RIFF\x10\x00\x00\x00WEBPreal-generated-photo"
+    asset = tmp_path / "public" / "assets" / "hero.webp"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(original)
+    turns = [
+        _tool_turn(
+            "write_file",
+            {"path": "public/assets/hero.webp", "content": "<svg>fake</svg>"},
+        ),
+        _tool_turn(
+            "write_file",
+            {"path": "src/main.js", "content": "export const ok = true;\n"},
+            "t2",
+        ),
+        _tool_turn("finish", {}, "t3"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    res = asyncio.run(
+        _client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser")
+    )
+
+    assert res["ok"] is True
+    assert res["files_written"] == 1
+    assert asset.read_bytes() == original
+
+
 def test_agentic_write_progress_extends_nominal_window(tmp_path, monkeypatch):
     turns = [
         _tool_turn("write_files", {"files": [

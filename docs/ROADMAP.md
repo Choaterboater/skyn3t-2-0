@@ -64,7 +64,7 @@ The 2.0 feature backlog, grouped by priority. Status legend:
 ## P3 — Game capability track
 
 Full plan + per-item status in
-[docs/game-capability-roadmap.md](game-capability-roadmap.md).
+[docs/archive/game-capability-roadmap.md](archive/game-capability-roadmap.md).
 
 | Item | Status | Notes |
 | --- | --- | --- |

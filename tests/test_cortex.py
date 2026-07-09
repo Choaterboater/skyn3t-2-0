@@ -400,6 +400,23 @@ async def test_prompt_evolver_uses_completed_build_manifest_prompts():
     assert prop.payload["tasks"][0]["gaps"] == ["missing empty states", "no tests"]
 
 
+async def test_prompt_evolver_ignores_malformed_manifest_gaps_string():
+    bus = EventBus()
+    cortex = Cortex(bus, settings=_settings())
+    ev = PromptEvolver(cortex=cortex)
+    manifest = {
+        "slug": "demo",
+        "extra": {"prompts": [{"stage": "codegen", "text": "Write code."}]},
+        "stages": [{"output_summary": {"gaps": "missing tests"}}],
+    }
+
+    best = await ev.evolve_from_manifest(manifest)
+
+    assert best is not None
+    prop = next(p for p in cortex.store.gated() if p.source == "prompt_evolver")
+    assert prop.payload["tasks"][0]["gaps"] == []
+
+
 # ---- repo scout ------------------------------------------------------------
 async def test_repo_scout_offline():
     scout = RepoScout(settings=_settings())

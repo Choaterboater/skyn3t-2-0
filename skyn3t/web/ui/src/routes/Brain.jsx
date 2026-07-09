@@ -171,11 +171,18 @@ export default function Brain({ stream }) {
             </span>
           }
         />
-        <div className="relative h-[480px] bg-void">
+        <div className="relative h-[360px] bg-void sm:h-[480px]">
           <div className="pointer-events-none absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-synapse/10 blur-3xl" />
           <Canvas
+            aria-label="Animated knowledge graph activity"
+            role="img"
             camera={{ position: [0, 0, 6], fov: 50 }}
             gl={{ powerPreference: "low-power" }}
+            fallback={
+              <div role="status" className="grid h-full place-items-center font-mono text-xs text-ash">
+                3D knowledge view is unavailable in this browser.
+              </div>
+            }
             onCreated={({ gl }) => {
               glRef.current = gl;
               // Swallow context-loss so a transient GPU hiccup doesn't throw.

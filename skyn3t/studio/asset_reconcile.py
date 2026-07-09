@@ -154,7 +154,7 @@ def _confined_target(root: Path, relpath: str) -> Path | None:
 def _color_for(key: str) -> tuple[int, int, int]:
     """Deterministic palette color for an asset key — a stable hash (NOT Python's
     salted ``hash()``) so two builds of the same key produce identical bytes."""
-    digest = hashlib.sha1(key.encode("utf-8", "ignore")).digest()
+    digest = hashlib.sha1(key.encode("utf-8", "ignore"), usedforsecurity=False).digest()
     return _PLACEHOLDER_COLORS[digest[0] % len(_PLACEHOLDER_COLORS)]
 
 

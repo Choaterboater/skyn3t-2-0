@@ -186,13 +186,14 @@ class CodeImproverAgent(BaseAgent):
             # entrypoint rewrite. Falls through to the classic per-file path
             # whenever the session is unavailable, fails, or lands nothing —
             # this branch can only ever ADD capability, never remove it.
-            improved, skipped, ran = await self._agentic_improve(
+            agentic_improved, agentic_skipped, ran = await self._agentic_improve(
                 worktree, brief, gaps, stack, p, knowledge
             )
-            if ran and improved:
+            if ran and agentic_improved:
                 return TaskResult(task_id=task.task_id, success=True,
-                                  output={"files_improved": len(improved),
-                                          "files": sorted(improved), "skipped": skipped,
+                                  output={"files_improved": len(agentic_improved),
+                                          "files": sorted(agentic_improved),
+                                          "skipped": agentic_skipped,
                                           "worktree_dir": str(worktree), "agentic": True,
                                           "backend": self.llm.backend})
 
@@ -268,7 +269,7 @@ class CodeImproverAgent(BaseAgent):
             try:
                 if f.stat().st_size > self._SNAPSHOT_MAX_BYTES:
                     continue
-                snap[str(f.relative_to(worktree))] = f.read_text(encoding="utf-8")
+                snap[f.relative_to(worktree).as_posix()] = f.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue  # binary/unreadable — not an improve target
         return snap
@@ -478,7 +479,7 @@ class CodeImproverAgent(BaseAgent):
         importer_abs = (worktree / importer_rel).resolve()
         try:
             target_abs = (importer_abs.parent / spec_clean).resolve()
-            return str(target_abs.relative_to(worktree.resolve()))
+            return target_abs.relative_to(worktree.resolve()).as_posix()
         except (ValueError, OSError):
             return None
 
@@ -537,7 +538,7 @@ class CodeImproverAgent(BaseAgent):
                 for ext in (".js", ".jsx", ".ts", ".tsx"):
                     hits = sorted(worktree.glob(f"**/{tail}{ext}"))
                     if hits:
-                        candidates.append(str(hits[0].relative_to(worktree)))
+                        candidates.append(hits[0].relative_to(worktree).as_posix())
                         break
         if candidates:
             return list(dict.fromkeys(candidates))

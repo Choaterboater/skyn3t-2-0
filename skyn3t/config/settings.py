@@ -13,8 +13,28 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo root = two levels up from this file (skyn3t/config/settings.py).
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _resolve_runtime_layout(
+    package_file: str | Path,
+    *,
+    home: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """Return the state root and projects directory for this installation."""
+    package_path = Path(package_file).resolve()
+    checkout_root = package_path.parents[2]
+    if (checkout_root / "pyproject.toml").is_file() and (
+        checkout_root / "skyn3t" / "__init__.py"
+    ).is_file():
+        return checkout_root, checkout_root.parent / "Projects"
+
+    state_root = Path(home).expanduser() if home is not None else Path.home()
+    state_root = state_root / ".skyn3t"
+    return state_root, state_root / "Projects"
+
+
+# Checkouts keep their historical repo-relative layout. Installed wheels must
+# never try to write mutable state into site-packages.
+REPO_ROOT, DEFAULT_PROJECTS_DIR = _resolve_runtime_layout(__file__)
 
 
 class Settings(BaseSettings):
@@ -59,7 +79,7 @@ class Settings(BaseSettings):
     app_name: str = "SkyN3t"
     version: str = "2.0.0"
     data_dir: Path = REPO_ROOT / "data"
-    projects_dir: Path = REPO_ROOT.parent / "Projects"
+    projects_dir: Path = DEFAULT_PROJECTS_DIR
     logs_dir: Path = REPO_ROOT / "logs"
 
     # ---- Database / vector store ----------------------------------------

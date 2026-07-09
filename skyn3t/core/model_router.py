@@ -365,7 +365,7 @@ def _arena_quality(model: dict, tier: Tier) -> float:
         score = max(0.0, min(100.0, (elo - 1000.0) / 4.5))
         rank = row.get("rank")
         try:
-            rank_n = int(rank)
+            rank_n = int(rank) if rank is not None else 0
         except (TypeError, ValueError):
             rank_n = 0
         if rank_n > 0:
@@ -611,7 +611,10 @@ class ModelRouter:
         path = self.settings.data_dir / _PAID_FALLBACK_CACHE
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(self._paid_fallback_cache, indent=2))
+            path.write_text(
+                json.dumps(self._paid_fallback_cache, indent=2),
+                encoding="utf-8",
+            )
         except Exception as exc:  # noqa: BLE001 - cache writes must never break routing
             log.warning("router.paid_cache_write_error", error=str(exc)[:120])
 
@@ -781,9 +784,9 @@ class ModelRouter:
                         cands.append(d)
             else:
                 for fam in _CODER_FAMILIES:  # newest live model per strong-coder family
-                    m = newest_paid_model(fam)
-                    if m and m not in cands:
-                        cands.append(m)
+                    live_model = newest_paid_model(fam)
+                    if live_model and live_model not in cands:
+                        cands.append(live_model)
                 for t in Tier:
                     d = self._default_model(t)
                     if d not in cands:

@@ -6,6 +6,29 @@
   color-scheme: dark;
 }
 
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid #ff9166;
+  outline-offset: 3px;
+}
+
+.skip-link {
+  position: fixed;
+  left: 0.75rem;
+  top: 0.75rem;
+  z-index: 100;
+  transform: translateY(-200%);
+  border-radius: 0.375rem;
+  background: #e8edf7;
+  color: #0a0e17;
+  padding: 0.6rem 0.85rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
 html,
 body,
 #root {
@@ -82,7 +105,10 @@ body {
   .btn-ghost:hover {
     @apply border-ember/50 text-bone;
   }
-
+  .btn-ember:disabled,
+  .btn-ghost:disabled {
+    @apply cursor-not-allowed opacity-50 shadow-none;
+  }
   .field {
     @apply w-full rounded-md border border-hairline bg-void px-3 py-2 font-mono text-sm text-bone outline-none transition;
   }
@@ -113,6 +139,10 @@ body {
   .forge-rail.is-proven {
     background: linear-gradient(90deg, #ff6a3d, #3dd9c4 70%);
   }
+  .forge-rail.is-failed {
+    background: linear-gradient(90deg, #c2410c, #ff6a3d);
+    opacity: 0.8;
+  }
   /* the molten spark that sweeps the rail while a build is live */
   .forge-rail::after {
     content: "";
@@ -142,6 +172,14 @@ body {
   }
   .ring-heat {
     box-shadow: 0 0 0 1px rgba(255, 106, 61, 0.4), 0 0 20px -4px rgba(255, 106, 61, 0.7);
+  }
+}
+
+@media (max-width: 639px) {
+  .metric {
+    font-size: 1.35rem;
+    line-height: 1.75rem;
+    overflow-wrap: anywhere;
   }
 }
 

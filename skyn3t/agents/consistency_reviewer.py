@@ -55,7 +55,7 @@ def check_python(root: Path) -> list[dict]:
     for p in vc.iter_files(root):
         if p.suffix != ".py":
             continue
-        rel = str(p.relative_to(root))
+        rel = p.relative_to(root).as_posix()
         text = vc.safe_read(p)
         for m in _PY_FROM.finditer(text):
             mod = m.group(1)
@@ -79,7 +79,7 @@ def check_js(root: Path) -> list[dict]:
     for p in vc.iter_files(root):
         if p.suffix not in {".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs"}:
             continue
-        rel = str(p.relative_to(root))
+        rel = p.relative_to(root).as_posix()
         text = vc.safe_read(p)
         for m in _JS_REL.finditer(text):
             spec = m.group(1)

@@ -13,6 +13,10 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _ok(value: Any) -> bool | None:
     data = _as_dict(value)
     if "passed" in data:
@@ -48,9 +52,9 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     """Return compact model/profile/quality fields from a manifest dict."""
 
     extra = _as_dict(manifest.get("extra"))
-    prompts = extra.get("prompts") if isinstance(extra.get("prompts"), list) else []
-    stages = manifest.get("stages") if isinstance(manifest.get("stages"), list) else []
-    stage_costs = extra.get("stage_costs") if isinstance(extra.get("stage_costs"), list) else []
+    prompts = _as_list(extra.get("prompts"))
+    stages = _as_list(manifest.get("stages"))
+    stage_costs = _as_list(extra.get("stage_costs"))
     proof = _as_dict(extra.get("proof"))
     proof_detail = _as_dict(proof.get("detail"))
     model_trace = {
@@ -89,14 +93,14 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "game_visual_passed": _ok(extra.get("game_visual")),
         "finance_sanity": _as_dict(extra.get("finance_sanity")),
         "workflow_depth": _as_dict(extra.get("workflow_depth")),
-        "skills_count": len(extra.get("skills_used") or []),
-        "recall_count": len(extra.get("recall_used") or []),
+        "skills_count": len(_as_list(extra.get("skills_used"))),
+        "recall_count": len(_as_list(extra.get("recall_used"))),
         "cost_usd": extra.get("build_cost_usd"),
     }
     return {
         "build_profile": str(extra.get("build_profile") or ""),
         "model_trace": model_trace,
         "quality_scorecard": quality_scorecard,
-        "skills_used": list(extra.get("skills_used") or []),
-        "recall_used": list(extra.get("recall_used") or []),
+        "skills_used": list(_as_list(extra.get("skills_used"))),
+        "recall_used": list(_as_list(extra.get("recall_used"))),
     }

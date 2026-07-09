@@ -174,7 +174,7 @@ def merge_back(
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(f, target)
-            copied.append(str(rel))
+            copied.append(rel.as_posix())
         except OSError:
             # Skip unreadable/locked files but keep delivering the rest.
             continue
@@ -186,7 +186,7 @@ def list_files(worktree_dir: str | Path) -> list[str]:
     src = Path(worktree_dir)
     if not src.exists():
         return []
-    return [str(f.relative_to(src)) for f in _iter_files(src)]
+    return [f.relative_to(src).as_posix() for f in _iter_files(src)]
 
 
 # Subdirectory under a delivered project that holds the live, read-only preview

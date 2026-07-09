@@ -6,6 +6,7 @@ import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/u
 export default function Cortex() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["proposals"],
     // Inbox = only proposals genuinely awaiting a decision (not already
@@ -84,9 +85,10 @@ export default function Cortex() {
         title="Cortex"
         sub="Self-evolution proposals awaiting your decision. The swarm wants to reshape itself."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <input
-              className="field w-56"
+              className="field w-full sm:w-56"
+              aria-label="Search Cortex"
               placeholder="search proposals, skills, models..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -110,14 +112,36 @@ export default function Cortex() {
             >
               Clear resolved
             </button>
-            <button
-              onClick={() => clear.mutate("all")}
-              disabled={clear.isPending}
-              className="btn-ghost disabled:opacity-50"
-              title="Dismiss every cached proposal (including pending)"
-            >
-              Dismiss all
-            </button>
+            {confirmClearAll ? (
+              <>
+                <button
+                  onClick={() => {
+                    clear.mutate("all");
+                    setConfirmClearAll(false);
+                  }}
+                  disabled={clear.isPending}
+                  className="btn-ember"
+                >
+                  Confirm dismiss
+                </button>
+                <button
+                  onClick={() => setConfirmClearAll(false)}
+                  disabled={clear.isPending}
+                  className="btn-ghost"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setConfirmClearAll(true)}
+                disabled={clear.isPending}
+                className="btn-ghost"
+                title="Dismiss every cached proposal, including pending proposals"
+              >
+                Dismiss all
+              </button>
+            )}
           </div>
         }
       />
@@ -164,7 +188,7 @@ export default function Cortex() {
               const id = p.id ?? p.proposal_id;
               return (
                 <div key={id} className="px-4 py-4">
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         {p.kind ? <Pill tone="ember">{p.kind}</Pill> : null}
@@ -179,7 +203,7 @@ export default function Cortex() {
                         {p.summary || p.description}
                       </p>
                     </div>
-                    <div className="flex shrink-0 gap-2">
+                    <div className="flex flex-wrap gap-2 sm:shrink-0">
                       <button
                         onClick={() => decide.mutate({ id, decision: "approve" })}
                         disabled={decide.isPending}

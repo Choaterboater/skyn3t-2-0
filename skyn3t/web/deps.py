@@ -18,10 +18,12 @@ seekable view over that history.
 from __future__ import annotations
 
 import ipaddress
+import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import Event, EventBus, EventType
@@ -188,6 +190,11 @@ class AppState:
         # plus a shared AppRunner. Populated lazily by the serve endpoints.
         self.running_apps: dict[str, Any] = {}
         self.app_runner: Any | None = None
+
+        # Per-process signing key for read-only generated-preview capability
+        # URLs. The bearer token itself never enters a URL, browser history, or
+        # access log. A restart invalidates every previously minted capability.
+        self.preview_signing_key = secrets.token_bytes(32)
 
         # Mirror cortex proposals into the cache as they are created.
         self._wire_proposal_capture()
@@ -524,6 +531,59 @@ def is_loopback(client_host: str | None) -> bool:
         return ipaddress.ip_address(client_host).is_loopback
     except ValueError:
         return False
+
+
+def is_cross_origin_browser_request(
+    headers: Any, *, client_host: str | None = None
+) -> bool:
+    """Whether browser metadata identifies an opaque or cross-origin caller.
+
+    Native API clients commonly omit Origin/Sec-Fetch-Site and are left to
+    bearer/loopback authentication. Browsers control these headers, so they
+    provide a second boundary against sandboxed generated previews and drive-by
+    localhost requests.
+    """
+    host = str(headers.get("host", "") or "").strip()
+    if is_loopback(client_host):
+        try:
+            host_name = urlsplit(f"//{host}").hostname if host else None
+        except ValueError:
+            host_name = None
+        testclient = client_host == "testclient" and host_name == "testserver"
+        if not testclient and not is_loopback(host_name):
+            # DNS rebinding can make an attacker-controlled Host resolve to
+            # 127.0.0.1. Loopback transport is not enough; require a bearer.
+            return True
+
+    fetch_site = str(headers.get("sec-fetch-site", "") or "").strip().lower()
+    if fetch_site == "cross-site":
+        return True
+
+    origin = str(headers.get("origin", "") or "").strip()
+    if not origin:
+        return False
+    if origin.lower() == "null":
+        return True
+
+    if not host:
+        return False
+    try:
+        parsed_origin = urlsplit(origin)
+        parsed_host = urlsplit(f"{parsed_origin.scheme}://{host}")
+        if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname:
+            return True
+        default_port = 443 if parsed_origin.scheme == "https" else 80
+        origin_authority = (
+            parsed_origin.hostname.casefold().rstrip("."),
+            parsed_origin.port or default_port,
+        )
+        host_authority = (
+            (parsed_host.hostname or "").casefold().rstrip("."),
+            parsed_host.port or default_port,
+        )
+        return origin_authority != host_authority
+    except (TypeError, ValueError):
+        return True
 
 
 def check_auth(

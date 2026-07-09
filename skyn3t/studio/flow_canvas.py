@@ -14,7 +14,7 @@ FLOW_CANVAS_SCHEMA = "skyn3t.flow_canvas.v1"
 
 def build_flow_canvas(plan: Any) -> dict[str, Any]:
     stages = list(getattr(plan, "stages", []) or [])
-    nodes = [{
+    nodes: list[dict[str, Any]] = [{
         "id": "start",
         "type": "trigger",
         "label": "Trigger",

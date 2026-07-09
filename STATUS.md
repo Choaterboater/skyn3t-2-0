@@ -1,6 +1,19 @@
 # SkyN3t 2.0 — Status
 
-_Last reviewed: 2026-07-02 (suite 1976 passed / 3 skipped)._
+_Last reviewed: 2026-07-09 (2,539 passed / 6 expected skips; all 2,545
+collected tests across 283 files ran with no deselections)._
+
+**2026-07-09 review and hardening swarm:** the control plane and generated
+previews now have explicit origin, host, CSP, and capability-URL boundaries;
+WebSocket credentials no longer travel in URLs; preview file serving rejects
+source, secret, dotfile, and junction escapes. The dashboard now isolates
+concurrent build event streams, reconnects safely after token changes, reports
+gate/agent state accurately, confirms destructive Cortex actions, and has
+responsive/accessibility/WebGL fallback handling. Windows process liveness,
+path serialization, UTF-8 fixtures, deploy shims, and process-tree cleanup were
+fixed. Release work now includes MIT/font/runtime-dependency notices, a clean
+dependency audit, deterministic frontend generation, byte-for-byte wheel asset
+parity, installed-wheel SPA/deep-link checks, and blocking CI quality gates.
 
 **2026-07-02 highlights — two parallel waves, merged:**
 
@@ -83,14 +96,15 @@ If you get disconnected, open these in order:
 ## Defaults (safe + cheap)
 
 - `free_only=true`, autonomy gated (`autonomous_builds=false`, `approval_gates=true`).
-- Hard caps: `per_build_usd_cap=0.50`, `daily_usd_cap=5.00`, `daily_token_cap=5M`.
+- Hard caps: `per_build_usd_cap=0` (disabled by default), `daily_usd_cap=5.00`,
+  `daily_token_cap=5M`.
 - Web access is loopback-only unless `SKYN3T_AUTH_TOKEN` is set.
 
 ## Known gaps / follow-ups
 
 - See [docs/ROADMAP.md](docs/ROADMAP.md) for the P0/P1/P2 backlog and which
   items are implemented vs. planned.
-- See [docs/game-capability-roadmap.md](docs/game-capability-roadmap.md) for the
+- See [docs/archive/game-capability-roadmap.md](docs/archive/game-capability-roadmap.md) for the
   game track — the Phaser stack, headless invariant gate, art tier,
   game-designer, and qa-playtest gate are all shipped.
 
@@ -122,11 +136,10 @@ Recently completed (verified in code + tests; full suite 1612 green):
 
 Still open / next up (honest status):
 
-- **Game sprite-RENDERING reliability** — cheap-model codegen loads all generated
-  sprites but renders only some (wires entities to invented, never-loaded texture
-  keys). The real "games still fail" root cause; being worked now.
-- **Advisory SEO gate** for web stacks — being built now.
-- **Native macOS (Swift/SwiftUI)** and **Godot** stacks — deferred, not started.
+- **Game sprite-rendering quality** remains a live-model benchmark even though
+  deterministic texture/render checks and the repair loop are shipped.
+- **Godot** remains deferred. The advisory SEO gate and native macOS
+  Swift/SwiftUI stack listed here previously are shipped and covered.
 
 ## Cross-package wiring — status
 

@@ -49,7 +49,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from skyn3t.security.secrets import filter_env
 
@@ -233,7 +233,7 @@ def _python_exec(explicit: str | None) -> str | None:
     return sys.executable or shutil.which("python") or shutil.which("python3")
 
 
-def _is_valid_schema(schema: Any) -> bool:
+def _is_valid_schema(schema: Any) -> TypeGuard[dict[str, Any]]:
     """A tool ``inputSchema`` must be a JSON Schema OBJECT (``type: object`` with a
     dict ``properties`` when present) — what an MCP client needs to build args."""
     if not isinstance(schema, dict):
@@ -269,11 +269,17 @@ def _fixture_value(spec: Any) -> Any:
     return "test"
 
 
-def _fixture_args(schema: dict) -> dict:
+def _fixture_args(schema: dict[str, Any]) -> dict[str, Any]:
     """Build a minimal valid ``arguments`` dict from a tool's inputSchema — only
     the REQUIRED params (the smallest well-formed call)."""
-    props = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
-    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    props_value = schema.get("properties")
+    props = props_value if isinstance(props_value, dict) else {}
+    required_value = schema.get("required")
+    required = (
+        [name for name in required_value if isinstance(name, str)]
+        if isinstance(required_value, list)
+        else []
+    )
     return {name: _fixture_value(props.get(name, {})) for name in required}
 
 

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
 from skyn3t.memory.models import Base, BuildRow, LessonRow, MessageRow, TaskRow
+from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME
 
@@ -167,9 +168,12 @@ class MemoryStore:
                 manifest = self._disk_manifest_for_row(r) or (
                     r.manifest if isinstance(r.manifest, dict) else {}
                 )
-                extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
-                classification = extra.get("classification") if isinstance(extra.get("classification"), dict) else {}
-                stack_selection = extra.get("stack_selection") if isinstance(extra.get("stack_selection"), dict) else {}
+                raw_extra = manifest.get("extra")
+                extra = raw_extra if isinstance(raw_extra, dict) else {}
+                raw_classification = extra.get("classification")
+                classification = raw_classification if isinstance(raw_classification, dict) else {}
+                raw_stack_selection = extra.get("stack_selection")
+                stack_selection = raw_stack_selection if isinstance(raw_stack_selection, dict) else {}
                 disk_status = manifest.get("status")
                 status = disk_status or r.status
                 if r.status in ("interrupted", "cancelled") and disk_status in ("running", "queued", "pending"):
@@ -271,25 +275,9 @@ class MemoryStore:
         replaces a blanket ``UPDATE … running→interrupted`` that clobbered live
         concurrent builds. Different-host rows are left (can't check liveness).
         Returns the number reconciled."""
-        import os
         import socket
 
         cur_host = socket.gethostname()
-
-        def _alive(pid: int) -> bool:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return False
-            except PermissionError:
-                # Same-host SkyN3t build workers are owned by this server
-                # process/user. EPERM usually means the old PID was reused by an
-                # unrelated process, so keeping the build "running" would create
-                # a phantom row forever.
-                return False
-            except (OSError, OverflowError, TypeError, ValueError):
-                return False
-            return True
 
         n = 0
         async with self._session() as s:
@@ -298,7 +286,8 @@ class MemoryStore:
             )).scalars().all()
             for row in rows:
                 manifest = row.manifest if isinstance(row.manifest, dict) else {}
-                extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
+                raw_extra = manifest.get("extra")
+                extra = raw_extra if isinstance(raw_extra, dict) else {}
                 owner_pid = extra.get("owner_pid")
                 owner_host = extra.get("owner_host")
                 if owner_pid is None:
@@ -307,7 +296,7 @@ class MemoryStore:
                     stale = False  # another host; cannot verify -> leave it
                 else:
                     try:
-                        stale = not _alive(int(owner_pid))
+                        stale = not is_process_alive(int(owner_pid))
                     except (TypeError, ValueError):
                         stale = True
                 if stale:

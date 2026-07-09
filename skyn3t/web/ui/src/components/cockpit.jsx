@@ -1,10 +1,12 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { latestBuildEvents } from "../buildSignals.js";
+import { apiFetch } from "../api.js";
 
 // Build per-stage debug rows from the live event stream. Event-driven: we render
 // whatever stages appear, so we never drift from the backend stage vocabulary.
 export function debugRowsFromEvents(events) {
   const rows = new Map();
-  for (const e of events) {
+  for (const e of latestBuildEvents(events)) {
     const stage = e.payload?.stage;
     if (!stage) continue;
     if (e.type === "build.stage.debug.started") {
@@ -30,7 +32,7 @@ export function debugRowsFromEvents(events) {
 
 export function latestSnapshot(events) {
   let snap = null;
-  for (const e of events) {
+  for (const e of latestBuildEvents(events)) {
     if (e.type === "build.stage.artifact.snapshot") snap = e.payload;
   }
   return snap; // { build_id, stage, files: [...] } | null
@@ -38,7 +40,7 @@ export function latestSnapshot(events) {
 
 export function latestRunningSlug(events) {
   let slug = null;
-  for (const e of events) {
+  for (const e of latestBuildEvents(events)) {
     if (e.type === "build.started" && e.payload?.slug) slug = e.payload.slug;
   }
   return slug;
@@ -62,7 +64,7 @@ export function pipelineFromEvents(events, fallback = []) {
     }
     return r;
   };
-  for (const e of events) {
+  for (const e of latestBuildEvents(events)) {
     const p = e.payload || {};
     if (e.type === "build.started" && Array.isArray(p.stages) && p.stages.length) {
       planned = p.stages;
@@ -162,6 +164,25 @@ export function PreviewPanel({ events }) {
   const slug = useMemo(() => latestRunningSlug(events), [events]);
   const snap = useMemo(() => latestSnapshot(events), [events]);
   const hasIndex = (snap?.files || []).includes("index.html");
+  const [preview, setPreview] = useState({ slug: "", url: "", error: "" });
+  useEffect(() => {
+    let alive = true;
+    if (!slug || !hasIndex) {
+      setPreview({ slug: "", url: "", error: "" });
+      return () => { alive = false; };
+    }
+    setPreview({ slug, url: "", error: "" });
+    apiFetch(`/preview/${encodeURIComponent(slug)}`)
+      .then((payload) => {
+        if (alive) setPreview({ slug, url: payload.preview_url || "", error: "" });
+      })
+      .catch((error) => {
+        if (alive) {
+          setPreview({ slug, url: "", error: String(error?.message || error) });
+        }
+      });
+    return () => { alive = false; };
+  }, [slug, hasIndex]);
   if (!slug) {
     return <p className="px-4 py-3 font-mono text-[11px] text-ash/70">Submit a brief to preview.</p>;
   }
@@ -172,12 +193,19 @@ export function PreviewPanel({ events }) {
       </p>
     );
   }
-  // Rendered preview works for relative-asset apps (e.g. static_html) and in
-  // loopback (no-token) mode. With a token set, the iframe may not authenticate.
+  if (preview.slug !== slug || !preview.url) {
+    return (
+      <p className="px-4 py-3 font-mono text-[11px] text-ash/70">
+        {preview.error ? `Preview unavailable: ${preview.error}` : "Authorizing preview..."}
+      </p>
+    );
+  }
   return (
     <iframe
       title="live preview"
-      src={`/api/projects/${slug}/index.html`}
+      src={preview.url}
+      sandbox="allow-scripts allow-modals allow-downloads allow-pointer-lock"
+      referrerPolicy="no-referrer"
       className="h-72 w-full rounded-md border border-hairline bg-white"
     />
   );

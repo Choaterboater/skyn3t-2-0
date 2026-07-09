@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +18,17 @@ _SKIP_DIRS = {
     ".venv",
     ".worktrees",
     "__pycache__",
+    "build",
+    "data",
     "dist",
+    "logs",
     "node_modules",
+    "Projects",
+    "scratchpad",
+    "wheelhouse",
     "worktrees",
 }
+_SKIP_DIR_PREFIXES = (".release_verify_",)
 _CODE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".html"}
 _SEVERITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
@@ -49,9 +57,13 @@ class AuditContext:
             for path in self.repo_root.rglob("*"):
                 if not path.is_file():
                     continue
-                if any(part in _SKIP_DIRS for part in path.parts):
-                    continue
                 rel_parts = path.relative_to(self.repo_root).parts
+                if any(
+                    part in _SKIP_DIRS
+                    or any(part.startswith(prefix) for prefix in _SKIP_DIR_PREFIXES)
+                    for part in rel_parts[:-1]
+                ):
+                    continue
                 if not self.include_tests and rel_parts and rel_parts[0] == "tests":
                     continue
                 if suffixes is not None and path.suffix not in suffixes:
@@ -63,7 +75,7 @@ class AuditContext:
 
     def rel(self, path: Path) -> str:
         try:
-            return str(path.relative_to(self.repo_root))
+            return path.relative_to(self.repo_root).as_posix()
         except ValueError:
             return str(path)
 
@@ -86,6 +98,7 @@ class RepoReviewAgent(BaseAuditAgent):
         findings: list[AuditFinding] = []
         code_files = ctx.iter_files(_CODE_SUFFIXES)
         test_files = [p for p in ctx.iter_files({".py", ".js", ".jsx", ".ts", ".tsx"}) if ctx.rel(p).startswith("tests/")]
+        source_files = [p for p in code_files if not ctx.rel(p).startswith("tests/")]
         todo_hits = _grep(ctx, re.compile(r"\b(TODO|FIXME|HACK|XXX)\b"))
 
         if not ctx.exists("docs/FILE_MAP.md"):
@@ -95,19 +108,26 @@ class RepoReviewAgent(BaseAuditAgent):
                 "Keep a current map of high-value files for future audit/debug agents.",
             ))
         status = ctx.read("STATUS.md")
-        if status and "Last reviewed:" in status:
-            findings.append(_finding(
-                "P3", "docs", "STATUS.md carries a manual last-reviewed date that can drift.",
-                ["STATUS.md"],
-                "Refresh STATUS.md after major audit council runs or add the generated audit link there.",
-            ))
+        reviewed = re.search(r"Last reviewed:\s*(\d{4}-\d{2}-\d{2})", status)
+        if reviewed:
+            try:
+                reviewed_at = datetime.fromisoformat(reviewed.group(1)).date()
+                age_days = (datetime.now(UTC).date() - reviewed_at).days
+            except ValueError:
+                age_days = 10_000
+            if age_days < 0 or age_days > 14:
+                findings.append(_finding(
+                    "P3", "docs", f"STATUS.md was last reviewed {reviewed.group(1)}.",
+                    ["STATUS.md"],
+                    "Refresh STATUS.md after major audit council runs.",
+                ))
         if len(todo_hits) >= 10:
             findings.append(_finding(
                 "P2", "maintainability", f"Found {len(todo_hits)} TODO/FIXME/HACK markers across repo source.",
                 todo_hits[:8],
                 "Group recurring markers into intentional backlog items or remove stale comments.",
             ))
-        if code_files and len(test_files) / max(1, len([p for p in code_files if "/tests/" not in ctx.rel(p)])) < 0.15:
+        if source_files and len(test_files) / len(source_files) < 0.15:
             findings.append(_finding(
                 "P2", "tests", "The rough test-to-source file ratio is low for an app factory this broad.",
                 ["tests/", "skyn3t/"],
@@ -123,7 +143,12 @@ class RepoReviewAgent(BaseAuditAgent):
                 "Reviews SkyN3t repository structure, docs freshness, source/test shape, and maintenance signals.",
                 "This is a factory audit, so generated project trees are intentionally out of scope for v1.",
             ],
-            metrics={"code_files": len(code_files), "test_files": len(test_files), "todo_markers": len(todo_hits)},
+            metrics={
+                "code_files": len(code_files),
+                "source_files": len(source_files),
+                "test_files": len(test_files),
+                "todo_markers": len(todo_hits),
+            },
         )
 
 

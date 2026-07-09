@@ -20,6 +20,7 @@ environment degrades to "unavailable" rather than an ImportError at import time.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import structlog
 
@@ -246,7 +247,7 @@ class ReplicateClient:
         ``inference_failed`` ("Unable to run inference") on rd-fast — verified that the
         identical call SUCCEEDS once ``remove_bg`` is dropped. Transparency is done
         downstream instead (flood-fill the border background to alpha in assets.py)."""
-        inp = {"prompt": prompt}
+        inp: dict[str, Any] = {"prompt": prompt}
         if str(model).startswith("retro-diffusion/"):
             inp.update(style="game_asset", width=256, height=256)
         return inp

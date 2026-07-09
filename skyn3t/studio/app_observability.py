@@ -18,9 +18,14 @@ OBSERVABILITY_FILENAME = "skyn3t-observability.json"
 
 def build_app_observability(manifest: BuildManifest) -> dict[str, Any]:
     extra = manifest.extra if isinstance(manifest.extra, dict) else {}
-    proof = extra.get("proof_run") if isinstance(extra.get("proof_run"), dict) else {}
-    deploy_plan = extra.get("deploy_plan") if isinstance(extra.get("deploy_plan"), dict) else {}
-    deployments = extra.get("deployments") if isinstance(extra.get("deployments"), list) else []
+    proof_value = extra.get("proof_run")
+    proof: dict[str, Any] = proof_value if isinstance(proof_value, dict) else {}
+    deploy_plan_value = extra.get("deploy_plan")
+    deploy_plan: dict[str, Any] = (
+        deploy_plan_value if isinstance(deploy_plan_value, dict) else {}
+    )
+    deployments_value = extra.get("deployments")
+    deployments: list[Any] = deployments_value if isinstance(deployments_value, list) else []
     stages = [
         {
             "name": stage.name,

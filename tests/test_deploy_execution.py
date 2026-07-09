@@ -9,33 +9,56 @@ fly/wrangler/vercel so nothing real is ever deployed.
 
 from __future__ import annotations
 
-import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from skyn3t.agents.deploy_agent import DeployAgent, _normalize_provider
 
 
 def _fake_cli(tmp_path, name, monkeypatch):
-    """Put a fake provider CLI on PATH: it dumps its env + args to files in cwd
-    and echoes a deployed URL — so a test can assert what crossed to it."""
+    """Run a fake provider CLI through Python on every supported test platform."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
-    shim = bindir / name
+    shim = bindir / f"{name}.py"
     # Dump env + args per invocation, keyed by the first arg, so a test can tell
     # the build command's env apart from the deploy command's.
     shim.write_text(
-        "#!/bin/sh\n"
-        'env > "env.$1.dump"\n'
-        'printf "%s" "$*" > "args.$1.dump"\n'
-        'echo "deployed to https://myapp.fly.dev"\n'
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "step = sys.argv[1] if len(sys.argv) > 1 else 'run'\n"
+        "env_dump = '\\n'.join(f'{key}={value}' for key, value in sorted(os.environ.items()))\n"
+        "Path(f'env.{step}.dump').write_text(env_dump + '\\n', encoding='utf-8')\n"
+        "Path(f'args.{step}.dump').write_text(' '.join(sys.argv[1:]), encoding='utf-8')\n"
+        "print('deployed to https://myapp.fly.dev')\n",
+        encoding="utf-8",
     )
-    shim.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+
+    real_which = shutil.which
+    real_run = subprocess.run
+
+    def fake_which(command):
+        return str(shim) if command == name else real_which(command)
+
+    def fake_run(command, *args, **kwargs):
+        if (
+            isinstance(command, (list, tuple))
+            and command
+            and Path(str(command[0])).name == name
+        ):
+            command = [sys.executable, str(shim), *command[1:]]
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     return shim
 
 
 def _project(tmp_path):
-    (tmp_path / "index.html").write_text("<h1>x</h1>")
+    (tmp_path / "index.html").write_text("<h1>x</h1>", encoding="utf-8")
     return tmp_path
 
 

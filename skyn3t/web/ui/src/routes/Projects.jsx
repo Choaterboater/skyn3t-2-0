@@ -69,26 +69,35 @@ function SortHeader({ label, sortKey: key, sort, setSort, align }) {
   const active = sort.key === key;
   const arrow = !active ? "↕" : sort.dir === "asc" ? "↑" : "↓";
   const defaultDir = _NUMERIC_KEYS.includes(key) || _DATE_KEYS.includes(key) ? "desc" : "asc";
+  const toggleSort = () =>
+    setSort((current) =>
+      current.key === key
+        ? { key, dir: current.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: defaultDir },
+    );
+
   return (
     <th
-      onClick={() =>
-        setSort((s) =>
-          s.key === key
-            ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
-            : { key, dir: defaultDir },
-        )
-      }
-      className={`cursor-pointer select-none px-4 py-2 font-normal hover:text-bone ${
-        align === "right" ? "text-right" : ""
-      }`}
-      title="Click to sort"
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      className={"px-2 py-1 font-normal " + (align === "right" ? "text-right" : "")}
     >
-      {label}
-      <span className={`ml-1 ${active ? "text-ember" : "text-ash/40"}`}>{arrow}</span>
+      <button
+        type="button"
+        onClick={toggleSort}
+        className={
+          "flex w-full items-center gap-1 rounded px-2 py-1 text-left hover:text-bone " +
+          (align === "right" ? "justify-end" : "")
+        }
+        title={"Sort by " + label}
+      >
+        {label}
+        <span aria-hidden="true" className={active ? "text-ember" : "text-ash/40"}>
+          {arrow}
+        </span>
+      </button>
     </th>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Live serve-status. Seed from GET /api/studio/serve, then replay the shared
 // serve.started/serve.stopped event stream on top so the table reflects starts
@@ -323,6 +332,7 @@ function ImproveInline({ slug, stream }) {
       <div className="flex items-start gap-2">
         <textarea
           value={goal}
+          aria-label={"Improvement goal for " + slug}
           onChange={(e) => setGoal(e.target.value)}
           placeholder="Describe what to add or change, in plain English…"
           rows={2}
@@ -808,7 +818,7 @@ export default function Projects({ stream }) {
                           <div className="flex items-center gap-3">
                             {p.has_preview ? (
                               <a
-                                href={`/api/projects/${p.slug}/index.html`}
+                                href={p.preview_url}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="font-mono text-[11px] text-plasma hover:text-plasma/70 underline"

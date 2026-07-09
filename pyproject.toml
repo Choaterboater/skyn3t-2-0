@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "SkyN3t 2.0 — Autonomous Multi-Agent App Factory"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Stephen Choate" }]
 
 # Lightweight core: the spine (config, core, memory, cli) runs on just these.
@@ -56,6 +56,15 @@ visual = [
     "pillow>=10.0",
 ]
 dev = [
+    # Imported during collection or needed to keep web/visual integration tests
+    # from silently skipping; `.[dev]` is the complete test environment.
+    "fastapi>=0.110",
+    "httpx2>=2.0",
+    "jinja2>=3.1",
+    "pillow>=10.0",
+    "playwright>=1.40",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
@@ -65,8 +74,28 @@ dev = [
 [project.scripts]
 skyn3t = "skyn3t.cli.main:app"
 
+[project.urls]
+Homepage = "https://github.com/Choaterboater/skyn3t-2-0"
+Repository = "https://github.com/Choaterboater/skyn3t-2-0"
+Issues = "https://github.com/Choaterboater/skyn3t-2-0/issues"
+
+[tool.setuptools]
+# Ship only the package data declared below. This avoids setuptools treating
+# Vite's extensionless dist/assets/fonts directories as namespace packages.
+include-package-data = false
+
 [tool.setuptools.packages.find]
 include = ["skyn3t*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+# The dashboard is part of the installed application, not a source-only extra.
+"skyn3t.web" = [
+    "ui/dist/index.html",
+    "ui/dist/THIRD_PARTY_NOTICES.txt",
+    "ui/dist/assets/*",
+    "ui/dist/fonts/*",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

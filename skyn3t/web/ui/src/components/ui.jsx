@@ -5,13 +5,15 @@ import React from "react";
 
 export function PageHeader({ eyebrow, title, sub, actions }) {
   return (
-    <header className="mb-7 flex items-end justify-between gap-4 animate-risefade">
+    <header className="mb-7 flex flex-col items-start justify-between gap-4 animate-risefade sm:flex-row sm:items-end">
       <div>
         {eyebrow ? <div className="eyebrow mb-2">{eyebrow}</div> : null}
-        <h1 className="font-display text-2xl font-bold tracking-tight text-bone">{title}</h1>
+        <h1 className="font-display text-2xl font-bold text-bone">{title}</h1>
         {sub ? <p className="mt-1 max-w-xl text-sm text-ash">{sub}</p> : null}
       </div>
-      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
+      {actions ? (
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">{actions}</div>
+      ) : null}
     </header>
   );
 }
@@ -76,7 +78,6 @@ export function Stat({ label, value, tone = "bone", hint }) {
       <div className="eyebrow">{label}</div>
       <div className={`metric mt-2 ${toneCls}`}>{value}</div>
       {hint ? <div className="mt-1 font-mono text-[11px] text-ash">{hint}</div> : null}
-      <div className="pointer-events-none absolute -right-6 -top-6 h-16 w-16 rounded-full bg-ember/5 blur-2xl" />
     </Panel>
   );
 }
@@ -94,7 +95,7 @@ export function Pill({ children, tone = "ash" }) {
 export function Empty({ icon = "◇", children }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
-      <span className="text-2xl text-ash/50">{icon}</span>
+      <span aria-hidden="true" className="text-2xl text-ash/50">{icon}</span>
       <p className="font-mono text-sm text-ash">{children}</p>
     </div>
   );

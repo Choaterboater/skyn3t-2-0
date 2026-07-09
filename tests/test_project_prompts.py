@@ -15,7 +15,10 @@ from skyn3t.web.routes import get_project_prompts, list_projects
 
 
 def _state(projects_dir):
-    return SimpleNamespace(settings=SimpleNamespace(projects_dir=str(projects_dir)))
+    return SimpleNamespace(
+        settings=SimpleNamespace(projects_dir=str(projects_dir)),
+        preview_signing_key=b"p" * 32,
+    )
 
 
 def _make_project(root, slug, prompts):

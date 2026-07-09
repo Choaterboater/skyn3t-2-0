@@ -176,7 +176,7 @@ _SIBLING_IMPORT_SERVER = _GOOD_SERVER.replace(
 
 
 def _write_server(tmp_path: Path, source: str) -> Path:
-    (tmp_path / "server.py").write_text(source)
+    (tmp_path / "server.py").write_text(source, encoding="utf-8")
     return tmp_path
 
 
@@ -196,7 +196,7 @@ def test_server_importing_a_sibling_module_boots(tmp_path):
     # The scaffold's own layout (`server.py` + `import tools`) must be provable:
     # the spawn must keep the script's directory on sys.path (no `-I`).
     _write_server(tmp_path, _SIBLING_IMPORT_SERVER)
-    (tmp_path / "helpers.py").write_text(_SIBLING_HELPERS)
+    (tmp_path / "helpers.py").write_text(_SIBLING_HELPERS, encoding="utf-8")
     v = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
     assert not v.skipped, v.to_dict()
     assert v.ok, v.to_dict()

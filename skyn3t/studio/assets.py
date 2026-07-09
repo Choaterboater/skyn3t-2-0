@@ -18,7 +18,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -69,7 +69,7 @@ _NATURE = ("tree", "flower", "sun", "star", "cloud", "rainbow", "house", "car")
 _BUSINESS_SIGNALS = ("service", "services", "company", "business", "marketing",
                      "website", " site", "contractor", "repair", "installation",
                      "commercial", "residential", "agency", "clinic", "shop", "store")
-_SERVICE_SUBJECTS = (
+_SERVICE_SUBJECTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("air conditioning", "a/c", "hvac", "cooling", " ac "), "air conditioning condenser unit beside a house"),
     (("heating", "furnace", "heat pump", "boiler"), "home furnace heating system"),
     (("plumbing", "plumber", "drain", " pipe"), "plumber repairing a pipe under a sink"),
@@ -79,7 +79,7 @@ _SERVICE_SUBJECTS = (
     (("roofing", "roof"), "roofer installing shingles on a roof"),
     (("landscaping", "lawn care"), "professionally landscaped residential yard"),
 )
-_DOMAIN_SUBJECTS = (
+_DOMAIN_SUBJECTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("golf", "golfing", "country club", "clubhouse", "tee time", "tee-time"),
      (
          "sunlit golf course fairway and green",
@@ -389,9 +389,9 @@ def _draw_web_asset_png(
     font = ImageFont.load_default()
     text = label if compact else f"{theme.upper()} / {label}"
     bbox = draw.textbbox((0, 0), text, font=font)
-    x = (width - (bbox[2] - bbox[0])) / 2 if compact else int(width * 0.11)
-    y = (height - (bbox[3] - bbox[1])) / 2 if compact else int(height * 0.21)
-    draw.text((x, y), text, font=font, fill=(16, 24, 39))
+    text_x = (width - (bbox[2] - bbox[0])) / 2 if compact else int(width * 0.11)
+    text_y = (height - (bbox[3] - bbox[1])) / 2 if compact else int(height * 0.21)
+    draw.text((text_x, text_y), text, font=font, fill=(16, 24, 39))
     out = io.BytesIO()
     im.save(out, "PNG")
     return out.getvalue()
@@ -618,9 +618,11 @@ def _key_bg_to_alpha(png_bytes: bytes) -> bytes:
             ImageDraw.floodfill(im, seed, sentinel, thresh=40)
         rgba = im.convert("RGBA")
         px = rgba.load()
+        if px is None:
+            return png_bytes
         for y in range(h):
             for x in range(w):
-                r, g, b, _a = px[x, y]
+                r, g, b, _a = cast(tuple[int, int, int, int], px[x, y])
                 if (r, g, b) == sentinel:
                     px[x, y] = (0, 0, 0, 0)
         out = _io.BytesIO()

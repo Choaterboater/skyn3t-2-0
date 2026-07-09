@@ -8,6 +8,9 @@ absent (design rule #6).
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import mimetypes
 import os
 import shutil
@@ -17,6 +20,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote
 
 import structlog
 
@@ -24,6 +28,7 @@ from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 from skyn3t.core.model_router import live_catalog
+from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import (
     AppState,
@@ -31,6 +36,7 @@ from skyn3t.web.deps import (
     ProposalRecord,
     check_auth,
     extract_bearer,
+    is_cross_origin_browser_request,
     is_loopback,
 )
 from skyn3t.worktree import PREVIEW_SUBDIR, list_files
@@ -170,7 +176,39 @@ def _preview_root(state: AppState, slug: str) -> Path:
     if not base.is_relative_to(projects_root):
         raise ValueError(f"slug escapes projects_dir: {slug!r}")
     preview = base / PREVIEW_SUBDIR
-    return preview if preview.is_dir() else base
+    if not preview.is_dir():
+        return base
+    resolved_preview = preview.resolve()
+    # Generated projects may contain symlinks/junctions. The selected preview
+    # root itself must remain inside that project; checking only child paths
+    # later would bless an escaped root and expose allowlisted host files.
+    if not resolved_preview.is_relative_to(base):
+        raise ValueError(f"preview root escapes project: {slug!r}")
+    return resolved_preview
+
+
+def _project_preview_capability(state: AppState, slug: str) -> str:
+    key = getattr(state, "preview_signing_key", b"")
+    if not isinstance(key, bytes) or len(key) < 32:
+        raise RuntimeError("preview signing key is unavailable")
+    digest = hmac.new(key, slug.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _project_preview_url(state: AppState, slug: str, path: str = "index.html") -> str:
+    cap = _project_preview_capability(state, slug)
+    return (
+        f"/api/project-previews/{cap}/{quote(slug, safe='')}/"
+        f"{quote(path.lstrip('/'), safe='/')}"
+    )
+
+
+def _valid_project_preview_capability(state: AppState, slug: str, cap: str) -> bool:
+    try:
+        expected = _project_preview_capability(state, slug)
+    except (RuntimeError, UnicodeError):
+        return False
+    return hmac.compare_digest(expected, cap)
 
 
 async def preview_payload(state: AppState, slug: str) -> dict[str, Any]:
@@ -183,6 +221,7 @@ async def preview_payload(state: AppState, slug: str) -> dict[str, Any]:
         "root": str(root),
         "files": sorted(files),
         "manifest": manifest.to_dict() if manifest is not None else None,
+        "preview_url": _project_preview_url(state, slug),
     }
 
 
@@ -197,13 +236,62 @@ def resolve_project_file(state: AppState, slug: str, rel_path: str) -> Path:
         raise ValueError(f"path escapes preview root: {rel_path!r}")
     if not candidate.is_file():
         raise FileNotFoundError(rel_path)
+    relative = candidate.relative_to(root)
+    lowered_parts = tuple(part.casefold() for part in relative.parts)
+    if (
+        any(part.startswith(".") for part in relative.parts)
+        or candidate.name.casefold() in _PROJECT_PRIVATE_FILES
+        or candidate.suffix.casefold() not in _PROJECT_SERVABLE_EXTS
+        or any(part in {"node_modules", "__pycache__"} for part in lowered_parts)
+    ):
+        raise PermissionError(rel_path)
     return candidate
 
 
 _PROJECT_REWRITE_EXTS = {".html", ".htm", ".css", ".js", ".mjs"}
+_PROJECT_SERVABLE_EXTS = frozenset({
+    ".html", ".htm", ".css", ".js", ".mjs", ".cjs",
+    ".json", ".webmanifest", ".wasm",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".ico", ".bmp",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
+    ".gltf", ".glb", ".obj", ".mtl", ".bin",
+    ".txt", ".csv", ".xml",
+})
+_PROJECT_PRIVATE_FILES = frozenset({
+    "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "credentials.json", "secrets.json",
+})
+_PROJECT_SANDBOX_CSP = (
+    "sandbox allow-scripts allow-modals allow-downloads allow-pointer-lock; "
+    "frame-ancestors 'self'"
+)
 
 
-def project_file_response(path: Path, slug: str) -> Any:
+def _project_response_headers() -> dict[str, str]:
+    """Isolation headers for every untrusted generated-project response.
+
+    CSP sandbox also covers active non-HTML documents such as SVG/XML when
+    opened directly. CORS/CORP remain permissive only for these project files so
+    ES modules, fonts, and images can load from the sandbox's opaque origin.
+    """
+    return {
+        "Content-Security-Policy": _PROJECT_SANDBOX_CSP,
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        # Opaque-origin sandboxed documents send Origin:null for modules, fonts,
+        # and fetches. Do not use "*" here: that would make guessable project
+        # paths readable by every website the operator visits.
+        "Access-Control-Allow-Origin": "null",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",
+    }
+
+
+def project_file_response(
+    path: Path, slug: str, *, route_prefix: str | None = None
+) -> Any:
     """Serve a generated preview file with project-scoped asset URLs.
 
     The cockpit iframe loads generated HTML through `/api/projects/{slug}/...`.
@@ -212,18 +300,20 @@ def project_file_response(path: Path, slug: str) -> Any:
     are rewritten on the way out; binary images/fonts stay as normal file
     responses.
     """
+    headers = _project_response_headers()
     if path.suffix.lower() not in _PROJECT_REWRITE_EXTS:
-        return FileResponse(str(path))
+        return FileResponse(str(path), headers=headers)
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return FileResponse(str(path))
+        return FileResponse(str(path), headers=headers)
 
-    scoped = f"/api/projects/{slug}/assets/"
+    scoped = route_prefix or f"/api/projects/{quote(slug, safe='')}/"
+    scoped = f"{scoped.rstrip('/')}/assets/"
     for prefix in ('"/assets/', "'/assets/", "(/assets/", "url(/assets/"):
         text = text.replace(prefix, prefix.replace("/assets/", scoped))
     media_type = mimetypes.guess_type(str(path))[0] or "text/plain"
-    return Response(content=text, media_type=media_type)
+    return Response(content=text, media_type=media_type, headers=headers)
 
 
 def _save_reference_image(
@@ -315,7 +405,8 @@ def _normalize_build_key(value: str) -> str:
 
 
 def _row_target_values(row: dict[str, Any]) -> tuple[str, str, str]:
-    manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+    raw_manifest = row.get("manifest")
+    manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
     return (
         str(row.get("brief") or manifest.get("brief") or ""),
         str(row.get("stack") or manifest.get("stack") or ""),
@@ -691,9 +782,12 @@ async def cancel_build(state: AppState, build_id: str, reason: str = "") -> dict
 
 def _build_replay_fields(row: dict[str, Any]) -> dict[str, Any]:
     """Extract the small set of inputs needed to rerun a prior build."""
-    manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
-    extra = manifest.get("extra") if isinstance(manifest.get("extra"), dict) else {}
-    trace = row.get("model_trace") if isinstance(row.get("model_trace"), dict) else {}
+    raw_manifest = row.get("manifest")
+    manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
+    raw_extra = manifest.get("extra")
+    extra = raw_extra if isinstance(raw_extra, dict) else {}
+    raw_trace = row.get("model_trace")
+    trace = raw_trace if isinstance(raw_trace, dict) else {}
     profile = (
         row.get("build_profile")
         or trace.get("profile")
@@ -984,6 +1078,12 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "updated_at": m.get("updated_at", ""),
                 "size_bytes": _dir_size(d),
                 "has_preview": (d / "index.html").exists(),
+                # A read-only capability lets browser navigation/iframes load a
+                # token-authenticated preview without putting the bearer itself
+                # in a URL. It exposes only the strict project-file allowlist.
+                "preview_url": _project_preview_url(
+                    state, str(m.get("slug", d.name))
+                ),
                 "has_serve": bool(serve_kind),
                 "serve_kind": serve_kind,
                 "serve_reason": serve_reason,
@@ -1112,11 +1212,7 @@ def _app_runner(state: AppState) -> Any:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return is_process_alive(pid)
 
 
 async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
@@ -2305,7 +2401,7 @@ async def list_openrouter_model_catalog(
 
         filtered.append(_build_model_catalog_item(m))
 
-    def _sort_key(item: dict[str, Any]) -> tuple[Any, Any, Any]:
+    def _sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
         if normalized_sort in {"created", "newest"}:
             return (item.get("created", 0), item["provider"], item["id"])
         if normalized_sort == "provider":
@@ -2765,20 +2861,22 @@ async def set_llm_routing(
             os.environ["SKYN3T_FREE_ONLY"] = value
             _persist_env_var("SKYN3T_FREE_ONLY", value)
 
-    if state.llm_client is not None:
+    llm_client = state.llm_client
+    if llm_client is not None:
         try:
-            state.llm_client.settings = state.settings
+            llm_client.settings = state.settings
         except Exception:  # noqa: BLE001
             pass
-    if getattr(state.llm_client, "router", None) is not None:
-        state.router = state.llm_client.router
+        client_router = getattr(llm_client, "router", None)
+        if client_router is not None:
+            state.router = client_router
 
     routing = (
-        state.llm_client.backend_status()
-        if state.llm_client is not None and hasattr(state.llm_client, "backend_status")
+        llm_client.backend_status()
+        if llm_client is not None and hasattr(llm_client, "backend_status")
         else {}
     )
-    tiers = {}
+    tiers: dict[str, str] = {}
     if state.router is not None:
         try:
             tiers = state.router.describe()
@@ -2910,7 +3008,24 @@ def build_router(state: AppState) -> Any:
         if not ok:
             raise HTTPException(status_code=401, detail="unauthorized")
 
-    auth = Depends(require_auth)
+    async def require_control_auth(request: Request) -> None:
+        await require_auth(request)
+        client_host = request.client.host if request.client else None
+        if not is_cross_origin_browser_request(request.headers, client_host=client_host):
+            return
+        # A real bearer explicitly authorizes cross-origin/native control use.
+        # Loopback trust alone must never authorize a sandboxed preview
+        # (Origin:null) or a drive-by browser request.
+        bearer_ok = check_auth(
+            state.settings,
+            authorization=request.headers.get("authorization"),
+            client_host=None,
+        )
+        if not bearer_ok:
+            raise HTTPException(status_code=403, detail="cross-origin control request denied")
+
+    auth = Depends(require_control_auth)
+    project_auth = Depends(require_auth)
     empty_body: Any = Body(default_factory=dict)
 
     @router.get("/auth/self-test", dependencies=[auth])
@@ -3087,15 +3202,31 @@ def build_router(state: AppState) -> Any:
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid project") from None
 
-    @router.get("/projects/{slug}/{path:path}", dependencies=[auth])
+    @router.get("/projects/{slug}/{path:path}", dependencies=[project_auth])
     async def _project_file(slug: str, path: str) -> Any:
         try:
             resolved = resolve_project_file(state, slug, path)
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid path") from None
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             raise HTTPException(status_code=404, detail="not found") from None
         return project_file_response(resolved, slug)
+
+    @router.get("/project-previews/{cap}/{slug}/{path:path}")
+    async def _project_preview_file(cap: str, slug: str, path: str) -> Any:
+        # Return 404 for both bad capabilities and missing files so this route
+        # never becomes an oracle for project names or preview contents.
+        if not _valid_project_preview_capability(state, slug, cap):
+            raise HTTPException(status_code=404, detail="not found")
+        try:
+            resolved = resolve_project_file(state, slug, path)
+        except (ValueError, FileNotFoundError, PermissionError):
+            raise HTTPException(status_code=404, detail="not found") from None
+        prefix = (
+            f"/api/project-previews/{quote(cap, safe='')}/"
+            f"{quote(slug, safe='')}/"
+        )
+        return project_file_response(resolved, slug, route_prefix=prefix)
 
     @router.get("/cortex/proposals", dependencies=[auth])
     async def _cortex_proposals(status: str = Query(default="")) -> dict[str, Any]:

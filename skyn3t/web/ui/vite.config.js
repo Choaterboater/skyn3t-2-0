@@ -31,8 +31,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: TARGET, changeOrigin: true },
-      "/ws": { target: TARGET, ws: true, changeOrigin: true },
+      // Preserve the browser-facing Host for the control-plane Origin check.
+      "/api": { target: TARGET, changeOrigin: false },
+      "/ws": { target: TARGET, ws: true, changeOrigin: false },
     },
   },
 });

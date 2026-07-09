@@ -22,6 +22,24 @@ data/cortex/
 data/proposals/
 data/checkpoints/
 data/budget/
+# A custom SKYN3T_DATA_DIR may point at the package directory (as this
+# checkout's local environment does). Keep the same runtime state out of source
+# control without deleting or relocating the operator's data.
+/skyn3t/*.db
+/skyn3t/*.db-*
+/skyn3t/asset_packs/
+/skyn3t/bench/
+/skyn3t/budget/
+/skyn3t/build_patterns.json
+/skyn3t/model_router_paid_fallback.json
+/skyn3t/model_tournament.json
+/skyn3t/reference_images/
+/skyn3t/skills/
+/skyn3t/snapshot.json
+/skyn3t/token_rollups.json
+/skyn3t/vector_db/
+/skyn3t/cortex/proposals.jsonl
+/skyn3t/cortex/settings_overrides.json
 logs/
 .claude/
 scratchpad/
@@ -29,4 +47,12 @@ proj_big/
 .env
 node_modules/
 dist/
+!skyn3t/web/ui/dist/
+!skyn3t/web/ui/dist/**
+/build/
+/wheelhouse/
+*.whl
+*.tar.gz
+.eggs/
+/skyn3t/cortex/staged/
 .DS_Store

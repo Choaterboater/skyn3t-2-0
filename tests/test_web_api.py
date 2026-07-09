@@ -25,7 +25,12 @@ from skyn3t.web.deps import (
     extract_bearer,
     is_loopback,
 )
-from skyn3t.web.websockets import ConnectionHub, _channel_match, _ws_authorized
+from skyn3t.web.websockets import (
+    ConnectionHub,
+    _channel_match,
+    _ws_auth_subprotocol,
+    _ws_authorized,
+)
 
 
 def _state(**kw) -> AppState:
@@ -138,6 +143,26 @@ def test_ws_authorized_via_subprotocol():
     assert _ws_authorized(st, _FakeWS(subprotocols=["skyn3t-bearer", "nope"], client_host="8.8.8.8")) is False
 
 
+def test_ws_authorized_via_encoded_subprotocol():
+    import base64
+
+    st = _state()
+    st.settings.auth_token = "secret /=, with spaces ☃"
+    encoded = base64.urlsafe_b64encode(st.settings.auth_token.encode()).rstrip(b"=").decode()
+    protocol = f"skyn3t-bearer.{encoded}"
+
+    assert _ws_authorized(
+        st, _FakeWS(subprotocols=[protocol], client_host="8.8.8.8")
+    ) is True
+    assert _ws_auth_subprotocol(_FakeWS(subprotocols=[protocol])) == protocol
+
+
+def test_ws_handshake_does_not_select_invalid_encoded_protocol():
+    assert _ws_auth_subprotocol(
+        _FakeWS(subprotocols=["skyn3t-bearer.not+base64"])
+    ) is None
+
+
 def test_ws_authorized_via_header_bearer():
     st = _state()
     st.settings.auth_token = "secret"
@@ -151,6 +176,60 @@ def test_ws_authorized_ignores_query_token():
     ws = _FakeWS(client_host="8.8.8.8")
     ws.query_params = {"token": "secret"}
     assert _ws_authorized(st, ws) is False
+
+
+def test_ws_rejects_opaque_or_cross_origin_loopback_caller():
+    st = _state()
+    st.settings.auth_token = ""
+    assert _ws_authorized(
+        st,
+        _FakeWS(headers={"origin": "null", "host": "127.0.0.1"}),
+    ) is False
+    assert _ws_authorized(
+        st,
+        _FakeWS(
+            headers={
+                "origin": "http://attacker.example",
+                "host": "attacker.example",
+                "sec-fetch-site": "same-origin",
+            }
+        ),
+    ) is False
+    assert _ws_authorized(
+        st,
+        _FakeWS(
+            headers={
+                "origin": "https://attacker.example",
+                "host": "127.0.0.1",
+                "sec-fetch-site": "cross-site",
+            }
+        ),
+    ) is False
+
+
+def test_ws_allows_same_origin_or_explicit_cross_origin_bearer():
+    st = _state()
+    st.settings.auth_token = ""
+    assert _ws_authorized(
+        st,
+        _FakeWS(
+            headers={
+                "origin": "http://127.0.0.1",
+                "host": "127.0.0.1",
+                "sec-fetch-site": "same-origin",
+            }
+        ),
+    ) is True
+
+    st.settings.auth_token = "secret"
+    assert _ws_authorized(
+        st,
+        _FakeWS(
+            headers={"origin": "null", "host": "127.0.0.1"},
+            subprotocols=["skyn3t-bearer", "secret"],
+            client_host="8.8.8.8",
+        ),
+    ) is True
 
 
 # ---- state snapshots -------------------------------------------------------

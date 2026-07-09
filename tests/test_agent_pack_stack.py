@@ -125,7 +125,7 @@ def test_scaffold_pack_own_proof_passes_with_zero_deps():
         for rel, contents in files.items():
             dst = root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(contents)
+            dst.write_text(contents, encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
              "-o", "addopts=", "test_agent_pack.py"],
@@ -152,7 +152,7 @@ def test_proof_run_passes_pack_scaffold_structurally(tmp_path):
     for rel, contents in files.items():
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(contents)
+        dst.write_text(contents, encoding="utf-8")
     res = proof_run(
         tmp_path,
         checklist=file_checklist("agent_pack"),

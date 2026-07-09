@@ -193,6 +193,15 @@ class ReplicateClient:
             for got in preds:
                 if isinstance(got, list):
                     urls.extend(got)
+                elif isinstance(got, BaseException):
+                    # gather(return_exceptions=True) previously swallowed the
+                    # actionable HTTP/provider error and surfaced only an empty
+                    # image list to the asset circuit.
+                    log.warning(
+                        "replicate.prediction_failed",
+                        error_type=type(got).__name__,
+                        error=str(got)[:240],
+                    )
             urls = urls[:n]
             fetched = await asyncio.gather(
                 *(self._fetch_image(client, u) for u in urls),

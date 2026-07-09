@@ -1738,7 +1738,8 @@ class StudioRunner:
             final_repairs = {}
         changed_keys = ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added",
-                        "phaser_entrypoint_repaired")
+                        "source_fences_stripped", "ts_in_js_stripped",
+                        "react_entrypoint_repaired", "phaser_entrypoint_repaired")
         if any(final_repairs.get(k) for k in changed_keys):
             manifest.files = list_files(project_dir)
             manifest.extra["final_consistency_repairs"] = {
@@ -3540,6 +3541,17 @@ class StudioRunner:
             if repairs["use_client_added"]:
                 manifest.extra["use_client_added"] = repairs["use_client_added"]
                 log.info("runner.use_client_added", files=repairs["use_client_added"])
+            if repairs.get("source_fences_stripped"):
+                manifest.extra["source_fences_stripped"] = repairs["source_fences_stripped"]
+                log.info("runner.source_fences_stripped",
+                         files=repairs["source_fences_stripped"])
+            if repairs.get("ts_in_js_stripped"):
+                manifest.extra["ts_in_js_stripped"] = repairs["ts_in_js_stripped"]
+                log.info("runner.ts_in_js_stripped", files=repairs["ts_in_js_stripped"])
+            if repairs.get("react_entrypoint_repaired"):
+                manifest.extra["react_entrypoint_repaired"] = repairs["react_entrypoint_repaired"]
+                log.info("runner.react_entrypoint_repaired",
+                         files=repairs["react_entrypoint_repaired"])
             if repairs.get("phaser_entrypoint_repaired"):
                 manifest.extra["phaser_entrypoint_repaired"] = repairs["phaser_entrypoint_repaired"]
                 log.info("runner.phaser_entrypoint_repaired",
@@ -3606,6 +3618,8 @@ class StudioRunner:
                 if any(recovery_repairs.get(k) for k in
                        ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added",
+                        "source_fences_stripped", "ts_in_js_stripped",
+                        "react_entrypoint_repaired",
                         "phaser_entrypoint_repaired")):
                     manifest.files = list_files(project_dir)
                     proof = await asyncio.to_thread(

@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.agents.config_detector import detect_from_code
-from skyn3t.npm_utils import mark_npm_install_current, npm_env, npm_install_args
+from skyn3t.npm_utils import (
+    discard_foreign_node_modules,
+    mark_npm_install_current,
+    npm_env,
+    npm_install_args,
+)
 from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name, scrub_text
 
 _PY_ENTRYPOINTS = ("main.py", "app.py", "server.py")
@@ -369,6 +374,7 @@ def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dic
     pdir = Path(project_dir)
     if not (pdir / "package.json").exists():
         return True, {"skipped": "no package.json"}
+    foreign_deps = discard_foreign_node_modules(pdir)
     if (pdir / "node_modules").is_dir():
         return True, {"skipped": "node_modules present"}
     npm = shutil.which("npm")
@@ -379,6 +385,8 @@ def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dic
         ok, detail = run(npm_install_args(npm, "ci"), str(pdir))
         if ok:
             mark_npm_install_current(pdir, action="ci")
+            if foreign_deps:
+                detail = {**(detail or {}), "reinstalled_after": foreign_deps}
             return ok, detail
         # A generated/edited project often has a lockfile out of sync with
         # package.json, which `npm ci` rejects outright. Fall back to `npm install`
@@ -387,10 +395,14 @@ def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dic
         ok, detail = run(npm_install_args(npm, "install"), str(pdir))
         if ok:
             mark_npm_install_current(pdir, action="install")
+            if foreign_deps:
+                detail = {**(detail or {}), "reinstalled_after": foreign_deps}
         return ok, detail
     ok, detail = run(npm_install_args(npm, "install"), str(pdir))
     if ok:
         mark_npm_install_current(pdir, action="install")
+        if foreign_deps:
+            detail = {**(detail or {}), "reinstalled_after": foreign_deps}
     return ok, detail
 
 

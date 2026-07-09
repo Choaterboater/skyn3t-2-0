@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 
-from skyn3t.studio.proof_run import ensure_path_alias_config, strip_ts_type_in_js
+from skyn3t.studio.proof_run import (
+    ensure_path_alias_config,
+    repair_react_vite_entrypoint_to_tsx,
+    strip_markdown_fences_in_source_files,
+    strip_ts_type_in_js,
+)
 
 
 def test_alias_config_written_when_at_imports_and_no_config(tmp_path):
@@ -41,6 +46,59 @@ def test_strip_ts_type_from_js(tmp_path):
     body = f.read_text()
     assert "export type" not in body and "import type" not in body
     assert "export const s" in body  # real code preserved
+
+
+def test_strip_inline_ts_syntax_from_jsx_entry(tmp_path):
+    f = tmp_path / "src" / "main.jsx"
+    f.parent.mkdir()
+    f.write_text(
+        "const handleError = (error: Error) => {\n"
+        "  console.error(error)\n"
+        "}\n"
+        "ReactDOM.createRoot(document.getElementById('root')!).render(<App />)\n",
+        encoding="utf-8",
+    )
+
+    assert "src/main.jsx" in strip_ts_type_in_js(tmp_path)
+    body = f.read_text()
+    assert "error: Error" not in body
+    assert "getElementById('root')!" not in body
+    assert "handleError = (error) =>" in body
+    assert "createRoot(document.getElementById('root')).render" in body
+
+
+def test_strip_markdown_fenced_source_file(tmp_path):
+    f = tmp_path / "src" / "App.jsx"
+    f.parent.mkdir()
+    f.write_text(
+        "src/App.jsx\n"
+        "```jsx\n"
+        "export default function App(){ return <main>Hi</main> }\n"
+        "```\n",
+        encoding="utf-8",
+    )
+
+    assert strip_markdown_fences_in_source_files(tmp_path) == ["src/App.jsx"]
+    body = f.read_text()
+    assert body == "export default function App(){ return <main>Hi</main> }\n"
+
+
+def test_repair_react_entrypoint_prefers_tsx_when_jsx_is_fenced(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "index.html").write_text(
+        '<div id="root"></div><script type="module" src="/src/main.jsx"></script>',
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "main.jsx").write_text("import App from './App'\n")
+    (tmp_path / "src" / "App.jsx").write_text(
+        "src/App.jsx\n```jsx\nexport default function App(){ return <main /> }\n```\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "main.tsx").write_text("import App from './App.tsx'\n")
+    (tmp_path / "src" / "App.tsx").write_text("export default function App(){ return <main /> }\n")
+
+    assert repair_react_vite_entrypoint_to_tsx(tmp_path, stack="react") == ["index.html"]
+    assert 'src="/src/main.tsx"' in (tmp_path / "index.html").read_text()
 
 
 def test_strip_ts_type_leaves_tsx_untouched(tmp_path):

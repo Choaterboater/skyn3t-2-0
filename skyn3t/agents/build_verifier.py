@@ -28,7 +28,12 @@ from skyn3t.agents import _verify_common as vc
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-from skyn3t.npm_utils import mark_npm_install_current, npm_install_args, npm_install_current
+from skyn3t.npm_utils import (
+    discard_foreign_node_modules,
+    mark_npm_install_current,
+    npm_install_args,
+    npm_install_current,
+)
 
 # --- reward-hacking heuristics ------------------------------------------------
 
@@ -237,6 +242,7 @@ class BuildVerifierAgent(BaseAgent):
         # ran (hallucinated versions + app/pages route conflicts slipped through
         # as a false "pass"). package.json presence is the honest signal.
         if (root / "package.json").is_file() and allow_real and shutil.which("npm"):
+            foreign_deps = discard_foreign_node_modules(root)
             if npm_install_current(root):
                 ok, out = True, "install skipped (dependencies current)"
             else:
@@ -248,8 +254,14 @@ class BuildVerifierAgent(BaseAgent):
                 pkg = json.loads(vc.safe_read(root / "package.json") or "{}")
                 if isinstance(pkg, dict) and "build" in (pkg.get("scripts") or {}):
                     bok, bout = await self._run(["npm", "run", "build"], root, timeout=300)
-                    return True, bok, "npm", (bout[-500:] if bout else "build run")
-                return True, True, "npm", "install ok (no build script)"
+                    detail = bout[-500:] if bout else "build run"
+                    if foreign_deps:
+                        detail = f"reinstalled host deps after {foreign_deps} node_modules; {detail}"
+                    return True, bok, "npm", detail
+                detail = "install ok (no build script)"
+                if foreign_deps:
+                    detail = f"reinstalled host deps after {foreign_deps} node_modules; {detail}"
+                return True, True, "npm", detail
             return True, False, "npm", out[-500:]
 
         # Swift Package Manager: key on the manifest (like package.json above),

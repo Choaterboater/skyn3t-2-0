@@ -40,10 +40,20 @@ def test_coloring_prompt_mentions_subject():
 
 # ---- HTTP mock harness -----------------------------------------------------
 class _Resp:
-    def __init__(self, *, json_data=None, content=b"", status_ok=True):
+    def __init__(
+        self,
+        *,
+        json_data=None,
+        content=b"",
+        status_ok=True,
+        status_code=200,
+        headers=None,
+    ):
         self._json = json_data
         self.content = content
         self._ok = status_ok
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if not self._ok:
@@ -113,6 +123,43 @@ async def test_generate_images_polls_until_succeeded(monkeypatch):
     _install_client(monkeypatch, create_resp=create, get_resp=done)
     imgs = await _client(replicate_api_token="r8_x").generate_images("a dog", n=1)
     assert imgs == [_PNG]
+
+
+async def test_generate_images_honors_rate_limit_reset_and_retries(monkeypatch):
+    limited = _Resp(status_ok=False, status_code=429, headers={"ratelimit-reset": "10"})
+    created = _Resp(json_data={
+        "id": "pred-rate", "status": "succeeded",
+        "output": ["https://replicate.delivery/out.png"],
+    }, status_code=201)
+    posts = [limited, created]
+    delays = []
+
+    class _AsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            return posts.pop(0)
+
+        async def get(self, url, headers=None):
+            return _Resp(content=_PNG)
+
+    async def _sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(rep_mod.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(rep_mod.asyncio, "sleep", _sleep)
+
+    images = await _client(replicate_api_token="r8_x").generate_images("a course", n=1)
+
+    assert images == [_PNG]
+    assert delays == [10.0]
 
 
 async def test_no_token_returns_empty(monkeypatch):

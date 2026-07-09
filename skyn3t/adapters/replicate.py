@@ -131,6 +131,7 @@ class ReplicateClient:
     _poll_interval = 2.0
     _default_timeout = 90.0
     _max_images = 4
+    _create_max_attempts = 3
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -220,7 +221,22 @@ class ReplicateClient:
         # finishes (capped at 60s) — often the whole job in a single round-trip;
         # we still poll as a fallback when it returns early.
         headers = {**self._headers(), "Prefer": "wait"}
-        resp = await client.post(create_url, json=body, headers=headers)
+        resp = None
+        for attempt in range(self._create_max_attempts):
+            resp = await client.post(create_url, json=body, headers=headers)
+            if getattr(resp, "status_code", 200) != 429:
+                break
+            if attempt + 1 >= self._create_max_attempts:
+                break
+            delay = self._create_retry_delay(resp, attempt)
+            log.warning(
+                "replicate.rate_limited",
+                model=model,
+                attempt=attempt + 1,
+                retry_in=delay,
+            )
+            await asyncio.sleep(delay)
+        assert resp is not None
         resp.raise_for_status()
         data = resp.json()
         pred_id = data.get("id") if isinstance(data, dict) else None
@@ -242,6 +258,19 @@ class ReplicateClient:
             log.warning("replicate.prediction_not_ok", status=status, id=pred_id)
             return []
         return self._output_urls(data.get("output"))
+
+    @staticmethod
+    def _create_retry_delay(response: Any, attempt: int) -> float:
+        """Honor Replicate's seconds-until-reset headers for HTTP 429."""
+        headers = getattr(response, "headers", {}) or {}
+        for name in ("retry-after", "ratelimit-reset", "x-ratelimit-reset"):
+            raw = headers.get(name)
+            try:
+                if raw is not None:
+                    return max(1.0, min(float(raw), 60.0))
+            except (TypeError, ValueError):
+                continue
+        return min(10.0 * (attempt + 1), 30.0)
 
     def _input_for(self, prompt: str, model: str = "") -> dict:
         """Build a model's prediction input. ``prompt`` is the only universal field,

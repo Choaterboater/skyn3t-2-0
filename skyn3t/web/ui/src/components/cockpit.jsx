@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { latestBuildEvents } from "../buildSignals.js";
 import { apiFetch } from "../api.js";
-import { sliceTaskIdentity } from "../agentSignals.js";
+import {
+  settleSliceRowsOnBuildTerminal,
+  sliceTaskIdentity,
+} from "../agentSignals.js";
 
 // Build per-stage debug rows from the live event stream. Event-driven: we render
 // whatever stages appear, so we never drift from the backend stage vocabulary.
@@ -76,6 +79,7 @@ export function pipelineFromEvents(events, fallback = []) {
     if (eventType === "build.started" && Array.isArray(p.stages) && p.stages.length) {
       planned = p.stages;
     }
+    settleSliceRowsOnBuildTerminal(rec.values(), e);
     const slice = sliceTaskIdentity(e);
     if (slice && (eventType.startsWith("task.") || eventType === "build.stage.artifact.snapshot")) {
       const r = ensure(slice.label);

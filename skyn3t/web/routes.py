@@ -164,9 +164,36 @@ async def budget_payload(state: AppState) -> dict[str, Any]:
 
 
 # ---- live build preview (cockpit, Phase A) --------------------------------
+_DELIVERED_PROJECT_STATUSES = frozenset({"completed", "completed_no_go"})
+_ACTIVE_PROJECT_STATUSES = frozenset({"pending", "queued", "running"})
+_PROJECT_SIZE_EXCLUDED_ROOTS = frozenset({
+    ".preview", ".git", ".skyn3t-recovery", ".venv", ".next",
+    "node_modules", "dist", "build", "out", "__pycache__",
+})
+
+
+class ProjectNotDeliveredError(RuntimeError):
+    """A project directory exists, but no completed build owns it yet."""
+
+
+def _manifest_is_delivered(manifest: BuildManifest | dict[str, Any] | None) -> bool:
+    if manifest is None:
+        return False
+    raw = manifest.status if isinstance(manifest, BuildManifest) else manifest.get("status", "")
+    return str(raw or "").strip().lower() in _DELIVERED_PROJECT_STATUSES
+
+
+def _require_delivered_project(state: AppState, slug: str) -> tuple[Path, BuildManifest]:
+    project = _resolve_project_dir(state, slug)
+    manifest = BuildManifest.load(project)
+    if not _manifest_is_delivered(manifest):
+        raise ProjectNotDeliveredError(slug)
+    assert manifest is not None
+    return project, manifest
+
+
 def _preview_root(state: AppState, slug: str) -> Path:
-    """The dir the cockpit serves: the live ``.preview`` snapshot while a build
-    runs, else the delivered project root after delivery.
+    """The directory served for a *delivered* project's static preview.
 
     Guards the SLUG against escaping ``projects_dir`` (e.g. ``slug='..'`` would
     otherwise resolve to the parent and leak a directory listing / arbitrary
@@ -212,7 +239,8 @@ def _valid_project_preview_capability(state: AppState, slug: str, cap: str) -> b
 
 
 async def preview_payload(state: AppState, slug: str) -> dict[str, Any]:
-    """Manifest + file tree for a build's live (or delivered) artifact."""
+    """Manifest + file tree for a completed build artifact."""
+    _require_delivered_project(state, slug)
     root = _preview_root(state, slug)
     files = list_files(root) if root.is_dir() else []
     manifest = BuildManifest.load(Path(state.settings.projects_dir) / slug)
@@ -230,6 +258,7 @@ def resolve_project_file(state: AppState, slug: str, rel_path: str) -> Path:
 
     Raises ``ValueError`` if the path escapes the preview root, ``FileNotFoundError``
     if no such file exists. This is the security boundary for the file route."""
+    _require_delivered_project(state, slug)
     root = _preview_root(state, slug).resolve()
     candidate = (root / rel_path).resolve()
     if not candidate.is_relative_to(root):
@@ -529,7 +558,11 @@ def _normalize_model_override(model: str) -> str:
 
 def _profile_extra(profile: str) -> dict[str, Any]:
     if profile == "fast":
-        return {"best_of_n": 1, "max_debug_attempts": 1, "agentic_timeout": 240}
+        return {
+            "best_of_n": 1,
+            "max_debug_attempts": 1,
+            "parallel_code_slices": True,
+        }
     if profile == "balanced":
         return {
             "best_of_n": 2,
@@ -634,14 +667,17 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     studio = state.studio
     dispatched = False
     runner = None
-    build_extra = {
+    build_extra: dict[str, Any] = {
         "stack": stack,
         "build_id": build_id,
         "build_profile": profile,
-        **_profile_extra(profile),
     }
     if full_app_requested:
-        build_extra = {**build_extra, **_full_app_extra()}
+        build_extra.update(_full_app_extra())
+    # The selected profile is the operator's explicit orchestration policy.
+    # Apply it last so `fast + full_app` stays single-candidate without imposing
+    # a hard generation deadline or dropping full-app assets/content quality.
+    build_extra.update(_profile_extra(profile))
     if model:
         build_extra["model_override"] = model
     if ref_paths:
@@ -742,9 +778,33 @@ async def cancel_build(state: AppState, build_id: str, reason: str = "") -> dict
 
     task = _BUILD_TASKS_BY_ID.pop(bid, None)
     task_cancelled = False
+    task_settled = task is None or task.done()
     if task is not None and not task.done():
+        import asyncio
+
         task.cancel()
         task_cancelled = True
+        try:
+            await asyncio.wait_for(task, timeout=15.0)
+            task_settled = True
+        except asyncio.CancelledError:
+            task_settled = True
+        except TimeoutError:
+            log.warning("build.cancel_settle_timeout", build_id=bid)
+        except Exception as exc:  # noqa: BLE001 - persistence must still win
+            task_settled = True
+            log.warning("build.cancel_settle_error", build_id=bid, error=str(exc)[:160])
+
+    # The runner's cancellation handler persists recovery paths while the task
+    # settles. Refresh the row before our final status write so the stale copy
+    # read above cannot erase that newly recorded recovery metadata.
+    if state.memory is not None and hasattr(state.memory, "get_build"):
+        try:
+            latest = await state.memory.get_build(bid)
+            if isinstance(latest, dict):
+                db_row = latest
+        except Exception:  # noqa: BLE001 - retain the original best-effort row
+            pass
 
     if rec is not None:
         rec.status = "cancelled"
@@ -777,7 +837,12 @@ async def cancel_build(state: AppState, build_id: str, reason: str = "") -> dict
         },
         correlation_id=bid,
     )
-    return {"build_id": bid, "status": "cancelled", "task_cancelled": task_cancelled}
+    return {
+        "build_id": bid,
+        "status": "cancelled",
+        "task_cancelled": task_cancelled,
+        "task_settled": task_settled,
+    }
 
 
 def _build_replay_fields(row: dict[str, Any]) -> dict[str, Any]:
@@ -873,7 +938,20 @@ async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
                     seen.add(bid)
         except Exception:  # noqa: BLE001
             pass
-    return {"builds": builds[:limit]}
+    visible = [dict(build) for build in builds[:limit]]
+    gate = getattr(getattr(state, "studio", None), "approval_gate", None)
+    for build in visible:
+        pending: list[dict[str, Any]] = []
+        if gate is not None:
+            try:
+                pending = list(gate.pending(str(build.get("build_id", ""))))
+            except Exception:  # noqa: BLE001 - introspection is advisory
+                pending = []
+        build["approval_pending"] = bool(pending)
+        build["approval_stages"] = [
+            str(item.get("stage")) for item in pending if item.get("stage")
+        ]
+    return {"builds": visible}
 
 
 def _cleanup_build_ids_from_payload(payload: dict[str, Any] | None) -> list[str]:
@@ -971,9 +1049,109 @@ async def cleanup_builds(
     }
 
 
+def _project_visible_stats(project: Path) -> tuple[int, int]:
+    """Return source/delivery bytes and file count, excluding internal previews."""
+    total = 0
+    count = 0
+    try:
+        files = project.rglob("*")
+        for path in files:
+            try:
+                relative = path.relative_to(project)
+                if (
+                    relative.parts
+                    and relative.parts[0].casefold() in _PROJECT_SIZE_EXCLUDED_ROOTS
+                ):
+                    continue
+                if path.is_file():
+                    total += path.stat().st_size
+                    count += 1
+            except OSError:
+                continue
+    except OSError:
+        return 0, 0
+    return total, count
+
+
+def _project_build_record(state: AppState, slug: str) -> Any | None:
+    matches = [
+        record
+        for record in getattr(state, "builds", {}).values()
+        if str(getattr(record, "slug", "") or "") == slug
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda record: float(getattr(record, "updated_at", 0.0) or 0.0))
+
+
+def _project_has_static_preview(state: AppState, slug: str) -> bool:
+    try:
+        return (_preview_root(state, slug) / "index.html").is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _incomplete_project_row(
+    state: AppState,
+    project: Path,
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw = manifest or {}
+    slug = str(raw.get("slug") or project.name)
+    record = _project_build_record(state, slug)
+    build_status = str(getattr(record, "status", "") or raw.get("status") or "")
+    normalized = build_status.strip().lower()
+    active = normalized in _ACTIVE_PROJECT_STATUSES
+    status = "building" if active else normalized or "incomplete"
+    delivery_state = "building" if status == "building" else "incomplete"
+    size_bytes, file_count = _project_visible_stats(project)
+    stack = str(raw.get("stack") or getattr(record, "stack", "") or "")
+    created_at = raw.get("created_at") or getattr(record, "created_at", "")
+    updated_at = raw.get("updated_at") or getattr(record, "updated_at", "")
+    reason = "build is still in progress" if delivery_state == "building" else (
+        "no completed build manifest"
+        if status == "incomplete"
+        else f"build {status} before delivery"
+    )
+    return {
+        "slug": slug,
+        "stack": stack,
+        "status": status,
+        "build_status": build_status or "manifest_missing",
+        "build_id": str(getattr(record, "build_id", "") or ""),
+        "build_active": active,
+        "delivery_state": delivery_state,
+        "is_complete": False,
+        "verdict": "",
+        "score": None,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "size_bytes": size_bytes,
+        "file_count": file_count,
+        "has_preview": False,
+        "preview_url": "",
+        "has_serve": False,
+        "serve_kind": "",
+        "serve_reason": reason,
+        "has_manifest": manifest is not None,
+        "cost_usd": getattr(record, "cost_usd", None),
+        "wasted_usd": None,
+        "prompt_count": 0,
+        "skills_used": [],
+        "recall_used": [],
+        "stage_skills_used": {},
+        "quality_scorecard": {},
+        "scaffold_stub_gate": {},
+        "deploy_plan": {},
+        "deployments": [],
+        "live_url": "",
+        "deploy_check": {},
+    }
+
+
 async def list_projects(state: AppState) -> dict[str, Any]:
     from skyn3t.studio.app_runner import build_run_spec
-    from skyn3t.studio.cleanup import _dir_size, _load_manifest
+    from skyn3t.studio.cleanup import _load_manifest
     from skyn3t.studio.proof_run import detect_offline_starter_stub
     from skyn3t.studio.runner import StudioRunner
     pdir = Path(state.settings.projects_dir)
@@ -981,6 +1159,9 @@ async def list_projects(state: AppState) -> dict[str, Any]:
     if pdir.is_dir():
         for d in sorted(p for p in pdir.iterdir() if p.is_dir() and not p.name.startswith(".")):
             man = _load_manifest(d)
+            if not _manifest_is_delivered(man):
+                out.append(_incomplete_project_row(state, d, man))
+                continue
             m = man or {}
             extra = m.get("extra") or {}
             skills_used = extra.get("skills_used") or []
@@ -1068,22 +1249,30 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             if spec is not None:
                 serve_kind = spec.kind
                 serve_reason = ""
+            size_bytes, file_count = _project_visible_stats(d)
+            slug = str(m.get("slug", d.name))
+            has_preview = _project_has_static_preview(state, slug)
+            record = _project_build_record(state, slug)
             out.append({
-                "slug": m.get("slug", d.name),
+                "slug": slug,
                 "stack": m.get("stack", ""),
                 "status": status,
+                "build_status": str(getattr(record, "status", "") or status),
+                "build_id": str(getattr(record, "build_id", "") or m.get("build_id", "")),
+                "build_active": False,
+                "delivery_state": "delivered",
+                "is_complete": True,
                 "verdict": verdict,
                 "score": score,
                 "created_at": m.get("created_at", ""),
                 "updated_at": m.get("updated_at", ""),
-                "size_bytes": _dir_size(d),
-                "has_preview": (d / "index.html").exists(),
+                "size_bytes": size_bytes,
+                "file_count": file_count,
+                "has_preview": has_preview,
                 # A read-only capability lets browser navigation/iframes load a
                 # token-authenticated preview without putting the bearer itself
                 # in a URL. It exposes only the strict project-file allowlist.
-                "preview_url": _project_preview_url(
-                    state, str(m.get("slug", d.name))
-                ),
+                "preview_url": _project_preview_url(state, slug) if has_preview else "",
                 "has_serve": bool(serve_kind),
                 "serve_kind": serve_kind,
                 "serve_reason": serve_reason,
@@ -1225,7 +1414,7 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     If a racing serve takes the slot, or a stop pops our claim, while we await
     start(), we detect the lost claim afterward and tear down our own process
     instead of leaking it (review findings #1, #2)."""
-    pdir = _resolve_project_dir(state, slug)
+    pdir, man = _require_delivered_project(state, slug)
     from skyn3t.studio.app_runner import RunningApp, cleanup_serve
     registry = _serve_registry(state)
     runner = _app_runner(state)
@@ -1238,8 +1427,7 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     claim = object()
     registry[slug] = claim
 
-    man = BuildManifest.load(pdir)
-    stack = man.stack if man is not None else ""
+    stack = man.stack
     app = await runner.start(pdir, stack)
 
     if registry.get(slug) is not claim:
@@ -1308,13 +1496,12 @@ async def deploy_plan_project(
     target: str = "",
 ) -> dict[str, Any]:
     """Return the deploy plan for a delivered project without firing a deploy."""
-    pdir = _resolve_project_dir(state, slug)
-    man = BuildManifest.load(pdir)
-    stack = man.stack if man is not None else ""
+    pdir, man = _require_delivered_project(state, slug)
+    stack = man.stack
     from skyn3t.studio.deploy import plan_deploy
 
     plan = plan_deploy(pdir, stack, target=target or None)
-    extra = man.extra if man is not None and isinstance(man.extra, dict) else {}
+    extra = man.extra if isinstance(man.extra, dict) else {}
     return {
         "slug": slug,
         "stack": stack,
@@ -1333,9 +1520,8 @@ async def deploy_project(
     write: bool = False,
 ) -> dict[str, Any]:
     """Fire the existing token-gated deploy path from the web surface."""
-    pdir = _resolve_project_dir(state, slug)
-    man = BuildManifest.load(pdir)
-    stack = man.stack if man is not None else ""
+    pdir, man = _require_delivered_project(state, slug)
+    stack = man.stack
     from skyn3t.agents.deploy_agent import DeployAgent
     from skyn3t.studio.deploy import plan_deploy, record_deployment, write_deploy_artifacts
 
@@ -1421,7 +1607,7 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
     any work starts."""
     if not goal or not goal.strip():
         raise ValueError("goal is required")
-    _resolve_project_dir(state, slug)  # validate; raises ValueError/FileNotFoundError
+    _require_delivered_project(state, slug)
     if getattr(state, "orchestrator", None) is None:
         return {"accepted": False, "slug": slug, "reason": "orchestrator unavailable"}
     from skyn3t.studio.improve import ImproveEngine
@@ -1505,20 +1691,14 @@ async def approve_build(state: AppState, build_id: str, approved: bool = True, r
             db_row = None
     if rec is None and db_row is None:
         raise KeyError(build_id)
-    new_status = "approved" if approved else "rejected"
+    decision = "approved" if approved else "rejected"
     correlation_id: str | None = None
     if rec is not None:
-        rec.status = new_status
-        rec.updated_at = time.time()
         correlation_id = rec.correlation_id
+        lifecycle_status = rec.status
     else:
-        # Persist the status change back into the store so the DB reflects it.
         correlation_id = build_id
-        if state.memory is not None and hasattr(state.memory, "save_build"):
-            try:
-                await state.memory.save_build(build_id=build_id, status=new_status)
-            except Exception:  # noqa: BLE001
-                pass
+        lifecycle_status = str((db_row or {}).get("status") or "")
     # Reattach to the live gated build: resolve its in-process approval gate so a
     # blocked build resumes at once rather than waiting out the gate timeout.
     gate_resolved = _resolve_live_gate(state, build_id, approved, reason)
@@ -1529,7 +1709,13 @@ async def approve_build(state: AppState, build_id: str, approved: bool = True, r
                  "kind": "build_approval", "gate_resolved": gate_resolved},
         correlation_id=correlation_id,
     )
-    return {"build_id": build_id, "status": new_status, "gate_resolved": gate_resolved}
+    return {
+        "build_id": build_id,
+        "status": lifecycle_status,
+        "decision": decision,
+        "gate_resolved": gate_resolved,
+        "applied": gate_resolved > 0,
+    }
 
 
 async def list_proposals(state: AppState, status: str = "") -> dict[str, Any]:
@@ -2978,7 +3164,8 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "model_cheap", "model_ui", "model_backend", "model_strong", "model_docs",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
             "visual_self_heal", "visual_self_heal_max_rounds",
-            "improve_agentic", "improve_agentic_timeout")
+            "improve_agentic", "improve_agentic_timeout",
+            "parallel_code_slices", "parallel_code_slices_min_files")
     return {k: getattr(s, k, None) for k in keys}
 
 
@@ -3143,6 +3330,10 @@ def build_router(state: AppState) -> Any:
     async def _preview(slug: str) -> dict[str, Any]:
         try:
             return await preview_payload(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid slug") from None
 
@@ -3208,7 +3399,7 @@ def build_router(state: AppState) -> Any:
             resolved = resolve_project_file(state, slug, path)
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid path") from None
-        except (FileNotFoundError, PermissionError):
+        except (FileNotFoundError, PermissionError, ProjectNotDeliveredError):
             raise HTTPException(status_code=404, detail="not found") from None
         return project_file_response(resolved, slug)
 
@@ -3220,7 +3411,7 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=404, detail="not found")
         try:
             resolved = resolve_project_file(state, slug, path)
-        except (ValueError, FileNotFoundError, PermissionError):
+        except (ValueError, FileNotFoundError, PermissionError, ProjectNotDeliveredError):
             raise HTTPException(status_code=404, detail="not found") from None
         prefix = (
             f"/api/project-previews/{quote(cap, safe='')}/"
@@ -3489,6 +3680,8 @@ def build_router(state: AppState) -> Any:
     async def _serve(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
             return await serve_project(state, str(body.get("slug", "")))
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid slug") from None
         except FileNotFoundError:
@@ -3506,6 +3699,8 @@ def build_router(state: AppState) -> Any:
     async def _deploy_plan(slug: str, target: str = "") -> dict[str, Any]:
         try:
             return await deploy_plan_project(state, slug, target=target)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid slug") from None
         except FileNotFoundError:
@@ -3520,6 +3715,8 @@ def build_router(state: AppState) -> Any:
                 target=str(body.get("target") or ""),
                 write=bool(body.get("write", False)),
             )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid slug") from None
         except FileNotFoundError:
@@ -3530,6 +3727,8 @@ def build_router(state: AppState) -> Any:
         try:
             return await improve_project(
                 state, str(body.get("slug", "")), str(body.get("goal", "")))
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
         except ValueError:
             raise HTTPException(status_code=422, detail="slug and goal are required") from None
         except FileNotFoundError:

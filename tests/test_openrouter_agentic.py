@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import skyn3t.adapters.llm as llm
 from skyn3t.adapters.llm import LLMClient
@@ -39,6 +40,18 @@ class _FakeClient:
         p = self._turns[self.i]
         self.i += 1
         return _FakeResp(p)
+
+
+class _DelayedClient(_FakeClient):
+    """Replays each turn after a fixed delay to exercise progress deadlines."""
+
+    def __init__(self, turns, delay):
+        super().__init__(turns)
+        self.delay = delay
+
+    async def post(self, url, json=None, headers=None):
+        await asyncio.sleep(self.delay)
+        return await super().post(url, json=json, headers=headers)
 
 
 class _StallPrimaryThenFallbackClient:
@@ -90,6 +103,151 @@ def test_agentic_loop_writes_files(tmp_path, monkeypatch):
     assert res["model"] == "deepseek/deepseek-v3.2"
     assert _client().last_model is None
     assert (tmp_path / "app" / "page.jsx").read_text().startswith("export default")
+
+
+def test_agentic_loop_writes_validated_file_batch(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_files", {"files": [
+            {"path": "src/main.py", "content": "from .service import value\n"},
+            {"path": "src/service.py", "content": "value = 42\n"},
+            {"path": "pyproject.toml", "content": "[project]\nname='batch-app'\n"},
+        ]}),
+        _tool_turn("finish", {"summary": "done"}, "t2"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", stack="fastapi"
+    ))
+
+    assert res["ok"] is True
+    assert res["completed"] is True
+    assert res["files_written"] == 3
+    assert (tmp_path / "src" / "main.py").exists()
+    assert (tmp_path / "src" / "service.py").exists()
+    assert (tmp_path / "pyproject.toml").exists()
+
+
+def test_agentic_batch_rejects_all_files_if_one_path_escapes(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_files", {"files": [
+            {"path": "src/safe.py", "content": "safe = True\n"},
+            {"path": "../escaped.py", "content": "escaped = True\n"},
+        ]}),
+        _tool_turn("finish", {}, "t2"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", stack="fastapi"
+    ))
+
+    assert res["ok"] is False
+    assert not (tmp_path / "src" / "safe.py").exists()
+    assert not (tmp_path.parent / "escaped.py").exists()
+
+
+def test_agentic_batch_rejects_duplicate_normalized_paths(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_files", {"files": [
+            {"path": "src/../app.py", "content": "first = True\n"},
+            {"path": "app.py", "content": "second = True\n"},
+        ]}),
+        _tool_turn("finish", {}, "t2"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", stack="fastapi"
+    ))
+
+    assert res["ok"] is False
+    assert not (tmp_path / "app.py").exists()
+
+
+def test_agentic_write_progress_extends_nominal_window(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_files", {"files": [
+            {"path": f"src/part{i}.py", "content": f"part = {i}\n"},
+        ]}, f"t{i}")
+        for i in range(3)
+    ]
+    turns.append(_tool_turn("finish", {}, "tf"))
+    monkeypatch.setattr(
+        llm.httpx,
+        "AsyncClient",
+        lambda *a, **k: _DelayedClient(turns, delay=0.04),
+    )
+
+    started = time.monotonic()
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", timeout=0.10, stack="fastapi"
+    ))
+    elapsed = time.monotonic() - started
+
+    assert elapsed > 0.10, "total duration may exceed the no-progress window"
+    assert res["ok"] is True
+    assert res["files_written"] == 3
+
+
+def test_agentic_request_without_progress_times_out(tmp_path, monkeypatch):
+    turns = [_tool_turn(
+        "write_file", {"path": "too-late.py", "content": "late = True\n"}
+    )]
+    monkeypatch.setattr(
+        llm.httpx,
+        "AsyncClient",
+        lambda *a, **k: _DelayedClient(turns, delay=0.08),
+    )
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", timeout=0.03, stack="fastapi"
+    ))
+
+    assert res["ok"] is False
+    assert res["completed"] is False
+    assert res["timed_out"] is True
+    assert "no file-write progress" in res["error"]
+    assert not (tmp_path / "too-late.py").exists()
+
+
+def test_identical_rewrites_do_not_extend_progress_window(tmp_path, monkeypatch):
+    same = _tool_turn(
+        "write_file", {"path": "same.py", "content": "value = 1\n"}
+    )
+    turns = [same, same, same, _tool_turn("finish", {}, "tf")]
+    monkeypatch.setattr(
+        llm.httpx,
+        "AsyncClient",
+        lambda *a, **k: _DelayedClient(turns, delay=0.04),
+    )
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", timeout=0.09, stack="fastapi"
+    ))
+
+    assert res["ok"] is False
+    assert res["timed_out"] is True
+    assert res["files_written"] == 1
+
+
+def test_changed_rewrite_counts_as_real_progress(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_file", {"path": "changed.py", "content": "value = 1\n"}),
+        _tool_turn(
+            "write_file", {"path": "changed.py", "content": "value = 2\n"}, "t2"
+        ),
+        _tool_turn("finish", {}, "tf"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build", str(tmp_path), "m", stack="fastapi"
+    ))
+
+    assert res["ok"] is True
+    assert res["files_written"] == 2
+    assert (tmp_path / "changed.py").read_text() == "value = 2\n"
 
 
 def test_agentic_loop_records_effective_model(tmp_path, monkeypatch):

@@ -158,7 +158,11 @@ class BaseAgent(ABC):
                     llm.routes.clear()
         await self.event_bus.emit(
             EventType.TASK_STARTED, self.name,
-            {"task_id": task.task_id, "type": task.type},
+            {
+                "task_id": task.task_id,
+                "type": task.type,
+                "metadata": dict(task.metadata),
+            },
             correlation_id=task.correlation_id,
         )
         try:
@@ -186,7 +190,12 @@ class BaseAgent(ABC):
             ev = EventType.TASK_COMPLETED if result.success else EventType.TASK_FAILED
             await self.event_bus.emit(
                 ev, self.name,
-                {"task_id": task.task_id, "success": result.success, "error": result.error},
+                {
+                    "task_id": task.task_id,
+                    "success": result.success,
+                    "error": result.error,
+                    "metadata": dict(task.metadata),
+                },
                 correlation_id=task.correlation_id,
             )
             return result
@@ -194,7 +203,11 @@ class BaseAgent(ABC):
             self.status = AgentStatus.READY
             await self.event_bus.emit(
                 EventType.TASK_FAILED, self.name,
-                {"task_id": task.task_id, "error": str(exc)},
+                {
+                    "task_id": task.task_id,
+                    "error": str(exc),
+                    "metadata": dict(task.metadata),
+                },
                 correlation_id=task.correlation_id,
             )
             return TaskResult(

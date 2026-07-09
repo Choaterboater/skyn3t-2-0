@@ -119,6 +119,9 @@ _AGENTIC_SYSTEM_CORE = (
     "is unchanged', '// ... existing code ...', or 'unchanged from the original'. Every "
     "function and class body must be fully implemented; an elided body ships a stub that "
     "crashes at run. "
+    "Work efficiently: use write_files to create 2-6 independent small or medium files "
+    "in one tool call; reserve write_file for a large core file that needs its own call. "
+    "Do not spend one model round-trip per tiny config, style, test, or support file. "
 )
 # Web sites / web apps: react_vite, nextjs, astro, remix, static_html.
 _AGENTIC_SYSTEM_WEB = (
@@ -290,6 +293,19 @@ _AGENTIC_TOOLS = [
             "path": {"type": "string", "description": "project-relative file path"},
             "content": {"type": "string", "description": "the complete file content"}},
             "required": ["path", "content"]}}},
+    {"type": "function", "function": {
+        "name": "write_files",
+        "description": (
+            "Create or overwrite a batch of up to 8 project files. Prefer this for "
+            "independent config, style, test, documentation, and support files."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "files": {"type": "array", "minItems": 1, "maxItems": 8,
+                      "items": {"type": "object", "properties": {
+                          "path": {"type": "string", "description": "project-relative path"},
+                          "content": {"type": "string", "description": "complete file content"}},
+                          "required": ["path", "content"]}}},
+            "required": ["files"]}}},
     {"type": "function", "function": {
         "name": "read_file", "description": "Read a file you have written, to stay coherent.",
         "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
@@ -1323,26 +1339,75 @@ class LLMClient:
                 return None
             return p if (p == root or str(p).startswith(str(root) + os.sep)) else None
 
-        def _run_tool(name: str, args: dict) -> str:
+        def _run_tool(name: str, args: dict) -> tuple[str, int]:
+            """Run one tool and return ``(message, changed_file_count)``.
+
+            The progress watchdog advances only for new content. Repeating a
+            successful no-op write is activity, but it is not build progress.
+            """
             if name == "write_file":
-                p = _safe(args.get("path", ""))
-                if not p:
-                    return "ERROR: path escapes the project"
+                rel = str(args.get("path", "")).strip()
+                p = _safe(rel)
+                if not rel or not p or p == root:
+                    return "ERROR: path escapes the project", 0
                 try:
-                    p.parent.mkdir(parents=True, exist_ok=True)
                     body = str(args.get("content", ""))
+                    if p.is_file() and p.read_text(
+                        encoding="utf-8", errors="replace"
+                    ) == body:
+                        return f"OK unchanged {rel} ({len(body)} bytes)", 0
+                    p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(body, encoding="utf-8")
-                    return f"OK wrote {args.get('path')} ({len(body)} bytes)"
+                    return f"OK wrote {rel} ({len(body)} bytes)", 1
                 except OSError as e:
-                    return f"ERROR: {e}"
+                    return f"ERROR: {e}", 0
+            if name == "write_files":
+                batch = args.get("files")
+                if not isinstance(batch, list) or not 1 <= len(batch) <= 8:
+                    return "ERROR: files must contain 1..8 file objects", 0
+                checked: list[tuple[Path, str, str]] = []
+                targets: set[str] = set()
+                for item in batch:
+                    if not isinstance(item, dict):
+                        return "ERROR: every files item must be an object", 0
+                    rel = str(item.get("path", "")).strip()
+                    p = _safe(rel)
+                    if not rel or not p or p == root:
+                        return f"ERROR: path escapes the project: {rel}", 0
+                    target_key = os.path.normcase(str(p))
+                    if target_key in targets:
+                        return f"ERROR: duplicate batch path: {rel}", 0
+                    targets.add(target_key)
+                    checked.append((p, rel, str(item.get("content", ""))))
+                try:
+                    changed: list[tuple[Path, str, str]] = []
+                    for p, rel, body in checked:
+                        if p.is_file() and p.read_text(
+                            encoding="utf-8", errors="replace"
+                        ) == body:
+                            continue
+                        changed.append((p, rel, body))
+                    for p, _rel, body in changed:
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        p.write_text(body, encoding="utf-8")
+                    total = sum(len(body) for _p, _rel, body in changed)
+                    if not changed:
+                        return f"OK unchanged batch ({len(checked)} files)", 0
+                    return (
+                        f"OK wrote batch ({len(changed)} changed of {len(checked)} files, "
+                        f"{total} bytes)",
+                        len(changed),
+                    )
+                except OSError as e:
+                    return f"ERROR: {e}", 0
             if name == "read_file":
                 p = _safe(args.get("path", ""))
                 if not p or not p.is_file():
-                    return "ERROR: not found"
+                    return "ERROR: not found", 0
                 try:
-                    return p.read_text(encoding="utf-8", errors="replace")[:8000]
+                    return p.read_text(encoding="utf-8", errors="replace")[:8000], 0
                 except OSError as e:
-                    return f"ERROR: {e}"
+                    return f"ERROR: {e}", 0
             if name == "list_files":
                 out: list[str] = []
                 for f in root.rglob("*"):
@@ -1350,8 +1415,8 @@ class LLMClient:
                         out.append(str(f.relative_to(root)))
                         if len(out) >= 200:
                             break
-                return "\n".join(sorted(out)) or "(empty)"
-            return "ERROR: unknown tool"
+                return "\n".join(sorted(out)) or "(empty)", 0
+            return "ERROR: unknown tool", 0
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _agentic_system_for(stack)},
@@ -1360,9 +1425,18 @@ class LLMClient:
         headers = {"Authorization": f"Bearer {openrouter_key(self.settings)}",
                    "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
         max_turns = max(4, int(getattr(self.settings, "openrouter_agentic_max_turns", 60)))
-        budget = timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))
-        wrote, finished, start = 0, False, _t.time()
+        budget = max(
+            0.01,
+            float(timeout or int(getattr(self.settings, "agentic_build_timeout", 1800))),
+        )
+        wrote, finished, start = 0, False, _t.monotonic()
+        # ``budget`` is a NO-WRITE-PROGRESS window, not a total build ceiling.
+        # Every successful write batch extends it, so a productive full-app build
+        # can run past the nominal profile duration without being truncated.
+        progress_deadline = start + budget
         budget_error = ""
+        loop_error = ""
+        timed_out = False
         attempted_model = model
         fallback_model = ""
         turn_timeouts = 0
@@ -1406,11 +1480,16 @@ class LLMClient:
                     except OSError:
                         pass
             return scaffold_entry or comps < 3 or ui_bytes < 4000
+        turn = 0
+        no_progress_turns = 0
         try:
             async with httpx.AsyncClient(timeout=180) as client:
-                for turn in range(max_turns):
-                    if _t.time() - start > budget:
+                while no_progress_turns < max_turns:
+                    remaining = progress_deadline - _t.monotonic()
+                    if remaining <= 0:
                         log.warning("llm.or_agentic_timeout", turns=turn, wrote=wrote)
+                        timed_out = True
+                        loop_error = f"agentic made no file-write progress for {budget}s"
                         break
                     # Context editing: send a shrunk COPY when the history blows the
                     # byte budget (stub OLD read-dumps, keep the last K) — the
@@ -1447,7 +1526,16 @@ class LLMClient:
                     # Retry + model failover: a mid-build retired model fails over to
                     # a live one and PINS it for the rest of the session (`model`),
                     # instead of the whole agentic build dying.
-                    data, model = await self._resilient_call(model, Tier.CHEAP, _do)
+                    try:
+                        data, model = await asyncio.wait_for(
+                            self._resilient_call(model, Tier.CHEAP, _do),
+                            timeout=max(0.01, remaining),
+                        )
+                    except TimeoutError:
+                        timed_out = True
+                        loop_error = f"agentic request made no file-write progress for {budget}s"
+                        log.warning("llm.or_agentic_timeout", turns=turn, wrote=wrote)
+                        break
                     if model != attempted_model:
                         fallback_model = model
                     msg = data["choices"][0]["message"]
@@ -1460,6 +1548,7 @@ class LLMClient:
                     messages.append({"role": "assistant", "content": msg.get("content") or "",
                                      "tool_calls": msg.get("tool_calls") or []})
                     tcs = msg.get("tool_calls") or []
+                    wrote_before = wrote
                     if tcs:
                         for tc in tcs:
                             fn = tc.get("function") or {}
@@ -1471,9 +1560,9 @@ class LLMClient:
                             if name == "finish":
                                 finished, result = True, "OK"
                             else:
-                                result = _run_tool(name, args)
-                                if name == "write_file" and result.startswith("OK"):
-                                    wrote += 1
+                                result, changed_files = _run_tool(name, args)
+                                if changed_files:
+                                    wrote += changed_files
                                     # Live per-file progress so a tailed build log shows
                                     # codegen advancing (the agentic phase was silent).
                                     log.info("llm.agentic_wrote",
@@ -1484,11 +1573,21 @@ class LLMClient:
                                              "content": result})
                     else:
                         finished = True  # final text answer -> done
+                    if wrote > wrote_before:
+                        progress_deadline = _t.monotonic() + budget
+                        no_progress_turns = 0
+                    else:
+                        no_progress_turns += 1
+                    turn += 1
                     if (not finished and len(doom_recent) == 3
                             and len(set(doom_recent)) == 1):
                         # Item 49: the model repeated one identical call 3x — stuck.
                         if doom_warned:
                             log.warning("llm.or_agentic_doom_abort", wrote=wrote, turns=turn)
+                            loop_error = (
+                                "agentic aborted after repeating an identical tool call "
+                                "despite corrective feedback"
+                            )
                             break
                         doom_warned, doom_recent = True, []
                         messages.append({"role": "user", "content": _DOOM_LOOP_NUDGE})
@@ -1520,14 +1619,21 @@ class LLMClient:
                                 continue
                         break
         except Exception as exc:  # noqa: BLE001 - never crash the build
+            loop_error = f"agentic loop failed: {str(exc)[:160]}"
             log.warning("llm.or_agentic_failed", error=str(exc)[:200], wrote=wrote)
         log.info("llm.or_agentic_done", model=model, files_written=wrote, finished=finished)
         self._record_completion("backend", "codegen", model)
-        return {"ok": wrote > 0 and not budget_error, "backend": "openrouter",
+        if not finished and not loop_error and not budget_error:
+            loop_error = (
+                f"agentic stopped after {max_turns} consecutive turns without a file write"
+            )
+        error = budget_error or loop_error or ("" if wrote > 0 else "agentic loop wrote no files")
+        return {"ok": finished and wrote > 0 and not error, "completed": finished,
+                "timed_out": timed_out, "files_written": wrote, "backend": "openrouter",
                 "model": model, "attempted_model": attempted_model,
                 "fallback_model": fallback_model, "stalled": bool(turn_timeouts),
                 "stall_reason": stall_reason, "turn_timeouts": turn_timeouts,
-                "error": budget_error or ("" if wrote > 0 else "agentic loop wrote no files")}
+                "error": error}
 
     @property
     def supports_agentic(self) -> bool:
@@ -1613,20 +1719,21 @@ class LLMClient:
                 # preallocated).
                 limit=_AGENTIC_STREAM_LIMIT,
             )
-            # A full multi-file app needs real time — the old cli_llm_timeout*3
-            # (15 min) killed claude -p mid-build, shipping a partial/stub. Use a
-            # dedicated, larger agentic budget (default 30 min, configurable).
+            # For streaming CLIs this is an INACTIVITY fallback, not a total
+            # duration ceiling. Every stream event proves the agent is alive and
+            # resets _consume_agentic_stream's idle wait, so productive full-app
+            # builds may continue until their terminal result event.
             agentic_timeout = (
                 timeout
                 or int(getattr(self.settings, "agentic_build_timeout", 0))
                 or (self.settings.cli_llm_timeout * 3)
             )
             if stream:
-                idle_timeout = int(getattr(self.settings, "agentic_idle_timeout", 0))
-                ok = await asyncio.wait_for(
-                    self._consume_agentic_stream(proc, provider, idle_timeout),
-                    timeout=agentic_timeout,
+                idle_timeout = (
+                    int(getattr(self.settings, "agentic_idle_timeout", 0))
+                    or agentic_timeout
                 )
+                ok = await self._consume_agentic_stream(proc, provider, idle_timeout)
             else:
                 out, err = await asyncio.wait_for(
                     proc.communicate(), timeout=agentic_timeout,
@@ -1646,7 +1753,13 @@ class LLMClient:
             return {"ok": False, "backend": backend, "error": str(exc)[:160]}
         effective_model = model or f"{provider}-cli"
         self._record_completion(f"{provider}_cli", "codegen", effective_model)
-        return {"ok": ok, "backend": f"{provider}_cli", "model": effective_model}
+        return {
+            "ok": ok,
+            "completed": ok,
+            "backend": f"{provider}_cli",
+            "model": effective_model,
+            "error": "" if ok else "agentic CLI ended without a successful result",
+        }
 
     async def _consume_agentic_stream(self, proc, provider: str, idle_timeout: int) -> bool:
         """Drive a stream-json agentic CLI to completion and report success.
@@ -1655,10 +1768,9 @@ class LLMClient:
         exits), capturing the terminal ``result`` event's error flag for an
         accurate success signal. When ``idle_timeout`` > 0, a gap of that many
         seconds with NO stream activity means the agent has stalled — we kill the
-        whole tree and report failure rather than waiting out the hard ceiling.
-        stderr is drained concurrently so a chatty agent can't deadlock on a full
-        pipe. Returns ``ok``. The outer ``agentic_build`` still wraps this in the
-        hard-timeout / CancelledError tree-kill guard.
+        whole tree and report failure. Each event resets that wait, so there is no
+        total-duration ceiling on productive work. stderr is drained concurrently
+        so a chatty agent cannot deadlock on a full pipe. Returns ``ok``.
         """
         saw_result = False
         result_is_error = False

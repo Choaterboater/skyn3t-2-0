@@ -266,6 +266,17 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert "deploy check skipped" in projects
 
 
+def test_projects_does_not_offer_completed_app_actions_for_live_builds() -> None:
+    projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
+
+    assert "const isComplete = project.is_complete !== false;" in projects
+    assert 'project.delivery_state === "building" ? "Building" : "Not delivered"' in projects
+    assert "if (project.is_complete === false) return false;" in projects
+    assert "canServe={p.has_serve !== false}" in projects
+    assert "p.is_complete !== false ? (" in projects
+    assert "internal .preview excluded" in projects
+
+
 def test_workspace_surfaces_selected_project_signals() -> None:
     workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
     assert "SignalGrid" in workspace
@@ -380,6 +391,7 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "Cheap + learned" in studio
     assert "Balanced" in studio
     assert "Best quality" in studio
+    assert "concurrent code specialists" in studio
     assert "Manual model" in studio
     assert "Full app" in studio
     assert "build_profile" in studio

@@ -39,7 +39,9 @@ def test_spa_post_build_alias(client):
 
 def test_spa_post_studio_approve_endpoint_is_mounted():
     state = AppState(settings=Settings(llm_backend="stub"))
-    state.builds["build-123"] = BuildRecord(build_id="build-123", brief="gate me")
+    state.builds["build-123"] = BuildRecord(
+        build_id="build-123", brief="gate me", status="running"
+    )
     app = web_app.create_app(state=state)
     local_client = TestClient(app)
 
@@ -49,7 +51,8 @@ def test_spa_post_studio_approve_endpoint_is_mounted():
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "approved"
+    assert response.json()["status"] == "running"
+    assert response.json()["decision"] == "approved"
 
 
 def test_spa_get_model_routing_preview_is_available(client):

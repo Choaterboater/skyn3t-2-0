@@ -194,7 +194,7 @@ async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp
     )
     result = await agent.run(task)
     assert "provider" not in captured
-    assert agent.metadata["codegen_override_unavailable"] == "claude"
+    assert "codegen_override_unavailable" not in agent.metadata
     assert result.output["codegen_override_unavailable"] == "claude"
 
 
@@ -240,7 +240,7 @@ async def test_unavailable_codegen_cli_override_reported_in_monolithic_completio
         capabilities_required=("codegen",),
     )
     result = await agent.run(task)
-    assert agent.metadata["codegen_override_unavailable"] == "claude"
+    assert "codegen_override_unavailable" not in agent.metadata
     assert result.output["codegen_override_unavailable"] == "claude"
 
 
@@ -291,7 +291,7 @@ async def test_unavailable_codegen_cli_override_reported_in_slice_completion_out
         capabilities_required=("codegen",),
     )
     result = await agent.run(task)
-    assert agent.metadata["codegen_override_unavailable"] == "claude"
+    assert "codegen_override_unavailable" not in agent.metadata
     assert result.output["codegen_override_unavailable"] == "claude"
 
 

@@ -47,3 +47,15 @@ async def test_build_failed_event_marks_failed():
     await st.event_bus.emit(EventType.BUILD_STARTED, "studio", {"build_id": bid})
     await st.event_bus.emit(EventType.BUILD_FAILED, "studio", {"build_id": bid, "error": "boom"})
     assert st.builds[bid].status == "failed"
+
+
+async def test_cancelled_build_failed_event_preserves_cancelled_status():
+    st = AppState(settings=Settings(llm_backend="stub"))
+    bid = "b-cancelled"
+    await st.event_bus.emit(EventType.BUILD_STARTED, "studio", {"build_id": bid})
+    await st.event_bus.emit(
+        EventType.BUILD_FAILED,
+        "studio",
+        {"build_id": bid, "status": "cancelled", "recovery": [{"files": 4}]},
+    )
+    assert st.builds[bid].status == "cancelled"

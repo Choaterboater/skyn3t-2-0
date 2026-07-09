@@ -7,6 +7,8 @@ last), and the per-slice tier hints.
 
 from __future__ import annotations
 
+import pytest
+
 from skyn3t.studio.slicer import SLICE_TIERS, slice_plan, slice_tier
 
 # A realistic full-stack React + FastAPI manifest (>= min_files).
@@ -64,6 +66,65 @@ def test_accepts_plain_path_strings_and_dedupes():
     # Deduped App.jsx appears once.
     assert [f["path"] for f in sl["frontend"]].count("src/App.jsx") == 1
     assert "api/main.py" in [f["path"] for f in sl["backend"]]
+
+
+def test_normalizes_paths_before_assigning_slice_ownership():
+    files = [
+        {"path": r"src\App.jsx", "purpose": "canonical owner"},
+        {"path": "SRC/app.jsx", "purpose": "case alias"},
+        {"path": "src/./components//Card.jsx", "purpose": "card"},
+        {"path": "package.json", "purpose": "manifest"},
+    ]
+
+    sl = slice_plan(files, stack="react", min_files=2)
+    frontend = sl["frontend"]
+    paths = [entry["path"] for entry in frontend]
+
+    assert paths == ["src/App.jsx", "src/components/Card.jsx"]
+    assert frontend[0]["purpose"] == "canonical owner"
+    assert sl["config"][0]["path"] == "package.json"
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "",
+        "   ",
+        ".",
+        "..",
+        "../outside.py",
+        "src/../outside.py",
+        "/absolute.py",
+        r"\absolute.py",
+        r"C:\outside.py",
+        "file:stream.py",
+        "nul\x00byte.py",
+    ],
+)
+def test_rejects_unsafe_architect_paths(unsafe):
+    sl = slice_plan(
+        [unsafe, {"path": "src/App.jsx"}, {"path": "package.json"}],
+        stack="react",
+        min_files=2,
+    )
+
+    paths = {
+        entry["path"]
+        for entries in sl.values()
+        for entry in entries
+    }
+    assert paths == {"src/App.jsx", "package.json"}
+
+
+def test_case_and_separator_aliases_count_once_for_minimum():
+    files = [
+        "src/App.jsx",
+        "SRC/APP.JSX",
+        r"src\App.jsx",
+        "package.json",
+    ]
+
+    assert slice_plan(files, stack="react", min_files=3) == {}
 
 
 def test_ambiguous_js_defaults_by_stack():

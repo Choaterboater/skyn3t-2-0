@@ -91,7 +91,9 @@ def test_doom_loop_corrective_nudge_then_abort(tmp_path, monkeypatch):
     # 3 identical calls -> one corrective nudge; 3 more -> abort. 6 POSTs, not 12/60.
     assert fake.i == 6, f"expected abort after 6 turns, got {fake.i}"
     assert any("identical tool call" in t.lower() for t in _user_texts(fake.bodies))
-    assert res["ok"] is True  # the file WAS written; abort is not a build failure
+    assert res["ok"] is False  # partial writes are preserved but never called complete
+    assert res["completed"] is False
+    assert "identical tool call" in res["error"]
 
 
 def test_doom_loop_not_tripped_by_varying_calls(tmp_path, monkeypatch):

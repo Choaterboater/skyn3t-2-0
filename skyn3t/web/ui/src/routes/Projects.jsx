@@ -474,6 +474,7 @@ function ShipCell({ project }) {
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState(null);
   const slug = project.slug;
+  const isComplete = project.is_complete !== false;
   const deployments = Array.isArray(project.deployments) ? project.deployments : [];
   const latest = deployments.length ? deployments[deployments.length - 1] : null;
   const liveUrl = project.live_url || latest?.url || "";
@@ -506,6 +507,18 @@ function ShipCell({ project }) {
     } catch (e) {
       setErr(String(e.message || e));
     }
+  }
+
+  if (!isComplete) {
+    const label = project.delivery_state === "building" ? "Building" : "Not delivered";
+    return (
+      <span
+        className="font-mono text-[10px] text-ash/50"
+        title={project.serve_reason || "A completed build manifest is required"}
+      >
+        {label}
+      </span>
+    );
   }
 
   return (
@@ -642,6 +655,7 @@ export default function Projects({ stream }) {
   const projects = Array.isArray(data) ? data : data?.projects || [];
   const liveCount = Object.keys(served).length;
   const shippableCount = projects.filter((project) => {
+    if (project.is_complete === false) return false;
     const state = String(project.verdict || project.status || "").toLowerCase();
     return state === "go" || state === "completed" || state === "applied";
   }).length;
@@ -790,7 +804,10 @@ export default function Projects({ stream }) {
                             </span>
                           ) : null}
                         </td>
-                        <td className="px-4 py-2 font-mono text-xs text-ash">
+                        <td
+                          className="px-4 py-2 font-mono text-xs text-ash"
+                          title={`${p.file_count ?? 0} files · internal .preview excluded`}
+                        >
                           {fmtMB(p.size_bytes)}
                         </td>
                         <td
@@ -882,18 +899,20 @@ export default function Projects({ stream }) {
                                   Prompts
                                 </button>
                               ) : null}
-                              <button
-                                onClick={() =>
-                                  setImproveSlug(isImproving ? null : p.slug)
-                                }
-                                className={`btn-ghost ${
-                                  isImproving
-                                    ? "text-ember"
-                                    : "text-ember/70 hover:text-ember"
-                                }`}
-                              >
-                                Improve
-                              </button>
+                              {p.is_complete !== false ? (
+                                <button
+                                  onClick={() =>
+                                    setImproveSlug(isImproving ? null : p.slug)
+                                  }
+                                  className={`btn-ghost ${
+                                    isImproving
+                                      ? "text-ember"
+                                      : "text-ember/70 hover:text-ember"
+                                  }`}
+                                >
+                                  Improve
+                                </button>
+                              ) : null}
                               <button
                                 onClick={() => setConfirmSlug(p.slug)}
                                 className="btn-ghost text-ember/70 hover:text-ember"

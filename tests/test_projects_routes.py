@@ -41,7 +41,84 @@ def test_list_projects_reads_manifests(tmp_path):
     assert rows["alpha"]["status"] == "completed" and rows["alpha"]["score"] == 92.0
     assert rows["alpha"]["size_bytes"] > 0 and rows["alpha"]["has_manifest"] is True
     assert rows["no-manifest"]["has_manifest"] is False
+    assert rows["no-manifest"]["status"] == "incomplete"
+    assert rows["no-manifest"]["delivery_state"] == "incomplete"
+    assert rows["no-manifest"]["is_complete"] is False
+    assert rows["no-manifest"]["has_serve"] is False
+    assert rows["no-manifest"]["preview_url"] == ""
     assert "beta" in rows and rows["beta"]["status"] == "failed"
+
+
+def test_manifestless_preview_is_building_and_hidden_from_project_size(tmp_path):
+    state = _state(tmp_path, builds={
+        "build-1": SimpleNamespace(
+            build_id="build-1",
+            slug="live",
+            stack="astro",
+            status="running",
+            cost_usd=0.25,
+            created_at=10.0,
+            updated_at=20.0,
+        )
+    })
+    project = state.settings.projects_dir / "live"
+    preview = project / ".preview"
+    preview.mkdir(parents=True)
+    (preview / "index.html").write_bytes(b"x" * 4096)
+
+    out = asyncio.run(list_projects(state))
+    row = next(item for item in out["projects"] if item["slug"] == "live")
+
+    assert row["status"] == "building"
+    assert row["build_status"] == "running"
+    assert row["build_active"] is True
+    assert row["delivery_state"] == "building"
+    assert row["size_bytes"] == 0
+    assert row["file_count"] == 0
+    assert row["has_preview"] is False
+    assert row["preview_url"] == ""
+    assert row["has_serve"] is False
+    assert row["serve_reason"] == "build is still in progress"
+
+
+def test_manifestless_cancelled_tree_is_incomplete_not_serveable(tmp_path):
+    state = _state(tmp_path, builds={
+        "build-2": SimpleNamespace(
+            build_id="build-2",
+            slug="cancelled-app",
+            stack="astro",
+            status="cancelled",
+            cost_usd=0.75,
+            created_at=10.0,
+            updated_at=30.0,
+        )
+    })
+    project = state.settings.projects_dir / "cancelled-app"
+    project.mkdir()
+    package = '{"scripts":{"dev":"astro dev"}}'
+    (project / "package.json").write_text(package)
+    (project / "src").mkdir()
+    source = "export default 1\n"
+    (project / "src" / "index.js").write_text(source)
+    (project / "node_modules" / "vendor").mkdir(parents=True)
+    (project / "node_modules" / "vendor" / "large.js").write_bytes(b"v" * 100_000)
+    (project / "dist").mkdir()
+    (project / "dist" / "bundle.js").write_bytes(b"d" * 50_000)
+
+    out = asyncio.run(list_projects(state))
+    row = next(item for item in out["projects"] if item["slug"] == "cancelled-app")
+
+    assert row["status"] == "cancelled"
+    assert row["build_status"] == "cancelled"
+    assert row["build_active"] is False
+    assert row["delivery_state"] == "incomplete"
+    expected_size = (project / "package.json").stat().st_size + (
+        project / "src" / "index.js"
+    ).stat().st_size
+    assert row["size_bytes"] == expected_size
+    assert row["file_count"] == 2
+    assert row["has_serve"] is False
+    assert "cancelled before delivery" in row["serve_reason"]
 
 
 def test_list_projects_surfaces_cost(tmp_path):

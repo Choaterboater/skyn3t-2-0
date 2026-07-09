@@ -755,6 +755,7 @@ class CodeAgent(BaseAgent):
                     "text": prompt,
                 })
                 res = await self.llm.agentic_build(prompt, str(worktree), **_agentic_kwargs)
+                self._restore_preexisting_assets(worktree, preexisting_assets)
                 agentic_ok = bool(res.get("ok", True))
                 agentic_confirmed = agentic_ok and bool(
                     res.get("completed", agentic_ok)
@@ -1778,10 +1779,10 @@ class CodeAgent(BaseAgent):
                 continue
         return present
 
-    def _snapshot_preexisting_assets(self, worktree: Path) -> set[str]:
-        """Record preexisting asset paths for result accounting."""
+    def _snapshot_preexisting_assets(self, worktree: Path) -> dict[str, bytes]:
+        """Snapshot upstream assets so codegen cannot corrupt or delete them."""
         root = Path(worktree).resolve()
-        paths: set[str] = set()
+        assets: dict[str, bytes] = {}
         for path in root.rglob("*"):
             try:
                 rel_path = path.relative_to(root)
@@ -1797,10 +1798,28 @@ class CodeAgent(BaseAgent):
                 resolved = path.resolve()
                 if os.path.commonpath([str(root), str(resolved)]) != str(root):
                     continue
-                paths.add(rel)
+                assets[rel] = path.read_bytes()
             except (OSError, ValueError):
                 continue
-        return paths
+        return assets
+
+    @staticmethod
+    def _restore_preexisting_assets(worktree: Path, assets: dict[str, bytes]) -> None:
+        """Restore the exact bytes authored by upstream asset-foundry stages."""
+        root = Path(worktree).resolve()
+        for rel, content in assets.items():
+            target = root.joinpath(*PurePosixPath(rel).parts)
+            try:
+                if target.is_symlink():
+                    target.unlink()
+                resolved = target.resolve()
+                if os.path.commonpath([str(root), str(resolved)]) != str(root):
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.is_file() or target.read_bytes() != content:
+                    target.write_bytes(content)
+            except (OSError, ValueError):
+                continue
 
     @staticmethod
     def _snapshot_regular_files(worktree: Path) -> dict[str, bytes]:

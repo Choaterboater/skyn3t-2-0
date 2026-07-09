@@ -226,6 +226,15 @@ def _agentic_system_for(stack: str) -> str:
 
 # Back-compat default (web): the composed prompt for the react_vite default stack.
 _AGENTIC_SYSTEM = _AGENTIC_SYSTEM_CORE + _AGENTIC_SYSTEM_WEB + _AGENTIC_SYSTEM_TAIL
+
+# Text tool calls cannot produce real binary media. Rejecting these extensions
+# prevents a model from satisfying an image path with SVG/prose bytes under a
+# misleading `.webp`/`.png` name. SVG remains allowed because it is text.
+_AGENTIC_BINARY_WRITE_EXTS = frozenset({
+    ".avif", ".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".mp3", ".mp4",
+    ".ogg", ".otf", ".pdf", ".png", ".ttf", ".wav", ".webm", ".webp",
+    ".woff", ".woff2",
+})
 # Pushed back into the loop when a model calls finish but delivered only scaffolding
 # (data/config, a thin homepage, no section components) — makes cheap models that stop
 # early actually build the full UI.
@@ -1462,6 +1471,12 @@ class LLMClient:
                     return "ERROR: path escapes the project", 0
                 if not _owned(p):
                     return f"ERROR: path is outside this slice's owned files: {rel}", 0
+                if p.suffix.lower() in _AGENTIC_BINARY_WRITE_EXTS:
+                    return (
+                        f"ERROR: {rel} is binary media and cannot be written by a text "
+                        "tool; preserve/use generated assets already in the workspace",
+                        0,
+                    )
                 try:
                     body = str(args.get("content", ""))
                     if p.is_file() and p.read_text(
@@ -1493,7 +1508,24 @@ class LLMClient:
                     checked.append((p, rel, str(item.get("content", ""))))
                 rejected = [rel for p, rel, _body in checked if not _owned(p)]
                 checked = [item for item in checked if _owned(item[0])]
+                binary_rejected = [
+                    rel
+                    for p, rel, _body in checked
+                    if p.suffix.lower() in _AGENTIC_BINARY_WRITE_EXTS
+                ]
+                checked = [
+                    item
+                    for item in checked
+                    if item[0].suffix.lower() not in _AGENTIC_BINARY_WRITE_EXTS
+                ]
                 if not checked:
+                    if binary_rejected:
+                        return (
+                            "ERROR: binary media cannot be written by a text tool; "
+                            "preserve/use generated assets already in the workspace: "
+                            + ", ".join(binary_rejected[:8]),
+                            0,
+                        )
                     return (
                         "ERROR: every batch path is outside this slice's owned files: "
                         + ", ".join(rejected[:8]),
@@ -1519,6 +1551,10 @@ class LLMClient:
                     )
                     if rejected:
                         message += "; rejected out-of-scope: " + ", ".join(rejected[:8])
+                    if binary_rejected:
+                        message += "; rejected binary media: " + ", ".join(
+                            binary_rejected[:8]
+                        )
                     return message, len(changed)
                 except OSError as e:
                     return f"ERROR: {e}", 0

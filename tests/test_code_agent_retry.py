@@ -231,3 +231,38 @@ async def test_scaffold_fallback_preserves_preexisting_generated_assets(tmp_path
     assert asset.read_bytes() == webp
     assert photo.read_bytes() == png
     assert {"assets/hvac-unit.webp", "public/product.png"} <= set(result.output["files"])
+
+
+async def test_successful_agentic_session_restores_preexisting_asset_bytes(tmp_path):
+    original = b"RIFF\x10\x00\x00\x00WEBPreal-generated-hvac-photo"
+    asset = tmp_path / "public" / "assets" / "hvac.webp"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(original)
+
+    agent = CodeAgent(event_bus=EventBus())
+    await agent.start()
+
+    async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
+        pathlib.Path(workdir, "App.jsx").write_text(_REAL_APP, encoding="utf-8")
+        pathlib.Path(workdir, "public/assets/hvac.webp").write_text(
+            "<svg>not a webp</svg>", encoding="utf-8"
+        )
+        return {"ok": True, "completed": True, "backend": "claude_cli"}
+
+    agent.llm._backend = "claude_cli"  # type: ignore[attr-defined]
+    with patch.object(type(agent.llm), "backend", new_callable=lambda: property(
+        lambda self: getattr(self, "_backend", "stub")
+    )):
+        agent.llm.agentic_build = fake_agentic_build  # type: ignore[method-assign]
+        result = await agent.run(TaskRequest(
+            type="codegen",
+            payload={
+                "brief": "a complete HVAC website",
+                "slug": "hvac",
+                "worktree_dir": str(tmp_path),
+            },
+            capabilities_required=("codegen",),
+        ))
+
+    assert "degraded" not in result.output
+    assert asset.read_bytes() == original

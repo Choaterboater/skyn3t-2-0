@@ -42,8 +42,21 @@ class Candidate:
     error: str | None = None
 
     @property
+    def degraded(self) -> bool:
+        """Whether codegen reported an incomplete architecture/session."""
+        if self.error or (self.result is not None and not self.result.success):
+            return True
+        if self.result is None:
+            return False
+        output = self.result.output
+        if bool(output.get("degraded")):
+            return True
+        agentic = output.get("agentic")
+        return isinstance(agentic, dict) and agentic.get("complete") is False
+
+    @property
     def passed(self) -> bool:
-        return bool(self.proof and self.proof.passed)
+        return bool(self.proof and self.proof.passed and not self.degraded)
 
     @property
     def rank_key(self) -> tuple:
@@ -63,6 +76,7 @@ class Candidate:
             "index": self.index,
             "worktree_dir": self.worktree.dir,
             "passed": self.passed,
+            "degraded": self.degraded,
             "files_written": self.files_written,
             "proof": self.proof.to_dict() if self.proof else None,
             "error": self.error,

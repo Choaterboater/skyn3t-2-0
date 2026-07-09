@@ -66,7 +66,10 @@ async def test_full_app_model_plan_is_augmented_with_hvac_pages() -> None:
         "plan": {
             "stack": "static_html",
             "summary": "Small model plan",
-            "files": [{"path": "index.html", "purpose": "home"}],
+            "files": [
+                {"path": "index.html", "purpose": "home"},
+                {"path": "assets/fake-service.webp", "purpose": "invented binary"},
+            ],
         },
     }
     llm = _ArchitectLLM(json.dumps(model_plan))
@@ -87,6 +90,8 @@ async def test_full_app_model_plan_is_augmented_with_hvac_pages() -> None:
 
     paths = [item["path"] for item in result.output["plan"]["files"]]
     assert len(paths) == len(set(paths))
+    assert "assets/fake-service.webp" not in paths
+    assert "Do NOT plan binary image" in llm.calls[0]["prompt"]
     assert {
         "services.html",
         "financing.html",

@@ -69,6 +69,11 @@ def test_gate_applies_answers_the_dispatch_question():
     assert stacks.gate_applies("deploy_check", "static")
     assert not stacks.gate_applies("deploy_check", "mcp")   # stdio, no live URL
     assert not stacks.gate_applies("deploy_check", "python")  # a CLI artifact
+    assert stacks.gate_applies("cli_playtest", "python_cli")
+    assert stacks.gate_applies("cli_playtest", "swift")
+    assert stacks.gate_applies("cli_playtest", "swift_macos")
+    assert stacks.gate_applies("cli_playtest", "swiftui")
+    assert not stacks.gate_applies("cli_playtest", "react")
     assert not stacks.gate_applies("not_a_gate", "react")
     assert not stacks.gate_applies("liveness", "")
 
@@ -86,6 +91,12 @@ def test_runner_sets_are_the_registry_objects():
     assert runner._DESIGN_STACKS is stacks.DESIGN_STACKS
     assert runner._UI_WEB_STACKS is stacks.UI_WEB_STACKS
     assert runner._GAME_STACKS is stacks.GAME_STACKS
+
+
+def test_cli_playtest_uses_the_registry_stack_set():
+    from skyn3t.studio import cli_playtest
+
+    assert cli_playtest._SUPPORTED_STACKS is stacks.CLI_PLAYTEST_STACKS
 
 
 def test_satellite_game_stack_copies_are_the_registry_object():

@@ -181,6 +181,8 @@ _GATE_VERDICT_KEYS = (
     "seo",
     "mcp_check",
     "rag_check",
+    "cli_check",
+    "cli_playtest",
     "finance_sanity",
     "workflow_depth",
 )

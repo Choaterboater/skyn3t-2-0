@@ -91,6 +91,8 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "headless_passed": _ok(extra.get("headless_gate")),
         "qa_passed": _ok(extra.get("qa_playtest")),
         "game_visual_passed": _ok(extra.get("game_visual")),
+        "cli_check_passed": _ok(extra.get("cli_check")),
+        "cli_playtest_passed": _ok(extra.get("cli_playtest")),
         "finance_sanity": _as_dict(extra.get("finance_sanity")),
         "workflow_depth": _as_dict(extra.get("workflow_depth")),
         "skills_count": len(_as_list(extra.get("skills_used"))),

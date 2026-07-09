@@ -344,11 +344,13 @@ _SWIFT_DIRECTIVE = (
     "by Swift Package Manager (SPM). This is NOT a web app: NEVER emit package.json, "
     "npm, node_modules, index.html, JavaScript/TypeScript, Vite, or any web files. "
     "LAYOUT (SPM): a root `Package.swift` (swift-tools-version:5.9, "
-    "`platforms: [.macOS(.v13)]`) declaring THREE targets — a `.target` library "
+    "`platforms: [.macOS(.v13)]`) declaring FOUR targets — a `.target` library "
     "`AppCore` for the pure logic, an `.executableTarget` `App` (dependencies: "
-    '["AppCore"]) for the UI, and a `.testTarget` `AppCoreTests` (dependencies: '
-    '["AppCore"]). Sources live under `Sources/AppCore/*.swift`, '
-    "`Sources/App/*.swift`, and tests under `Tests/AppCoreTests/*.swift`. "
+    '["AppCore"]) for the UI, an `.executableTarget` `AppCLI` (dependencies: '
+    '["AppCore"]) for deterministic terminal proof, and a `.testTarget` '
+    '`AppCoreTests` (dependencies: ["AppCore"]). Sources live under '
+    "`Sources/AppCore/*.swift`, `Sources/App/*.swift`, `Sources/AppCLI/main.swift`, "
+    "and tests under `Tests/AppCoreTests/*.swift`. "
     "ENTRY: `Sources/App/MainApp.swift` holds the `@main struct ...: App` with a "
     "`WindowGroup { ContentView() }` — the `@main` file must NOT be named "
     "`main.swift`. "
@@ -359,7 +361,10 @@ _SWIFT_DIRECTIVE = (
     "model (`@State`/`@StateObject`), render it, and forward user actions to its "
     "methods. "
     "TESTS: `Tests/AppCoreTests/` uses XCTest with `@testable import AppCore` and "
-    "asserts the core's real behavior. "
+    "asserts the core's real behavior. INTERACTIVE PROOF: `AppCLI` provides `--help`, "
+    "an offline prompt loop over AppCore, and a nonzero stderr error for invalid args. "
+    "Ship root `.skyn3t-cli-playtest.json` version 1 with root-relative command "
+    "`.build/debug/AppCLI` and literal help / interactive / invalid-input scenarios. "
     "TARGET: macOS 13+; keep it compiling cleanly under the installed toolchain "
     "(avoid unavailable APIs). Implement the brief's real features, not a stub."
 )
@@ -513,7 +518,10 @@ _VARIANT_DIRECTIVES: tuple[tuple[str, Any, str], ...] = (
      "/ denied) and exit 2 when a tool is denied; writes require --mode "
      "workspace-write (read-only is the DEFAULT) and every file path is confined "
      "to the workspace (symlink-safe, size-capped); ship offline mock-provider "
-     "scenarios in scenarios.json and `doctor --output-format json`."),
+     "scenarios in scenarios.json and `doctor --output-format json`. Also ship an "
+     "offline `chat` prompt loop and root `.skyn3t-cli-playtest.json` version 1 with "
+     "literal help / interactive / invalid-input scenarios; its command begins "
+     "`[\"{python}\", \"-B\", \"main.py\"]`."),
     ("nextjs", _implies_supabase,
      "VARIANT — Supabase Next.js app: create `lib/supabaseClient.js` with "
      "`createClient` from `@supabase/supabase-js`, reading ONLY browser-safe "

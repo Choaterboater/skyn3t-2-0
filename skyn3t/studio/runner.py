@@ -48,6 +48,9 @@ from skyn3t.core.stacks import (
     GAME_STACKS as _GAME_STACKS,
 )
 from skyn3t.core.stacks import (
+    SWIFT_MACOS_STACKS as _SWIFT_MACOS_STACKS,
+)
+from skyn3t.core.stacks import (
     UI_WEB_STACKS as _UI_WEB_STACKS,
 )
 from skyn3t.core.stacks import (
@@ -2301,6 +2304,46 @@ class StudioRunner:
         return StudioRunner._select_root_py_files(
             project_dir, ("main.py", "workflow_core.py"))
 
+    @staticmethod
+    def _select_cli_playtest_source_files(project_dir, stack: str) -> list[str]:
+        """Select bounded source targets for an interactive CLI repair.
+
+        Python CLI projects follow the existing root-module convention. Swift
+        deliveries hand the improver their package manifest and real
+        ``Sources/**/*.swift`` files, never tests or build output. The playtest
+        contract itself is deliberately excluded: it is the immutable behavior
+        specification the repair must satisfy, not a target it may weaken.
+        """
+        low = (stack or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if low not in _SWIFT_MACOS_STACKS:
+            return StudioRunner._select_root_py_files(project_dir, ("main.py",))
+        try:
+            files = list_files(project_dir)
+        except Exception:  # noqa: BLE001 - selection must never raise
+            return []
+        candidates: list[str] = []
+        for rel in files:
+            posix = rel.replace("\\", "/")
+            parts = posix.split("/")
+            if any(seg in {".build", ".swiftpm", "Tests"} for seg in parts):
+                continue
+            if posix == "Package.swift" or (
+                posix.startswith("Sources/") and posix.endswith(".swift")
+            ):
+                candidates.append(posix)
+
+        def priority(rel: str) -> tuple[int, str]:
+            name = rel.rsplit("/", 1)[-1].lower()
+            if name == "main.swift":
+                return (0, rel)
+            if name == "mainapp.swift":
+                return (1, rel)
+            if rel == "Package.swift":
+                return (2, rel)
+            return (3, rel)
+
+        return sorted(dict.fromkeys(candidates), key=priority)[:6]
+
     async def _run_mcp_check(
         self, manifest, plan, project_dir, correlation_id, extra
     ) -> None:
@@ -2705,6 +2748,161 @@ class StudioRunner:
                 log.warning("cli_check.repair_rolled_back", changed=touched)
         except Exception as exc:  # noqa: BLE001 - advisory; never break a build
             log.warning("cli_check.failed", error=str(exc))
+
+    async def _run_cli_playtest(
+        self, manifest, plan, project_dir, correlation_id, extra
+    ) -> None:
+        """Replay a project's scripted terminal contract (ADVISORY).
+
+        The gate is opt-in per delivery through ``.skyn3t-cli-playtest.json``;
+        the core checker returns a recorded soft-skip when that file is absent.
+        Real findings receive one source-only repair. The contract is snapshotted
+        as immutable, the generated project is re-proved, and the interaction is
+        replayed before a repair is kept. Any partial, build-breaking,
+        contract-changing, or ineffective rewrite is rolled back byte-for-byte.
+        This method never changes the build verdict and never raises.
+        """
+        try:
+            from skyn3t.studio.cli_playtest import check_cli_playtest
+
+            initial = await asyncio.to_thread(
+                check_cli_playtest, project_dir, plan.stack
+            )
+            manifest.extra["cli_playtest"] = initial.to_dict()
+            log.info(
+                "cli_playtest.done",
+                skipped=initial.skipped,
+                ok=initial.ok,
+                issues=len(initial.issues),
+            )
+
+            gaps = initial.gaps()
+            if not gaps or not self._has_capability("code_improve"):
+                return
+            files = self._select_cli_playtest_source_files(project_dir, plan.stack)
+            if not files:
+                return
+
+            contract_rel = ".skyn3t-cli-playtest.json"
+            before_files = set(self._safe_list_files(project_dir))
+            # The improver is asked to edit only ``files``, but a failed or
+            # over-broad agent can still mutate/delete any other delivered path.
+            # Snapshot the complete deliverable inventory (build/vendor/cache
+            # trees are already excluded by list_files) so rollback is a real
+            # tree transaction, not just a best-effort target restore.
+            snapshots = self._snapshot_seo_targets(project_dir, sorted(before_files))
+
+            payload = {
+                "brief": manifest.brief,
+                "slug": manifest.slug,
+                "worktree_dir": project_dir,
+                "project_dir": project_dir,
+                "stack": plan.stack,
+                "plan": plan.to_dict(),
+                "gaps": format_fix_feedback(
+                    gaps,
+                    stage="cli_playtest",
+                    attempt=1,
+                    max_attempts=1,
+                    files=list(files),
+                ),
+                "files": list(files),
+                "playtest_contract": contract_rel,
+            }
+            if extra:
+                payload["extra"] = extra
+            task = TaskRequest(
+                type="code_improver",
+                payload=payload,
+                capabilities_required=("code_improve",),
+                correlation_id=correlation_id,
+                metadata={"stage": "cli_playtest"},
+            )
+            dispatched_ok = True
+            try:
+                await asyncio.wait_for(
+                    self.orchestrator.submit(task), timeout=self.stage_exec_timeout
+                )
+            except Exception as exc:  # noqa: BLE001 - timeout can leave partial writes
+                dispatched_ok = False
+                log.warning("cli_playtest.improve_failed", error=str(exc))
+
+            changed = self._seo_changed_targets(project_dir, snapshots)
+            new_files = sorted(
+                f
+                for f in set(self._safe_list_files(project_dir))
+                if f not in before_files
+            )
+            if not changed and not new_files:
+                return
+            touched = sorted(set(changed) | set(new_files))
+
+            def rollback(reason: str) -> None:
+                self._rollback_seo(project_dir, snapshots, new_files)
+                manifest.files = self._safe_list_files(project_dir)
+                manifest.extra["cli_playtest"] = initial.to_dict()
+                manifest.extra["cli_playtest_repair"] = {
+                    "kept": False,
+                    "reason": reason,
+                    "changed_files": touched,
+                }
+
+            changed_outside_scope = sorted(set(changed) - set(files))
+            if contract_rel in changed_outside_scope:
+                rollback("playtest contract is immutable; rolled back attempted rewrite")
+                return
+            if changed_outside_scope:
+                rollback(
+                    "CLI playtest repair changed files outside its allowed source scope; "
+                    "rolled back"
+                )
+                return
+            if not dispatched_ok:
+                rollback("improver dispatch failed/timed out; rolled back partial writes")
+                return
+
+            try:
+                proof = await asyncio.to_thread(
+                    proof_run,
+                    project_dir,
+                    checklist=plan.checklist,
+                    execution_backend=self.settings.execution_backend,
+                    stack=plan.stack,
+                    run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+                    test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                    run_build=bool(getattr(self.settings, "run_generated_build", True)),
+                    build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                )
+            except Exception as exc:  # noqa: BLE001 - mutation must not escape rollback
+                rollback("build proof failed to run after CLI playtest repair; rolled back")
+                log.warning("cli_playtest.reproof_failed", error=str(exc))
+                return
+            if not proof.passed:
+                rollback("advisory CLI playtest repair broke the build proof; rolled back")
+                log.warning("cli_playtest.repair_rolled_back", changed=touched)
+                return
+
+            try:
+                repaired = await asyncio.to_thread(
+                    check_cli_playtest, project_dir, plan.stack
+                )
+            except Exception as exc:  # noqa: BLE001 - mutation must not escape rollback
+                rollback("CLI playtest replay failed to run after repair; rolled back")
+                log.warning("cli_playtest.replay_failed", error=str(exc))
+                return
+            if not repaired.ok:
+                rollback("advisory CLI playtest repair did not satisfy the contract; rolled back")
+                log.warning("cli_playtest.repair_ineffective", changed=touched)
+                return
+
+            manifest.files = self._safe_list_files(project_dir)
+            manifest.extra["cli_playtest"] = repaired.to_dict()
+            manifest.extra["cli_playtest_repair"] = {
+                "kept": True,
+                "changed_files": touched,
+            }
+        except Exception as exc:  # noqa: BLE001 - advisory; never break a build
+            log.warning("cli_playtest.failed", error=str(exc))
 
     async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
@@ -4082,6 +4280,16 @@ class StudioRunner:
             if _gate_applies("cli_check", plan.stack) and getattr(
                     self.settings, "cli_check_enabled", True):
                 await self._run_cli_check(
+                    manifest, plan, project_dir, correlation_id, extra)
+
+            # Scripted interactive terminal playtest (CLI + native Swift aliases,
+            # ADVISORY): a project opts in by shipping
+            # .skyn3t-cli-playtest.json. Without one, the checker records a cheap
+            # soft-skip. Failures receive one source-only, contract-preserving
+            # repair followed by real proof + interaction replay.
+            if _gate_applies("cli_playtest", plan.stack) and getattr(
+                    self.settings, "cli_playtest_enabled", True):
+                await self._run_cli_playtest(
                     manifest, plan, project_dir, correlation_id, extra)
 
             verdict = self._apply_ai_native_gates(manifest, verdict)

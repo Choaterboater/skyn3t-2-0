@@ -19,6 +19,7 @@ integration test is skipped when the ``swift`` toolchain is absent. Mirrors
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 
@@ -158,6 +159,27 @@ def test_swift_scaffold_has_pure_logic_render_split():
     assert "import SwiftUI" not in core_src, "pure logic file must not import SwiftUI"
 
 
+def test_swift_scaffold_has_deterministic_cli_playtest_contract():
+    files = scaffold_for("swift", "note-taker", "a macOS notes app")
+    assert "Sources/AppCLI/main.swift" in files
+    assert 'name: "AppCLI"' in files["Package.swift"]
+
+    cli = files["Sources/AppCLI/main.swift"]
+    for token in ("import AppCore", 'write("app> ")', 'arguments == ["--help"]'):
+        assert token in cli
+
+    contract = json.loads(files[".skyn3t-cli-playtest.json"])
+    assert contract["version"] == 1
+    assert contract["command"] == [".build/debug/AppCLI"]
+    assert {scenario["name"] for scenario in contract["scenarios"]} == {
+        "help", "interactive", "invalid-input",
+    }
+    interactive = next(s for s in contract["scenarios"] if s["name"] == "interactive")
+    assert [step.get("send") for step in interactive["steps"] if "send" in step] == [
+        "add buy milk", "list", "quit",
+    ]
+
+
 def test_scaffold_swift_has_no_npm_or_web_confusion():
     # A native macOS app must NOT accidentally produce the React/Vite web scaffold
     # (the silent fallback this whole stack guards against) — NO npm anywhere.
@@ -244,3 +266,9 @@ def test_swift_scaffold_actually_compiles(tmp_path):
     )
     assert res.passed, res.to_dict()
     assert res.detail.get("build") == "passed", res.detail
+
+    from skyn3t.studio.cli_playtest import check_cli_playtest
+
+    interactive = check_cli_playtest(tmp_path, "swift")
+    assert interactive.ok, interactive.to_dict()
+    assert interactive.checked["scenario_count"] == 3

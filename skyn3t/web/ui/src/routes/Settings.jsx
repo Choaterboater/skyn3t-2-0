@@ -944,7 +944,7 @@ export default function Settings() {
             <p className="mb-4 text-sm text-ash">
               End-of-build gates that verify a delivery before it ships —
               headless sim, playtest, liveness, SEO, and the MCP / RAG /
-              workflow / CLI contract checks. Advisory gates feed the repair
+              workflow / CLI contract and scripted terminal checks. Advisory gates feed the repair
               loop; disabling one skips that verification for future builds.
             </p>
             <div className="grid gap-2">

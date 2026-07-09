@@ -59,6 +59,7 @@ async def test_slice_agentic_keeps_small_delivery_no_scaffold_floor(tmp_path):
         comp.mkdir(parents=True, exist_ok=True)
         (comp / "Card.jsx").write_text(
             "export default function Card(){ return null }\n", encoding="utf-8")
+        assert kwargs["allowed_paths"] == ["src/components/Card.jsx"]
         return {"ok": True, "backend": "claude_cli"}
 
     agent.llm._backend = "claude_cli"  # type: ignore[attr-defined]

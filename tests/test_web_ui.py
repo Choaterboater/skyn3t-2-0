@@ -235,6 +235,52 @@ def test_slice_activity_is_named_in_activity_and_cockpit() -> None:
     assert "ensure(slice.label)" in cockpit
     assert 'eventType === "task.completed"' in cockpit
     assert "p.slice_complete" in cockpit
+    assert "settleSliceRowsOnBuildTerminal(rec.values(), e)" in cockpit
+    assert cockpit.index("settleSliceRowsOnBuildTerminal(rec.values(), e)") < cockpit.index(
+        "const name = p.stage || p.capability"
+    )
+
+
+def test_build_terminal_settles_active_slice_rows() -> None:
+    helper = SRC / "agentSignals.js"
+    script = f"""
+      import {{ settleSliceRowsOnBuildTerminal }} from {json.dumps(helper.as_uri())};
+      const rows = [
+        {{ capability: "slice", stage: "code/frontend", state: "running" }},
+        {{ capability: "slice", stage: "code/tests", state: "pending" }},
+        {{ capability: "slice", stage: "code/config", state: "done", status: "completed" }},
+        {{ capability: "code", stage: "code", state: "running" }},
+      ];
+      settleSliceRowsOnBuildTerminal(rows, {{
+        type: "build.failed",
+        payload: {{ status: "cancelled", reason: "cancelled by user" }},
+      }});
+      if (rows[0].state !== "failed" || rows[0].status !== "cancelled") {{
+        throw new Error("running slice did not settle as cancelled");
+      }}
+      if (rows[1].state !== "failed" || rows[1].gaps[0] !== "cancelled by user") {{
+        throw new Error("pending slice did not retain the terminal reason");
+      }}
+      if (rows[2].state !== "done" || rows[2].status !== "completed") {{
+        throw new Error("terminal slice state was overwritten");
+      }}
+      if (rows[3].state !== "running") {{
+        throw new Error("non-slice row was changed");
+      }}
+
+      const completed = [{{ capability: "slice", stage: "code/frontend", state: "running" }}];
+      settleSliceRowsOnBuildTerminal(completed, {{ type: "build.completed", payload: {{}} }});
+      if (completed[0].state !== "done" || completed[0].status !== "completed") {{
+        throw new Error("successful build did not settle its active slice");
+      }}
+    """
+    subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=UI_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_concurrent_slice_completion_keeps_code_agent_busy() -> None:

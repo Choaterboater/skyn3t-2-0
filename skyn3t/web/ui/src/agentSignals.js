@@ -7,6 +7,23 @@ export function sliceTaskIdentity(event) {
   return { stage, slice, label: `${stage}/${slice}` };
 }
 
+export function settleSliceRowsOnBuildTerminal(rows, event) {
+  const type = String(event?.type || "").toLowerCase();
+  if (type !== "build.completed" && type !== "build.failed") return;
+
+  const failed = type === "build.failed";
+  const payload = event?.payload || {};
+  const status = String(payload.status || (failed ? "failed" : "completed")).trim();
+  const gap = String(payload.error || payload.reason || "").trim();
+
+  for (const row of rows || []) {
+    if (row?.capability !== "slice" || !["pending", "running"].includes(row.state)) continue;
+    row.state = failed ? "failed" : "done";
+    row.status = status;
+    if (failed && gap) row.gaps = [gap];
+  }
+}
+
 function eventAgentKeys(event) {
   const payload = event?.payload || {};
   const metadata = payload.metadata || {};

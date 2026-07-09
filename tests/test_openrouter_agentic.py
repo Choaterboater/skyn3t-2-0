@@ -197,6 +197,37 @@ def test_agentic_slice_tool_writes_only_owned_paths(tmp_path, monkeypatch):
     assert not (tmp_path / "src" / "also-out-of-scope.jsx").exists()
 
 
+def test_agentic_slice_skips_whole_app_antistub_nudge(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn(
+            "write_file",
+            {"path": "tests/site.test.mjs", "content": "export const passed = true;\n"},
+        ),
+        _tool_turn("finish", {}, "t2"),
+        _tool_turn(
+            "write_file",
+            {"path": "src/unwanted-app.astro", "content": "<main>wrong scope</main>\n"},
+            "t3",
+        ),
+    ]
+    fake = _FakeClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build tests only",
+        str(tmp_path),
+        "m",
+        stack="astro",
+        allowed_paths=["tests/site.test.mjs"],
+        enforce_antistub=False,
+    ))
+
+    assert res["ok"] is True
+    assert fake.i == 2
+    assert (tmp_path / "tests" / "site.test.mjs").is_file()
+    assert not (tmp_path / "src" / "unwanted-app.astro").exists()
+
+
 def test_agentic_write_progress_extends_nominal_window(tmp_path, monkeypatch):
     turns = [
         _tool_turn("write_files", {"files": [

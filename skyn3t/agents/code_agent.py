@@ -1120,10 +1120,11 @@ class CodeAgent(BaseAgent):
         self, stack: str, model_override: Any, payload: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any], str]:
         payload = payload if isinstance(payload, dict) else {}
-        extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
-        timeout = payload.get("agentic_timeout") or extra.get("agentic_timeout")
+        extra_value = payload.get("extra")
+        extra: dict[str, Any] = extra_value if isinstance(extra_value, dict) else {}
+        timeout_value = payload.get("agentic_timeout") or extra.get("agentic_timeout")
         try:
-            timeout = int(timeout) if timeout else None
+            timeout = int(timeout_value) if timeout_value else None
         except (TypeError, ValueError):
             timeout = None
         runtime = {"timeout": timeout} if timeout else {}
@@ -1395,7 +1396,9 @@ class CodeAgent(BaseAgent):
             try:
                 if p.stat().st_size > 500_000:
                     continue  # skip oversized/binary artifacts
-                out[str(p.relative_to(root))] = p.read_text(encoding="utf-8", errors="ignore")
+                out[p.relative_to(root).as_posix()] = p.read_text(
+                    encoding="utf-8", errors="ignore"
+                )
             except OSError:
                 continue
         return out

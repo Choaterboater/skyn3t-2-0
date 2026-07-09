@@ -13,11 +13,13 @@ so it is fully unit-testable without FastAPI or a live socket.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 from typing import Any
 
 from skyn3t.core.events import Event, EventBus, EventType
-from skyn3t.web.deps import AppState, check_auth
+from skyn3t.web.deps import AppState, check_auth, is_cross_origin_browser_request
 
 try:  # pragma: no cover - exercised only when fastapi present
     from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -116,6 +118,7 @@ class ConnectionHub:
 # subprotocols, which travel in ``Sec-WebSocket-Protocol`` — not in the URL —
 # so the token never lands in uvicorn/proxy access logs the way ``?token=`` did.
 _WS_AUTH_SUBPROTOCOL = "skyn3t-bearer"
+_WS_AUTH_SUBPROTOCOL_PREFIX = f"{_WS_AUTH_SUBPROTOCOL}."
 
 
 def _ws_headers(ws: Any) -> dict[str, str]:
@@ -135,19 +138,56 @@ def _client_subprotocols(ws: Any) -> list[str]:
     return [p.strip() for p in raw.split(",") if p.strip()] if raw else []
 
 
+def _decode_ws_bearer_protocol(proto: str) -> str | None:
+    if not proto.startswith(_WS_AUTH_SUBPROTOCOL_PREFIX):
+        return None
+    encoded = proto[len(_WS_AUTH_SUBPROTOCOL_PREFIX):]
+    if not encoded:
+        return None
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        raw = base64.b64decode(
+            (encoded + padding).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+        token = raw.decode("utf-8")
+    except (binascii.Error, UnicodeEncodeError, UnicodeDecodeError, ValueError):
+        return None
+    return token or None
+
+
 def _ws_bearer_from_subprotocol(ws: Any) -> str | None:
-    """Token offered as ``[_WS_AUTH_SUBPROTOCOL, <token>]`` (scheme, then token)."""
+    """Decode a URL-safe bearer protocol, accepting the legacy pair too."""
     protos = _client_subprotocols(ws)
+    for proto in protos:
+        token = _decode_ws_bearer_protocol(proto)
+        if token is not None:
+            return token
+
+    # Backward compatibility for older dashboard/native clients. Raw tokens
+    # with spaces, commas, "=" or non-ASCII are not valid WebSocket protocol
+    # values; new clients encode them in the single protocol above.
     if len(protos) >= 2 and protos[0] == _WS_AUTH_SUBPROTOCOL:
         return protos[1]
     return None
+
+
+def _ws_auth_subprotocol(ws: Any) -> str | None:
+    """The exact offered auth protocol the server should select."""
+    protos = _client_subprotocols(ws)
+    for proto in protos:
+        if _decode_ws_bearer_protocol(proto) is not None:
+            return proto
+    return _WS_AUTH_SUBPROTOCOL if _WS_AUTH_SUBPROTOCOL in protos else None
 
 
 def _ws_authorized(state: AppState, ws: Any) -> bool:
     """Authorize a handshake via the Authorization header or the ``skyn3t-bearer``
     subprotocol. The token is deliberately never read from the query string —
     that path leaked it into access logs."""
-    authorization = _ws_headers(ws).get("authorization")
+    headers = _ws_headers(ws)
+    authorization = headers.get("authorization")
     token = state.settings.auth_token.strip()
     if token and not authorization:
         sub_token = _ws_bearer_from_subprotocol(ws)
@@ -157,7 +197,17 @@ def _ws_authorized(state: AppState, ws: Any) -> bool:
     client = getattr(ws, "client", None)
     if client is not None:
         client_host = getattr(client, "host", None)
-    return check_auth(state.settings, authorization=authorization, client_host=client_host)
+    if not check_auth(
+        state.settings, authorization=authorization, client_host=client_host
+    ):
+        return False
+    if not is_cross_origin_browser_request(headers, client_host=client_host):
+        return True
+    # Opaque/cross-origin browser handshakes cannot rely on loopback trust. A
+    # configured, valid bearer (normally supplied as a subprotocol) is explicit.
+    return check_auth(
+        state.settings, authorization=authorization, client_host=None
+    )
 
 
 def build_ws_router(state: AppState, hub: ConnectionHub) -> Any:
@@ -176,7 +226,7 @@ def build_ws_router(state: AppState, hub: ConnectionHub) -> Any:
         # Echo the auth subprotocol back when the client offered it, so the
         # handshake completes (a client that offers a subprotocol expects the
         # server to select one).
-        chosen = _WS_AUTH_SUBPROTOCOL if _WS_AUTH_SUBPROTOCOL in _client_subprotocols(ws) else None
+        chosen = _ws_auth_subprotocol(ws)
         await ws.accept(subprotocol=chosen)
         # Prime with recent trajectory BEFORE registering as a fan-out target,
         # so the hub never sends concurrently with the priming loop on the same

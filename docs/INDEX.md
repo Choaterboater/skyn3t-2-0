@@ -12,7 +12,7 @@ Open this folder as an Obsidian vault if you want backlinks and graph navigation
 | [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) | Engine selection guidance |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | System architecture and package map |
 | [`ROADMAP.md`](ROADMAP.md) | Feature backlog and status |
-| [`game-capability-roadmap.md`](game-capability-roadmap.md) | Game-specific capability roadmap |
+| [`game-capability-roadmap.md`](archive/game-capability-roadmap.md) | Game-specific capability roadmap |
 
 ## RAG / LLM use
 

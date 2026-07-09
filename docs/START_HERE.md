@@ -9,7 +9,7 @@ If you get disconnected or return after a while, read these in order:
 5. [`docs/ROADMAP.md`](ROADMAP.md) — what is done vs planned.
 6. [`docs/APP_TYPES.md`](APP_TYPES.md) — which UI/style pattern to use by app type.
 7. [`docs/ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) — which engine fits the job.
-8. [`docs/game-capability-roadmap.md`](game-capability-roadmap.md) — game-specific work.
+8. [`docs/archive/game-capability-roadmap.md`](archive/game-capability-roadmap.md) — game-specific work.
 
 ## Session rule
 

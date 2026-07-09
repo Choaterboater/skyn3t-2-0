@@ -36,12 +36,26 @@ def test_required_top_level_files_present() -> None:
         assert (UI_DIR / name).is_file(), f"missing {name}"
 
 
+def test_auth_reconnect_cannot_clear_or_close_a_newer_websocket() -> None:
+    api = (SRC / "api.js").read_text(encoding="utf-8")
+
+    assert "let activeSocket = null;" in api
+    assert "if (wsRef.current !== ws) return;" in api
+    assert "if (closedByUser || wsRef.current !== ws)" in api
+    assert "const socket = activeSocket;" in api
+    assert "if (wsRef.current === socket) wsRef.current = null;" in api
+    assert "if (socket) socket.close();" in api
+
+
 def test_vite_dev_proxy_matches_default_backend_port() -> None:
-    vite = (UI_DIR / "vite.config.js").read_text()
-    readme = (UI_DIR / "README.md").read_text()
+    vite = (UI_DIR / "vite.config.js").read_text(encoding="utf-8")
+    readme = (UI_DIR / "README.md").read_text(encoding="utf-8")
     assert "http://127.0.0.1:6660" in vite
     assert "http://127.0.0.1:6660" in readme
     assert "process.env.SKYN3T_API" in vite
+    assert '"/api": { target: TARGET, changeOrigin: false }' in vite
+    assert '"/ws": { target: TARGET, ws: true, changeOrigin: false }' in vite
+    assert "changeOrigin: true" not in vite
 
 
 def test_required_src_files_present() -> None:
@@ -65,7 +79,7 @@ def test_all_route_components_present() -> None:
 
 
 def test_package_json_is_valid_and_has_required_deps() -> None:
-    data = json.loads((UI_DIR / "package.json").read_text())
+    data = json.loads((UI_DIR / "package.json").read_text(encoding="utf-8"))
     assert data.get("scripts", {}).get("build") == "vite build"
     deps = data.get("dependencies", {})
     for dep in (
@@ -83,7 +97,7 @@ def test_package_json_is_valid_and_has_required_deps() -> None:
 
 
 def test_app_imports_every_route() -> None:
-    app = (SRC / "App.jsx").read_text()
+    app = (SRC / "App.jsx").read_text(encoding="utf-8")
     for comp in (
         "Overview",
         "Agents",
@@ -100,18 +114,18 @@ def test_app_imports_every_route() -> None:
 
 
 def test_styles_has_tailwind_directives() -> None:
-    css = (SRC / "styles.css").read_text()
+    css = (SRC / "styles.css").read_text(encoding="utf-8")
     for directive in ("@tailwind base", "@tailwind components", "@tailwind utilities"):
         assert directive in css
 
 
 def test_dashboard_self_hosts_fonts() -> None:
-    html = (UI_DIR / "index.html").read_text()
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
     fonts = UI_DIR / "public" / "fonts" / "fonts.css"
     assert "fonts.googleapis.com" not in html
     assert "fonts.gstatic.com" not in html
     assert '/fonts/fonts.css' in html
-    css = fonts.read_text()
+    css = fonts.read_text(encoding="utf-8")
     for family in ("Inter", "JetBrains Mono", "Space Grotesk"):
         assert family in css
     for file_name in (
@@ -122,8 +136,41 @@ def test_dashboard_self_hosts_fonts() -> None:
         assert (UI_DIR / "public" / "fonts" / file_name).is_file()
 
 
+def test_dashboard_bundled_fonts_include_license_notices() -> None:
+    fonts_dir = UI_DIR / "public" / "fonts"
+    notice = (fonts_dir / "NOTICE.txt").read_text(encoding="utf-8")
+    ofl = (fonts_dir / "OFL-1.1.txt").read_text(encoding="utf-8")
+
+    for family, source in (
+        ("Inter", "https://github.com/rsms/inter"),
+        ("JetBrains Mono", "https://github.com/JetBrains/JetBrainsMono"),
+        ("Space Grotesk", "https://github.com/floriankarsten/space-grotesk"),
+    ):
+        assert family in notice
+        assert source in notice
+    assert "SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007" in ofl
+    assert "provided that each copy contains" in ofl
+
+
+def test_dashboard_third_party_notices_cover_runtime_packages() -> None:
+    notices = (UI_DIR / "public" / "THIRD_PARTY_NOTICES.txt").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "Packages: 22",
+        "@react-three/fiber",
+        "@tanstack/react-query",
+        "react-router-dom",
+        "three",
+        "ieee754",
+        "MIT License",
+        "BSD-3-Clause",
+    ):
+        assert marker in notices
+
+
 def test_settings_page_has_section_navigation() -> None:
-    settings = (ROUTES / "Settings.jsx").read_text()
+    settings = (ROUTES / "Settings.jsx").read_text(encoding="utf-8")
     assert "SETTINGS_SECTIONS" in settings
     assert 'aria-label="Settings sections"' in settings
     for anchor in (
@@ -137,28 +184,28 @@ def test_settings_page_has_section_navigation() -> None:
 
 
 def test_first_run_user_doc_is_indexed() -> None:
-    doc = (REPO_ROOT / "docs" / "FIRST_RUN.md").read_text()
-    index = (REPO_ROOT / "docs" / "INDEX.md").read_text()
+    doc = (REPO_ROOT / "docs" / "FIRST_RUN.md").read_text(encoding="utf-8")
+    index = (REPO_ROOT / "docs" / "INDEX.md").read_text(encoding="utf-8")
     assert "SkyN3t First Run" in doc
     assert "Settings" in doc and "Foundry" in doc and "Projects" in doc
     assert "FIRST_RUN.md" in index
 
 
 def test_api_exposes_fetch_wrapper_and_ws_hook() -> None:
-    api = (SRC / "api.js").read_text()
+    api = (SRC / "api.js").read_text(encoding="utf-8")
     assert "export async function apiFetch" in api
     assert "export function useEventStream" in api
     assert "/ws" in api
 
 
 def test_brain_uses_r3f() -> None:
-    brain = (ROUTES / "Brain.jsx").read_text()
+    brain = (ROUTES / "Brain.jsx").read_text(encoding="utf-8")
     assert "@react-three/fiber" in brain
     assert "Canvas" in brain
 
 
 def test_activity_wires_trajectory_replay_ui() -> None:
-    activity = (ROUTES / "Activity.jsx").read_text()
+    activity = (ROUTES / "Activity.jsx").read_text(encoding="utf-8")
     assert "SignalGrid" in activity
     assert 'apiFetch(`/trajectory?' in activity
     assert "Trajectory replay / time travel" in activity
@@ -178,7 +225,7 @@ def test_activity_wires_trajectory_replay_ui() -> None:
 
 
 def test_signal_grid_primitive_wraps_long_values() -> None:
-    ui = (COMPONENTS / "ui.jsx").read_text()
+    ui = (COMPONENTS / "ui.jsx").read_text(encoding="utf-8")
     assert "export function SignalGrid" in ui
     assert "items.map((item)" in ui
     assert "min-w-0" in ui
@@ -187,7 +234,7 @@ def test_signal_grid_primitive_wraps_long_values() -> None:
 
 
 def test_skills_wires_build_pattern_scoreboard() -> None:
-    skills = (ROUTES / "Skills.jsx").read_text()
+    skills = (ROUTES / "Skills.jsx").read_text(encoding="utf-8")
     assert "data?.patterns" in skills
     assert "Build-pattern reuse" in skills
     assert "Successful builds fill this scoreboard" in skills
@@ -198,7 +245,7 @@ def test_skills_wires_build_pattern_scoreboard() -> None:
 
 
 def test_projects_surfaces_ai_guidance_evidence() -> None:
-    projects = (ROUTES / "Projects.jsx").read_text()
+    projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
     assert "SignalGrid" in projects
     assert "function aiEvidence" in projects
     assert "skills {ai.skills.length}" in projects
@@ -220,7 +267,7 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
 
 
 def test_workspace_surfaces_selected_project_signals() -> None:
-    workspace = (ROUTES / "Workspace.jsx").read_text()
+    workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
     assert "SignalGrid" in workspace
     assert "countWorkspaceActivity" in workspace
     assert "workspaceEventMatches" in workspace
@@ -259,7 +306,7 @@ def test_workspace_activity_helper_counts_correlation_matched_events() -> None:
 
 
 def test_cortex_effects_surface_reusable_skills() -> None:
-    cortex = (ROUTES / "Cortex.jsx").read_text()
+    cortex = (ROUTES / "Cortex.jsx").read_text(encoding="utf-8")
     assert "Reusable skills" in cortex
     assert "skillRows" in cortex
     assert "skillCount" in cortex
@@ -269,21 +316,21 @@ def test_cortex_effects_surface_reusable_skills() -> None:
 
 
 def test_agents_explains_roster_count() -> None:
-    agents = (ROUTES / "Agents.jsx").read_text()
+    agents = (ROUTES / "Agents.jsx").read_text(encoding="utf-8")
     assert "registered specialist roles" in agents
     assert "not the number of parallel agents" in agents
     assert "Roster size" in agents
 
 
 def test_settings_wires_visual_self_heal_toggle() -> None:
-    settings = (ROUTES / "Settings.jsx").read_text()
+    settings = (ROUTES / "Settings.jsx").read_text(encoding="utf-8")
     assert "/settings/visual_self_heal" in settings
     assert "visual_self_heal" in settings
     assert "Drive rendered UI" in settings
 
 
 def test_settings_explains_model_precedence() -> None:
-    settings = (ROUTES / "Settings.jsx").read_text()
+    settings = (ROUTES / "Settings.jsx").read_text(encoding="utf-8")
     assert "SignalGrid" in settings
     assert "const routingCockpit =" in settings
     assert "Routing cockpit" in settings
@@ -305,7 +352,7 @@ def test_settings_explains_model_precedence() -> None:
 
 
 def test_gate_ladder_hero_contains_mobile_overflow() -> None:
-    ladder = (COMPONENTS / "GateLadder.jsx").read_text()
+    ladder = (COMPONENTS / "GateLadder.jsx").read_text(encoding="utf-8")
     assert "overflow-x-auto" in ladder
     assert "overscroll-x-contain" in ladder
     assert "min-w-[720px]" in ladder
@@ -313,8 +360,8 @@ def test_gate_ladder_hero_contains_mobile_overflow() -> None:
 
 
 def test_studio_error_states_are_contained() -> None:
-    ui = (COMPONENTS / "ui.jsx").read_text()
-    studio = (ROUTES / "Studio.jsx").read_text()
+    ui = (COMPONENTS / "ui.jsx").read_text(encoding="utf-8")
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "export function ErrorText" in ui
     assert 'role="alert"' in ui
     assert "[overflow-wrap:anywhere]" in ui
@@ -327,7 +374,7 @@ def test_studio_error_states_are_contained() -> None:
 
 
 def test_studio_wires_build_profiles_and_manual_model() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "Cheap + learned" in studio
     assert "Balanced" in studio
     assert "Best quality" in studio
@@ -346,8 +393,8 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
 
 
 def test_studio_polling_is_scoped_to_active_builds() -> None:
-    main = (SRC / "main.jsx").read_text()
-    studio = (ROUTES / "Studio.jsx").read_text()
+    main = (SRC / "main.jsx").read_text(encoding="utf-8")
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
 
     assert "refetchInterval: 5000" not in main
     assert "function studioBuildRefetchInterval" in studio
@@ -358,7 +405,7 @@ def test_studio_polling_is_scoped_to_active_builds() -> None:
 
 
 def test_studio_exposes_free_only_routing_toggle() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "const routingFreeOnly =" in studio
     assert "const setFreeOnlyRouting = useMutation" in studio
     assert 'apiPost("/llm/routing", { free_only })' in studio
@@ -368,7 +415,7 @@ def test_studio_exposes_free_only_routing_toggle() -> None:
 
 
 def test_studio_has_command_deck_summary() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "SignalGrid" in studio
     assert "const effectiveBuildProfile =" in studio
     assert "build_profile: effectiveBuildProfile" in studio
@@ -392,7 +439,7 @@ def test_studio_has_command_deck_summary() -> None:
 
 
 def test_studio_foundry_layout_avoids_stretched_empty_card() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert 'const [showRoutingDetails, setShowRoutingDetails] = useState(false)' in studio
     assert 'className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start"' in studio
     assert 'className="min-w-0 space-y-4"' in studio
@@ -402,14 +449,14 @@ def test_studio_foundry_layout_avoids_stretched_empty_card() -> None:
 
 
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert 'const codegenModel = String(trace.codegen_model || "");' in studio
     assert 'const modelOverride = String(trace.model_override || "");' in studio
     assert 'model: codegenModel || modelOverride || "auto",' in studio
 
 
 def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "modelOverride && (!codegenModel || codegenModel === modelOverride)" in studio
     assert '? "manual"' in studio
     assert ': codegenModel ? "codegen" : "auto route"' in studio
@@ -420,7 +467,7 @@ def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None
 
 
 def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "function aiCostMeta(build)" in studio
     assert "quality_scorecard?.cost_usd" in studio
     assert "trace.stage_costs" in studio
@@ -429,7 +476,7 @@ def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:
 
 
 def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "scorecard.finance_sanity" in studio
     assert "scorecard.workflow_depth" in studio
     assert "finance sanity:" in studio
@@ -437,14 +484,14 @@ def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None
 
 
 def test_studio_recent_build_diagnostics_surface_agentic_stalls() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "trace.agentic" in studio
     assert "agentic stalled:" in studio
     assert "agentic fallback:" in studio
 
 
 def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "function rebuildFields(build)" in studio
     assert "const [variantSource, setVariantSource]" in studio
     assert "const loadRebuildVariant = (build) =>" in studio
@@ -457,14 +504,14 @@ def test_studio_rebuild_variants_are_editable_and_diagnostic() -> None:
 
 
 def test_studio_rebuild_variants_default_back_to_auto_stack() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "function rebuildFields(build)" in studio
     assert 'stack: "",' in studio
     assert "variant · {variantSource.stack || \"auto stack\"}" in studio
 
 
 def test_studio_rebuild_full_app_variant_only_preserves_source_profile_while_checked() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert 'sourceBuildProfile: profile === "full_app" ? "full_app" : null' in studio
     assert "sourceBuildProfile: fields.sourceBuildProfile" in studio
     assert (

@@ -247,7 +247,10 @@ class SkillLibrary:
             return False
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
-            (self.dir / f"{skill.slug}.md").write_text(skill.to_markdown())
+            (self.dir / f"{skill.slug}.md").write_text(
+                skill.to_markdown(),
+                encoding="utf-8",
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:

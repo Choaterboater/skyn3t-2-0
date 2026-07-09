@@ -335,8 +335,10 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         body = self._read_body()
-        messages = body.get("messages") if isinstance(body.get("messages"), list) else []
-        model = body.get("model") if isinstance(body.get("model"), str) else "mock-model"
+        messages_value = body.get("messages")
+        messages: list[Any] = messages_value if isinstance(messages_value, list) else []
+        model_value = body.get("model")
+        model = model_value if isinstance(model_value, str) else "mock-model"
         stream = bool(body.get("stream"))
         tools = body.get("tools") or body.get("functions")
         system = body.get("system")
@@ -421,6 +423,8 @@ class MockLLMServer:
         if self._server is None:
             return ""
         host, port = self._server.server_address[0], self._server.server_address[1]
+        if isinstance(host, bytes):
+            host = host.decode("ascii", errors="replace")
         return f"http://{host}:{port}"
 
     def captured_requests(self) -> list[CapturedRequest]:

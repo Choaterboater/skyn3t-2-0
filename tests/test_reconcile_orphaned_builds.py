@@ -8,7 +8,17 @@ import json
 
 from skyn3t.config.settings import Settings
 from skyn3t.memory.store import MemoryStore
+from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.manifest import MANIFEST_FILENAME
+
+
+def test_pid_liveness_probe_is_safe_for_current_process():
+    import os
+
+    assert is_process_alive(os.getpid()) is True
+    assert is_process_alive(True) is False
+    assert is_process_alive(0) is False
+    assert is_process_alive(-1) is False
 
 
 async def test_reconcile_marks_orphaned_running_as_interrupted(tmp_path):

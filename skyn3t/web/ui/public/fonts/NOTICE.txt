@@ -1,0 +1,17 @@
+Bundled font notices
+====================
+
+The dashboard redistributes the following unmodified font software under the
+SIL Open Font License, Version 1.1. The full license is in OFL-1.1.txt.
+
+Inter
+Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+Source: https://github.com/rsms/inter
+
+JetBrains Mono
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+Source: https://github.com/JetBrains/JetBrainsMono
+
+Space Grotesk
+Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)
+Source: https://github.com/floriankarsten/space-grotesk

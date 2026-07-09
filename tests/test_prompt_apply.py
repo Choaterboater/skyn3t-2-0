@@ -202,6 +202,25 @@ def test_persisted_override_reapplied_when_cortex_boots(tmp_path):
     asyncio.run(run())
 
 
+def test_persisted_override_reapplied_when_cli_spine_boots(monkeypatch):
+    """CLI builds replay approved prompts before Cortex is constructed."""
+    from skyn3t.cli import main as cli
+    from skyn3t.config.settings import get_settings
+    from skyn3t.cortex.prompt_store import persist_prompt_override
+
+    bus = EventBus()
+    settings = get_settings()
+    persist_prompt_override(settings.data_dir, "code", "CHECK TYPES")
+    agent = _code_agent(bus)
+
+    monkeypatch.setattr(cli, "build_agents", lambda **_kwargs: [agent])
+
+    spine = asyncio.run(cli._assemble_spine(with_memory=False, event_bus=bus))
+
+    assert spine["agents_registered"] == 1
+    assert agent.config.get("prompt_override") == "CHECK TYPES"
+
+
 def test_prompt_proposal_applies_end_to_end(tmp_path):
     async def run():
         bus = EventBus()

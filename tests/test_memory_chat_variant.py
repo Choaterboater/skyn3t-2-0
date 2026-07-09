@@ -76,7 +76,7 @@ def test_memory_scaffold_own_proof_passes_with_zero_deps():
         for rel, contents in files.items():
             dst = root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(contents)
+            dst.write_text(contents, encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
              "-o", "addopts=", "test_memory_store.py", "test_rag_core.py"],

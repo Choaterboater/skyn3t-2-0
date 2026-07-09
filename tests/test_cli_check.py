@@ -163,7 +163,7 @@ def test_python_cli_base_scaffold_passes(tmp_path):
     for rel, contents in scaffold_for("python_cli", "demo", "a demo tool").items():
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(contents)
+        dst.write_text(contents, encoding="utf-8")
     v = check_cli(tmp_path, stack="python_cli", python_exec=sys.executable)
     assert not v.skipped, v.to_dict()
     assert v.ok, v.to_dict()
@@ -177,7 +177,7 @@ def test_terminal_copilot_variant_passes(tmp_path):
     for rel, contents in files.items():
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(contents)
+        dst.write_text(contents, encoding="utf-8")
     v = check_cli(tmp_path, stack="python_cli", python_exec=sys.executable)
     assert not v.skipped, v.to_dict()
     assert v.ok, v.to_dict()

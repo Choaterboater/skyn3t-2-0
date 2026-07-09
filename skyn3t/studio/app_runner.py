@@ -16,13 +16,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.request
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
-    tomllib = None
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -411,7 +407,23 @@ def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dic
 # ---------------------------------------------------------------------------
 
 def _kill_group(pid: int, *, wait_s: float = 5.0) -> None:
-    """Terminate a process group: SIGTERM, wait for exit, then SIGKILL. Never raises."""
+    """Terminate a preview process tree using the native platform mechanism."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=max(1.0, wait_s),
+            )
+        except (OSError, subprocess.SubprocessError):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        return
+
     def _sig(s):
         try:
             os.killpg(os.getpgid(pid), s)
@@ -428,7 +440,7 @@ def _kill_group(pid: int, *, wait_s: float = 5.0) -> None:
         except OSError:
             return                  # exited cleanly
         time.sleep(0.05)
-    _sig(signal.SIGKILL)            # ignored SIGTERM -> force kill
+    _sig(getattr(signal, "SIGKILL", signal.SIGTERM))  # ignored SIGTERM -> force kill
 
 
 # ---------------------------------------------------------------------------

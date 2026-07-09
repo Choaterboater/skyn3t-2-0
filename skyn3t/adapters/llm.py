@@ -22,13 +22,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextvars
+import importlib
 import json
+import math
 import os
 import random
 import shutil
 import signal
+import sys
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -37,6 +43,7 @@ from typing import Any
 import httpx
 import structlog
 
+from skyn3t.atomic_io import atomic_write_text
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.model_router import ModelRouter, Tier
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
@@ -49,6 +56,8 @@ from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 _LAST_MODEL: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_model", default=None)
 _LAST_ROUTE: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_route", default=None)
 _ROUTES: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_routes", default=None)
+_BUDGET_LEDGER_LOCK = threading.RLock()
+_LEDGER_LOCK_TIMEOUT_S = 15.0
 
 log = structlog.get_logger(__name__)
 
@@ -448,11 +457,83 @@ class LLMResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float = 0.0
+    build_id: str | None = None
+
+
+@dataclass
+class _BuildBudgetState:
+    """Mutable state deliberately shared by child asyncio task contexts."""
+
+    build_id: str
+    spent_usd: float = 0.0
+
+
+_BUILD_BUDGET_STATE: contextvars.ContextVar[_BuildBudgetState | None] = (
+    contextvars.ContextVar("skyn3t_budget_build_state", default=None)
+)
+
+
+@contextmanager
+def _exclusive_ledger_lock(ledger_path: Path) -> Iterator[None]:
+    """Lock a sibling file across processes without optional dependencies."""
+    lock_path = ledger_path.with_name(f"{ledger_path.name}.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        raise BudgetExceeded(f"budget ledger lock unavailable: {exc}") from exc
+
+    locked = False
+    deadline = time.monotonic() + _LEDGER_LOCK_TIMEOUT_S
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            while not locked:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise BudgetExceeded("timed out waiting for the budget ledger lock") from exc
+                    time.sleep(0.02)
+        else:
+            fcntl = importlib.import_module("fcntl")
+
+            while not locked:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise BudgetExceeded("timed out waiting for the budget ledger lock") from exc
+                    time.sleep(0.02)
+        yield
+    finally:
+        if locked:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl = importlib.import_module("fcntl")
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        handle.close()
 
 
 @dataclass
 class BudgetTracker:
-    """Hard backstop on spend. Raising stops a runaway loop."""
+    """Hard backstop on spend, safe across tasks and local processes."""
     per_build_cap: float
     daily_cap: float
     token_cap: int
@@ -464,29 +545,82 @@ class BudgetTracker:
     ledger_day: str = field(default_factory=lambda: date.today().isoformat())
 
     def __post_init__(self) -> None:
-        self._load_ledger()
+        with self._ledger_guard():
+            self._load_ledger()
 
     def record(self, r: LLMResult) -> None:
-        self._rollover_if_needed()
-        self.spent_build += r.cost_usd
-        self.spent_day += r.cost_usd
-        self.tokens_day += r.prompt_tokens + r.completion_tokens
-        self.calls.append(r)
-        self._save_ledger()
+        with self._ledger_guard():
+            self._rollover_if_needed()
+            # Disk is authoritative inside the process-wide transaction. Using
+            # max(local, disk) here loses updates when two processes start with
+            # the same stale snapshot and then perform read-modify-write.
+            self._load_ledger()
+            self.spent_day += r.cost_usd
+            self.tokens_day += r.prompt_tokens + r.completion_tokens
+            state = _BUILD_BUDGET_STATE.get()
+            if state is None:
+                self.spent_build += r.cost_usd
+            else:
+                state.spent_usd += r.cost_usd
+                self.spent_build = state.spent_usd
+                if r.build_id is None:
+                    r.build_id = state.build_id
+            self.calls.append(r)
+            self._save_ledger()
 
     def check(self) -> None:
-        self._rollover_if_needed()
-        if self.per_build_cap > 0 and self.spent_build > self.per_build_cap:
-            raise BudgetExceeded(f"per-build cap ${self.per_build_cap} exceeded (${self.spent_build:.4f})")
-        if self.spent_day > self.daily_cap:
-            raise BudgetExceeded(f"daily cap ${self.daily_cap} exceeded (${self.spent_day:.4f})")
-        if self.tokens_day > self.token_cap:
-            raise BudgetExceeded(f"daily token cap {self.token_cap} exceeded ({self.tokens_day})")
+        with self._ledger_guard():
+            self._rollover_if_needed()
+            self._load_ledger(merge=True)
+            spent_build = self.current_build_spend()
+            if self.per_build_cap > 0 and spent_build > self.per_build_cap:
+                raise BudgetExceeded(
+                    f"per-build cap ${self.per_build_cap} exceeded (${spent_build:.4f})"
+                )
+            if self.spent_day > self.daily_cap:
+                raise BudgetExceeded(
+                    f"daily cap ${self.daily_cap} exceeded (${self.spent_day:.4f})"
+                )
+            if self.tokens_day > self.token_cap:
+                raise BudgetExceeded(
+                    f"daily token cap {self.token_cap} exceeded ({self.tokens_day})"
+                )
 
     def reset_build(self) -> None:
+        # Scoped builds are started by CostTracker.begin_build. A private helper
+        # client may call reset_build while it is running inside that context;
+        # resetting the shared state there would let the build escape its cap.
+        if _BUILD_BUDGET_STATE.get() is not None:
+            return
         self.spent_build = 0.0
 
-    def _load_ledger(self) -> None:
+    def begin_build(self, build_id: str) -> contextvars.Token:
+        """Begin task-local accounting shared with any child asyncio tasks."""
+        self.spent_build = 0.0
+        return _BUILD_BUDGET_STATE.set(_BuildBudgetState(build_id=build_id))
+
+    def end_build(self, token: contextvars.Token) -> float:
+        """Close a build context and return its final spend."""
+        state = _BUILD_BUDGET_STATE.get()
+        spent = state.spent_usd if state is not None else self.spent_build
+        _BUILD_BUDGET_STATE.reset(token)
+        self.spent_build = spent
+        return spent
+
+    def current_build_spend(self) -> float:
+        state = _BUILD_BUDGET_STATE.get()
+        return state.spent_usd if state is not None else self.spent_build
+
+    @contextmanager
+    def _ledger_guard(self) -> Iterator[None]:
+        with _BUDGET_LEDGER_LOCK:
+            if self.ledger_path is None:
+                yield
+            else:
+                with _exclusive_ledger_lock(self.ledger_path):
+                    yield
+
+    def _load_ledger(self, *, merge: bool = False) -> None:
         if self.ledger_path is None:
             return
         try:
@@ -499,31 +633,45 @@ class BudgetTracker:
         if data.get("day") != today:
             return
         try:
-            self.spent_day = float(data.get("spent_day", 0.0) or 0.0)
-            self.tokens_day = int(data.get("tokens_day", 0) or 0)
+            spent_day = float(data.get("spent_day", 0.0) or 0.0)
+            tokens_day = int(data.get("tokens_day", 0) or 0)
+            if not math.isfinite(spent_day) or spent_day < 0 or tokens_day < 0:
+                raise ValueError("invalid negative or non-finite budget ledger")
+            if merge:
+                self.spent_day = max(self.spent_day, spent_day)
+                self.tokens_day = max(self.tokens_day, tokens_day)
+            else:
+                self.spent_day = spent_day
+                self.tokens_day = tokens_day
             self.ledger_day = today
         except (TypeError, ValueError):
-            self.spent_day = 0.0
-            self.tokens_day = 0
+            if not merge:
+                self.spent_day = 0.0
+                self.tokens_day = 0
 
     def _save_ledger(self) -> None:
         if self.ledger_path is None:
             return
         try:
-            self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
-            self.ledger_path.write_text(
+            atomic_write_text(
+                self.ledger_path,
                 json.dumps({
                     "day": self.ledger_day,
                     "spent_day": self.spent_day,
                     "tokens_day": self.tokens_day,
                 }, sort_keys=True),
-                encoding="utf-8",
             )
         except OSError:
             pass
 
     def _rollover_if_needed(self) -> None:
         today = date.today().isoformat()
+        if self.ledger_day == today:
+            return
+        # A long-lived tracker may wake after midnight after another tracker has
+        # already recorded usage for the new day. Adopt that ledger before
+        # deciding whether a zero-value rollover needs to be initialized.
+        self._load_ledger()
         if self.ledger_day == today:
             return
         self.ledger_day = today
@@ -962,6 +1110,9 @@ class LLMClient:
         model_override: str | None = None,
         images: list[str] | None = None,
     ) -> LLMResult:
+        # Refuse before dispatch when a persisted/shared counter is already over
+        # cap. The post-record check still catches the call that crosses a cap.
+        self.budget.check()
         # Pass task_type so the LearnedModelRouter can serve per-task picks. It
         # was dead-wired (resolve(tier, file_hint) only) -> the learned router
         # always queried the empty task bucket and could never serve.
@@ -1202,8 +1353,10 @@ class LLMClient:
                 return "\n".join(sorted(out)) or "(empty)"
             return "ERROR: unknown tool"
 
-        messages = [{"role": "system", "content": _agentic_system_for(stack)},
-                    {"role": "user", "content": prompt}]
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": _agentic_system_for(stack)},
+            {"role": "user", "content": prompt},
+        ]
         headers = {"Authorization": f"Bearer {openrouter_key(self.settings)}",
                    "HTTP-Referer": "https://github.com/skyn3t", "X-Title": "SkyN3t"}
         max_turns = max(4, int(getattr(self.settings, "openrouter_agentic_max_turns", 60)))
@@ -1399,6 +1552,10 @@ class LLMClient:
         while ONLY codegen runs on the claude CLI. Returns {ok, backend, error}.
         """
         backend = self.backend
+        try:
+            self.budget.check()
+        except BudgetExceeded as exc:
+            return {"ok": False, "backend": backend, "error": str(exc)}
         provider = (provider or (backend[:-4] if backend.endswith("_cli") else "")).lower()
         if provider and not model:
             model = str(getattr(self.settings, "codegen_cli_model", "") or "").strip() or None
@@ -1587,10 +1744,27 @@ class LLMClient:
         if proc is None or proc.returncode is not None:
             return
         try:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()  # fall back to single-process kill
+            if sys.platform == "win32":
+                try:
+                    killer = await asyncio.create_subprocess_exec(
+                        "taskkill",
+                        "/PID",
+                        str(proc.pid),
+                        "/T",
+                        "/F",
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    taskkill_returncode = await asyncio.wait_for(killer.wait(), timeout=5)
+                    if taskkill_returncode != 0 and proc.returncode is None:
+                        proc.kill()
+                except (TimeoutError, FileNotFoundError, OSError):
+                    proc.kill()
+            else:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()  # fall back to single-process kill
             await asyncio.wait_for(proc.wait(), timeout=5)
         except (TimeoutError, ProcessLookupError):
             pass

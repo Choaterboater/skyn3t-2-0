@@ -6,6 +6,8 @@
   "description": "SkyN3t 2.0 live swarm / pipeline / brain dashboard",
   "scripts": {
     "dev": "vite",
+    "test": "node --test",
+    "prebuild": "node scripts/generate-third-party-notices.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -18,10 +20,10 @@
     "three": "^0.166.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.6",
-    "vite": "^5.3.4"
+    "vite": "^8.1.4"
   }
 }

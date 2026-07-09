@@ -153,7 +153,7 @@ def test_proof_run_passes_mcp_scaffold_structurally(tmp_path):
     for rel, contents in files.items():
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(contents)
+        dst.write_text(contents, encoding="utf-8")
     res = proof_run(
         tmp_path,
         checklist=file_checklist("mcp"),

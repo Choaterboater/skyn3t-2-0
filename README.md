@@ -101,11 +101,15 @@ answer. Token-gated one-command execution is the next slice.
 ## Quickstart
 
 ```bash
-# 1. Create and activate a virtualenv (Python 3.11+).
+# 1. Create a virtualenv (Python 3.11+).
 python -m venv .venv
-source .venv/bin/activate
+```
 
-# 2. Install the package (dev extras for tests; add web,visual for the dashboard).
+Activate it with `source .venv/bin/activate` on macOS/Linux or
+`.venv\Scripts\Activate.ps1` in Windows PowerShell, then continue:
+
+```bash
+# 2. Install the package (dev extras include the complete test environment).
 pip install -e ".[dev]"
 
 # 3. Check readiness — what works offline vs. what needs keys.
@@ -119,9 +123,11 @@ skyn3t project list
 skyn3t deploy <slug>
 ```
 
-The build lands in `../Projects/<slug>/` (sibling of the repo). Add API keys to
-`.env` (see `.env.example`) to unlock real LLM backends; without them SkyN3t uses
-a deterministic stub so the whole pipeline still runs.
+From a source checkout, the build lands in `../Projects/<slug>/` (sibling of
+the repo). A wheel install keeps its writable data, logs, configuration, and
+projects under `~/.skyn3t/` instead of writing into `site-packages`. Add API
+keys to `.env` (see `.env.example`) to unlock real LLM backends; without them
+SkyN3t uses a deterministic stub so the whole pipeline still runs.
 
 ### The Foundry — web control plane
 
@@ -208,3 +214,9 @@ flowchart TD
 - [docs/INDEX.md](docs/INDEX.md) — full docs index · older session ledgers live in [docs/archive/](docs/archive/)
 
 Current state and the offline-vs-keys breakdown live in [STATUS.md](STATUS.md).
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -152,7 +152,7 @@ def test_finance_scaffold_own_proof_passes():
         for rel, contents in files.items():
             dst = root / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(contents)
+            dst.write_text(contents, encoding="utf-8")
         proc = subprocess.run(
             [sys.executable, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
              "-o", "addopts=", "test_main.py"],
@@ -174,7 +174,7 @@ def test_proof_run_passes_the_variant_cleanly(tmp_path):
     for rel, contents in files.items():
         dst = tmp_path / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(contents)
+        dst.write_text(contents, encoding="utf-8")
     res = proof_run(tmp_path, checklist=file_checklist("fastapi"), stack="fastapi",
                     run_tests=True, enable_mock_llm=False)
     assert res.passed, res.to_dict()

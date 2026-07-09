@@ -4,14 +4,15 @@ Live swarm / pipeline / brain visualization for SkyN3t 2.0.
 
 Stack: **Vite + React 18 + Tailwind CSS + @tanstack/react-query + react-router-dom + three / @react-three/fiber**.
 
-This directory contains **source only** — there is no `node_modules/` and no build
-output committed. You build it once and the backend serves the static `dist/`.
+The production `dist/` is committed and included in Python wheels so an
+installed control plane has a working dashboard without Node. Rebuild it after
+changing UI source; `node_modules/` remains local and ignored.
 
 ## Build
 
 ```bash
 cd skyn3t/web/ui
-npm install        # fetches deps into node_modules/
+npm ci             # reproduce the locked dependency graph
 npm run build      # emits a production bundle into ./dist
 ```
 
@@ -29,6 +30,13 @@ non-default host with:
 
 ```bash
 SKYN3T_API=http://127.0.0.1:6660 npm run dev
+```
+
+In PowerShell:
+
+```powershell
+$env:SKYN3T_API="http://127.0.0.1:6660"
+npm run dev
 ```
 
 ## Endpoints consumed

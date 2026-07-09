@@ -148,7 +148,7 @@ def load_local_asset_pack(path: str | Path) -> list[AssetItem]:
                 tags=_as_tags(entry.get("tags")),
                 license=str(entry.get("license") or data.get("license") or ""),
                 credit=str(entry.get("credit") or data.get("credit") or ""),
-                source_path=str(source_path),
+                source_path=source_path.as_posix(),
                 fps=int(entry.get("fps") or 0),
                 loop=bool(entry.get("loop", True)),
                 frame_width=int(entry.get("frame_width") or 0),
@@ -187,7 +187,9 @@ def _discover_asset_pack_roots(
         root = Path(base)
         if not root.is_dir():
             continue
-        pack_roots = sorted(p for p in root.iterdir() if p.is_dir() and "kenney" in p.name.lower())
+        pack_roots: list[str | Path] = sorted(
+            p for p in root.iterdir() if p.is_dir() and "kenney" in p.name.lower()
+        )
         if not pack_roots and "kenney" in root.name.lower():
             pack_roots = [root]
         try:

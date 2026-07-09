@@ -172,7 +172,8 @@ export default function Activity({ stream }) {
               {mode === "replay" ? "replay" : "live"}
             </Pill>
             <input
-              className="field w-64"
+              className="field w-full sm:w-64"
+              aria-label="Filter activity events"
               placeholder="filter type, source, correlation…"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
@@ -251,7 +252,7 @@ export default function Activity({ stream }) {
           </button>
         </div>
         {replayError ? (
-          <div className="border-t border-hairline px-4 py-2 font-mono text-xs text-ember">
+          <div role="alert" className="border-t border-hairline px-4 py-2 font-mono text-xs text-ember">
             {replayError}
           </div>
         ) : null}
@@ -280,7 +281,7 @@ export default function Activity({ stream }) {
                   <tr
                     key={eventKey(e, i)}
                     onClick={() => setSelected(e)}
-                    className="cursor-pointer border-b border-hairline/60 transition-colors hover:bg-void/40"
+                    className={"cursor-pointer border-b border-hairline/60 transition-colors hover:bg-void/40 " + (selected === e ? "bg-void/60" : "")}
                   >
                     <td className="whitespace-nowrap px-4 py-1.5 text-ash/70">
                       {fmtTime(e.timestamp)}
@@ -288,8 +289,15 @@ export default function Activity({ stream }) {
                     <td className={`px-4 py-1.5 ${TYPE_COLOR(e.type)}`}>
                       {e.type}
                     </td>
-                    <td className="max-w-[420px] truncate px-4 py-1.5 font-sans text-xs text-bone">
-                      {eventSummary(e)}
+                    <td className="max-w-[420px] px-4 py-1.5 font-sans text-xs text-bone">
+                      <button
+                        type="button"
+                        className="block w-full truncate text-left"
+                        aria-pressed={selected === e}
+                        onClick={() => setSelected(e)}
+                      >
+                        {eventSummary(e)}
+                      </button>
                     </td>
                     <td className="px-4 py-1.5 text-ash">{e.source}</td>
                     <td className="max-w-[180px] truncate px-4 py-1.5 text-ash/70">

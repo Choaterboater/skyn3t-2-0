@@ -96,6 +96,54 @@ def test_product_audit_excludes_local_agent_worktrees(tmp_path: Path) -> None:
     assert not any(item.startswith(".claude/") for item in evidence)
 
 
+def test_product_audit_counts_tests_and_excludes_build_outputs(tmp_path: Path) -> None:
+    from skyn3t.audit import run_product_audit
+    from skyn3t.audit.agents import AuditContext
+
+    repo = _fixture_repo(tmp_path / "repo")
+    generated = repo / "build" / "lib" / "skyn3t"
+    generated.mkdir(parents=True)
+    (generated / "stale.py").write_text("# TODO: generated copy\n", encoding="utf-8")
+    release_copy = repo / ".release_verify_wheel" / "unpack" / "skyn3t"
+    release_copy.mkdir(parents=True)
+    (release_copy / "stale.py").write_text(
+        "# TODO: unpacked release copy\n", encoding="utf-8"
+    )
+    installed_copy = repo / "logs" / "installed-wheel" / "skyn3t"
+    installed_copy.mkdir(parents=True)
+    (installed_copy / "stale.py").write_text(
+        "# TODO: installed validation copy\n", encoding="utf-8"
+    )
+
+    ctx = AuditContext(repo_root=repo)
+    assert ctx.rel(repo / "tests" / "test_runner.py") == "tests/test_runner.py"
+
+    report = run_product_audit(repo_root=repo, include_tests=True, max_findings=20, use_llm=False)
+    repo_review = next(section for section in report.sections if section.title == "Repo Review")
+
+    assert repo_review.metrics["code_files"] == 3
+    assert repo_review.metrics["source_files"] == 2
+    assert repo_review.metrics["test_files"] == 1
+    assert not any(
+        item.startswith(("build/", ".release_verify_", "logs/"))
+        for finding in repo_review.findings
+        for item in finding.evidence
+    )
+
+
+def test_product_audit_does_not_skip_checkout_under_build_ancestor(tmp_path: Path) -> None:
+    from skyn3t.audit.agents import AuditContext
+
+    repo = _fixture_repo(tmp_path / "build" / "repo")
+    files = AuditContext(repo_root=repo).iter_files({".py"})
+
+    assert {path.relative_to(repo).as_posix() for path in files} == {
+        "skyn3t/agents/reviewer.py",
+        "skyn3t/studio/runner.py",
+        "tests/test_runner.py",
+    }
+
+
 def test_audit_product_cli_writes_explicit_report_paths(monkeypatch, tmp_path: Path) -> None:
     from skyn3t.config import settings as settings_mod
     from skyn3t.config.settings import REPO_ROOT

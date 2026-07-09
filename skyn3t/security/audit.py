@@ -134,7 +134,11 @@ class AuditLog:
         """Return True if the hash chain is intact (no tampering detected)."""
         prev = _GENESIS
         for rec in self.read():
-            body = {k: rec[k] for k in ("ts", "action", "actor", "outcome", "detail", "pid") if k in rec}
+            body: dict[str, Any] = {
+                key: rec[key]
+                for key in ("ts", "action", "actor", "outcome", "detail", "pid")
+                if key in rec
+            }
             expected = _hash_record(prev, body)
             if rec.get("prev") != prev or rec.get("hash") != expected:
                 return False

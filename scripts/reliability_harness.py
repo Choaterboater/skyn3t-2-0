@@ -14,12 +14,17 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DB = REPO / "data" / "skyn3t.db"
-SKYN3T = REPO / ".venv" / "bin" / "skyn3t"
+
+
+def skyn3t_command(*args: str) -> list[str]:
+    """Build a cross-platform CLI command using the active interpreter."""
+    return [sys.executable, "-m", "skyn3t.cli.main", *args]
 
 
 def _verdict_for(slug: str):
@@ -52,7 +57,9 @@ def run(args) -> None:
         t0 = time.time()
         try:
             subprocess.run(
-                [str(SKYN3T), "studio", "build", brief, "--stack", args.stack, "--slug", slug],
+                skyn3t_command(
+                    "studio", "build", brief, "--stack", args.stack, "--slug", slug
+                ),
                 cwd=str(REPO), timeout=args.timeout, capture_output=True, text=True)
         except subprocess.TimeoutExpired:
             print(f"  {slug}: TIMEOUT after {args.timeout}s", flush=True)

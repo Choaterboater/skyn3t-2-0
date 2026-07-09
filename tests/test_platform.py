@@ -4,6 +4,7 @@ self_healing). No network, no heavy deps required."""
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
@@ -138,7 +139,9 @@ def test_sandbox_subprocess_fallback_warns():
     if runner.docker_available():
         pytest.skip("docker present; fallback path not exercised")
     with pytest.warns(RuntimeWarning):
-        result = asyncio.run(runner.run(["echo", "hi"], timeout=10))
+        result = asyncio.run(
+            runner.run([sys.executable, "-c", "print('hi')"], timeout=10)
+        )
     assert "hi" in result.stdout
     assert result.warning is not None
 

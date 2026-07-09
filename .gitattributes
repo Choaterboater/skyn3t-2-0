@@ -1,0 +1,3 @@
+# Vite output embeds upstream GLSL template strings whose trailing spaces are
+# part of the generated artifact. Keep normal whitespace checks on source files.
+skyn3t/web/ui/dist/** -whitespace

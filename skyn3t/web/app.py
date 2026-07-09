@@ -43,6 +43,23 @@ except Exception as exc:  # noqa: BLE001
 # Directory that holds the built single-page app, if any.
 UI_DIST_DIR = Path(__file__).resolve().parent / "ui" / "dist"
 
+_CONTROL_PLANE_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'self'; "
+        # React and react-three-fiber set a small number of runtime style props
+        # (including the WebGL canvas dimensions). Scripts remain self-only.
+        "frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; "
+        "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+        "frame-src 'self' http://127.0.0.1:* http://localhost:*"
+    ),
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "X-Permitted-Cross-Domain-Policies": "none",
+}
+
 _MINIMAL_PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -115,6 +132,16 @@ def create_app(
         state = AppState(settings=settings, **state_kwargs)
 
     app = FastAPI(title=f"{settings.app_name} Control Plane", version=settings.version)
+
+    @app.middleware("http")
+    async def _security_headers(request: Any, call_next: Any) -> Any:
+        response = await call_next(request)
+        for name, value in _CONTROL_PLANE_SECURITY_HEADERS.items():
+            # Generated-project routes set a stricter sandbox CSP and their own
+            # cross-origin isolation policy. Never weaken those responses.
+            if name not in response.headers:
+                response.headers[name] = value
+        return response
 
     # The EventBus -> WebSocket bridge.
     hub = ConnectionHub(state.event_bus)

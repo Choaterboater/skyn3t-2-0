@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
+import { latestBuildEvents } from "../buildSignals.js";
 import { Panel, PanelHead, Empty } from "./ui.jsx";
 
 // The signature of the Foundry: the VERIFY LADDER. skyn3t doesn't just emit
@@ -39,26 +40,60 @@ function useGateHeat(events) {
   return useMemo(() => {
     const running = new Set();
     const passed = new Set();
-    for (const e of events || []) {
-      const tag = `${e.type || ""} ${e.source || ""}`.toLowerCase();
+    const failed = new Set();
+    let sealed = false;
+
+    for (const e of latestBuildEvents(events)) {
+      const payload = e.payload || {};
+      if (e.type === "build.completed") {
+        const verdict = String(payload.verdict || payload.status || "").toLowerCase();
+        sealed = ["go", "completed", "applied"].includes(verdict);
+      } else if (e.type === "build.failed") {
+        sealed = false;
+      }
+
+      const tag = [
+        e.type,
+        e.source,
+        payload.stage,
+        payload.gate,
+        payload.capability,
+      ].join(" ").toLowerCase();
       for (const gate of Object.keys(GATE_META)) {
         if (!tag.includes(gate)) continue;
-        if (/(start|run|forg)/.test(tag) && !/(done|complete|pass|fail|ok|kept)/.test(tag)) {
+        const starting =
+          /(start|run|forg)/.test(tag) &&
+          !/(done|complete|pass|fail|ok|kept)/.test(tag);
+        const completing = /(done|complete|pass|fail|ok|kept)/.test(tag);
+        const status = String(payload.status || payload.verdict || "").toLowerCase();
+        const gateFailed =
+          payload.passed === false ||
+          ["failed", "no_go", "completed_no_go", "rejected"].includes(status);
+
+        if (starting) {
           running.add(gate);
           passed.delete(gate);
-        } else if (/(done|complete|pass|ok|kept)/.test(tag)) {
-          passed.add(gate);
+          failed.delete(gate);
+        } else if (completing) {
           running.delete(gate);
+          if (gateFailed) {
+            passed.delete(gate);
+            failed.add(gate);
+          } else {
+            failed.delete(gate);
+            passed.add(gate);
+          }
         }
       }
     }
-    return { running, passed, live: running.size > 0 };
+    return { running, passed, failed, live: running.size > 0, sealed };
   }, [events]);
 }
 
 function stationState(gate, enabled, heat) {
   if (heat.running.has(gate)) return "forging";
   if (heat.passed.has(gate)) return "proven";
+  if (heat.failed.has(gate)) return "failed";
   if (enabled === false) return "off";
   return "armed";
 }
@@ -66,6 +101,7 @@ function stationState(gate, enabled, heat) {
 const STATE_STYLES = {
   forging: { node: "border-ember bg-ember/15 text-ember shadow-ember animate-forgepulse", label: "text-ember", tag: "text-ember" },
   proven: { node: "border-plasma/60 bg-plasma/10 text-plasma shadow-plasma", label: "text-plasma", tag: "text-plasma/80" },
+  failed: { node: "border-ember/70 bg-ember/10 text-ember", label: "text-ember", tag: "text-ember/80" },
   armed: { node: "border-hairline bg-void/70 text-ash", label: "text-bone", tag: "text-ash" },
   off: { node: "border-dashed border-hairline bg-transparent text-ash/40", label: "text-ash/50", tag: "text-ash/40" },
 };
@@ -107,8 +143,11 @@ export default function GateLadder({ stream }) {
   const armed = gates.filter((g) => g.enabled !== false).length;
   const forging = heat.running.size;
   const proven = gates.filter((g) => heat.passed.has(g.gate)).length;
-  const sealed = proven > 0 && forging === 0;
-  const railCls = `forge-rail ${heat.live ? "is-live" : sealed ? "is-proven" : "is-cold"}`;
+  const failed = gates.filter((g) => heat.failed.has(g.gate)).length;
+  const sealed = heat.sealed;
+  const railCls =
+    "forge-rail " +
+    (heat.live ? "is-live" : failed ? "is-failed" : sealed ? "is-proven" : "is-cold");
 
   return (
     <Panel glow={heat.live} className="mb-6 overflow-hidden">
@@ -118,8 +157,13 @@ export default function GateLadder({ stream }) {
           <span className="font-mono text-[11px]">
             {forging ? (
               <span className="text-ember">forging · {forging} gate{forging > 1 ? "s" : ""} hot</span>
+            ) : failed ? (
+              <span className="text-ember">{failed} gate{failed > 1 ? "s" : ""} failed</span>
             ) : sealed ? (
-              <span className="text-plasma">{proven} cleared</span>
+              <span className="text-plasma">
+                {"build proven" +
+                  (proven ? " · " + proven + " gate" + (proven > 1 ? "s" : "") + " cleared" : "")}
+              </span>
             ) : (
               <span className="text-ash">{armed} gates armed</span>
             )}

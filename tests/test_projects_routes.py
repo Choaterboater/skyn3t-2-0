@@ -17,6 +17,7 @@ def _state(tmp_path, builds=None):
     return SimpleNamespace(
         settings=SimpleNamespace(projects_dir=projects),
         builds=builds or {},
+        preview_signing_key=b"p" * 32,
     )
 
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
+import { agentActivity, agentIsBusy, agentLastEvent } from "../agentSignals.js";
 import { PageHeader, Panel, PanelHead, Stat, Empty, Pill } from "../components/ui.jsx";
 
 // Status -> heat. Busy/running flares ember; ready/healthy cools to plasma;
@@ -19,16 +20,14 @@ export default function Agents({ stream }) {
     queryFn: queryFn("/agents"),
   });
 
-  // Track recent per-agent activity from the live stream.
-  const lastBySource = {};
-  (stream?.events || []).forEach((e) => {
-    if (e.source) lastBySource[e.source] = e.type;
-  });
+  const activity = agentActivity(stream?.events || []);
 
   const agents = Array.isArray(data) ? data : data?.agents || [];
 
-  const forging = agents.filter((a) => statusHeat(a.status) === "ember").length;
-  const ready = agents.filter((a) => statusHeat(a.status) === "plasma").length;
+  const forging = agents.filter((agent) => agentIsBusy(agent, activity)).length;
+  const ready = agents.filter(
+    (agent) => !agentIsBusy(agent, activity) && statusHeat(agent.status) === "plasma",
+  ).length;
 
   return (
     <div>
@@ -82,9 +81,9 @@ export default function Agents({ stream }) {
           <div className="grid grid-cols-1 gap-px bg-hairline/40 sm:grid-cols-2 lg:grid-cols-3">
             {agents.map((a) => {
               const status = a.status || "idle";
-              const heat = statusHeat(status);
-              const hot = heat === "ember";
-              const last = lastBySource[a.name];
+              const hot = agentIsBusy(a, activity) || statusHeat(status) === "ember";
+              const heat = hot ? "ember" : statusHeat(status);
+              const last = agentLastEvent(a, activity);
               return (
                 <div
                   key={a.name}

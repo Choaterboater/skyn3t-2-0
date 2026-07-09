@@ -44,6 +44,8 @@ def confined_path(root: Path | str, rel: str) -> Path | None:
     (symlink-safe), else ``None``. The shared guard for agent file-write paths —
     even hardcoded rel paths can escape a GENERATED tree through a symlinked
     subdirectory. Same idiom as proof_run._confine / code_improver._confined."""
+    if "\x00" in rel:
+        return None
     try:
         base = Path(root).resolve()
         target = (base / rel).resolve()

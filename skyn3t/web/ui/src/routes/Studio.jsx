@@ -998,6 +998,7 @@ export default function Studio({ stream }) {
                 ref={briefRef}
                 className="field flex-1"
                 placeholder="Describe the app to build…"
+                aria-label="App brief"
                 value={brief}
                 onChange={(e) => setBrief(e.target.value)}
               />
@@ -1007,6 +1008,7 @@ export default function Studio({ stream }) {
                 ref={fileInputRef}
                 type="file"
                 accept="image/*"
+                aria-label="Reference image"
                 className="hidden"
                 onChange={(e) => onPickImage(e.target.files?.[0])}
               />
@@ -1014,7 +1016,7 @@ export default function Studio({ stream }) {
                 <div className="flex items-center gap-2 rounded border border-hairline px-2 py-1">
                   <img
                     src={refImage.url}
-                    alt="reference"
+                    alt={"Reference preview: " + refImage.name}
                     className="h-9 w-9 rounded object-cover"
                   />
                   <span className="max-w-[8rem] truncate font-mono text-[11px] text-ash">
@@ -1023,6 +1025,7 @@ export default function Studio({ stream }) {
                   <button
                     type="button"
                     onClick={clearImage}
+                    aria-label="Remove reference image"
                     title="Remove reference image"
                     className="text-ash hover:text-ember"
                   >
@@ -1083,6 +1086,7 @@ export default function Studio({ stream }) {
                   <input
                     type="text"
                     list="studio-models"
+                    aria-label="Manual model override"
                     value={modelOverride}
                     onChange={(e) => setModelOverride(e.target.value)}
                     placeholder="openrouter model (optional)"
@@ -1120,12 +1124,14 @@ export default function Studio({ stream }) {
                       <div className="flex flex-wrap items-center gap-2">
                         <input
                           type="text"
+                          aria-label="Filter model catalog"
                           value={modelCatalogQuery}
                           onChange={(e) => setModelCatalogQuery(e.target.value)}
                           placeholder="filter model id (e.g. qwen, deepseek, openai/)"
                           className="field min-w-[12rem] flex-1"
                         />
                         <select
+                          aria-label="Model catalog sort field"
                           value={modelCatalogSort}
                           onChange={(e) => setModelCatalogSort(e.target.value)}
                           className="field max-w-[8.5rem]"
@@ -1136,6 +1142,7 @@ export default function Studio({ stream }) {
                           <option value="price">sort price</option>
                         </select>
                         <select
+                          aria-label="Model catalog sort order"
                           value={modelCatalogOrder}
                           onChange={(e) => setModelCatalogOrder(e.target.value)}
                           className="field max-w-[7.5rem]"

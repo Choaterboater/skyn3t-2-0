@@ -251,6 +251,7 @@ function ImprovePane({ slug, stream, cids = new Set(), onDispatched }) {
       <div className="border-b border-hairline px-4 py-3">
         <textarea
           value={goal}
+          aria-label={"Improvement goal for " + (slug || "selected project")}
           onChange={(e) => setGoal(e.target.value)}
           placeholder="Describe what to add or change, in plain English…"
           rows={3}
@@ -353,9 +354,10 @@ export default function Workspace({ stream }) {
         sub="Run a delivered app and refine it in place — serve on the left, improve on the right."
         actions={
           <select
+            aria-label="Workspace project"
             value={slug}
             onChange={(e) => pick(e.target.value)}
-            className="rounded border border-hairline bg-ink/60 px-3 py-1.5 font-mono text-xs text-bone focus:border-ember focus:outline-none"
+            className="max-w-full rounded border border-hairline bg-ink/60 px-3 py-1.5 font-mono text-xs text-bone focus:border-ember focus:outline-none"
           >
             <option value="">Select a project…</option>
             {projects.map((p) => (

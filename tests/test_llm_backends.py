@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from skyn3t.adapters import llm as llm_mod
-from skyn3t.adapters.llm import LLMClient, LLMResult, _strip_code_fences
+from skyn3t.adapters.llm import BudgetExceeded, LLMClient, LLMResult, _strip_code_fences
 from skyn3t.config.settings import Settings
 from skyn3t.core.model_router import _FREE_DEFAULTS, Tier
 
@@ -109,15 +111,97 @@ def test_budget_tracker_persists_daily_usage_across_clients(tmp_path):
         daily_token_cap=10_000,
     )
     first = LLMClient(settings)
+    second = LLMClient(settings)
     first.budget.record(LLMResult(
         text="ok", model="m", backend="openrouter",
         prompt_tokens=100, completion_tokens=50, cost_usd=0.25,
     ))
+    second.budget.record(LLMResult(
+        text="ok", model="m", backend="openrouter",
+        prompt_tokens=100, completion_tokens=50, cost_usd=0.25,
+    ))
 
-    second = LLMClient(settings)
+    restored = LLMClient(settings)
+    assert round(restored.budget.spent_day, 4) == 0.5
+    assert restored.budget.tokens_day == 300
 
-    assert round(second.budget.spent_day, 4) == 0.25
-    assert second.budget.tokens_day == 150
+
+async def test_complete_preflights_persisted_budget_before_dispatch(tmp_path, monkeypatch):
+    settings = Settings(
+        llm_backend="stub",
+        data_dir=tmp_path,
+        per_build_usd_cap=10.0,
+        daily_usd_cap=0.1,
+        daily_token_cap=10_000,
+    )
+    client = LLMClient(settings)
+    client.budget.spent_day = 0.2
+    client.budget._save_ledger()
+    called = False
+
+    def fake_stub(*args, **kwargs):
+        nonlocal called
+        called = True
+        return LLMResult(text="unexpected", model="m", backend="stub")
+
+    monkeypatch.setattr(client, "_stub", fake_stub)
+    with pytest.raises(BudgetExceeded, match="daily cap"):
+        await client.complete("must not dispatch")
+    assert called is False
+
+
+async def test_agentic_build_preflights_persisted_budget(tmp_path, monkeypatch):
+    settings = Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="sk-or-test",
+        free_only=False,
+        data_dir=tmp_path,
+        per_build_usd_cap=10.0,
+        daily_usd_cap=0.1,
+        daily_token_cap=10_000,
+    )
+    client = LLMClient(settings)
+    client.budget.spent_day = 0.2
+    client.budget._save_ledger()
+    called = False
+
+    async def fake_agentic(*args, **kwargs):
+        nonlocal called
+        called = True
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_openrouter_agentic", fake_agentic)
+    result = await client.agentic_build("must not dispatch", str(tmp_path))
+    assert result["ok"] is False
+    assert "daily cap" in result["error"]
+    assert called is False
+
+
+def test_stale_tracker_rollover_preserves_usage_already_recorded_today(tmp_path):
+    settings = Settings(
+        llm_backend="stub",
+        data_dir=tmp_path,
+        per_build_usd_cap=10.0,
+        daily_usd_cap=10.0,
+        daily_token_cap=10_000,
+    )
+    stale = LLMClient(settings)
+    stale.budget.ledger_day = "2000-01-01"
+    stale.budget.spent_day = 9.0
+    stale.budget.tokens_day = 9_000
+
+    current = LLMClient(settings)
+    current.budget.record(LLMResult(
+        text="ok", model="m", backend="stub",
+        prompt_tokens=100, completion_tokens=50, cost_usd=0.25,
+    ))
+
+    stale.budget.check()
+    restored = LLMClient(settings)
+    assert stale.budget.spent_day == pytest.approx(0.25)
+    assert stale.budget.tokens_day == 150
+    assert restored.budget.spent_day == pytest.approx(0.25)
+    assert restored.budget.tokens_day == 150
 
 
 def test_budget_tracker_per_build_zero_disables_build_cap(tmp_path):
@@ -161,6 +245,72 @@ async def test_cli_failure_degrades_to_stub(monkeypatch):
     monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _boom)
     result = await _client("claude_cli").complete("hello", tier=Tier.CHEAP)
     assert result.backend == "stub"  # degraded, never raised
+
+
+async def test_terminate_uses_taskkill_for_windows_process_tree(monkeypatch):
+    calls = []
+
+    class _Killer:
+        async def wait(self):
+            return 0
+
+    class _Proc:
+        pid = 4321
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+    async def _create(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Killer()
+
+    monkeypatch.setattr(llm_mod.sys, "platform", "win32")
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _create)
+    proc = _Proc()
+
+    await LLMClient._terminate(proc)
+
+    assert calls[0][0] == ("taskkill", "/PID", "4321", "/T", "/F")
+    assert proc.killed is False
+
+
+async def test_terminate_falls_back_when_windows_taskkill_fails(monkeypatch):
+    class _Killer:
+        async def wait(self):
+            return 1
+
+    class _Proc:
+        pid = 4321
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+    async def _create(*_args, **_kwargs):
+        return _Killer()
+
+    monkeypatch.setattr(llm_mod.sys, "platform", "win32")
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _create)
+    proc = _Proc()
+
+    await LLMClient._terminate(proc)
+
+    assert proc.killed is True
 
 
 def _install_fake_cli(monkeypatch, captured):

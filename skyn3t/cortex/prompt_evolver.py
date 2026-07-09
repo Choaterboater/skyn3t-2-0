@@ -176,9 +176,14 @@ class PromptEvolver:
         set consumed by ``evolve``. It returns ``None`` when no prompt was
         captured, keeping old builds harmless.
         """
-        raw = manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
-        extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
-        prompts = extra.get("prompts") if isinstance(extra.get("prompts"), list) else []
+        raw_value = (
+            manifest.to_dict() if hasattr(manifest, "to_dict") else dict(manifest or {})
+        )
+        raw: dict[str, Any] = raw_value if isinstance(raw_value, dict) else {}
+        extra_value = raw.get("extra")
+        extra: dict[str, Any] = extra_value if isinstance(extra_value, dict) else {}
+        prompts_value = extra.get("prompts")
+        prompts: list[Any] = prompts_value if isinstance(prompts_value, list) else []
         prompt_row = next(
             (p for p in prompts if isinstance(p, dict) and str(p.get("text") or "").strip()),
             None,
@@ -197,14 +202,17 @@ class PromptEvolver:
     @staticmethod
     def _task_from_manifest(raw: dict[str, Any]) -> dict[str, Any]:
         gaps: list[str] = []
-        stages = raw.get("stages") if isinstance(raw.get("stages"), list) else []
+        stages_value = raw.get("stages")
+        stages: list[Any] = stages_value if isinstance(stages_value, list) else []
         for stage in stages:
             if not isinstance(stage, dict):
                 continue
             summary = stage.get("output_summary")
             if not isinstance(summary, dict):
                 continue
-            gaps.extend(str(g) for g in (summary.get("gaps") or []) if str(g))
+            stage_gaps = summary.get("gaps")
+            if isinstance(stage_gaps, list):
+                gaps.extend(str(g) for g in stage_gaps if str(g))
         return {
             "slug": raw.get("slug"),
             "brief": raw.get("brief"),

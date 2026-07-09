@@ -1,6 +1,7 @@
-import React, { useMemo } from "react";
+import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
+import { agentActivity, agentIsBusy } from "../agentSignals.js";
 import { PageHeader, Panel, PanelHead, Empty } from "../components/ui.jsx";
 import GateLadder from "../components/GateLadder.jsx";
 
@@ -16,22 +17,6 @@ function Telem({ label, value, tone = "bone" }) {
   );
 }
 
-// Derive which agents are "hot" (mid-task) from the live event stream.
-function useHeat(events) {
-  return useMemo(() => {
-    const busy = new Set();
-    const lastSeen = {};
-    for (const e of events || []) {
-      const t = (e.type || "").toLowerCase();
-      const src = e.source || "";
-      lastSeen[src] = e.timestamp || 0;
-      if (t.includes("task.started") || t.includes("stage.started")) busy.add(src);
-      else if (t.includes("completed") || t.includes("failed")) busy.delete(src);
-    }
-    return { busy, lastSeen };
-  }, [events]);
-}
-
 // The signature: the swarm rendered as a heat constellation. Each agent is a
 // node that flares ember while it forges, and cools to plasma when idle.
 function SwarmConstellation({ agents, heat }) {
@@ -40,7 +25,7 @@ function SwarmConstellation({ agents, heat }) {
     <div className="flex flex-wrap gap-2 p-4">
       {agents.map((a) => {
         const name = a.name || a.agent_type || String(a);
-        const hot = heat.busy.has(name);
+        const hot = agentIsBusy(a, heat);
         return (
           <div
             key={name}
@@ -70,12 +55,12 @@ export default function Overview({ stream }) {
   const events = stream?.events || [];
   const health = useQuery({ queryKey: ["health"], queryFn: queryFn("/health") });
   const agentsQ = useQuery({ queryKey: ["agents"], queryFn: queryFn("/agents") });
-  const heat = useHeat(events);
+  const heat = agentActivity(events);
 
   const agents = Array.isArray(agentsQ.data) ? agentsQ.data : agentsQ.data?.agents || [];
   const d = health.data || {};
   const recent = [...events].slice(-9).reverse();
-  const forging = heat.busy.size;
+  const forging = agents.filter((agent) => agentIsBusy(agent, heat)).length;
 
   return (
     <div>

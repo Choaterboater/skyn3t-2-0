@@ -130,7 +130,7 @@ def _inject_loads(sources: list[tuple[Path, str]], keys: list[str]) -> Path | No
             if not am:
                 continue
             recv = am.group("recv")
-            indent = re.match(r"[ \t]*", line).group()
+            indent = line[: len(line) - len(line.lstrip(" \t"))]
             injected = [
                 f"{indent}{recv}.image('{k}', 'assets/sprites/{k}.png');\n"
                 for k in keys

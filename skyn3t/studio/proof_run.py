@@ -354,9 +354,10 @@ def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
                 comp = bool(m.group("default")) or any(n.strip()[:1].isupper() for n in named)
                 ext = (".tsx" if ts else ".jsx") if comp else (".ts" if ts else ".js")
                 stub = base.with_name(base.name + ext)
-            stub = _confine(root, stub)
-            if stub is None or stub in planned or stub.exists():
+            confined_stub = _confine(root, stub)
+            if confined_stub is None or confined_stub in planned or confined_stub.exists():
                 continue
+            stub = confined_stub
             if stub.suffix in _STYLESHEET_EXTS:
                 content = _STYLESHEET_STUB_CONTENT
             else:
@@ -366,7 +367,7 @@ def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
                 stub.parent.mkdir(parents=True, exist_ok=True)
                 stub.write_text(content, encoding="utf-8")
                 planned.add(stub)
-                written.append(str(stub.relative_to(root)))
+                written.append(stub.relative_to(root).as_posix())
             except OSError:
                 continue
         # Bare/side-effect imports (`import './x.css';`, no `from`) — invisible
@@ -384,16 +385,17 @@ def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
                 stub = base
             else:
                 stub = base.with_name(base.name + (".ts" if ts else ".js"))
-            stub = _confine(root, stub)
-            if stub is None or stub in planned or stub.exists():
+            confined_stub = _confine(root, stub)
+            if confined_stub is None or confined_stub in planned or confined_stub.exists():
                 continue
+            stub = confined_stub
             content = (_STYLESHEET_STUB_CONTENT if stub.suffix in _STYLESHEET_EXTS
                       else _make_import_stub(spec, None, None, [], stack=stack))
             try:
                 stub.parent.mkdir(parents=True, exist_ok=True)
                 stub.write_text(content, encoding="utf-8")
                 planned.add(stub)
-                written.append(str(stub.relative_to(root)))
+                written.append(stub.relative_to(root).as_posix())
             except OSError:
                 continue
     return written
@@ -800,16 +802,10 @@ def _run_proof_command(
         return _ProofCommandResult(127, "", f"exec failed: {exc}")
 
 
-def _using_sandbox(ctx: _ProofCommandContext | None) -> bool:
-    return bool(ctx is not None and ctx.runner is not None)
-
-
 def _use_container_command_names(ctx: _ProofCommandContext | None) -> bool:
-    if not _using_sandbox(ctx):
+    if ctx is None or ctx.runner is None:
         return False
     runner = ctx.runner
-    if runner is None:
-        return False
     if not hasattr(runner, "docker_available"):
         return True
     backend = str(getattr(getattr(runner, "settings", None), "execution_backend", "") or "")
@@ -1796,7 +1792,7 @@ def add_use_client_directives(root: str | Path) -> list[str]:
             f.write_text('"use client";\n\n' + body.lstrip("﻿"), encoding="utf-8")
         except OSError:
             continue
-        changed.append(str(rel))
+        changed.append(rel.as_posix())
     return changed
 
 
@@ -2022,7 +2018,7 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
                 f.write_text("".join(out), encoding="utf-8")
             except OSError:
                 continue
-            changed.append(str(f.relative_to(root)))
+            changed.append(f.relative_to(root).as_posix())
     return changed
 
 
@@ -2243,7 +2239,7 @@ def reconcile_lucide_icons(root: str | Path) -> list[str]:
                 f.write_text(new_text, encoding="utf-8")
             except OSError:
                 continue
-            changed.append(str(f.relative_to(root)))
+            changed.append(f.relative_to(root).as_posix())
     return changed
 
 

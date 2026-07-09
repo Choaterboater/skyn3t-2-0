@@ -17,6 +17,8 @@ from typing import Any
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.observability.metrics import MetricsRegistry, get_metrics
 
+_MISSING_BUILD_ID = object()
+
 
 @dataclass
 class CostSnapshot:
@@ -56,6 +58,7 @@ class CostTracker:
 
     settings: Settings = field(default_factory=get_settings)
     budget: Any | None = None  # an LLMClient.budget (BudgetTracker)
+    llm: Any | None = None
     metrics: MetricsRegistry = field(default_factory=get_metrics)
     # build_id -> {"cost_usd": float, "tokens": int, "started": float}
     _builds: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -66,9 +69,14 @@ class CostTracker:
 
     @classmethod
     def from_llm(cls, llm: Any, settings: Settings | None = None) -> CostTracker:
-        return cls(settings=settings or get_settings(), budget=getattr(llm, "budget", None))
+        return cls(
+            settings=settings or get_settings(),
+            budget=getattr(llm, "budget", None),
+            llm=llm,
+        )
 
     def attach(self, llm: Any) -> None:
+        self.llm = llm
         self.budget = getattr(llm, "budget", None)
 
     # ---- ingestion -------------------------------------------------------
@@ -94,11 +102,14 @@ class CostTracker:
 
     # ---- build attribution ----------------------------------------------
     def start_build(self, build_id: str) -> None:
-        # Reset the per-build spend counter so the per-build USD cap applies to
-        # THIS build, not cumulatively across a long-lived (web) process.
-        reset = getattr(self.budget, "reset_build", None)
-        if callable(reset):
-            reset()
+        # A BudgetTracker build context is isolated from overlapping builds but
+        # deliberately shared with child asyncio tasks created by this build.
+        begin = getattr(self.budget, "begin_build", None)
+        budget_token = begin(build_id) if callable(begin) else None
+        if budget_token is None:
+            reset = getattr(self.budget, "reset_build", None)
+            if callable(reset):
+                reset()
         # Snapshot the call ledger length at start. Cost is attributed by
         # summing the individual LLM call records appended *after* this point
         # (and not already claimed by another build), so concurrent/overlapping
@@ -106,7 +117,7 @@ class CostTracker:
         base_calls = len(getattr(self.budget, "calls", [])) if self.budget else 0
         self._builds[build_id] = {
             "started": time(), "base_calls": base_calls,
-            "cost_usd": 0.0, "tokens": 0,
+            "cost_usd": 0.0, "tokens": 0, "_budget_token": budget_token,
         }
 
     # ---- per-stage attribution (Spec 2 "wasted tokens") ------------------
@@ -138,6 +149,9 @@ class CostTracker:
         cost = 0.0
         tokens = 0
         for r in calls[base:]:
+            owner = getattr(r, "build_id", _MISSING_BUILD_ID)
+            if owner is not _MISSING_BUILD_ID and owner != build_id:
+                continue
             cost += getattr(r, "cost_usd", 0.0)
             tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
         rec = {"stage": stage, "cost_usd": round(max(0.0, cost), 6), "tokens": max(0, tokens)}
@@ -146,33 +160,51 @@ class CostTracker:
 
     def end_build(self, build_id: str) -> dict[str, Any]:
         self.sync()
-        entry = self._builds.get(build_id)
+        entry = self._builds.pop(build_id, None)
         if entry is None:
             return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0, "stages": []}
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
-        # Attribute only the calls recorded during this build's lifetime that
-        # have not already been claimed by an earlier-finishing overlapping
-        # build. Each call is owned by exactly one build.
+        # BudgetTracker records carry an owning build id, so completion order
+        # cannot make one overlapping build steal another's calls. Untagged
+        # records retain the legacy first-claimer behavior for fake/old budgets.
         cost = 0.0
         tokens = 0
         for r in calls[entry["base_calls"]:]:
-            rid = id(r)
-            if rid in self._claimed_call_ids:
-                continue
-            self._claimed_call_ids.add(rid)
+            owner = getattr(r, "build_id", _MISSING_BUILD_ID)
+            if owner is not _MISSING_BUILD_ID:
+                if owner != build_id:
+                    continue
+            else:
+                rid = id(r)
+                if rid in self._claimed_call_ids:
+                    continue
+                self._claimed_call_ids.add(rid)
             cost += getattr(r, "cost_usd", 0.0)
             tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
         entry["cost_usd"] = round(max(0.0, cost), 6)
         entry["tokens"] = max(0, tokens)
         entry["duration_s"] = round(time() - entry["started"], 3)
+        token = entry.pop("_budget_token", None)
+        finish = getattr(self.budget, "end_build", None)
+        if token is not None and callable(finish):
+            finish(token)
         return {"build_id": build_id, "stages": list(entry.get("stages", [])),
                 **{k: entry[k] for k in ("cost_usd", "tokens", "duration_s")}}
+
+    def close_build(self, build_id: str) -> None:
+        """Release a build context after a failed/cancelled runner exit."""
+        if build_id in self._builds:
+            self.end_build(build_id)
 
     # ---- snapshot --------------------------------------------------------
     def snapshot(self) -> CostSnapshot:
         b = self.budget
+        current_spend = getattr(b, "current_build_spend", None) if b else None
         return CostSnapshot(
-            spent_build_usd=getattr(b, "spent_build", 0.0) if b else 0.0,
+            spent_build_usd=(
+                current_spend() if callable(current_spend)
+                else getattr(b, "spent_build", 0.0) if b else 0.0
+            ),
             spent_day_usd=getattr(b, "spent_day", 0.0) if b else 0.0,
             tokens_day=getattr(b, "tokens_day", 0) if b else 0,
             daily_cap_usd=self.settings.daily_usd_cap,

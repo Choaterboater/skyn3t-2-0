@@ -224,15 +224,20 @@ def _design_from_llm(data, floor: GameDesign) -> GameDesign | None:
         return None
     # If the model contributed NOTHING usable, fall back to the floor entirely (don't
     # synthesize a floor-valued design that merely differs by open_ended).
-    _has_str = any(
-        isinstance(data.get(k), str) and data.get(k).strip()
-        for k in ("core_loop", "win", "lose", "progression", "economy")
-    )
-    _has_list = any(
-        isinstance(data.get(k), list)
-        and any(isinstance(x, str) and x.strip() for x in data.get(k))
-        for k in ("mechanics", "powerups", "variety")
-    )
+    _has_str = False
+    for key in ("core_loop", "win", "lose", "progression", "economy"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            _has_str = True
+            break
+    _has_list = False
+    for key in ("mechanics", "powerups", "variety"):
+        value = data.get(key)
+        if isinstance(value, list) and any(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            _has_list = True
+            break
     if not (_has_str or _has_list):
         return None
     # Genre flows into the codegen directive text -> whitelist like role keys.

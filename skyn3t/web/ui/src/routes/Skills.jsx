@@ -120,6 +120,7 @@ export default function Skills() {
         <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
           <input
             className="field"
+            aria-label="Agent catalog path"
             placeholder="/path/to/agents-or-skills"
             value={catalogPath}
             onChange={(event) => setCatalogPath(event.target.value)}
@@ -210,7 +211,7 @@ export default function Skills() {
                 className="panel flex flex-col gap-3 border-hairline bg-void/40 p-4 transition-all duration-300 hover:border-plasma/40"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <h3 className="font-display text-base font-bold tracking-tight text-bone">
+                  <h3 className="font-display text-base font-bold text-bone">
                     {s.name}
                   </h3>
                   {s.score != null ? (

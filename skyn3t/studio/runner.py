@@ -1096,7 +1096,7 @@ class StudioRunner:
             verdict = "no_go"
             final_score = self._clamp_score_to_verdict(final_score, verdict)
             manifest.score = final_score
-            reasons = []
+            reasons: list[str] = []
             if finance.get("ok") is False:
                 reasons.extend(str(issue) for issue in finance.get("issues", [])[:3])
             if workflow.get("ok") is False:
@@ -3182,6 +3182,27 @@ class StudioRunner:
         slug: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> BuildOutcome:
+        # Establish identity and budget ownership before stack selection or any
+        # other delegated work can spend. Copy the caller's mapping so injecting
+        # an id does not mutate a request object that may be reused elsewhere.
+        build_extra = dict(extra or {})
+        if not build_extra.get("build_id"):
+            build_extra["build_id"] = uuid.uuid4().hex
+        build_id = str(build_extra["build_id"])
+        self._obs_call(self.cost_tracker, "start_build", build_id)
+        try:
+            return await self._start_build(brief, slug=slug, extra=build_extra)
+        finally:
+            # _start_build ends successful builds when it captures their report.
+            # Every earlier failure and cancellation still closes here.
+            self._obs_call(self.cost_tracker, "close_build", build_id)
+
+    async def _start_build(
+        self,
+        brief: str,
+        slug: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> BuildOutcome:
         extra = extra or {}
         # Always slugify: a caller-supplied slug (e.g. the web API) must not pass
         # through verbatim, or a value like "../../evil" would traverse out of
@@ -3202,6 +3223,11 @@ class StudioRunner:
         # "smart" Claude-picks-the-stack path never ran. Best-effort: if the
         # client can't be built, select_stack degrades to the keyword fallback.
         sel_llm = getattr(self, "_sel_llm", None)
+        if sel_llm is None:
+            # The observability wiring already received the process's shared
+            # LLMClient. Reusing it keeps selector spend in this build's call
+            # ledger instead of hiding it in a second private tracker.
+            sel_llm = getattr(self.cost_tracker, "llm", None)
         if sel_llm is None:
             try:
                 from skyn3t.adapters.llm import LLMClient
@@ -3318,8 +3344,8 @@ class StudioRunner:
         # blocks/crashes the build (design rule #6) — assets are best-effort.
         extra = await self._generate_assets(main_wt.dir, brief, manifest, extra, stack=plan.stack)
 
-        # Observability + budget guard for this build (all best-effort).
-        self._obs_call(self.cost_tracker, "start_build", build_id)
+        # Budget guard wiring for this build (all best-effort). Cost tracking
+        # already began in start(), before selector/planner/asset delegation.
         self._obs_call(self.budget_guard, "reset")
         self._obs_call(self.budget_guard, "attach", self.event_bus)
         self._guard_check("build")
@@ -3434,7 +3460,7 @@ class StudioRunner:
                     record.error = result.error
                     record.agent_name = result.agent_name
                     record.output_summary = {"error": result.error}
-                    failed = {"error": result.error}
+                    failed: dict[str, Any] = {"error": result.error}
                     if spec.agent_type == "code":
                         failed["backend"] = "failed"
                         failed["degraded"] = True

@@ -39,6 +39,8 @@ from skyn3t.studio.visual_check import (
     _vision_locate_with_retry,
 )
 
+DriveResult = list[str] | dict[str, Any]
+
 # Where the build-time art tier writes generated role sprites (see game-art-tier #6).
 _SPRITE_DIR = "public/assets/sprites"
 _MAX_CONSOLE_ERRORS = 8
@@ -441,14 +443,15 @@ async def qa_playtest(
     *,
     settings: Any,
     app_runner: Any | None = None,
-    drive_fn: Callable[[str], list[str]] | None = None,
+    drive_fn: Callable[[str], DriveResult] | None = None,
 ) -> QaPlaytestVerdict:
     """Serve the built game, DRIVE every control with a browser, and fail on any uncaught
     console/page error; also verify generated sprites are actually rendered. ADVISORY:
     the returned verdict's ``gaps()`` feed the fix-loop; it NEVER blocks a build. Soft-
     skips (``skipped=True``, no gaps) when Playwright is unavailable or the game won't
-    serve. The browser driver (``drive_fn(url) -> list[str]``) is injected so the logic
-    is testable without a browser; the default is the real Playwright driver. Never
+    serve. The browser driver is injected so the logic is testable without a browser;
+    it may return a legacy error list or a result object containing errors and play-state
+    confirmation. The default is the real Playwright driver. Never
     raises."""
     try:
         if drive_fn is None:
@@ -463,7 +466,11 @@ async def qa_playtest(
             # a click target needs precision a cheap OpenRouter vision model doesn't
             # reliably have — see visual_check.make_click_vision_fn's docstring.
             vision_fn = make_click_vision_fn(settings)
-            drive_fn = functools.partial(_drive_and_collect, vision_fn=vision_fn)
+            driver: Callable[[str], DriveResult] = functools.partial(
+                _drive_and_collect, vision_fn=vision_fn
+            )
+        else:
+            driver = drive_fn
 
         from skyn3t.studio.app_runner import AppRunner, cleanup_serve
 
@@ -478,7 +485,7 @@ async def qa_playtest(
                 return QaPlaytestVerdict(
                     skipped=True, reason="game did not serve a preview")
             try:
-                driven = await asyncio.to_thread(drive_fn, url)
+                driven = await asyncio.to_thread(driver, url)
             except Exception as exc:  # noqa: BLE001 - a driver failure soft-skips
                 return QaPlaytestVerdict(skipped=True, reason=f"drive error: {exc}")
             errors, play_confirmed = _normalize_drive_result(driven)

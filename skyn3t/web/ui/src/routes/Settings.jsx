@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, queryFn, apiPost } from "../api.js";
+import { apiFetch, queryFn, apiPost, saveAuthToken } from "../api.js";
 import {
   PageHeader,
   Panel,
@@ -197,14 +197,13 @@ export default function Settings() {
   }, [secrets.data]);
 
   function saveToken() {
-    if (typeof localStorage !== "undefined") {
-      if (token) localStorage.setItem("skyn3t_token", token);
-      else localStorage.removeItem("skyn3t_token");
-    }
+    const next = token.trim();
+    setToken(next);
+    saveAuthToken(next);
+    void queryClient.invalidateQueries();
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
-
   async function saveKey() {
     try {
       const r = await apiPost("/llm/key", { provider, key });
@@ -515,9 +514,10 @@ export default function Settings() {
                 whole-app builds when it is set.
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                  <div className="min-w-[16rem] flex-1">
+                  <div className="min-w-0 flex-1 sm:min-w-[16rem]">
                     <input
                       type="text"
+                      aria-label="Primary OpenRouter model"
                       list="preferred-models"
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
@@ -579,6 +579,7 @@ export default function Settings() {
             </div>
             <div className="flex flex-wrap gap-2">
               <select
+                aria-label="CLI codegen provider"
                 value={codegenCliProvider}
                 onChange={(e) => setCodegenCliProvider(e.target.value)}
                 className="field max-w-[12rem]"
@@ -592,14 +593,16 @@ export default function Settings() {
               <input
                 type="text"
                 className="field min-w-[10rem] flex-1"
+                aria-label="CLI codegen model"
                 placeholder="CLI codegen model"
                 value={codegenCliModel}
                 onChange={(e) => setCodegenCliModel(e.target.value)}
               />
-              <div className="min-w-[14rem] flex-1">
+              <div className="min-w-0 flex-1 sm:min-w-[14rem]">
                 <input
                   type="text"
                   className="field"
+                  aria-label="OpenRouter codegen model"
                   list="openrouter-codegen-models"
                   value={openrouterCodegenModel}
                   onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
@@ -621,6 +624,7 @@ export default function Settings() {
                   type="text"
                   className="field min-w-0"
                   placeholder={`${tier} model`}
+                  aria-label={tier + " model"}
                   value={modelPins[tier] || ""}
                   onChange={(e) =>
                     setModelPins((prev) => ({ ...prev, [tier]: e.target.value }))
@@ -648,6 +652,7 @@ export default function Settings() {
             </p>
             <div className="flex flex-wrap gap-2">
               <select
+                aria-label="Default app type"
                 value={appTypeOverride}
                 onChange={(e) => setAppTypeOverride(e.target.value)}
                 className="field max-w-[14rem]"
@@ -659,6 +664,7 @@ export default function Settings() {
                 ))}
               </select>
               <select
+                aria-label="Default engine"
                 value={engineOverride}
                 onChange={(e) => setEngineOverride(e.target.value)}
                 className="field max-w-[14rem]"
@@ -703,6 +709,7 @@ export default function Settings() {
             </div>
             <div className="flex flex-wrap gap-2">
               <select
+                aria-label="API key provider"
                 value={provider}
                 onChange={(e) => setProvider(e.target.value)}
                 className="field max-w-[12rem]"
@@ -718,6 +725,8 @@ export default function Settings() {
                 type="password"
                 className="field min-w-[12rem] flex-1"
                 placeholder={`${provider} API key`}
+                aria-label={provider + " API key"}
+                autoComplete="off"
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
               />
@@ -753,6 +762,8 @@ export default function Settings() {
                 type="password"
                 className="field min-w-[12rem] flex-1"
                 placeholder="GitHub token (ghp_… / gho_…)"
+                aria-label="GitHub token"
+                autoComplete="off"
                 value={ghToken}
                 onChange={(e) => setGhToken(e.target.value)}
               />
@@ -796,6 +807,8 @@ export default function Settings() {
                 type="password"
                 className="field min-w-[12rem] flex-1"
                 placeholder="Replicate token (r8_…)"
+                aria-label="Replicate API token"
+                autoComplete="off"
                 value={repToken}
                 onChange={(e) => setRepToken(e.target.value)}
               />
@@ -803,6 +816,7 @@ export default function Settings() {
                 type="text"
                 className="field min-w-[12rem] flex-1"
                 placeholder="model (owner/name) — optional"
+                aria-label="Replicate image model"
                 value={repModel}
                 onChange={(e) => setRepModel(e.target.value)}
               />
@@ -1010,6 +1024,7 @@ export default function Settings() {
             </div>
             <div className="flex flex-wrap gap-2">
               <select
+                aria-label="Messaging channel"
                 value={channel}
                 onChange={(e) => setChannel(e.target.value)}
                 className="field max-w-[10rem]"
@@ -1024,6 +1039,8 @@ export default function Settings() {
                 type="password"
                 className="field min-w-[12rem] flex-1"
                 placeholder={`${channel} token`}
+                aria-label={channel + " token"}
+                autoComplete="off"
                 value={chToken}
                 onChange={(e) => setChToken(e.target.value)}
               />
@@ -1031,6 +1048,7 @@ export default function Settings() {
                 type="text"
                 className="field min-w-[10rem] flex-1"
                 placeholder="target (chat id / channel) — optional"
+                aria-label="Messaging target"
                 value={chTarget}
                 onChange={(e) => setChTarget(e.target.value)}
               />
@@ -1055,6 +1073,8 @@ export default function Settings() {
                 type="password"
                 className="field min-w-[12rem] flex-1"
                 placeholder="auth token"
+                aria-label="Control-plane auth token"
+                autoComplete="off"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
               />
@@ -1071,7 +1091,7 @@ export default function Settings() {
             right={<span className="font-mono text-[11px] text-ash">read-only</span>}
           />
           {error ? (
-            <div className="px-4 py-3 text-sm text-ember">{String(error.message)}</div>
+            <div role="alert" className="px-4 py-3 text-sm text-ember">{String(error.message)}</div>
           ) : flags ? (
             <div>
               {Object.entries(flags).map(([k, v]) => (

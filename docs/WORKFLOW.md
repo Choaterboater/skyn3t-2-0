@@ -33,7 +33,7 @@ When a feature adds a new owner file or concept:
 Run:
 
 ```bash
-python3 scripts/refresh_file_map.py
+python scripts/refresh_file_map.py
 ```
 
 The refresher keeps `docs/FILE_MAP.md` aligned with the repo's current owner map.

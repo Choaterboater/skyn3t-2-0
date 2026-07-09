@@ -32,7 +32,8 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+from typing import cast as type_cast
 
 import typer
 
@@ -55,6 +56,12 @@ app.add_typer(domain_app, name="domain")
 app.add_typer(bench_app, name="bench")
 app.add_typer(cortex_app, name="cortex")
 app.add_typer(audit_app, name="audit")
+
+
+class _RagWithIngestor(Protocol):
+    """RAG runtime augmented with its event-ingestion lifecycle owner."""
+
+    _skyn3t_ingestor: object
 
 
 # ---------------------------------------------------------------------------
@@ -244,9 +251,13 @@ async def _assemble_spine(*, with_memory: bool = True, event_bus: Any | None = N
 
         overrides = load_prompt_overrides(settings.data_dir)
         if overrides:
-            from skyn3t.cortex.handlers import CortexHandlers
+            from skyn3t.cortex.handlers import HandlerRegistry
 
-            handlers = CortexHandlers(settings, agents=orchestrator.agents)
+            handlers = HandlerRegistry(
+                settings=settings,
+                agents=orchestrator.agents,
+                data_dir=settings.data_dir,
+            )
             for target, instruction in overrides.items():
                 handlers._apply_prompt_to_live(target, instruction)
     except Exception:  # noqa: BLE001 - prompt replay must never block startup
@@ -690,7 +701,8 @@ def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any
 
         ingestor = ExperienceIngestor(event_bus, rag_engine=rag)
         ingestor.start()
-        rag._skyn3t_ingestor = ingestor
+        managed_rag = type_cast(_RagWithIngestor, rag)
+        managed_rag._skyn3t_ingestor = ingestor
     except Exception:  # noqa: BLE001
         rag = None
     return learning, patterns, skills, rag

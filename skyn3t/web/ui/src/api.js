@@ -8,14 +8,41 @@ import { useEffect, useRef, useState } from "react";
 // ---------------------------------------------------------------------------
 
 const BASE = "/api";
+const AUTH_TOKEN_STORAGE_KEY = "skyn3t_token";
+const AUTH_TOKEN_EVENT = "skyn3t:auth-token-changed";
+
+function storedAuthToken() {
+  return typeof localStorage !== "undefined"
+    ? localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+    : null;
+}
+
+export function saveAuthToken(token) {
+  const next = String(token || "").trim();
+  if (typeof localStorage !== "undefined") {
+    if (next) localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, next);
+    else localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_TOKEN_EVENT));
+  }
+}
 
 function authHeaders() {
   // Optional bearer token persisted by the Settings page.
-  const token =
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem("skyn3t_token")
-      : null;
+  const token = storedAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function bearerSubprotocol(token) {
+  const bytes = new TextEncoder().encode(String(token || ""));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+  return `skyn3t-bearer.${encoded}`;
 }
 
 export async function apiFetch(path, options = {}) {
@@ -64,35 +91,52 @@ export function useEventStream({ maxEvents = 200 } = {}) {
   const [last, setLast] = useState(null);
   const wsRef = useRef(null);
   const sendQueue = useRef([]);
+  const [authRevision, setAuthRevision] = useState(0);
+
+  useEffect(() => {
+    const refreshAuth = () => setAuthRevision((revision) => revision + 1);
+    const onStorage = (event) => {
+      if (!event.key || event.key === AUTH_TOKEN_STORAGE_KEY) refreshAuth();
+    };
+    window.addEventListener(AUTH_TOKEN_EVENT, refreshAuth);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(AUTH_TOKEN_EVENT, refreshAuth);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
 
   useEffect(() => {
     let closedByUser = false;
     let retry = 0;
     let timer = null;
+    let activeSocket = null;
 
     function connect() {
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
       // Browsers can't set headers on a WebSocket, so carry the bearer token as
       // a subprotocol (Sec-WebSocket-Protocol) rather than a ?token= query param
       // — the query param leaks the token into uvicorn/proxy access logs.
-      const token =
-        typeof localStorage !== "undefined"
-          ? localStorage.getItem("skyn3t_token")
-          : null;
+      const token = storedAuthToken();
       const url = `${proto}://${window.location.host}/ws`;
       let ws;
       try {
         ws = token
-          ? new WebSocket(url, ["skyn3t-bearer", token])
+          ? new WebSocket(url, [bearerSubprotocol(token)])
           : new WebSocket(url);
       } catch (_) {
         scheduleReconnect();
         return;
       }
+      activeSocket = ws;
       wsRef.current = ws;
       setStatus("connecting");
 
       ws.onopen = () => {
+        if (closedByUser || wsRef.current !== ws) {
+          ws.close();
+          return;
+        }
         retry = 0;
         setStatus("open");
         // Flush anything queued while disconnected.
@@ -101,6 +145,7 @@ export function useEventStream({ maxEvents = 200 } = {}) {
       };
 
       ws.onmessage = (msg) => {
+        if (closedByUser || wsRef.current !== ws) return;
         let evt;
         try {
           evt = JSON.parse(msg.data);
@@ -120,11 +165,13 @@ export function useEventStream({ maxEvents = 200 } = {}) {
       };
 
       ws.onerror = () => {
-        setStatus("error");
+        if (wsRef.current === ws) setStatus("error");
       };
 
       ws.onclose = () => {
+        if (wsRef.current !== ws) return;
         wsRef.current = null;
+        activeSocket = null;
         if (closedByUser) return;
         setStatus("closed");
         scheduleReconnect();
@@ -132,6 +179,7 @@ export function useEventStream({ maxEvents = 200 } = {}) {
     }
 
     function scheduleReconnect() {
+      if (closedByUser) return;
       retry += 1;
       const delay = Math.min(1000 * 2 ** retry, 15000);
       timer = setTimeout(connect, delay);
@@ -142,9 +190,12 @@ export function useEventStream({ maxEvents = 200 } = {}) {
     return () => {
       closedByUser = true;
       if (timer) clearTimeout(timer);
-      if (wsRef.current) wsRef.current.close();
+      const socket = activeSocket;
+      activeSocket = null;
+      if (wsRef.current === socket) wsRef.current = null;
+      if (socket) socket.close();
     };
-  }, [maxEvents]);
+  }, [maxEvents, authRevision]);
 
   function send(obj) {
     const data = typeof obj === "string" ? obj : JSON.stringify(obj);

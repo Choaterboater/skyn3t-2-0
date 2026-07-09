@@ -200,6 +200,9 @@ class EventBus:
         """Serialize recent history for restore-on-boot."""
         return {
             "published": self._published,
+            # History is intentionally bounded, so it cannot reconstruct these
+            # monotonic counters after the ring wraps.
+            "type_counts": dict(self._type_counts),
             "history": [e.to_dict() for e in self._history],
         }
 
@@ -207,7 +210,6 @@ class EventBus:
         # Validate + reconstruct into a temp list FIRST, then swap. A corrupt
         # checkpoint (bad EventType, missing 'source') must not crash, and must
         # not leave history half-cleared mid-loop (design rule #6: degrade).
-        self._published = snap.get("published", 0)
         restored: list[Event] = []
         for raw in snap.get("history", []):
             try:
@@ -223,10 +225,48 @@ class EventBus:
                 )
             except (ValueError, KeyError, TypeError) as exc:
                 log.warning("event_restore_skipped_corrupt", error=str(exc))
+        history_counts: dict[str, int] = defaultdict(int)
+        for ev in restored:
+            history_counts[ev.type.value] += 1
+
+        restored_counts: dict[str, int] = {}
+        raw_counts = snap.get("type_counts")
+        if isinstance(raw_counts, dict):
+            for raw_type, raw_count in raw_counts.items():
+                try:
+                    event_type = EventType(raw_type)
+                except (TypeError, ValueError):
+                    log.warning("event_restore_skipped_count", event_type=raw_type)
+                    continue
+                if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 0:
+                    log.warning(
+                        "event_restore_skipped_count",
+                        event_type=event_type.value,
+                        count=raw_count,
+                    )
+                    continue
+                restored_counts[event_type.value] = max(
+                    raw_count, history_counts.get(event_type.value, 0)
+                )
+        else:
+            # Backward compatibility with snapshots written before type_counts
+            # was persisted. These can only recover the bounded history.
+            restored_counts.update(history_counts)
+        for type_name, history_count in history_counts.items():
+            restored_counts[type_name] = max(
+                restored_counts.get(type_name, 0), history_count
+            )
+
+        raw_published = snap.get("published", 0)
+        published = (
+            raw_published
+            if isinstance(raw_published, int) and not isinstance(raw_published, bool)
+            and raw_published >= 0
+            else 0
+        )
+
         self._history.clear()
         self._history.extend(restored)
-        # Reseed per-type counts from the restored (bounded) history — best-effort,
-        # consistent with _published being restored from the snapshot.
         self._type_counts.clear()
-        for ev in restored:
-            self._type_counts[ev.type.value] += 1
+        self._type_counts.update(restored_counts)
+        self._published = max(published, sum(restored_counts.values()))

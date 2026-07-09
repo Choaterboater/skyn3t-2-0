@@ -12,6 +12,7 @@ def _state(tmp_path):
     proj = tmp_path / "demo" / ".preview"
     (proj / "src").mkdir(parents=True)
     (proj / "src" / "main.py").write_text("print('hi')\n")
+    (proj / "index.html").write_text("<h1>hi</h1>\n")
     return state
 
 
@@ -24,8 +25,14 @@ def test_preview_payload_lists_files(tmp_path):
 
 def test_resolve_project_file_returns_path(tmp_path):
     state = _state(tmp_path)
-    path = resolve_project_file(state, "demo", "src/main.py")
-    assert path.read_text() == "print('hi')\n"
+    path = resolve_project_file(state, "demo", "index.html")
+    assert path.read_text() == "<h1>hi</h1>\n"
+
+
+def test_resolve_project_file_rejects_non_browser_source(tmp_path):
+    state = _state(tmp_path)
+    with pytest.raises(PermissionError):
+        resolve_project_file(state, "demo", "src/main.py")
 
 
 def test_resolve_project_file_rejects_traversal(tmp_path):
@@ -47,6 +54,24 @@ def test_preview_root_rejects_escaping_slug(tmp_path):
     state = _state(tmp_path)
     with pytest.raises(ValueError):
         _preview_root(state, "..")
+
+
+def test_preview_root_rejects_symlink_escape(tmp_path):
+    from skyn3t.web.routes import _preview_root
+
+    project = tmp_path / "demo"
+    outside = tmp_path / "outside"
+    project.mkdir()
+    outside.mkdir()
+    (outside / "index.html").write_text("<h1>outside</h1>")
+    try:
+        (project / ".preview").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this platform")
+
+    state = AppState(settings=Settings(projects_dir=tmp_path))
+    with pytest.raises(ValueError, match="preview root escapes"):
+        _preview_root(state, "demo")
 
 
 def test_resolve_project_file_rejects_escaping_slug(tmp_path):

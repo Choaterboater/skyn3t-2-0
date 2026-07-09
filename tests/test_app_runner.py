@@ -112,6 +112,29 @@ def test_ensure_node_deps_skips_when_node_modules_present(tmp_path):
     assert calls == []  # already installed -> never shells out to npm
 
 
+def test_ensure_node_deps_reinstalls_docker_node_modules(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
+    nm = tmp_path / "node_modules"
+    nm.mkdir()
+    (nm / ".skyn3t-docker-install.json").write_text(
+        json.dumps({"backend": "docker", "container_os": "linux", "fingerprint": "abc"}),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake(cmd, cwd):
+        calls.append((cmd, cwd, (tmp_path / "node_modules").exists()))
+        (tmp_path / "node_modules").mkdir(exist_ok=True)
+        return True, {"ran": True}
+
+    ok, info = ensure_node_deps(tmp_path, runner=fake)
+
+    assert ok is True
+    assert len(calls) == 1
+    assert calls[0][2] is False
+    assert npm_install_current(tmp_path) is True
+
+
 def test_ensure_node_deps_installs_when_node_modules_missing(tmp_path):
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
     calls = []

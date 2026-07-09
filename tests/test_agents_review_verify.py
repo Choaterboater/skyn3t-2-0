@@ -191,6 +191,50 @@ def test_build_verifier_runs_real_build_for_nextjs(tmp_path, monkeypatch):
     assert res.output["verdict"] == "fail"  # install failed -> honest fail, feeds fix-loop
 
 
+def test_build_verifier_reinstalls_docker_node_modules_before_host_build(tmp_path, monkeypatch):
+    import skyn3t.agents.build_verifier as bv
+
+    root = tmp_path / "web"
+    root.mkdir()
+    (root / "package.json").write_text(json.dumps({
+        "name": "web",
+        "scripts": {"build": "vite build"},
+        "dependencies": {"vite": "^4.4.9"},
+    }))
+    (root / "src").mkdir()
+    (root / "src" / "main.jsx").write_text("export default null\n")
+    nm = root / "node_modules"
+    nm.mkdir()
+    (nm / ".skyn3t-docker-install.json").write_text(
+        json.dumps({"backend": "docker", "container_os": "linux", "fingerprint": "abc"}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(bv.shutil, "which",
+                        lambda x: "/usr/bin/npm" if x == "npm" else None)
+    install_saw_foreign = []
+
+    async def fake_run(self, cmd, cwd, timeout):
+        if cmd[:2] == ["npm", "install"]:
+            install_saw_foreign.append((root / "node_modules" / ".skyn3t-docker-install.json").exists())
+            (root / "node_modules").mkdir(exist_ok=True)
+            return True, "install ok"
+        if cmd[:3] == ["npm", "run", "build"]:
+            return True, "build ok"
+        return False, "unexpected command"
+
+    monkeypatch.setattr(bv.BuildVerifierAgent, "_run", fake_run)
+
+    agent = bv.BuildVerifierAgent(event_bus=EventBus())
+    res = _run(agent.run(TaskRequest(
+        type="verify_build",
+        payload={"worktree_dir": str(root), "stack": "react"})))
+
+    assert res.success
+    assert install_saw_foreign == [False]
+    assert res.output["verdict"] == "pass"
+
+
 def test_boot_verifier_routes_fastapi_to_python(tmp_path, monkeypatch):
     """fastapi (a Python web framework) must boot via the Python import-smoke,
     not fall through to the structural web check (finding #20)."""

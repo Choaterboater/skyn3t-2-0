@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 from skyn3t.security.secrets import filter_env
@@ -166,8 +167,51 @@ def npm_install_stamp_path(project_dir: str | Path) -> Path:
     return Path(project_dir) / "node_modules" / ".skyn3t-install.json"
 
 
+def npm_docker_install_stamp_path(project_dir: str | Path) -> Path:
+    return Path(project_dir) / "node_modules" / ".skyn3t-docker-install.json"
+
+
 def npm_build_stamp_path(project_dir: str | Path) -> Path:
     return Path(project_dir) / "node_modules" / ".skyn3t-build.json"
+
+
+def foreign_node_modules_reason(project_dir: str | Path) -> str:
+    """Return why ``node_modules`` cannot be reused by the host, else ``""``.
+
+    Docker proof installs native packages such as esbuild for Linux. If that tree
+    is later reused by local macOS preview/build, Vite fails before reading app
+    source. The Docker stamp is intentionally separate from the host install
+    stamp; this helper makes the host path discard the foreign tree first.
+    """
+    pdir = Path(project_dir)
+    if not (pdir / "node_modules").is_dir():
+        return ""
+    stamp = npm_docker_install_stamp_path(pdir)
+    if not stamp.is_file():
+        return ""
+    try:
+        data = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "docker"
+    if not isinstance(data, dict):
+        return "docker"
+    backend = str(data.get("backend") or "docker").strip() or "docker"
+    container_os = str(data.get("container_os") or "").strip()
+    return f"{backend}:{container_os}" if container_os else backend
+
+
+def discard_foreign_node_modules(project_dir: str | Path) -> str:
+    """Remove host-incompatible ``node_modules`` and return the reason removed."""
+    reason = foreign_node_modules_reason(project_dir)
+    if not reason:
+        return ""
+    try:
+        shutil.rmtree(Path(project_dir) / "node_modules")
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return ""
+    return reason
 
 
 def npm_install_current(project_dir: str | Path) -> bool:

@@ -25,9 +25,11 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.npm_utils import (
+    discard_foreign_node_modules,
     mark_npm_build_current,
     mark_npm_install_current,
     npm_build_current,
+    npm_docker_install_stamp_path,
     npm_env,
     npm_install_args,
     npm_install_current,
@@ -1937,11 +1939,41 @@ def ensure_path_alias_config(root: str | Path) -> list[str]:
 
 _IMPORT_TYPE_RE = re.compile(r"^\s*import\s+type\s")
 _EXPORT_TYPE_RE = re.compile(r"^\s*export\s+type\s+\w")
+_TS_SIMPLE_TYPE = (
+    r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?"
+    r"(?:<[^()\n;=]*>)?(?:\[\])?"
+)
+_TS_PARAM_TYPE_RE = re.compile(rf"\b([A-Za-z_$][\w$]*)(?:\?)?\s*:\s*{_TS_SIMPLE_TYPE}")
+_TS_ARROW_PARAMS_RE = re.compile(r"\(([^()\n]*)\)(\s*(?::\s*[^=;\n]+)?\s*=>)")
+_TS_FUNCTION_PARAMS_RE = re.compile(r"(\bfunction\s+[A-Za-z_$][\w$]*\s*)\(([^()\n]*)\)")
+_TS_VAR_TYPE_RE = re.compile(rf"^(\s*(?:const|let|var)\s+[A-Za-z_$][\w$]*)\s*:\s*{_TS_SIMPLE_TYPE}\s*=")
+_TS_NON_NULL_RE = re.compile(r"(?<=[\]\)])!(?=[\.\),;])")
 
 
 def _balanced_line(s: str) -> bool:
     return (s.count("(") == s.count(")") and s.count("[") == s.count("]")
             and s.count("{") == s.count("}"))
+
+
+def _strip_inline_ts_syntax_in_js_line(line: str) -> tuple[str, bool]:
+    """Conservatively erase common TS-only syntax from one plain JS/JSX line."""
+    original = line
+
+    def _strip_params(params: str) -> str:
+        return _TS_PARAM_TYPE_RE.sub(r"\1", params)
+
+    def _arrow_repl(match: re.Match[str]) -> str:
+        suffix = re.sub(r":\s*[^=;\n]+(?=\s*=>)", "", match.group(2))
+        return f"({_strip_params(match.group(1))}){suffix}"
+
+    def _function_repl(match: re.Match[str]) -> str:
+        return f"{match.group(1)}({_strip_params(match.group(2))})"
+
+    line = _TS_ARROW_PARAMS_RE.sub(_arrow_repl, line)
+    line = _TS_FUNCTION_PARAMS_RE.sub(_function_repl, line)
+    line = _TS_VAR_TYPE_RE.sub(r"\1 =", line)
+    line = _TS_NON_NULL_RE.sub("", line)
+    return line, line != original
 
 
 def strip_ts_type_in_js(root: str | Path) -> list[str]:
@@ -1981,7 +2013,10 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
                     and stripped.endswith(";")):
                 removed = True
                 continue
-            out.append(ln)
+            fixed, did_fix = _strip_inline_ts_syntax_in_js_line(ln)
+            if did_fix:
+                removed = True
+            out.append(fixed)
         if removed:
             try:
                 f.write_text("".join(out), encoding="utf-8")
@@ -1989,6 +2024,134 @@ def strip_ts_type_in_js(root: str | Path) -> list[str]:
                 continue
             changed.append(str(f.relative_to(root)))
     return changed
+
+
+_SOURCE_FENCE_SUFFIXES = frozenset({
+    ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".css", ".html", ".py",
+    ".go", ".rs", ".java", ".vue", ".svelte", ".astro",
+})
+_CODE_FENCE_LINE_RE = re.compile(r"^\s*```[A-Za-z0-9_+-]*\s*$")
+
+
+def _looks_like_source_path_header(line: str, rel: str) -> bool:
+    clean = line.strip().replace("\\", "/")
+    return clean in {rel, Path(rel).name}
+
+
+def strip_markdown_fences_in_source_files(root: str | Path) -> list[str]:
+    """Remove accidental markdown wrappers from source files.
+
+    Some low-cost models emit a file as ``path/to/File.jsx`` + fenced code, and
+    the agentic writer can persist that wrapper literally. Only strip when the
+    first nonblank line is an optional matching path header followed by a code
+    fence and the last nonblank line closes the fence.
+    """
+    root = Path(root)
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in _SOURCE_FENCE_SUFFIXES:
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            continue
+        if not lines:
+            continue
+        rel = str(f.relative_to(root)).replace("\\", "/")
+        start = 0
+        while start < len(lines) and not lines[start].strip():
+            start += 1
+        if start >= len(lines):
+            continue
+        fence_at = start
+        if _looks_like_source_path_header(lines[start], rel):
+            fence_at = start + 1
+        if fence_at >= len(lines) or not _CODE_FENCE_LINE_RE.match(lines[fence_at]):
+            continue
+        end = len(lines) - 1
+        while end > fence_at and not lines[end].strip():
+            end -= 1
+        if end <= fence_at or not lines[end].strip().startswith("```"):
+            continue
+        new_lines = lines[:start] + lines[fence_at + 1:end] + lines[end + 1:]
+        try:
+            f.write_text("".join(new_lines), encoding="utf-8")
+        except OSError:
+            continue
+        changed.append(rel)
+    return changed
+
+
+_REACT_VITE_TSX_REPAIR_STACKS = frozenset({"react", "react_vite", "react_ts", "vite"})
+_MODULE_SCRIPT_SRC_RE = re.compile(
+    r'(<script\b[^>]*\btype=["\']module["\'][^>]*\bsrc=["\'])([^"\']+)(["\'][^>]*>\s*</script>)',
+    re.IGNORECASE,
+)
+
+
+def _jsx_source_contaminated(text: str) -> bool:
+    head = text.lstrip("\ufeff \t\r\n")[:1200]
+    return (
+        "```" in head
+        or "\nimport type " in head
+        or "\nexport type " in head
+        or re.search(r"\buse[A-Z][A-Za-z0-9_]*\s*<", head) is not None
+        or re.search(r"\([^()\n]*:\s*[A-Za-z_$][\w$]*(?:[<\),])", head) is not None
+        or ")!" in head
+    )
+
+
+def repair_react_vite_entrypoint_to_tsx(project_dir: str | Path, stack: str = "") -> list[str]:
+    """Point Vite HTML at a clean TSX twin when the JSX entry tree is contaminated.
+
+    This is intentionally narrow: it only edits React/Vite-ish stacks, only when
+    the HTML currently points at a ``.jsx`` module, only when a corresponding
+    ``.tsx`` entry exists, and only when the current JSX entry or ``src/App.jsx``
+    shows obvious markdown/TypeScript contamination.
+    """
+    if (stack or "").lower() not in _REACT_VITE_TSX_REPAIR_STACKS:
+        return []
+    root = Path(project_dir)
+    index = root / "index.html"
+    try:
+        html = index.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    match = _MODULE_SCRIPT_SRC_RE.search(html)
+    if not match:
+        return []
+    src = match.group(2)
+    current_rel = src.split("?", 1)[0].lstrip("/")
+    if not current_rel.endswith(".jsx"):
+        return []
+    current = root / current_rel
+    candidate_rel = current_rel[:-4] + "tsx"
+    candidate = root / candidate_rel
+    if not candidate.is_file():
+        fallback = root / "src" / "main.tsx"
+        if not fallback.is_file():
+            return []
+        candidate = fallback
+        candidate_rel = str(fallback.relative_to(root)).replace("\\", "/")
+    contaminated = False
+    for path in (current, root / "src" / "App.jsx"):
+        try:
+            contaminated = contaminated or _jsx_source_contaminated(
+                path.read_text(encoding="utf-8", errors="replace")
+            )
+        except OSError:
+            continue
+    if not contaminated:
+        return []
+    replacement = "/" + candidate_rel
+    new_html = html[:match.start(2)] + replacement + html[match.end(2):]
+    if new_html == html:
+        return []
+    try:
+        index.write_text(new_html, encoding="utf-8")
+    except OSError:
+        return []
+    return ["index.html"]
 
 
 _LUCIDE_IMPORT_RE = re.compile(r"import\s*\{([^}]*)\}\s*from\s*['\"]lucide-react['\"]")
@@ -2167,6 +2330,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     same pass — making the whole repair converge in one call. Safe to call
     repeatedly (a complete tree is a no-op). Never raises on an individual
     repair's expected filesystem errors (each function is already defensive)."""
+    source_fences = strip_markdown_fences_in_source_files(project_dir)
     sanitized = sanitize_package_json_deps(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
     added = reconcile_npm_deps(project_dir)
@@ -2179,6 +2343,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
     alias_cfg = ensure_path_alias_config(project_dir)
     ts_stripped = strip_ts_type_in_js(project_dir)
+    react_entry = repair_react_vite_entrypoint_to_tsx(project_dir, stack=stack)
     # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
     # ones — the model invents icon names that aren't exported, failing the build.
     lucide = reconcile_lucide_icons(project_dir)
@@ -2206,8 +2371,10 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "next_config_peers": peers,
         "imports_scaffolded": stubbed,
         "use_client_added": use_client,
+        "source_fences_stripped": source_fences,
         "path_alias_config": alias_cfg,
         "ts_in_js_stripped": ts_stripped,
+        "react_entrypoint_repaired": react_entry,
         "lucide_icons_fixed": lucide,
         "tauri_cargo_fixed": tauri_cargo,
         "phaser_entrypoint_repaired": phaser_entry,
@@ -3236,7 +3403,7 @@ def _node_npm_install_args(npm_cmd: str, action: str = "install", *, container: 
 
 
 def _docker_npm_install_stamp_path(pdir: Path) -> Path:
-    return pdir / "node_modules" / ".skyn3t-docker-install.json"
+    return npm_docker_install_stamp_path(pdir)
 
 
 def _node_install_current(pdir: Path, *, container: bool = False) -> bool:
@@ -3321,6 +3488,7 @@ def _run_node_build(
 
     env = _node_build_env(container=use_container_names)
     npm_cmd = "npm" if use_container_names else str(npm)
+    foreign_deps = "" if use_container_names else discard_foreign_node_modules(pdir)
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
     # fix-loop sees the error. ONLY a genuine connectivity failure (offline
@@ -3352,6 +3520,8 @@ def _run_node_build(
             return (True, False, out[-700:])
         _mark_node_install_current(pdir, container=use_container_names)
         install_summary = "npm install ok"
+        if foreign_deps:
+            install_summary = f"{install_summary} after replacing {foreign_deps} node_modules"
 
     if npm_build_current(pdir, build_cmd):
         return (

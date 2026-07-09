@@ -4805,6 +4805,11 @@ class StudioRunner:
         slice_wts: dict[str, Worktree] = {}
         for name in slices:
             wt = create_worktree(str(self.settings.projects_dir), f"{plan.slug}-slice-{name}")
+            # Every specialist needs the same read-only upstream context: real
+            # generated assets, their manifests/credits, and TestAuthor's
+            # acceptance suite. CodeAgent snapshots this baseline and restores
+            # anything outside the slice's owned paths after each session.
+            merge_back(main_wt.dir, wt.dir, overwrite=True, clean=False)
             worktrees.append(wt)
             slice_wts[name] = wt
 

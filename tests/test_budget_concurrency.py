@@ -25,6 +25,15 @@ def _result(cost: float, *, tokens: int = 3) -> LLMResult:
     )
 
 
+def test_default_settings_do_not_truncate_full_app_builds():
+    settings = Settings()
+
+    assert settings.per_build_usd_cap == 0
+    assert settings.daily_usd_cap == 0
+    assert settings.daily_token_cap == 0
+    assert settings.openrouter_max_concurrency >= 8
+
+
 def _record_budget_in_process(
     data_dir: str,
     ready: multiprocessing.Queue,

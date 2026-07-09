@@ -10,6 +10,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from skyn3t.agents.boot_verifier import BootVerifierAgent
 from skyn3t.agents.build_verifier import BuildVerifierAgent, detect_reward_hacking
 from skyn3t.agents.consistency_reviewer import ConsistencyReviewerAgent
@@ -17,7 +19,13 @@ from skyn3t.agents.contract_verifier import ContractVerifierAgent, extract_plann
 from skyn3t.agents.critic import CriticAgent, static_scan
 from skyn3t.agents.integration_verifier import IntegrationVerifierAgent
 from skyn3t.agents.reviewer import ReviewerAgent, heuristic_score
-from skyn3t.agents.test_author import TestAuthorAgent, derive_acceptance, render_test_file
+from skyn3t.agents.test_author import (
+    TestAuthorAgent,
+    derive_acceptance,
+    derive_asset_paths,
+    derive_planned_pages,
+    render_test_file,
+)
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
 
@@ -337,6 +345,11 @@ def test_test_author_accepts_an_astro_page_as_source_and_entrypoint(tmp_path):
     page = root / "src" / "pages" / "index.astro"
     page.parent.mkdir(parents=True)
     page.write_text("---\nconst title = 'Golf lessons';\n---\n<h1>{title}</h1>\n")
+    generated_metadata = root / ".astro" / "content.d.ts"
+    generated_metadata.parent.mkdir()
+    generated_metadata.write_text(
+        'export type Config = typeof import("../src/content.config.mjs");\n'
+    )
 
     generated = render_test_file(
         ["project produces at least one runnable entrypoint"],
@@ -348,6 +361,7 @@ def test_test_author_accepts_an_astro_page_as_source_and_entrypoint(tmp_path):
 
     namespace["test_project_has_source_content"]()
     namespace["test_project_has_entrypoint"]()
+    assert generated_metadata not in namespace["_sources"]()
 
 
 def test_test_author_promotes_explicit_game_counts_to_real_checks():
@@ -359,6 +373,135 @@ def test_test_author_promotes_explicit_game_counts_to_real_checks():
     src = render_test_file(crit, brief, "code-islands")
     assert "EXACT_COUNT_PHRASES" in src
     assert '"120 levels"' in src
+
+
+def test_test_author_enforces_exact_hvac_pages_and_generated_assets(tmp_path):
+    root = tmp_path / "hvac"
+    root.mkdir()
+    paid_asset = "assets/air-conditioning-condenser-unit-beside-a-house.webp"
+    plan_files = [
+        "index.html",
+        "about.html",
+        "contact.html",
+        "financing.html",
+        "reviews.html",
+        "services/ac-repair.html",
+        "services/heating.html",
+        "services/installation.html",
+        "css/custom.css",
+        "js/contact-form.js",
+        "js/main.js",
+        "js/reviews-carousel.js",
+        "package.json",
+    ]
+    payload = {
+        "worktree_dir": str(root),
+        "brief": "HVAC service pages, financing, reviews, emergency contact, and photos",
+        "slug": "hvac",
+        "stack": "static",
+        "plan": {"stack": "static", "files": [{"path": path} for path in plan_files]},
+        "extra": {
+            "assets": [{"subject": "condenser", "file": paid_asset}],
+            "asset_foundry": {"selected": {
+                "web/hero": {"path": "/assets/hero.png"},
+                "web/og": {"path": "/assets/og.png"},
+                "web/favicon": {"path": "/assets/favicon.png"},
+            }},
+        },
+    }
+
+    agent = TestAuthorAgent(event_bus=EventBus())
+    result = _run(agent.run(TaskRequest(type="test_author", payload=payload)))
+
+    expected_pages = [path for path in plan_files if path.endswith(".html")]
+    assert result.output["planned_pages"] == expected_pages
+    assert result.output["asset_paths"] == [
+        paid_asset,
+        "assets/hero.png",
+        "assets/og.png",
+        "assets/favicon.png",
+    ]
+
+    for relative in expected_pages:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("<main>HVAC service</main>", encoding="utf-8")
+    for relative in result.output["asset_paths"]:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"image")
+    (root / "index.html").write_text(
+        '<img src="/assets/air-conditioning-condenser-unit-beside-a-house.webp">'
+        '<img src="/assets/hero.png"><meta content="/assets/og.png">'
+        '<link rel="icon" href="/assets/favicon.png">',
+        encoding="utf-8",
+    )
+
+    written = root / result.output["test_files"][0]
+    namespace = {"__file__": str(written)}
+    exec(compile(written.read_text(encoding="utf-8"), str(written), "exec"), namespace)
+    for relative in expected_pages:
+        namespace["test_planned_feature_page_exists"](relative)
+    for relative in result.output["asset_paths"]:
+        namespace["test_generated_asset_exists"](relative)
+        namespace["test_generated_asset_is_referenced"](relative)
+
+    (root / "financing.html").unlink()
+    with pytest.raises(AssertionError, match="planned feature page is missing"):
+        namespace["test_planned_feature_page_exists"]("financing.html")
+
+
+def test_test_author_uses_astro_routes_not_components_for_golf_contract(tmp_path):
+    plan = {"stack": "astro", "files": [
+        {"path": "src/pages/index.astro"},
+        {"path": "src/pages/lessons/index.astro"},
+        {"path": "src/pages/lessons/[slug].astro"},
+        {"path": "src/pages/drills.astro"},
+        {"path": "src/pages/equipment.astro"},
+        {"path": "src/pages/resources.astro"},
+        {"path": "src/pages/book.astro"},
+        {"path": "src/pages/api/bookings.ts"},
+        {"path": "src/components/Header.astro"},
+        {"path": "src/layouts/Layout.astro"},
+        {"path": "package.json"},
+        {"path": "../escape.astro"},
+    ]}
+    payload = {
+        "plan": plan,
+        "stack": "astro",
+        "extra": {"asset_foundry": {"selected": {
+            "web/hero": {"path": "/assets/hero.png"},
+        }}},
+    }
+
+    assert derive_planned_pages(plan, "astro") == [
+        "src/pages/index.astro",
+        "src/pages/lessons/index.astro",
+        "src/pages/lessons/[slug].astro",
+        "src/pages/drills.astro",
+        "src/pages/equipment.astro",
+        "src/pages/resources.astro",
+        "src/pages/book.astro",
+    ]
+    assert derive_asset_paths(payload) == ["assets/hero.png"]
+
+
+def test_test_author_discards_unsafe_planned_and_asset_paths():
+    plan = {"stack": "static", "files": [
+        {"path": "index.html"},
+        {"path": "partials/header.html"},
+        {"path": "../outside.html"},
+        {"path": "C:\\outside.html"},
+        {"path": "dist/copied.html"},
+    ]}
+    payload = {"extra": {"assets": [
+        {"file": "assets/safe.webp"},
+        {"file": "../../secret.png"},
+        {"file": "C:\\secret.png"},
+    ]}}
+
+    assert derive_planned_pages(plan, "static") == ["index.html"]
+    assert derive_asset_paths(payload) == ["assets/safe.webp"]
 
 
 def test_modules_import_without_side_effects():

@@ -22,6 +22,7 @@ data/cortex/
 data/proposals/
 data/checkpoints/
 data/budget/
+data/recovery/
 # A custom SKYN3T_DATA_DIR may point at the package directory (as this
 # checkout's local environment does). Keep the same runtime state out of source
 # control without deleting or relocating the operator's data.

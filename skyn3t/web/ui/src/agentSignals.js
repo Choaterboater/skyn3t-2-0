@@ -1,11 +1,24 @@
+export function sliceTaskIdentity(event) {
+  const payload = event?.payload || {};
+  const metadata = payload.metadata || {};
+  const slice = String(metadata.slice || payload.slice || "").trim();
+  if (!slice) return null;
+  const stage = String(metadata.stage || payload.stage || payload.type || "code").trim();
+  return { stage, slice, label: `${stage}/${slice}` };
+}
+
 function eventAgentKeys(event) {
   const payload = event?.payload || {};
+  const metadata = payload.metadata || {};
+  const slice = sliceTaskIdentity(event);
   return new Set(
     [
       payload.agent_name,
       payload.agent_type,
       payload.stage,
       payload.capability,
+      metadata.stage,
+      slice?.label,
       event?.source,
     ]
       .map((value) => String(value || "").trim())
@@ -13,23 +26,79 @@ function eventAgentKeys(event) {
   );
 }
 
+function stageIdentity(event) {
+  const payload = event?.payload || {};
+  const stage = [
+    payload.stage,
+    payload.agent_type,
+    payload.capability,
+    payload.agent_name,
+  ].find((value) => String(value || "").trim());
+  return `${event?.correlation_id || ""}:${String(stage || "stage").trim()}`;
+}
+
+function taskIdentity(event) {
+  const taskId = String(event?.payload?.task_id || "").trim();
+  return taskId ? `${event?.correlation_id || ""}:${taskId}` : "";
+}
+
 export function agentActivity(events = []) {
-  const busy = new Set();
+  const activeCounts = new Map();
+  const activeTasks = new Map();
+  const activeStages = new Map();
   const lastByKey = new Map();
+
+  const bump = (keys, delta) => {
+    for (const key of keys) {
+      const count = Math.max(0, (activeCounts.get(key) || 0) + delta);
+      if (count) activeCounts.set(key, count);
+      else activeCounts.delete(key);
+    }
+  };
 
   for (const event of events) {
     const type = String(event?.type || "").toLowerCase();
     const keys = eventAgentKeys(event);
     for (const key of keys) lastByKey.set(key, event.type);
 
-    if (type.includes("task.started") || type.includes("stage.started")) {
-      for (const key of keys) busy.add(key);
-    } else if (type.includes("completed") || type.includes("failed")) {
-      for (const key of keys) busy.delete(key);
+    if (type.includes("task.started")) {
+      const taskId = taskIdentity(event);
+      const prior = taskId ? activeTasks.get(taskId) : null;
+      if (prior) bump(prior.keys, -1);
+      bump(keys, 1);
+      if (taskId) activeTasks.set(taskId, { keys, correlationId: event?.correlation_id });
+    } else if (type.includes("task.completed") || type.includes("task.failed")) {
+      const taskId = taskIdentity(event);
+      const started = taskId ? activeTasks.get(taskId) : null;
+      bump(started?.keys || keys, -1);
+      if (taskId) activeTasks.delete(taskId);
+    } else if (type.includes("stage.started")) {
+      const stageId = stageIdentity(event);
+      const prior = activeStages.get(stageId);
+      if (prior) bump(prior.keys, -1);
+      bump(keys, 1);
+      activeStages.set(stageId, { keys, correlationId: event?.correlation_id });
+    } else if (type.includes("stage.completed")) {
+      const stageId = stageIdentity(event);
+      const started = activeStages.get(stageId);
+      bump(started?.keys || keys, -1);
+      activeStages.delete(stageId);
+    } else if (type === "build.completed" || type === "build.failed") {
+      const correlationId = event?.correlation_id;
+      for (const [taskId, active] of activeTasks) {
+        if (active.correlationId !== correlationId) continue;
+        bump(active.keys, -1);
+        activeTasks.delete(taskId);
+      }
+      for (const [stageId, active] of activeStages) {
+        if (active.correlationId !== correlationId) continue;
+        bump(active.keys, -1);
+        activeStages.delete(stageId);
+      }
     }
   }
 
-  return { busy, lastByKey };
+  return { busy: new Set(activeCounts.keys()), lastByKey };
 }
 
 export function agentKeys(agent) {

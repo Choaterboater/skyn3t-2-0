@@ -1022,7 +1022,7 @@ def extract_error_gaps(
 # into package.json and polluted the import/substance signals.
 _NON_SOURCE_DIRS = frozenset({
     ".git", "__pycache__", ".venv", "node_modules", ".next", "dist", "build",
-    ".vite", "out", "coverage", ".turbo", ".cache", "vendor", ".svelte-kit",
+    ".vite", ".astro", "out", "coverage", ".turbo", ".cache", "vendor", ".svelte-kit",
     ".skyn3t-pytest",
     # Swift Package Manager build output / caches — not the app's own source.
     ".build", ".swiftpm",

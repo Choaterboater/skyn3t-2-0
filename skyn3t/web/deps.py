@@ -74,6 +74,8 @@ class BuildRecord:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     correlation_id: str | None = None
+    _stage_costs_usd: dict[str, float] = field(default_factory=dict, repr=False)
+    _cost_finalized: bool = field(default=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -333,11 +335,24 @@ class AppState:
             for k in ("skills_used", "recall_used"):
                 if isinstance(ev.payload.get(k), list):
                     setattr(rec, k, list(ev.payload[k]))
+            event_cost: float | None = None
             if "cost_usd" in ev.payload:
                 try:
-                    rec.cost_usd = float(ev.payload["cost_usd"])
+                    event_cost = float(ev.payload["cost_usd"])
                 except (TypeError, ValueError):
                     pass
+            if ev.type == EventType.BUILD_STAGE_COMPLETED:
+                # Stage completion events carry a stage-local slice. Keep one
+                # value per stage so duplicate/replayed events are idempotent.
+                stage = str(ev.payload.get("stage") or "").strip()
+                if stage and event_cost is not None and not rec._cost_finalized:
+                    rec._stage_costs_usd[stage] = event_cost
+                    rec.cost_usd = sum(rec._stage_costs_usd.values())
+            elif ev.type in (EventType.BUILD_COMPLETED, EventType.BUILD_FAILED):
+                # The settled terminal total wins over the live stage estimate.
+                if event_cost is not None:
+                    rec.cost_usd = event_cost
+                rec._cost_finalized = True
             # Build status is driven ONLY by build-level events. Stage events
             # carry the *stage's* status/verdict/score — never copy those onto
             # the build record (that was flipping builds to "completed" early).

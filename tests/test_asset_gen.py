@@ -5,9 +5,11 @@ is mocked (no network); the step itself is exercised end-to-end on disk.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
+import skyn3t.studio.assets as assets_mod
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
@@ -232,11 +234,98 @@ async def test_empty_images_yields_zero(tmp_path):
     assert res["generated"] == 0 and res["skipped"] is True
 
 
-async def test_repeated_empty_images_open_provider_circuit(tmp_path):
+async def test_transient_empty_images_retry_and_recover(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    class _EmptyThenImage(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def generate_images(self, prompt, n=1, **kw):
+            self.calls.append(prompt)
+            self.attempts += 1
+            return [] if self.attempts == 1 else [_PNG]
+
+    monkeypatch.setattr(assets_mod, "ASSET_PROVIDER_RETRY_DELAY", 0)
+    client = _EmptyThenImage()
+    s = _settings(replicate_api_token="r8_x", asset_gen=True)
+
+    res = await generate_assets(
+        str(proj), "an HVAC company website", settings=s, client=client, max_assets=1,
+    )
+
+    assert res["generated"] == 1 and res["skipped"] is False
+    assert len(client.calls) == 2
+
+
+async def test_transient_exception_retries_and_recovers(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    class _ExceptionThenImage(_FakeClient):
+        async def generate_images(self, prompt, n=1, **kw):
+            self.calls.append(prompt)
+            if len(self.calls) == 1:
+                raise RuntimeError("temporary provider overload")
+            return [_PNG]
+
+    monkeypatch.setattr(assets_mod, "ASSET_PROVIDER_RETRY_DELAY", 0)
+    client = _ExceptionThenImage()
+    s = _settings(replicate_api_token="r8_x", asset_gen=True)
+
+    res = await generate_assets(
+        str(proj), "an HVAC company website", settings=s, client=client, max_assets=1,
+    )
+
+    assert res["generated"] == 1
+    assert len(client.calls) == 2
+
+
+async def test_concurrent_builds_share_provider_admission(tmp_path):
+    class _TrackingClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.active = 0
+            self.max_active = 0
+
+        async def generate_images(self, prompt, n=1, **kw):
+            self.calls.append(prompt)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return [_PNG]
+
+    client = _TrackingClient()
+    s = _settings(replicate_api_token="r8_x", asset_gen=True)
+    projects = [tmp_path / "one", tmp_path / "two"]
+    for project in projects:
+        project.mkdir()
+
+    results = await asyncio.gather(*(
+        generate_assets(
+            str(project),
+            "a golf website with course photos",
+            settings=s,
+            client=client,
+            max_assets=2,
+        )
+        for project in projects
+    ))
+
+    assert [result["generated"] for result in results] == [2, 2]
+    assert client.max_active == assets_mod.ASSET_PROVIDER_MAX_CONCURRENCY
+    assert len(client.calls) == 4
+
+
+async def test_repeated_empty_images_open_provider_circuit(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     client = _FakeClient(images=[])
     s = _settings(replicate_api_token="r8_x", asset_gen=True)
+    monkeypatch.setattr(assets_mod, "ASSET_PROVIDER_RETRY_DELAY", 0)
 
     res = await generate_assets(
         str(proj),
@@ -247,7 +336,10 @@ async def test_repeated_empty_images_open_provider_circuit(tmp_path):
     )
 
     assert res["generated"] == 0 and res["skipped"] is True
-    assert len(client.calls) == 2
+    assert len(client.calls) == (
+        assets_mod.ASSET_PROVIDER_FAILURE_LIMIT
+        * assets_mod.ASSET_PROVIDER_MAX_ATTEMPTS
+    )
 
 
 async def test_runner_asset_step_clears_stale_extra_assets(tmp_path):

@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,6 +40,9 @@ MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 
 # Provider failures should not fan out into a pile of paid/stalled predictions.
 ASSET_PROVIDER_BATCH_SIZE = 2
 ASSET_PROVIDER_FAILURE_LIMIT = 2
+ASSET_PROVIDER_MAX_CONCURRENCY = 2
+ASSET_PROVIDER_MAX_ATTEMPTS = 2
+ASSET_PROVIDER_RETRY_DELAY = 0.5
 # Web frameworks that serve static files from public/ (vs ./assets/ for static html).
 _WEB_STACKS = {"nextjs", "next", "react", "react_vite", "react_ts", "vite",
                "remix", "astro", "svelte", "sveltekit", "vue", "nuxt",
@@ -109,6 +114,33 @@ _SUBJECT_STOPWORDS = {
     "the",
     "with",
 }
+
+
+class _ProviderAdmission:
+    def __init__(self) -> None:
+        self.semaphore = asyncio.Semaphore(ASSET_PROVIDER_MAX_CONCURRENCY)
+        self.users = 0
+
+
+_PROVIDER_ADMISSIONS: dict[asyncio.AbstractEventLoop, _ProviderAdmission] = {}
+
+
+@asynccontextmanager
+async def _provider_slot() -> AsyncIterator[None]:
+    """Share Replicate capacity across builds without binding later event loops."""
+    loop = asyncio.get_running_loop()
+    admission = _PROVIDER_ADMISSIONS.get(loop)
+    if admission is None:
+        admission = _ProviderAdmission()
+        _PROVIDER_ADMISSIONS[loop] = admission
+    admission.users += 1
+    try:
+        async with admission.semaphore:
+            yield
+    finally:
+        admission.users -= 1
+        if admission.users == 0 and _PROVIDER_ADMISSIONS.get(loop) is admission:
+            _PROVIDER_ADMISSIONS.pop(loop, None)
 
 
 def _wants_images(brief: str) -> bool:
@@ -269,17 +301,37 @@ async def generate_assets(
         log.warning("assets.mkdir_failed", error=str(exc)[:160])
         return {"generated": 0, "skipped": True, "reason": "mkdir_failed", "assets": []}
 
-    # Generate in tiny batches. Full fan-out made a failing provider spend one
-    # prediction per subject before the build could fall back; batching keeps good
-    # providers reasonably quick while opening the circuit after repeated misses.
+    # Generate in tiny batches. Capacity is shared across simultaneous builds so
+    # independent fan-out cannot overload the provider. Only failed subjects retry;
+    # successful predictions stay on the single-attempt path.
     async def _gen(subject: str) -> tuple[str, bytes | None]:
-        try:
-            images = await cli.generate_images(
-                asset_prompt(style, subject), n=1, model=model)
-            return subject, (images[0] if images else None)
-        except Exception as exc:  # noqa: BLE001 - never break the build over a subject
-            log.warning("assets.subject_failed", subject=subject, error=str(exc)[:160])
-            return subject, None
+        prompt = asset_prompt(style, subject)
+        for attempt in range(1, ASSET_PROVIDER_MAX_ATTEMPTS + 1):
+            error = "empty result"
+            try:
+                async with _provider_slot():
+                    images = await cli.generate_images(prompt, n=1, model=model)
+                data = images[0] if images else None
+                if data:
+                    return subject, data
+            except Exception as exc:  # noqa: BLE001 - never break the build over a subject
+                error = str(exc)[:160]
+            if attempt < ASSET_PROVIDER_MAX_ATTEMPTS:
+                log.warning(
+                    "assets.subject_retry",
+                    subject=subject,
+                    attempt=attempt,
+                    error=error,
+                )
+                await asyncio.sleep(ASSET_PROVIDER_RETRY_DELAY * attempt)
+            else:
+                log.warning(
+                    "assets.subject_failed",
+                    subject=subject,
+                    attempts=attempt,
+                    error=error,
+                )
+        return subject, None
 
     results: list[tuple[str, bytes | None]] = []
     failures = 0

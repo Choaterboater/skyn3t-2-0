@@ -28,6 +28,7 @@ import random
 import shutil
 import signal
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -575,6 +576,7 @@ class LLMClient:
         self._g_last_model: str | None = None
         self._g_last_route: tuple[str, str] | None = None
         self._g_routes: list[tuple[str, str, str]] = []
+        self._unhealthy_models: dict[str, float] = {}
 
     # ---- per-run route capture (task-local + global fallback) ---------------
     def begin_run_capture(self) -> None:
@@ -801,6 +803,8 @@ class LLMClient:
         free_only = bool(getattr(self.settings, "free_only", False))
         for m in str(getattr(self.settings, "llm_fallback_models", "") or "").split(","):
             m = m.strip()
+            if not m:
+                continue
             if free_only and not _is_free_model_id(m):
                 log.warning("llm.free_only_ignored_paid_fallback", model=m)
                 continue
@@ -814,6 +818,33 @@ class LLMClient:
             log.warning("llm.fallback_resolve_error", error=str(exc)[:120])
         return out
 
+    def _model_unhealthy(self, model: str) -> bool:
+        model = str(model or "").strip()
+        if not model:
+            return False
+        until = self._unhealthy_models.get(model)
+        if not until:
+            return False
+        if until > time.monotonic():
+            return True
+        self._unhealthy_models.pop(model, None)
+        return False
+
+    def _healthy_fallback_models(self, primary: str, tier: Tier) -> list[str]:
+        return [m for m in self._fallback_models(primary, tier) if not self._model_unhealthy(m)]
+
+    def _mark_model_unhealthy(self, model: str, exc: BaseException | None) -> None:
+        model = str(model or "").strip()
+        if not model:
+            return
+        ttl = max(0.0, float(getattr(self.settings, "llm_unhealthy_ttl_seconds", 300.0) or 0.0))
+        if ttl <= 0:
+            return
+        until = time.monotonic() + ttl
+        previous = self._unhealthy_models.get(model, 0.0)
+        self._unhealthy_models[model] = max(previous, until)
+        log.warning("llm.model_quarantined", model=model, ttl_s=ttl, reason=_err_reason(exc))
+
     async def _resilient_call(self, primary: str, tier: Tier, attempt_fn):
         """Run ``attempt_fn(model)`` with bounded transient retry + ordered model
         failover. ``attempt_fn`` is an async callable taking a model id and returning
@@ -826,15 +857,25 @@ class LLMClient:
         max_retries = self._retry_budget()
         first_exc: BaseException | None = None
         candidates = [primary]
+        if self._model_unhealthy(primary):
+            fallbacks = self._healthy_fallback_models(primary, tier)
+            if fallbacks:
+                log.info("llm.model_quarantine_skip",
+                         model=primary,
+                         to=fallbacks[0],
+                         tier=getattr(tier, "value", str(tier)))
+                candidates = fallbacks
         ci = 0
         while ci < len(candidates):
             model = candidates[ci]
+            model_exc: BaseException | None = None
             for attempt in range(max_retries + 1):
                 try:
                     return await attempt_fn(model)
                 except Exception as exc:  # noqa: BLE001 - classified for recovery
                     if first_exc is None:
                         first_exc = exc
+                    model_exc = exc
                     cat = classify_llm_error(exc)
                     if cat == "fatal":
                         raise
@@ -846,8 +887,9 @@ class LLMClient:
                     break  # transient budget spent, or a model error -> try a fallback
             # Resolve fallbacks lazily the first time the primary misses.
             if ci == 0 and len(candidates) == 1:
-                candidates.extend(self._fallback_models(primary, tier))
+                candidates.extend(self._healthy_fallback_models(primary, tier))
             if ci + 1 < len(candidates):
+                self._mark_model_unhealthy(model, model_exc or first_exc)
                 log.info("llm.model_failover",
                          **{"from": model, "to": candidates[ci + 1],
                             "tier": getattr(tier, "value", str(tier)),

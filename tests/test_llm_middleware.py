@@ -63,7 +63,7 @@ def _install_scripted(monkeypatch, script: list) -> dict:
 
     Each item is a ``_Resp`` (returned) or an ``Exception`` (raised from post,
     e.g. a transport error). Returns a live counter dict {"calls": int}."""
-    state = {"i": 0, "calls": 0}
+    state = {"i": 0, "calls": 0, "models": []}
     seq = list(script)
 
     class _C:
@@ -75,6 +75,7 @@ def _install_scripted(monkeypatch, script: list) -> dict:
 
         async def post(self, url, json=None, headers=None):
             state["calls"] += 1
+            state["models"].append((json or {}).get("model"))
             item = seq[state["i"]]
             state["i"] += 1
             if isinstance(item, Exception):
@@ -270,6 +271,26 @@ def test_transient_429_retries_then_succeeds_no_failover(monkeypatch, no_router_
     res = asyncio.run(c._openrouter("m/primary", "p", "", 100, False))
     assert res.text == "ok2"
     assert state["calls"] == 2  # retried the SAME model; no failover
+
+
+def test_transient_failover_quarantines_primary_for_next_call(monkeypatch, no_router_network):
+    state = _install_scripted(monkeypatch, [
+        _Resp(status=429),
+        _Resp(status=200, payload={"choices": [{"message": {"content": "fallback-1"}}],
+                                   "usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
+        _Resp(status=200, payload={"choices": [{"message": {"content": "fallback-2"}}],
+                                   "usage": {"prompt_tokens": 1, "completion_tokens": 1}}),
+    ])
+    c = _or_client(llm_max_retries=0)
+
+    first = asyncio.run(c._openrouter("qwen/qwen3-coder:free", "p", "", 100, False, tier=Tier.CHEAP))
+    second = asyncio.run(c._openrouter("qwen/qwen3-coder:free", "p", "", 100, False, tier=Tier.CHEAP))
+
+    assert first.text == "fallback-1"
+    assert second.text == "fallback-2"
+    assert state["models"][0] == "qwen/qwen3-coder:free"
+    assert state["models"][1] != "qwen/qwen3-coder:free"
+    assert state["models"][2] == state["models"][1]
 
 
 def test_non_transient_400_fails_fast(monkeypatch, no_router_network):

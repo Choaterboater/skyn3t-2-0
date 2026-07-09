@@ -345,6 +345,18 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "golf website for adult beginners" in studio
 
 
+def test_studio_polling_is_scoped_to_active_builds() -> None:
+    main = (SRC / "main.jsx").read_text()
+    studio = (ROUTES / "Studio.jsx").read_text()
+
+    assert "refetchInterval: 5000" not in main
+    assert "function studioBuildRefetchInterval" in studio
+    assert 'queryKey: ["builds"]' in studio
+    assert "refetchInterval: studioBuildRefetchInterval" in studio
+    assert 'queryKey: ["models"]' in studio
+    assert 'queryKey: ["llm-secrets"]' in studio
+
+
 def test_studio_exposes_free_only_routing_toggle() -> None:
     studio = (ROUTES / "Studio.jsx").read_text()
     assert "const routingFreeOnly =" in studio

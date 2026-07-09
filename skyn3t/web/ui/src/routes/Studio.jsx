@@ -303,6 +303,12 @@ function isTerminalBuild(status) {
   return BUILD_TERMINAL_STATUSES.has(normalizeBuildStatus(status));
 }
 
+function studioBuildRefetchInterval(query) {
+  const data = query?.state?.data;
+  const rows = Array.isArray(data) ? data : data?.builds || [];
+  return rows.some((build) => isActiveBuild(build?.status)) ? 5000 : false;
+}
+
 // The forge line. Each stage is a node on a horizontal rail: it ignites EMBER
 // while running, cools to PLASMA when done, sits ASH while pending, flares the
 // hot ember on failure. It also shows WHICH agent ran the stage and its score —
@@ -549,6 +555,7 @@ export default function Studio({ stream }) {
   const { data: builds } = useQuery({
     queryKey: ["builds"],
     queryFn: queryFn("/builds"),
+    refetchInterval: studioBuildRefetchInterval,
   });
 
   // Supported real-builder stacks for the fan-out picker. Falls back to the six

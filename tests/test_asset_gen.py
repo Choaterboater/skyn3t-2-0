@@ -18,8 +18,8 @@ from skyn3t.studio.assets import (
     asset_gen_enabled,
     asset_subject_relevant,
     filter_assets_for_brief,
-    generate_offline_web_assets,
     generate_assets,
+    generate_offline_web_assets,
 )
 from skyn3t.studio.planner import Planner
 from skyn3t.studio.runner import StudioRunner

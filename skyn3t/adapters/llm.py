@@ -38,7 +38,8 @@ import httpx
 import structlog
 
 from skyn3t.config.settings import Settings, get_settings
-from skyn3t.core.model_router import ModelRouter, Tier, is_free_model_id as router_is_free_model_id
+from skyn3t.core.model_router import ModelRouter, Tier
+from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 
 # Per-asyncio-task LLM route capture. The LLMClient is SHARED across agents, but
 # each agent's run() is its own task; task-local vars isolate "the completions
@@ -1263,7 +1264,7 @@ class LLMClient:
                     # canonical `messages` keeps growing untouched.
                     sent = self._edit_context(messages)
 
-                    async def _do(m, _sent=sent):
+                    async def _do(m, _sent=sent, _turn=turn, _wrote=wrote):
                         async def _post():
                             body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
                                     "tool_choice": "auto", "max_tokens": 16384}
@@ -1283,9 +1284,9 @@ class LLMClient:
                                 log.warning(
                                     "llm.or_agentic_stalled",
                                     model=m,
-                                    turn=turn,
+                                    turn=_turn,
                                     idle_s=idle_timeout,
-                                    wrote=wrote,
+                                    wrote=_wrote,
                                 )
                                 raise _AgenticTurnStall(stall_reason) from exc
                         return await _post()

@@ -22,7 +22,8 @@ import structlog
 
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
-from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id, live_catalog
+from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
+from skyn3t.core.model_router import live_catalog
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import (
     AppState,
@@ -877,8 +878,8 @@ async def cleanup_builds(
 
 
 async def list_projects(state: AppState) -> dict[str, Any]:
-    from skyn3t.studio.cleanup import _dir_size, _load_manifest
     from skyn3t.studio.app_runner import build_run_spec
+    from skyn3t.studio.cleanup import _dir_size, _load_manifest
     from skyn3t.studio.proof_run import detect_offline_starter_stub
     from skyn3t.studio.runner import StudioRunner
     pdir = Path(state.settings.projects_dir)

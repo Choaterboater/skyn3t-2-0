@@ -1431,6 +1431,7 @@ class LLMClient:
         stack: str = "",
         allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
         enforce_antistub: bool = True,
+        verify_on_stop: bool | None = None,
     ) -> dict:
         """Whole-project agentic codegen on an OpenRouter model: the model writes the
         app itself via tool-calls (write_file/read_file/list_files/finish) with full
@@ -1601,7 +1602,11 @@ class LLMClient:
         stall_reason = ""
         idle_timeout = float(getattr(self.settings, "agentic_idle_timeout", 0) or 0)
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
-        verify_on_stop = bool(getattr(self.settings, "agentic_verify_on_stop", True))
+        verify_on_stop_enabled = (
+            bool(getattr(self.settings, "agentic_verify_on_stop", True))
+            if verify_on_stop is None
+            else bool(verify_on_stop)
+        )
         verify_denials, _MAX_VERIFY_DENIALS = 0, 2
         doom_recent: list[tuple[str, str]] = []  # last 3 (tool, raw-args) signatures
         doom_warned = False
@@ -1794,7 +1799,7 @@ class LLMClient:
                         # Item 19: verify-on-stop. Deny the finish with the REAL
                         # defect list while codegen context is warm; degrade open
                         # after 2 denials (the pipeline fix-loop takes over).
-                        if verify_on_stop and verify_denials < _MAX_VERIFY_DENIALS:
+                        if verify_on_stop_enabled and verify_denials < _MAX_VERIFY_DENIALS:
                             problems = _agentic_verify_problems(root)
                             if problems:
                                 verify_denials += 1
@@ -1842,6 +1847,7 @@ class LLMClient:
         stack: str = "",
         allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
         enforce_antistub: bool = True,
+        verify_on_stop: bool | None = None,
     ) -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
@@ -1880,6 +1886,7 @@ class LLMClient:
                     stack=stack,
                     allowed_paths=allowed_paths,
                     enforce_antistub=enforce_antistub,
+                    verify_on_stop=verify_on_stop,
                 )
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         if not self._cli_available(provider):

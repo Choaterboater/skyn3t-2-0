@@ -248,6 +248,28 @@ def test_verify_on_stop_disabled_by_setting(tmp_path, monkeypatch):
     assert not any("VERIFY-ON-STOP" in t for t in _user_texts(fake.bodies))
 
 
+def test_verify_on_stop_disabled_by_agentic_build_call(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_file", {
+            "path": "src/main.js", "content": "import './Missing.js';\n"}),
+        _tool_turn("finish", {}, "t2"),
+    ]
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(_client().agentic_build(
+        "x",
+        str(tmp_path),
+        model="m",
+        stack="phaser",
+        verify_on_stop=False,
+    ))
+
+    assert res["ok"] is True
+    assert fake.i == 2
+    assert not any("VERIFY-ON-STOP" in t for t in _user_texts(fake.bodies))
+
+
 # ---------------------------------------------------------------------------
 # Zero-spend own-CI: the loop over a REAL HTTP seam (no monkeypatched client)
 # ---------------------------------------------------------------------------

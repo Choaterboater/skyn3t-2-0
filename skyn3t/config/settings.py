@@ -395,6 +395,13 @@ class Settings(BaseSettings):
     # + stderr. ADVISORY like its siblings: recorded to
     # manifest.extra["cli_check"], one repair, never flips the verdict.
     cli_check_enabled: bool = True
+    # Scripted interactive CLI playtest (Python CLI + native Swift aliases):
+    # replay the generated project's root ``.skyn3t-cli-playtest.json`` contract
+    # through a real PTY, including prompts, responses, transcript expectations,
+    # and exit status. ADVISORY: records to manifest.extra["cli_playtest"], feeds
+    # one bounded repair, and never flips the verdict. Default ON only in effect:
+    # projects without the opt-in local contract soft-skip immediately.
+    cli_playtest_enabled: bool = True
     # Deterministic deploy_check gate (Ship pillar): after a REAL deploy, re-run
     # the liveness/contract probes against the LIVE url (not localhost). Opt-in
     # (default OFF) — it only applies once something is actually deployed. ADVISORY

@@ -78,6 +78,16 @@ CONTENT_STACKS = frozenset({"agent_pack"})
 # advertised subcommand, invalid-input rejection) — the wave-2 §3.6 tier.
 CLI_STACKS = frozenset({"python", "cli", "python_cli"})
 
+# Interactive terminal deliveries that may ship a project-local scripted
+# playtest contract. Keep the normalized Swift spellings here as well as the
+# canonical planner token: API callers and imported manifests can retain the
+# agent vocabulary even though new plans normally use ``swift``.
+SWIFT_MACOS_STACKS = frozenset({
+    "swift", "swiftui", "swiftpm", "spm", "swift_package",
+    "macos_native", "swift_macos", "swift_native",
+})
+CLI_PLAYTEST_STACKS = CLI_STACKS | SWIFT_MACOS_STACKS
+
 # Stacks whose deploy serves a LIVE HTTP URL (static / node_ssr / container deploy
 # kinds) — the ones the post-deploy `deploy_check` gate can probe. Excludes
 # artifact/mobile stacks (tauri/desktop/mcp/cli/swift/react_native) that have no
@@ -99,6 +109,7 @@ GROUPS: dict[str, frozenset[str]] = {
     "workflow": WORKFLOW_STACKS,
     "content": CONTENT_STACKS,
     "cli": CLI_STACKS,
+    "cli_playtest": CLI_PLAYTEST_STACKS,
     "deployable_url": DEPLOYABLE_URL_STACKS,
 }
 
@@ -143,6 +154,8 @@ GATES: tuple[GateSpec, ...] = (
              "skyn3t.studio.runner:StudioRunner._run_workflow_check"),
     GateSpec("cli_check", CLI_STACKS, "cli_check_enabled",
              "skyn3t.studio.runner:StudioRunner._run_cli_check"),
+    GateSpec("cli_playtest", CLI_PLAYTEST_STACKS, "cli_playtest_enabled",
+             "skyn3t.studio.runner:StudioRunner._run_cli_playtest"),
     # Ship pillar — after a REAL deploy, re-run the liveness/contract probes
     # against the LIVE url. Opt-in (deploy_check_enabled defaults False) and runs
     # POST-deploy (from `skyn3t deploy --now`), not in the in-build gate loop.

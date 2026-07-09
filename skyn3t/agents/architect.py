@@ -153,10 +153,12 @@ class ArchitectAgent(BaseAgent):
         if stack in _SWIFT_STACKS:
             prompt += ("\n\nIMPORTANT: this is a NATIVE macOS app in Swift + SwiftUI built by "
                        "Swift Package Manager — NOT a web app. Plan a root Package.swift "
-                       "(executable target 'App' + library target 'AppCore' + test target), "
+                       "(executables 'App' and 'AppCLI' + library 'AppCore' + test target), "
                        "SwiftUI sources under Sources/App/ (a @main App in MainApp.swift + "
                        "views), the PURE logic (models/state, NO SwiftUI import) under "
-                       "Sources/AppCore/, and XCTests under Tests/AppCoreTests/. Use ONLY "
+                       "Sources/AppCore/, an offline deterministic prompt loop over AppCore "
+                       "under Sources/AppCLI/main.swift, `.skyn3t-cli-playtest.json`, and "
+                       "XCTests under Tests/AppCoreTests/. Use ONLY "
                        ".swift files — NEVER package.json, index.html, JS/TS, or any web files.")
         ref = p.get("reference_image")
         if ref:

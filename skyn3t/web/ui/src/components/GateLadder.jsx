@@ -24,6 +24,7 @@ const GATE_META = {
   rag_check: { rung: "Retrieves", proves: "ingest → query → answer", glyph: "❋", order: 41 },
   workflow_check: { rung: "Runs", proves: "the /trigger contract holds", glyph: "⇶", order: 42 },
   cli_check: { rung: "Obeys", proves: "the command surface works", glyph: "⌘", order: 43 },
+  cli_playtest: { rung: "Interacts", proves: "scripted terminal flows work", glyph: "↵", order: 44 },
   game_visual: { rung: "Looks right", proves: "vision-judged mid-play", glyph: "✺", order: 50 },
   qa_playtest: { rung: "Plays", proves: "driven end to end", glyph: "▶", order: 60 },
 };

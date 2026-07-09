@@ -37,7 +37,10 @@ def test_trigger_ignores_ordinary_cli_briefs():
 
 def test_copilot_brief_gets_the_event_stream_scaffold():
     files = scaffold_for("python_cli", "k8s-pilot", "a cli agent for kubernetes debugging")
-    for required in ("cli_core.py", "scenarios.json", "test_cli_agent.py", "pyproject.toml"):
+    for required in (
+        "cli_core.py", "scenarios.json", "test_cli_agent.py", "pyproject.toml",
+        ".skyn3t-cli-playtest.json",
+    ):
         assert required in files, required
     assert "session_start" in files["cli_core.py"]
     assert "workspace-write" in files["main.py"]
@@ -46,11 +49,23 @@ def test_copilot_brief_gets_the_event_stream_scaffold():
     assert "dependencies = []" in files["pyproject.toml"]
     for banned in ("import fastapi", "import httpx", "import typer"):
         assert banned not in files["cli_core.py"] and banned not in files["main.py"]
+    assert "chat" in files["main.py"]
+
+    contract = json.loads(files[".skyn3t-cli-playtest.json"])
+    assert contract["version"] == 1
+    assert contract["command"] == ["{python}", "-B", "main.py"]
+    assert contract["env"] == {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}
+    assert {scenario["name"] for scenario in contract["scenarios"]} == {
+        "help", "interactive", "invalid-input",
+    }
+    interactive = next(s for s in contract["scenarios"] if s["name"] == "interactive")
+    assert any(step.get("send") == "/exit" for step in interactive["steps"])
 
 
 def test_plain_cli_brief_is_unchanged():
     files = scaffold_for("python_cli", "todo", "a command line todo manager")
     assert "cli_core.py" not in files
+    assert ".skyn3t-cli-playtest.json" not in files
 
 
 def test_copilot_scaffold_own_proof_passes_with_zero_deps():
@@ -80,6 +95,12 @@ def test_copilot_scaffold_own_proof_passes_with_zero_deps():
         events = [json.loads(line) for line in run.stdout.splitlines() if line]
         assert events[0]["type"] == "session_start"
         assert events[-1]["type"] == "answer"
+
+        from skyn3t.studio.cli_playtest import check_cli_playtest
+
+        verdict = check_cli_playtest(root, "python_cli")
+        assert verdict.ok, verdict.to_dict()
+        assert verdict.checked["scenario_count"] == 3
 
 
 def test_proof_run_passes_the_variant_cleanly(tmp_path):

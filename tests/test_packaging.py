@@ -11,6 +11,13 @@ from scripts.check_release_wheel import compare_wheels
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_cli_playtest_driver_is_a_runtime_dependency() -> None:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = config["project"]["dependencies"]
+
+    assert any(dependency.startswith("pexpect>=4.9") for dependency in dependencies)
+
+
 def test_setuptools_discovery_rejects_implicit_namespace_directories() -> None:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     discovery = config["tool"]["setuptools"]["packages"]["find"]

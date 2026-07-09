@@ -21,7 +21,7 @@ def test_each_variant_brief_gets_its_contract():
          ("PAPER-ONLY", "NO_DATA", "as_of", "Decimal")),
         ("rag", "a chatbot that remembers me", ("MEMORY_FILE", "AFTER its own")),
         ("python_cli", "a terminal assistant for my notes",
-         ("workspace-write", "session_start", "denied")),
+         ("workspace-write", "session_start", "denied", "cli-playtest", "chat")),
         ("nextjs", "a Next.js app with Supabase auth",
          ("NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY",
           "SUPABASE_SERVICE_ROLE_KEY", "server-only")),

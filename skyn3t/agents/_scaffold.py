@@ -2838,6 +2838,8 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
     - ``Sources/App/ContentView.swift`` — the SwiftUI view that only RENDERS the
       model and forwards user actions to it.
     - ``Sources/App/MainApp.swift`` — the ``@main`` SwiftUI ``App`` entry.
+    - ``Sources/AppCLI/main.swift`` — an offline prompt loop over the same
+      AppCore model, giving the PTY playtest a deterministic binary.
 
     The library/executable/test target split (not a single executable target) is
     what lets the tests link ONLY the pure core — testing an ``@main`` executable
@@ -2861,6 +2863,11 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "        // The SwiftUI app: the @main entry + the views that render AppCore.\n"
             "        .executableTarget(\n"
             '            name: "App",\n'
+            '            dependencies: ["AppCore"]\n'
+            "        ),\n"
+            "        // Headless companion: deterministic PTY proof over AppCore.\n"
+            "        .executableTarget(\n"
+            '            name: "AppCLI",\n'
             '            dependencies: ["AppCore"]\n'
             "        ),\n"
             "        // Unit tests exercise the pure core.\n"
@@ -2976,6 +2983,70 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "    }\n"
             "}\n"
         ),
+        "Sources/AppCLI/main.swift": (
+            "import AppCore\n"
+            "import Darwin\n"
+            "import Foundation\n\n"
+            "private func write(_ text: String, to handle: FileHandle = .standardOutput) {\n"
+            "    handle.write(Data(text.utf8))\n"
+            "}\n\n"
+            "private func runCLI() -> Int32 {\n"
+            "    let arguments = Array(CommandLine.arguments.dropFirst())\n"
+            '    if arguments == ["--help"] {\n'
+            '        print("Usage: AppCLI [--help]")\n'
+            '        print("Interactive commands: add <title>, list, toggle <number>, quit")\n'
+            "        return 0\n"
+            "    }\n"
+            "    if !arguments.isEmpty {\n"
+            '        write("error: unknown option \\(arguments[0])\\n", to: .standardError)\n'
+            "        return 2\n"
+            "    }\n\n"
+            "    var model = AppModel()\n"
+            "    while true {\n"
+            '        write("app> ")\n'
+            "        guard let raw = readLine() else {\n"
+            '            print("goodbye")\n'
+            "            return 0\n"
+            "        }\n"
+            "        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)\n"
+            '        if line == "quit" || line == "exit" {\n'
+            '            print("goodbye")\n'
+            "            return 0\n"
+            "        }\n"
+            '        if line.hasPrefix("add ") {\n'
+            '            let title = String(line.dropFirst(4))\n'
+            "            if model.add(title) {\n"
+            '                print("added: \\(title.trimmingCharacters(in: .whitespaces))")\n'
+            "            } else {\n"
+            '                write("error: title cannot be blank\\n", to: .standardError)\n'
+            "            }\n"
+            "            continue\n"
+            "        }\n"
+            '        if line == "list" {\n'
+            "            if model.items.isEmpty {\n"
+            '                print("no items")\n'
+            "            } else {\n"
+            "                for (index, item) in model.items.enumerated() {\n"
+            '                    let mark = item.done ? "x" : " "\n'
+            '                    print("\\(index + 1). [\\(mark)] \\(item.title)")\n'
+            "                }\n"
+            "            }\n"
+            "            continue\n"
+            "        }\n"
+            '        if line.hasPrefix("toggle "),\n'
+            '           let number = Int(line.dropFirst(7)),\n'
+            "           number > 0,\n"
+            "           model.items.indices.contains(number - 1) {\n"
+            "            model.toggle(model.items[number - 1].id)\n"
+            '            print("toggled: \\(number)")\n'
+            "            continue\n"
+            "        }\n"
+            '        write("error: unknown command; use add, list, toggle, or quit\\n",\n'
+            "              to: .standardError)\n"
+            "    }\n"
+            "}\n\n"
+            "exit(runCLI())\n"
+        ),
         "Tests/AppCoreTests/AppCoreTests.swift": (
             "import XCTest\n"
             "@testable import AppCore\n\n"
@@ -3007,6 +3078,27 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "    }\n"
             "}\n"
         ),
+        ".skyn3t-cli-playtest.json": (
+            "{\n"
+            '  "version": 1,\n'
+            '  "command": [".build/debug/AppCLI"],\n'
+            '  "env": {"TERM": "dumb"},\n'
+            '  "scenarios": [\n'
+            '    {"name": "help", "args": ["--help"],\n'
+            '     "steps": [{"expect": "Usage: AppCLI"}], "exit_code": 0},\n'
+            '    {"name": "interactive", "args": [], "steps": [\n'
+            '       {"expect": "app> ", "send": "add buy milk"},\n'
+            '       {"expect": "added: buy milk"},\n'
+            '       {"expect": "app> ", "send": "list"},\n'
+            '       {"expect": "1. [ ] buy milk"},\n'
+            '       {"expect": "app> ", "send": "quit"},\n'
+            '       {"expect": "goodbye"}\n'
+            '     ], "exit_code": 0},\n'
+            '    {"name": "invalid-input", "args": ["--unknown"],\n'
+            '     "steps": [{"expect": "error: unknown option"}], "exit_code": 2}\n'
+            '  ]\n'
+            "}\n"
+        ),
         ".gitignore": ".build/\n.swiftpm/\nDerivedData/\n*.xcodeproj\n",
         "README.md": compose_readme(
             title,
@@ -3020,6 +3112,8 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             usage=(
                 "Build and run the app:\n\n"
                 "```bash\nswift run App\n```\n\n"
+                "Drive the same core through its offline terminal companion:\n\n"
+                "```bash\nswift run AppCLI\n```\n\n"
                 "Run the unit test suite (the pure logic core):\n\n"
                 "```bash\nswift test\n```\n\n"
                 "Open it in Xcode instead with `xed .` (or double-click "
@@ -3030,12 +3124,15 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
                 ("Sources/AppCore/AppModel.swift", "Pure model/state + logic (no SwiftUI) — unit-tested"),
                 ("Sources/App/ContentView.swift", "SwiftUI view — renders the model, forwards user actions"),
                 ("Sources/App/MainApp.swift", "@main SwiftUI App entry (WindowGroup)"),
+                ("Sources/AppCLI/main.swift", "Deterministic offline CLI over AppCore"),
+                (".skyn3t-cli-playtest.json", "Safe project-local PTY playtest contract"),
                 ("Tests/AppCoreTests/AppCoreTests.swift", "XCTest unit tests for the pure core"),
             ],
             features=[
                 "Native macOS SwiftUI app (no browser, no npm)",
                 "Pure logic core split out from the view — one authoritative model, easily testable",
                 "Swift Package Manager build (swift build / swift run / swift test)",
+                "Deterministic CLI companion for interactive headless proof",
                 "XCTest unit tests exercising the core in isolation",
             ],
             extra=(
@@ -4461,6 +4558,7 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             '"""' + doc_title + " — a terminal copilot with a typed event-stream contract.\n\n"
             "Commands:\n"
             "  python main.py run '<prompt>' [--format json|text] [--mode read-only|workspace-write]\n"
+            "  python main.py chat [--format json|text] [--mode read-only|workspace-write]\n"
             "  python main.py doctor --output-format json\n\n"
             "``run --format json`` prints ONE JSON EVENT PER LINE (session_start,\n"
             "tool_call, tool_result, answer, denied) — a mechanical contract any\n"
@@ -4475,6 +4573,13 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             "from pathlib import Path\n\n"
             "import cli_core\n\n"
             "ROOT = Path(__file__).resolve().parent\n\n\n"
+            "def _print_event(event: dict, output_format: str) -> None:\n"
+            "    if output_format == \"json\":\n"
+            "        print(json.dumps(event, ensure_ascii=False))\n"
+            "    else:\n"
+            "        print(f\"[{event.get('type')}] \" + json.dumps(\n"
+            "            {k: v for k, v in event.items() if k != \"type\"},\n"
+            "            ensure_ascii=False))\n\n\n"
             "def _cmd_run(args) -> int:\n"
             "    scenarios = cli_core.load_scenarios(ROOT / \"scenarios.json\")\n"
             "    scenario = cli_core.pick_scenario(scenarios, args.prompt)\n"
@@ -4483,14 +4588,33 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             "        return 1\n"
             "    events, exit_code = cli_core.run_scenario(scenario, args.workspace, args.mode)\n"
             "    for event in events:\n"
-            '        if args.format == "json":\n'
-            "            print(json.dumps(event, ensure_ascii=False))\n"
-            "        else:\n"
-            '            print(f"[{event.get(\'type\')}] " + json.dumps(\n'
-            '                {k: v for k, v in event.items() if k != "type"}, ensure_ascii=False))\n'
+            "        _print_event(event, args.format)\n"
             "    if exit_code:\n"
             '        print("one or more tool calls were denied", file=sys.stderr)\n'
             "    return exit_code\n\n\n"
+            "def _cmd_chat(args) -> int:\n"
+            '    \"\"\"Offline prompt loop used by people and the project-local PTY proof.\"\"\"\n'
+            '    scenarios = cli_core.load_scenarios(ROOT / "scenarios.json")\n'
+            "    while True:\n"
+            "        try:\n"
+            '            prompt = input("copilot> ")\n'
+            "        except (EOFError, KeyboardInterrupt):\n"
+            '            print("goodbye")\n'
+            "            return 0\n"
+            '        if prompt.strip().lower() in {"/exit", "exit", "quit"}:\n'
+            '            print("goodbye")\n'
+            "            return 0\n"
+            "        scenario = cli_core.pick_scenario(scenarios, prompt)\n"
+            "        if scenario is None:\n"
+            '            print("no scenario matched and no fallback exists", file=sys.stderr)\n'
+            "            return 1\n"
+            "        events, exit_code = cli_core.run_scenario(\n"
+            "            scenario, args.workspace, args.mode)\n"
+            "        for event in events:\n"
+            "            _print_event(event, args.format)\n"
+            "        if exit_code:\n"
+            '            print("one or more tool calls were denied", file=sys.stderr)\n'
+            "            return exit_code\n\n\n"
             "def _cmd_doctor(args) -> int:\n"
             "    checks: list[dict] = []\n"
             "    ok = True\n"
@@ -4521,12 +4645,19 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             '    run_p.add_argument("--mode", choices=("read-only", "workspace-write"),\n'
             '                       default="read-only")\n'
             '    run_p.add_argument("--workspace", default=".")\n'
+            '    chat_p = sub.add_parser("chat", help="start an offline interactive prompt loop")\n'
+            '    chat_p.add_argument("--format", choices=("json", "text"), default="text")\n'
+            '    chat_p.add_argument("--mode", choices=("read-only", "workspace-write"),\n'
+            '                        default="read-only")\n'
+            '    chat_p.add_argument("--workspace", default=".")\n'
             '    doc_p = sub.add_parser("doctor")\n'
             '    doc_p.add_argument("--output-format", choices=("json", "text"),\n'
             '                       default="text")\n'
             "    args = parser.parse_args(argv)\n"
             '    if args.command == "run":\n'
             "        return _cmd_run(args)\n"
+            '    if args.command == "chat":\n'
+            "        return _cmd_chat(args)\n"
             "    return _cmd_doctor(args)\n\n\n"
             'if __name__ == "__main__":\n'
             "    raise SystemExit(main())\n"
@@ -4557,6 +4688,26 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             "      ]\n"
             "    }\n"
             "  ]\n"
+            "}\n"
+        ),
+        ".skyn3t-cli-playtest.json": (
+            "{\n"
+            '  "version": 1,\n'
+            '  "command": ["{python}", "-B", "main.py"],\n'
+            '  "env": {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"},\n'
+            '  "scenarios": [\n'
+            '    {"name": "help", "args": ["--help"],\n'
+            '     "steps": [{"expect": "terminal copilot"}], "exit_code": 0},\n'
+            '    {"name": "interactive", "args": ["chat", "--format", "json"],\n'
+            '     "steps": [\n'
+            '       {"expect": "copilot> ", "send": "hello there"},\n'
+            '       {"expect": "\\\"type\\\": \\\"answer\\\""},\n'
+            '       {"expect": "copilot> ", "send": "/exit"},\n'
+            '       {"expect": "goodbye"}\n'
+            '     ], "exit_code": 0},\n'
+            '    {"name": "invalid-input", "args": ["not-a-command"],\n'
+            '     "steps": [{"expect": "invalid choice"}], "exit_code": 2}\n'
+            '  ]\n'
             "}\n"
         ),
         "test_cli_agent.py": (
@@ -4606,6 +4757,14 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             "    assert proc.returncode == 0, proc.stdout + proc.stderr\n"
             "    report = json.loads(proc.stdout)\n"
             '    assert report["ok"] is True and report["checks"]\n\n\n'
+            "def test_chat_is_deterministic_and_exits_cleanly():\n"
+            "    proc = subprocess.run(\n"
+            '        [sys.executable, "-B", str(ROOT / "main.py"), "chat",\n'
+            '         "--format", "json"], input="hello there\\n/exit\\n",\n'
+            "        capture_output=True, text=True, timeout=60)\n"
+            "    assert proc.returncode == 0, proc.stdout + proc.stderr\n"
+            '    assert \"\\\"type\\\": \\\"answer\\\"\" in proc.stdout\n'
+            '    assert "goodbye" in proc.stdout\n\n\n'
             "def test_validate_event_rejects_junk():\n"
             '    assert cli_core.validate_event({"type": "nonsense"})\n'
             '    assert cli_core.validate_event({"type": "answer", "text": " "})\n'
@@ -4643,15 +4802,20 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
                 "and paths that escape the workspace are always denied — in every\n"
                 "mode. Extend `scenarios.json` (or wire a real provider) to grow the\n"
                 "copilot's behavior."
+                " Start an offline interactive session with `python main.py chat`; "
+                "the project-local `.skyn3t-cli-playtest.json` records its literal "
+                "prompt/response proof without granting network or write access."
             ),
             structure=[
-                ("main.py", "The CLI: run | doctor (argparse, stdlib only)"),
+                ("main.py", "The CLI: run | chat | doctor (argparse, stdlib only)"),
                 ("cli_core.py", "Pure core: event schema, scenario playback, guarded tools"),
                 ("scenarios.json", "Bundled mock-provider scenarios (offline answers)"),
+                (".skyn3t-cli-playtest.json", "Safe project-local PTY playtest contract"),
                 ("test_cli_agent.py", "Deterministic proof: contract + permissions"),
             ],
             features=[
                 "Typed JSONL event stream — run output is mechanically verifiable",
+                "Offline interactive chat loop with a declarative PTY proof",
                 "Permission modes: read-only by default, writes are opt-in",
                 "Workspace boundary + symlink-escape + size-cap write guards",
                 "Bundled scenario playback — works offline with zero keys",

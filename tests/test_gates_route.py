@@ -49,6 +49,11 @@ async def test_toggle_by_gate_name_updates_live_settings(tmp_path, monkeypatch):
     payload = await set_gate_enabled(state, "rag_check_enabled", True, persist=False)
     assert state.settings.rag_check_enabled is True
 
+    payload = await set_gate_enabled(state, "cli_playtest", False, persist=False)
+    assert state.settings.cli_playtest_enabled is False
+    entry = next(g for g in payload["gates"] if g["gate"] == "cli_playtest")
+    assert entry["enabled"] is False
+
 
 async def test_unknown_gate_is_rejected_not_setattred(tmp_path):
     state = _make_state(tmp_path)

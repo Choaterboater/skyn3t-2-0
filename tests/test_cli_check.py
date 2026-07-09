@@ -181,4 +181,4 @@ def test_terminal_copilot_variant_passes(tmp_path):
     v = check_cli(tmp_path, stack="python_cli", python_exec=sys.executable)
     assert not v.skipped, v.to_dict()
     assert v.ok, v.to_dict()
-    assert set(v.checked["subcommands"]) == {"run", "doctor"}
+    assert set(v.checked["subcommands"]) == {"run", "chat", "doctor"}

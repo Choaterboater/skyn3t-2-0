@@ -23,6 +23,8 @@ dependencies = [
     "rich>=13.7",
     "python-dotenv>=1.0",
     "structlog>=24.1",
+    # Cross-platform interactive process driver for the default cli_playtest gate.
+    "pexpect>=4.9",
 ]
 
 [project.optional-dependencies]

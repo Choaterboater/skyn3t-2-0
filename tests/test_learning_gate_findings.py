@@ -27,6 +27,11 @@ _EXTRA = {
         ],
     },
     "seo": {"ok": False, "skipped": False, "issues": ["page has no <title>"]},
+    "cli_playtest": {
+        "ok": False,
+        "skipped": False,
+        "issues": ["scenario 'create note' never printed the title prompt"],
+    },
     "mcp_check": {"ok": False, "skipped": True, "issues": [],
                   "reason": "mcp SDK not importable"},
     "liveness": {"skipped": False, "dead_routes": ["/about", "/pricing"]},
@@ -60,6 +65,7 @@ def test_extract_flattens_and_prefixes_gate_issues():
     joined = "\n".join(findings)
     assert "rag_check: the app called the LLM seam" in joined
     assert "seo: page has no <title>" in joined
+    assert "cli_playtest: scenario 'create note' never printed the title prompt" in joined
     assert "liveness: route(s) dead after repair — /about, /pricing" in joined
     # Lessons stay short/one-line — no multi-line gate dump leaks in.
     assert all("\n" not in f and len(f) <= 180 for f in findings)

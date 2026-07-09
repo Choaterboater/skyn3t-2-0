@@ -353,6 +353,8 @@ def test_settings_explains_model_precedence() -> None:
 
 def test_gate_ladder_hero_contains_mobile_overflow() -> None:
     ladder = (COMPONENTS / "GateLadder.jsx").read_text(encoding="utf-8")
+    assert "cli_playtest" in ladder
+    assert "scripted terminal flows work" in ladder
     assert "overflow-x-auto" in ladder
     assert "overscroll-x-contain" in ladder
     assert "min-w-[720px]" in ladder

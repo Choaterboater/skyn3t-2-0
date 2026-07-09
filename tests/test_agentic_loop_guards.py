@@ -110,6 +110,64 @@ def test_doom_loop_not_tripped_by_varying_calls(tmp_path, monkeypatch):
     assert not any("identical tool call" in t.lower() for t in _user_texts(fake.bodies))
 
 
+def _changed_path_churn_turns(*, offset: int = 0):
+    turns = []
+    for i in range(8):
+        n = offset + i
+        turns.extend([
+            _tool_turn(
+                "write_file",
+                {"path": "run.js", "content": f"export const run = {n};\n"},
+                f"run-{n}",
+            ),
+            _tool_turn(
+                "write_file",
+                {"path": f"src/page-{n}.js", "content": f"export const page = {n};\n"},
+                f"page-{n}",
+            ),
+        ])
+    return turns
+
+
+def test_changed_path_churn_gets_batching_nudge_without_reducing_scope(
+    tmp_path, monkeypatch
+):
+    turns = _changed_path_churn_turns() + [_tool_turn("finish", {}, "finish")]
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(
+        _client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser")
+    )
+
+    nudges = [
+        text for text in _user_texts(fake.bodies)
+        if "write_files" in text and "run.js" in text
+    ]
+    assert nudges
+    assert res["ok"] is True
+    assert res["files_written"] == 16
+    assert all((tmp_path / f"src/page-{i}.js").is_file() for i in range(8))
+
+
+def test_changed_path_churn_aborts_second_dominant_window_and_preserves_work(
+    tmp_path, monkeypatch
+):
+    turns = _changed_path_churn_turns() + _changed_path_churn_turns(offset=8)
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(
+        _client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser")
+    )
+
+    assert fake.i == 32
+    assert res["ok"] is False
+    assert "repeated changed rewrites" in res["error"]
+    assert res["files_written"] == 32
+    assert all((tmp_path / f"src/page-{i}.js").is_file() for i in range(16))
+
+
 # ---------------------------------------------------------------------------
 # Verify-on-stop (item 19, degrade-open)
 # ---------------------------------------------------------------------------

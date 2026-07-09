@@ -389,6 +389,25 @@ async def generate_assets(
             (assets_dir / "assets.json").write_text(
                 json.dumps(manifest["assets"], indent=2) + "\n", encoding="utf-8"
             )
+            credits = proj / "CREDITS.md"
+            existing = credits.read_text(encoding="utf-8") if credits.exists() else "# Credits\n"
+            lines: list[str] = []
+            for asset in written:
+                file_ref = asset["file"]
+                if file_ref in existing:
+                    continue
+                lines.append(
+                    f"- `{file_ref}`: generated via Replicate `{model}` "
+                    f"for {asset['subject']}"
+                )
+            if lines:
+                heading = "\n\n## Generated Images\n"
+                if "## Generated Images" in existing:
+                    heading = "\n"
+                credits.write_text(
+                    existing.rstrip() + heading + "\n".join(lines) + "\n",
+                    encoding="utf-8",
+                )
         except OSError as exc:
             log.warning("assets.manifest_write_failed", error=str(exc)[:160])
     log.info("assets.generated", count=len(written), subjects=[a["subject"] for a in written])

@@ -61,6 +61,7 @@ async def test_slice_agentic_keeps_small_delivery_no_scaffold_floor(tmp_path):
             "export default function Card(){ return null }\n", encoding="utf-8")
         assert kwargs["allowed_paths"] == ["src/components/Card.jsx"]
         assert kwargs["enforce_antistub"] is False
+        assert kwargs["verify_on_stop"] is False
         return {"ok": True, "backend": "claude_cli"}
 
     agent.llm._backend = "claude_cli"  # type: ignore[attr-defined]
@@ -123,10 +124,12 @@ async def test_slice_partial_delivery_retries_and_remains_degraded(tmp_path):
     agent = CodeAgent(event_bus=EventBus())
     await agent.start()
     calls = {"n": 0}
+    verify_overrides = []
     original = "export const preserved = 'substantial partial source';\n"
 
     async def fake_agentic_build(prompt, workdir, **kwargs):
         calls["n"] += 1
+        verify_overrides.append(kwargs["verify_on_stop"])
         target = pathlib.Path(workdir, "src/components/Card.jsx")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(original, encoding="utf-8")
@@ -159,6 +162,7 @@ async def test_slice_partial_delivery_retries_and_remains_degraded(tmp_path):
         ))
 
     assert calls["n"] == 2
+    assert verify_overrides == [False, False]
     assert result.output["degraded"] is True
     assert result.output["agentic"]["complete"] is False
     assert result.output["agentic"]["missing_files"] == ["src/components/Chart.jsx"]

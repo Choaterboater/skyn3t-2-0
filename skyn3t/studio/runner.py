@@ -3558,6 +3558,7 @@ class StudioRunner:
             test_first=extra.get("test_first"),
             best_of_n=extra.get("best_of_n"),
             gated_stages=tuple(extra.get("gated_stages", ())),
+            full_app_contract=bool(extra.get("full_app_contract")),
         )
 
         manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
@@ -4600,6 +4601,7 @@ class StudioRunner:
             checklist=plan.checklist,
             execution_backend=self.settings.execution_backend,
             stack=plan.stack,
+            seed_dir=main_wt.dir,
             worktree_registry=worktrees,
             preserve_on_cancel=True,
         )

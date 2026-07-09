@@ -398,12 +398,13 @@ class Planner:
         test_first: bool | None = None,
         best_of_n: int | None = None,
         gated_stages: tuple[str, ...] = (),
+        full_app_contract: bool = False,
     ) -> BuildPlan:
         """Produce an ordered :class:`BuildPlan` from a brief."""
         stack = detect_stack(brief, stack_hint)
         bon = self._resolve_best_of_n(best_of_n)
-        tf = self._resolve_test_first(test_first, bon)
-        if test_first is None and stack in _SELF_TESTED_STACKS:
+        tf = self._resolve_test_first(True if full_app_contract else test_first, bon)
+        if not full_app_contract and test_first is None and stack in _SELF_TESTED_STACKS:
             tf = False
 
         stages = default_pipeline()

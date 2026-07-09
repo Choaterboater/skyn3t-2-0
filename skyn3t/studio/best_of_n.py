@@ -18,7 +18,13 @@ from typing import Any
 
 from skyn3t.core.agent import TaskResult
 from skyn3t.studio.proof_run import ProofResult, proof_run
-from skyn3t.worktree import Worktree, cleanup_worktree, create_worktree, list_files
+from skyn3t.worktree import (
+    Worktree,
+    cleanup_worktree,
+    create_worktree,
+    list_files,
+    merge_back,
+)
 
 # A factory that runs ONE code-stage trajectory in a given worktree and returns
 # the stage TaskResult. Provided by the StudioRunner.
@@ -117,6 +123,7 @@ async def sample(
     checklist: list[str] | None = None,
     execution_backend: str = "auto",
     stack: str = "",
+    seed_dir: str | None = None,
     worktrees_root: str | None = None,
     worktree_registry: list[Worktree] | None = None,
     preserve_on_cancel: bool = False,
@@ -124,6 +131,10 @@ async def sample(
     """Run ``n`` code trajectories in parallel, proof each, select the best.
 
     ``trajectory(worktree, index)`` runs one code stage into the given worktree.
+    When ``seed_dir`` is provided, its files are copied into every candidate
+    before any trajectory starts. This preserves deterministic tests and assets
+    authored by earlier stages so each candidate is generated and proved
+    against the same complete input tree.
     The caller owns merging and cleaning the winner; this function normally
     cleans every loser. A runner that needs to recover partial output on
     cancellation can register every worktree up front and defer cancellation
@@ -133,6 +144,8 @@ async def sample(
     candidates: list[Candidate] = []
     for i in range(n):
         wt = create_worktree(base_dir, f"{slug}-cand{i}", worktrees_root=worktrees_root)
+        if seed_dir:
+            merge_back(seed_dir, wt.dir, overwrite=True, clean=False)
         candidates.append(Candidate(index=i, worktree=wt))
         if worktree_registry is not None:
             worktree_registry.append(wt)

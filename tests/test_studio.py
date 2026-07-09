@@ -22,7 +22,7 @@ from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import Planner, detect_stack, file_checklist
 from skyn3t.studio.proof_run import proof_run
 from skyn3t.studio.runner import StudioRunner
-from skyn3t.worktree import create_worktree, list_files, merge_back
+from skyn3t.worktree import cleanup_worktree, create_worktree, list_files, merge_back
 
 
 # ---- planner -------------------------------------------------------------
@@ -65,6 +65,21 @@ def test_planner_best_of_n_implies_test_first():
     assert plan.best_of_n == 3
     assert plan.test_first is True
     assert "test_author" in plan.stage_names
+
+
+def test_planner_full_app_contract_forces_test_author_for_fast_profile():
+    plan = Planner().plan(
+        "Build a complete Astro website",
+        "full-site",
+        stack_hint="astro",
+        test_first=False,
+        best_of_n=1,
+        full_app_contract=True,
+    )
+
+    assert plan.test_first is True
+    assert "test_author" in plan.stage_names
+    assert plan.stage_names.index("test_author") < plan.stage_names.index("code")
 
 
 def test_planner_uses_default_best_of_two_from_settings(tmp_path):
@@ -241,6 +256,51 @@ def test_best_of_n_fallback_most_complete():
         sel = bon.select([a, b])
         assert not sel.any_passed
         assert sel.winner.index == 1
+
+
+def test_best_of_n_seeds_every_candidate_with_prior_tests_and_assets(tmp_path):
+    async def run():
+        seed = tmp_path / "seed"
+        acceptance = seed / "tests" / "test_acceptance_contract.py"
+        asset = seed / "public" / "assets" / "generated.webp"
+        acceptance.parent.mkdir(parents=True)
+        asset.parent.mkdir(parents=True)
+        acceptance.write_text("def test_contract():\n    assert True\n", encoding="utf-8")
+        asset.write_bytes(b"real-generated-image")
+        seen: list[int] = []
+
+        async def trajectory(worktree, index):
+            assert (worktree.path / acceptance.relative_to(seed)).read_text(
+                encoding="utf-8"
+            ).startswith("def test_contract")
+            assert (worktree.path / asset.relative_to(seed)).read_bytes() == b"real-generated-image"
+            source = worktree.path / "src" / "main.py"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(f"candidate = {index}\n", encoding="utf-8")
+            seen.append(index)
+            return TaskResult(
+                task_id=f"candidate-{index}",
+                success=True,
+                output={"files_written": 1},
+            )
+
+        selection = await bon.sample(
+            str(tmp_path / "Projects"),
+            "seeded",
+            2,
+            trajectory,
+            seed_dir=str(seed),
+            checklist=["src/main.py"],
+        )
+        assert sorted(seen) == [0, 1]
+        assert selection.winner is not None
+        assert all(candidate.proof is not None for candidate in selection.candidates)
+        assert (selection.winner.worktree.path / asset.relative_to(seed)).read_bytes() == (
+            b"real-generated-image"
+        )
+        cleanup_worktree(selection.winner.worktree)
+
+    asyncio.run(run())
 
 
 # ---- manifest round-trip -------------------------------------------------

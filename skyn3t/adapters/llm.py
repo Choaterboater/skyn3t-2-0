@@ -1404,6 +1404,7 @@ class LLMClient:
         timeout: int | None = None,
         stack: str = "",
         allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
+        enforce_antistub: bool = True,
     ) -> dict:
         """Whole-project agentic codegen on an OpenRouter model: the model writes the
         app itself via tool-calls (write_file/read_file/list_files/finish) with full
@@ -1554,7 +1555,9 @@ class LLMClient:
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
         # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
-        stub_nudge_applies = (not stack) or (stack in _ANTISTUB_NUDGE_STACKS)
+        stub_nudge_applies = enforce_antistub and (
+            (not stack) or (stack in _ANTISTUB_NUDGE_STACKS)
+        )
 
         def _looks_stub() -> bool:
             return _agentic_project_looks_stub(root, stack)
@@ -1730,6 +1733,7 @@ class LLMClient:
         provider: str | None = None,
         stack: str = "",
         allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
+        enforce_antistub: bool = True,
     ) -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
@@ -1767,6 +1771,7 @@ class LLMClient:
                     timeout=timeout,
                     stack=stack,
                     allowed_paths=allowed_paths,
+                    enforce_antistub=enforce_antistub,
                 )
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         if not self._cli_available(provider):

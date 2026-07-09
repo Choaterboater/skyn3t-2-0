@@ -1382,6 +1382,7 @@ class CodeAgent(BaseAgent):
                     prompt,
                     str(worktree),
                     allowed_paths=sorted(expected),
+                    enforce_antistub=False,
                     **agentic_kwargs,
                 )
                 agentic_ok = bool(res.get("ok", True))

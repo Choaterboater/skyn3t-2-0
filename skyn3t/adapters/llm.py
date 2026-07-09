@@ -1396,8 +1396,15 @@ class LLMClient:
             prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
         )
 
-    async def _openrouter_agentic(self, prompt: str, workdir: str, model: str,
-                                  timeout: int | None = None, stack: str = "") -> dict:
+    async def _openrouter_agentic(
+        self,
+        prompt: str,
+        workdir: str,
+        model: str,
+        timeout: int | None = None,
+        stack: str = "",
+        allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> dict:
         """Whole-project agentic codegen on an OpenRouter model: the model writes the
         app itself via tool-calls (write_file/read_file/list_files/finish) with full
         context — coherent like bolt/v0/Aider, vs skyn3t's weak per-file gen. Files
@@ -1413,6 +1420,17 @@ class LLMClient:
                 return None
             return p if (p == root or str(p).startswith(str(root) + os.sep)) else None
 
+        allowed: set[str] | None = None
+        if allowed_paths is not None:
+            allowed = set()
+            for raw in allowed_paths:
+                target = _safe(str(raw))
+                if target is not None and target != root:
+                    allowed.add(os.path.normcase(str(target)))
+
+        def _owned(path: Path) -> bool:
+            return allowed is None or os.path.normcase(str(path)) in allowed
+
         def _run_tool(name: str, args: dict) -> tuple[str, int]:
             """Run one tool and return ``(message, changed_file_count)``.
 
@@ -1424,6 +1442,8 @@ class LLMClient:
                 p = _safe(rel)
                 if not rel or not p or p == root:
                     return "ERROR: path escapes the project", 0
+                if not _owned(p):
+                    return f"ERROR: path is outside this slice's owned files: {rel}", 0
                 try:
                     body = str(args.get("content", ""))
                     if p.is_file() and p.read_text(
@@ -1453,6 +1473,14 @@ class LLMClient:
                         return f"ERROR: duplicate batch path: {rel}", 0
                     targets.add(target_key)
                     checked.append((p, rel, str(item.get("content", ""))))
+                rejected = [rel for p, rel, _body in checked if not _owned(p)]
+                checked = [item for item in checked if _owned(item[0])]
+                if not checked:
+                    return (
+                        "ERROR: every batch path is outside this slice's owned files: "
+                        + ", ".join(rejected[:8]),
+                        0,
+                    )
                 try:
                     changed: list[tuple[Path, str, str]] = []
                     for p, rel, body in checked:
@@ -1467,11 +1495,13 @@ class LLMClient:
                     total = sum(len(body) for _p, _rel, body in changed)
                     if not changed:
                         return f"OK unchanged batch ({len(checked)} files)", 0
-                    return (
+                    message = (
                         f"OK wrote batch ({len(changed)} changed of {len(checked)} files, "
-                        f"{total} bytes)",
-                        len(changed),
+                        f"{total} bytes)"
                     )
+                    if rejected:
+                        message += "; rejected out-of-scope: " + ", ".join(rejected[:8])
+                    return message, len(changed)
                 except OSError as e:
                     return f"ERROR: {e}", 0
             if name == "read_file":
@@ -1691,9 +1721,16 @@ class LLMClient:
         return b.endswith("_cli") or (
             b == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)))
 
-    async def agentic_build(self, prompt: str, workdir: str, timeout: int | None = None,
-                            model: str | None = None, provider: str | None = None,
-                            stack: str = "") -> dict:
+    async def agentic_build(
+        self,
+        prompt: str,
+        workdir: str,
+        timeout: int | None = None,
+        model: str | None = None,
+        provider: str | None = None,
+        stack: str = "",
+        allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
         This is the RIGHT way to use claude/kimi/copilot for codegen: one
@@ -1723,8 +1760,14 @@ class LLMClient:
                     setting_names=("openrouter_codegen_model", "preferred_model"),
                     task_type="codegen",
                 )
-                return await self._openrouter_agentic(prompt, workdir, m, timeout=timeout,
-                                                      stack=stack)
+                return await self._openrouter_agentic(
+                    prompt,
+                    workdir,
+                    m,
+                    timeout=timeout,
+                    stack=stack,
+                    allowed_paths=allowed_paths,
+                )
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         if not self._cli_available(provider):
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}

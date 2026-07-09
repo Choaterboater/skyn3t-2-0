@@ -167,6 +167,36 @@ def test_agentic_batch_rejects_duplicate_normalized_paths(tmp_path, monkeypatch)
     assert not (tmp_path / "app.py").exists()
 
 
+def test_agentic_slice_tool_writes_only_owned_paths(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_files", {"files": [
+            {"path": "config/owned.json", "content": '{"ok": true}\n'},
+            {"path": "src/out-of-scope.jsx", "content": "export default null;\n"},
+        ]}),
+        _tool_turn(
+            "write_file",
+            {"path": "src/also-out-of-scope.jsx", "content": "export default null;\n"},
+            "t2",
+        ),
+        _tool_turn("finish", {}, "t3"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    res = asyncio.run(_client()._openrouter_agentic(
+        "build config only",
+        str(tmp_path),
+        "m",
+        stack="fastapi",
+        allowed_paths=["config/owned.json"],
+    ))
+
+    assert res["ok"] is True
+    assert res["files_written"] == 1
+    assert (tmp_path / "config" / "owned.json").is_file()
+    assert not (tmp_path / "src" / "out-of-scope.jsx").exists()
+    assert not (tmp_path / "src" / "also-out-of-scope.jsx").exists()
+
+
 def test_agentic_write_progress_extends_nominal_window(tmp_path, monkeypatch):
     turns = [
         _tool_turn("write_files", {"files": [

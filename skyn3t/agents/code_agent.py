@@ -1379,7 +1379,11 @@ class CodeAgent(BaseAgent):
                     "text": prompt,
                 })
                 res = await self.llm.agentic_build(
-                    prompt, str(worktree), **agentic_kwargs)
+                    prompt,
+                    str(worktree),
+                    allowed_paths=sorted(expected),
+                    **agentic_kwargs,
+                )
                 agentic_ok = bool(res.get("ok", True))
                 confirmed = agentic_ok and bool(res.get("completed", agentic_ok))
                 agentic_error = str(res.get("error", "") or "")

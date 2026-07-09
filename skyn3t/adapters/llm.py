@@ -113,8 +113,10 @@ _AGENTIC_SYSTEM_CORE = (
     "standard command. Build exactly the kind of app the brief and the pinned stack "
     "describe — never silently switch to a different kind of project (e.g. do not turn "
     "a game, mobile, desktop, API or CLI brief into a website). "
-    "You are creating brand-new files from scratch in a fresh workspace — there is NO "
-    "pre-existing version of any file. Write every file IN FULL: NEVER elide code with "
+    "You are building in a project workspace that may already contain generated assets, "
+    "acceptance tests, or working files from an earlier stage/session. Inspect, preserve, "
+    "and reuse them; never replace a real binary asset with text or delete acceptance "
+    "tests. Write every code file you create or replace IN FULL: NEVER elide code with "
     "an edit-style placeholder such as '/* ... unchanged ... */', '// rest of the file "
     "is unchanged', '// ... existing code ...', or 'unchanged from the original'. Every "
     "function and class body must be fully implemented; an elided body ships a stub that "
@@ -560,6 +562,21 @@ class _BuildBudgetState:
 
 _BUILD_BUDGET_STATE: contextvars.ContextVar[_BuildBudgetState | None] = (
     contextvars.ContextVar("skyn3t_budget_build_state", default=None)
+)
+
+# A changing rewrite can evade the identical-call breaker forever. Detect only
+# strongly dominant repeated-path churn: this is deliberately not a total turn,
+# file, token, or duration cap. One warning lets the model move on to missing
+# files; a second dominant window aborts the session while preserving all work so
+# CodeAgent's targeted in-place retry can complete the remaining contract.
+_PATH_CHURN_WINDOW = 16
+_PATH_CHURN_THRESHOLD = 8
+_PATH_CHURN_NUDGE = (
+    "You are stuck repeatedly rewriting `{path}` ({count} of the last "
+    f"{_PATH_CHURN_WINDOW} changed file writes). Preserve its current working version "
+    "and STOP touching it for now. Use write_files to create the remaining missing "
+    "files in batches, then read and revisit this path once only if final wiring truly "
+    "requires it. Call finish when the planned app is complete."
 )
 
 
@@ -1552,6 +1569,8 @@ class LLMClient:
         verify_denials, _MAX_VERIFY_DENIALS = 0, 2
         doom_recent: list[tuple[str, str]] = []  # last 3 (tool, raw-args) signatures
         doom_warned = False
+        changed_path_window: list[str] = []
+        churn_warned_paths: set[str] = set()
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
         # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
@@ -1644,6 +1663,23 @@ class LLMClient:
                                 result, changed_files = _run_tool(name, args)
                                 if changed_files:
                                     wrote += changed_files
+                                    changed_paths: list[str] = []
+                                    if name == "write_file":
+                                        changed_paths = [str(args.get("path") or "")]
+                                    elif name == "write_files":
+                                        changed_paths = [
+                                            str(item.get("path") or "")
+                                            for item in (args.get("files") or [])
+                                            if isinstance(item, dict)
+                                        ]
+                                    changed_path_window.extend(
+                                        path.replace("\\", "/").strip().lower()
+                                        for path in changed_paths
+                                        if path.strip()
+                                    )
+                                    changed_path_window = changed_path_window[
+                                        -_PATH_CHURN_WINDOW:
+                                    ]
                                     # Live per-file progress so a tailed build log shows
                                     # codegen advancing (the agentic phase was silent).
                                     log.info("llm.agentic_wrote",
@@ -1674,6 +1710,42 @@ class LLMClient:
                         messages.append({"role": "user", "content": _DOOM_LOOP_NUDGE})
                         log.info("llm.or_agentic_doom_nudge", wrote=wrote)
                         continue
+                    if not finished and len(changed_path_window) == _PATH_CHURN_WINDOW:
+                        dominant = max(
+                            set(changed_path_window), key=changed_path_window.count
+                        )
+                        dominant_count = changed_path_window.count(dominant)
+                        if dominant_count >= _PATH_CHURN_THRESHOLD:
+                            changed_path_window = []
+                            if dominant in churn_warned_paths:
+                                log.warning(
+                                    "llm.or_agentic_path_churn_abort",
+                                    path=dominant,
+                                    count=dominant_count,
+                                    wrote=wrote,
+                                    turns=turn,
+                                )
+                                loop_error = (
+                                    "agentic aborted after repeated changed rewrites of "
+                                    f"{dominant} despite corrective feedback"
+                                )
+                                break
+                            churn_warned_paths.add(dominant)
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": _PATH_CHURN_NUDGE.format(
+                                        path=dominant, count=dominant_count
+                                    ),
+                                }
+                            )
+                            log.info(
+                                "llm.or_agentic_path_churn_nudge",
+                                path=dominant,
+                                count=dominant_count,
+                                wrote=wrote,
+                            )
+                            continue
                     if finished:
                         # Refuse a thin result: push the model to build the real UI instead
                         # of stopping at data/config scaffolding (cheap models do this).

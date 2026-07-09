@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.cli.main import build_agents
 from skyn3t.config.settings import Settings
@@ -20,13 +22,29 @@ from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.runner import StudioRunner
 
 
-def test_offline_agent_pack_build_end_to_end(tmp_path):
+@pytest.fixture
+def _no_docker_probe(monkeypatch):
+    """The deterministic stub build must not depend on a Docker daemon."""
+    from skyn3t.security.sandbox import SandboxRunner
+
+    def unexpected_probe(self):
+        raise AssertionError("inline acceptance test unexpectedly probed Docker")
+
+    monkeypatch.setattr(SandboxRunner, "docker_available", unexpected_probe)
+
+
+def test_offline_agent_pack_build_end_to_end(tmp_path, _no_docker_probe):
     async def run():
         bus = EventBus()
         settings = Settings(
             projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data",
             logs_dir=tmp_path / "logs", critic_enabled=False,
             liveness_check_enabled=False,
+            llm_backend="stub",
+            # This test executes only the deterministic, repo-owned stub pack.
+            # Pin the local backend so hosted CI never needs or probes Docker;
+            # production builds retain the safe `auto` default.
+            execution_backend="inline",
             # Unlike the sibling seals, KEEP the generated-test step on: the
             # pack's own pytest (lint + originality + convert) IS its proof.
             run_generated_tests=True,

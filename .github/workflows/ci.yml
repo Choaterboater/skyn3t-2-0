@@ -19,11 +19,25 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        include:
+          # Keep both existing Linux versions, then add one current-version
+          # platform leg for Windows and macOS. This catches OS-specific process,
+          # path, browser, and native-toolchain regressions without multiplying
+          # every supported Python version across every hosted runner.
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v7.0.0
 
@@ -33,31 +47,42 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Set up Node
+        uses: actions/setup-node@v6.1.0
+        with:
+          node-version: "22"
+
       - name: Install test environment
         # Dev owns the Python web/visual dependencies so integration tests do
-        # not silently skip. Heavy ML and Playwright browser binaries remain
-        # optional and degrade cleanly.
+        # not silently skip. Heavy ML remains optional.
         run: pip install -e ".[dev]"
 
+      - name: Install Chromium and Linux browser dependencies
+        if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install Chromium
+        if: runner.os != 'Linux'
+        run: python -m playwright install chromium
+
+      - name: Verify macOS Swift toolchain
+        if: runner.os == 'macOS'
+        run: |
+          swift --version
+          xcodebuild -version
+
       - name: Lint (ruff)
+        if: runner.os == 'Linux'
         run: ruff check skyn3t tests
 
       - name: Type-check Python package
+        if: runner.os == 'Linux'
         run: mypy skyn3t
 
       - name: Tests (pytest, hermetic offline suite)
         env:
           SKYN3T_LLM_BACKEND: stub
-        # The swift / claude-CLI / npm tests now SKIP gracefully when their
-        # toolchain is absent (skipif), so they run here (and skip) instead of
-        # being excluded. These 3 still need a sandbox subprocess that can run the
-        # GENERATED project's pytest — the no-Docker hardened-local fallback can't
-        # in CI — so they stay excluded until that's made hermetic. Tracked debt.
-        run: >-
-          python -m pytest -q
-          --deselect tests/test_agent_pack_build_e2e.py::test_offline_agent_pack_build_end_to_end
-          --deselect tests/test_fix_loop.py::test_proof_runs_generated_tests_pass
-          --deselect tests/test_fix_loop.py::test_proof_runs_generated_tests_fail
+        run: python -m pytest -q
 
   python-compat:
     runs-on: ubuntu-latest

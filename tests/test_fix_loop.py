@@ -212,23 +212,50 @@ def _proj_with_test(tmp_path, body: str):
     return proj
 
 
-def test_proof_runs_generated_tests_pass(tmp_path):
+@pytest.fixture
+def _no_docker_probe(monkeypatch):
+    """Controlled generated-test fixtures must remain Docker-independent."""
+    from skyn3t.security.sandbox import SandboxRunner
+
+    def unexpected_probe(self):
+        raise AssertionError("inline proof test unexpectedly probed Docker")
+
+    monkeypatch.setattr(SandboxRunner, "docker_available", unexpected_probe)
+
+
+def test_proof_runs_generated_tests_pass(tmp_path, _no_docker_probe):
     proj = _proj_with_test(
         tmp_path, "from main import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
     )
-    res = proof_run(str(proj), stack="python", run_tests=True)
+    # The generated tree is authored above and therefore trusted test data.
+    # `inline` makes the test hermetic on hosted CI without changing the
+    # production proof backend, whose default remains Docker-first `auto`.
+    res = proof_run(
+        str(proj), stack="python", run_tests=True, execution_backend="inline"
+    )
     assert res.passed is True
     assert res.detail.get("tests") == "passed"
+    assert res.detail["proof_environment"] == {
+        "execution_backend": "inline",
+        "command_backend": "local",
+        "sandbox_available": False,
+        "degraded": False,
+        "degraded_reasons": [],
+    }
 
 
-def test_proof_runs_generated_tests_fail(tmp_path):
+def test_proof_runs_generated_tests_fail(tmp_path, _no_docker_probe):
     proj = _proj_with_test(
         tmp_path, "from main import add\n\n\ndef test_add():\n    assert add(1, 2) == 99\n"
     )
-    res = proof_run(str(proj), stack="python", run_tests=True)
+    res = proof_run(
+        str(proj), stack="python", run_tests=True, execution_backend="inline"
+    )
     assert res.passed is False
     assert res.detail.get("tests") == "failed"
     assert "<tests>" in res.missing
+    assert res.detail["proof_environment"]["execution_backend"] == "inline"
+    assert res.detail["proof_environment"]["sandbox_available"] is False
 
 
 def test_proof_soft_skips_when_no_tests(tmp_path):

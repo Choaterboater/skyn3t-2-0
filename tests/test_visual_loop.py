@@ -6,6 +6,7 @@ a real browser, vision model, or build."""
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -14,11 +15,33 @@ from skyn3t.studio.visual_check import VisualVerdict
 from skyn3t.studio.visual_loop import VisualLoopResult, visual_self_improve
 
 
-def test_screenshot_works_from_inside_an_asyncio_loop(tmp_path):
+def test_screenshot_capture_is_offloaded_from_asyncio_loop(monkeypatch):
     # Regression: VisualChecker.check runs inside the event loop, but the sync
     # Playwright API refuses to run there — the capture must be thread-offloaded.
+    from skyn3t.studio import visual_check
+    from skyn3t.studio.visual_check import VisualChecker
+
+    event_loop_thread = threading.get_ident()
+    capture_threads = []
+
+    def fake_screenshot(url, out_path, **kwargs):
+        capture_threads.append(threading.get_ident())
+        return out_path
+
+    monkeypatch.setattr(visual_check, "playwright_available", lambda: True)
+    monkeypatch.setattr(visual_check, "screenshot", fake_screenshot)
+    verdict = asyncio.run(VisualChecker().check("http://example.test", "a page"))
+
+    assert capture_threads
+    assert capture_threads[0] != event_loop_thread
+    assert verdict.reason == "no vision provider wired"
+
+
+@pytest.mark.requires_loopback
+def test_real_browser_can_capture_static_app(tmp_path):
     pytest.importorskip("playwright")
-    from skyn3t.studio.app_runner import AppRunner, cleanup_serve
+    from skyn3t.studio.app_runner import AppRunner as LiveAppRunner
+    from skyn3t.studio.app_runner import cleanup_serve
     from skyn3t.studio.visual_check import VisualChecker, playwright_available
 
     if not playwright_available():
@@ -26,7 +49,7 @@ def test_screenshot_works_from_inside_an_asyncio_loop(tmp_path):
     (tmp_path / "index.html").write_text("<html><body><h1>hi</h1></body></html>")
 
     async def _go():
-        runner = AppRunner()
+        runner = LiveAppRunner()
         app = await runner.start(tmp_path, "static", ready_timeout=15)
         if app.status != "running":
             pytest.skip("could not serve the static app")
@@ -38,7 +61,7 @@ def test_screenshot_works_from_inside_an_asyncio_loop(tmp_path):
 
     verdict = asyncio.run(_go())
     if verdict.reason == "screenshot failed":
-        pytest.skip("headless browser could not capture in this environment")
+        pytest.skip("Playwright Chromium is not installed or cannot launch")
     # Screenshot SUCCEEDED -> the only soft-skip is the (unwired) vision step.
     assert verdict.reason == "no vision provider wired"
 

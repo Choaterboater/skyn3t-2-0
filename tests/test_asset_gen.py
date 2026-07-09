@@ -125,6 +125,11 @@ async def test_writes_images_and_manifest(tmp_path):
     manifest = json.loads((assets_dir / "assets.json").read_text())
     assert {a["file"] for a in manifest} == {a["file"] for a in res["assets"]}
     assert all((proj / a["file"]).read_bytes() == _PNG for a in res["assets"])
+    credits = (proj / "CREDITS.md").read_text(encoding="utf-8")
+    assert "## Generated Images" in credits
+    assert "Replicate" in credits
+    assert "black-forest-labs/flux-schnell" in credits
+    assert all(asset["file"] in credits for asset in res["assets"])
 
 
 async def test_stack_arg_routes_to_public_before_package_json(tmp_path):

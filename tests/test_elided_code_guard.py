@@ -14,8 +14,6 @@ regeneration), and a delivery-time `_clean_agentic_files` reject (revert/drop).
 
 from __future__ import annotations
 
-import os
-
 from skyn3t.agents.validate import (
     elided_code_violation,
     looks_elided,
@@ -174,12 +172,10 @@ def test_agentic_system_prompt_forbids_elision():
 # ---------------------------------------------------------------------------
 
 def test_real_build7_sim_stub_detected():
-    p = os.path.expanduser("~/Documents/Projects/polished-space-shooter-7/src/sim.js")
-    if not os.path.exists(p):
-        import pytest
-
-        pytest.skip("build #7 sim.js fixture not present")
-    txt = open(p, encoding="utf-8").read()
+    # Preserve the exact regression shape in-repo. A developer's Documents
+    # directory is not a portable test fixture and made this guard silently skip
+    # on clean machines and CI runners.
+    txt = "export function createState(seed) { /* ... unchanged ... */ }\n"
     assert looks_elided(txt) is True
     ok, _ = validate_source("src/sim.js", txt)
     assert ok is False

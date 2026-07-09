@@ -157,10 +157,11 @@ def test_provenance_no_match() -> None:
 
 
 # ---- BrowserAgent degraded path ----------------------------------------
-def test_browser_verify_degrades_without_playwright() -> None:
+def test_browser_verify_degrades_without_playwright(monkeypatch) -> None:
     agent = BrowserAgent(event_bus=None)
-    if agent.available:
-        pytest.skip("playwright present; degraded path not exercised")
+    # Exercise the optional-dependency branch deterministically even in the
+    # complete dev environment, where the Playwright Python package is present.
+    monkeypatch.setattr(agent, "available", False)
     out = asyncio.run(agent.verify_rendered("http://localhost:1/"))
     assert out["ok"] is False
     assert out["degraded"] is True

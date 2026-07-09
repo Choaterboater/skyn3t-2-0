@@ -217,7 +217,6 @@ def test_swift_resolves_in_all_vocabularies():
 # ---- 7. REAL swift build (integration) -----------------------------------
 @requires_swift
 @requires_swiftui
-@pytest.mark.skipif(shutil.which("swift") is None, reason="swift toolchain not installed")
 def test_swift_scaffold_actually_compiles(tmp_path):
     # The scaffold MUST really compile under the installed toolchain — a scaffold
     # that doesn't `swift build` is a broken floor. Also runs `swift test`.

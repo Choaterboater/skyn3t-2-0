@@ -1,4 +1,6 @@
 import asyncio
+import os
+import subprocess
 
 import pytest
 
@@ -64,14 +66,32 @@ def test_preview_root_rejects_symlink_escape(tmp_path):
     project.mkdir()
     outside.mkdir()
     (outside / "index.html").write_text("<h1>outside</h1>")
+    preview = project / ".preview"
+    junction = False
     try:
-        (project / ".preview").symlink_to(outside, target_is_directory=True)
-    except OSError:
-        pytest.skip("directory symlinks are unavailable on this platform")
+        preview.symlink_to(outside, target_is_directory=True)
+    except OSError as symlink_error:
+        if os.name != "nt":
+            pytest.skip(f"directory symlinks are unavailable: {symlink_error}")
+        # Windows directory junctions exercise the same resolve-time escape and
+        # do not require Developer Mode or SeCreateSymbolicLinkPrivilege.
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(preview), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"directory links are unavailable: {result.stderr.strip()}")
+        junction = True
 
     state = AppState(settings=Settings(projects_dir=tmp_path))
-    with pytest.raises(ValueError, match="preview root escapes"):
-        _preview_root(state, "demo")
+    try:
+        with pytest.raises(ValueError, match="preview root escapes"):
+            _preview_root(state, "demo")
+    finally:
+        if junction and preview.exists():
+            os.rmdir(preview)
 
 
 def test_resolve_project_file_rejects_escaping_slug(tmp_path):

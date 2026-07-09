@@ -44,9 +44,11 @@ def test_modules_import_without_side_effects():
     assert hasattr(web_app, "get_app")
 
 
-def test_create_app_raises_clearly_when_fastapi_absent():
-    if web_app.fastapi_available():
-        pytest.skip("fastapi installed; cannot test the absent-dep error path")
+def test_create_app_raises_clearly_when_fastapi_absent(monkeypatch):
+    # The dev extra intentionally installs FastAPI. Simulate the guarded import
+    # result so the core-only error contract remains covered in every environment.
+    monkeypatch.setattr(web_app, "_HAVE_FASTAPI", False)
+    monkeypatch.setattr(web_app, "_IMPORT_ERROR", ModuleNotFoundError("fastapi"))
     with pytest.raises(RuntimeError) as exc:
         web_app.create_app()
     assert "FastAPI" in str(exc.value)

@@ -12,10 +12,8 @@ fix-loop. It CREATES files, never edits code, and never raises.
 from __future__ import annotations
 
 import io
-import os
 from pathlib import Path
 
-import pytest
 from PIL import Image
 
 from skyn3t.studio.asset_reconcile import reconcile_asset_refs
@@ -231,21 +229,27 @@ def test_never_raises_on_missing_src(tmp_path: Path):
     assert result == {"images_created": [], "missing_audio": [], "refs_scanned": 0}
 
 
-def test_never_raises_on_unreadable_src_file(tmp_path: Path):
+def test_never_raises_on_unreadable_src_file(tmp_path: Path, monkeypatch):
     """An unreadable source file is skipped; the readable ones still reconcile."""
     proj = tmp_path / "proj"  # no public/ dir -> assets resolve under the root
     _write(proj / "src" / "good.js", "this.load.image('g', '/assets/g.png');")
     bad = proj / "src" / "bad.js"
     _write(bad, "this.load.image('b', '/assets/b.png');")
-    os.chmod(bad, 0o000)
-    try:
-        if os.access(bad, os.R_OK):  # running as root — chmod won't block; skip
-            pytest.skip("cannot make a file unreadable as this user")
-        result = reconcile_asset_refs(proj, stack="phaser")
-    finally:
-        os.chmod(bad, 0o644)
+
+    # chmod(000) is still readable to root and does not model Windows ACLs.
+    # Raise the same OS-level error at the read boundary on every platform.
+    original_read_text = Path.read_text
+
+    def permission_denied_for_bad(path: Path, *args, **kwargs):
+        if path == bad:
+            raise PermissionError("simulated unreadable source")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", permission_denied_for_bad)
+    result = reconcile_asset_refs(proj, stack="phaser")
     # the good file still produced its asset; the unreadable one was silently skipped
     assert "assets/g.png" in result["images_created"]
+    assert "assets/b.png" not in result["images_created"]
 
 
 def test_non_asset_and_external_urls_ignored(tmp_path: Path):

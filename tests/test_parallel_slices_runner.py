@@ -123,6 +123,12 @@ def test_run_parallel_slices_merges_every_slice(tmp_path):
     plan = _plan()
     prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
     slices = r._maybe_slices(plan, prior)
+    asset = Path(main_wt.dir) / "public" / "assets" / "generated.webp"
+    acceptance = Path(main_wt.dir) / "tests" / "test_acceptance_contract.py"
+    asset.parent.mkdir(parents=True)
+    acceptance.parent.mkdir(parents=True)
+    asset.write_bytes(b"RIFF\x10\x00\x00\x00WEBPreal-generated-photo")
+    acceptance.write_text("def test_contract():\n    assert True\n", encoding="utf-8")
 
     captured: dict = {}
 
@@ -130,6 +136,8 @@ def test_run_parallel_slices_merges_every_slice(tmp_path):
         # Simulate a scoped slice agent writing exactly its files into its wt.
         wt = Path(payload["worktree_dir"])
         sc = payload["slice_scope"]
+        assert (wt / "public/assets/generated.webp").read_bytes() == asset.read_bytes()
+        assert (wt / "tests/test_acceptance_contract.py").is_file()
         for rel in sc["files"]:
             p = wt / rel
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +156,8 @@ def test_run_parallel_slices_merges_every_slice(tmp_path):
     merged = set(list_files(main_wt.dir))
     # Files from every slice landed in the main worktree.
     assert {"src/App.jsx", "api/main.py", "tests/test_users.py", "package.json"} <= merged
+    assert (Path(main_wt.dir) / "public/assets/generated.webp").read_bytes() == asset.read_bytes()
+    assert (Path(main_wt.dir) / "tests/test_acceptance_contract.py").is_file()
     assert result.output["files_written"] >= len(_ARCH_FILES)
     assert set(result.metadata["parallel_slices"]["slices"]) == set(slices)
     # Each slice agent received the full manifest as cross-slice context.

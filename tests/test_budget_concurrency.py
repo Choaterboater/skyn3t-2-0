@@ -44,6 +44,32 @@ def _record_budget_in_process(
         tracker.record(_result(0.01))
 
 
+@pytest.mark.parametrize("disabled_cap", [0, -1])
+def test_nonpositive_daily_caps_disable_usd_and_token_guards(disabled_cap):
+    budget = BudgetTracker(
+        per_build_cap=0,
+        daily_cap=float(disabled_cap),
+        token_cap=disabled_cap,
+    )
+    budget.record(_result(999.0, tokens=9_000_000))
+
+    budget.check()  # no exception: usage is tracked, both daily guards are disabled
+    assert budget.spent_day == pytest.approx(999.0)
+    assert budget.tokens_day == 9_000_000
+
+
+def test_positive_daily_caps_still_trip():
+    usd_budget = BudgetTracker(per_build_cap=0, daily_cap=0.5, token_cap=10_000)
+    usd_budget.record(_result(0.6, tokens=10))
+    with pytest.raises(BudgetExceeded, match="daily cap"):
+        usd_budget.check()
+
+    token_budget = BudgetTracker(per_build_cap=0, daily_cap=10, token_cap=5)
+    token_budget.record(_result(0.1, tokens=6))
+    with pytest.raises(BudgetExceeded, match="daily token cap"):
+        token_budget.check()
+
+
 def test_daily_ledger_updates_are_atomic_across_processes(tmp_path):
     ctx = multiprocessing.get_context("spawn")
     ready = ctx.Queue()

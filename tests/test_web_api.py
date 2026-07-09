@@ -387,6 +387,7 @@ async def test_fast_full_app_keeps_scope_and_assets_without_redundant_candidates
     assert studio.extra["best_of_n"] == 1
     assert studio.extra["max_debug_attempts"] == 1
     assert studio.extra["parallel_code_slices"] is True
+    assert studio.extra["parallel_code_slices_min_files"] == 4
     assert studio.extra["asset_gen"] is True
     assert studio.extra["visual_self_heal"] is True
     assert studio.extra["agentic_timeout"] == 1200
@@ -451,11 +452,18 @@ async def test_studio_runner_persists_full_app_contract_extra(tmp_path):
         await runner.start(
             "Build a python tool",
             slug="full-app-persist",
-            extra={"build_profile": "manual", "full_app_contract": True},
+            extra={
+                "build_profile": "fast",
+                "full_app_contract": True,
+                "parallel_code_slices": True,
+                "parallel_code_slices_min_files": 4,
+            },
         )
 
     assert saved
     assert saved[0]["extra"]["full_app_contract"] is True
+    assert saved[0]["extra"]["parallel_code_slices"] is True
+    assert saved[0]["extra"]["parallel_code_slices_min_files"] == 4
 
 
 async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(

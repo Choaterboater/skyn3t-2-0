@@ -41,6 +41,16 @@ When the build finishes, open **Projects** to inspect files, proof results, cost
 Settings > Runtime shows `parallel_code_slices` and its file-count threshold. A Fast build can
 enable the same specialist mode for that build even when the global setting is off.
 
+### Failed Preview Recovery
+
+A failed build can retain a substantial `.preview` tree for inspection. That tree is not a
+delivered project and should not be renamed or copied over the project root: downstream
+contract, reviewer, and final proof gates may not have run. Older failed manifests may also
+lack the architect's complete planned-file contract, so SkyN3t cannot safely determine what is
+still missing. After fixing the cause (for example a daily token budget), use the build's replay
+or rebuild-variant action. The fresh run preserves the original brief/profile while executing
+the complete verification lifecycle.
+
 ## Useful Commands
 
 ```bash

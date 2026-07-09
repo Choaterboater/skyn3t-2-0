@@ -233,16 +233,90 @@ _ANTISTUB_NUDGE = (
     "as real, separate section components (hero, services, about, testimonials, service "
     "areas, why-choose-us, contact) with real copy and the images under /assets, then "
     "assemble them all in the homepage so it renders a full, content-rich, multi-section page. "
-    "CRITICAL: if app/page.jsx (the entry/homepage) is still a placeholder or counter demo, "
-    "OVERWRITE it now — import and render your section components; never leave the scaffold."
+    "CRITICAL: if the primary entry/homepage (for example app/page.jsx, "
+    "src/pages/index.astro, index.html, src/App.vue, or src/routes/+page.svelte) is still "
+    "a placeholder or counter demo, OVERWRITE it now and wire in the real UI; never leave "
+    "the scaffold."
 )
-# The anti-stub nudge + `_looks_stub()` heuristic are WEB-MARKETING-specific (they count
-# .jsx/.tsx section components, inspect app/page.jsx, and tell the model to build hero/
-# services/etc.). They only make sense for web marketing stacks. On any other stack the
-# heuristic misfires — most dangerously on games, which have no .jsx files, so
-# `_looks_stub()` is ALWAYS true and the nudge would drag the model off-brief into a
-# React marketing site that clobbers the real app. Gate the nudge to these stacks only.
-_ANTISTUB_NUDGE_STACKS = frozenset({"react_vite", "nextjs", "astro", "remix"})
+# The anti-stub nudge is for user-facing web stacks only. Each stack is inspected
+# using its native source format below; applying a JSX-only heuristic to Astro,
+# Vue, Svelte, or static HTML falsely labels complete apps as stubs.
+_ANTISTUB_NUDGE_STACKS = frozenset({
+    "react", "react_vite", "react_ts", "next", "nextjs", "remix",
+    "astro", "static", "static_html", "html", "vue", "vuejs",
+    "svelte", "sveltekit",
+})
+
+
+def _agentic_project_looks_stub(root: Path, stack: str) -> bool:
+    """Judge a user-facing web project using that stack's native source files."""
+    low = (stack or "react_vite").strip().lower()
+    if low in {"astro"}:
+        suffixes = {".astro", ".html", ".css", ".scss", ".js", ".ts"}
+        entry_names = {"index.astro"}
+    elif low in {"static", "static_html", "html"}:
+        suffixes = {".html", ".htm", ".css", ".scss", ".js", ".mjs", ".ts"}
+        entry_names = {"index.html", "index.htm"}
+    elif low in {"vue", "vuejs"}:
+        suffixes = {".vue", ".css", ".scss", ".js", ".ts"}
+        entry_names = {"app.vue"}
+    elif low in {"svelte", "sveltekit"}:
+        suffixes = {".svelte", ".css", ".scss", ".js", ".ts"}
+        entry_names = {"+page.svelte", "app.svelte"}
+    else:
+        suffixes = {".jsx", ".tsx", ".js", ".ts", ".css", ".scss"}
+        entry_names = {
+            "page.jsx", "page.tsx", "app.jsx", "app.tsx",
+            "index.jsx", "index.tsx",
+        }
+
+    ui_bytes = 0
+    surface_files = 0
+    entry_bytes = 0
+    scaffold_entry = False
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            continue
+        parts = {part.lower() for part in rel.parts}
+        if {"node_modules", ".next", ".git", "dist", "build"} & parts:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        ui_bytes += size
+        is_entry = path.name.lower() in entry_names
+        if is_entry:
+            entry_bytes = max(entry_bytes, size)
+            try:
+                scaffold_entry = scaffold_entry or (
+                    "generated offline by skyn3t"
+                    in path.read_text(encoding="utf-8", errors="replace").lower()
+                )
+            except OSError:
+                pass
+        native_static_page = (
+            low in {"static", "static_html", "html"}
+            and path.suffix.lower() in {".html", ".htm"}
+        )
+        if (
+            is_entry
+            or native_static_page
+            or parts & {"components", "sections", "pages", "routes", "views"}
+        ):
+            surface_files += 1
+
+    # A rich single-file static page is valid; component frameworks should have
+    # several real UI surfaces. Both shapes still need a substantive byte floor.
+    return (
+        scaffold_entry
+        or ui_bytes < 4000
+        or (surface_files < 3 and entry_bytes < 4000)
+    )
 
 # Doom-loop breaker (research item 49, opencode's DOOM_LOOP_THRESHOLD=3): three
 # consecutive IDENTICAL tool calls (same name + same arguments) mean the model is
@@ -593,11 +667,11 @@ class BudgetTracker:
                 raise BudgetExceeded(
                     f"per-build cap ${self.per_build_cap} exceeded (${spent_build:.4f})"
                 )
-            if self.spent_day > self.daily_cap:
+            if self.daily_cap > 0 and self.spent_day > self.daily_cap:
                 raise BudgetExceeded(
                     f"daily cap ${self.daily_cap} exceeded (${self.spent_day:.4f})"
                 )
-            if self.tokens_day > self.token_cap:
+            if self.token_cap > 0 and self.tokens_day > self.token_cap:
                 raise BudgetExceeded(
                     f"daily token cap {self.token_cap} exceeded ({self.tokens_day})"
                 )
@@ -1452,34 +1526,8 @@ class LLMClient:
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
         stub_nudge_applies = (not stack) or (stack in _ANTISTUB_NUDGE_STACKS)
 
-        _entry_names = {"page.jsx", "page.tsx", "app.jsx", "app.tsx", "index.jsx", "index.tsx"}
-
         def _looks_stub() -> bool:
-            """A delivered project is a stub if it has almost no UI components, the total
-            component code is tiny, OR an entry file is still the untouched offline
-            scaffold placeholder (marker) — i.e. the model built components but never
-            wrote the homepage, so the placeholder is what renders."""
-            comps, ui_bytes, scaffold_entry = 0, 0, False
-            for f in root.rglob("*"):
-                if not f.is_file() or f.suffix not in (".jsx", ".tsx"):
-                    continue
-                if {"node_modules", ".next", ".git"} & set(f.parts):
-                    continue
-                rel = "/" + str(f.relative_to(root))
-                try:
-                    n = f.stat().st_size
-                except OSError:
-                    n = 0
-                ui_bytes += n
-                if "/components/" in rel or "/sections/" in rel:
-                    comps += 1
-                if f.name.lower() in _entry_names:
-                    try:
-                        if "generated offline by skyn3t" in f.read_text(errors="replace").lower():
-                            scaffold_entry = True
-                    except OSError:
-                        pass
-            return scaffold_entry or comps < 3 or ui_bytes < 4000
+            return _agentic_project_looks_stub(root, stack)
         turn = 0
         no_progress_turns = 0
         try:

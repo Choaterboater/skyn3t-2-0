@@ -91,6 +91,31 @@ def test_maybe_slices_accepts_per_build_profile_override(tmp_path):
     assert {"frontend", "backend", "tests", "config"} <= set(slices)
 
 
+def test_per_build_slice_floor_activates_realistic_four_file_full_app(tmp_path):
+    r = _runner(tmp_path, parallel_code_slices_min_files=8)
+    prior = {"architect": {"plan": {"files": [
+        {"path": "src/pages/index.astro"},
+        {"path": "src/pages/lessons.astro"},
+        {"path": "src/pages/api/bookings.ts"},
+        {"path": "package.json"},
+    ]}}}
+
+    assert r._maybe_slices(
+        _plan(stack="astro"), prior, {"parallel_code_slices": True}
+    ) is None
+    slices = r._maybe_slices(
+        _plan(stack="astro"),
+        prior,
+        {
+            "parallel_code_slices": True,
+            "parallel_code_slices_min_files": 4,
+        },
+    )
+
+    assert slices is not None
+    assert set(slices) == {"frontend", "backend", "config"}
+
+
 def test_run_parallel_slices_merges_every_slice(tmp_path):
     r = _runner(tmp_path, parallel_code_slices=True)
     main_wt = create_worktree(str(r.settings.projects_dir), "demo")

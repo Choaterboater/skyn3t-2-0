@@ -484,6 +484,24 @@ async def test_loop_blocks_when_budget_exhausted():
     assert "USD cap" in reason
 
 
+async def test_loop_allows_spend_when_daily_usd_cap_is_disabled():
+    bus = EventBus()
+    s = _settings(
+        autonomous_builds=True,
+        autonomous_daily_build_cap=10,
+        daily_usd_cap=0,
+        per_build_usd_cap=100,
+    )
+    loop = AutonomousLoop(Cortex(bus, settings=s), bus, settings=s)
+    loop.state.record_spend(500)
+    loop.state.reserve("inflight", 100)
+
+    allowed, reason = loop.can_start_build()
+
+    assert allowed is True
+    assert reason == ""
+
+
 async def test_loop_blocks_on_in_flight_reservation_before_spend_recorded():
     """Pre-charge guard: an in-flight build's escrow must block a concurrent
     launch even before any real spend is recorded — otherwise two builds each

@@ -678,6 +678,11 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     # Apply it last so `fast + full_app` stays single-candidate without imposing
     # a hard generation deadline or dropping full-app assets/content quality.
     build_extra.update(_profile_extra(profile))
+    if full_app_requested and profile == "fast":
+        # Full-app architect plans commonly start with 4-7 load-bearing files.
+        # Keep the override per build: global small-app behavior remains at the
+        # conservative default while fast full apps actually fan out specialists.
+        build_extra["parallel_code_slices_min_files"] = 4
     if model:
         build_extra["model_override"] = model
     if ref_paths:

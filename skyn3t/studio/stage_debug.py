@@ -94,6 +94,11 @@ async def debug_stage(
             "passed": nxt.passed, "score_before": score_before, "score_after": nxt.score,
         })
         check = nxt
+        if not ran:
+            # A successfully dispatched improver that changed zero files cannot
+            # make the next identical proof pass. Stop here instead of spending
+            # every debug attempt on repeated no-op model calls.
+            break
 
     status = "passed" if check.passed else "degraded"
     await emit(EventType.STAGE_DEBUG_RESOLVED, {

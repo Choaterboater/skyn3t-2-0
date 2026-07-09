@@ -119,9 +119,9 @@ class BudgetGuard:
 
         if self.settings.per_build_usd_cap > 0 and spent_build > self.settings.per_build_usd_cap:
             self._trip("budget", f"per-build cap ${self.settings.per_build_usd_cap} exceeded (${spent_build:.4f})")
-        if spent_day > self.settings.daily_usd_cap:
+        if self.settings.daily_usd_cap > 0 and spent_day > self.settings.daily_usd_cap:
             self._trip("budget", f"daily cap ${self.settings.daily_usd_cap} exceeded (${spent_day:.4f})")
-        if tokens_day > self.settings.daily_token_cap:
+        if self.settings.daily_token_cap > 0 and tokens_day > self.settings.daily_token_cap:
             self._trip("budget", f"daily token cap {self.settings.daily_token_cap} exceeded ({tokens_day})")
 
         if self._loops > self.max_loops:

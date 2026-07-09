@@ -35,7 +35,11 @@ class _CapturingImprover(BaseAgent):
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         self.payloads.append(dict(task.payload))
-        return TaskResult(task_id=task.task_id, success=True, output={})
+        return TaskResult(
+            task_id=task.task_id,
+            success=True,
+            output={"files_improved": 1, "files": ["changed.py"]},
+        )
 
 
 def _runner():
@@ -151,3 +155,31 @@ async def test_improve_once_passes_files_and_gaps_through(tmp_path):
     assert improver.payloads
     assert improver.payloads[0]["files"] == ["src/scenes/Game.js"]
     assert improver.payloads[0]["gaps"][0].startswith("[QA-FAIL game_visual")
+
+
+async def test_improve_once_reports_successful_zero_change_as_noop(tmp_path):
+    class _NoopImprover(_CapturingImprover):
+        async def execute(self, task: TaskRequest) -> TaskResult:
+            self.payloads.append(dict(task.payload))
+            return TaskResult(
+                task_id=task.task_id,
+                success=True,
+                output={"files_improved": 0, "files": []},
+            )
+
+    runner = _runner()
+    plan = Planner(Settings()).plan("a game", "g")
+    improver = _NoopImprover(runner.event_bus)
+    await runner.orchestrator.register(improver)
+
+    changed = await runner._improve_once(
+        work_dir=str(tmp_path),
+        plan=plan,
+        gaps=["missing behavior"],
+        correlation_id="cid",
+        extra=None,
+        label="debug:code",
+    )
+
+    assert changed is False
+    assert len(improver.payloads) == 1

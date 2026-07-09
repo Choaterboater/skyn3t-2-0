@@ -30,11 +30,15 @@ class CostSnapshot:
     token_cap: int
 
     @property
-    def daily_remaining_usd(self) -> float:
+    def daily_remaining_usd(self) -> float | None:
+        if self.daily_cap_usd <= 0:
+            return None
         return max(0.0, self.daily_cap_usd - self.spent_day_usd)
 
     @property
-    def build_remaining_usd(self) -> float:
+    def build_remaining_usd(self) -> float | None:
+        if self.per_build_cap_usd <= 0:
+            return None
         return max(0.0, self.per_build_cap_usd - self.spent_build_usd)
 
     @property
@@ -42,12 +46,21 @@ class CostSnapshot:
         return (self.spent_day_usd / self.daily_cap_usd) if self.daily_cap_usd else 0.0
 
     def to_dict(self) -> dict[str, Any]:
+        daily_remaining = self.daily_remaining_usd
+        build_remaining = self.build_remaining_usd
         return {
             "spent_build_usd": round(self.spent_build_usd, 6),
             "spent_day_usd": round(self.spent_day_usd, 6),
             "tokens_day": self.tokens_day,
-            "daily_remaining_usd": round(self.daily_remaining_usd, 6),
-            "build_remaining_usd": round(self.build_remaining_usd, 6),
+            "daily_cap_enabled": self.daily_cap_usd > 0,
+            "build_cap_enabled": self.per_build_cap_usd > 0,
+            "token_cap_enabled": self.token_cap > 0,
+            "daily_remaining_usd": (
+                round(daily_remaining, 6) if daily_remaining is not None else None
+            ),
+            "build_remaining_usd": (
+                round(build_remaining, 6) if build_remaining is not None else None
+            ),
             "daily_fraction": round(self.daily_fraction, 4),
         }
 
@@ -98,7 +111,10 @@ class CostTracker:
             self.metrics.llm_cost_usd.inc(cost)
         self._last_seen_calls = len(calls)
         snap = self.snapshot()
-        self.metrics.budget_remaining.set(snap.daily_remaining_usd)
+        remaining = snap.daily_remaining_usd
+        self.metrics.budget_remaining.set(
+            remaining if remaining is not None else float("inf")
+        )
 
     # ---- build attribution ----------------------------------------------
     def start_build(self, build_id: str) -> None:

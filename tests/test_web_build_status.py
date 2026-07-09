@@ -35,10 +35,12 @@ async def test_stage_events_do_not_complete_the_build():
 
     # Only BUILD_COMPLETED finalizes + captures verdict/score.
     await bus.emit(EventType.BUILD_COMPLETED, "studio",
-                   {"build_id": bid, "status": "completed", "verdict": "go", "score": 82.36})
+                   {"build_id": bid, "status": "completed", "verdict": "go",
+                    "score": 82.36, "cost_usd": 0.42})
     assert st.builds[bid].status == "completed"
     assert st.builds[bid].verdict == "go"
     assert st.builds[bid].score == 82.36
+    assert st.builds[bid].cost_usd == 0.42
 
 
 async def test_build_failed_event_marks_failed():
@@ -47,6 +49,34 @@ async def test_build_failed_event_marks_failed():
     await st.event_bus.emit(EventType.BUILD_STARTED, "studio", {"build_id": bid})
     await st.event_bus.emit(EventType.BUILD_FAILED, "studio", {"build_id": bid, "error": "boom"})
     assert st.builds[bid].status == "failed"
+
+
+async def test_build_failed_event_captures_terminal_verdict_score_and_cost():
+    st = AppState(
+        settings=Settings(llm_backend="stub"),
+        llm_client=object(),
+        router=object(),
+    )
+    bid = "b-terminal"
+    await st.event_bus.emit(EventType.BUILD_STARTED, "studio", {"build_id": bid})
+    await st.event_bus.emit(
+        EventType.BUILD_FAILED,
+        "studio",
+        {
+            "build_id": bid,
+            "status": "failed",
+            "verdict": "no_go",
+            "score": 12.5,
+            "cost_usd": 0.522486,
+            "reason": "budget guard",
+        },
+    )
+
+    record = st.builds[bid]
+    assert record.status == "failed"
+    assert record.verdict == "no_go"
+    assert record.score == 12.5
+    assert record.cost_usd == pytest.approx(0.522486)
 
 
 async def test_cancelled_build_failed_event_preserves_cancelled_status():

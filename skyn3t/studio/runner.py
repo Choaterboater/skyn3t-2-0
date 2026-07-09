@@ -549,6 +549,32 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - convert guard trip into build failure
             raise _BuildRejected(f"budget guard tripped before {stage}: {exc}") from exc
 
+    def _settle_build_cost(self, manifest: BuildManifest, build_id: str) -> dict[str, Any]:
+        """Close cost attribution and copy its terminal truth onto the manifest."""
+        build_cost = self._obs_call(self.cost_tracker, "end_build", build_id)
+        if not isinstance(build_cost, dict):
+            return {}
+        try:
+            manifest.cost_usd = max(0.0, float(build_cost.get("cost_usd") or 0.0))
+        except (TypeError, ValueError):
+            pass
+        manifest.extra["build_cost_usd"] = manifest.cost_usd
+        stages = build_cost.get("stages")
+        if isinstance(stages, list) and stages:
+            manifest.extra["stage_costs"] = stages
+        if manifest.verdict and manifest.verdict != "go":
+            manifest.extra["wasted_usd"] = manifest.cost_usd
+        return build_cost
+
+    @staticmethod
+    def _terminal_event_fields(manifest: BuildManifest) -> dict[str, Any]:
+        return {
+            "status": manifest.status,
+            "verdict": manifest.verdict,
+            "score": manifest.score,
+            "cost_usd": manifest.cost_usd,
+        }
+
     # ---- skills (advisory injection) ------------------------------------
     def _skill_advice(self, stack: str, brief: str = "") -> tuple[str, list[str]]:
         """Return (advice_text, used_slugs) from the skill library, if wired.
@@ -1654,8 +1680,9 @@ class StudioRunner:
     ) -> bool:
         """Run the code-improver once against ``work_dir`` for the flagged gaps.
 
-        Returns True if an improver task was dispatched. Best-effort: a missing
-        capability or a failed submission returns False and never raises. Used by
+        Returns True only when the improver reports a real file change. Best-
+        effort: a missing capability, failed submission, or successful no-op
+        returns False and never raises. Used by
         the per-stage debug pass (``_debug_and_snapshot``) and the game-visual
         repair loop (which passes explicit target ``files``).
         """
@@ -1677,8 +1704,17 @@ class StudioRunner:
             correlation_id=correlation_id, metadata={"stage": label},
         )
         try:
-            await asyncio.wait_for(self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
-            return True
+            result = await asyncio.wait_for(
+                self.orchestrator.submit(task), timeout=self.stage_exec_timeout
+            )
+            if not result.success:
+                return False
+            output = result.output if isinstance(result.output, dict) else {}
+            changed = output.get("files_improved")
+            if isinstance(changed, int):
+                return changed > 0
+            files_changed = output.get("files")
+            return bool(files_changed) if isinstance(files_changed, list) else False
         except Exception as exc:  # noqa: BLE001
             log.warning("debug.improve_failed", label=label, error=str(exc))
             return False
@@ -3541,6 +3577,15 @@ class StudioRunner:
         manifest.extra["build_profile"] = build_profile
         if extra.get("full_app_contract"):
             manifest.extra["full_app_contract"] = True
+        if "parallel_code_slices" in extra:
+            manifest.extra["parallel_code_slices"] = bool(extra["parallel_code_slices"])
+        if "parallel_code_slices_min_files" in extra:
+            try:
+                manifest.extra["parallel_code_slices_min_files"] = max(
+                    2, int(extra["parallel_code_slices_min_files"])
+                )
+            except (TypeError, ValueError):
+                pass
         if model_override:
             manifest.extra["model_override"] = model_override
         manifest.extra["codegen_model"] = self._codegen_trace_model(model_override)
@@ -3725,6 +3770,10 @@ class StudioRunner:
                     record.duration_ms = result.duration_ms
                     record.output_summary = self._summarize(result.output)
                     prior[spec.name] = result.output
+                    if spec.name == "architect" or spec.capability == "architecture":
+                        self._promote_architect_contract(
+                            plan, prior, manifest, record
+                        )
                     # Feed the learned router from this real stage outcome.
                     self._feed_tournament(spec, result)
                 else:
@@ -4401,14 +4450,9 @@ class StudioRunner:
                 manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps,
                 code_backend=code_backend, project_dir=project_dir,
             )
-            build_cost = self._obs_call(self.cost_tracker, "end_build", build_id)
-            # Record the per-stage cost breakdown + "wasted" spend (everything a
-            # no_go build cost produced nothing shippable) for cost analysis.
-            if isinstance(build_cost, dict) and build_cost.get("stages"):
-                manifest.extra["stage_costs"] = build_cost["stages"]
-                manifest.extra["build_cost_usd"] = build_cost.get("cost_usd")
-                if verdict != "go":
-                    manifest.extra["wasted_usd"] = build_cost.get("cost_usd")
+            # Settle before persistence so manifest, DB, API, and outcome report
+            # the same terminal cost even when the result is no_go.
+            self._settle_build_cost(manifest, build_id)
 
             outcome = await self._finalize(manifest, plan, correlation_id, final_score)
             return outcome
@@ -4421,6 +4465,7 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             recovered = self._recover_cancelled_worktrees(build_id, worktrees)
             manifest.status = "cancelled"
+            self._settle_build_cost(manifest, build_id)
             manifest.touch()
             manifest.extra["cancellation"] = {
                 "cancelled_at": manifest.updated_at,
@@ -4447,6 +4492,7 @@ class StudioRunner:
                     "status": "cancelled",
                     "reason": "build cancelled",
                     "recovery": recovered,
+                    **self._terminal_event_fields(manifest),
                 },
                 correlation_id=correlation_id,
             )
@@ -4456,6 +4502,7 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
                 used_lessons, helpful=False,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
@@ -4465,7 +4512,12 @@ class StudioRunner:
             await self.event_bus.emit(
                 EventType.BUILD_FAILED,
                 "studio",
-                {"build_id": build_id, "slug": slug, "reason": str(exc)},
+                {
+                    "build_id": build_id,
+                    "slug": slug,
+                    "reason": str(exc),
+                    **self._terminal_event_fields(manifest),
+                },
                 correlation_id=correlation_id,
             )
             manifest.save(project_dir)
@@ -4476,6 +4528,7 @@ class StudioRunner:
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
                 used_lessons, helpful=False,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
@@ -4488,7 +4541,12 @@ class StudioRunner:
             await self.event_bus.emit(
                 EventType.BUILD_FAILED,
                 "studio",
-                {"build_id": build_id, "slug": slug, "error": str(exc)},
+                {
+                    "build_id": build_id,
+                    "slug": slug,
+                    "error": str(exc),
+                    **self._terminal_event_fields(manifest),
+                },
                 correlation_id=correlation_id,
             )
             try:
@@ -4568,14 +4626,77 @@ class StudioRunner:
 
     # ---- Hermes orchestrator-worker: parallel code slicing --------------
     @staticmethod
+    def _architect_plan_contract(prior: dict[str, Any]) -> dict[str, Any] | None:
+        """Return a bounded, path-safe copy of the architect's file contract."""
+        arch = prior.get("architect") if isinstance(prior, dict) else None
+        raw = arch.get("plan") if isinstance(arch, dict) else None
+        if not isinstance(raw, dict) or not isinstance(raw.get("files"), list):
+            return None
+
+        # The architect is model output. Reuse the slice planner's path guard so
+        # the same exact contract drives codegen, slicing, debug, and final proof
+        # without allowing absolute/traversal/drive-qualified checklist paths.
+        from skyn3t.studio.slicer import _canonical_path
+
+        files: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in raw["files"][:200]:
+            path = _canonical_path(
+                item.get("path") or item.get("file") if isinstance(item, dict) else item
+            )
+            if not path or path.casefold() in seen:
+                continue
+            seen.add(path.casefold())
+            entry = {"path": path}
+            if isinstance(item, dict) and item.get("purpose"):
+                entry["purpose"] = str(item["purpose"])[:500]
+            files.append(entry)
+        if not files:
+            return None
+
+        build_order: list[str] = []
+        for item in raw.get("build_order") or []:
+            path = _canonical_path(item)
+            if path and path.casefold() in seen and path not in build_order:
+                build_order.append(path)
+        components = [str(value)[:300] for value in (raw.get("components") or [])[:200]]
+        return {
+            "stack": str(raw.get("stack") or "")[:100],
+            "summary": str(raw.get("summary") or "")[:4000],
+            "files": files,
+            "build_order": build_order or [item["path"] for item in files],
+            "components": components,
+        }
+
+    @classmethod
+    def _promote_architect_contract(
+        cls,
+        plan: BuildPlan,
+        prior: dict[str, Any],
+        manifest: BuildManifest,
+        record: StageRecord,
+    ) -> dict[str, Any] | None:
+        """Make the architect plan authoritative for every later proof path."""
+        contract = cls._architect_plan_contract(prior)
+        if contract is None:
+            return None
+        paths = [item["path"] for item in contract["files"]]
+        plan.checklist = paths
+        for stage in plan.stages:
+            if stage.agent_type == "code":
+                stage.extra["checklist"] = list(paths)
+        arch = prior.get("architect")
+        if isinstance(arch, dict):
+            arch["plan"] = contract
+        manifest.extra["architect_plan"] = contract
+        record.output_summary["plan"] = contract
+        return contract
+
+    @staticmethod
     def _architect_files(prior: dict[str, Any]) -> list[Any]:
         """The architect's planned files (``[{path,purpose}, ...]``), or []."""
-        arch = prior.get("architect") if isinstance(prior, dict) else None
-        if isinstance(arch, dict):
-            ap = arch.get("plan")
-            if isinstance(ap, dict) and isinstance(ap.get("files"), list):
-                return ap["files"]
-        return []
+        contract = StudioRunner._architect_plan_contract(prior)
+        return list(contract["files"]) if contract is not None else []
 
     def _maybe_slices(
         self,
@@ -4595,7 +4716,12 @@ class StudioRunner:
         if plan.best_of_n > 1:
             return None
         files = self._architect_files(prior) or list(plan.checklist or [])
-        min_files = int(getattr(self.settings, "parallel_code_slices_min_files", 8))
+        configured_min = getattr(self.settings, "parallel_code_slices_min_files", 8)
+        raw_min = (extra or {}).get("parallel_code_slices_min_files", configured_min)
+        try:
+            min_files = max(2, int(raw_min))
+        except (TypeError, ValueError):
+            min_files = max(2, int(configured_min))
         slices = slice_plan(files, plan.stack, min_files=min_files)
         return slices or None
 
@@ -5059,6 +5185,7 @@ class StudioRunner:
                 "status": manifest.status,
                 "verdict": manifest.verdict,
                 "score": final_score,
+                "cost_usd": manifest.cost_usd,
                 "files": manifest.files_count,
                 **summary,
             },

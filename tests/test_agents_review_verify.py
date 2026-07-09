@@ -332,6 +332,24 @@ def test_test_author_derives_and_writes(tmp_path):
     assert written.read_text().strip()
 
 
+def test_test_author_accepts_an_astro_page_as_source_and_entrypoint(tmp_path):
+    root = tmp_path / "astro-app"
+    page = root / "src" / "pages" / "index.astro"
+    page.parent.mkdir(parents=True)
+    page.write_text("---\nconst title = 'Golf lessons';\n---\n<h1>{title}</h1>\n")
+
+    generated = render_test_file(
+        ["project produces at least one runnable entrypoint"],
+        "An Astro golf lesson site",
+        "astro-app",
+    )
+    namespace = {"__file__": str(root / "tests" / "test_acceptance_astro.py")}
+    exec(compile(generated, namespace["__file__"], "exec"), namespace)
+
+    namespace["test_project_has_source_content"]()
+    namespace["test_project_has_entrypoint"]()
+
+
 def test_test_author_promotes_explicit_game_counts_to_real_checks():
     brief = "Code Islands is a 120-level journey with 12 islands and 4 phases."
     crit = derive_acceptance(brief, {})

@@ -26,9 +26,108 @@ _SYSTEM = (
     "many cohesive files, each with one clear purpose. Respond with JSON: "
     '{"stack": str, "summary": str, "files": [{"path": str, "purpose": str}], '
     '"build_order": [str], "components": [str]}. Include EVERY file needed for a '
-    "fully-featured implementation — typically 6-15 files. Make each file's "
-    "purpose specific and substantial."
+    "fully-featured implementation. Full applications commonly need 12-30 cohesive "
+    "files; do not compress the product into a small scaffold. Keep purposes concise "
+    "so the response remains valid JSON."
 )
+
+_FULL_APP_ARCHITECT_TOKENS = 12_000
+_STANDARD_ARCHITECT_TOKENS = 4_096
+
+# A model plan remains the primary architecture. These entries are the deterministic
+# recovery contract when structured output is truncated or omits an explicit feature
+# named in the brief. Keeping the map small and product-oriented avoids guessing an
+# implementation while still making requested screens independently provable.
+_FEATURE_ROUTES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("lesson", "learning path"), "lessons", "Lesson paths and progression"),
+    (("drill", "practice routine"), "drills", "Practical drills and routines"),
+    (("equipment", "gear"), "equipment", "Equipment guidance"),
+    (("tutorial", "resource"), "resources", "Tutorial and resource library"),
+    (("tee-time", "tee time", "booking", "appointment"), "book", "Booking call to action and form"),
+    (("service",), "services", "Service overview"),
+    (("financ",), "financing", "Financing options and call to action"),
+    (("review", "testimonial"), "reviews", "Customer reviews and trust proof"),
+    (("emergency",), "emergency", "Emergency contact workflow"),
+    (("contact",), "contact", "Contact details and validated inquiry form"),
+    (("pricing", "plans"), "pricing", "Pricing or plan comparison"),
+    (("faq",), "faq", "Frequently asked questions"),
+)
+
+
+def _merge_file_plans(*groups: list[Any]) -> list[dict[str, str]]:
+    """Merge model and recovery files by path while preserving model intent."""
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if isinstance(item, str):
+                path, purpose = item.strip(), "Required project file"
+            elif isinstance(item, dict):
+                path = str(item.get("path") or "").strip()
+                purpose = str(item.get("purpose") or "Required project file").strip()
+            else:
+                continue
+            key = path.replace("\\", "/").lower()
+            if not path or key in seen:
+                continue
+            seen.add(key)
+            merged.append({"path": path, "purpose": purpose})
+    return merged
+
+
+def _brief_feature_routes(brief: str) -> list[tuple[str, str]]:
+    text = brief.lower()
+    routes: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for needles, route, purpose in _FEATURE_ROUTES:
+        if any(needle in text for needle in needles) and route not in seen:
+            routes.append((route, purpose))
+            seen.add(route)
+
+    # Service businesses need individually navigable service detail pages, not
+    # only a generic services hero. These paths are useful even when the brief
+    # says only "HVAC" rather than spelling out heating and cooling separately.
+    if any(term in text for term in ("hvac", "air conditioning", "heating and cooling")):
+        for route, purpose in (
+            ("heating", "Heating repair and installation service details"),
+            ("cooling", "Cooling repair and installation service details"),
+            ("maintenance", "Preventive maintenance service details"),
+        ):
+            if route not in seen:
+                routes.append((route, purpose))
+                seen.add(route)
+    return routes
+
+
+def _full_app_recovery_files(brief: str, stack: str) -> list[dict[str, str]]:
+    """Return a brief-derived, stack-native floor for web full applications."""
+    routes = _brief_feature_routes(brief)
+    if stack == "astro":
+        shared = [
+            {"path": "src/components/SiteHeader.astro", "purpose": "Responsive site navigation"},
+            {"path": "src/components/SiteFooter.astro", "purpose": "Finished footer and contact links"},
+            {"path": "src/components/CallToAction.astro", "purpose": "Reusable primary conversion action"},
+            {"path": "src/components/FeatureCard.astro", "purpose": "Reusable accessible content card"},
+            {"path": "src/data/site.js", "purpose": "Typed product content and sample data"},
+            {"path": "src/styles/global.css", "purpose": "Responsive tokens and global layout styles"},
+            {"path": "src/pages/404.astro", "purpose": "Useful not-found recovery page"},
+            {"path": "tests/site-contract.test.mjs", "purpose": "Brief feature and route contract tests"},
+        ]
+        return shared + [
+            {"path": f"src/pages/{route}.astro", "purpose": purpose}
+            for route, purpose in routes
+        ]
+    if stack == "static_html":
+        shared = [
+            {"path": "data/site.js", "purpose": "Structured product content and sample data"},
+            {"path": "tests/site-contract.test.mjs", "purpose": "Brief feature and page contract tests"},
+            {"path": "404.html", "purpose": "Useful not-found recovery page"},
+        ]
+        return shared + [
+            {"path": f"{route}.html", "purpose": purpose}
+            for route, purpose in routes
+        ]
+    return []
 
 # Plain-JS Vite+React stacks whose scaffold floor is .jsx — the architect must
 # plan .jsx (not .tsx), else the .jsx scaffold main + index.html render the
@@ -108,6 +207,9 @@ class ArchitectAgent(BaseAgent):
     async def execute(self, task: TaskRequest) -> TaskResult:
         p = task.payload
         brief = p.get("brief", "") or p.get("slug", "app")
+        raw_extra = p.get("extra")
+        extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+        full_app = bool(extra.get("full_app_contract"))
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         research = prior.get("research", {}) if isinstance(prior.get("research"), dict) else {}
         stack = detect_stack(
@@ -163,12 +265,45 @@ class ArchitectAgent(BaseAgent):
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."
-        result = await self.llm.complete(prompt, tier=Tier.STRONG, system=self.system_prompt(_SYSTEM), json_mode=True, task_type=self.agent_type)
+        result = await self.llm.complete(
+            prompt,
+            tier=Tier.STRONG,
+            system=self.system_prompt(_SYSTEM),
+            max_tokens=(
+                _FULL_APP_ARCHITECT_TOKENS
+                if full_app
+                else _STANDARD_ARCHITECT_TOKENS
+            ),
+            json_mode=True,
+            task_type=self.agent_type,
+        )
         parsed = parse_json(result.text)
+
+        # Some otherwise-correct models wrap the requested object in {"plan":
+        # {...}}. Accept that harmless shape instead of discarding a paid plan.
+        if (
+            isinstance(parsed, dict)
+            and not parsed.get("files")
+            and isinstance(parsed.get("plan"), dict)
+        ):
+            parsed = parsed["plan"]
 
         if (not isinstance(parsed, dict) or parsed.get("stub") is True
                 or result.backend == "stub" or not parsed.get("files")):
-            parsed = self._offline_plan(brief, stack, p.get("slug"))
+            parsed = self._offline_plan(
+                brief, stack, p.get("slug"), full_app=full_app,
+            )
+        elif full_app:
+            recovery = self._offline_plan(
+                brief, stack, p.get("slug"), full_app=True,
+            )
+            parsed["files"] = _merge_file_plans(
+                list(parsed.get("files") or []),
+                list(recovery.get("files") or []),
+            )
+            parsed["build_order"] = [
+                item["path"] for item in parsed["files"]
+            ]
 
         # Always include the stack so downstream stages agree.
         parsed.setdefault("stack", stack)
@@ -192,16 +327,32 @@ class ArchitectAgent(BaseAgent):
                           output={"plan": plan, "stack": plan["stack"],
                                   "model": result.model, "backend": result.backend})
 
-    def _offline_plan(self, brief: str, stack: str, slug: Any) -> dict[str, Any]:
+    def _offline_plan(
+        self,
+        brief: str,
+        stack: str,
+        slug: Any,
+        *,
+        full_app: bool = False,
+    ) -> dict[str, Any]:
         app_name = slugify(slug or brief, "app")
         scaffold = scaffold_for(stack, app_name, brief)
         files = [{"path": path, "purpose": f"{stack} project file"} for path in scaffold]
+        if full_app:
+            files = _merge_file_plans(
+                files,
+                _full_app_recovery_files(brief, stack),
+            )
         return {
             "stack": stack,
-            "summary": f"Offline plan: scaffold a runnable {stack} project for '{brief}'.",
+            "summary": (
+                f"Recovery full-app plan for '{brief}' using {stack}."
+                if full_app
+                else f"Offline plan: scaffold a runnable {stack} project for '{brief}'."
+            ),
             "files": files,
-            "build_order": list(scaffold.keys()),
-            "components": list(scaffold.keys()),
+            "build_order": [item["path"] for item in files],
+            "components": [item["path"] for item in files],
         }
 
     async def health_check(self) -> bool:

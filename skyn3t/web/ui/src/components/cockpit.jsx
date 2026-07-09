@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { latestBuildEvents } from "../buildSignals.js";
 import { apiFetch } from "../api.js";
+import { sliceTaskIdentity } from "../agentSignals.js";
 
 // Build per-stage debug rows from the live event stream. Event-driven: we render
 // whatever stages appear, so we never drift from the backend stage vocabulary.
@@ -64,10 +65,36 @@ export function pipelineFromEvents(events, fallback = []) {
     }
     return r;
   };
-  for (const e of latestBuildEvents(events)) {
+  const buildEvents = latestBuildEvents(events);
+  const correlations = new Set(buildEvents.map((event) => event.correlation_id).filter(Boolean));
+  const scopedEvents = events.filter(
+    (event) => buildEvents.includes(event) || correlations.has(event.correlation_id),
+  );
+  for (const e of scopedEvents) {
     const p = e.payload || {};
-    if (e.type === "build.started" && Array.isArray(p.stages) && p.stages.length) {
+    const eventType = String(e.type || "");
+    if (eventType === "build.started" && Array.isArray(p.stages) && p.stages.length) {
       planned = p.stages;
+    }
+    const slice = sliceTaskIdentity(e);
+    if (slice && (eventType.startsWith("task.") || eventType === "build.stage.artifact.snapshot")) {
+      const r = ensure(slice.label);
+      r.capability = "slice";
+      r.agentType = p.type || "code";
+      r.agentName = p.agent || e.source;
+      if (eventType === "task.started") r.state = "running";
+      else if (eventType === "task.completed") {
+        r.state = "done";
+        r.status = p.success === false ? "failed" : "completed";
+      } else if (eventType === "task.failed") {
+        r.state = "failed";
+        r.status = "failed";
+        if (p.error) r.gaps = [p.error];
+      } else if (p.slice_complete) {
+        r.state = p.success === false ? "failed" : "done";
+        r.status = p.success === false ? "failed" : "completed";
+      }
+      continue;
     }
     const name = p.stage || p.capability;
     if (!name) continue;

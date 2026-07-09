@@ -224,6 +224,70 @@ def test_activity_wires_trajectory_replay_ui() -> None:
     assert "searchableEventText" in activity
 
 
+def test_slice_activity_is_named_in_activity_and_cockpit() -> None:
+    activity = (ROUTES / "Activity.jsx").read_text(encoding="utf-8")
+    cockpit = (COMPONENTS / "cockpit.jsx").read_text(encoding="utf-8")
+
+    assert "sliceTaskIdentity" in activity
+    assert 'case "task.started"' in activity
+    assert "identity?.label" in activity
+    assert "sliceTaskIdentity" in cockpit
+    assert "ensure(slice.label)" in cockpit
+    assert 'eventType === "task.completed"' in cockpit
+    assert "p.slice_complete" in cockpit
+
+
+def test_concurrent_slice_completion_keeps_code_agent_busy() -> None:
+    helper = SRC / "agentSignals.js"
+    script = f"""
+      import {{ agentActivity, agentIsBusy, sliceTaskIdentity }} from {json.dumps(helper.as_uri())};
+      const started = (task, slice, correlation = "build-1") => ({{
+        type: "task.started",
+        source: "code",
+        correlation_id: correlation,
+        payload: {{ task_id: task, metadata: {{ stage: "code", slice }} }},
+      }});
+      const completed = (task, slice, correlation = "build-1") => ({{
+        type: "task.completed",
+        source: "code",
+        correlation_id: correlation,
+        payload: {{ task_id: task, success: true, metadata: {{ stage: "code", slice }} }},
+      }});
+      const code = {{ name: "code", agent_type: "codegen" }};
+      const frontend = started("front", "frontend");
+      const config = started("config", "config");
+      if (sliceTaskIdentity(frontend)?.label !== "code/frontend") {{
+        throw new Error("slice identity was not preserved");
+      }}
+      const oneDone = agentActivity([frontend, config, completed("front", "frontend")]);
+      if (!agentIsBusy(code, oneDone)) {{
+        throw new Error("first slice completion incorrectly made code idle");
+      }}
+      const allDone = agentActivity([
+        frontend, config, completed("front", "frontend"), completed("config", "config"),
+      ]);
+      if (agentIsBusy(code, allDone)) {{
+        throw new Error("code remained busy after every slice completed");
+      }}
+      const otherBuild = started("other", "frontend", "build-2");
+      const cancelled = agentActivity([
+        frontend,
+        otherBuild,
+        {{ type: "build.failed", correlation_id: "build-1", payload: {{ status: "cancelled" }} }},
+      ]);
+      if (!agentIsBusy(code, cancelled)) {{
+        throw new Error("cancelling one build cleared another build's active slice");
+      }}
+    """
+    subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=UI_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_signal_grid_primitive_wraps_long_values() -> None:
     ui = (COMPONENTS / "ui.jsx").read_text(encoding="utf-8")
     assert "export function SignalGrid" in ui

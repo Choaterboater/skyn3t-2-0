@@ -89,3 +89,44 @@ async def test_cancelled_build_failed_event_preserves_cancelled_status():
         {"build_id": bid, "status": "cancelled", "recovery": [{"files": 4}]},
     )
     assert st.builds[bid].status == "cancelled"
+
+
+async def test_stage_costs_accumulate_idempotently_until_terminal_total():
+    st = AppState(settings=Settings(llm_backend="stub"))
+    bid = "b-live-cost"
+    await st.event_bus.emit(EventType.BUILD_STARTED, "studio", {"build_id": bid})
+
+    await st.event_bus.emit(
+        EventType.BUILD_STAGE_COMPLETED,
+        "studio",
+        {"build_id": bid, "stage": "research", "cost_usd": 0.10},
+    )
+    await st.event_bus.emit(
+        EventType.BUILD_STAGE_COMPLETED,
+        "studio",
+        {"build_id": bid, "stage": "code", "cost_usd": 0.25},
+    )
+    assert st.builds[bid].cost_usd == pytest.approx(0.35)
+
+    # Replaying the same stage slice replaces it instead of double-counting it.
+    await st.event_bus.emit(
+        EventType.BUILD_STAGE_COMPLETED,
+        "studio",
+        {"build_id": bid, "stage": "code", "cost_usd": 0.25},
+    )
+    assert st.builds[bid].cost_usd == pytest.approx(0.35)
+
+    await st.event_bus.emit(
+        EventType.BUILD_COMPLETED,
+        "studio",
+        {"build_id": bid, "status": "completed", "cost_usd": 0.42},
+    )
+    assert st.builds[bid].cost_usd == pytest.approx(0.42)
+
+    # A late replay cannot overwrite the settled terminal total.
+    await st.event_bus.emit(
+        EventType.BUILD_STAGE_COMPLETED,
+        "studio",
+        {"build_id": bid, "stage": "review", "cost_usd": 9.99},
+    )
+    assert st.builds[bid].cost_usd == pytest.approx(0.42)

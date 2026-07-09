@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { apiFetch } from "../api.js";
+import { sliceTaskIdentity } from "../agentSignals.js";
 import {
   PageHeader,
   Panel,
@@ -45,7 +46,7 @@ function compact(value, max = 120) {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-function eventSummary(e) {
+export function eventSummary(e) {
   const p = e.payload || {};
   switch (e.type) {
     case "build.started":
@@ -58,6 +59,21 @@ function eventSummary(e) {
       return compact(`Stage started: ${p.stage || ""} ${p.agent ? `· ${p.agent}` : ""}`);
     case "build.stage.completed":
       return compact(`Stage completed: ${p.stage || ""} · score ${p.score ?? "—"}${p.gaps ? ` · gaps ${Array.isArray(p.gaps) ? p.gaps.length : p.gaps}` : ""}`);
+    case "task.submitted":
+    case "task.routed":
+    case "task.started":
+    case "task.completed":
+    case "task.failed": {
+      const identity = sliceTaskIdentity(e);
+      const target = identity?.label || p.metadata?.stage || p.type || p.task_id || "task";
+      const verb = e.type.replace("task.", "");
+      const detail = e.type === "task.routed" && p.agent
+        ? ` · ${p.agent}`
+        : e.type === "task.failed" && p.error
+        ? ` · ${p.error}`
+        : "";
+      return compact(`Task ${verb}: ${target}${detail}`);
+    }
     case "improve.started":
       return compact(`Improve started: ${p.slug || ""} · ${p.goal || ""}`);
     case "improve.completed":

@@ -247,13 +247,15 @@ class Settings(BaseSettings):
     free_only: bool = True
     no_claude: bool = False
     model_evolution: bool = False  # opt-in: with auto_route, route via the learned ModelTournament router
-    openrouter_max_concurrency: int = Field(default=4, ge=1)
+    # Shared stage admission. Eight lets several full-app candidate/slice agents
+    # progress together; provider-side retry/backoff still absorbs rate pressure.
+    openrouter_max_concurrency: int = Field(default=8, ge=1)
 
     # ---- Cost caps (hard backstops) -------------------------------------
     # Values <= 0 disable the corresponding guard.
     per_build_usd_cap: float = 0.0
-    daily_usd_cap: float = 5.00
-    daily_token_cap: int = 5_000_000
+    daily_usd_cap: float = 0.0
+    daily_token_cap: int = 0
     autonomous_daily_build_cap: int = 10
 
     # ---- Feature flags ---------------------------------------------------

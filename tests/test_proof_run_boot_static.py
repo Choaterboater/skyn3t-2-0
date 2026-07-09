@@ -76,6 +76,33 @@ def test_bare_and_aliased_imports_are_not_flagged(tmp_path):
     assert res.passed is True
 
 
+def test_proof_ignores_generated_astro_metadata(tmp_path):
+    (tmp_path / "package.json").write_text(
+        '{"name":"golf","scripts":{"build":"astro build"},'
+        '"dependencies":{"astro":"^5.0.0"}}',
+        encoding="utf-8",
+    )
+    pages = tmp_path / "src" / "pages"
+    pages.mkdir(parents=True)
+    (pages / "index.astro").write_text(
+        "<html><body><main>Golf lessons</main></body></html>", encoding="utf-8"
+    )
+
+    # Astro sync/build writes this generated declaration even when the project
+    # has no authored content config. It is tool output, not a broken app import.
+    metadata = tmp_path / ".astro"
+    metadata.mkdir()
+    (metadata / "content.d.ts").write_text(
+        'export type ContentConfig = typeof import("./../src/content.config.mjs");\n',
+        encoding="utf-8",
+    )
+
+    res = proof_run(tmp_path, stack="astro", execution_backend="inline")
+    assert res.passed is True
+    assert "unresolved_imports" not in res.detail
+    assert res.files_total == 2
+
+
 # --- gate 2: unwired scaffold-stub entry -------------------------------------
 
 _STUB_APP = (

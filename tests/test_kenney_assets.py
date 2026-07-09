@@ -5,8 +5,8 @@ from pathlib import Path
 
 from skyn3t.agents.art_director import ArtPlan, RoleArt
 from skyn3t.config.settings import Settings
-from skyn3t.studio.assets import generate_role_sprites
 from skyn3t.studio.asset_foundry import build_asset_foundry
+from skyn3t.studio.assets import generate_role_sprites
 from skyn3t.studio.kenney_assets import load_kenney_assets, write_kenney_role_sprites
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16

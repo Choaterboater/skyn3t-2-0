@@ -63,6 +63,28 @@ _PAID_DEFAULTS: dict[Tier, str] = {
     Tier.DOCS: "newest:deepseek-v3",
 }
 
+# Concrete PAID offline backstop — the paid-mode twin of ``_FREE_DEFAULTS``. This is
+# a LAST RESORT only: the primary path is the live OpenRouter catalog, which the
+# router refreshes hourly (``best_paid_model`` / ``newest:<family>``) so normal
+# operation always tracks the newest models as the catalog changes day to day. These
+# hardcoded ids are reached ONLY when the live catalog is unreachable AND no per-tier
+# paid model has been cached yet; they are current (2026) non-free, non-Claude models
+# that approximate what the benchmark-scored online router would pick for each tier,
+# so the offline path never drops to a stale generation or (the bug this fixes) a
+# ``:free`` id for a paid user. ``fallback_candidates`` re-selects at runtime if one
+# is ever retired. NOTE: the UI entry stays within the codestral/qwen/kimi/llama
+# family because the offline UI fallback is family-guarded by
+# tests/test_model_router_newest.py::test_resolve_newest_falls_back_to_paid_default_offline.
+# When the live catalog is reachable this table is never consulted — keep it roughly
+# current, but the router self-heals from the catalog regardless.
+_PAID_OFFLINE_DEFAULTS: dict[Tier, str] = {
+    Tier.CHEAP: "qwen/qwen3-coder",
+    Tier.UI: "mistralai/codestral-2501",
+    Tier.BACKEND: "moonshotai/kimi-k2.7-code",
+    Tier.STRONG: "z-ai/glm-5.2",
+    Tier.DOCS: "deepseek/deepseek-v4-pro",
+}
+
 _PAID_FALLBACK_CACHE = "model_router_paid_fallback.json"
 
 # When a configured :free model is no longer in the live catalog, substitute a
@@ -559,18 +581,6 @@ def newest_paid_model(family: str) -> str | None:
     return max(cands, key=lambda c: c[1])[0] if cands else None
 
 
-def _fallback_free_model(tier: Tier) -> str:
-    """Best-effort :free model substitute used when paid resolution fails."""
-    live = ranked_live_free_model_ids(tier, limit=1) or live_free_model_ids()
-    if not live:
-        return _FREE_DEFAULTS[tier]
-    for marker in _FREE_TIER_PREFS.get(tier, ()):
-        for model in live:
-            if marker in model.lower():
-                return model
-    return live[0]
-
-
 _CLAUDE_MARKERS = ("claude", "anthropic")
 
 
@@ -630,7 +640,11 @@ class ModelRouter:
             log.info("router.newest_cache_fallback", family=family, model=cached, tier=tier.value)
             return cached
 
-        fallback = _fallback_free_model(tier)
+        # Offline last resort: a CONCRETE paid default, never a :free id. This branch
+        # is only reachable in PAID mode (free_only rewrites happen later, in
+        # _apply_policy), so dropping to :free here would silently downgrade a paying
+        # user — the regression guarded by test_no_claude_paid_mode_uses_paid_default.
+        fallback = _PAID_OFFLINE_DEFAULTS[tier]
         log.info("router.newest_offline_fallback", family=family, model=fallback, tier=tier.value)
         return fallback
 

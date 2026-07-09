@@ -118,17 +118,24 @@ async def sample(
     execution_backend: str = "auto",
     stack: str = "",
     worktrees_root: str | None = None,
+    worktree_registry: list[Worktree] | None = None,
+    preserve_on_cancel: bool = False,
 ) -> SelectionResult:
     """Run ``n`` code trajectories in parallel, proof each, select the best.
 
     ``trajectory(worktree, index)`` runs one code stage into the given worktree.
-    The caller owns merging the winner back and cleaning up worktrees.
+    The caller owns merging and cleaning the winner; this function normally
+    cleans every loser. A runner that needs to recover partial output on
+    cancellation can register every worktree up front and defer cancellation
+    cleanup to its outer lifecycle handler.
     """
     n = max(1, int(n))
     candidates: list[Candidate] = []
     for i in range(n):
         wt = create_worktree(base_dir, f"{slug}-cand{i}", worktrees_root=worktrees_root)
         candidates.append(Candidate(index=i, worktree=wt))
+        if worktree_registry is not None:
+            worktree_registry.append(wt)
 
     async def _run(cand: Candidate) -> None:
         try:
@@ -156,19 +163,24 @@ async def sample(
                 cand.error = f"proof_run failed: {exc}"
 
     selection: SelectionResult | None = None
+    cancelled = False
     try:
         await asyncio.gather(*(_run(c) for c in candidates))
         selection = select(candidates)
         return selection
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
         # Own cleanup of every worktree we created that is NOT the selected
         # winner, so a raised/cancelled gather never leaks worktrees. The caller
         # merges + cleans the winner. cleanup_worktree is idempotent/best-effort.
-        winner = selection.winner if selection is not None else None
-        for cand in candidates:
-            if winner is not None and cand is winner:
-                continue
-            cleanup_worktree(cand.worktree)
+        if not (cancelled and preserve_on_cancel):
+            winner = selection.winner if selection is not None else None
+            for cand in candidates:
+                if winner is not None and cand is winner:
+                    continue
+                cleanup_worktree(cand.worktree)
 
 
 def select(candidates: list[Candidate]) -> SelectionResult:

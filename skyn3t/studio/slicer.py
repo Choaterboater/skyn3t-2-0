@@ -15,6 +15,7 @@ overhead).
 from __future__ import annotations
 
 from collections import OrderedDict
+from pathlib import PurePosixPath
 from typing import Any
 
 # model_router tier name a slice's sub-agent should prefer (the "mixed by slice"
@@ -56,13 +57,35 @@ _BACKEND_STACKS = frozenset({
 })
 
 
+def _canonical_path(raw: Any) -> str | None:
+    """Return one safe, portable spelling for an architect-owned path.
+
+    Architect output is untrusted model data.  Normalize separators and benign
+    ``.`` segments before assigning ownership, while rejecting absolute paths,
+    traversal, Windows drive/stream syntax, and NULs.  The returned spelling is
+    always relative and uses forward slashes.
+    """
+    path = str(raw or "").strip().replace("\\", "/")
+    if not path or "\x00" in path or ":" in path or path.startswith("/"):
+        return None
+
+    raw_parts = path.split("/")
+    if any(part == ".." for part in raw_parts):
+        return None
+
+    canonical = PurePosixPath(path).as_posix()
+    if canonical in {"", ".", ".."}:
+        return None
+    return canonical
+
+
 def _norm(entry: Any) -> dict[str, Any] | None:
-    """Normalise an architect entry (dict or str) to a dict with a 'path'."""
+    """Normalise an architect entry (dict or str) to a dict with a safe path."""
     if isinstance(entry, str):
-        path = entry.strip()
+        path = _canonical_path(entry)
         return {"path": path} if path else None
     if isinstance(entry, dict):
-        path = str(entry.get("path") or entry.get("file") or "").strip()
+        path = _canonical_path(entry.get("path") or entry.get("file") or "")
         if not path:
             return None
         out = dict(entry)
@@ -125,9 +148,15 @@ def slice_plan(
     seen: set[str] = set()
     for entry in files or []:
         f = _norm(entry)
-        if f is None or f["path"] in seen:
+        if f is None:
             continue
-        seen.add(f["path"])
+        # Generated projects are developed and merged on Windows as well as
+        # POSIX.  Windows paths are case-insensitive, so ownership must be too:
+        # two case aliases cannot be handed to different slice agents.
+        identity = f["path"].casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
         normed.append(f)
 
     if len(normed) < max(2, int(min_files)):

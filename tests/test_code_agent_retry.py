@@ -161,13 +161,14 @@ async def test_phaser_missing_sim_core_exhausts_retry_then_degrades(tmp_path):
     assert any(f.endswith("src/sim.js") for f in result.output["files"])
 
 
-async def test_timeout_with_substantial_code_is_kept(tmp_path):
-    # First (only) call writes a REAL app but returns ok=False (a mid-build
-    # TIMEOUT). It must be KEPT — not retried, not flagged degraded. Discarding a
-    # 28KB timed-out app to re-run was the regression bug.
+async def test_timeout_with_substantial_code_is_kept_but_not_declared_complete(tmp_path):
+    # A timeout can leave valuable code behind, but it is not proof of completion.
+    # Resume once, preserve the substantial partial app, and keep the no-go marker
+    # when neither attempt reaches a confirmed terminal success.
     result, n = await _run_with_attempts(tmp_path, [(False, _REAL_APP)])
-    assert n == 1, "a substantial delivery must NOT be retried, even on ok=False"
-    assert "degraded" not in result.output, "a real app on timeout is kept, not degraded"
+    assert n == 2, "an unconfirmed substantial delivery gets one resume attempt"
+    assert result.output.get("degraded") is True
+    assert "did not confirm completion" in result.output.get("degraded_reason", "")
     assert any("App.jsx" in f for f in result.output["files"])
 
 
@@ -211,3 +212,22 @@ async def test_exhausts_retry_then_degraded(tmp_path):
     assert result.output.get("degraded") is True
     assert "after 1 retry" in result.output.get("degraded_reason", "")
     assert result.output["files_written"] > 0  # scaffold floor still delivered
+
+
+async def test_scaffold_fallback_preserves_preexisting_generated_assets(tmp_path):
+    webp = b"RIFF\x10\x00\x00\x00WEBPgenerated-hvac-photo"
+    png = b"\x89PNG\r\n\x1a\npreexisting-product-photo"
+    asset = tmp_path / "assets/hvac-unit.webp"
+    photo = tmp_path / "public/product.png"
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    photo.parent.mkdir(parents=True, exist_ok=True)
+    asset.write_bytes(webp)
+    photo.write_bytes(png)
+
+    result, n = await _run_with_attempts(tmp_path, [(False, None)])
+
+    assert n == 2
+    assert result.output["degraded"] is True
+    assert asset.read_bytes() == webp
+    assert photo.read_bytes() == png
+    assert {"assets/hvac-unit.webp", "public/product.png"} <= set(result.output["files"])

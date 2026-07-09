@@ -3196,15 +3196,31 @@ class StudioRunner:
         payload: dict[str, Any],
         correlation_id: str,
     ) -> TaskResult:
+        slice_scope = payload.get("slice_scope")
+        metadata = {"stage": spec.name}
+        if isinstance(slice_scope, dict) and slice_scope.get("name"):
+            metadata["slice"] = str(slice_scope["name"])
         task = TaskRequest(
             type=spec.agent_type,
             payload=payload,
             capabilities_required=(spec.capability,),
             correlation_id=correlation_id,
-            metadata={"stage": spec.name},
+            metadata=metadata,
         )
-        # Honor the stage-execution timeout (the 'stage_timeout' contract) so a
-        # hung agent can't stall the whole build forever.
+        # Code generation has its own progress-aware bounds in the LLM adapter:
+        # an agentic session has a per-session budget plus an idle watchdog that
+        # kills a silent process tree. Do not wrap that work in the generic stage
+        # timeout. The generic timer starts before BaseAgent acquires its per-agent
+        # lock, so concurrent builds spent most of the 30-minute allowance queued
+        # behind another productive CodeAgent and were then cancelled shortly
+        # after their first files appeared. Awaiting directly also preserves
+        # immediate explicit cancellation -- CancelledError still propagates
+        # through the orchestrator into the adapter's process-tree cleanup.
+        if spec.agent_type == "code":
+            return await self.orchestrator.submit(task)
+
+        # Non-code agents do not own an equivalent stall watchdog. Keep their
+        # fixed execution bound so a silent stage cannot hold a build forever.
         try:
             return await asyncio.wait_for(
                 self.orchestrator.submit(task), timeout=self.stage_exec_timeout
@@ -3373,6 +3389,60 @@ class StudioRunner:
                 continue
         return f"{slug}-{uuid.uuid4().hex[:8]}"  # effectively unreachable fallback
 
+    def _recover_cancelled_worktrees(
+        self,
+        build_id: str,
+        worktrees: list[Worktree],
+    ) -> list[dict[str, Any]]:
+        """Snapshot nonempty candidate trees before cancellation cleanup.
+
+        Recovery lives under ``data_dir``, never ``projects_dir``: these files
+        have not passed proof or selection and must not appear as a delivered or
+        servable app. ``merge_back`` applies the normal generated-file allowlist
+        (no symlinks, git metadata, dependency trees, or build caches).
+        """
+        base = (Path(self.settings.data_dir) / "recovery").resolve()
+
+        def safe_segment(value: str, fallback: str) -> str:
+            readable = _slugify(value) or fallback
+            # The hash prevents two differently-malformed caller-supplied ids
+            # from collapsing onto the same sanitized recovery directory.
+            suffix = uuid.uuid5(uuid.NAMESPACE_URL, value or fallback).hex[:8]
+            return f"{readable[:48]}-{suffix}"
+
+        build_root = (base / safe_segment(build_id, "build")).resolve()
+        if not build_root.is_relative_to(base):
+            return []
+
+        recovered: list[dict[str, Any]] = []
+        for index, worktree in enumerate(worktrees):
+            try:
+                pending = list_files(worktree.dir)
+            except Exception:  # noqa: BLE001 - cancellation recovery is best-effort
+                continue
+            if not pending:
+                continue
+            label = safe_segment(worktree.path.name or worktree.slug, f"candidate-{index}")
+            target = (build_root / f"{index:02d}-{label}").resolve()
+            if not target.is_relative_to(build_root):
+                continue
+            try:
+                copied = merge_back(worktree.dir, target, clean=True)
+            except Exception:  # noqa: BLE001 - cleanup must still run after a copy failure
+                continue
+            if not copied:
+                continue
+            recovered.append(
+                {
+                    "candidate": worktree.slug,
+                    "path": str(target),
+                    "relative_path": target.relative_to(Path(self.settings.data_dir).resolve()).as_posix(),
+                    "files": copied,
+                    "file_count": len(copied),
+                }
+            )
+        return recovered
+
     # ---- main entrypoint -------------------------------------------------
     async def start(
         self,
@@ -3535,24 +3605,25 @@ class StudioRunner:
         ]
         manifest.extra["skills_used"] = list(skill_slugs)
 
-        # Real image assets (Replicate): for an image-implying brief, generate a
-        # small capped set of line-art/coloring images INTO the worktree before
-        # codegen, then tell the code/agentic prompt they exist so the app uses
-        # real art. Gated behind a token + asset_gen; a no-op otherwise. Never
-        # blocks/crashes the build (design rule #6) — assets are best-effort.
-        extra = await self._generate_assets(main_wt.dir, brief, manifest, extra, stack=plan.stack)
-
-        # Budget guard wiring for this build (all best-effort). Cost tracking
-        # already began in start(), before selector/planner/asset delegation.
-        self._obs_call(self.budget_guard, "reset")
-        self._obs_call(self.budget_guard, "attach", self.event_bus)
-        self._guard_check("build")
-
         # Track the stage whose cost slice is currently open so a mid-stage
         # exception can still close it (else its base leaks). end_stage is
         # idempotent, so closing an already-finished stage is a harmless no-op.
         open_stage: str | None = None
         try:
+            # Real image assets (Replicate): generate them into the runner-owned
+            # worktree before codegen. Keep this inside the lifecycle try so an
+            # explicit cancellation while the provider is working still records
+            # recovery metadata and cleans the worktree in the common finally.
+            extra = await self._generate_assets(
+                main_wt.dir, brief, manifest, extra, stack=plan.stack
+            )
+
+            # Budget guard wiring for this build (all best-effort). Cost tracking
+            # already began in start(), before selector/planner/asset delegation.
+            self._obs_call(self.budget_guard, "reset")
+            self._obs_call(self.budget_guard, "attach", self.event_bus)
+            self._guard_check("build")
+
             for spec in plan.stages:
                 self._obs_call(self.budget_guard, "heartbeat")
                 self._guard_check(spec.name)
@@ -3621,10 +3692,13 @@ class StudioRunner:
                         correlation_id, main_wt, worktrees
                     )
                 # ---- Hermes orchestrator-worker: parallel code slices ----
-                elif spec.agent_type == "code" and (slices := self._maybe_slices(plan, prior)):
+                elif spec.agent_type == "code" and (
+                    slices := self._maybe_slices(plan, prior, stage_extra)
+                ):
                     result = await self._run_code_parallel_slices(
                         plan, spec, project_dir, prior, lessons, stage_extra,
                         correlation_id, main_wt, worktrees, slices,
+                        build_id=build_id,
                     )
                 else:
                     payload = self._base_payload(
@@ -4339,6 +4413,44 @@ class StudioRunner:
             outcome = await self._finalize(manifest, plan, correlation_id, final_score)
             return outcome
 
+        except asyncio.CancelledError:
+            # Cancellation is terminal, not an unhandled crash. Preserve every
+            # nonempty in-flight candidate before the finally block removes its
+            # isolated worktree; never merge an unproved candidate into Projects.
+            if open_stage is not None:
+                self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
+            recovered = self._recover_cancelled_worktrees(build_id, worktrees)
+            manifest.status = "cancelled"
+            manifest.touch()
+            manifest.extra["cancellation"] = {
+                "cancelled_at": manifest.updated_at,
+                "recovery": recovered,
+            }
+            try:
+                self.approval_gate.clear(build_id)
+            except Exception:  # noqa: BLE001 - cancellation must keep unwinding
+                pass
+            # Keep a durable lifecycle record beside the partial preview. Its
+            # cancelled status is explicitly non-deliverable, so project routes
+            # must not treat this as a finished app.
+            try:
+                manifest.save(project_dir)
+            except Exception:  # noqa: BLE001 - DB/event recording still proceeds
+                pass
+            await self._save_build(manifest)
+            await self.event_bus.emit(
+                EventType.BUILD_FAILED,
+                "studio",
+                {
+                    "build_id": build_id,
+                    "slug": slug,
+                    "status": "cancelled",
+                    "reason": "build cancelled",
+                    "recovery": recovered,
+                },
+                correlation_id=correlation_id,
+            )
+            raise
         except _BuildRejected as exc:
             if open_stage is not None:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
@@ -4415,7 +4527,6 @@ class StudioRunner:
         )
 
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
-            worktrees.append(wt)
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
             payload.update(spec.extra)
             payload["trajectory_index"] = index
@@ -4431,6 +4542,8 @@ class StudioRunner:
             checklist=plan.checklist,
             execution_backend=self.settings.execution_backend,
             stack=plan.stack,
+            worktree_registry=worktrees,
+            preserve_on_cancel=True,
         )
 
         if selection.winner is None:
@@ -4464,13 +4577,20 @@ class StudioRunner:
                 return ap["files"]
         return []
 
-    def _maybe_slices(self, plan: BuildPlan, prior: dict[str, Any]):
+    def _maybe_slices(
+        self,
+        plan: BuildPlan,
+        prior: dict[str, Any],
+        extra: dict[str, Any] | None = None,
+    ):
         """Slice plan when parallel code-slicing should run, else None.
 
         Gated by the flag, single-trajectory only (not combined with best-of-N),
         and only when the architect manifest decomposes into >=2 slices above the
         file-count floor (tiny apps keep the monolithic path)."""
-        if not bool(getattr(self.settings, "parallel_code_slices", False)):
+        configured = bool(getattr(self.settings, "parallel_code_slices", False))
+        enabled = bool((extra or {}).get("parallel_code_slices", configured))
+        if not enabled:
             return None
         if plan.best_of_n > 1:
             return None
@@ -4479,15 +4599,43 @@ class StudioRunner:
         slices = slice_plan(files, plan.stack, min_files=min_files)
         return slices or None
 
-    def _slice_model(self, tier_name: str) -> str | None:
-        """Resolve a slice's tier to a concrete model for the single-model agentic
-        CLI (opt-in via ``settings.slice_tier_models`` {tier: model}). Returns None
-        when unmapped — the slice uses the default model. On the OpenRouter backend
-        per-file tier routing already mixes UI/backend models, so this is only
-        consulted for the agentic path."""
+    def _slice_model(self, tier_name: str, llm: Any | None = None) -> str | None:
+        """Resolve a concrete model for one whole-project agentic slice.
+
+        Explicit ``slice_tier_models`` mappings apply to every agentic backend.
+        Without a mapping, OpenRouter agentic slices must resolve their tier now
+        because the whole slice is one model call and per-file routing never runs.
+        Local CLIs remain unpinned unless explicitly mapped.
+        """
         mapping = getattr(self.settings, "slice_tier_models", None) or {}
         if isinstance(mapping, dict) and mapping.get(tier_name):
             return str(mapping[tier_name])
+        if (
+            llm is None
+            or str(getattr(llm, "backend", "") or "").lower() != "openrouter"
+            or not bool(getattr(llm, "supports_agentic", False))
+        ):
+            return None
+        try:
+            from skyn3t.core.model_router import Tier
+
+            tier = Tier(tier_name)
+            resolver = getattr(llm, "_resolve_pinned_model", None)
+            if callable(resolver):
+                return str(resolver(
+                    tier=tier,
+                    setting_names=("openrouter_codegen_model", "preferred_model"),
+                    task_type="codegen",
+                ))
+            router = getattr(llm, "router", None)
+            if router is not None:
+                return str(router.resolve(tier, task_type="codegen"))
+        except Exception as exc:  # noqa: BLE001 - routing must not break a slice
+            log.warning(
+                "runner.slice_model_resolution_failed",
+                tier=tier_name,
+                error=str(exc)[:120],
+            )
         return None
 
     async def _run_code_parallel_slices(
@@ -4502,6 +4650,8 @@ class StudioRunner:
         main_wt: Worktree,
         worktrees: list[Worktree],
         slices: dict[str, list[dict[str, Any]]],
+        *,
+        build_id: str = "",
     ) -> TaskResult:
         """Generate the code stage as parallel scoped sub-agents (one per slice),
         each in its own worktree, then merge all slices into the main worktree.
@@ -4531,10 +4681,11 @@ class StudioRunner:
             slice_wts[name] = wt
 
         base_agent = self._registered_codegen_agent()
-        # Only pin a slice's tier model on the single-model agentic CLI; on the
-        # OpenRouter completion backend, _generate_file's per-file tier routing
-        # must stand (else every file in the slice collapses to one tier model).
-        agentic_backend = bool(getattr(getattr(base_agent, "llm", None), "supports_agentic", False))
+        # Agentic slices make one whole-slice call, so OpenRouter must resolve the
+        # slice tier up front. Completion mode keeps per-file routing. Local CLIs
+        # are only pinned by an explicit slice_tier_models mapping.
+        slice_llm = getattr(base_agent, "llm", None)
+        agentic_backend = bool(getattr(slice_llm, "supports_agentic", False))
 
         async def _run_slice(name: str, files: list[dict[str, Any]]):
             wt = slice_wts[name]
@@ -4547,18 +4698,53 @@ class StudioRunner:
                 "files": [f["path"] for f in files if isinstance(f, dict) and f.get("path")],
                 "manifest": manifest,
             }
-            model = self._slice_model(slice_tier(name))
-            if model and agentic_backend and not payload.get("model_override"):
-                payload["model_override"] = model
-            # Run each slice in its OWN fresh CodeAgent.execute() — the orchestrator
-            # routes every codegen task to the ONE registered CodeAgent whose run()
-            # holds a per-instance _run_lock, which would serialize the fan-out into
-            # the monolithic path + overhead. Slices use isolated worktrees and the
-            # fresh agent has its own metadata, so there's no shared state to guard.
+            if agentic_backend and not payload.get("model_override"):
+                model = self._slice_model(slice_tier(name), slice_llm)
+                if model:
+                    payload["model_override"] = model
             return name, await self._run_slice_agent(base_agent, spec, payload, correlation_id, name)
 
-        gathered = await asyncio.gather(*(_run_slice(n, f) for n, f in slices.items()))
-        results = dict(gathered)
+        # Consume slices as they finish so their files become visible in the live
+        # preview immediately. The final ordered merge below still establishes
+        # deterministic precedence (config-last); this early merge never
+        # overwrites another completed slice. Explicitly cancel every child when
+        # the parent is cancelled so no codegen process is orphaned.
+        tasks = [
+            asyncio.create_task(_run_slice(name, files))
+            for name, files in slices.items()
+        ]
+        results: dict[str, TaskResult] = {}
+        try:
+            for completed in asyncio.as_completed(tasks):
+                name, result = await completed
+                results[name] = result
+                merge_back(
+                    slice_wts[name].dir,
+                    main_wt.dir,
+                    overwrite=False,
+                    clean=False,
+                )
+                preview_files = sync_preview(main_wt.dir, project_dir, clean=False)
+                await self.event_bus.emit(
+                    EventType.STAGE_ARTIFACT_SNAPSHOT,
+                    "studio",
+                    {
+                        "build_id": build_id or correlation_id,
+                        "stage": spec.name,
+                        "slice": name,
+                        "slice_complete": True,
+                        "success": result.success,
+                        "files": preview_files[:200],
+                        "live": True,
+                    },
+                    correlation_id=correlation_id,
+                )
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         # Merge slices into the main worktree in slices order (config-last by
         # construction) so authoritative files win on a path conflict. clean=False
@@ -4567,11 +4753,6 @@ class StudioRunner:
         summaries: dict[str, Any] = {}
         degraded_reasons: list[str] = []
         unavailable_overrides: set[str] = set()
-        # A vanished SUBSTANTIVE slice (frontend/backend) means the app is missing
-        # whole features — surface it so the existing degradation gate fires.
-        # tests/config emptiness is tolerable (tests optional; the checklist /
-        # _fill_missing / css-stub backfill config).
-        substantive = {"frontend", "backend"}
         for name in slices:
             merged = merge_back(slice_wts[name].dir, main_wt.dir, overwrite=True, clean=False)
             r = results.get(name)
@@ -4587,9 +4768,10 @@ class StudioRunner:
                     value = str(value).strip()
                     if value:
                         unavailable_overrides.add(value)
-            if name in substantive and (sl_out.get("degraded") or not ok):
+            if sl_out.get("degraded") or not ok:
+                failure = sl_out.get("degraded_reason") or getattr(r, "error", None)
                 degraded_reasons.append(
-                    f"{name}: {sl_out.get('degraded_reason') or 'slice produced no files'}")
+                    f"{name}: {failure or 'slice produced no files'}")
 
         out: dict[str, Any] = {
             "files_written": total_written,
@@ -4616,7 +4798,7 @@ class StudioRunner:
         return result
 
     def _registered_codegen_agent(self):
-        """The registered codegen agent, to clone its LLM for per-slice agents."""
+        """Return the registered codegen agent for backend/model inspection."""
         for a in self.orchestrator.agents.values():
             try:
                 if a.has_capabilities(("codegen",)):
@@ -4627,32 +4809,18 @@ class StudioRunner:
 
     async def _run_slice_agent(self, base_agent, spec: StageSpec, payload: dict[str, Any],
                                correlation_id: str, name: str) -> TaskResult:
-        """Run one slice in a FRESH CodeAgent.execute(), bypassing the shared
-        BaseAgent.run() / per-instance _run_lock so concurrent slices don't
-        serialize. Falls back to the orchestrator path if no agent is available."""
-        if base_agent is None:
-            return await self._submit_stage(spec, payload, correlation_id)
-        from skyn3t.agents.code_agent import CodeAgent
-        task = TaskRequest(
-            type=spec.agent_type, payload=payload,
-            capabilities_required=(spec.capability,),
-            correlation_id=correlation_id, metadata={"stage": spec.name, "slice": name},
-        )
+        """Run one isolated slice through the registered orchestrator agent.
+
+        CodeAgent serializes only matching worktree targets, so distinct slices
+        remain concurrent without bypassing lifecycle events, model metadata,
+        persistence, cancellation propagation, or the adapter's stall watchdog.
+        """
         try:
-            agent = CodeAgent(event_bus=self.event_bus,
-                              llm=getattr(base_agent, "llm", None),
-                              config=getattr(base_agent, "config", None))
-            await agent.initialize()
-        except Exception as exc:  # noqa: BLE001 - degrade to the serialized path
-            log.warning("runner.slice_agent_init_failed", slice=name, error=str(exc)[:160])
             return await self._submit_stage(spec, payload, correlation_id)
-        try:
-            return await asyncio.wait_for(agent.execute(task), timeout=self.stage_exec_timeout)
-        except TimeoutError:
-            return TaskResult(task_id=task.task_id, success=False,
-                              error=f"slice {name} timed out after {self.stage_exec_timeout}s")
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate a slice failure
-            return TaskResult(task_id=task.task_id, success=False, error=str(exc)[:200])
+            return TaskResult(task_id=uuid.uuid4().hex, success=False, error=str(exc)[:200])
 
     # ---- helpers ---------------------------------------------------------
     @staticmethod

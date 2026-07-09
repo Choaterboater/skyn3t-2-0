@@ -54,10 +54,11 @@ async def test_approve_live_build_in_cache():
     out = await approve_build(state, "b1", approved=True, reason="looks good")
 
     assert out["build_id"] == "b1"
-    assert out["status"] == "approved"
+    assert out["status"] == "queued"
+    assert out["decision"] == "approved"
     assert out["gate_resolved"] == 0
-    # In-memory record was updated.
-    assert state.builds["b1"].status == "approved"
+    # Approval is a gate decision, not a build lifecycle transition.
+    assert state.builds["b1"].status == "queued"
     # save_build was NOT called for an in-cache build.
     assert memory.saved == []
 
@@ -70,8 +71,9 @@ async def test_reject_live_build_in_cache():
 
     out = await approve_build(state, "b2", approved=False, reason="nope")
 
-    assert out["status"] == "rejected"
-    assert state.builds["b2"].status == "rejected"
+    assert out["status"] == "queued"
+    assert out["decision"] == "rejected"
+    assert state.builds["b2"].status == "queued"
 
 
 # ---------------------------------------------------------------------------
@@ -90,12 +92,13 @@ async def test_approve_db_only_build_returns_200():
     out = await approve_build(state, "db1", approved=True, reason="approve old build")
 
     assert out["build_id"] == "db1"
-    assert out["status"] == "approved"
+    assert out["status"] == "completed"
+    assert out["decision"] == "approved"
     assert out["gate_resolved"] == 0
 
 
-async def test_approve_db_only_build_persists_status():
-    """Status change for a DB-only build is written back via save_build."""
+async def test_approve_db_only_build_does_not_clobber_persisted_status():
+    """An approval decision must not replace the persisted lifecycle status."""
     db_build = {"build_id": "db2", "slug": "proj2", "status": "completed"}
     memory = _FakeMemory({"db2": db_build})
     state = AppState()
@@ -103,9 +106,8 @@ async def test_approve_db_only_build_persists_status():
 
     await approve_build(state, "db2", approved=False, reason="reject it")
 
-    assert len(memory.saved) == 1
-    assert memory.saved[0]["build_id"] == "db2"
-    assert memory.saved[0]["status"] == "rejected"
+    assert memory.saved == []
+    assert memory._rows["db2"]["status"] == "completed"
 
 
 async def test_reject_db_only_build_returns_correct_status():
@@ -117,7 +119,8 @@ async def test_reject_db_only_build_returns_correct_status():
 
     out = await approve_build(state, "db3", approved=False, reason="no")
 
-    assert out["status"] == "rejected"
+    assert out["status"] == "completed"
+    assert out["decision"] == "rejected"
 
 
 # ---------------------------------------------------------------------------

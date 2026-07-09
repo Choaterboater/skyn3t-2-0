@@ -177,15 +177,16 @@ class Settings(BaseSettings):
     # (produced only a placeholder/stub). Each retry re-runs with corrective
     # feedback. Fires ONLY on under-delivery, so a good first pass adds no time.
     agentic_retries: int = 1
-    # Wall-clock budget (seconds) for ONE agentic `claude -p` codegen session.
-    # A full multi-file app routinely needs >15 min; the old cli_llm_timeout*3
-    # killed it mid-build and shipped a stub. 0 falls back to cli_llm_timeout*3.
+    # No-progress window (seconds) for agentic codegen. Productive OpenRouter
+    # write batches and streaming CLI events reset/extend this window, so it is
+    # NOT a total full-app duration or quality cap. Non-streaming CLIs cannot
+    # expose progress and therefore retain it as their bounded wait.
     agentic_build_timeout: int = 1800
     # Stall guard (seconds) for a streaming agentic session: if the agent emits
     # NO stream events for this long it has hung, so we kill it early instead of
     # burning the full build budget. A working `claude -p` emits message/tool
     # events far more often than this, so it never trips on real progress. 0
-    # disables the guard (only the hard ``agentic_build_timeout`` ceiling applies).
+    # uses ``agentic_build_timeout`` as the inactivity/no-progress window.
     agentic_idle_timeout: int = 600
     # Route dashboard Improve goals through the whole-project agentic tool-loop
     # (same machinery as builds) so a feature goal can CREATE new pages and touch

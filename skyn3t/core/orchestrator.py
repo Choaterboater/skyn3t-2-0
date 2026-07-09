@@ -139,7 +139,11 @@ class Orchestrator:
     async def _do_submit(self, task: TaskRequest) -> TaskResult:
         await self.event_bus.emit(
             EventType.TASK_SUBMITTED, "orchestrator",
-            {"task_id": task.task_id, "type": task.type},
+            {
+                "task_id": task.task_id,
+                "type": task.type,
+                "metadata": dict(task.metadata),
+            },
             correlation_id=task.correlation_id,
         )
 
@@ -154,7 +158,11 @@ class Orchestrator:
 
         await self.event_bus.emit(
             EventType.TASK_ROUTED, "orchestrator",
-            {"task_id": task.task_id, "agent": agent.name},
+            {
+                "task_id": task.task_id,
+                "agent": agent.name,
+                "metadata": dict(task.metadata),
+            },
             correlation_id=task.correlation_id,
         )
 

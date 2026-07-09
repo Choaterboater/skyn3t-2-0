@@ -263,7 +263,11 @@ const BUILD_PROFILES = [
     label: "Cheap + learned",
     hint: "Uses learned routing, skills, and recall without pinning an expensive model.",
   },
-  { id: "fast", label: "Fast", hint: "Shortest path with fewer debug retries." },
+  {
+    id: "fast",
+    label: "Fast",
+    hint: "One complete candidate; larger apps use concurrent code specialists.",
+  },
   {
     id: "balanced",
     label: "Balanced",
@@ -1700,36 +1704,40 @@ export default function Studio({ stream }) {
                       <td className="px-4 py-2 text-right">
                         {active ? (
                           <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => {
-                                setPendingBuildId(buildKey);
-                                approve.mutate({
-                                  build_id: buildKey,
-                                  approved: true,
-                                  reason: "",
-                                });
-                              }}
-                              disabled={approve.isPending && pendingBuildId === buildKey}
-                              className="btn-ember disabled:opacity-50"
-                              title="Approve this build"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              onClick={() => {
-                                setPendingBuildId(buildKey);
-                                approve.mutate({
-                                  build_id: buildKey,
-                                  approved: false,
-                                  reason: "",
-                                });
-                              }}
-                              disabled={approve.isPending && pendingBuildId === buildKey}
-                              className="btn-ghost disabled:opacity-50"
-                              title="Reject this build"
-                            >
-                              Reject
-                            </button>
+                            {b.approval_pending ? (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setPendingBuildId(buildKey);
+                                    approve.mutate({
+                                      build_id: buildKey,
+                                      approved: true,
+                                      reason: "",
+                                    });
+                                  }}
+                                  disabled={approve.isPending && pendingBuildId === buildKey}
+                                  className="btn-ember disabled:opacity-50"
+                                  title="Approve the pending build gate"
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setPendingBuildId(buildKey);
+                                    approve.mutate({
+                                      build_id: buildKey,
+                                      approved: false,
+                                      reason: "",
+                                    });
+                                  }}
+                                  disabled={approve.isPending && pendingBuildId === buildKey}
+                                  className="btn-ghost disabled:opacity-50"
+                                  title="Reject the pending build gate"
+                                >
+                                  Reject
+                                </button>
+                              </>
+                            ) : null}
                             <button
                               onClick={() => {
                                 setPendingBuildId(buildKey);

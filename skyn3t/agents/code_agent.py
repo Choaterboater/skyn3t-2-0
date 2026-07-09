@@ -18,11 +18,13 @@ absent) and are confined to that directory.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import re
 import shutil
 import tempfile
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import structlog
@@ -40,11 +42,17 @@ from skyn3t.agents._scaffold import (
     scaffold_for,
     synthesize_python_entrypoint,
 )
-from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
+from skyn3t.core.agent import AgentCapability, AgentStatus, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
 
 log = structlog.get_logger(__name__)
+
+
+@dataclass(slots=True)
+class _WorktreeLockEntry:
+    lock: asyncio.Lock
+    users: int = 0
 
 _SYSTEM = (
     "You are an expert software engineer. Generate the COMPLETE, production-quality "
@@ -545,6 +553,11 @@ def variant_directive(stack: str, brief: str) -> str:
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
+    _run_metadata_keys = (
+        "degraded", "degraded_reason", "codegen_override_unavailable",
+        "prompts", "agentic", "prose_rejected", "index_html_repaired",
+        "scene_registry_repaired",
+    )
 
     def __init__(self, name: str = "code", *, event_bus: EventBus,
                  llm: LLMClient | None = None, config: dict | None = None) -> None:
@@ -554,18 +567,86 @@ class CodeAgent(BaseAgent):
             name="codegen", description="Write runnable source files into the worktree",
             tags=("generative", "code")))
         self.llm = llm or LLMClient()
+        # CodeAgent is a singleton, but independent worktrees run concurrently.
+        # All mutable execution metadata is isolated in the current task context;
+        # only writes to the SAME worktree are serialized.
+        self._run_metadata_var: contextvars.ContextVar[dict[str, Any] | None] = (
+            contextvars.ContextVar(f"{name}_codegen_metadata", default=None)
+        )
+        self._worktree_locks: dict[str, _WorktreeLockEntry] = {}
+        self._worktree_locks_guard = asyncio.Lock()
+        self._active_runs = 0
+        self._active_runs_guard = asyncio.Lock()
 
     async def initialize(self) -> None:
         self.metadata["backend"] = self.llm.backend
+
+    @property
+    def _task_metadata(self) -> dict[str, Any]:
+        """Metadata isolated to the current build execution."""
+        current = self._run_metadata_var.get()
+        return current if current is not None else self.metadata
+
+    @staticmethod
+    def _worktree_key(task: TaskRequest) -> str:
+        payload = task.payload if isinstance(task.payload, dict) else {}
+        raw = payload.get("worktree_dir") or payload.get("project_dir")
+        if not raw:
+            return f"task:{task.task_id}"
+        try:
+            return str(Path(str(raw)).resolve())
+        except OSError:
+            return str(raw)
+
+    async def run(self, task: TaskRequest) -> TaskResult:
+        """Run different worktrees concurrently; serialize only shared targets."""
+        # Run metadata used to live on the singleton. Remove any legacy/stale
+        # values before entering a task-local context so old state cannot leak
+        # through diagnostics or tests during a rolling upgrade.
+        for metadata_key in self._run_metadata_keys:
+            self.metadata.pop(metadata_key, None)
+        key = self._worktree_key(task)
+        async with self._worktree_locks_guard:
+            entry = self._worktree_locks.get(key)
+            if entry is None:
+                entry = _WorktreeLockEntry(asyncio.Lock())
+                self._worktree_locks[key] = entry
+            entry.users += 1
+        acquired = False
+        token = None
+        try:
+            await entry.lock.acquire()
+            acquired = True
+            token = self._run_metadata_var.set({})
+            async with self._active_runs_guard:
+                self._active_runs += 1
+                self.status = AgentStatus.BUSY
+            # Deliberately bypass BaseAgent.run's singleton-wide _run_lock.
+            # Timing, task events, persistence-facing TaskResult fields, and
+            # LLM routes still flow through _run_locked; route capture is already
+            # task-local in LLMClient.
+            return await self._run_locked(task)
+        finally:
+            if token is not None:
+                self._run_metadata_var.reset(token)
+                async with self._active_runs_guard:
+                    self._active_runs = max(0, self._active_runs - 1)
+                    self.status = AgentStatus.BUSY if self._active_runs else AgentStatus.READY
+            if acquired:
+                entry.lock.release()
+            async with self._worktree_locks_guard:
+                entry.users = max(0, entry.users - 1)
+                if entry.users == 0 and self._worktree_locks.get(key) is entry:
+                    self._worktree_locks.pop(key, None)
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         p = task.payload
         # Per-run reset: this agent is a long-lived singleton, so a `degraded`
         # flag set by a PRIOR build must not leak into this one (it would emit a
         # false no_go + halved score on a clean build). Clear before any work.
-        self.metadata.pop("degraded", None)
-        self.metadata.pop("degraded_reason", None)
-        self.metadata.pop("codegen_override_unavailable", None)
+        run_metadata = self._task_metadata
+        for key in self._run_metadata_keys:
+            run_metadata.pop(key, None)
         brief = p.get("brief", "") or p.get("slug", "app")
         # An art plan the runner computed + threaded (LLM-tailored or the floor); the
         # game-art directive uses it so codegen lists the SAME roles the sprite
@@ -609,6 +690,8 @@ class CodeAgent(BaseAgent):
         art = stack == "phaser" and bool(getattr(_gs_art(), "game_art_enabled", True))
         scaffold = scaffold_for(stack, app_name, brief, art=art)
         files: dict[str, str] = dict(scaffold)
+        reported_expected: set[str] = set()
+        preserved_asset_paths: set[str] = set()
 
         knowledge = knowledge_block(p)
         # Codegen-only CLI routing: a configured `codegen_cli_provider` (e.g.
@@ -619,7 +702,7 @@ class CodeAgent(BaseAgent):
         _codegen_cli_ok, _agentic_kwargs, _codegen_unavailable = self._codegen_agentic_routing(
             stack, model_override, p)
         if _codegen_unavailable:
-            self.metadata["codegen_override_unavailable"] = _codegen_unavailable
+            run_metadata["codegen_override_unavailable"] = _codegen_unavailable
         if self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
@@ -631,17 +714,25 @@ class CodeAgent(BaseAgent):
             # The scaffold is a fallback only if the agent under-delivers.
             from skyn3t.config.settings import get_settings
 
+            preexisting_assets = self._snapshot_preexisting_assets(worktree)
+            preserved_asset_paths = set(preexisting_assets)
+
             # "Did the agent add a real app beyond the scaffold?" A delivery barely
             # above the scaffold's own code size is the placeholder leaking through,
             # so require a real margin over it (not a flat 800-byte floor).
-            threshold = max(800, self._code_bytes(scaffold) * 2)
+            threshold = max(800, self._threshold_code_bytes(scaffold) * 2)
             max_retries = max(0, int(getattr(get_settings(), "agentic_retries", 1)))
 
             disk: dict[str, str] = {}
             code_bytes = 0
             agentic_ok = True
+            agentic_confirmed = True
             agentic_error = ""
             prose_files: list[str] = []
+            missing_planned: list[str] = []
+            contract_gap = ""
+            expected_planned = self._agentic_planned_paths(plan)
+            reported_expected = expected_planned
             attempt = 0
             while True:
                 prompt = (
@@ -650,22 +741,23 @@ class CodeAgent(BaseAgent):
                         art_plan=_art_plan, game_design=_game_design,
                         asset_foundry=_asset_foundry, design=design)
                     if attempt == 0
-                    else self._agentic_retry_prompt(
-                        brief, stack, plan, knowledge, code_bytes,
-                        art_plan=_art_plan, game_design=_game_design,
-                        asset_foundry=_asset_foundry, design=design)
+                    else self._agentic_resume_prompt(
+                        brief, stack, plan, disk, missing_planned,
+                        agentic_error, contract_gap)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
                 # now — discarded. One entry per attempt (initial + any retry).
-                self.metadata.setdefault("prompts", []).append({
+                run_metadata.setdefault("prompts", []).append({
                     "stage": "codegen" if attempt == 0 else f"codegen_retry_{attempt}",
                     "chars": len(prompt),
                     "text": prompt,
                 })
                 res = await self.llm.agentic_build(prompt, str(worktree), **_agentic_kwargs)
-                self.metadata["agentic"] = res
                 agentic_ok = bool(res.get("ok", True))
+                agentic_confirmed = agentic_ok and bool(
+                    res.get("completed", agentic_ok)
+                )
                 agentic_error = res.get("error", "")
                 disk = self._read_files(worktree)
                 # The CLI writes files directly (bypassing extract/validate). Guard
@@ -674,19 +766,30 @@ class CodeAgent(BaseAgent):
                 disk, prose_files = self._clean_agentic_files(disk, scaffold)
                 self._unlink_rejected_agentic_files(worktree, prose_files, scaffold)
                 code_bytes = self._code_bytes(disk)
+                present_planned = self._present_planned_files(worktree, expected_planned)
+                missing_planned = sorted(expected_planned - present_planned)
                 contract_gap = self._agentic_contract_gap(stack, disk)
-                under_delivered = not (disk and code_bytes >= threshold) or bool(contract_gap)
-                # Stop as soon as a real app is on disk — even if the call did NOT
-                # exit cleanly (a TIMEOUT mid-build still produced real code; do not
-                # throw it away to retry). Retry ONLY on genuine under-delivery or
-                # a stack contract miss such as a Phaser game without src/sim.js.
-                if not under_delivered or attempt >= max_retries:
+                under_delivered = (
+                    not (disk and code_bytes >= threshold)
+                    or bool(contract_gap)
+                    or bool(missing_planned)
+                )
+                # A large subset is still incomplete when the architecture named
+                # files that never arrived, or the provider never confirmed finish.
+                # Resume in the SAME worktree with a compact missing-file prompt.
+                if (agentic_confirmed and not under_delivered) or attempt >= max_retries:
                     break
                 log.warning("code_agent.agentic_retry", attempt=attempt + 1,
                             code_bytes=code_bytes, threshold=threshold, ok=agentic_ok,
-                            contract_gap=contract_gap)
+                            contract_gap=contract_gap,
+                            missing_planned=missing_planned[:12])
                 attempt += 1
 
+            res["completed"] = agentic_confirmed
+            res["complete"] = agentic_confirmed and not under_delivered
+            res["planned_files"] = len(expected_planned)
+            res["missing_files"] = missing_planned[:50]
+            run_metadata["agentic"] = res
             if prose_files:
                 # Some files were prose (not code) and were reverted to the
                 # scaffold. This DEGRADES the build only if it left the app
@@ -694,43 +797,59 @@ class CodeAgent(BaseAgent):
                 # one auto-reverted util still works and must NOT be no_go'd over it
                 # (proof/build/liveness already verify the app actually runs).
                 log.warning("code_agent.agentic_prose_rejected", files=prose_files)
-                self.metadata["prose_rejected"] = list(prose_files)
+                run_metadata["prose_rejected"] = list(prose_files)
             contract_gap = self._agentic_contract_gap(stack, disk)
-            under_delivered = not (disk and code_bytes >= threshold) or bool(contract_gap)
-            if under_delivered:
+            present_planned = self._present_planned_files(worktree, expected_planned)
+            missing_planned = sorted(expected_planned - present_planned)
+            under_delivered = (
+                not (disk and code_bytes >= threshold)
+                or bool(contract_gap)
+                or bool(missing_planned)
+            )
+            incomplete = under_delivered or not agentic_confirmed
+            if incomplete:
                 # Genuine under-delivery: no-op'd / left a stub, or a prose-revert
                 # dropped the real code below threshold.
-                if not agentic_ok:
-                    degraded_reason = (f"agentic build failed: {agentic_error}"
-                                       if agentic_error else "agentic build returned ok=False")
-                elif contract_gap:
-                    degraded_reason = (
-                        f"agentic build missed required {stack} contract after {attempt} retr"
-                        f"{'y' if attempt == 1 else 'ies'}: {contract_gap}"
+                reasons: list[str] = []
+                if not agentic_confirmed:
+                    reasons.append(
+                        f"agentic build failed or did not confirm completion: "
+                        f"{agentic_error or 'provider returned without a successful finish'}"
                     )
+                if missing_planned:
+                    reasons.append(
+                        f"missing {len(missing_planned)} planned file(s): "
+                        + ", ".join(missing_planned[:12])
+                    )
+                elif contract_gap:
+                    reasons.append(f"missed required {stack} contract: {contract_gap}")
                 elif prose_files:
-                    degraded_reason = (f"prose (not code) in {prose_files} left only "
-                                       f"{code_bytes} code bytes (threshold {threshold})")
-                else:
-                    degraded_reason = (f"agentic build under-delivered after {attempt} retr"
-                                       f"{'y' if attempt == 1 else 'ies'}: {code_bytes} code "
-                                       f"bytes in {len(disk)} files (threshold {threshold})")
+                    reasons.append(
+                        f"prose (not code) in {prose_files} left only "
+                        f"{code_bytes} code bytes (threshold {threshold})"
+                    )
+                elif not (disk and code_bytes >= threshold):
+                    reasons.append(
+                        f"under-delivered {code_bytes} code bytes in {len(disk)} files "
+                        f"(threshold {threshold})"
+                    )
+                detail = "; ".join(reasons) or "completion contract not satisfied"
+                degraded_reason = (
+                    f"agentic build incomplete after {attempt} retr"
+                    f"{'y' if attempt == 1 else 'ies'}: {detail}"
+                )
                 log.warning(
                     "code_agent.agentic_degraded", agentic_ok=agentic_ok,
                     code_bytes=code_bytes, files_on_disk=len(disk),
                     retries=attempt, reason=degraded_reason,
                 )
-                self.metadata["degraded"] = True
-                self.metadata["degraded_reason"] = degraded_reason
-            elif not agentic_ok:
-                # A SUBSTANTIAL app was delivered but the call didn't exit cleanly
-                # — almost always a timeout mid-build. KEEP it (the verifier gates
-                # judge whether the possibly-truncated app actually works); a real
-                # app is far better than reverting to the scaffold stub.
-                log.warning("code_agent.agentic_timeout_kept", code_bytes=code_bytes,
-                            files_on_disk=len(disk), error=agentic_error or "(timeout)")
-            if disk and code_bytes >= threshold and not contract_gap:
-                files = disk  # the agent's real app becomes the delivery
+                run_metadata["degraded"] = True
+                run_metadata["degraded_reason"] = degraded_reason
+            if disk and code_bytes >= threshold:
+                # Preserve substantial partial work, but merge the deterministic
+                # scaffold floor under it so common entrypoints/manifests are never
+                # absent. ``degraded`` prevents an incomplete subset from shipping.
+                files = ({**scaffold, **disk} if incomplete else disk)
                 # Insurance against the entrypoint-clobber bug: a weak model can
                 # ship an index.html that never imports the app (a standalone inline
                 # page), so the real game never loads and entities stay primitive.
@@ -748,11 +867,15 @@ class CodeAgent(BaseAgent):
                 # would leave the strays alongside it, so wipe the agent's output
                 # first.
                 self._clear_worktree(worktree)
+                self._restore_preexisting_assets(worktree, preexisting_assets)
                 self._write_files(worktree, files)  # under-delivered -> scaffold floor
         else:
             # Completion backend (OpenRouter): per-file, generated CONCURRENTLY
             # (bounded) so a multi-file app's wall-clock is the slowest file.
             planned = self._planned_paths(plan, scaffold)
+            expected_planned = self._agentic_planned_paths(plan)
+            reported_expected = expected_planned
+            generated: set[str] = set()
             sem = asyncio.Semaphore(self._gen_concurrency)
 
             async def _one(rel_path: str) -> tuple[str, str | None]:
@@ -767,10 +890,22 @@ class CodeAgent(BaseAgent):
             for rel_path, content in await asyncio.gather(*(_one(p) for p in planned)):
                 if content and content.strip():
                     files[rel_path] = content
+                    generated.add(rel_path)
+            missing = sorted(expected_planned - generated)
+            if missing:
+                run_metadata["degraded"] = True
+                run_metadata["degraded_reason"] = (
+                    f"completion codegen missed {len(missing)} planned file(s): "
+                    + ", ".join(missing[:12])
+                )
 
         files = self._repair_entrypoints(stack, files, app_name)
 
-        written = self._write_files(worktree, files)
+        written = sorted(
+            set(self._write_files(worktree, files))
+            | self._present_planned_files(worktree, reported_expected)
+            | preserved_asset_paths
+        )
 
         out: dict[str, Any] = {
             "files_written": len(written),
@@ -780,9 +915,9 @@ class CodeAgent(BaseAgent):
             "backend": self.llm.backend,
             # The exact prompt(s) this stage sent the model (empty on the offline
             # scaffold path). The runner lifts these into manifest.extra["prompts"].
-            "prompts": self.metadata.get("prompts", []),
+            "prompts": run_metadata.get("prompts", []),
         }
-        agentic = self.metadata.get("agentic")
+        agentic = run_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
                 k: agentic.get(k)
@@ -795,16 +930,22 @@ class CodeAgent(BaseAgent):
                     "stalled",
                     "stall_reason",
                     "turn_timeouts",
+                    "completed",
+                    "complete",
+                    "timed_out",
+                    "files_written",
+                    "planned_files",
+                    "missing_files",
                     "error",
                 )
                 if agentic.get(k) not in (None, "")
             }
         # Propagate degradation signal from the agentic path so downstream
         # scoring/verdict can see it. Never set on the stub or completion paths.
-        if self.metadata.get("degraded"):
+        if run_metadata.get("degraded"):
             out["degraded"] = True
-            out["degraded_reason"] = self.metadata.get("degraded_reason", "unknown")
-        codegen_unavailable = self.metadata.get("codegen_override_unavailable")
+            out["degraded_reason"] = run_metadata.get("degraded_reason", "unknown")
+        codegen_unavailable = run_metadata.get("codegen_override_unavailable")
         if codegen_unavailable:
             out["codegen_override_unavailable"] = codegen_unavailable
 
@@ -835,6 +976,26 @@ class CodeAgent(BaseAgent):
             if path not in paths:
                 paths.append(path)
         return paths
+
+    @staticmethod
+    def _agentic_planned_paths(plan: dict[str, Any]) -> set[str]:
+        """Safe file paths explicitly promised by the architect.
+
+        The agentic builder may choose its own structure when no architecture was
+        supplied. Once an architect names files, however, a large subset is not a
+        complete delivery and must be resumed or marked degraded.
+        """
+        expected: set[str] = set()
+        for item in plan.get("files") or []:
+            raw = item.get("path") if isinstance(item, dict) else item
+            rel = str(raw or "").strip().replace("\\", "/")
+            if not rel or rel.endswith("/") or "\x00" in rel or ":" in rel:
+                continue
+            path = PurePosixPath(rel)
+            if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+                continue
+            expected.add(path.as_posix())
+        return expected
 
     def _agentic_prompt(self, brief: str, stack: str, plan: dict[str, Any], knowledge: str,
                         *, art_plan: dict[str, Any] | None = None,
@@ -1166,12 +1327,14 @@ class CodeAgent(BaseAgent):
         silent hole."""
         name = str(slice_scope.get("name") or "slice")
         slice_files = [str(x) for x in (slice_scope.get("files") or [])]
+        owned_paths = self._agentic_planned_paths({"files": slice_files})
+        slice_baseline = self._snapshot_regular_files(worktree)
         manifest = str(slice_scope.get("manifest") or "")
         model_override = p.get("model_override")
         codegen_cli_ok, agentic_kwargs, codegen_unavailable = self._codegen_agentic_routing(
             stack, model_override, p)
         if codegen_unavailable:
-            self.metadata["codegen_override_unavailable"] = codegen_unavailable
+            self._task_metadata["codegen_override_unavailable"] = codegen_unavailable
         knowledge = knowledge_block(p)
         files: dict[str, str] = {}
         degraded_reason = ""
@@ -1181,28 +1344,97 @@ class CodeAgent(BaseAgent):
             # orchestration is testable and the merge produces real files.
             files = self._slice_stub(stack, app_name, brief, slice_files)
         elif getattr(self.llm, "supports_agentic", False) or codegen_cli_ok:
+            from skyn3t.config.settings import get_settings
+
             raw_prior = p.get("prior")
             prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
             raw_design = prior.get("design")
             design = raw_design if isinstance(raw_design, dict) else None
-            prompt = self._agentic_slice_prompt(
-                brief, stack, name, slice_files, manifest, knowledge, design=design)
-            res = await self.llm.agentic_build(prompt, str(worktree), **agentic_kwargs)
-            self.metadata["agentic"] = res
-            disk = self._read_files(worktree)
-            # Reject chat-prose source files (no scaffold to revert to -> dropped).
-            disk, prose = self._clean_agentic_files(disk, {})
-            self._unlink_rejected_agentic_files(worktree, prose, {})
-            if prose:
-                self.metadata["prose_rejected"] = list(prose)
-            if not disk:
-                # The slice failed / timed out before writing / was all prose —
-                # deliver its scaffold subset as a runnable floor and flag degraded.
-                self._clear_worktree(worktree)
-                files = self._slice_stub(stack, app_name, brief, slice_files)
-                degraded_reason = f"agentic slice '{name}' delivered no files; fell back to scaffold"
-            else:
+            expected = owned_paths
+            max_retries = max(0, int(getattr(get_settings(), "agentic_retries", 1)))
+            disk: dict[str, str] = {}
+            missing = sorted(expected)
+            confirmed = False
+            agentic_error = ""
+            prose_seen: set[str] = set()
+            out_of_scope_seen: set[str] = set()
+            attempt = 0
+            res: dict[str, Any] = {}
+            while True:
+                prompt = (
+                    self._agentic_slice_prompt(
+                        brief, stack, name, slice_files, manifest, knowledge, design=design)
+                    if attempt == 0
+                    else self._agentic_slice_resume_prompt(
+                        brief, stack, name, slice_files, disk, missing, agentic_error)
+                )
+                self._task_metadata.setdefault("prompts", []).append({
+                    "stage": f"codegen_slice_{name}"
+                    if attempt == 0 else f"codegen_slice_{name}_retry_{attempt}",
+                    "chars": len(prompt),
+                    "text": prompt,
+                })
+                res = await self.llm.agentic_build(
+                    prompt, str(worktree), **agentic_kwargs)
+                agentic_ok = bool(res.get("ok", True))
+                confirmed = agentic_ok and bool(res.get("completed", agentic_ok))
+                agentic_error = str(res.get("error", "") or "")
+                out_of_scope_seen.update(
+                    self._prune_slice_out_of_scope(worktree, expected, slice_baseline)
+                )
+                disk = {
+                    path: content
+                    for path, content in self._read_files(worktree).items()
+                    if path in expected
+                }
+                # Reject chat-prose source files (no scaffold to revert to -> dropped).
+                disk, prose = self._clean_agentic_files(disk, {})
+                self._unlink_rejected_agentic_files(worktree, prose, {})
+                prose_seen.update(prose)
+                present_owned = self._present_planned_files(worktree, expected)
+                missing = sorted(expected - present_owned)
+                if (confirmed and not missing) or attempt >= max_retries:
+                    break
+                attempt += 1
+
+            complete = confirmed and not missing
+            res["completed"] = confirmed
+            res["complete"] = complete
+            res["planned_files"] = len(expected)
+            res["missing_files"] = missing[:50]
+            res["out_of_scope_files"] = sorted(out_of_scope_seen)[:50]
+            self._task_metadata["agentic"] = res
+            if prose_seen:
+                self._task_metadata["prose_rejected"] = sorted(prose_seen)
+            if complete:
                 files = disk
+            else:
+                reasons: list[str] = []
+                if not confirmed:
+                    reasons.append(
+                        "provider did not confirm completion"
+                        + (f": {agentic_error}" if agentic_error else "")
+                    )
+                if missing:
+                    reasons.append(
+                        f"missing {len(missing)} owned file(s): " + ", ".join(missing[:12])
+                    )
+                if prose_seen:
+                    reasons.append("rejected prose source: " + ", ".join(sorted(prose_seen)[:8]))
+                if out_of_scope_seen:
+                    reasons.append(
+                        "removed out-of-scope writes: "
+                        + ", ".join(sorted(out_of_scope_seen)[:8])
+                    )
+                degraded_reason = (
+                    f"agentic slice '{name}' incomplete after {attempt} retr"
+                    f"{'y' if attempt == 1 else 'ies'}: "
+                    + "; ".join(reasons or ["completion contract not satisfied"])
+                )
+                # Keep every useful partial file and add only the deterministic
+                # owned-file floor beneath it. The degraded marker prevents this
+                # recovery tree from being mistaken for a complete specialist merge.
+                files = {**self._slice_stub(stack, app_name, brief, missing), **disk}
         else:
             # Completion backend: generate just this slice's files concurrently,
             # each pinned to the slice's tier model when provided. Pass the full
@@ -1218,23 +1450,44 @@ class CodeAgent(BaseAgent):
                     except Exception:  # noqa: BLE001 - isolate per file
                         return rel, None
 
+            generated: set[str] = set()
             for rel, content in await asyncio.gather(*(_one(r) for r in slice_files)):
                 if content and content.strip():
                     files[rel] = content
-            if not files:
-                files = self._slice_stub(stack, app_name, brief, slice_files)
-                degraded_reason = f"completion slice '{name}' produced no files; fell back to scaffold"
+                    generated.add(rel)
+            missing = sorted(owned_paths - generated)
+            if missing:
+                files = {**self._slice_stub(stack, app_name, brief, slice_files), **files}
+                degraded_reason = (
+                    f"completion slice '{name}' missed {len(missing)} owned file(s): "
+                    + ", ".join(missing[:12])
+                )
 
-        written = self._write_files(worktree, files)
+        written = sorted(
+            set(self._write_files(worktree, files))
+            | self._present_planned_files(worktree, owned_paths)
+        )
         out: dict[str, Any] = {
             "files_written": len(written), "worktree_dir": str(worktree),
             "stack": stack, "files": written, "backend": self.llm.backend,
             "slice": name,
+            "prompts": self._task_metadata.get("prompts", []),
         }
+        agentic = self._task_metadata.get("agentic")
+        if isinstance(agentic, dict):
+            out["agentic"] = {
+                key: agentic.get(key)
+                for key in (
+                    "ok", "backend", "model", "completed", "complete", "timed_out",
+                    "files_written", "planned_files", "missing_files",
+                    "out_of_scope_files", "error",
+                )
+                if agentic.get(key) not in (None, "")
+            }
         if degraded_reason:
             out["degraded"] = True
             out["degraded_reason"] = degraded_reason
-        codegen_unavailable_out = self.metadata.get("codegen_override_unavailable")
+        codegen_unavailable_out = self._task_metadata.get("codegen_override_unavailable")
         if codegen_unavailable_out:
             out["codegen_override_unavailable"] = codegen_unavailable_out
         return TaskResult(task_id=task.task_id, success=True, output=out)
@@ -1267,6 +1520,35 @@ class CodeAgent(BaseAgent):
             f"{design_block}"
         )
         return self.system_prompt(prompt)
+
+    def _agentic_slice_resume_prompt(
+        self,
+        brief: str,
+        stack: str,
+        slice_name: str,
+        slice_files: list[str],
+        files: dict[str, str],
+        missing: list[str],
+        previous_error: str,
+    ) -> str:
+        """Compact continuation for an incomplete specialist slice."""
+        remaining = "\n".join(f"- {path}" for path in missing) or (
+            "- No owned path is absent; validate the existing slice and finish successfully."
+        )
+        existing = "\n".join(f"- {path}" for path in sorted(files)[:120]) or "- (none)"
+        owned = "\n".join(f"- {path}" for path in slice_files) or "- (none)"
+        error = previous_error or "the prior session ended without confirmed completion"
+        return self.system_prompt(
+            "RESUME THIS SLICE IN PLACE. Preserve every working file and do not restart "
+            "or reduce the implementation.\n\n"
+            f"Brief: {brief}\nStack: {stack}\nSlice: {slice_name}\n"
+            f"Prior issue: {error}\n\n"
+            f"Owned paths (do not write outside these):\n{owned}\n\n"
+            f"Still missing:\n{remaining}\n\n"
+            f"Already present (inspect before editing):\n{existing}\n\n"
+            "Implement every missing owned file in full, repair wiring among the owned "
+            "files, and finish successfully only when the entire slice is complete."
+        )
 
     @staticmethod
     def _design_summary(design: dict[str, Any] | None) -> str:
@@ -1307,16 +1589,35 @@ class CodeAgent(BaseAgent):
         """Offline slice content: reuse the stack scaffold for known paths, a
         minimal stub for the rest."""
         full = scaffold_for(stack, app_name, brief)
-        return {rel: full.get(rel) or self._minimal_stub(rel) for rel in slice_files}
+        return {
+            rel: full.get(rel) or self._minimal_stub(rel)
+            for rel in slice_files
+            if Path(rel).suffix.lower() not in self._BINARY_EXTS
+        }
 
-    _CODE_EXTS = ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
+    _CODE_EXTS = (
+        "py", "js", "jsx", "mjs", "cjs", "ts", "tsx", "go", "rs", "rb",
+        "php", "java", "kt", "kts", "swift", "dart", "cs", "c", "cc", "cpp",
+        "cxx", "h", "hpp", "astro", "html", "htm", "css", "scss", "sass",
+        "less", "vue", "svelte",
+    )
+    _THRESHOLD_CODE_EXTS = ("py", "js", "jsx", "ts", "tsx", "go", "rs", "rb")
 
     @classmethod
     def _code_bytes(cls, files: dict[str, str]) -> int:
-        """Total bytes across real code files (excludes config/docs/markup)."""
+        """Total bytes across substantive source and user-facing markup/style files."""
         return sum(
             len(c) for f, c in files.items()
             if f.rsplit(".", 1)[-1] in cls._CODE_EXTS
+        )
+
+    @classmethod
+    def _threshold_code_bytes(cls, files: dict[str, str]) -> int:
+        """Legacy scaffold baseline, kept stable as substantive formats expand."""
+        return sum(
+            len(content)
+            for path, content in files.items()
+            if path.rsplit(".", 1)[-1] in cls._THRESHOLD_CODE_EXTS
         )
 
     @staticmethod
@@ -1383,12 +1684,194 @@ class CodeAgent(BaseAgent):
                 design=design)
         )
 
+    def _agentic_resume_prompt(
+        self,
+        brief: str,
+        stack: str,
+        plan: dict[str, Any],
+        files: dict[str, str],
+        missing: list[str],
+        previous_error: str,
+        contract_gap: str,
+    ) -> str:
+        """Compact in-place continuation after an incomplete agentic session.
+
+        Repeating the full ~14K initial prompt wastes the small recovery window
+        and encourages wholesale rewrites. The new session can inspect the shared
+        worktree, so give it the brief, exact remaining contract, and prior error.
+        """
+        purposes = {
+            str(item.get("path", "")).replace("\\", "/"): str(item.get("purpose", ""))
+            for item in plan.get("files") or []
+            if isinstance(item, dict) and item.get("path")
+        }
+        remaining = "\n".join(
+            f"- {path}" + (f" — {purposes[path]}" if purposes.get(path) else "")
+            for path in missing
+        ) or "- No path is absent; inspect the existing files and finish validation/wiring."
+        existing = "\n".join(f"- {path}" for path in sorted(files)[:120]) or "- (none)"
+        issues = "\n".join(
+            f"- {issue}" for issue in (previous_error, contract_gap) if issue
+        ) or "- The prior session ended without confirming completion."
+        variant = variant_directive(stack, brief)
+        return (
+            "RESUME IN PLACE. A previous codegen session ended before the complete "
+            "architecture was confirmed. Preserve working files and do not restart or "
+            "replace the product with a smaller demo.\n\n"
+            f"Brief: {brief}\nStack: {stack}\n"
+            f"Architecture: {plan.get('summary', '')}\n\n"
+            f"Prior completion issues:\n{issues}\n\n"
+            f"Files still required by the approved architecture:\n{remaining}\n\n"
+            f"Files already present (inspect before editing):\n{existing}\n\n"
+            + (f"Variant contract: {variant}\n\n" if variant else "")
+            + "Implement every missing file in full, repair imports and entrypoint wiring, "
+            "and validate the complete existing app. Do not omit features, TODO, or elide "
+            "code. Finish successfully only after the whole planned application is present."
+        )
+
     # `assets` holds pre-generated binary images (Replicate). Skipping it keeps
     # those bytes off the text round-trip below — reading a PNG with errors=
     # "ignore" then re-writing it via _write_files would corrupt it.
     _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next", "assets"})
     _BINARY_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
                               ".bmp", ".svg", ".pdf", ".woff", ".woff2", ".ttf"})
+
+    @staticmethod
+    def _present_planned_files(worktree: Path, expected: set[str]) -> set[str]:
+        """Return confined, regular planned files present on disk.
+
+        This inventory is separate from ``_read_files``: planned images, fonts,
+        SVGs, assets, and large artifacts count as delivered without ever being
+        decoded and rewritten as text. Symlinks (including symlinked parents) do
+        not satisfy completeness.
+        """
+        root = Path(worktree).resolve()
+        present: set[str] = set()
+        for rel in expected:
+            parts = PurePosixPath(rel).parts
+            candidate = root.joinpath(*parts)
+            current = root
+            unsafe = False
+            for part in parts:
+                current = current / part
+                if current.is_symlink():
+                    unsafe = True
+                    break
+            if unsafe:
+                continue
+            try:
+                resolved = candidate.resolve()
+                if os.path.commonpath([str(root), str(resolved)]) != str(root):
+                    continue
+                if candidate.is_file():
+                    present.add(rel)
+            except (OSError, ValueError):
+                continue
+        return present
+
+    def _snapshot_preexisting_assets(self, worktree: Path) -> dict[str, bytes]:
+        """Capture binary/asset files so a scaffold fallback cannot erase them."""
+        root = Path(worktree).resolve()
+        snapshot: dict[str, bytes] = {}
+        for path in root.rglob("*"):
+            try:
+                rel_path = path.relative_to(root)
+            except ValueError:
+                continue
+            if ".git" in rel_path.parts or path.is_symlink() or not path.is_file():
+                continue
+            rel = rel_path.as_posix()
+            is_asset = "assets" in rel_path.parts or path.suffix.lower() in self._BINARY_EXTS
+            if not is_asset:
+                continue
+            try:
+                resolved = path.resolve()
+                if os.path.commonpath([str(root), str(resolved)]) != str(root):
+                    continue
+                snapshot[rel] = path.read_bytes()
+            except (OSError, ValueError):
+                continue
+        return snapshot
+
+    @staticmethod
+    def _restore_preexisting_assets(worktree: Path, snapshot: dict[str, bytes]) -> None:
+        root = Path(worktree).resolve()
+        for rel, content in snapshot.items():
+            target = root.joinpath(*PurePosixPath(rel).parts)
+            try:
+                resolved = target.resolve()
+                if os.path.commonpath([str(root), str(resolved)]) != str(root):
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+            except (OSError, ValueError):
+                continue
+
+    @staticmethod
+    def _snapshot_regular_files(worktree: Path) -> dict[str, bytes]:
+        """Snapshot preexisting slice files so ownership cleanup can restore them."""
+        root = Path(worktree)
+        snapshot: dict[str, bytes] = {}
+        for path in root.rglob("*"):
+            try:
+                rel_path = path.relative_to(root)
+                if ".git" in rel_path.parts or path.is_symlink() or not path.is_file():
+                    continue
+                snapshot[rel_path.as_posix()] = path.read_bytes()
+            except (OSError, ValueError):
+                continue
+        return snapshot
+
+    @staticmethod
+    def _prune_slice_out_of_scope(
+        worktree: Path,
+        owned: set[str],
+        baseline: dict[str, bytes],
+    ) -> list[str]:
+        """Remove or restore writes outside a specialist's normalized ownership set."""
+        root = Path(worktree)
+        removed: list[str] = []
+        paths = sorted(root.rglob("*"), key=lambda path: len(path.parts), reverse=True)
+        for path in paths:
+            try:
+                rel_path = path.relative_to(root)
+            except ValueError:
+                continue
+            if ".git" in rel_path.parts:
+                continue
+            rel = rel_path.as_posix()
+            try:
+                if path.is_symlink():
+                    # An owned-name symlink can point outside the worktree and
+                    # must never satisfy specialist completeness.
+                    path.unlink()
+                    removed.append(rel)
+                elif path.is_file():
+                    if rel not in owned:
+                        if rel in baseline:
+                            if path.read_bytes() != baseline[rel]:
+                                path.write_bytes(baseline[rel])
+                                removed.append(rel)
+                        else:
+                            path.unlink()
+                            removed.append(rel)
+                elif path.is_dir():
+                    path.rmdir()  # clean empty directories left by removed files
+            except OSError:
+                continue
+        for rel, content in baseline.items():
+            if rel in owned:
+                continue
+            target = root.joinpath(*PurePosixPath(rel).parts)
+            if target.exists() or target.is_symlink():
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                removed.append(rel)
+            except OSError:
+                continue
+        return sorted(removed)
 
     def _read_files(self, worktree: Path) -> dict[str, str]:
         """Read every text file the agent wrote into the worktree."""
@@ -1478,7 +1961,7 @@ class CodeAgent(BaseAgent):
         (Path(worktree) / "index.html").write_text(scaffold_html, encoding="utf-8")
         files = dict(files)
         files["index.html"] = scaffold_html
-        self.metadata["index_html_repaired"] = True
+        self._task_metadata["index_html_repaired"] = True
         log.warning("code_agent.index_html_entrypoint_repaired", stack=stack)
         return files
 
@@ -1713,7 +2196,7 @@ class CodeAgent(BaseAgent):
         (Path(worktree) / "src" / "main.js").write_text(new_main, encoding="utf-8")
         files = dict(files)
         files["src/main.js"] = new_main
-        self.metadata["scene_registry_repaired"] = True
+        self._task_metadata["scene_registry_repaired"] = True
         log.warning(
             "code_agent.scene_registry_repaired",
             stack=stack,

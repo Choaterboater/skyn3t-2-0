@@ -4,6 +4,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from skyn3t.config.settings import Settings  # noqa: E402
+from skyn3t.studio.manifest import BuildManifest  # noqa: E402
 from skyn3t.web.app import create_app  # noqa: E402
 from skyn3t.web.deps import AppState  # noqa: E402
 
@@ -13,6 +14,9 @@ def _client(tmp_path, token=""):
     proj = tmp_path / "demo" / ".preview"
     proj.mkdir(parents=True)
     (proj / "index.html").write_text("<h1>hi</h1>")
+    BuildManifest(
+        slug="demo", brief="demo", stack="static", status="completed", verdict="go"
+    ).save(tmp_path / "demo")
     app = create_app(state=state)
     return TestClient(app)
 
@@ -54,6 +58,9 @@ def test_project_file_scopes_absolute_asset_urls(tmp_path):
     (assets / "app.js").write_text('const img = "/assets/golf.svg";')
     (assets / "atlas.xml").write_text("<TextureAtlas />")
     (assets / "model.glb").write_bytes(b"glTF")
+    BuildManifest(
+        slug="demo", brief="demo", stack="static", status="completed", verdict="go"
+    ).save(tmp_path / "demo")
     app = create_app(state=state)
     client = TestClient(app)
 
@@ -209,6 +216,37 @@ def test_token_authenticated_preview_mints_read_only_capability(tmp_path):
     (other / "index.html").write_text("<h1>other</h1>")
     wrong_slug = preview_url.replace("/demo/", "/other/")
     assert client.get(wrong_slug).status_code == 404
+
+
+def test_manifestless_build_cannot_mint_or_serve_preview_capability(tmp_path):
+    state = AppState(settings=Settings(projects_dir=tmp_path))
+    preview = tmp_path / "building" / ".preview"
+    preview.mkdir(parents=True)
+    (preview / "index.html").write_text("<h1>partial</h1>")
+    app = create_app(state=state)
+    client = TestClient(app)
+
+    listing = client.get("/api/projects")
+    assert listing.status_code == 200
+    row = listing.json()["projects"][0]
+    assert row["status"] == "incomplete"
+    assert row["delivery_state"] == "incomplete"
+    assert row["is_complete"] is False
+    assert row["size_bytes"] == 0
+    assert row["preview_url"] == ""
+    assert row["has_serve"] is False
+
+    assert client.get("/api/preview/building").status_code == 409
+    assert client.get("/api/projects/building/index.html").status_code == 404
+    serve = client.post("/api/studio/serve", json={"slug": "building"})
+    assert serve.status_code == 409
+    assert serve.json()["detail"] == "project build is not complete"
+
+    # Even a correctly signed capability cannot bypass the delivery boundary.
+    from skyn3t.web.routes import _project_preview_url
+
+    capability = _project_preview_url(state, "building")
+    assert client.get(capability).status_code == 404
 
 
 def test_preview_slug_traversal_rejected(tmp_path):

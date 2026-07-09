@@ -13,6 +13,7 @@ import pytest
 
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.studio.app_runner import RunningApp
+from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web import routes
 from skyn3t.web.routes import (
     fanout_project,
@@ -40,6 +41,9 @@ def _static_project(state, slug, body="<title>served</title>"):
     d = Path(state.settings.projects_dir) / slug
     d.mkdir(parents=True)
     (d / "index.html").write_text(body)
+    BuildManifest(
+        slug=slug, brief=slug, stack="static", status="completed", verdict="go"
+    ).save(d)
     return d
 
 
@@ -106,9 +110,26 @@ def test_serve_no_preview_not_registered(tmp_path):
     d = Path(state.settings.projects_dir) / "cli"
     d.mkdir(parents=True)
     (d / "main.py").write_text("print('cli')\n")  # no web entrypoint, no index.html
+    BuildManifest(
+        slug="cli", brief="cli", stack="python", status="completed", verdict="go"
+    ).save(d)
     out = asyncio.run(serve_project(state, "cli"))
     assert out["status"] == "no_preview"
     assert "cli" not in getattr(state, "running_apps", {})
+
+
+def test_serve_rejects_manifestless_incomplete_project_before_runner_start(tmp_path):
+    state = _state(tmp_path)
+    project = Path(state.settings.projects_dir) / "partial"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<h1>not delivered</h1>")
+    state.app_runner = _FailRunner(None)
+
+    with pytest.raises(routes.ProjectNotDeliveredError):
+        asyncio.run(serve_project(state, "partial"))
+
+    assert not state.app_runner.stopped
+    assert "partial" not in getattr(state, "running_apps", {})
 
 
 def test_serve_unknown_slug_is_filenotfound(tmp_path):

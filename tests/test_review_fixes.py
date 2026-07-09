@@ -41,28 +41,23 @@ def test_slices_run_concurrently_through_real_routing(tmp_path, monkeypatch):
                         logs_dir=tmp_path / "l", critic_enabled=False,
                         parallel_code_slices=True)
     runner = StudioRunner(bus, Orchestrator(bus), settings=settings, memory=None)
-    # Register a real codegen agent so _registered_codegen_agent finds one to clone.
-    asyncio.run(runner.orchestrator.register(CodeAgent(event_bus=bus)))
+    # Register the real shared codegen agent. Its run() now coordinates by target
+    # worktree, so isolated slices overlap while retaining normal task lifecycle.
+    agent = CodeAgent(event_bus=bus)
+    asyncio.run(runner.orchestrator.register(agent))
 
     state = {"active": 0, "max": 0}
 
-    class _SlowAgent:  # replaces the per-slice CodeAgent
-        def __init__(self, *, event_bus=None, llm=None, config=None):
-            pass
+    async def slow_execute(task):
+        state["active"] += 1
+        state["max"] = max(state["max"], state["active"])
+        await asyncio.sleep(0.15)
+        state["active"] -= 1
+        sc = task.payload["slice_scope"]
+        return TaskResult(task_id=task.task_id, success=True,
+                          output={"files": [f"{sc['name']}.x"], "slice": sc["name"]})
 
-        async def initialize(self):
-            pass
-
-        async def execute(self, task):
-            state["active"] += 1
-            state["max"] = max(state["max"], state["active"])
-            await asyncio.sleep(0.15)
-            state["active"] -= 1
-            sc = task.payload["slice_scope"]
-            return TaskResult(task_id=task.task_id, success=True,
-                              output={"files": [f"{sc['name']}.x"], "slice": sc["name"]})
-
-    monkeypatch.setattr("skyn3t.agents.code_agent.CodeAgent", _SlowAgent)
+    monkeypatch.setattr(agent, "execute", slow_execute)
 
     plan = BuildPlan(slug="demo", brief="x", stack="react", stages=[],
                      checklist=["package.json"], best_of_n=1)
@@ -77,6 +72,8 @@ def test_slices_run_concurrently_through_real_routing(tmp_path, monkeypatch):
         "cid", main_wt, [main_wt], slices))
 
     assert state["max"] >= 2, f"slices serialized — max concurrent execute()={state['max']}"
+    task_events = [e for e in bus.history() if e.type.value.startswith("task.")]
+    assert {e.payload.get("metadata", {}).get("slice") for e in task_events} >= set(slices)
 
 
 # --------------------------------------------------------------------------

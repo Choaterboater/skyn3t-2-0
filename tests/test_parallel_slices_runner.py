@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from skyn3t.config.settings import Settings
 from skyn3t.core.agent import TaskResult
-from skyn3t.core.events import EventBus
+from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.planner import BuildPlan
 from skyn3t.studio.runner import StudioRunner
@@ -44,6 +45,22 @@ def _plan(**kw):
 _CODE_SPEC = StageSpec(name="code", agent_type="code", capability="codegen")
 
 
+class _TierResolvingAgenticLLM:
+    backend = "openrouter"
+    supports_agentic = True
+
+    def __init__(self) -> None:
+        self.resolved: list[tuple[str, tuple[str, ...], str]] = []
+
+    def _resolve_pinned_model(self, *, tier, setting_names=(), task_type="", **kwargs):
+        self.resolved.append((tier.value, tuple(setting_names), task_type))
+        return {
+            "ui": "resolved/ui-model",
+            "strong": "resolved/strong-model",
+            "cheap": "resolved/cheap-model",
+        }[tier.value]
+
+
 def test_maybe_slices_gated_off_by_default(tmp_path):
     r = _runner(tmp_path)  # flag defaults False
     assert r._maybe_slices(_plan(), {"architect": {"plan": {"files": _ARCH_FILES}}}) is None
@@ -61,6 +78,17 @@ def test_maybe_slices_on_with_flag_and_enough_files(tmp_path):
     assert slices is not None
     assert {"frontend", "backend", "tests", "config"} <= set(slices)
     assert list(slices)[-1] == "config"  # config merges last
+
+
+def test_maybe_slices_accepts_per_build_profile_override(tmp_path):
+    r = _runner(tmp_path)  # global setting remains off
+    slices = r._maybe_slices(
+        _plan(),
+        {"architect": {"plan": {"files": _ARCH_FILES}}},
+        {"parallel_code_slices": True},
+    )
+    assert slices is not None
+    assert {"frontend", "backend", "tests", "config"} <= set(slices)
 
 
 def test_run_parallel_slices_merges_every_slice(tmp_path):
@@ -99,6 +127,11 @@ def test_run_parallel_slices_merges_every_slice(tmp_path):
     assert set(result.metadata["parallel_slices"]["slices"]) == set(slices)
     # Each slice agent received the full manifest as cross-slice context.
     assert "api/main.py" in captured["frontend"]["slice_scope"]["manifest"]
+    snapshots = [
+        event for event in r.event_bus.history()
+        if event.type is EventType.STAGE_ARTIFACT_SNAPSHOT
+    ]
+    assert {event.payload["slice"] for event in snapshots} == set(slices)
 
 
 def test_summarize_keeps_codegen_override_unavailable() -> None:
@@ -163,10 +196,96 @@ def test_run_parallel_slices_scopes_each_agent_to_its_files(tmp_path):
         return TaskResult(task_id="x", success=True, output={"slice": sc["name"]})
 
     r._submit_stage = fake_submit  # type: ignore[assignment]
-    asyncio.run(r._run_code_parallel_slices(
+    result = asyncio.run(r._run_code_parallel_slices(
         plan, _CODE_SPEC, str(r.settings.projects_dir / "demo"),
         prior, [], {}, "cid", main_wt, [main_wt], slices))
 
     assert "api/main.py" in seen_scopes["backend"]
     assert "api/main.py" not in seen_scopes["frontend"]
     assert "src/App.jsx" in seen_scopes["frontend"]
+    assert result.output["degraded"] is True
+    assert all(f"{name}:" in result.output["degraded_reason"] for name in slices)
+
+
+def test_openrouter_agentic_slices_resolve_each_slice_tier_model(tmp_path):
+    r = _runner(tmp_path, parallel_code_slices=True, llm_backend="openrouter")
+    main_wt = create_worktree(str(r.settings.projects_dir), "demo")
+    plan = _plan()
+    prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
+    slices = r._maybe_slices(plan, prior)
+    llm = _TierResolvingAgenticLLM()
+    r._registered_codegen_agent = lambda: SimpleNamespace(llm=llm)  # type: ignore[method-assign]
+    captured: dict[str, str] = {}
+
+    async def fake_submit(spec, payload, cid):
+        scope = payload["slice_scope"]
+        captured[scope["name"]] = payload.get("model_override", "")
+        target = Path(payload["worktree_dir"]) / scope["files"][0]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("// slice\n", encoding="utf-8")
+        return TaskResult(
+            task_id="x",
+            success=True,
+            output={"files_written": 1, "slice": scope["name"]},
+        )
+
+    r._submit_stage = fake_submit  # type: ignore[assignment]
+    asyncio.run(r._run_code_parallel_slices(
+        plan, _CODE_SPEC, str(r.settings.projects_dir / "demo"),
+        prior, [], {}, "cid", main_wt, [main_wt], slices,
+    ))
+
+    assert captured == {
+        "frontend": "resolved/ui-model",
+        "backend": "resolved/strong-model",
+        "tests": "resolved/cheap-model",
+        "config": "resolved/cheap-model",
+    }
+    assert [tier for tier, _pins, _task in llm.resolved].count("cheap") == 2
+    assert all(
+        pins == ("openrouter_codegen_model", "preferred_model") and task == "codegen"
+        for _tier, pins, task in llm.resolved
+    )
+
+
+def test_manual_build_model_override_wins_for_every_agentic_slice(tmp_path):
+    r = _runner(tmp_path, parallel_code_slices=True, llm_backend="openrouter")
+    main_wt = create_worktree(str(r.settings.projects_dir), "demo")
+    plan = _plan()
+    prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
+    slices = r._maybe_slices(plan, prior)
+    llm = _TierResolvingAgenticLLM()
+    r._registered_codegen_agent = lambda: SimpleNamespace(llm=llm)  # type: ignore[method-assign]
+    captured: dict[str, str] = {}
+
+    async def fake_submit(spec, payload, cid):
+        scope = payload["slice_scope"]
+        captured[scope["name"]] = payload.get("model_override", "")
+        target = Path(payload["worktree_dir"]) / scope["files"][0]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("// slice\n", encoding="utf-8")
+        return TaskResult(
+            task_id="x",
+            success=True,
+            output={"files_written": 1, "slice": scope["name"]},
+        )
+
+    r._submit_stage = fake_submit  # type: ignore[assignment]
+    asyncio.run(r._run_code_parallel_slices(
+        plan, _CODE_SPEC, str(r.settings.projects_dir / "demo"),
+        prior, [], {"model_override": "manual/build-model"},
+        "cid", main_wt, [main_wt], slices,
+    ))
+
+    assert captured == {name: "manual/build-model" for name in slices}
+    assert llm.resolved == [], "manual build pin must bypass slice-tier resolution"
+
+
+def test_local_cli_slices_are_only_pinned_by_explicit_mapping(tmp_path):
+    local_cli = SimpleNamespace(backend="claude_cli", supports_agentic=True)
+    assert _runner(tmp_path)._slice_model("ui", local_cli) is None
+    mapped = _runner(
+        tmp_path,
+        slice_tier_models={"ui": "claude-explicit-ui"},
+    )
+    assert mapped._slice_model("ui", local_cli) == "claude-explicit-ui"

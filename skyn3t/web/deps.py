@@ -353,7 +353,8 @@ class AppState:
                     except (TypeError, ValueError):
                         pass
             elif ev.type == EventType.BUILD_FAILED:
-                rec.status = "failed"
+                failure_status = str(ev.payload.get("status") or "").strip().lower()
+                rec.status = "cancelled" if failure_status == "cancelled" else "failed"
             rec.updated_at = time.time()
             self.prune_caches()
 

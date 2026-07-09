@@ -30,6 +30,17 @@ A small client portal with projects, messages, invoices, login, and admin settin
 
 When the build finishes, open **Projects** to inspect files, proof results, cost, and deploy planning.
 
+### Build Profiles
+
+- **Fast** builds one complete candidate and, for sufficiently large file plans, uses concurrent
+  frontend/backend/test specialists in isolated worktrees. It does not shorten active generation;
+  **Full app** still keeps its full content and asset scope.
+- **Balanced** spends additional verification effort without paid asset generation by default.
+- **Best quality** keeps best-of-N selection, richer configured assets, and visual repair.
+
+Settings > Runtime shows `parallel_code_slices` and its file-count threshold. A Fast build can
+enable the same specialist mode for that build even when the global setting is off.
+
 ## Useful Commands
 
 ```bash

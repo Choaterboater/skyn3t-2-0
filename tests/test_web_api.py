@@ -346,7 +346,7 @@ async def test_balanced_profile_adds_more_retries_without_asset_cost():
     assert studio.extra["visual_self_heal"] is False
 
 
-async def test_fast_profile_caps_agentic_codegen_runtime():
+async def test_fast_profile_uses_single_candidate_without_truncating_codegen():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -360,7 +360,36 @@ async def test_fast_profile_caps_agentic_codegen_runtime():
 
     assert res["build_profile"] == "fast"
     assert studio.extra["best_of_n"] == 1
-    assert studio.extra["agentic_timeout"] == 240
+    assert studio.extra["max_debug_attempts"] == 1
+    assert studio.extra["parallel_code_slices"] is True
+    assert "agentic_timeout" not in studio.extra
+
+
+async def test_fast_full_app_keeps_scope_and_assets_without_redundant_candidates():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    res = await routes.submit_build(
+        st,
+        brief="a complete golf tutorial website",
+        build_profile="fast",
+        full_app=True,
+    )
+
+    assert res["full_app"] is True
+    assert studio.extra["full_app_contract"] is True
+    assert studio.extra["best_of_n"] == 1
+    assert studio.extra["max_debug_attempts"] == 1
+    assert studio.extra["parallel_code_slices"] is True
+    assert studio.extra["asset_gen"] is True
+    assert studio.extra["visual_self_heal"] is True
+    assert studio.extra["agentic_timeout"] == 1200
 
 
 
@@ -1223,6 +1252,34 @@ async def test_cancel_build_marks_live_record_cancelled():
     assert st.event_bus.published_count >= 2
 
 
+async def test_cancel_build_awaits_task_cleanup_before_persisting():
+    import asyncio
+
+    cleanup_done = asyncio.Event()
+
+    async def worker():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            cleanup_done.set()
+
+    st = _state()
+    bid = "live-cancel"
+    st.builds[bid] = BuildRecord(build_id=bid, brief="x", status="running")
+    task = asyncio.create_task(worker())
+    await asyncio.sleep(0)
+    routes._BUILD_TASKS.add(task)
+    routes._BUILD_TASKS_BY_ID[bid] = task
+
+    out = await routes.cancel_build(st, bid, reason="stop")
+
+    assert out["task_cancelled"] is True
+    assert out["task_settled"] is True
+    assert cleanup_done.is_set()
+    assert task.done()
+
+
 async def test_cancel_build_persists_unseen_history_row():
     class _Memory:
         def __init__(self):
@@ -1247,6 +1304,53 @@ async def test_cancel_build_persists_unseen_history_row():
     assert mem.saved["status"] == "cancelled"
     assert mem.saved["manifest"]["status"] == "cancelled"
     assert mem.saved["manifest"]["cancel_reason"] == "stale"
+
+
+async def test_cancel_build_preserves_runner_recovery_written_during_settlement():
+    import asyncio
+
+    class _Memory:
+        def __init__(self):
+            self.row = {
+                "build_id": "recovering",
+                "status": "running",
+                "manifest": {"build_id": "recovering", "status": "running", "extra": {}},
+            }
+
+        async def get_build(self, build_id):
+            return self.row
+
+        async def save_build(self, **fields):
+            manifest = fields.get("manifest", self.row["manifest"])
+            self.row = {**self.row, **fields, "manifest": manifest}
+
+    mem = _Memory()
+    st = _state(memory=mem)
+    bid = "recovering"
+
+    async def worker():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await mem.save_build(
+                build_id=bid,
+                status="cancelled",
+                manifest={
+                    "build_id": bid,
+                    "status": "cancelled",
+                    "extra": {"cancellation": {"recovery": [{"path": "data/recovery/a"}]}},
+                },
+            )
+
+    task = asyncio.create_task(worker())
+    await asyncio.sleep(0)
+    routes._BUILD_TASKS.add(task)
+    routes._BUILD_TASKS_BY_ID[bid] = task
+
+    await routes.cancel_build(st, bid, reason="stop")
+
+    recovery = mem.row["manifest"]["extra"]["cancellation"]["recovery"]
+    assert recovery == [{"path": "data/recovery/a"}]
 
 
 async def test_settings_payload_surfaces_learned_router_flags():
@@ -1277,6 +1381,8 @@ async def test_settings_payload_surfaces_improve_agentic():
     st.settings.improve_agentic = False
     payload = await routes.settings_payload(st)
     assert payload["improve_agentic"] is False
+    assert payload["parallel_code_slices"] is False
+    assert payload["parallel_code_slices_min_files"] >= 2
 
 
 async def test_improve_agentic_setting_toggle_does_not_persist_in_tests():
@@ -1316,7 +1422,9 @@ async def test_web_deploy_plan_for_project(tmp_path):
     project = projects / "site"
     project.mkdir(parents=True)
     (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
-    BuildManifest(slug="site", brief="site", stack="static", verdict="go").save(project)
+    BuildManifest(
+        slug="site", brief="site", stack="static", status="completed", verdict="go"
+    ).save(project)
     st = _state(settings=Settings(projects_dir=projects, data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"))
 
     out = await routes.deploy_plan_project(st, "site")
@@ -1327,12 +1435,36 @@ async def test_web_deploy_plan_for_project(tmp_path):
     assert "cloudflare-pages" in out["plan"]["targets"]
 
 
+async def test_deploy_and_improve_reject_incomplete_project(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "unfinished"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>partial</main>", encoding="utf-8")
+    BuildManifest(
+        slug="unfinished", brief="site", stack="static", status="running"
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    with pytest.raises(routes.ProjectNotDeliveredError):
+        await routes.deploy_plan_project(st, "unfinished")
+    with pytest.raises(routes.ProjectNotDeliveredError):
+        await routes.deploy_project(st, "unfinished")
+    with pytest.raises(routes.ProjectNotDeliveredError):
+        await routes.improve_project(st, "unfinished", "finish it")
+
+
 async def test_web_deploy_is_token_gated(tmp_path):
     projects = tmp_path / "Projects"
     project = projects / "site"
     project.mkdir(parents=True)
     (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
-    BuildManifest(slug="site", brief="site", stack="static", verdict="go").save(project)
+    BuildManifest(
+        slug="site", brief="site", stack="static", status="completed", verdict="go"
+    ).save(project)
     st = _state(settings=Settings(projects_dir=projects, data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"))
 
     out = await routes.deploy_project(st, "site", target="cloudflare-pages")
@@ -1347,7 +1479,9 @@ async def test_web_deploy_records_live_check_when_enabled(tmp_path):
     project = projects / "site"
     project.mkdir(parents=True)
     (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
-    BuildManifest(slug="site", brief="site", stack="static", verdict="go").save(project)
+    BuildManifest(
+        slug="site", brief="site", stack="static", status="completed", verdict="go"
+    ).save(project)
     st = _state(settings=Settings(
         projects_dir=projects,
         data_dir=tmp_path / "data",

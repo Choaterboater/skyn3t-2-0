@@ -283,7 +283,7 @@ async def test_transient_exception_retries_and_recovers(tmp_path, monkeypatch):
     assert len(client.calls) == 2
 
 
-async def test_concurrent_builds_share_provider_admission(tmp_path):
+async def test_concurrent_builds_share_provider_admission(tmp_path, monkeypatch):
     class _TrackingClient(_FakeClient):
         def __init__(self):
             super().__init__()
@@ -300,6 +300,7 @@ async def test_concurrent_builds_share_provider_admission(tmp_path):
 
     client = _TrackingClient()
     s = _settings(replicate_api_token="r8_x", asset_gen=True)
+    monkeypatch.setattr(assets_mod, "ASSET_PROVIDER_MIN_INTERVAL", 0)
     projects = [tmp_path / "one", tmp_path / "two"]
     for project in projects:
         project.mkdir()
@@ -318,6 +319,39 @@ async def test_concurrent_builds_share_provider_admission(tmp_path):
     assert [result["generated"] for result in results] == [2, 2]
     assert client.max_active == assets_mod.ASSET_PROVIDER_MAX_CONCURRENCY
     assert len(client.calls) == 4
+
+
+async def test_provider_admission_spaces_immediate_prediction_starts(tmp_path, monkeypatch):
+    class _StartTrackingClient(_FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.starts = []
+
+        async def generate_images(self, prompt, n=1, **kw):
+            self.calls.append(prompt)
+            self.starts.append(asyncio.get_running_loop().time())
+            return [_PNG]
+
+    monkeypatch.setattr(assets_mod, "ASSET_PROVIDER_MIN_INTERVAL", 0.02)
+    client = _StartTrackingClient()
+    settings = _settings(replicate_api_token="r8_x", asset_gen=True)
+    projects = [tmp_path / "one", tmp_path / "two"]
+    for project in projects:
+        project.mkdir()
+
+    await asyncio.gather(*(
+        generate_assets(
+            str(project),
+            "an HVAC company website",
+            settings=settings,
+            client=client,
+            max_assets=1,
+        )
+        for project in projects
+    ))
+
+    assert len(client.starts) == 2
+    assert client.starts[1] - client.starts[0] >= 0.015
 
 
 async def test_repeated_empty_images_open_provider_circuit(tmp_path, monkeypatch):

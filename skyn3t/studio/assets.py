@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
+from weakref import WeakKeyDictionary
 
 import structlog
 
@@ -40,9 +41,10 @@ MAX_ASSETS = 8  # rich multi-service sites need a hero + one per service (was 4 
 # Provider failures should not fan out into a pile of paid/stalled predictions.
 ASSET_PROVIDER_BATCH_SIZE = 2
 ASSET_PROVIDER_FAILURE_LIMIT = 2
-ASSET_PROVIDER_MAX_CONCURRENCY = 2
+ASSET_PROVIDER_MAX_CONCURRENCY = 1
 ASSET_PROVIDER_MAX_ATTEMPTS = 2
-ASSET_PROVIDER_RETRY_DELAY = 0.5
+ASSET_PROVIDER_MIN_INTERVAL = 1.0
+ASSET_PROVIDER_RETRY_DELAY = 1.0
 # Web frameworks that serve static files from public/ (vs ./assets/ for static html).
 _WEB_STACKS = {"nextjs", "next", "react", "react_vite", "react_ts", "vite",
                "remix", "astro", "svelte", "sveltekit", "vue", "nuxt",
@@ -123,6 +125,9 @@ class _ProviderAdmission:
 
 
 _PROVIDER_ADMISSIONS: dict[asyncio.AbstractEventLoop, _ProviderAdmission] = {}
+_PROVIDER_START_TIMES: WeakKeyDictionary[asyncio.AbstractEventLoop, float] = (
+    WeakKeyDictionary()
+)
 
 
 @asynccontextmanager
@@ -136,6 +141,11 @@ async def _provider_slot() -> AsyncIterator[None]:
     admission.users += 1
     try:
         async with admission.semaphore:
+            last_started = _PROVIDER_START_TIMES.get(loop, 0.0)
+            wait_for = ASSET_PROVIDER_MIN_INTERVAL - (loop.time() - last_started)
+            if wait_for > 0:
+                await asyncio.sleep(wait_for)
+            _PROVIDER_START_TIMES[loop] = loop.time()
             yield
     finally:
         admission.users -= 1

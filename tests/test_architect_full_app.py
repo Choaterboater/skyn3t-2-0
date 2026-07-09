@@ -100,6 +100,44 @@ async def test_full_app_model_plan_is_augmented_with_hvac_pages() -> None:
 
 
 @pytest.mark.asyncio
+async def test_full_app_recovery_does_not_duplicate_astro_index_routes() -> None:
+    model_plan = {
+        "stack": "astro",
+        "summary": "Detailed golf architecture",
+        "files": [
+            {"path": "src/pages/index.astro", "purpose": "home"},
+            {"path": "src/pages/lessons/index.astro", "purpose": "lesson hub"},
+            {"path": "src/pages/drills/index.astro", "purpose": "drill hub"},
+            {"path": "src/pages/equipment/index.astro", "purpose": "equipment hub"},
+        ],
+    }
+    llm = _ArchitectLLM(json.dumps(model_plan))
+    agent = ArchitectAgent(event_bus=EventBus(), llm=llm)  # type: ignore[arg-type]
+
+    result = await agent.execute(TaskRequest(
+        type="architecture",
+        payload={
+            "brief": (
+                "A golf website for adult beginners with lesson paths, drills, "
+                "equipment basics, tutorial resources, and tee-time CTAs"
+            ),
+            "stack": "astro",
+            "extra": {"full_app_contract": True},
+        },
+    ))
+
+    paths = {item["path"] for item in result.output["plan"]["files"]}
+    assert "src/pages/lessons/index.astro" in paths
+    assert "src/pages/drills/index.astro" in paths
+    assert "src/pages/equipment/index.astro" in paths
+    assert "src/pages/lessons.astro" not in paths
+    assert "src/pages/drills.astro" not in paths
+    assert "src/pages/equipment.astro" not in paths
+    assert "src/pages/resources.astro" in paths
+    assert "src/pages/book.astro" in paths
+
+
+@pytest.mark.asyncio
 async def test_standard_architect_accepts_plan_wrapper_and_uses_larger_floor() -> None:
     llm = _ArchitectLLM(json.dumps({
         "plan": {

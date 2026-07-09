@@ -75,6 +75,60 @@ def _merge_file_plans(*groups: list[Any]) -> list[dict[str, str]]:
     return merged
 
 
+def _page_route_identity(raw: Any, stack: str) -> str | None:
+    """Canonical URL identity for collision-prone file-routed web pages."""
+    if isinstance(raw, dict):
+        path = str(raw.get("path") or raw.get("file") or "")
+    else:
+        path = str(raw or "")
+    path = path.strip().replace("\\", "/").lstrip("/").casefold()
+    if stack == "astro":
+        if path.startswith("src/pages/"):
+            path = path[len("src/pages/"):]
+        elif path.startswith("pages/"):
+            path = path[len("pages/"):]
+        else:
+            return None
+        if not path.endswith(".astro"):
+            return None
+        route = path[:-len(".astro")]
+    elif stack == "static_html":
+        if not path.endswith((".html", ".htm")):
+            return None
+        suffix = ".html" if path.endswith(".html") else ".htm"
+        route = path[:-len(suffix)]
+    else:
+        return None
+    if route == "index":
+        route = ""
+    elif route.endswith("/index"):
+        route = route[:-len("/index")]
+    return "/" + route.strip("/")
+
+
+def _augment_full_app_files(
+    model_files: list[Any],
+    recovery_files: list[Any],
+    stack: str,
+) -> list[dict[str, str]]:
+    """Append recovery files without creating duplicate file-routed URLs."""
+    primary = _merge_file_plans(model_files)
+    route_ids = {
+        route
+        for item in primary
+        if (route := _page_route_identity(item, stack)) is not None
+    }
+    additions: list[Any] = []
+    for item in recovery_files:
+        route = _page_route_identity(item, stack)
+        if route is not None and route in route_ids:
+            continue
+        additions.append(item)
+        if route is not None:
+            route_ids.add(route)
+    return _merge_file_plans(primary, additions)
+
+
 def _brief_feature_routes(brief: str) -> list[tuple[str, str]]:
     text = brief.lower()
     routes: list[tuple[str, str]] = []
@@ -297,9 +351,10 @@ class ArchitectAgent(BaseAgent):
             recovery = self._offline_plan(
                 brief, stack, p.get("slug"), full_app=True,
             )
-            parsed["files"] = _merge_file_plans(
+            parsed["files"] = _augment_full_app_files(
                 list(parsed.get("files") or []),
                 list(recovery.get("files") or []),
+                stack,
             )
             parsed["build_order"] = [
                 item["path"] for item in parsed["files"]

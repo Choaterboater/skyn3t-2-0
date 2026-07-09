@@ -7,6 +7,8 @@ import asyncio
 import json
 import time
 
+import pytest
+
 import skyn3t.adapters.llm as llm
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.config.settings import Settings
@@ -446,6 +448,50 @@ def test_antistub_nudge_still_fires_for_react_stack(tmp_path, monkeypatch):
     res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="react_vite"))
     assert res["ok"] is True
     assert (tmp_path / "components" / "Hero.jsx").exists()       # nudge still drives the UI build
+
+
+@pytest.mark.parametrize(
+    ("stack", "sources"),
+    [
+        ("astro", [
+            ("src/pages/index.astro", 2200),
+            ("src/components/Hero.astro", 1500),
+            ("src/components/Services.astro", 1500),
+        ]),
+        ("static_html", [
+            ("index.html", 1600),
+            ("about.html", 1600),
+            ("contact.html", 1600),
+            ("styles.css", 1200),
+        ]),
+        ("vue", [
+            ("src/App.vue", 2200),
+            ("src/components/Hero.vue", 1500),
+            ("src/components/Services.vue", 1500),
+        ]),
+        ("sveltekit", [
+            ("src/routes/+page.svelte", 2200),
+            ("src/components/Hero.svelte", 1500),
+            ("src/components/Services.svelte", 1500),
+        ]),
+    ],
+)
+def test_antistub_uses_each_web_stacks_native_sources(tmp_path, stack, sources):
+    for rel, size in sources:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x" * size)
+
+    assert llm._agentic_project_looks_stub(tmp_path, stack) is False
+
+
+def test_antistub_does_not_count_data_as_a_static_homepage(tmp_path):
+    (tmp_path / "index.html").write_text("<main>thin</main>")
+    data = tmp_path / "src" / "data.js"
+    data.parent.mkdir(parents=True)
+    data.write_text("export const rows = " + "x" * 6000)
+
+    assert llm._agentic_project_looks_stub(tmp_path, "static_html") is True
 
 
 def test_supports_agentic_openrouter_flag():

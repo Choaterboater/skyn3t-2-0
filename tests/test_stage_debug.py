@@ -52,7 +52,11 @@ def test_code_stage_degrades_when_unfixable(tmp_path):
     async def go():
         wt, spec, record, plan, settings, emitted, emit = _ctx(tmp_path)
 
+        calls = 0
+
         async def improve(_gaps):
+            nonlocal calls
+            calls += 1
             return False  # writes nothing -> stays empty -> proof keeps failing
 
         result = await debug_stage(
@@ -60,6 +64,8 @@ def test_code_stage_degrades_when_unfixable(tmp_path):
             plan=plan, settings=settings, emit=emit, improve=improve, max_attempts=2,
         )
         assert result.degraded and not result.passed
+        assert result.attempts == 1
+        assert calls == 1
         resolved = [p for t, p in emitted if t == EventType.STAGE_DEBUG_RESOLVED][-1]
         assert resolved["status"] == "degraded"
 

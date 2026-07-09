@@ -25,7 +25,13 @@ from skyn3t.core.events import EventBus
 # Helper
 # ---------------------------------------------------------------------------
 
-async def _run_agentic(tmp_path, agentic_result: dict, *, write_code: bool = False):
+async def _run_agentic(
+    tmp_path,
+    agentic_result: dict,
+    *,
+    write_code: bool = False,
+    partial_files: dict[str, str | bytes] | None = None,
+):
     """Run CodeAgent with the agentic branch active and a stubbed agentic_build.
 
     Patches `llm.backend` to "claude_cli" so `supports_agentic` becomes True.
@@ -40,6 +46,13 @@ async def _run_agentic(tmp_path, agentic_result: dict, *, write_code: bool = Fal
         if write_code:
             code = "# Generated app\n" + ("x = 1  # substantial padding line\n" * 240)
             pathlib.Path(workdir, "main.py").write_text(code)
+        for rel, content in (partial_files or {}).items():
+            target = pathlib.Path(workdir, rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                target.write_bytes(content)
+            else:
+                target.write_text(content)
         return agentic_result
 
     # Drive supports_agentic=True by setting backend to "claude_cli" on instance.
@@ -99,6 +112,28 @@ async def test_agentic_build_under_delivered_sets_degraded_flag(tmp_path):
     assert "under-delivered" in result.output["degraded_reason"]
     # Scaffold floor still written.
     assert result.output["files_written"] > 0
+
+
+async def test_under_delivery_preserves_productive_partial_files_and_assets(tmp_path):
+    service_data = '{"services":[{"name":"Emergency repair"}]}\n'
+    generated_svg = b'<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10z"/></svg>\n'
+    result = await _run_agentic(
+        tmp_path,
+        {"ok": True, "completed": True, "backend": "claude_cli"},
+        partial_files={
+            "data/services.json": service_data,
+            "assets/generated-service.svg": generated_svg,
+        },
+    )
+
+    assert result.success
+    assert result.output.get("degraded") is True
+    assert (tmp_path / "data" / "services.json").read_text() == service_data
+    assert (tmp_path / "assets" / "generated-service.svg").read_bytes() == generated_svg
+    assert "data/services.json" in result.output["files"]
+    assert "assets/generated-service.svg" in result.output["files"]
+    # The runnable floor is additive; it must not replace the partial product.
+    assert (tmp_path / "index.html").is_file()
 
 
 async def test_agentic_build_error_string_in_reason(tmp_path):

@@ -161,7 +161,8 @@ class AutonomousLoop:
             return 0.0
 
     def _budget_exhausted(self) -> bool:
-        return self.state.spend_usd >= self.settings.daily_usd_cap
+        cap = self.settings.daily_usd_cap
+        return cap > 0 and self.state.spend_usd >= cap
 
     def _budget_would_overshoot(self) -> bool:
         """Per-build pre-check: would launching the next build blow the cap?
@@ -169,6 +170,8 @@ class AutonomousLoop:
         Accounts for in-flight builds via reserved/escrowed spend so concurrent
         launches don't each see spend_usd==0 and collectively overshoot.
         """
+        if self.settings.daily_usd_cap <= 0:
+            return False
         projected = self.state.committed_usd + self._next_build_estimate()
         return projected > self.settings.daily_usd_cap
 

@@ -355,6 +355,13 @@ class AppState:
             elif ev.type == EventType.BUILD_FAILED:
                 failure_status = str(ev.payload.get("status") or "").strip().lower()
                 rec.status = "cancelled" if failure_status == "cancelled" else "failed"
+                if ev.payload.get("verdict"):
+                    rec.verdict = str(ev.payload["verdict"])
+                if "score" in ev.payload:
+                    try:
+                        rec.score = float(ev.payload["score"])
+                    except (TypeError, ValueError):
+                        pass
             rec.updated_at = time.time()
             self.prune_caches()
 

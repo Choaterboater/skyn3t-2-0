@@ -3,6 +3,7 @@
 boundaries so the manifest records where a build's tokens actually went."""
 from __future__ import annotations
 
+from skyn3t.config.settings import Settings
 from skyn3t.observability.cost_tracker import CostTracker
 
 
@@ -95,3 +96,25 @@ def test_stage_methods_safe_for_unknown_build():
     ct.start_stage("ghost", "plan")  # no such build — must not raise
     rec = ct.end_stage("ghost", "plan")
     assert rec["cost_usd"] == 0.0
+
+
+def test_disabled_caps_are_reported_as_unlimited_not_exhausted():
+    budget = _Budget()
+    budget.spent_day = 123.0
+    budget.tokens_day = 9_000_000
+    tracker = CostTracker(
+        settings=Settings(
+            per_build_usd_cap=0,
+            daily_usd_cap=0,
+            daily_token_cap=0,
+        ),
+        budget=budget,
+    )
+
+    report = tracker.report()
+
+    assert report["daily_cap_enabled"] is False
+    assert report["build_cap_enabled"] is False
+    assert report["token_cap_enabled"] is False
+    assert report["daily_remaining_usd"] is None
+    assert report["build_remaining_usd"] is None

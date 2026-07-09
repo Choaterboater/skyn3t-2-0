@@ -305,6 +305,30 @@ def test_budget_guard_per_build_zero_disables_build_cap():
     assert guard.check() is GuardState.OK
 
 
+@pytest.mark.parametrize("disabled_cap", [0, -1])
+def test_budget_guard_nonpositive_daily_caps_are_disabled(disabled_cap):
+    from skyn3t.config.settings import Settings
+    from skyn3t.self_healing.budget import BudgetGuard, GuardState
+
+    class _Budget:
+        spent_build = 500.0
+        spent_day = 500.0
+        tokens_day = 9_000_000
+
+    guard = BudgetGuard(
+        settings=Settings(
+            per_build_usd_cap=0,
+            daily_usd_cap=disabled_cap,
+            daily_token_cap=disabled_cap,
+        ),
+        budget=_Budget(),
+        max_loops=10_000,
+        stall_timeout=10_000,
+    )
+
+    assert guard.check() is GuardState.OK
+
+
 def test_budget_guard_event_attach():
     from skyn3t.self_healing.budget import BudgetGuard
 

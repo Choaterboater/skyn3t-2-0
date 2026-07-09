@@ -45,6 +45,7 @@ from skyn3t.agents._scaffold import (
 from skyn3t.core.agent import AgentCapability, AgentStatus, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+from skyn3t.worktree import list_files
 
 log = structlog.get_logger(__name__)
 
@@ -861,14 +862,15 @@ class CodeAgent(BaseAgent):
                 # to register the real scene modules.
                 files = self._repair_scene_registry(worktree, files, stack)
             else:
-                # Under-delivered -> deliver a CLEAN scaffold. The agent wrote
-                # stray files (rejected prose, a partial app, scratch notes) into
-                # the worktree; _write_files only overwrites the scaffold keys and
-                # would leave the strays alongside it, so wipe the agent's output
-                # first.
-                self._clear_worktree(worktree)
-                self._restore_preexisting_assets(worktree, preexisting_assets)
-                self._write_files(worktree, files)  # under-delivered -> scaffold floor
+                # Keep productive partial work even when it contains no source
+                # extension counted by the byte threshold (for example generated
+                # images, content JSON, or documentation written before the UI).
+                # The degraded marker above still prevents this tree from being
+                # mistaken for a complete delivery; the scaffold is only a
+                # runnable floor beneath the partial output, not a replacement.
+                files = {**scaffold, **disk}
+                files = self._repair_html_entrypoint(worktree, files, stack, scaffold)
+                files = self._repair_scene_registry(worktree, files, stack)
         else:
             # Completion backend (OpenRouter): per-file, generated CONCURRENTLY
             # (bounded) so a multi-file app's wall-clock is the slowest file.
@@ -901,8 +903,10 @@ class CodeAgent(BaseAgent):
 
         files = self._repair_entrypoints(stack, files, app_name)
 
+        just_written = set(self._write_files(worktree, files))
         written = sorted(
-            set(self._write_files(worktree, files))
+            just_written
+            | set(list_files(worktree))
             | self._present_planned_files(worktree, reported_expected)
             | preserved_asset_paths
         )
@@ -1769,10 +1773,10 @@ class CodeAgent(BaseAgent):
                 continue
         return present
 
-    def _snapshot_preexisting_assets(self, worktree: Path) -> dict[str, bytes]:
-        """Capture binary/asset files so a scaffold fallback cannot erase them."""
+    def _snapshot_preexisting_assets(self, worktree: Path) -> set[str]:
+        """Record preexisting asset paths for result accounting."""
         root = Path(worktree).resolve()
-        snapshot: dict[str, bytes] = {}
+        paths: set[str] = set()
         for path in root.rglob("*"):
             try:
                 rel_path = path.relative_to(root)
@@ -1788,24 +1792,10 @@ class CodeAgent(BaseAgent):
                 resolved = path.resolve()
                 if os.path.commonpath([str(root), str(resolved)]) != str(root):
                     continue
-                snapshot[rel] = path.read_bytes()
+                paths.add(rel)
             except (OSError, ValueError):
                 continue
-        return snapshot
-
-    @staticmethod
-    def _restore_preexisting_assets(worktree: Path, snapshot: dict[str, bytes]) -> None:
-        root = Path(worktree).resolve()
-        for rel, content in snapshot.items():
-            target = root.joinpath(*PurePosixPath(rel).parts)
-            try:
-                resolved = target.resolve()
-                if os.path.commonpath([str(root), str(resolved)]) != str(root):
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(content)
-            except (OSError, ValueError):
-                continue
+        return paths
 
     @staticmethod
     def _snapshot_regular_files(worktree: Path) -> dict[str, bytes]:

@@ -19,7 +19,13 @@ _SECRET_RE = re.compile(
     re.I,
 )
 _EVAL_RE = re.compile(r"\b(?:eval|Function)\s*\(")
-_SQL_INTERP_RE = re.compile(r"(?:SELECT|INSERT|UPDATE|DELETE)[^;\n]*(?:\+|\$\{|%s|f['\"])", re.I)
+_SQL_INTERP_RE = re.compile(
+    r"(?:"
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^;\n]*(?:\+|\$\{|%s|\.format\()"
+    r"|f['\"][^'\"\n]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b"
+    r")",
+    re.I,
+)
 _HEADER_MARKERS = (
     "content-security-policy",
     "x-frame-options",

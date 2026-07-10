@@ -27,6 +27,21 @@ def test_static_site_uses_http_server(tmp_path):
     assert spec.cmd[-2:] == ["--bind", "127.0.0.1"] or "127.0.0.1" in spec.cmd
 
 
+def test_pinned_static_site_ignores_optional_npm_start_wrapper(tmp_path):
+    (tmp_path / "index.html").write_text("<h1>static app</h1>", encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"npm run serve","serve":"npx serve . -l 3000 -s"}}',
+        encoding="utf-8",
+    )
+
+    spec = build_run_spec(tmp_path, "static", port=9002)
+
+    assert spec is not None
+    assert spec.kind == "static"
+    assert spec.port == 9002
+    assert spec.cmd[-3:] == ["9002", "--bind", "127.0.0.1"]
+
+
 def test_python_web_uses_python_entrypoint(tmp_path):
     (tmp_path / "main.py").write_text("import uvicorn\n")
     (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n")

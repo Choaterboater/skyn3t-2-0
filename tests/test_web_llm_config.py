@@ -19,6 +19,7 @@ from skyn3t.web.routes import (  # noqa: E402
     set_llm_key,
     set_llm_routing,
     set_replicate_token,
+    submit_build,
 )
 
 
@@ -82,11 +83,49 @@ async def test_switch_backend():
     assert r["routing"]["requested"] == "stub"
 
 
+async def test_switch_backend_accepts_codex_and_reports_missing_cli_without_openrouter():
+    st = _state(llm_backend="openrouter", openrouter_api_key="sk-or-x")
+    r = await set_llm_backend(st, "codex_cli", persist=False)
+    assert st.settings.llm_backend == "codex_cli"
+    assert r["requested"] == "codex_cli"
+    assert r["active"] == "stub"
+    assert r["routing"]["state"] == "cli_missing"
+
+
+async def test_switch_backend_rejects_unknown_value():
+    st = _state(llm_backend="stub")
+    with pytest.raises(ValueError, match="Unsupported LLM backend"):
+        await set_llm_backend(st, "arbitrary_cli", persist=False)
+    assert st.settings.llm_backend == "stub"
+
+
 async def test_explicit_openrouter_missing_key_surfaces_routing_state():
     p = await llm_secrets_payload(_state(llm_backend="openrouter"))
     assert p["backend"] == "stub"
     assert p["routing"]["requested"] == "openrouter"
     assert p["routing"]["state"] == "missing_key"
+
+
+async def test_submit_build_blocks_unavailable_selected_backend_before_queueing():
+    st = _state(llm_backend="openrouter")
+
+    with pytest.raises(ValueError, match="OpenRouter was explicitly selected"):
+        await submit_build(st, brief="must not become an offline prototype")
+
+    assert st.builds == {}
+
+
+async def test_submit_build_blocks_unavailable_codegen_cli_before_paid_stages():
+    st = _state(
+        llm_backend="openrouter",
+        openrouter_api_key="sk-or-configured",
+        codegen_cli_provider="codex",
+    )
+
+    with pytest.raises(ValueError, match="codegen_cli_provider='codex'.*unavailable"):
+        await submit_build(st, brief="must not spend before codegen can run")
+
+    assert st.builds == {}
 
 
 async def test_set_llm_routing_updates_codegen_and_model_pins():
@@ -138,6 +177,12 @@ async def test_set_llm_routing_rejects_unknown_codegen_provider():
             persist=False,
         )
     assert st.settings.codegen_cli_provider == ""
+
+
+async def test_set_llm_routing_accepts_codex_codegen_provider():
+    st = _state(llm_backend="stub")
+    await set_llm_routing(st, codegen_cli_provider="codex", persist=False)
+    assert st.settings.codegen_cli_provider == "codex"
 
 
 async def test_set_llm_routing_persist_false_does_not_mutate_env(monkeypatch):

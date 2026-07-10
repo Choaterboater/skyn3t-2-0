@@ -127,7 +127,7 @@ class Settings(BaseSettings):
 
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
     # auto picks: openrouter (if key) -> a detected CLI -> stub.
-    llm_backend: str = "auto"  # auto|stub|openrouter|claude_cli|kimi_cli|copilot_cli|openai_cli
+    llm_backend: str = "auto"  # auto|stub|openrouter|codex_cli|claude_cli|kimi_cli|copilot_cli
     cli_llm_provider: str = "claude"  # which CLI when auto selects one
     # Route ONLY the codegen (code agent) stage to a coding-agent CLI's agentic
     # whole-app build, while every OTHER stage keeps the global backend (e.g. cheap
@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     # dangling-import class inside codegen, where context is still warm.
     agentic_verify_on_stop: bool = True
     cli_llm_timeout: int = 300  # generating a substantial file via claude -p needs room
-    # Run the headless build CLIs (claude/kimi -p) WITHOUT the host's ambient MCP
+    # Run the headless build CLIs (codex exec / claude/kimi -p) WITHOUT the host's ambient MCP
     # servers. Otherwise every codegen call boots the user's whole ~/.claude MCP
     # fleet (Aruba, context7, playwright, ...) — pure per-build startup tax and a
     # sandboxing concern. True = isolated builds; flip to False only to give the

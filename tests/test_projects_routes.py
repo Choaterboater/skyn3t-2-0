@@ -119,6 +119,7 @@ def test_manifestless_cancelled_tree_is_incomplete_not_serveable(tmp_path):
     assert row["file_count"] == 2
     assert row["has_serve"] is False
     assert "cancelled before delivery" in row["serve_reason"]
+    assert row["non_shippable_spend_usd"] == 0.75
 
 
 def test_list_projects_surfaces_cost(tmp_path):
@@ -132,6 +133,84 @@ def test_list_projects_surfaces_cost(tmp_path):
     out = asyncio.run(list_projects(state))
     row = {p["slug"]: p for p in out["projects"]}["costly"]
     assert row["cost_usd"] == 0.42 and row["wasted_usd"] == 0.42
+    assert row["non_shippable_spend_usd"] == 0.42
+
+
+def test_list_projects_classifies_recorded_non_shippable_spend(tmp_path):
+    state = _state(tmp_path)
+    cases = [
+        ("cancelled", "cancelled", "", 1.1, None),
+        ("failed", "failed", "no_go", 2.2, None),
+        ("no-go", "completed_no_go", "no_go", 3.3, None),
+        ("go", "completed", "go", 4.4, 99.0),
+        ("active", "running", "no_go", 5.5, 99.0),
+    ]
+    for slug, status, verdict, cost, persisted_spend in cases:
+        project = state.settings.projects_dir / slug
+        project.mkdir()
+        extra = {"build_cost_usd": cost}
+        if persisted_spend is not None:
+            extra["non_shippable_spend_usd"] = persisted_spend
+        (project / "skyn3t_manifest.json").write_text(json.dumps({
+            "build_id": f"build-{slug}",
+            "slug": slug,
+            "stack": "static",
+            "status": status,
+            "verdict": verdict,
+            "score": 80 if verdict == "go" else 30,
+            "extra": extra,
+        }))
+        (project / "index.html").write_text(
+            "<!doctype html><html><body><main>Real project</main></body></html>"
+        )
+
+    rows = {
+        row["slug"]: row
+        for row in asyncio.run(list_projects(state))["projects"]
+    }
+
+    assert rows["cancelled"]["non_shippable_spend_usd"] == 1.1
+    assert rows["failed"]["non_shippable_spend_usd"] == 2.2
+    assert rows["no-go"]["non_shippable_spend_usd"] == 3.3
+    assert rows["go"]["non_shippable_spend_usd"] is None
+    assert rows["active"]["non_shippable_spend_usd"] is None
+    assert rows["no-go"]["delivery_state"] == "delivered"
+    assert rows["go"]["delivery_state"] == "delivered"
+    assert rows["cancelled"]["delivery_state"] == "incomplete"
+    assert rows["failed"]["delivery_state"] == "incomplete"
+    assert rows["active"]["delivery_state"] == "building"
+    assert all(row["wasted_usd"] is None for row in rows.values())
+
+
+def test_list_projects_hydrates_manifestless_status_from_persisted_history(tmp_path):
+    state = _state(tmp_path)
+
+    class _Memory:
+        async def recent_builds(self, limit=25):
+            assert limit >= 50
+            return [{
+                "build_id": "persisted-cancelled",
+                "slug": "manifestless-cancelled",
+                "stack": "astro",
+                "status": "cancelled",
+                "cost_usd": 0.0,
+                "quality_scorecard": {
+                    "cost_truth": {"llm_cost_usd": 0.0},
+                },
+            }]
+
+    state.memory = _Memory()
+    (state.settings.projects_dir / "manifestless-cancelled").mkdir()
+
+    row = asyncio.run(list_projects(state))["projects"][0]
+
+    assert row["has_manifest"] is False
+    assert row["status"] == "cancelled"
+    assert row["build_status"] == "cancelled"
+    assert row["build_id"] == "persisted-cancelled"
+    assert row["stack"] == "astro"
+    assert row["cost_usd"] == 0.0
+    assert row["non_shippable_spend_usd"] == 0.0
 
 
 def test_list_projects_surfaces_ai_guidance_evidence(tmp_path):
@@ -258,6 +337,7 @@ def test_list_projects_surfaces_ai_trace_for_cancelled_manifest(tmp_path):
     assert row["skills_used"] == ["api", "frontend", "delivered-empty"]
     assert row["recall_used"] == []
     assert row["cost_usd"] == pytest.approx(7.586062)
+    assert row["non_shippable_spend_usd"] == pytest.approx(7.586062)
 
 
 def test_delete_project_moves_to_trash(tmp_path):

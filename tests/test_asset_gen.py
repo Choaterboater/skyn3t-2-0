@@ -474,7 +474,7 @@ def test_apply_web_asset_foundry_wires_html_when_codegen_ignored_assets(tmp_path
     assert '<meta property="og:image" content="/assets/og.png">' in html
 
 
-async def test_runner_asset_step_honors_per_build_asset_gen_override(tmp_path, monkeypatch):
+async def test_runner_asset_step_does_not_override_global_asset_disable(tmp_path, monkeypatch):
     captured = {}
 
     async def _fake_generate_assets(project_dir, brief, *, settings, stack):
@@ -502,9 +502,11 @@ async def test_runner_asset_step_honors_per_build_asset_gen_override(tmp_path, m
         stack="nextjs",
     )
 
-    assert captured == {"asset_gen": True, "stack": "nextjs"}
+    assert captured == {}
     assert manifest.extra["asset_gen_requested"] is True
-    assert out["assets"][0]["subject"].startswith("sunlit golf")
+    assert manifest.extra["asset_gen_enabled"] is False
+    assert "global asset generation is disabled" in manifest.extra["asset_gen_blocked_reason"]
+    assert "assets" not in out
 
 
 def test_codegen_payload_prefers_current_worktree_asset_manifest(tmp_path):

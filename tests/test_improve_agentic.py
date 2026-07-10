@@ -2,9 +2,10 @@
 """Agentic improve: free-text dashboard goals route through the whole-project
 agentic tool-loop (the same `agentic_build` machinery builds use), so a goal
 like "add an SEO audit tool" can CREATE new pages/components instead of being
-squeezed into a single-entrypoint rewrite. The classic per-file path remains
-as the fallback whenever agentic is unavailable, fails, or lands nothing —
-behavior never regresses below the pre-agentic baseline.
+squeezed into a single-entrypoint rewrite. Without an explicit CLI lock, the
+classic per-file path remains the fallback whenever agentic is unavailable,
+fails, or lands nothing. An explicit CLI lock fails closed instead of silently
+spending through the global backend.
 
 Do-no-harm invariants pinned here:
 - every file the agentic session changed/created is re-validated; a broken
@@ -141,16 +142,96 @@ def test_agentic_landed_nothing_falls_back_to_classic_path(tmp_path):
     assert result.output["skipped"]["app/page.jsx"] == "already_satisfied"
 
 
+def test_explicit_cli_failure_never_falls_back_to_global_completions(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(
+        ok=False,
+        error="claude CLI unavailable",
+        completions=[_VALID_REWRITE_FOR_FALLBACK],
+    )
+    result = _run(
+        tmp_path,
+        llm,
+        extra={"files": ["app/page.jsx"], "agentic_provider": "claude"},
+    )
+
+    assert result.success is False
+    assert result.output["routing_locked"] is True
+    assert result.output["routing_lock_provider"] == "claude"
+    assert "unavailable" in result.error
+    assert llm.complete_calls == []
+    assert (tmp_path / "app" / "page.jsx").read_text() == _PAGE
+
+
+def test_explicit_cli_no_change_never_falls_back_to_global_completions(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(
+        writes={},
+        ok=True,
+        completions=[_VALID_REWRITE_FOR_FALLBACK],
+    )
+    result = _run(
+        tmp_path,
+        llm,
+        extra={"files": ["app/page.jsx"], "agentic_provider": "codex"},
+    )
+
+    assert result.success is False
+    assert "without any valid file changes" in result.error
+    assert llm.complete_calls == []
+
+
+def test_explicit_cli_exception_restores_partial_write_and_never_falls_back(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])
+
+    async def broken_agentic(_prompt, workdir, **_kwargs):
+        Path(workdir, "app/page.jsx").write_text(_PAGE_IMPROVED, encoding="utf-8")
+        raise RuntimeError("CLI process crashed")
+
+    llm.agentic_build = broken_agentic
+    result = _run(
+        tmp_path,
+        llm,
+        extra={"files": ["app/page.jsx"], "agentic_provider": "claude"},
+    )
+
+    assert result.success is False
+    assert "CLI process crashed" in result.error
+    assert llm.complete_calls == []
+    assert (tmp_path / "app" / "page.jsx").read_text() == _PAGE
+
+
+def test_explicit_cli_with_agentic_disabled_blocks_classic_path(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/page.jsx"],
+            "agentic_provider": "claude",
+        },
+    )
+
+    assert result.success is False
+    assert "agentic improve is disabled" in result.error
+    assert llm.agentic_calls == []
+    assert llm.complete_calls == []
+
+
 def test_agentic_payload_routing_reaches_agentic_build(tmp_path):
     _seed(tmp_path)
     llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
-    _run(tmp_path, llm, extra={"agentic_timeout": 555,
-                               "agentic_provider": "claude",
-                               "agentic_model": "sonnet"})
+    result = _run(tmp_path, llm, extra={"agentic_timeout": 555,
+                                        "agentic_provider": "claude",
+                                        "agentic_model": "sonnet"})
     call = llm.agentic_calls[0]
     assert call["timeout"] == 555
     assert call["provider"] == "claude"
     assert call["model"] == "sonnet"
+    assert result.output["backend"] == "claude_cli"
     # The prompt frames this as improving an EXISTING app, not a fresh build.
     assert "existing" in call["prompt"].lower()
 
@@ -184,10 +265,17 @@ def test_classic_improve_prompt_includes_stage_role_guidance(tmp_path):
     assert "imported React repair role" in llm.complete_calls[0]["prompt"]
 
 
-def test_engine_threads_improve_agentic_setting(tmp_path):
+def test_engine_threads_improve_agentic_setting(tmp_path, monkeypatch):
     import json
 
+    from skyn3t.adapters.llm import LLMClient
     from skyn3t.studio.improve import ImproveEngine
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_available",
+        lambda self, provider: provider == "claude",
+    )
 
     projects = tmp_path / "Projects"
     projects.mkdir()

@@ -55,8 +55,8 @@ def _load_manifest(d: Path) -> dict | None:
     if not f.exists():
         return None
     try:
-        return json.loads(f.read_text())
-    except (json.JSONDecodeError, OSError):
+        return json.loads(f.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError):
         return None
 
 

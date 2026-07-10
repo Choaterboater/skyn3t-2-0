@@ -87,6 +87,26 @@ class ImproveEngine:
         slug = manifest.slug if manifest else project_dir.name
         stack = (manifest.stack if manifest and manifest.stack
                  else StackDetector.detect(project_dir))
+        from skyn3t.adapters.llm import RoutingLockError, enforce_explicit_routing_lock
+
+        try:
+            enforce_explicit_routing_lock(self.settings)
+        except RoutingLockError as exc:
+            outcome = ImproveOutcome(
+                project_dir=str(project_dir),
+                slug=slug,
+                stack=stack,
+                goal=goal,
+                status="failed",
+                detail={
+                    "error": str(exc),
+                    "delivery_blocked": "routing_lock",
+                    "routing_locked": True,
+                    "project_preserved": True,
+                },
+            )
+            await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+            return outcome
         await self._emit(EventType.IMPROVE_STARTED,
                          {"slug": slug, "stack": stack, "goal": goal,
                           "project_dir": str(project_dir)}, cid)
@@ -105,6 +125,33 @@ class ImproveEngine:
                              {"slug": slug, "stage": "generating"}, cid)
             files_changed, improver_ok, improver_err, skipped = await self._run_improver(
                 wt.dir, slug, stack, goal, repo_ctx, cid)
+            routing_provider = str(
+                getattr(self.settings, "codegen_cli_provider", "") or ""
+            ).strip().lower()
+            if routing_provider and not improver_ok:
+                # An explicit codegen CLI is a provider lock. Do not run
+                # deterministic/config rewrites or deliver the unchanged
+                # worktree after its agentic invocation failed; report a clean
+                # failure and preserve the existing project byte-for-byte.
+                outcome = ImproveOutcome(
+                    project_dir=str(project_dir),
+                    slug=slug,
+                    stack=stack,
+                    goal=goal,
+                    status="failed",
+                    detail={
+                        "delivered": 0,
+                        "improver_success": False,
+                        "improver_error": improver_err,
+                        "delivery_blocked": "routing_lock",
+                        "routing_locked": True,
+                        "routing_lock_provider": routing_provider,
+                        "project_preserved": True,
+                        **({"skipped": skipped} if skipped else {}),
+                    },
+                )
+                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                return outcome
 
             # Same deterministic, build-readying repairs the main build pipeline
             # runs (StudioRunner._deterministic_repairs -> apply_deterministic_repairs)
@@ -311,13 +358,17 @@ class ImproveEngine:
         )
         result = await self.orchestrator.submit(task)
         ok = bool(result and getattr(result, "success", False))
-        output = (getattr(result, "output", None) or {}) if ok else {}
-        files = list(output.get("files", []))
+        output = (getattr(result, "output", None) or {}) if result else {}
+        files = list(output.get("files", [])) if ok else []
         # rel -> reason the improver declined the file ("already_satisfied",
         # "unchanged", "invalid_rewrite", ...) — the difference between "your
         # goal was already done" and "the rewrite failed" for the cockpit.
         skipped = dict(output.get("skipped", {}) or {})
-        err = "" if ok else str(getattr(result, "error", "") or "improver did not succeed")
+        err = "" if ok else str(
+            getattr(result, "error", "")
+            or output.get("routing_lock_reason")
+            or "improver did not succeed"
+        )
         return files, ok, err, skipped
 
     async def _surface_config(self, project_dir: Path, goal: str, stack: str,

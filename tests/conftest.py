@@ -84,6 +84,26 @@ def _no_cli_vision(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_llm_cli(monkeypatch):
+    """Keep ``llm_backend=auto`` offline even when a developer has CLIs installed.
+
+    Tests that cover a CLI backend replace these caches and mock subprocess
+    creation themselves. This fence prevents unrelated tests from consuming a
+    signed-in Codex/Claude/Copilot account merely because the binary is on PATH.
+    """
+    from skyn3t.adapters.llm import KNOWN_CLI_PROVIDERS, LLMClient
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_cache",
+        {provider: False for provider in KNOWN_CLI_PROVIDERS},
+    )
+    monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {})
+    monkeypatch.setattr(LLMClient, "_cli_version_cache", {})
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_data_dir(tmp_path, monkeypatch):
     """Point every test's ``data_dir`` at a unique temp dir.
 
@@ -96,6 +116,10 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     """
     from skyn3t.config import settings as settings_mod
 
+    # Runtime backend-selection tests intentionally mutate os.environ. Re-pin
+    # the offline backend for every test so that mutation cannot leak into the
+    # next test and make unrelated API tests depend on an installed CLI.
+    monkeypatch.setenv("SKYN3T_LLM_BACKEND", "stub")
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
     # Don't read the developer's real repo .env during tests. Settings hard-codes
     # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github

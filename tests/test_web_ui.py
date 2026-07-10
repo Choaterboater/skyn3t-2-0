@@ -385,8 +385,14 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert "safe cleanup candidates" in projects
     assert "const projectSignals =" in projects
     assert "Projects cockpit" in projects
+    assert 'label: "delivered"' in projects
     assert 'label: "shippable"' in projects
-    assert 'label: "wasted"' in projects
+    assert 'label: "not delivered"' in projects
+    assert 'label: "cancelled"' in projects
+    assert 'label: "failed"' in projects
+    assert 'label: "non-shippable spend"' in projects
+    assert "summarizeBuildOutcomes(projects)" in projects
+    assert "<Pill tone={outcome.tone}>{outcome.label}</Pill>" in projects
     assert "function ShipCell" in projects
     assert "function DeployInline" in projects
     assert 'apiFetch(`/studio/deploy/plan?${params.toString()}`)' in projects
@@ -404,10 +410,32 @@ def test_projects_does_not_offer_completed_app_actions_for_live_builds() -> None
 
     assert "if (project.is_complete === false)" in projects
     assert 'project.delivery_state === "building" ? "Building" : "Not delivered"' in projects
-    assert "if (project.is_complete === false) return false;" in projects
+    assert "summarizeBuildOutcomes(projects)" in projects
     assert "canServe={p.has_serve !== false}" in projects
     assert "p.is_complete !== false ? (" in projects
     assert "internal .preview excluded" in projects
+
+
+def test_projects_wires_bounded_local_reverify() -> None:
+    projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
+    helper = (SRC / "projectReverify.js").read_text(encoding="utf-8")
+
+    assert "canReverifyLocally(project)" in projects
+    assert 'project.can_reverify === "boolean"' in helper
+    assert 'project.has_manifest === true' in helper
+    assert 'project.is_complete === false' in helper
+    assert '"Reverify locally"' in projects
+    assert "Reverifying locally..." in projects
+    assert "0 SkyN3t model calls" in projects
+    assert (
+        'apiPost(\n        `/projects/${encodeURIComponent(slug)}/reverify`,\n        {},'
+        in projects
+    )
+    assert 'qc.invalidateQueries({ queryKey: ["projects"] })' in projects
+    assert 'qc.invalidateQueries({ queryKey: ["builds"] })' in projects
+    assert "describeLocalReverify(result)" in projects
+    assert "Local reverify failed:" in projects
+    assert "setQueryData" not in projects
 
 
 def test_workspace_surfaces_selected_project_signals() -> None:
@@ -646,6 +674,8 @@ def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None
     assert "{ai.modelSource} · {ai.model}" in studio
     assert 'prompts {ai.promptCount ?? "—"}' in studio
     assert 'stages {ai.stageCount ?? "—"}' in studio
+    assert "const outcome = buildOutcome(b);" in studio
+    assert "<Pill tone={outcome.tone}>{outcome.label}</Pill>" in studio
 
 
 def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:

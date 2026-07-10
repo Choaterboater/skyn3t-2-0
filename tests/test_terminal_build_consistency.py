@@ -67,6 +67,37 @@ class _Memory:
         self.saved.append(fields)
 
 
+@pytest.mark.parametrize(
+    ("status", "verdict", "expected"),
+    [
+        ("cancelled", "", 0.522486),
+        ("failed", "no_go", 0.522486),
+        ("completed_no_go", "no_go", 0.522486),
+        ("completed", "go", None),
+        ("running", "no_go", None),
+    ],
+)
+def test_cost_settlement_persists_only_terminal_non_shippable_spend(
+    status,
+    verdict,
+    expected,
+):
+    tracker = _TerminalCostTracker()
+    tracker.start_build("spend-semantics")
+    runner = object.__new__(StudioRunner)
+    runner.cost_tracker = tracker
+    manifest = BuildManifest(
+        slug="spend-semantics",
+        brief="test spend semantics",
+        status=status,
+        verdict=verdict,
+    )
+
+    runner._settle_build_cost(manifest, "spend-semantics")
+
+    assert manifest.extra.get("non_shippable_spend_usd") == expected
+
+
 async def test_failed_runner_settles_cost_before_all_terminal_persistence(tmp_path):
     settings = Settings(
         _env_file=None,
@@ -109,6 +140,7 @@ async def test_failed_runner_settles_cost_before_all_terminal_persistence(tmp_pa
     assert outcome.cost_usd == disk_manifest.cost_usd == pytest.approx(0.522486)
     assert disk_manifest.extra["build_cost_usd"] == pytest.approx(0.522486)
     assert disk_manifest.extra["wasted_usd"] == pytest.approx(0.522486)
+    assert disk_manifest.extra["non_shippable_spend_usd"] == pytest.approx(0.522486)
     assert costs.closed == 1
 
     persisted = memory.saved[-1]

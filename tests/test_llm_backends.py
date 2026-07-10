@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from skyn3t.adapters import llm as llm_mod
@@ -235,7 +237,298 @@ def test_auto_falls_back_to_stub_without_cli(monkeypatch):
     assert _client("claude_cli").backend == "stub"
 
 
-async def test_cli_failure_degrades_to_stub(monkeypatch):
+def test_cli_availability_cache_refreshes_after_ttl(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"codex": False}, raising=False)
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_cache_checked_at",
+        {"codex": 10.0},
+        raising=False,
+    )
+    monkeypatch.setattr(llm_mod.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(
+        llm_mod.shutil,
+        "which",
+        lambda binary: "/tools/codex" if binary == "codex" else None,
+    )
+
+    assert LLMClient._cli_available("codex") is True
+    assert LLMClient._cli_cache_checked_at["codex"] == 20.0
+
+
+def test_codex_cli_is_a_first_class_backend_with_version_metadata(monkeypatch):
+    calls = []
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(LLMClient, "_cli_version_cache", {}, raising=False)
+    monkeypatch.setattr(
+        llm_mod.shutil,
+        "which",
+        lambda binary: "/tools/codex" if binary == "codex" else None,
+    )
+
+    def _version(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return type("Version", (), {"stdout": "codex-cli 9.9.9\n", "stderr": ""})()
+
+    monkeypatch.setattr(llm_mod.subprocess, "run", _version)
+    status = _client("codex_cli").backend_status()
+
+    assert status["active"] == "codex_cli"
+    assert status["state"] == "ready"
+    assert status["cli_available"]["codex"] is True
+    assert status["cli_details"]["codex"] == {
+        "provider": "codex",
+        "label": "Codex CLI",
+        "backend": "codex_cli",
+        "command": "codex",
+        "available": True,
+        "path": "/tools/codex",
+        "version": "codex-cli 9.9.9",
+        "version_state": "reported",
+        "account_source": "local_cli_session",
+        "account_verified": False,
+        "cost_source": "not_reported_by_cli",
+        "cost_usd_known": False,
+    }
+    assert status["accounting"]["cost_usd_known"] is False
+    assert calls[0][0] == ["/tools/codex", "--version"]
+
+
+def test_explicit_missing_cli_never_falls_back_to_openrouter(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(llm_mod.shutil, "which", lambda _binary: None)
+    status = _client(
+        "codex_cli", openrouter_api_key="sk-or-present", free_only=False
+    ).backend_status()
+
+    assert status["requested"] == "codex_cli"
+    assert status["active"] == "stub"
+    assert status["state"] == "cli_missing"
+    assert "not available on PATH" in status["reason"]
+    assert status["accounting"]["cost_source"] == "offline_stub"
+
+
+def test_unknown_backend_is_stubbed_without_executable_lookup(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+
+    def _unexpected(_binary):
+        raise AssertionError("unknown backend must not trigger a PATH lookup")
+
+    monkeypatch.setattr(llm_mod.shutil, "which", _unexpected)
+    client = _client("arbitrary_cli", openrouter_api_key="sk-or-present", free_only=False)
+    assert client.backend == "stub"
+    # Avoid probing allowlisted status rows; the routing assertion above is the
+    # security contract under test.
+    assert client._cli_available("arbitrary") is False
+
+
+async def test_codex_completion_uses_noninteractive_stdin_without_real_cli(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"codex": True}, raising=False)
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self, stdin):
+            captured["stdin"] = stdin
+            return b'{"ok": true}', b""
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    result = await _client("codex_cli").complete(
+        "inspect this", tier=Tier.CHEAP, system="be concise", json_mode=True
+    )
+
+    assert captured["argv"][:2] == ("codex", "exec")
+    assert "--sandbox" in captured["argv"]
+    assert "read-only" in captured["argv"]
+    assert "--ignore-user-config" in captured["argv"]
+    assert captured["argv"][-1] == "-"
+    assert b"be concise\n\ninspect this" in captured["stdin"]
+    assert result.backend == "codex_cli"
+    assert result.cost_source == "not_reported_by_cli"
+
+
+async def test_codex_agentic_build_uses_workspace_write_jsonl_and_stdin(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    client = _client("codex_cli", codegen_cli_model="gpt-test")
+    monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "codex")
+
+    class _Stdin:
+        def write(self, value):
+            captured["stdin"] = value
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            captured["stdin_closed"] = True
+
+    class _Proc:
+        returncode = 0
+        stdin = _Stdin()
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    async def _fake_consume(proc, provider, idle_timeout):
+        captured["stream"] = (proc, provider, idle_timeout)
+        return True
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(client, "_consume_agentic_stream", _fake_consume)
+    result = await client.agentic_build("build it", str(tmp_path))
+
+    assert captured["argv"][:2] == ("codex", "exec")
+    assert "workspace-write" in captured["argv"]
+    assert "--json" in captured["argv"]
+    assert ("--model", "gpt-test") == (
+        captured["argv"][captured["argv"].index("--model")],
+        captured["argv"][captured["argv"].index("--model") + 1],
+    )
+    assert captured["argv"][-1] == "-"
+    assert captured["stdin"] == b"build it"
+    assert captured["stdin_closed"] is True
+    assert captured["stream"][1] == "codex"
+    assert result["backend"] == "codex_cli"
+    assert result["cost_usd"] is None
+    assert result["cost_source"] == "not_reported_by_cli"
+    assert client.budget.calls[-1].backend == "codex_cli"
+    assert client.budget.calls[-1].cost_source == "not_reported_by_cli"
+
+
+async def test_kimi_completion_uses_documented_print_mode(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"kimi": True}, raising=False)
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"ok": true}', b""
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    result = await _client("kimi_cli").complete("inspect this", tier=Tier.CHEAP)
+
+    assert captured["argv"] == (
+        "kimi",
+        "--print",
+        "--output-format",
+        "text",
+        "--final-message-only",
+        "--prompt",
+        "inspect this",
+    )
+    assert "--strict-mcp-config" not in captured["argv"]
+    assert result.backend == "kimi_cli"
+
+
+async def test_kimi_agentic_build_uses_print_stream_mode(monkeypatch, tmp_path):
+    captured = {}
+    client = _client("kimi_cli", codegen_cli_model="kimi-test")
+    monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "kimi")
+
+    class _Proc:
+        returncode = 0
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    async def _fake_consume(proc, provider, idle_timeout):
+        captured["stream"] = (proc, provider, idle_timeout)
+        return True
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(client, "_consume_agentic_stream", _fake_consume)
+    result = await client.agentic_build("build it", str(tmp_path))
+
+    assert captured["argv"][:4] == ("kimi", "--print", "--prompt", "build it")
+    assert ("--output-format", "stream-json") == (
+        captured["argv"][captured["argv"].index("--output-format")],
+        captured["argv"][captured["argv"].index("--output-format") + 1],
+    )
+    assert ("--model", "kimi-test") == (
+        captured["argv"][captured["argv"].index("--model")],
+        captured["argv"][captured["argv"].index("--model") + 1],
+    )
+    assert "--strict-mcp-config" not in captured["argv"]
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["stream"][1] == "kimi"
+    assert result["ok"] is True
+    assert result["backend"] == "kimi_cli"
+
+
+async def test_copilot_agentic_build_grants_tools_without_all_paths(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    client = _client("copilot_cli", codegen_cli_model="gpt-test")
+    monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "copilot")
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"done", b""
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return _Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    result = await client.agentic_build("build it", str(tmp_path))
+
+    assert captured["argv"][:2] == ("copilot", "-p")
+    assert "--allow-all-tools" in captured["argv"]
+    assert "--no-ask-user" in captured["argv"]
+    assert "--no-auto-update" in captured["argv"]
+    assert "--no-custom-instructions" in captured["argv"]
+    assert "--allow-all-paths" not in captured["argv"]
+    assert "--allow-all-urls" not in captured["argv"]
+    assert ("--model", "gpt-test") == (
+        captured["argv"][captured["argv"].index("--model")],
+        captured["argv"][captured["argv"].index("--model") + 1],
+    )
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert result["ok"] is True
+    assert result["cost_usd"] is None
+
+
+async def test_agentic_cli_spawn_failure_records_unknown_cost(monkeypatch, tmp_path):
+    client = _client("codex_cli")
+    monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "codex")
+
+    async def _boom(*_args, **_kwargs):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _boom)
+    result = await client.agentic_build("build it", str(tmp_path))
+
+    assert result["ok"] is False
+    assert result["backend"] == "codex_cli"
+    assert result["cost_usd"] is None
+    assert result["cost_source"] == "not_reported_by_cli"
+    assert client.budget.calls[-1].backend == "codex_cli"
+    assert client.budget.calls[-1].status == "failed_cli_exception"
+
+
+async def test_cli_spawn_failure_uses_stub_text_but_preserves_unknown_cost(monkeypatch):
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
     monkeypatch.setattr(llm_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
 
@@ -243,8 +536,65 @@ async def test_cli_failure_degrades_to_stub(monkeypatch):
         raise FileNotFoundError("cli missing")
 
     monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _boom)
+    client = _client("claude_cli")
+    result = await client.complete("hello", tier=Tier.CHEAP)
+
+    assert result.backend == "claude_cli"
+    assert result.status == "failed_cli_spawn"
+    assert result.cost_source == "not_reported_by_cli"
+    assert client.budget.calls[-1] is result
+
+
+async def test_cli_nonzero_stdout_is_failure_not_model_output(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"claude": True}, raising=False)
+
+    class _Proc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"authentication failed", b"login required"
+
+    async def _fake_exec(*_args, **_kwargs):
+        return _Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
     result = await _client("claude_cli").complete("hello", tier=Tier.CHEAP)
-    assert result.backend == "stub"  # degraded, never raised
+
+    assert result.backend == "claude_cli"
+    assert result.status == "failed_cli_nonzero"
+    assert result.text != "authentication failed"
+    assert result.cost_source == "not_reported_by_cli"
+
+
+async def test_cancelled_cli_call_records_unknown_account_usage(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"claude": True}, raising=False)
+    entered = asyncio.Event()
+
+    class _Proc:
+        returncode = None
+
+        async def communicate(self):
+            entered.set()
+            await asyncio.Future()
+
+    async def _fake_exec(*_args, **_kwargs):
+        return _Proc()
+
+    async def _fake_terminate(_proc):
+        return None
+
+    client = _client("claude_cli")
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(client, "_terminate", _fake_terminate)
+    task = asyncio.create_task(client.complete("hello", tier=Tier.CHEAP))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert client.budget.calls[-1].backend == "claude_cli"
+    assert client.budget.calls[-1].status == "failed_cli_cancelled"
+    assert client.budget.calls[-1].cost_source == "not_reported_by_cli"
 
 
 async def test_terminate_uses_taskkill_for_windows_process_tree(monkeypatch):

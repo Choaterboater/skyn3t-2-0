@@ -5,8 +5,9 @@ the :class:`ModelRouter`, then dispatches to a backend:
 
 * ``openrouter`` — real HTTP (primary) when ``OPENROUTER_API_KEY`` is set.
 * ``<provider>_cli`` — shells out to a locally-installed CLI (``claude``,
-  ``kimi``, ``copilot``) in headless print mode. Real generation with **no API
-  key** — handy when you already have a coding-agent CLI signed in.
+  ``codex``, ``kimi``, ``copilot``) in headless print mode. Real generation
+  with **no SkyN3t API key** — handy when you already have a coding-agent CLI
+  signed in.
 * ``stub`` — deterministic offline responses so the full pipeline (and the
   test suite) runs with **no keys and no network**. This is what makes
   "brief -> runnable app" demonstrable out of the box.
@@ -30,12 +31,13 @@ import random
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -100,10 +102,30 @@ _VISION_MODEL_MARKERS = ("gpt-4o", "gpt-4.1", "vision", "claude-3", "gemini",
 # generated code. Only project-level settings load; auth still works.
 _CLI_COMMANDS: dict[str, list[str]] = {
     "claude": ["claude", "-p", "--setting-sources", "project"],
-    "kimi": ["kimi", "-p"],
+    "codex": [
+        "codex", "exec", "--ephemeral", "--sandbox", "read-only",
+        "--color", "never", "--skip-git-repo-check",
+    ],
+    "kimi": [
+        "kimi", "--print", "--output-format", "text",
+        "--final-message-only", "--prompt",
+    ],
     "copilot": ["copilot", "-p"],
 }
-_KNOWN_CLI_PROVIDERS = ("claude", "kimi", "copilot")
+KNOWN_CLI_PROVIDERS = ("codex", "claude", "copilot", "kimi")
+SUPPORTED_LLM_BACKENDS = (
+    "auto", "stub", "openrouter",
+    *(f"{provider}_cli" for provider in KNOWN_CLI_PROVIDERS),
+)
+_KNOWN_CLI_PROVIDERS = KNOWN_CLI_PROVIDERS
+_CLI_DISPLAY_NAMES = {
+    "codex": "Codex CLI",
+    "claude": "Claude Code CLI",
+    "copilot": "GitHub Copilot CLI",
+    "kimi": "Kimi Code CLI",
+}
+_CLI_VERSION_ARGS = {provider: ("--version",) for provider in KNOWN_CLI_PROVIDERS}
+_CLI_STATUS_TTL_SECONDS = 5.0
 
 
 def openrouter_key(settings: Settings) -> str:
@@ -348,6 +370,81 @@ def _agentic_project_looks_stub(root: Path, stack: str) -> bool:
         or (surface_files < 3 and entry_bytes < 4000)
     )
 
+
+class RoutingLockError(ValueError):
+    """An explicitly selected LLM route cannot be honored as configured."""
+
+
+def explicit_routing_lock_error(
+    settings: Any,
+    *,
+    cli_available: Callable[[str], bool] | None = None,
+) -> str:
+    """Return the blocking reason for an explicit route, or ``""``.
+
+    ``auto`` deliberately remains degrade-open: with no provider available it
+    may use the offline stub. Explicit selections are locks, however, and must
+    never be silently reinterpreted as a different provider. The CLI probe is
+    injectable so callers and tests can validate policy without running a
+    model command.
+    """
+    requested = str(getattr(settings, "llm_backend", "auto") or "auto").strip().lower()
+    if requested not in SUPPORTED_LLM_BACKENDS:
+        return f"Unsupported LLM backend {requested!r}."
+    if requested == "openrouter" and not openrouter_key(settings):
+        return (
+            "OpenRouter was explicitly selected but "
+            "SKYN3T_OPENROUTER_API_KEY is not configured."
+        )
+
+    probe = cli_available
+
+    def provider_available(provider: str) -> bool:
+        nonlocal probe
+        if probe is None:
+            # Availability is a class-level PATH probe; constructing a complete
+            # LLMClient here would also build a model router and require unrelated
+            # runtime paths. Accept both the production classmethod and tests that
+            # replace it with an instance-style function.
+            def default_probe(name: str) -> bool:
+                raw_probe: Any = LLMClient._cli_available
+                try:
+                    return bool(raw_probe(name))
+                except TypeError:
+                    return bool(raw_probe(LLMClient, name))
+
+            probe = default_probe
+        return probe(provider)
+
+    if requested.endswith("_cli"):
+        provider = requested[:-4]
+        if not provider_available(provider):
+            return f"{provider} CLI was explicitly selected but is not available on PATH."
+
+    codegen_provider = str(
+        getattr(settings, "codegen_cli_provider", "") or ""
+    ).strip().lower()
+    if codegen_provider:
+        if codegen_provider not in KNOWN_CLI_PROVIDERS:
+            return f"Unsupported codegen CLI provider {codegen_provider!r}."
+        if not provider_available(codegen_provider):
+            return (
+                f"codegen_cli_provider={codegen_provider!r} is explicitly selected "
+                "but unavailable; OpenRouter fallback is disabled."
+            )
+    return ""
+
+
+def enforce_explicit_routing_lock(
+    settings: Any,
+    *,
+    cli_available: Callable[[str], bool] | None = None,
+) -> None:
+    """Raise before work begins when an explicit provider route is unusable."""
+    reason = explicit_routing_lock_error(settings, cli_available=cli_available)
+    if reason:
+        raise RoutingLockError(reason)
+
 # Doom-loop breaker (research item 49, opencode's DOOM_LOOP_THRESHOLD=3): three
 # consecutive IDENTICAL tool calls (same name + same arguments) mean the model is
 # stuck, not progressing. One corrective nudge; a second trip aborts the loop.
@@ -428,12 +525,15 @@ _AGENTIC_TOOLS = [
 # marker-only format produced before the sentinel existed.
 # Flags that make each headless CLI ignore the host's ambient MCP servers, so a
 # skyn3t build never boots the user's whole ~/.claude / ~/.copilot MCP fleet
-# (Aruba, context7, playwright, ...) on every codegen call. claude + kimi (a
-# claude-compatible fork): with --strict-mcp-config and no --mcp-config, zero MCP
-# servers load. copilot: --disable-builtin-mcps drops its built-in github MCP.
+# (Aruba, context7, playwright, ...) on every codegen call. Claude supports an
+# explicit strict/empty MCP configuration. Kimi 1.41 exposes additive MCP config
+# flags but no documented disable-all flag, so do not pass an incompatible flag
+# or claim isolation for it. Copilot disables its built-in GitHub MCP.
 _CLI_NO_MCP_ARGS: dict[str, list[str]] = {
     "claude": ["--strict-mcp-config"],
-    "kimi": ["--strict-mcp-config"],
+    # Codex documents that auth still loads with --ignore-user-config. This
+    # avoids loading the operator's MCP/config fleet into an isolated build.
+    "codex": ["--ignore-user-config"],
     "copilot": ["--disable-builtin-mcps"],
 }
 
@@ -1177,17 +1277,91 @@ class LLMClient:
         self._g_routes = list(value)
 
     _cli_cache: dict[str, bool] = {}
+    _cli_cache_checked_at: dict[str, float] = {}
+    _cli_version_cache: dict[str, tuple[str, str]] = {}
 
     @classmethod
     def _cli_available(cls, provider: str) -> bool:
-        if provider not in cls._cli_cache:
-            cls._cli_cache[provider] = shutil.which(provider) is not None
+        provider = str(provider or "").strip().lower()
+        if provider not in _KNOWN_CLI_PROVIDERS:
+            return False
+        checked_at = cls._cli_cache_checked_at.get(provider)
+        expired = (
+            checked_at is not None
+            and time.monotonic() - checked_at >= _CLI_STATUS_TTL_SECONDS
+        )
+        if provider not in cls._cli_cache or expired:
+            previous = cls._cli_cache.get(provider)
+            available = shutil.which(provider) is not None
+            cls._cli_cache[provider] = available
+            cls._cli_cache_checked_at[provider] = time.monotonic()
+            if previous is not None and previous != available:
+                cls._cli_version_cache.pop(provider, None)
         return cls._cli_cache[provider]
+
+    @classmethod
+    def _cli_version(cls, provider: str) -> str:
+        """Return a bounded ``--version`` line without probing model/auth state."""
+        provider = str(provider or "").strip().lower()
+        if not cls._cli_available(provider):
+            return ""
+        path = str(shutil.which(provider) or "")
+        cached = cls._cli_version_cache.get(provider)
+        if cached is not None and cached[0] == path:
+            return cached[1]
+        version = ""
+        try:
+            result = subprocess.run(
+                [path or provider, *_CLI_VERSION_ARGS[provider]],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=3,
+            )
+            raw = result.stdout or result.stderr or ""
+            version = next((line.strip() for line in raw.splitlines() if line.strip()), "")[:160]
+        except (OSError, subprocess.SubprocessError):
+            version = ""
+        cls._cli_version_cache[provider] = (path, version)
+        return version
+
+    @classmethod
+    def clear_cli_status_cache(cls) -> None:
+        """Force the next status read to re-detect installed CLI binaries."""
+        cls._cli_cache.clear()
+        cls._cli_cache_checked_at.clear()
+        cls._cli_version_cache.clear()
+
+    @classmethod
+    def _cli_detail(cls, provider: str) -> dict[str, Any]:
+        provider = str(provider or "").strip().lower()
+        available = cls._cli_available(provider)
+        path = str(shutil.which(provider) or "") if available else ""
+        version = cls._cli_version(provider) if available else ""
+        return {
+            "provider": provider,
+            "label": _CLI_DISPLAY_NAMES.get(provider, provider),
+            "backend": f"{provider}_cli",
+            "command": provider,
+            "available": available,
+            "path": path,
+            "version": version,
+            "version_state": "reported" if version else ("unknown" if available else "missing"),
+            # PATH/version checks do not prove that the CLI is signed in. The
+            # CLI owns authentication and billing outside SkyN3t's API-key and
+            # budget ledgers, so never label these runs provider-confirmed free.
+            "account_source": "local_cli_session",
+            "account_verified": False,
+            "cost_source": "not_reported_by_cli",
+            "cost_usd_known": False,
+        }
 
     @property
     def backend(self) -> str:
         """Resolve the active backend from policy + availability."""
-        pref = (self.settings.llm_backend or "auto").lower()
+        pref = str(self.settings.llm_backend or "auto").strip().lower()
+        if pref not in SUPPORTED_LLM_BACKENDS:
+            return "stub"
         if pref == "stub":
             return "stub"
         if pref == "openrouter":
@@ -1199,7 +1373,7 @@ class LLMClient:
         if openrouter_key(self.settings):
             return "openrouter"
         preferred = (self.settings.cli_llm_provider or "claude").lower()
-        for prov in (preferred, *_KNOWN_CLI_PROVIDERS):
+        for prov in dict.fromkeys((preferred, *_KNOWN_CLI_PROVIDERS)):
             if self._cli_available(prov):
                 return f"{prov}_cli"
         return "stub"
@@ -1212,14 +1386,18 @@ class LLMClient:
         object is the operator-facing truth: it records the requested backend,
         active backend, and why a fallback happened.
         """
-        pref = (self.settings.llm_backend or "auto").lower()
+        pref = str(self.settings.llm_backend or "auto").strip().lower()
         active = self.backend
         openrouter_configured = bool(openrouter_key(self.settings))
         preferred_cli = (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
-        cli_available = {p: self._cli_available(p) for p in _KNOWN_CLI_PROVIDERS}
+        cli_details = {p: self._cli_detail(p) for p in _KNOWN_CLI_PROVIDERS}
+        cli_available = {p: detail["available"] for p, detail in cli_details.items()}
         state = "ready"
         reason = ""
-        if pref == "openrouter" and not openrouter_configured:
+        if pref not in SUPPORTED_LLM_BACKENDS:
+            state = "unsupported_backend"
+            reason = f"Unsupported LLM backend {pref!r}; using the offline stub."
+        elif pref == "openrouter" and not openrouter_configured:
             state = "missing_key"
             reason = "OpenRouter was selected but SKYN3T_OPENROUTER_API_KEY is not configured."
         elif pref.endswith("_cli") and active == "stub":
@@ -1241,10 +1419,10 @@ class LLMClient:
             codegen_backend = f"{codegen_provider}_cli"
             codegen_reason = "codegen_cli_provider overrides the global backend for codegen."
         elif codegen_provider:
-            codegen_backend = active
+            codegen_backend = "stub"
             codegen_reason = (
                 f"codegen_cli_provider={codegen_provider!r} is set but unavailable; "
-                "codegen follows the active backend."
+                "codegen uses the offline scaffold and does not fall back to OpenRouter."
             )
         elif active == "openrouter":
             codegen_backend = "openrouter"
@@ -1252,6 +1430,35 @@ class LLMClient:
         else:
             codegen_backend = active
             codegen_reason = "codegen follows the active backend."
+
+        if active.endswith("_cli"):
+            active_provider = active[:-4]
+            accounting = {
+                key: cli_details[active_provider][key]
+                for key in (
+                    "account_source", "account_verified", "cost_source", "cost_usd_known"
+                )
+            }
+            accounting["note"] = (
+                "The local CLI owns sign-in and billing; SkyN3t does not receive exact "
+                "dollar usage from this backend."
+            )
+        elif active == "openrouter":
+            accounting = {
+                "account_source": "skyn3t_openrouter_api_key",
+                "account_verified": False,
+                "cost_source": "provider_usage_or_catalog_estimate",
+                "cost_usd_known": False,
+                "note": "Per-call cost evidence is recorded from OpenRouter responses when available.",
+            }
+        else:
+            accounting = {
+                "account_source": "offline",
+                "account_verified": True,
+                "cost_source": "offline_stub",
+                "cost_usd_known": True,
+                "note": "The offline stub makes no provider call.",
+            }
 
         return {
             "requested": pref,
@@ -1261,6 +1468,8 @@ class LLMClient:
             "openrouter_configured": openrouter_configured,
             "preferred_cli": preferred_cli,
             "cli_available": cli_available,
+            "cli_details": cli_details,
+            "accounting": accounting,
             "free_only": bool(getattr(self.settings, "free_only", False)),
             "no_claude": bool(getattr(self.settings, "no_claude", False)),
             "codegen": {
@@ -1684,20 +1893,74 @@ class LLMClient:
             return None  # CLI can't fetch remote; don't make the host fetch arbitrary URLs
         return s if os.path.exists(s) else None
 
+    @staticmethod
+    def _cli_attempt_result(
+        provider: str,
+        prompt: str,
+        *,
+        status: str,
+        text: str = "",
+    ) -> LLMResult:
+        return LLMResult(
+            text=text,
+            model=f"{provider}-cli",
+            backend=f"{provider}_cli",
+            prompt_tokens=max(1, len(prompt) // 4),
+            completion_tokens=max(0, len(text) // 4),
+            cost_usd=0.0,
+            cost_source="not_reported_by_cli",
+            status=status,
+        )
+
+    def _record_failed_cli_attempt(
+        self,
+        provider: str,
+        prompt: str,
+        *,
+        status: str,
+    ) -> None:
+        """Persist unknown-cost CLI usage even when no response can be returned."""
+        try:
+            self.budget.record(
+                self._cli_attempt_result(provider, prompt, status=status)
+            )
+        except Exception as exc:  # noqa: BLE001 - accounting must not mask cancellation
+            log.warning(
+                "llm.cli_failure_accounting_failed",
+                provider=provider,
+                error=str(exc)[:120],
+            )
+
+    def _failed_cli_fallback(
+        self,
+        provider: str,
+        prompt: str,
+        system: str | None,
+        json_mode: bool,
+        *,
+        status: str,
+    ) -> LLMResult:
+        fallback = self._stub(f"{provider}-cli", prompt, system, json_mode)
+        return self._cli_attempt_result(
+            provider,
+            prompt,
+            status=status,
+            text=fallback.text,
+        )
+
     async def _cli(self, provider, prompt, system, json_mode, images=None) -> LLMResult:
         """Run a locally-installed coding-agent CLI in headless print mode.
 
         Degrades to the stub backend (never raises) if the CLI fails or times
         out, so a build keeps moving (design rule #6).
         """
-        argv = [*_CLI_COMMANDS.get(provider, [provider, "-p"]),
-                *_no_mcp_args(self.settings, provider)]
         full = prompt if not system else f"{system}\n\n{prompt}"
         # build-from-image: reference the image FILE(S) so the CLI reads them as a
         # visual reference ALONGSIDE the full text context — the same pattern the
         # vision judge (studio/visual_check) uses. A data: URL is written to a
         # temp file first; the image is prepended so it frames the context below.
         temp_images: list[str] = []
+        paths: list[str] = []
         if images:
             paths = [p for p in (self._ensure_image_path(i) for i in images) if p]
             # Only the data:-URL temp files WE created (skyn3t_ref_*) get cleaned
@@ -1709,30 +1972,57 @@ class LLMClient:
                         f"then:\n\n{full}")
         if json_mode:
             full += "\n\nRespond with ONLY valid JSON — no prose, no code fences."
+        argv = [
+            *_CLI_COMMANDS.get(provider, [provider, "-p"]),
+            *_no_mcp_args(self.settings, provider),
+        ]
+        stdin_prompt = provider == "codex"
+        if provider == "codex":
+            for path in paths:
+                argv.extend(("--image", path))
+            # stdin avoids Windows' command-line length ceiling for large
+            # architecture/review prompts. A literal '-' is Codex's documented
+            # noninteractive stdin prompt form.
+            argv.append("-")
+        else:
+            argv.append(full)
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                *argv, full,
+                *argv,
+                stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group -> killable as a tree
             )
+            communicate = (
+                proc.communicate(full.encode("utf-8"))
+                if stdin_prompt
+                else proc.communicate()
+            )
             out, err = await asyncio.wait_for(
-                proc.communicate(), timeout=self.settings.cli_llm_timeout
+                communicate, timeout=self.settings.cli_llm_timeout
             )
         except TimeoutError:
             log.warning("llm.cli_timeout", provider=provider, timeout=self.settings.cli_llm_timeout)
             await self._terminate(proc)  # don't orphan the CLI subprocess
-            return self._stub(f"{provider}-cli", prompt, system, json_mode)
+            return self._failed_cli_fallback(
+                provider, prompt, system, json_mode, status="failed_cli_timeout"
+            )
         except asyncio.CancelledError:
             # An outer stage timeout cancelled us — kill the tree before unwinding
             # so a slow ``claude -p`` can't keep running for 90 minutes orphaned.
             await self._terminate(proc)
+            self._record_failed_cli_attempt(
+                provider, prompt, status="failed_cli_cancelled"
+            )
             raise
         except Exception as exc:  # noqa: BLE001
             log.warning("llm.cli_failed", provider=provider, error=str(exc)[:160])
             await self._terminate(proc)
-            return self._stub(f"{provider}-cli", prompt, system, json_mode)
+            return self._failed_cli_fallback(
+                provider, prompt, system, json_mode, status="failed_cli_spawn"
+            )
         finally:
             # Don't leak the decoded data:-URL reference images into the temp dir.
             for tp in temp_images:
@@ -1742,16 +2032,24 @@ class LLMClient:
                     pass
 
         text = (out or b"").decode("utf-8", "replace").strip()
-        if proc.returncode != 0 and not text:
+        if proc.returncode != 0:
             log.warning("llm.cli_nonzero", provider=provider,
                         err=(err or b"").decode("utf-8", "replace")[:160])
-            return self._stub(f"{provider}-cli", prompt, system, json_mode)
+            return self._failed_cli_fallback(
+                provider, prompt, system, json_mode, status="failed_cli_nonzero"
+            )
+        if not text:
+            log.warning("llm.cli_empty", provider=provider)
+            return self._failed_cli_fallback(
+                provider, prompt, system, json_mode, status="failed_cli_empty"
+            )
         if json_mode:
             text = _strip_code_fences(text)
         approx_p = max(1, len(full) // 4)
         return LLMResult(
             text=text, model=f"{provider}-cli", backend=f"{provider}_cli",
             prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
+            cost_source="not_reported_by_cli", status="cli_response",
         )
 
     async def _openrouter_agentic(
@@ -2610,29 +2908,44 @@ class LLMClient:
         # Stream the agent's NDJSON event log (claude/kimi) so we can detect the
         # terminal `result` event (an accurate success signal — claude -p can
         # exit 0 on a reported error) and watch for a stalled session via an idle
-        # guard instead of always burning the full ceiling. copilot has no such
+        # guard instead of always burning the full ceiling. Codex also emits
+        # JSONL and is validated by its process exit status. Copilot has no such
         # mode, so it keeps the blocking path.
-        stream = provider in ("claude", "kimi")
+        stream = provider in ("claude", "codex", "kimi")
         # claude takes --verbose with stream-json; kimi's stream-json does not.
         stream_args = (["--output-format", "stream-json", "--verbose"] if provider == "claude"
                        else ["--output-format", "stream-json"] if provider == "kimi" else [])
-        # Optional per-call model pin (claude/kimi accept --model); ignored when
+        # Optional per-call model pin for CLIs that expose --model; ignored when
         # no model is given so the CLI's default applies (today's behaviour).
-        model_args = ["--model", model] if (model and provider in ("claude", "kimi")) else []
+        model_args = (
+            ["--model", model]
+            if (model and provider in ("claude", "codex", "copilot", "kimi"))
+            else []
+        )
         # --setting-sources project isolates codegen from the host's Claude Code
         # config (output-style plugins, hooks) so they can't corrupt the build.
         argv = {
             "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
                        "--setting-sources", "project", *model_args, *stream_args, *nm],
-            # kimi-code's -p is non-interactive (rejects -y/--auto/--permission-mode)
-            # and has no --strict-mcp-config. Needs `kimi login` (OAuth) to run.
-            "kimi": ["kimi", "-p", prompt, *model_args, *stream_args],
-            "copilot": ["copilot", "-p", prompt, *nm],
+            "codex": [
+                "codex", "exec", "--ephemeral", "--sandbox", "workspace-write",
+                "--color", "never", "--skip-git-repo-check", "--json",
+                "--cd", workdir, *model_args, *nm, "-",
+            ],
+            # Kimi requires --print for noninteractive and stream-json modes.
+            # It has no documented disable-all ambient-MCP flag in 1.41.
+            "kimi": ["kimi", "--print", "--prompt", prompt, *model_args, *stream_args],
+            "copilot": [
+                "copilot", "-p", prompt, "--allow-all-tools", "--no-ask-user",
+                "--no-auto-update", "--no-custom-instructions", *model_args, *nm,
+            ],
         }.get(provider, [provider, "-p", prompt])
+        stdin_prompt = provider == "codex"
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=workdir,
+                stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group -> killable as a tree
                 # A single stream-json event line (a big tool result, or the final
@@ -2643,6 +2956,10 @@ class LLMClient:
                 # preallocated).
                 limit=_AGENTIC_STREAM_LIMIT,
             )
+            if stdin_prompt and proc.stdin is not None:
+                proc.stdin.write(prompt.encode("utf-8"))
+                await proc.stdin.drain()
+                proc.stdin.close()
             # For streaming CLIs this is an INACTIVITY fallback, not a total
             # duration ceiling. Every stream event proves the agent is alive and
             # resets _consume_agentic_stream's idle wait, so productive full-app
@@ -2670,18 +2987,43 @@ class LLMClient:
             # Outer stage timeout / build cancellation: kill the whole agent tree
             # before unwinding so it can't keep building orphaned for an hour.
             await self._terminate(proc)
+            self._record_failed_cli_attempt(
+                provider, prompt, status="failed_cli_cancelled"
+            )
             raise
         except Exception as exc:  # noqa: BLE001 - never raise into the build
             await self._terminate(proc)
+            self._record_failed_cli_attempt(
+                provider, prompt, status="failed_cli_exception"
+            )
             log.warning("llm.agentic_failed", provider=provider, error=str(exc)[:160])
-            return {"ok": False, "backend": backend, "error": str(exc)[:160]}
+            return {
+                "ok": False,
+                "backend": f"{provider}_cli",
+                "cost_source": "not_reported_by_cli",
+                "cost_usd": None,
+                "error": str(exc)[:160],
+            }
         effective_model = model or f"{provider}-cli"
+        self.budget.record(LLMResult(
+            text="",
+            model=effective_model,
+            backend=f"{provider}_cli",
+            prompt_tokens=max(1, len(prompt) // 4),
+            completion_tokens=0,
+            cost_usd=0.0,
+            cost_source="not_reported_by_cli",
+            status="cli_response" if ok else "failed_cli",
+        ))
         self._record_completion(f"{provider}_cli", "codegen", effective_model)
         return {
             "ok": ok,
             "completed": ok,
             "backend": f"{provider}_cli",
             "model": effective_model,
+            "account_source": "local_cli_session",
+            "cost_source": "not_reported_by_cli",
+            "cost_usd": None,
             "error": "" if ok else "agentic CLI ended without a successful result",
         }
 

@@ -107,6 +107,25 @@ def test_improve_missing_project_fails_cleanly(tmp_path):
         asyncio.run(engine.improve("nope", "x"))
 
 
+def test_improve_rejects_missing_explicit_global_backend_before_work(tmp_path):
+    settings = _settings(tmp_path)
+    settings.llm_backend = "openrouter"
+    settings.openrouter_api_key = ""
+    project = _seed_project(settings.projects_dir, "demo")
+    orchestrator = _FakeOrchestrator()
+    engine = ImproveEngine(EventBus(), orchestrator, settings=settings)
+
+    outcome = asyncio.run(engine.improve("demo", "make it say improved"))
+
+    assert outcome.status == "failed"
+    assert outcome.detail["delivery_blocked"] == "routing_lock"
+    assert outcome.detail["routing_locked"] is True
+    assert outcome.detail["project_preserved"] is True
+    assert "OpenRouter was explicitly selected" in outcome.detail["error"]
+    assert orchestrator.submitted == []
+    assert (project / "main.py").read_text() == "print('original')\n"
+
+
 def test_improve_emits_lifecycle_events(tmp_path):
     settings = _settings(tmp_path)
     _seed_project(settings.projects_dir, "demo")
@@ -277,6 +296,53 @@ def test_improve_failed_improver_preserves_original(tmp_path):
     assert outcome.detail.get("improver_success") is False
     assert "unavailable" in outcome.detail.get("improver_error", "")
     assert outcome.files_changed == []
+
+
+def test_improve_explicit_cli_failure_is_not_delivered_as_a_noop(
+    tmp_path, monkeypatch
+):
+    from skyn3t.adapters.llm import LLMClient
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_available",
+        lambda self, provider: provider == "claude",
+    )
+    settings = _settings(tmp_path)
+    settings.codegen_cli_provider = "claude"
+    settings.codegen_cli_model = "sonnet"
+    settings.improve_agentic = True
+    settings.improve_agentic_timeout = 900
+    project = _seed_project(settings.projects_dir, "demo")
+
+    class _LockedFailureOrchestrator:
+        async def submit(self, _task):
+            return SimpleNamespace(
+                success=False,
+                output={
+                    "files": [],
+                    "routing_locked": True,
+                    "routing_lock_reason": "claude CLI invocation failed",
+                },
+                error="claude CLI invocation failed",
+            )
+
+    from skyn3t.studio import improve as improve_module
+
+    def forbidden_proof(*_args, **_kwargs):
+        raise AssertionError("proof should not run for a failed routing lock")
+
+    monkeypatch.setattr(improve_module, "proof_run", forbidden_proof)
+    engine = ImproveEngine(
+        EventBus(), _LockedFailureOrchestrator(), settings=settings
+    )
+    outcome = asyncio.run(engine.improve("demo", "add a pricing page"))
+
+    assert outcome.status == "failed"
+    assert outcome.detail["delivery_blocked"] == "routing_lock"
+    assert outcome.detail["routing_locked"] is True
+    assert outcome.detail["project_preserved"] is True
+    assert (project / "main.py").read_text() == "print('original')\n"
 
 
 def test_improve_failed_proof_rejects_edit_and_preserves_valid_manifest(

@@ -185,9 +185,12 @@ async def test_cli_backend_ignores_images(monkeypatch):
         raise FileNotFoundError("cli missing")
 
     monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _boom)
-    # CLI with an image must not raise; it degrades to stub like today.
+    # CLI with an image must not raise. The fallback text is offline, while the
+    # backend/cost evidence still records that a CLI account attempt occurred.
     result = await _client("claude_cli").complete("hi", tier=Tier.UI, images=[_DATA_URL])
-    assert result.backend == "stub"
+    assert result.backend == "claude_cli"
+    assert result.status == "failed_cli_spawn"
+    assert result.cost_source == "not_reported_by_cli"
 
 
 async def test_empty_images_list_is_text_only(monkeypatch):

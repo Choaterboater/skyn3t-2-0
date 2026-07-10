@@ -27,6 +27,15 @@ import {
   formatModelOption,
 } from "../modelValue.js";
 import { projectBuildMetadata } from "../projectMetadata.js";
+import { buildOutcome } from "../buildOutcome.js";
+import {
+  BACKEND_OPTIONS,
+  backendOption,
+  backendOptionLabel,
+  cliAccountBillingText,
+  cliBackendStatus,
+  cliProviderStatus,
+} from "../cliBackends.js";
 
 // Fallback rail shown before the first `build.started` arrives. Once a build is
 // live, the rail is driven off the REAL emitted plan (build.started.stages) — so
@@ -404,9 +413,12 @@ function aiCostMeta(build) {
   const quality_scorecard = build.quality_scorecard || {};
   const costTruth = build.cost_truth || quality_scorecard.cost_truth || {};
   const externalAssets = costTruth.external_asset_usage || {};
-  const runCost = numericPricingValue(
-    costTruth.llm_cost_usd ?? build.cost_usd ?? quality_scorecard?.cost_usd
-  );
+  const llmCostKnown = costTruth.llm_cost_known !== false;
+  const runCost = llmCostKnown
+    ? numericPricingValue(
+        costTruth.llm_cost_usd ?? build.cost_usd ?? quality_scorecard?.cost_usd
+      )
+    : null;
   const stageCosts = Array.isArray(trace.stage_costs) && trace.stage_costs.length
     ? trace.stage_costs
     : Array.isArray(build.stage_costs) ? build.stage_costs : [];
@@ -448,7 +460,9 @@ function aiCostMeta(build) {
         ? `up to ${formatUsd(unconfirmedExposure)} unconfirmed timeout exposure`
         : "",
     ].filter(Boolean).join(" · "),
-    stageCostLabel: stageCostCount
+    stageCostLabel: !llmCostKnown
+      ? "unknown"
+      : stageCostCount
       ? `${formatUsd(stageCostTotal)} / ${stageCostCount}`
       : "—",
   };
@@ -554,6 +568,7 @@ export default function Studio({ stream }) {
   const [buildProfile, setBuildProfile] = useState("cheap_learned");
   const [fullApp, setFullApp] = useState(false);
   const [modelOverride, setModelOverride] = useState("");
+  const [foundryBackend, setFoundryBackend] = useState("");
   const [variantSource, setVariantSource] = useState(null);
   const [showRoutingDetails, setShowRoutingDetails] = useState(false);
   const [modelCatalogOpen, setModelCatalogOpen] = useState(false);
@@ -628,8 +643,44 @@ export default function Studio({ stream }) {
     queryFn: queryFn("/llm/secrets"),
     retry: 0,
   });
+  const llmBackends = useQuery({
+    queryKey: ["llm-backends"],
+    queryFn: queryFn("/llm/backends"),
+    retry: 0,
+  });
+  useEffect(() => {
+    if (secrets.data?.backend_pref !== undefined) {
+      setFoundryBackend(secrets.data.backend_pref || "auto");
+    }
+  }, [secrets.data?.backend_pref]);
   const normalizeModelId = (value) => value.replace(/\s+/g, "").trim();
   const routingSecrets = secrets.data || {};
+  const selectedFoundryBackend = foundryBackend || routingSecrets.backend_pref || "auto";
+  const selectedFoundryOption = backendOption(selectedFoundryBackend);
+  const selectedFoundryStatus = cliBackendStatus(
+    llmBackends.data,
+    selectedFoundryBackend,
+  );
+  const selectedFoundryCliUnavailable =
+    selectedFoundryOption?.kind === "cli" && selectedFoundryStatus.available !== true;
+  const openrouterConfigured = Boolean(
+    routingSecrets.providers?.openrouter || routingSecrets.routing?.openrouter_configured
+  );
+  const selectedFoundryOpenRouterMissing =
+    selectedFoundryBackend === "openrouter" && !openrouterConfigured;
+  const codegenCliProvider = String(
+    routingSecrets.codegen_cli_provider || ""
+  ).trim();
+  const codegenCliStatus = cliProviderStatus(
+    llmBackends.data,
+    codegenCliProvider,
+  );
+  const codegenCliUnavailable = Boolean(codegenCliProvider) &&
+    codegenCliStatus.available !== true;
+  const selectedFoundryUnavailable =
+    selectedFoundryCliUnavailable ||
+    selectedFoundryOpenRouterMissing ||
+    codegenCliUnavailable;
   const routingFreeOnly = routingSecrets.free_only !== false;
   const routingModelPins =
     routingSecrets && typeof routingSecrets.model_pins === "object" && routingSecrets.model_pins
@@ -640,6 +691,8 @@ export default function Studio({ stream }) {
       ? variantSource.sourceBuildProfile
       : buildProfile;
   const normalizedModelOverride = normalizeModelId(modelOverride);
+  const activeModelOverride =
+    selectedFoundryOption?.kind === "cli" ? "" : normalizedModelOverride;
   const modelOptions = models.data?.models || [];
   const routingPreview = useQuery({
     queryKey: [
@@ -695,7 +748,7 @@ export default function Studio({ stream }) {
   })();
   const routingLockLines = describeRoutingLocks(
     secrets.data,
-    normalizedModelOverride,
+    activeModelOverride,
     routingTiers,
   );
   const hasRoutingLocks = routingLockLines.length > 0;
@@ -713,7 +766,7 @@ export default function Studio({ stream }) {
     .join(" · ");
   const routingPin = routingPinSummary(
     routingTiers,
-    normalizedModelOverride,
+    activeModelOverride,
     routingPreview.data?.preferred_model
   );
 
@@ -769,6 +822,30 @@ export default function Studio({ stream }) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   };
+
+  const foundryBackendMut = useMutation({
+    mutationFn: (backend) => apiPost("/llm/backend", { backend }),
+    onMutate: (backend) => {
+      const previous = selectedFoundryBackend;
+      setFoundryBackend(backend);
+      return { previous };
+    },
+    onError: (_error, _backend, context) => {
+      setFoundryBackend(context?.previous || routingSecrets.backend_pref || "auto");
+    },
+    onSuccess: (result, backend) => {
+      const requested = result.requested || backend;
+      setFoundryBackend(requested);
+      qc.setQueryData(["llm-secrets"], (old) => ({
+        ...(old || {}),
+        backend_pref: requested,
+        backend: result.active,
+        routing: result.routing || old?.routing,
+      }));
+      void qc.invalidateQueries({ queryKey: ["llm-backends"] });
+      void qc.invalidateQueries({ queryKey: ["routing-preview"] });
+    },
+  });
 
   const submit = useMutation({
     mutationFn: (payload) => apiPost("/builds", payload),
@@ -850,7 +927,7 @@ export default function Studio({ stream }) {
         build_profile: effectiveBuildProfile,
         full_app: fullApp,
       };
-      if (normalizedModelOverride) {
+      if (selectedFoundryOption?.kind !== "cli" && normalizedModelOverride) {
         payload.model_override = normalizedModelOverride;
       }
       if (refImage?.url) {
@@ -906,10 +983,14 @@ export default function Studio({ stream }) {
       ? "Full app contract"
       : BUILD_PROFILES.find((p) => p.id === effectiveBuildProfile)?.label || effectiveBuildProfile;
   const buildIntent = {
+    backend: selectedFoundryOption?.label || selectedFoundryBackend,
     mode: `${effectiveProfileLabel}${
       fullApp ? " · full app" : ""
     }`,
     model: (() => {
+      if (selectedFoundryOption?.kind === "cli") {
+        return `${selectedFoundryOption.label} · provider CLI model selection`;
+      }
       const tiers = routingPreview.data?.tiers;
       const planningRoute = Array.isArray(tiers) && tiers.length > 0
         ? formatRoutingSummary(tiers)
@@ -1024,7 +1105,11 @@ export default function Studio({ stream }) {
               className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (!brief.trim()) return;
+                if (
+                  !brief.trim() ||
+                  foundryBackendMut.isPending ||
+                  selectedFoundryUnavailable
+                ) return;
                 const payload = {
                   brief: brief.trim(),
                   build_profile: effectiveBuildProfile,
@@ -1033,7 +1118,7 @@ export default function Studio({ stream }) {
                 if (variantSource?.stack) {
                   payload.stack = variantSource.stack;
                 }
-                if (normalizedModelOverride) {
+                if (selectedFoundryOption?.kind !== "cli" && normalizedModelOverride) {
                   payload.model_override = normalizedModelOverride;
                 }
                 if (refImage?.url) payload.reference_image = refImage.url;
@@ -1092,6 +1177,8 @@ export default function Studio({ stream }) {
                 type="submit"
                 disabled={
                   submit.isPending ||
+                  foundryBackendMut.isPending ||
+                  selectedFoundryUnavailable ||
                   !brief.trim()
                 }
                 className="btn-ember disabled:opacity-50"
@@ -1107,6 +1194,85 @@ export default function Studio({ stream }) {
 
             <div className="mt-3 border-t border-hairline pt-3">
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                <div className="grid gap-3 border-b border-hairline pb-3 md:col-span-2 md:grid-cols-[minmax(14rem,22rem)_minmax(0,1fr)] md:items-start">
+                  <label className="min-w-0">
+                    <span className="mb-1 block font-mono text-[10px] uppercase text-ash">
+                      Foundry execution backend
+                    </span>
+                    <select
+                      aria-label="Foundry execution backend"
+                      value={selectedFoundryBackend}
+                      onChange={(event) => foundryBackendMut.mutate(event.target.value)}
+                      disabled={foundryBackendMut.isPending}
+                      className="field"
+                    >
+                      {BACKEND_OPTIONS.map((option) => {
+                        const status = cliBackendStatus(llmBackends.data, option.id);
+                        const unavailable = option.kind === "cli" && status.available !== true;
+                        return (
+                          <option
+                            key={option.id}
+                            value={option.id}
+                            disabled={unavailable && selectedFoundryBackend !== option.id}
+                          >
+                            {backendOptionLabel(option, llmBackends.data)}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
+                  <div className="min-w-0 text-[11px] text-ash">
+                    <p>
+                      Persisted globally for all future Foundry runs. Requested{" "}
+                      <span className="font-mono text-bone">{selectedFoundryBackend}</span>; active{" "}
+                      <span className="font-mono text-bone">
+                        {routingSecrets.backend || routingSecrets.routing?.active || "checking"}
+                      </span>.
+                    </p>
+                    {selectedFoundryOption?.kind === "cli" ? (
+                      <>
+                        <p className={`mt-1 ${selectedFoundryStatus.available ? "text-plasma" : "text-ember"}`}>
+                          {selectedFoundryStatus.available
+                            ? `${selectedFoundryOption.label} command available${
+                                selectedFoundryStatus.detail?.path
+                                  ? ` at ${selectedFoundryStatus.detail.path}`
+                                  : ""
+                              }.`
+                            : selectedFoundryStatus.checked
+                              ? `${selectedFoundryOption.label} command not found on PATH. Choose another backend before forging.`
+                              : llmBackends.isError
+                                ? `${selectedFoundryOption.label} availability could not be checked.`
+                                : `${selectedFoundryOption.label} availability is being checked.`}
+                        </p>
+                        <p className="mt-1">{cliAccountBillingText(selectedFoundryBackend)}</p>
+                        <p className="mt-1 text-ash/80">
+                          An explicit CLI does not silently switch to OpenRouter; a missing
+                          command resolves to the offline stub, and Studio blocks the build here.
+                        </p>
+                      </>
+                    ) : null}
+                    {selectedFoundryOpenRouterMissing ? (
+                      <p className="mt-1 text-ember">
+                        OpenRouter is selected but its API key is missing. Choose an
+                        installed CLI, configure the key, or use the offline stub before forging.
+                      </p>
+                    ) : null}
+                    {codegenCliUnavailable ? (
+                      <p className="mt-1 text-ember">
+                        The codegen-only {codegenCliProvider} CLI override is unavailable.
+                        Clear it in Settings or install the command before forging.
+                      </p>
+                    ) : null}
+                    {foundryBackendMut.isPending ? (
+                      <p className="mt-1 font-mono text-plasma">saving backend...</p>
+                    ) : null}
+                    {foundryBackendMut.isError ? (
+                      <ErrorText className="mt-2 max-h-20 text-[11px]">
+                        {String(foundryBackendMut.error?.message || foundryBackendMut.error)}
+                      </ErrorText>
+                    ) : null}
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2 md:col-span-2">
                   {BUILD_PROFILES.map((p) => {
                     const on = buildProfile === p.id;
@@ -1135,9 +1301,18 @@ export default function Studio({ stream }) {
                     aria-label="Manual codegen model override"
                     value={modelOverride}
                     onChange={(e) => setModelOverride(e.target.value)}
-                    placeholder="openrouter model (optional)"
+                    disabled={selectedFoundryOption?.kind === "cli"}
+                    placeholder={
+                      selectedFoundryOption?.kind === "cli"
+                        ? "CLI controls its model"
+                        : "OpenRouter model (optional)"
+                    }
                     className="field"
-                    title="Pin the CodeAgent model; other stages keep profile routing"
+                    title={
+                      selectedFoundryOption?.kind === "cli"
+                        ? "OpenRouter model overrides are not sent while an explicit CLI backend is selected"
+                        : "Pin the CodeAgent model; other stages keep profile routing"
+                    }
                   />
                   <datalist id="studio-models">
                     {manualModelChoices.map((item) => (
@@ -1151,10 +1326,14 @@ export default function Studio({ stream }) {
                   <div className="mt-1 flex items-center justify-between gap-2">
                     <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
                       {normalizedModelOverride
-                        ? unknownModelOverride
+                        ? selectedFoundryOption?.kind === "cli"
+                          ? `OpenRouter override retained but inactive while ${selectedFoundryOption.label} is selected`
+                          : unknownModelOverride
                           ? `Codegen override: ${normalizedModelOverride} (not in cached OpenRouter list)`
                           : `Codegen override: ${normalizedModelOverride} (for this build)`
-                        : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
+                        : selectedFoundryOption?.kind === "cli"
+                          ? `${selectedFoundryOption.label} uses its CLI model selection`
+                          : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
                     </span>
                     {normalizedModelOverride ? (
                       <button
@@ -1288,7 +1467,7 @@ export default function Studio({ stream }) {
                 <div className="flex flex-wrap items-center gap-2 md:justify-end">
                   <label
                     className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
-                    title="Force automatic routing to OpenRouter free models"
+                    title="Limit OpenRouter model routing to zero-price catalog entries; this does not change CLI account billing"
                   >
                     <input
                       type="checkbox"
@@ -1297,7 +1476,9 @@ export default function Studio({ stream }) {
                       onChange={(e) => setFreeOnlyRouting.mutate(e.target.checked)}
                       className="accent-plasma"
                     />
-                    <span className={routingFreeOnly ? "text-plasma" : ""}>Free only</span>
+                    <span className={routingFreeOnly ? "text-plasma" : ""}>
+                      OpenRouter · Free only
+                    </span>
                   </label>
                   <label
                     className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
@@ -1407,7 +1588,11 @@ export default function Studio({ stream }) {
                   type="button"
                   onClick={() => fanoutMut.mutate()}
                   disabled={
-                    fanoutMut.isPending || !brief.trim() || selectedStacks.size < 2
+                    fanoutMut.isPending ||
+                    foundryBackendMut.isPending ||
+                    selectedFoundryUnavailable ||
+                    !brief.trim() ||
+                    selectedStacks.size < 2
                   }
                   className="btn-ghost flex-shrink-0 disabled:opacity-50"
                   title="Build N divergent stack candidates for this brief and pick the winner"
@@ -1447,7 +1632,9 @@ export default function Studio({ stream }) {
                 backend: {routingPreview.data?.backend || "auto"} · profile:
                 {" "}
                 {routingPreview.data?.build_profile || effectiveBuildProfile}
-                {" "}· {routingFreeOnly ? "free only" : "paid allowed"}
+                {" "}· {selectedFoundryOption?.kind === "cli"
+                  ? "CLI account billing"
+                  : `OpenRouter ${routingFreeOnly ? "free only" : "paid allowed"}`}
                 {routingPreview.isError || routingPreview.isLoading ? " · updating" : ""}
               </div>
               {routingCatalogInfo ? (
@@ -1537,6 +1724,7 @@ export default function Studio({ stream }) {
             <SignalGrid
               label="Command deck"
               items={[
+                { label: "backend", value: buildIntent.backend },
                 { label: "mode", value: buildIntent.mode },
                 { label: "model", value: buildIntent.model },
                 { label: "reference", value: buildIntent.reference },
@@ -1723,6 +1911,7 @@ export default function Studio({ stream }) {
                   const fields = rebuildFields(b);
                   const buildKey = b.build_id || b.slug;
                   const active = isActiveBuild(b.status);
+                  const outcome = buildOutcome(b);
                   return (
                     <tr key={buildKey}>
                       <td className="px-4 py-2 font-mono text-xs text-bone">
@@ -1764,7 +1953,13 @@ export default function Studio({ stream }) {
                         </div>
                       </td>
                       <td className="px-4 py-2">
-                        <Pill tone={verdictTone(b.status)}>{b.status}</Pill>
+                        <Pill tone={outcome.tone}>{outcome.label}</Pill>
+                        <div
+                          className="mt-1 max-w-[11rem] font-mono text-[10px] text-ash/70"
+                          title={outcome.title}
+                        >
+                          {outcome.detail}
+                        </div>
                       </td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">
                         {b.score ?? "—"}

@@ -6,6 +6,7 @@ import json
 
 from skyn3t.studio.proof_run import (
     ensure_path_alias_config,
+    ensure_vitest_alias_config,
     repair_react_vite_entrypoint_to_tsx,
     strip_markdown_fences_in_source_files,
     strip_ts_type_in_js,
@@ -135,6 +136,42 @@ def test_alias_maps_src_layout_to_src(tmp_path):
     assert ensure_path_alias_config(tmp_path) == ["jsconfig.json"]
     cfg = json.loads((tmp_path / "jsconfig.json").read_text())
     assert cfg["compilerOptions"]["paths"]["@/*"] == ["./src/*"]
+
+
+def test_vitest_alias_config_is_created_for_aliased_tests(tmp_path):
+    (tmp_path / "src").mkdir()
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "unit.test.ts").write_text(
+        "import { value } from '@/lib/value';\n", encoding="utf-8"
+    )
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"test": "vitest run"},
+        "devDependencies": {"vitest": "^2.1.0"},
+    }), encoding="utf-8")
+
+    assert ensure_vitest_alias_config(tmp_path) == ["vitest.config.mjs"]
+    config = (tmp_path / "vitest.config.mjs").read_text(encoding="utf-8")
+    assert "fileURLToPath(new URL('./src', import.meta.url))" in config
+    assert ensure_vitest_alias_config(tmp_path) == []
+
+
+def test_vitest_alias_config_preserves_existing_vite_config(tmp_path):
+    (tmp_path / "src").mkdir()
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "unit.test.ts").write_text(
+        "import { value } from '@/lib/value';\n", encoding="utf-8"
+    )
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"test": "vitest run"}}), encoding="utf-8"
+    )
+    existing = tmp_path / "vite.config.ts"
+    existing.write_text("export default {};\n", encoding="utf-8")
+
+    assert ensure_vitest_alias_config(tmp_path) == []
+    assert existing.read_text(encoding="utf-8") == "export default {};\n"
+    assert not (tmp_path / "vitest.config.mjs").exists()
 
 
 def test_strip_is_conservative(tmp_path):

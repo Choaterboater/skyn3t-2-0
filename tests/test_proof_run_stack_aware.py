@@ -186,6 +186,69 @@ def test_proof_run_empty_project_always_fails(tmp_path):
     assert res.passed is False
 
 
+def test_proof_fails_when_declared_swift_tests_fail(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "Package.swift").write_text(
+        "// swift-tools-version: 5.9\n"
+        "import PackageDescription\n"
+        "let package = Package(name: \"App\", targets: ["
+        ".executableTarget(name: \"App\"), .testTarget(name: \"AppTests\")])\n",
+        encoding="utf-8",
+    )
+    sources = tmp_path / "Sources" / "App"
+    sources.mkdir(parents=True)
+    (sources / "main.swift").write_text('print("hello")\n', encoding="utf-8")
+    monkeypatch.setattr(
+        proof_mod,
+        "_run_swift_build",
+        lambda *_args, **_kwargs: (True, True, "build passed"),
+    )
+    monkeypatch.setattr(
+        proof_mod,
+        "_run_swift_tests",
+        lambda *_args, **_kwargs: (True, False, "1 test failed"),
+    )
+
+    result = proof_mod.proof_run(
+        tmp_path,
+        stack="swift",
+        execution_backend="inline",
+        run_tests=True,
+        run_build=True,
+    )
+
+    assert result.passed is False
+    assert result.detail["swift_tests"] == "failed"
+    assert "<swift-tests>" in result.missing
+
+
+def test_run_swift_tests_timeout_is_a_gating_failure(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "Package.swift").write_text(
+        "// swift-tools-version: 5.9\n"
+        "import PackageDescription\n"
+        "let package = Package(name: \"App\", targets: ["
+        ".testTarget(name: \"AppTests\")])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(proof_mod.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        proof_mod,
+        "_run_proof_command",
+        lambda *_args, **_kwargs: proof_mod._ProofCommandResult(
+            124, "", "", timed_out=True
+        ),
+    )
+
+    ran, ok, summary = proof_mod._run_swift_tests(tmp_path, 1)
+
+    assert ran is True
+    assert ok is False
+    assert summary == "swift test timed out"
+
+
 def test_proof_run_does_not_claim_sandbox_for_local_checks(tmp_path, monkeypatch):
     """Docker readiness is useful, but mode must describe where proof ran."""
     import skyn3t.studio.proof_run as proof_mod
@@ -398,3 +461,18 @@ def test_proof_command_uses_sandbox_from_inside_running_event_loop(tmp_path):
     assert calls
     assert "OPENAI_API_KEY" not in calls[0]["env"]
     assert calls[0]["env"]["SAFE_FLAG"] == "1"
+
+
+def test_local_proof_command_replaces_invalid_utf8_output(tmp_path):
+    """Build output must not crash reader threads on Windows code pages."""
+    import skyn3t.studio.proof_run as proof_mod
+
+    result = proof_mod._run_proof_command(
+        None,
+        [sys.executable, "-c", "import os; os.write(1, bytes([0x90]))"],
+        cwd=tmp_path,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert "\ufffd" in result.stdout

@@ -1,6 +1,6 @@
 """Headless build CLIs run without the host's ambient MCP servers.
 
-A skyn3t build shells out to `claude -p` / `kimi -p` for codegen. Without
+A skyn3t build can shell out to Codex/Claude/Copilot/Kimi for codegen. Without
 isolation each call boots the user's whole ~/.claude MCP fleet (Aruba,
 context7, playwright, ...) — pure per-build startup tax and a sandboxing
 concern. `cli_disable_mcp` (default True) appends the provider's MCP-off flag.
@@ -18,9 +18,10 @@ def test_disable_mcp_default_on():
 
 def test_no_mcp_args_per_provider_when_enabled():
     s = Settings()  # cli_disable_mcp=True by default
-    # claude + kimi (a claude-compatible fork) ignore all ambient MCP config.
+    # Claude can explicitly ignore ambient MCP config. Kimi 1.41 cannot.
     assert _no_mcp_args(s, "claude") == ["--strict-mcp-config"]
-    assert _no_mcp_args(s, "kimi") == ["--strict-mcp-config"]
+    assert _no_mcp_args(s, "kimi") == []
+    assert _no_mcp_args(s, "codex") == ["--ignore-user-config"]
     # copilot has no --strict-mcp-config; it disables its built-in MCP servers.
     assert _no_mcp_args(s, "copilot") == ["--disable-builtin-mcps"]
     # Unknown providers get nothing (no flag we can vouch for).
@@ -29,7 +30,7 @@ def test_no_mcp_args_per_provider_when_enabled():
 
 def test_no_mcp_args_suppressed_when_disabled():
     s = Settings(cli_disable_mcp=False)
-    for prov in ("claude", "kimi", "copilot"):
+    for prov in ("codex", "claude", "kimi", "copilot"):
         assert _no_mcp_args(s, prov) == []
 
 

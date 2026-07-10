@@ -104,6 +104,7 @@ from skyn3t.worktree import (
     create_worktree,
     list_files,
     merge_back,
+    source_tree_snapshot,
     sync_preview,
 )
 
@@ -375,8 +376,8 @@ class StudioRunner:
         """Model label for persisted codegen diagnostics.
 
         Match CodeAgent routing: an available codegen CLI override owns codegen.
-        When the override is absent or unavailable, report the OpenRouter path's
-        visible model preference instead.
+        An unavailable explicit override is a routing lock that keeps the
+        offline scaffold, so report it directly instead of implying OpenRouter.
         """
         provider = str(
             getattr(self.settings, "codegen_cli_provider", "") or "").strip().lower()
@@ -394,6 +395,7 @@ class StudioRunner:
                     provider=provider,
                     error=str(exc)[:120],
                 )
+            return f"{provider}-cli:unavailable"
         configured = (
             model_override
             or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
@@ -585,8 +587,11 @@ class StudioRunner:
     def _settle_build_cost(self, manifest: BuildManifest, build_id: str) -> dict[str, Any]:
         """Close cost attribution and copy its terminal truth onto the manifest."""
         build_cost = self._obs_call(self.cost_tracker, "end_build", build_id)
-        if not isinstance(build_cost, dict):
-            return {}
+        usage_settled = isinstance(build_cost, dict)
+        if not usage_settled:
+            build_cost = {}
+        else:
+            manifest.extra["llm_usage_settled"] = True
         try:
             settled_cost = max(0.0, float(build_cost.get("cost_usd") or 0.0))
             # Compatibility with custom/legacy trackers that are not idempotent:
@@ -625,8 +630,34 @@ class StudioRunner:
         truncated = build_cost.get("usage_evidence_truncated")
         if isinstance(truncated, int) and truncated > 0:
             manifest.extra["llm_usage_evidence_truncated"] = truncated
+        source_counts = build_cost.get("usage_evidence_source_counts")
+        if isinstance(source_counts, dict):
+            durable_counts: dict[str, int] = {}
+            for raw_source, raw_count in source_counts.items():
+                source = str(raw_source or "unknown")
+                try:
+                    count = max(0, int(raw_count))
+                except (TypeError, ValueError):
+                    continue
+                if count:
+                    durable_counts[source] = count
+            if durable_counts:
+                manifest.extra["llm_usage_source_counts"] = durable_counts
         if manifest.verdict and manifest.verdict != "go":
             manifest.extra["wasted_usd"] = manifest.cost_usd
+        terminal_unshipped = manifest.status in {
+            "cancelled",
+            "completed_no_go",
+            "failed",
+            "interrupted",
+            "rejected",
+        } or (manifest.status == "completed" and manifest.verdict == "no_go")
+        if terminal_unshipped:
+            # Recorded LLM attribution only. ``cost_truth`` separately carries
+            # whether provider evidence is confirmed, estimated, or incomplete.
+            manifest.extra["non_shippable_spend_usd"] = manifest.cost_usd
+        else:
+            manifest.extra.pop("non_shippable_spend_usd", None)
         return build_cost
 
     @staticmethod
@@ -791,18 +822,19 @@ class StudioRunner:
         try:
             from skyn3t.studio.assets import asset_gen_enabled, generate_assets
 
-            asset_settings = self.settings
-            if extra.get("asset_gen") and not asset_gen_enabled(asset_settings):
-                try:
-                    asset_settings = self.settings.model_copy(update={"asset_gen": True})
-                except Exception:  # noqa: BLE001 - fall back to global settings
-                    asset_settings = self.settings
-            manifest.extra["asset_gen_requested"] = bool(
+            asset_requested = bool(
                 extra.get("asset_gen") or getattr(self.settings, "asset_gen", False)
             )
-            if asset_gen_enabled(asset_settings):
+            manifest.extra["asset_gen_requested"] = asset_requested
+            asset_enabled = asset_gen_enabled(self.settings)
+            manifest.extra["asset_gen_enabled"] = asset_enabled
+            if asset_requested and not asset_enabled:
+                manifest.extra["asset_gen_blocked_reason"] = (
+                    "global asset generation is disabled or no Replicate token is configured"
+                )
+            if asset_enabled:
                 result = await generate_assets(
-                    worktree_dir, brief, settings=asset_settings, stack=stack
+                    worktree_dir, brief, settings=self.settings, stack=stack
                 )
                 manifest.extra["assets"] = result
                 assets = result.get("assets") or []
@@ -1873,7 +1905,8 @@ class StudioRunner:
         changed_keys = ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_relinked", "imports_scaffolded", "use_client_added",
                         "source_fences_stripped", "ts_in_js_stripped",
-                        "react_entrypoint_repaired", "phaser_entrypoint_repaired")
+                        "react_entrypoint_repaired", "phaser_entrypoint_repaired",
+                        "vitest_alias_config")
         if any(final_repairs.get(k) for k in changed_keys):
             manifest.files = list_files(project_dir)
             manifest.extra["final_consistency_repairs"] = {
@@ -3757,6 +3790,13 @@ class StudioRunner:
         slug: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> BuildOutcome:
+        # All entrypoints (web, CLI, Cortex, autonomy, and messaging) converge
+        # here. Validate explicit provider locks before stack selection can make
+        # an LLM call or any build ledger is opened. ``auto`` remains allowed to
+        # degrade to the offline stub.
+        from skyn3t.adapters.llm import enforce_explicit_routing_lock
+
+        enforce_explicit_routing_lock(self.settings)
         # Establish identity and budget ownership before stack selection or any
         # other delegated work can spend. Copy the caller's mapping so injecting
         # an id does not mutate a request object that may be reused elsewhere.
@@ -3888,6 +3928,11 @@ class StudioRunner:
         manifest.extra["effective_codegen_model"] = predicted_codegen_model
         manifest.extra["codegen_model"] = predicted_codegen_model
         manifest.extra["llm_backend"] = str(getattr(self.settings, "llm_backend", ""))
+        codegen_cli_provider = str(
+            getattr(self.settings, "codegen_cli_provider", "") or ""
+        ).strip().lower()
+        if codegen_cli_provider:
+            manifest.extra["codegen_cli_provider"] = codegen_cli_provider
         manifest.extra["clarification"] = clar.to_dict()
         manifest.extra["stack_selection"] = {
             "method": choice.method, "stack": choice.stack,
@@ -4159,6 +4204,16 @@ class StudioRunner:
                     verdict = str(result.output.get("verdict", "no_go"))
                     reviewer_gaps = list(result.output.get("gaps") or [])
                     reviewer_ran = True
+                    reviewed_tree = source_tree_snapshot(main_wt.dir)
+                    record.output_summary["source_tree_snapshot_valid"] = bool(
+                        reviewed_tree.get("valid")
+                    )
+                    record.output_summary["source_tree_sha256"] = str(
+                        reviewed_tree.get("sha256") or ""
+                    )
+                    record.output_summary["source_tree_digest_algorithm"] = str(
+                        reviewed_tree.get("algorithm") or ""
+                    )
 
                 manifest.add_stage(record)
                 await self._save_build(manifest)
@@ -4373,12 +4428,6 @@ class StudioRunner:
             final_score = self._honest_score(
                 round(0.6 * reviewer_score + 0.4 * proof.score, 2), proof.passed
             )
-            # Advisory JS/TS tests (run after a green build): a failure dampens
-            # the score but never flips the verdict — surfacing real test
-            # regressions without false-failing a building app on a flaky test.
-            if (getattr(proof, "detail", None) or {}).get("node_tests") == "failed":
-                final_score = round(final_score * 0.85, 2)
-                manifest.extra["node_tests_advisory"] = "failed — score dampened (non-gating)"
             manifest.score = final_score
             # Verdict: the (re-scored) reviewer "go" is necessary but NOT
             # sufficient — the objective proof, non-empty delivery, real
@@ -4779,6 +4828,15 @@ class StudioRunner:
             manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
+            delivered_tree = source_tree_snapshot(project_dir)
+            manifest.extra["delivery_source_tree"] = {
+                "algorithm": delivered_tree.get("algorithm"),
+                "sha256": delivered_tree.get("sha256"),
+                "file_count": delivered_tree.get("file_count"),
+                "byte_count": delivered_tree.get("byte_count"),
+                "valid": delivered_tree.get("valid"),
+                "verdict": verdict,
+            }
 
             # Grade the learning loop by the REAL outcome (a 'go'), not merely
             # "files were written". Crediting every non-empty no_go as helpful is

@@ -9,6 +9,17 @@ from __future__ import annotations
 import math
 from typing import Any
 
+_UNSUCCESSFUL_TERMINAL_STATUSES = frozenset({
+    "cancelled",
+    "completed_no_go",
+    "failed",
+    "interrupted",
+    "rejected",
+})
+_CLI_TRACE_PREFIXES = tuple(
+    f"{provider}-cli:" for provider in ("codex", "claude", "copilot", "kimi")
+)
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -233,22 +244,105 @@ def _compact_external_asset_usage(extra: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact_cost_truth(extra: dict[str, Any]) -> dict[str, Any]:
+def _compact_cost_truth(
+    extra: dict[str, Any],
+    *,
+    status: Any = "",
+    verdict: Any = "",
+) -> dict[str, Any]:
     evidence = [
         item
         for item in _as_list(extra.get("llm_usage_evidence"))
         if isinstance(item, dict)
     ][:256]
-    source_counts: dict[str, int] = {}
+    retained_source_counts: dict[str, int] = {}
     for item in evidence:
         source = str(item.get("cost_source") or "unknown")
-        source_counts[source] = source_counts.get(source, 0) + 1
+        retained_source_counts[source] = retained_source_counts.get(source, 0) + 1
+
+    try:
+        truncated_count = max(0, int(extra.get("llm_usage_evidence_truncated") or 0))
+    except (TypeError, ValueError):
+        truncated_count = 0
+    aggregate_source_counts: dict[str, int] = {}
+    for raw_source, raw_count in _as_dict(
+        extra.get("llm_usage_source_counts")
+    ).items():
+        source = str(raw_source or "unknown")
+        try:
+            count = max(0, int(raw_count))
+        except (TypeError, ValueError):
+            continue
+        if count:
+            aggregate_source_counts[source] = count
+
+    expected_evidence_count = len(evidence) + truncated_count
+    aggregate_complete = bool(aggregate_source_counts) and (
+        sum(aggregate_source_counts.values()) >= expected_evidence_count
+    )
+    source_counts = dict(retained_source_counts)
+    for source, count in aggregate_source_counts.items():
+        source_counts[source] = max(source_counts.get(source, 0), count)
+    provenance_incomplete = truncated_count > 0 and not aggregate_complete
+
+    backend = str(extra.get("llm_backend") or "").strip().lower()
+    codegen_cli_provider = str(
+        extra.get("codegen_cli_provider") or ""
+    ).strip().lower()
+    agentic_backend = str(
+        _as_dict(extra.get("agentic")).get("backend") or ""
+    ).strip().lower()
+    effective_codegen_model = str(
+        extra.get("effective_codegen_model") or extra.get("codegen_model") or ""
+    ).strip().lower()
+    explicit_cli_routing = (
+        backend.endswith("_cli")
+        or bool(codegen_cli_provider)
+        or agentic_backend.endswith("_cli")
+        or effective_codegen_model.startswith(_CLI_TRACE_PREFIXES)
+    )
+    normalized_status = str(status or "").strip().lower()
+    normalized_verdict = str(verdict or "").strip().lower()
+    terminal_unsuccessful = (
+        normalized_status in _UNSUCCESSFUL_TERMINAL_STATUSES
+        or (
+            normalized_status == "completed"
+            and normalized_verdict == "no_go"
+        )
+    )
+    usage_settlement_conclusive = (
+        extra.get("llm_usage_settled") is True
+        or bool(evidence)
+        or bool(aggregate_source_counts)
+        or truncated_count > 0
+    )
+    unsettled_terminal_cli = (
+        terminal_unsuccessful
+        and explicit_cli_routing
+        and not usage_settlement_conclusive
+    )
 
     estimate_count = sum(
         count for source, count in source_counts.items() if "estimate" in source
     )
     confirmed_count = source_counts.get("provider", 0) + source_counts.get("free", 0)
-    if estimate_count and confirmed_count:
+    cli_unknown_count = source_counts.get("not_reported_by_cli", 0)
+    if provenance_incomplete and (estimate_count or confirmed_count):
+        label = "partial LLM cost; truncated evidence source unknown"
+        classification = "partial"
+    elif provenance_incomplete:
+        label = "LLM cost unknown; evidence was truncated"
+        classification = "unknown"
+    elif unsettled_terminal_cli:
+        label = "local CLI cost unknown; terminal usage was not settled"
+        classification = "unknown"
+    elif cli_unknown_count and (estimate_count or confirmed_count):
+        label = "partial LLM cost; local CLI cost unknown"
+        classification = "partial"
+    elif cli_unknown_count:
+        label = "local CLI cost unknown"
+        classification = "unknown"
+    elif estimate_count and confirmed_count:
         label = "mixed provider-confirmed and estimated LLM"
         classification = "mixed"
     elif estimate_count:
@@ -262,20 +356,37 @@ def _compact_cost_truth(extra: dict[str, Any]) -> dict[str, Any]:
         label = "estimated LLM (source unavailable)"
         classification = "estimate"
 
-    llm_cost = _nonnegative_number(extra.get("build_cost_usd"))
+    known_llm_cost = _nonnegative_number(extra.get("build_cost_usd"))
+    llm_cost_known = (
+        cli_unknown_count == 0
+        and not provenance_incomplete
+        and not unsettled_terminal_cli
+    )
     exposure = _nonnegative_number(extra.get("max_unconfirmed_exposure_usd"))
     assets = _compact_external_asset_usage(extra)
     external_unknown = not bool(assets.get("dollar_cost_known"))
     return {
-        "llm_cost_usd": round(llm_cost, 8),
+        "llm_cost_usd": round(known_llm_cost, 8) if llm_cost_known else None,
+        "llm_known_cost_usd": round(known_llm_cost, 8),
+        "llm_cost_known": llm_cost_known,
         "llm_cost_label": label,
         "llm_cost_classification": classification,
         "source_counts": source_counts,
-        "evidence_count": len(evidence),
+        "evidence_count": (
+            sum(aggregate_source_counts.values())
+            if aggregate_complete
+            else len(evidence)
+        ),
+        "evidence_retained_count": len(evidence),
+        "evidence_truncated_count": truncated_count,
+        "evidence_source_counts_complete": not provenance_incomplete,
+        "usage_settlement_conclusive": usage_settlement_conclusive,
         "max_unconfirmed_exposure_usd": round(exposure, 8),
         "external_asset_usage": assets,
-        "combined_total_cost_usd": None if external_unknown else round(llm_cost, 8),
-        "combined_total_known": not external_unknown,
+        "combined_total_cost_usd": (
+            None if external_unknown or not llm_cost_known else round(known_llm_cost, 8)
+        ),
+        "combined_total_known": not external_unknown and llm_cost_known,
     }
 
 
@@ -290,7 +401,11 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     proof_detail = _as_dict(proof.get("detail"))
     responsive_visual = _as_dict(extra.get("responsive_visual_proof"))
     best_of_n = _compact_best_of_n(extra.get("best_of_n"))
-    cost_truth = _compact_cost_truth(extra)
+    cost_truth = _compact_cost_truth(
+        extra,
+        status=manifest.get("status"),
+        verdict=manifest.get("verdict"),
+    )
     model_trace = {
         "profile": extra.get("build_profile", ""),
         "model_override": extra.get("model_override", ""),

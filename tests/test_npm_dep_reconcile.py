@@ -146,6 +146,97 @@ def test_run_node_build_skips_build_when_build_stamp_current(tmp_path, monkeypat
     assert "npm run build skipped" in summary
 
 
+def test_run_node_build_runs_declared_check_after_current_build(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as pr
+    from skyn3t.npm_utils import mark_npm_build_current, mark_npm_install_current
+
+    _node_proj(tmp_path)
+    package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+    package["scripts"]["check"] = "astro check"
+    (tmp_path / "package.json").write_text(json.dumps(package), encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    mark_npm_install_current(tmp_path)
+    mark_npm_build_current(tmp_path, "build")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm")
+    calls = []
+
+    def fake_run(_ctx, command, **_kwargs):
+        calls.append(command)
+        return pr._ProofCommandResult(1, "strict type error", "")
+
+    monkeypatch.setattr(pr, "_run_proof_command", fake_run)
+
+    ran, ok, summary = pr._run_node_build(tmp_path, "astro", 120)
+
+    assert ran is True and ok is False
+    assert calls == [["/usr/bin/npm", "run", "check"]]
+    assert "strict type error" in summary
+
+
+def test_run_node_build_rejects_checker_install_prompt(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as pr
+    from skyn3t.npm_utils import mark_npm_build_current, mark_npm_install_current
+
+    _node_proj(tmp_path)
+    package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+    package["scripts"]["check"] = "astro check"
+    (tmp_path / "package.json").write_text(json.dumps(package), encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    mark_npm_install_current(tmp_path)
+    mark_npm_build_current(tmp_path, "build")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm")
+
+    def fake_run(_ctx, _command, **_kwargs):
+        return pr._ProofCommandResult(
+            0,
+            "Astro requires the following dependency to be installed. Continue?",
+            "",
+        )
+
+    monkeypatch.setattr(pr, "_run_proof_command", fake_run)
+
+    ran, ok, summary = pr._run_node_build(tmp_path, "astro", 120)
+
+    assert ran is True and ok is False
+    assert "requires the following dependency" in summary
+
+
+def test_dependency_stabilization_prevents_second_install_during_build(
+    tmp_path, monkeypatch
+):
+    import skyn3t.studio.proof_run as pr
+
+    _node_proj(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda name: "npm" if name == "npm" else None)
+    commands = []
+
+    def fake_run(_ctx, command, **_kwargs):
+        commands.append(command)
+        if "install" in command:
+            (tmp_path / "node_modules").mkdir(exist_ok=True)
+            (tmp_path / "package-lock.json").write_text(
+                '{"lockfileVersion": 3}', encoding="utf-8"
+            )
+        return pr._ProofCommandResult(0, "ok", "")
+
+    monkeypatch.setattr(pr, "_run_proof_command", fake_run)
+
+    ran, passed, _summary = pr.stabilize_node_dependencies(
+        tmp_path,
+        execution_backend="inline",
+        stack="nextjs",
+        timeout=300,
+    )
+    build_ran, build_passed, _build_summary = pr._run_node_build(
+        tmp_path, "nextjs", 300
+    )
+
+    assert ran is True and passed is True
+    assert build_ran is True and build_passed is True
+    assert sum("install" in command for command in commands) == 1
+    assert any(command[-2:] == ["run", "build"] for command in commands)
+
+
 def test_adds_only_undeclared_bare_imports(tmp_path):
     (tmp_path / "package.json").write_text(
         json.dumps({"name": "x", "dependencies": {"react": "^18.2.0"}}), encoding="utf-8")
@@ -349,10 +440,10 @@ def test_idempotent(tmp_path):
     assert reconcile_npm_deps(tmp_path) == []  # already declared the second time
 
 
-# ---- advisory JS/TS test execution (finding #5) ----------------------------
-def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
+# ---- JS/TS test execution ---------------------------------------------------
+def test_run_node_tests_classification(tmp_path, monkeypatch):
     """_run_node_tests runs only with a real runner + node_modules, and a
-    failure returns (ran=True, passed=False) — advisory, never a proof gate."""
+    failure returns (ran=True, passed=False) for the proof gate to enforce."""
     import subprocess as _sp
 
     import skyn3t.studio.proof_run as pr
@@ -372,12 +463,108 @@ def test_run_node_tests_advisory_classification(tmp_path, monkeypatch):
     ran, ok, _ = pr._run_node_tests(tmp_path, 60)
     assert ran is True and ok is False
 
-    # no recognized runner -> not run (advisory skip, never asserts on the app)
+    # No recognized runner means no suite was executed.
     (tmp_path / "package.json").write_text(json.dumps({
         "name": "x", "scripts": {"test": "echo hi"}, "dependencies": {"react": "^18"},
     }), encoding="utf-8")
     ran, ok, why = pr._run_node_tests(tmp_path, 60)
     assert ran is False
+
+
+def test_run_node_tests_timeout_is_a_gating_failure(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as pr
+
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "package.json").write_text(
+        json.dumps({
+            "name": "x",
+            "scripts": {"test": "vitest run"},
+            "devDependencies": {"vitest": "^1.0.0"},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(shutil, "which", lambda name: "npm" if name == "npm" else None)
+    monkeypatch.setattr(
+        pr,
+        "_run_proof_command",
+        lambda *_args, **_kwargs: pr._ProofCommandResult(
+            124, "", "", timed_out=True
+        ),
+    )
+
+    ran, ok, summary = pr._run_node_tests(tmp_path, 1)
+
+    assert ran is True
+    assert ok is False
+    assert summary == "node tests timed out"
+
+
+@pytest.mark.parametrize(
+    ("command", "dev_dependencies"),
+    [
+        ("node --test", {}),
+        ("playwright test", {"@playwright/test": "^1.50.0"}),
+        ("cypress run", {"cypress": "^14.0.0"}),
+        ("tap", {"tap": "^21.0.0"}),
+        ("uvu test", {"uvu": "^0.5.6"}),
+    ],
+)
+def test_common_node_test_runners_are_declared_and_fail_closed(
+    tmp_path, monkeypatch, command, dev_dependencies
+):
+    import skyn3t.studio.proof_run as pr
+
+    package = {
+        "name": "x",
+        "scripts": {"test": command},
+        "devDependencies": dev_dependencies,
+    }
+    (tmp_path / "package.json").write_text(json.dumps(package), encoding="utf-8")
+    if command != "node --test":
+        (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(shutil, "which", lambda name: "npm" if name == "npm" else None)
+    monkeypatch.setattr(
+        pr,
+        "_run_proof_command",
+        lambda *_args, **_kwargs: pr._ProofCommandResult(1, "declared test failed", ""),
+    )
+
+    assert pr.package_declares_node_tests(package) is True
+    ran, passed, summary = pr._run_node_tests(tmp_path, 30)
+
+    assert ran is True
+    assert passed is False
+    assert "declared test failed" in summary
+
+
+def test_native_node_tests_run_without_node_modules_or_build_script(
+    tmp_path, monkeypatch
+):
+    import skyn3t.studio.proof_run as pr
+
+    _scaffold = tmp_path / "index.html"
+    _scaffold.write_text("<!doctype html><main>native tests</main>", encoding="utf-8")
+    (tmp_path / "package.json").write_text(
+        json.dumps({"scripts": {"test": "node --test"}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(pr, "_run_generated_tests", lambda *_a, **_k: (False, False, ""))
+    monkeypatch.setattr(
+        pr,
+        "_run_node_tests",
+        lambda *_a, **_k: (True, False, "native test failed"),
+    )
+
+    result = pr.proof_run(
+        tmp_path,
+        stack="static",
+        execution_backend="inline",
+        run_tests=True,
+        run_build=False,
+    )
+
+    assert result.passed is False
+    assert result.detail["node_tests"] == "failed"
+    assert "<node-tests>" in result.missing
 
 
 def test_reconcile_normalizes_latest_for_curated_packages(tmp_path):
@@ -399,3 +586,25 @@ def test_reconcile_normalizes_latest_for_curated_packages(tmp_path):
     assert deps["yup"] != "latest" and deps["yup"].startswith("^1")
     assert deps["react-hook-form"] == "7.51.3"
     assert deps["some-rare-pkg"] == "latest"
+
+
+def test_sanitize_normalizes_placeholder_npm_versions(tmp_path):
+    """Generated 0.0.0 ranges must not survive as nonexistent registry pins."""
+    from skyn3t.studio.proof_run import sanitize_package_json_deps
+
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "x",
+        "dependencies": {
+            "react": "0.0.0",
+            "@tailwindcss/vite": "^0.0.0",
+            "astro": "^4.16.0",
+        },
+    }), encoding="utf-8")
+
+    changed = sanitize_package_json_deps(tmp_path)
+    deps = json.load(open(tmp_path / "package.json"))["dependencies"]
+
+    assert changed == ["@tailwindcss/vite", "react"]
+    assert deps["react"] == "^18.2.0"
+    assert deps["@tailwindcss/vite"] == "latest"
+    assert deps["astro"] == "^4.16.0"

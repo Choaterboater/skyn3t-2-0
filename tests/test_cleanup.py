@@ -49,6 +49,30 @@ def test_scan_buckets(tmp_path):
     assert [i.path.name for i in report.orphaned_worktrees] == ["loose-abcd1234"]
 
 
+def test_scan_reads_utf8_manifest_on_windows(tmp_path):
+    projects = tmp_path / "Projects"
+    projects.mkdir()
+    project = projects / "golf"
+    project.mkdir()
+    (project / "main.py").write_text("print('golf')\n", encoding="utf-8")
+    (project / "skyn3t_manifest.json").write_text(
+        json.dumps(
+            {
+                "slug": "golf",
+                "brief": "Adult beginner golf - caf\u00e9 practice \U0001f3cc",
+                "status": "failed",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = scan(projects, tmp_path / "wt", known_worktrees=())
+
+    assert [item.path.name for item in report.failed] == ["golf"]
+    assert report.orphaned_projects == []
+
+
 def test_apply_dry_run_moves_nothing(tmp_path):
     projects = tmp_path / "Projects"
     projects.mkdir()

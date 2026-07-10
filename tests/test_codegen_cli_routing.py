@@ -4,9 +4,6 @@ whole-app build on that CLI (e.g. claude) even when the global backend is cheap
 from __future__ import annotations
 
 import pathlib
-import shutil
-
-import pytest
 
 from skyn3t.adapters.llm import _CLI_COMMANDS, LLMClient
 from skyn3t.agents.code_agent import CodeAgent
@@ -46,7 +43,6 @@ def test_codegen_cli_model_setting_default_empty():
     assert Settings().codegen_cli_model == ""
 
 
-@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not installed")
 async def test_codegen_cli_model_threaded_to_agentic_build(tmp_path, monkeypatch):
     # A configured codegen_cli_model (e.g. "sonnet") must reach the agentic
     # `--model` flag on the SAME call that routes codegen to codegen_cli_provider —
@@ -58,6 +54,9 @@ async def test_codegen_cli_model_threaded_to_agentic_build(tmp_path, monkeypatch
         bus = EventBus()
         agent = CodeAgent(event_bus=bus)
         await agent.start()
+        monkeypatch.setattr(
+            agent.llm, "_cli_available", lambda provider: provider == "claude"
+        )
         captured = {}
 
         async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
@@ -164,7 +163,7 @@ async def test_slice_codegen_cli_provider_uses_codegen_model_not_model_override(
     assert captured.get("stack") == "react_vite"
 
 
-async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp_path, monkeypatch):
+async def test_unavailable_codegen_cli_override_uses_stub_not_openrouter(tmp_path, monkeypatch):
     settings = Settings(
         llm_backend="openrouter",
         openrouter_api_key="x",
@@ -193,9 +192,11 @@ async def test_unavailable_codegen_cli_override_falls_back_to_active_backend(tmp
         capabilities_required=("codegen",),
     )
     result = await agent.run(task)
-    assert "provider" not in captured
+    assert captured == {}
     assert "codegen_override_unavailable" not in agent.metadata
     assert result.output["codegen_override_unavailable"] == "claude"
+    assert result.output["backend"] == "stub"
+    assert "without an OpenRouter fallback" in result.output["codegen_override_reason"]
 
 
 async def test_unavailable_codegen_cli_override_reported_in_monolithic_completion_output(
@@ -214,6 +215,7 @@ async def test_unavailable_codegen_cli_override_reported_in_monolithic_completio
     bus = EventBus()
     agent = CodeAgent(event_bus=bus, llm=llm)
     await agent.start()
+    generated = False
 
     async def fake_generate_file(
         rel_path,
@@ -225,6 +227,8 @@ async def test_unavailable_codegen_cli_override_reported_in_monolithic_completio
         manifest="",
         design=None,
     ):
+        nonlocal generated
+        generated = True
         return "export default function App(){ return null }\n"
 
     monkeypatch.setattr(agent, "_generate_file", fake_generate_file)
@@ -242,6 +246,8 @@ async def test_unavailable_codegen_cli_override_reported_in_monolithic_completio
     result = await agent.run(task)
     assert "codegen_override_unavailable" not in agent.metadata
     assert result.output["codegen_override_unavailable"] == "claude"
+    assert result.output["backend"] == "stub"
+    assert generated is False
 
 
 async def test_unavailable_codegen_cli_override_reported_in_slice_completion_output(
@@ -260,6 +266,7 @@ async def test_unavailable_codegen_cli_override_reported_in_slice_completion_out
     bus = EventBus()
     agent = CodeAgent(event_bus=bus, llm=llm)
     await agent.start()
+    generated = False
 
     async def fake_generate_file(
         rel_path,
@@ -271,6 +278,8 @@ async def test_unavailable_codegen_cli_override_reported_in_slice_completion_out
         manifest="",
         design=None,
     ):
+        nonlocal generated
+        generated = True
         return "export default function Widget(){ return null }\n"
 
     monkeypatch.setattr(agent, "_generate_file", fake_generate_file)
@@ -293,6 +302,8 @@ async def test_unavailable_codegen_cli_override_reported_in_slice_completion_out
     result = await agent.run(task)
     assert "codegen_override_unavailable" not in agent.metadata
     assert result.output["codegen_override_unavailable"] == "claude"
+    assert result.output["backend"] == "stub"
+    assert generated is False
 
 
 async def test_codegen_override_unavailable_metadata_cleared_between_runs(tmp_path):

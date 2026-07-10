@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import gzip
 import hashlib
+import io
 import os
 import re
+import tarfile
 import tomllib
 from pathlib import Path
 
@@ -33,16 +37,69 @@ def validate_release_tag(tag: str, version: str | None = None) -> str:
     return expected
 
 
-def normalize_gzip_mtime(path: Path, epoch: int) -> None:
-    """Set the gzip header timestamp without changing the compressed payload."""
+def _validate_epoch(epoch: int) -> None:
     if isinstance(epoch, bool) or not isinstance(epoch, int) or not 0 <= epoch <= 0xFFFFFFFF:
         raise ValueError("SOURCE_DATE_EPOCH must fit the gzip 32-bit timestamp field")
+
+
+def normalize_gzip_mtime(path: Path, epoch: int) -> None:
+    """Set the gzip header timestamp without changing the compressed payload."""
+    _validate_epoch(epoch)
     payload = bytearray(path.read_bytes())
     if len(payload) < 18 or payload[:3] != b"\x1f\x8b\x08":
         raise ValueError(f"not a gzip archive: {path}")
     payload[4:8] = epoch.to_bytes(4, "little")
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     temporary.write_bytes(payload)
+    os.replace(temporary, path)
+
+
+def normalize_sdist_archive(path: Path, epoch: int) -> None:
+    """Repack a source distribution with deterministic tar and gzip metadata."""
+    _validate_epoch(epoch)
+    records: list[tuple[tarfile.TarInfo, bytes | None]] = []
+    try:
+        with tarfile.open(path, mode="r:gz") as source:
+            for member in sorted(
+                source.getmembers(), key=lambda item: (item.name, item.type, item.linkname)
+            ):
+                info = copy.copy(member)
+                data: bytes | None = None
+                if member.isfile():
+                    extracted = source.extractfile(member)
+                    if extracted is None:
+                        raise ValueError(f"could not read sdist member: {member.name}")
+                    data = extracted.read()
+                    info.size = len(data)
+                info.mtime = epoch
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                info.devmajor = 0
+                info.devminor = 0
+                info.pax_headers = {}
+                records.append((info, data))
+    except (OSError, tarfile.TarError) as exc:
+        raise ValueError(f"not a readable source tar archive: {path}") from exc
+
+    tar_payload = io.BytesIO()
+    with tarfile.open(fileobj=tar_payload, mode="w", format=tarfile.PAX_FORMAT) as target:
+        for info, data in records:
+            target.addfile(info, io.BytesIO(data) if data is not None else None)
+
+    compressed = io.BytesIO()
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        compresslevel=9,
+        fileobj=compressed,
+        mtime=epoch,
+    ) as target_gzip:
+        target_gzip.write(tar_payload.getvalue())
+
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_bytes(compressed.getvalue())
     os.replace(temporary, path)
 
 
@@ -75,8 +132,8 @@ def verify_reproducible(primary: Path, comparison: Path, *, epoch: int) -> list[
         )
     for name in sorted(left):
         if name.endswith(".tar.gz"):
-            normalize_gzip_mtime(left[name], epoch)
-            normalize_gzip_mtime(right[name], epoch)
+            normalize_sdist_archive(left[name], epoch)
+            normalize_sdist_archive(right[name], epoch)
         left_bytes = left[name].read_bytes()
         right_bytes = right[name].read_bytes()
         if left_bytes != right_bytes:

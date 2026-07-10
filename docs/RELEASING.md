@@ -3,7 +3,8 @@
 Releases are built from version tags by `.github/workflows/release.yml`. The
 workflow tests the repository, rebuilds the committed dashboard, builds the
 wheel and source distribution twice, and requires byte-identical output after
-normalizing the source archive's gzip timestamp to the commit epoch.
+normalizing source-archive member order, timestamps, ownership metadata, and
+gzip header to the commit epoch.
 
 ## Prepare a release
 

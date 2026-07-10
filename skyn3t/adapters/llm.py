@@ -27,6 +27,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import signal
 import sys
@@ -587,6 +588,37 @@ _PATH_CHURN_NUDGE = (
     "files in batches, then read and revisit this path once only if final wiring truly "
     "requires it. Call finish when the planned app is complete."
 )
+
+# A model can evade same-path detection by inventing a new filename for the same
+# redundant install/build wrapper on every turn. This guard is plan-aware and
+# resets whenever an approved file appears, so it does not cap app size or useful
+# exploratory work. It only acts on a sustained family of unplanned helper scripts
+# while approved architecture files are still missing.
+_AUXILIARY_CHURN_THRESHOLD = 6
+_AUXILIARY_SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".cjs", ".js", ".mjs", ".ps1", ".sh"})
+_AUXILIARY_SCRIPT_TOKENS = frozenset(
+    {"boot", "build", "ci", "dev", "install", "run", "setup", "start", "test", "verify"}
+)
+_AUXILIARY_CHURN_NUDGE = (
+    "You are creating many redundant unplanned install/build wrapper scripts while "
+    "approved architecture files are still missing. STOP inventing helper variants. "
+    "Preserve the current app, use write_files to create the missing planned files "
+    "directly, and call finish only after they are wired."
+)
+
+
+def _agentic_auxiliary_family(path: str) -> str:
+    """Classify path-variant build wrappers without matching normal app files."""
+    normalized = str(path or "").replace("\\", "/").strip().lower().strip("/")
+    if not normalized:
+        return ""
+    candidate = Path(normalized)
+    if candidate.suffix not in _AUXILIARY_SCRIPT_SUFFIXES:
+        return ""
+    if "/" in normalized and not normalized.startswith("scripts/"):
+        return ""
+    tokens = {token for token in re.split(r"[^a-z0-9]+", candidate.stem) if token}
+    return "build_helper" if tokens & _AUXILIARY_SCRIPT_TOKENS else ""
 
 
 @contextmanager
@@ -1430,6 +1462,7 @@ class LLMClient:
         timeout: int | None = None,
         stack: str = "",
         allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
+        planned_paths: list[str] | tuple[str, ...] | set[str] | None = None,
         enforce_antistub: bool = True,
         verify_on_stop: bool | None = None,
     ) -> dict:
@@ -1458,6 +1491,16 @@ class LLMClient:
 
         def _owned(path: Path) -> bool:
             return allowed is None or os.path.normcase(str(path)) in allowed
+
+        planned: set[str] = set()
+        if planned_paths is not None:
+            for raw in planned_paths:
+                target = _safe(str(raw))
+                if target is not None and target != root:
+                    planned.add(os.path.normcase(str(target)))
+
+        def _planned_missing_count() -> int:
+            return sum(1 for raw in planned if not Path(raw).is_file())
 
         def _run_tool(name: str, args: dict) -> tuple[str, int]:
             """Run one tool and return ``(message, changed_file_count)``.
@@ -1612,6 +1655,9 @@ class LLMClient:
         doom_warned = False
         changed_path_window: list[str] = []
         churn_warned_paths: set[str] = set()
+        auxiliary_churn_paths: set[str] = set()
+        auxiliary_churn_warned = False
+        planned_missing_count = _planned_missing_count()
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
         # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
@@ -1721,6 +1767,25 @@ class LLMClient:
                                     changed_path_window = changed_path_window[
                                         -_PATH_CHURN_WINDOW:
                                     ]
+                                    current_missing = _planned_missing_count()
+                                    if current_missing < planned_missing_count:
+                                        # A real architecture file landed: this is
+                                        # productive exploration, not sustained churn.
+                                        auxiliary_churn_paths.clear()
+                                        auxiliary_churn_warned = False
+                                    planned_missing_count = current_missing
+                                    for changed_path in changed_paths:
+                                        target = _safe(changed_path)
+                                        target_key = (
+                                            os.path.normcase(str(target)) if target is not None else ""
+                                        )
+                                        normalized = changed_path.replace("\\", "/").strip().lower()
+                                        if (
+                                            target_key
+                                            and target_key not in planned
+                                            and _agentic_auxiliary_family(normalized)
+                                        ):
+                                            auxiliary_churn_paths.add(normalized)
                                     # Live per-file progress so a tailed build log shows
                                     # codegen advancing (the agentic phase was silent).
                                     log.info("llm.agentic_wrote",
@@ -1787,6 +1852,38 @@ class LLMClient:
                                 wrote=wrote,
                             )
                             continue
+                    if (
+                        not finished
+                        and planned_missing_count > 0
+                        and len(auxiliary_churn_paths) >= _AUXILIARY_CHURN_THRESHOLD
+                    ):
+                        churn_count = len(auxiliary_churn_paths)
+                        examples = sorted(auxiliary_churn_paths)[:4]
+                        auxiliary_churn_paths.clear()
+                        if auxiliary_churn_warned:
+                            log.warning(
+                                "llm.or_agentic_auxiliary_churn_abort",
+                                count=churn_count,
+                                examples=examples,
+                                missing_planned=planned_missing_count,
+                                wrote=wrote,
+                                turns=turn,
+                            )
+                            loop_error = (
+                                "agentic aborted after continued unplanned build-helper "
+                                "path churn despite corrective feedback"
+                            )
+                            break
+                        auxiliary_churn_warned = True
+                        messages.append({"role": "user", "content": _AUXILIARY_CHURN_NUDGE})
+                        log.info(
+                            "llm.or_agentic_auxiliary_churn_nudge",
+                            count=churn_count,
+                            examples=examples,
+                            missing_planned=planned_missing_count,
+                            wrote=wrote,
+                        )
+                        continue
                     if finished:
                         # Refuse a thin result: push the model to build the real UI instead
                         # of stopping at data/config scaffolding (cheap models do this).
@@ -1846,6 +1943,7 @@ class LLMClient:
         provider: str | None = None,
         stack: str = "",
         allowed_paths: list[str] | tuple[str, ...] | set[str] | None = None,
+        planned_paths: list[str] | tuple[str, ...] | set[str] | None = None,
         enforce_antistub: bool = True,
         verify_on_stop: bool | None = None,
     ) -> dict:
@@ -1885,6 +1983,7 @@ class LLMClient:
                     timeout=timeout,
                     stack=stack,
                     allowed_paths=allowed_paths,
+                    planned_paths=planned_paths,
                     enforce_antistub=enforce_antistub,
                     verify_on_stop=verify_on_stop,
                 )

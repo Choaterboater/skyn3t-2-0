@@ -168,6 +168,78 @@ def test_changed_path_churn_aborts_second_dominant_window_and_preserves_work(
     assert all((tmp_path / f"src/page-{i}.js").is_file() for i in range(16))
 
 
+def _auxiliary_churn_turns(offset: int = 0):
+    names = [
+        "install.sh",
+        "build.sh",
+        "scripts/setup.sh",
+        "scripts/run.mjs",
+        "verify-and-build.mjs",
+        "scripts/try-install.mjs",
+    ]
+    return [
+        _tool_turn(
+            "write_file",
+            {"path": name.replace(".sh", f"-{offset}.sh") if offset else name,
+             "content": f"echo helper-{offset}-{index}\n"},
+            f"aux-{offset}-{index}",
+        )
+        for index, name in enumerate(names)
+    ]
+
+
+def test_unplanned_helper_path_variants_nudge_then_abort(tmp_path, monkeypatch):
+    turns = _auxiliary_churn_turns() + _auxiliary_churn_turns(offset=2)
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(
+        _client()._openrouter_agentic(
+            "build",
+            str(tmp_path),
+            "m",
+            stack="astro",
+            planned_paths=["src/App.astro"],
+            enforce_antistub=False,
+        )
+    )
+
+    assert fake.i == 12
+    assert res["ok"] is False
+    assert "build-helper path churn" in res["error"]
+    assert any("wrapper scripts" in text for text in _user_texts(fake.bodies))
+
+
+def test_planned_file_progress_resets_helper_family_guard(tmp_path, monkeypatch):
+    turns = [
+        *_auxiliary_churn_turns(),
+        _tool_turn(
+            "write_file",
+            {"path": "src/App.astro", "content": "<main>complete application</main>\n"},
+            "planned",
+        ),
+        *_auxiliary_churn_turns(offset=3),
+        _tool_turn("finish", {}, "finish"),
+    ]
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(
+        _client()._openrouter_agentic(
+            "build",
+            str(tmp_path),
+            "m",
+            stack="astro",
+            planned_paths=["src/App.astro"],
+            enforce_antistub=False,
+        )
+    )
+
+    assert res["ok"] is True
+    assert (tmp_path / "src/App.astro").is_file()
+    assert len([text for text in _user_texts(fake.bodies) if "wrapper scripts" in text]) == 1
+
+
 # ---------------------------------------------------------------------------
 # Verify-on-stop (item 19, degrade-open)
 # ---------------------------------------------------------------------------

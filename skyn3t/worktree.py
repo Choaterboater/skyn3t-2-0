@@ -13,11 +13,14 @@ Either way the public API is identical. Import has zero side effects.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
 import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # Files/dirs never copied back into a delivered project.
 _IGNORE_NAMES = frozenset(
@@ -35,6 +38,29 @@ _IGNORE_NAMES = frozenset(
         ".skyn3t-swift-module-cache",
     }
 )
+
+# Canonical authored-source view used when binding a verdict to a project tree.
+# These names are excluded at any depth, not only at the project root.
+SOURCE_TREE_EXCLUDED_DIR_NAMES = frozenset(
+    name.casefold()
+    for name in {
+        *_IGNORE_NAMES,
+        ".astro",
+        ".next",
+        ".nuxt",
+        ".preview",
+        ".skyn3t-recovery",
+        ".svelte-kit",
+        ".turbo",
+        ".vite",
+        "build",
+        "coverage",
+        "dist",
+        "out",
+    }
+)
+SOURCE_TREE_DIGEST_ALGORITHM = "source-tree-sha256-v1"
+_SOURCE_TREE_EXCLUDED_FILES = frozenset({"skyn3t_manifest.json"})
 
 
 @dataclass(slots=True)
@@ -187,6 +213,116 @@ def list_files(worktree_dir: str | Path) -> list[str]:
     if not src.exists():
         return []
     return [f.relative_to(src).as_posix() for f in _iter_files(src)]
+
+
+def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
+    """Return a deterministic, generated-output-free source tree snapshot.
+
+    Directory names are filtered at every depth and traversal never follows
+    symlinks or Windows junctions. A case-folded path collision or unreadable
+    file is recorded so callers can refuse to bind a delivery verdict to an
+    ambiguous tree.
+    """
+    root = Path(worktree_dir).resolve()
+    files: list[tuple[str, Path]] = []
+    excluded_entries = 0
+    unreadable: list[str] = []
+    unsafe_aliases: list[str] = []
+    collisions: list[list[str]] = []
+    seen_casefolded: dict[str, str] = {}
+    if not root.is_dir():
+        return {
+            "algorithm": SOURCE_TREE_DIGEST_ALGORITHM,
+            "sha256": "",
+            "files": [],
+            "file_count": 0,
+            "byte_count": 0,
+            "excluded_entries": 0,
+            "path_collisions": [],
+            "unreadable_files": [],
+            "unsafe_aliases": [],
+            "valid": False,
+        }
+
+    def record_walk_error(error: OSError) -> None:
+        unreadable.append(f"<directory:{getattr(error, 'filename', '') or 'unknown'}>")
+
+    for current, dirnames, filenames in os.walk(
+        root,
+        topdown=True,
+        onerror=record_walk_error,
+        followlinks=False,
+    ):
+        current_path = Path(current)
+        kept_dirs: list[str] = []
+        for dirname in dirnames:
+            candidate = current_path / dirname
+            is_alias = candidate.is_symlink() or bool(
+                getattr(os.path, "isjunction", lambda _path: False)(candidate)
+            )
+            if dirname.casefold() in SOURCE_TREE_EXCLUDED_DIR_NAMES or is_alias:
+                excluded_entries += 1
+                if is_alias:
+                    unsafe_aliases.append(
+                        candidate.relative_to(root).as_posix()
+                    )
+            else:
+                kept_dirs.append(dirname)
+        dirnames[:] = kept_dirs
+
+        for filename in filenames:
+            path = current_path / filename
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                excluded_entries += 1
+                continue
+            is_alias = path.is_symlink()
+            if filename.casefold() in _SOURCE_TREE_EXCLUDED_FILES or is_alias:
+                excluded_entries += 1
+                if is_alias:
+                    unsafe_aliases.append(relative)
+                continue
+            folded = relative.casefold()
+            previous = seen_casefolded.get(folded)
+            if previous is not None and previous != relative:
+                collisions.append([previous, relative])
+                continue
+            seen_casefolded[folded] = relative
+            files.append((relative, path))
+
+    files.sort(key=lambda item: (item[0].casefold(), item[0]))
+    digest = hashlib.sha256()
+    digest.update(f"{SOURCE_TREE_DIGEST_ALGORITHM}\0".encode())
+    total_bytes = 0
+    included: list[str] = []
+    for relative, path in files:
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            with path.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    total_bytes += len(chunk)
+                    digest.update(chunk)
+        except OSError:
+            unreadable.append(relative)
+            continue
+        digest.update(b"\0")
+        included.append(relative)
+
+    valid = not collisions and not unreadable and not unsafe_aliases
+    return {
+        "algorithm": SOURCE_TREE_DIGEST_ALGORITHM,
+        "sha256": digest.hexdigest() if valid else "",
+        "files": included,
+        "file_count": len(included),
+        "byte_count": total_bytes,
+        "excluded_entries": excluded_entries,
+        "path_collisions": collisions,
+        "unreadable_files": unreadable,
+        "unsafe_aliases": unsafe_aliases,
+        "valid": valid,
+    }
 
 
 # Subdirectory under a delivered project that holds the live, read-only preview

@@ -50,6 +50,7 @@ async def test_monolithic_agentic_retries_restore_contract_between_attempts(
 ):
     contract, expected = _seed_contract(tmp_path)
     llm = LLMClient(Settings(llm_backend="claude_cli", agentic_retries=1))
+    monkeypatch.setattr(llm, "_cli_available", lambda provider: provider == "claude")
     agent = CodeAgent(event_bus=EventBus(), llm=llm)
     await agent.start()
     calls = {"n": 0}
@@ -110,6 +111,7 @@ async def test_completion_batch_cannot_delete_preexisting_contract(tmp_path, mon
 async def test_agentic_slice_cannot_weaken_seeded_contract(tmp_path, monkeypatch):
     contract, expected = _seed_contract(tmp_path)
     llm = LLMClient(Settings(llm_backend="claude_cli"))
+    monkeypatch.setattr(llm, "_cli_available", lambda provider: provider == "claude")
     agent = CodeAgent(event_bus=EventBus(), llm=llm)
     await agent.start()
 

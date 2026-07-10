@@ -186,6 +186,27 @@ class CodeImproverAgent(BaseAgent):
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
         gaps = p.get("gaps") or review.get("gaps") or []
+        routing_provider = str(p.get("agentic_provider") or "").strip().lower()
+
+        if routing_provider and not p.get("agentic"):
+            reason = (
+                f"{routing_provider} CLI is explicitly selected for improve, but "
+                "agentic improve is disabled; global completion fallback is blocked."
+            )
+            return TaskResult(
+                task_id=task.task_id,
+                success=False,
+                output={
+                    "files_improved": 0,
+                    "files": [],
+                    "worktree_dir": str(worktree),
+                    "backend": f"{routing_provider}_cli",
+                    "routing_locked": True,
+                    "routing_lock_provider": routing_provider,
+                    "routing_lock_reason": reason,
+                },
+                error=reason,
+            )
 
         if p.get("agentic"):
             # Whole-project agentic improve: the model explores the tree itself
@@ -193,7 +214,7 @@ class CodeImproverAgent(BaseAgent):
             # entrypoint rewrite. Falls through to the classic per-file path
             # whenever the session is unavailable, fails, or lands nothing —
             # this branch can only ever ADD capability, never remove it.
-            agentic_improved, agentic_skipped, ran = await self._agentic_improve(
+            agentic_improved, agentic_skipped, ran, agentic_error = await self._agentic_improve(
                 worktree, brief, gaps, stack, p, knowledge
             )
             if ran and agentic_improved:
@@ -202,7 +223,31 @@ class CodeImproverAgent(BaseAgent):
                                           "files": sorted(agentic_improved),
                                           "skipped": agentic_skipped,
                                           "worktree_dir": str(worktree), "agentic": True,
-                                          "backend": self.llm.backend})
+                                          "backend": (
+                                              f"{routing_provider}_cli"
+                                              if routing_provider else self.llm.backend
+                                          )})
+            if routing_provider:
+                reason = agentic_error or (
+                    f"{routing_provider} CLI completed improve without any valid file "
+                    "changes; global completion fallback is blocked."
+                )
+                return TaskResult(
+                    task_id=task.task_id,
+                    success=False,
+                    output={
+                        "files_improved": 0,
+                        "files": [],
+                        "skipped": agentic_skipped,
+                        "worktree_dir": str(worktree),
+                        "agentic": True,
+                        "backend": f"{routing_provider}_cli",
+                        "routing_locked": True,
+                        "routing_lock_provider": routing_provider,
+                        "routing_lock_reason": reason,
+                    },
+                    error=reason,
+                )
 
         target_files = p.get("files") or self._targets_from_gaps(gaps, worktree)
         if not target_files:
@@ -281,6 +326,24 @@ class CodeImproverAgent(BaseAgent):
                 continue  # binary/unreadable — not an improve target
         return snap
 
+    def _restore_snapshot(self, worktree: Path, before: dict[str, str]) -> None:
+        """Undo text-file writes from an agentic invocation that failed."""
+        after = self._snapshot(worktree)
+        for rel in sorted(set(after) - set(before)):
+            try:
+                (worktree / rel).unlink(missing_ok=True)
+            except OSError:
+                pass
+        for rel, content in before.items():
+            if after.get(rel) == content:
+                continue
+            try:
+                target = worktree / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            except OSError:
+                pass
+
     @staticmethod
     def _agentic_improve_prompt(
         brief: str, gaps: list[Any], stack: str, knowledge: str = ""
@@ -308,11 +371,12 @@ class CodeImproverAgent(BaseAgent):
     async def _agentic_improve(self, worktree: Path, brief: str, gaps: list[Any],
                                stack: str, payload: dict[str, Any],
                                knowledge: str = "",
-                               ) -> tuple[list[str], dict[str, str], bool]:
+                               ) -> tuple[list[str], dict[str, str], bool, str]:
         """Run one whole-project agentic session toward the goal. Returns
-        (improved_rels, skipped_reasons, ran). ran=False means the session
-        never usably executed (unsupported backend / hard failure) and the
-        caller should use the classic path with no signal lost."""
+        (improved_rels, skipped_reasons, ran, error). ran=False means the
+        session never usably executed (unsupported backend / hard failure).
+        The caller may use the classic path only when no explicit CLI lock is
+        present."""
         from skyn3t.agents.validate import validate_source
 
         before = self._snapshot(worktree)
@@ -326,9 +390,12 @@ class CodeImproverAgent(BaseAgent):
                 stack=stack)
         except Exception as exc:  # noqa: BLE001 - agentic must never sink improve
             _log.warning("code_improver.agentic_failed", error=str(exc))
-            return [], {}, False
+            self._restore_snapshot(worktree, before)
+            return [], {}, False, f"agentic improve failed: {exc}"
         if not (res or {}).get("ok"):
-            return [], {}, False
+            self._restore_snapshot(worktree, before)
+            error = str((res or {}).get("error") or "agentic improve was not completed")
+            return [], {}, False, error
         after = self._snapshot(worktree)
         improved: list[str] = []
         skipped: dict[str, str] = {}
@@ -351,7 +418,7 @@ class CodeImproverAgent(BaseAgent):
             except OSError:
                 pass
             skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
-        return improved, skipped, True
+        return improved, skipped, True, ""
 
     async def _improve_one(self, rel: str, original: str, brief: str,
                            gaps: list[Any], stack: str,

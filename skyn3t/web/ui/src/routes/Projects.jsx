@@ -9,7 +9,6 @@ import {
   Pill,
   Empty,
   SignalGrid,
-  verdictTone,
 } from "../components/ui.jsx";
 import {
   activeDeploymentIndex,
@@ -20,6 +19,11 @@ import {
 } from "../deployWorkflow.js";
 import { describeCostTruth } from "../costTruth.js";
 import { projectBuildMetadata } from "../projectMetadata.js";
+import { buildOutcome, summarizeBuildOutcomes } from "../buildOutcome.js";
+import {
+  canReverifyLocally,
+  describeLocalReverify,
+} from "../projectReverify.js";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -509,6 +513,41 @@ function ShipCell({ project, open, onToggle }) {
   );
 }
 
+function ReverifyControl({ project, state, onRun }) {
+  if (!canReverifyLocally(project)) return null;
+
+  const busy = state?.status === "busy";
+  const message = state?.message || "";
+  return (
+    <div className="flex max-w-[16rem] flex-col items-end gap-1" aria-live="polite">
+      <button
+        type="button"
+        onClick={() => onRun(project.slug)}
+        disabled={busy}
+        className="btn-ghost whitespace-nowrap text-plasma/80 hover:text-plasma disabled:opacity-50"
+        title="Run proof commands against the existing local files"
+      >
+        {busy ? "Reverifying locally..." : "Reverify locally"}
+      </button>
+      {state?.status !== "result" ? (
+        <span className="font-mono text-[10px] text-ash/60">0 SkyN3t model calls</span>
+      ) : null}
+      {message ? (
+        <span
+          role={state.status === "error" ? "alert" : "status"}
+          className={
+            "max-w-full break-words font-mono text-[10px] " +
+            (state.status === "error" ? "text-ember" : "text-plasma")
+          }
+          title={message}
+        >
+          {message}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function DeployInline({ project, onClose }) {
   const qc = useQueryClient();
   const slug = project.slug;
@@ -766,6 +805,7 @@ export default function Projects({ stream }) {
   const [deploySlug, setDeploySlug] = useState(null);
   const [busy, setBusy] = useState({}); // slug -> "serving" | "stopping"
   const [serveErr, setServeErr] = useState({}); // slug -> message
+  const [reverifyState, setReverifyState] = useState({});
   const [sort, setSort] = useState({ key: "updated_at", dir: "desc" });
 
   const { data, isLoading, error } = useQuery({
@@ -821,22 +861,61 @@ export default function Projects({ stream }) {
     }
   }
 
+  async function reverifyLocally(slug) {
+    setReverifyState((current) => ({
+      ...current,
+      [slug]: { status: "busy", message: "" },
+    }));
+    try {
+      const result = await apiPost(
+        `/projects/${encodeURIComponent(slug)}/reverify`,
+        {},
+      );
+      setReverifyState((current) => ({
+        ...current,
+        [slug]: { status: "result", message: describeLocalReverify(result) },
+      }));
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["projects"] }),
+        qc.invalidateQueries({ queryKey: ["builds"] }),
+      ]);
+    } catch (error) {
+      setReverifyState((current) => ({
+        ...current,
+        [slug]: {
+          status: "error",
+          message: `Local reverify failed: ${String(error.message || error)}`,
+        },
+      }));
+    }
+  }
+
   const projects = Array.isArray(data) ? data : data?.projects || [];
   const liveCount = Object.keys(served).length;
-  const shippableCount = projects.filter((project) => {
-    if (project.is_complete === false) return false;
-    const state = String(project.verdict || project.status || "").toLowerCase();
-    return state === "go" || state === "completed" || state === "applied";
-  }).length;
-  const wastedSpend = projects.reduce(
-    (sum, project) => sum + Number(project.wasted_usd || 0),
-    0,
-  );
+  const outcomeSummary = summarizeBuildOutcomes(projects);
   const projectSignals = [
     { label: "projects", value: String(projects.length) },
-    { label: "live", value: String(liveCount) },
-    { label: "shippable", value: String(shippableCount) },
-    { label: "wasted", value: fmtCost(wastedSpend) },
+    { label: "live serves", value: String(liveCount) },
+    { label: "delivered", value: String(outcomeSummary.delivered) },
+    { label: "shippable", value: String(outcomeSummary.shippable) },
+    {
+      label: "not delivered",
+      value: String(outcomeSummary.notDelivered),
+      title: `${outcomeSummary.active} still building; cancelled and failed rows remain explicit below`,
+    },
+    { label: "cancelled", value: String(outcomeSummary.cancelled) },
+    { label: "failed", value: String(outcomeSummary.failed) },
+    {
+      label: "non-shippable spend",
+      value: outcomeSummary.unknownCostRows > 0
+        ? outcomeSummary.nonShippableSpendUsd > 0
+          ? `>= ${fmtCost(outcomeSummary.nonShippableSpendUsd)} + ${outcomeSummary.unknownCostRows} unknown`
+          : `${outcomeSummary.unknownCostRows} unknown`
+        : fmtCost(outcomeSummary.nonShippableSpendUsd),
+      title: outcomeSummary.unknownCostRows > 0
+        ? "Known recorded spend is a lower bound; one or more CLI-backed terminal runs have unknown provider-account cost"
+        : "Recorded build cost for terminal projects with no shippable outcome; provider cost truth may still be estimated",
+    },
   ];
 
   const sorted = useMemo(() => {
@@ -931,6 +1010,7 @@ export default function Projects({ stream }) {
                   const isDeploying = deploySlug === p.slug;
                   const ai = aiEvidence(p);
                   const costTruth = describeCostTruth(p);
+                  const outcome = buildOutcome(p);
                   return (
                     <React.Fragment key={p.slug}>
                       <tr>
@@ -941,9 +1021,13 @@ export default function Projects({ stream }) {
                           {p.stack || "—"}
                         </td>
                         <td className="px-4 py-2">
-                          <Pill tone={verdictTone(p.status || p.verdict)}>
-                            {p.status || p.verdict || "—"}
-                          </Pill>
+                          <Pill tone={outcome.tone}>{outcome.label}</Pill>
+                          <div
+                            className="mt-1 max-w-[11rem] font-mono text-[10px] text-ash/70"
+                            title={outcome.title}
+                          >
+                            {outcome.detail}
+                          </div>
                         </td>
                         <td className="px-4 py-2 font-mono text-xs text-ash">
                           {p.score ?? "—"}
@@ -970,7 +1054,7 @@ export default function Projects({ stream }) {
                             className={p.wasted_usd ? "text-ember" : "text-ash"}
                             title={costTruth.title}
                           >
-                            {fmtCost(p.cost_usd)}
+                            {costTruth.amountLabel || fmtCost(p.cost_usd)}
                           </span>
                           {costTruth.label ? (
                             <span
@@ -992,12 +1076,12 @@ export default function Projects({ stream }) {
                               + assets unknown
                             </div>
                           ) : null}
-                          {p.wasted_usd ? (
+                          {Number(p.wasted_usd) > 0 ? (
                             <span
                               className="ml-1 text-[10px] text-ember/70"
-                              title="no_go build — this spend produced nothing shippable"
+                              title="The API explicitly recorded this amount as wasted spend"
                             >
-                              wasted
+                              recorded waste
                             </span>
                           ) : null}
                         </td>
@@ -1082,7 +1166,12 @@ export default function Projects({ stream }) {
                               ) : null}
                             </div>
                           ) : (
-                            <div className="flex items-center justify-end gap-2">
+                            <div className="flex flex-wrap items-start justify-end gap-2">
+                              <ReverifyControl
+                                project={p}
+                                state={reverifyState[p.slug]}
+                                onRun={reverifyLocally}
+                              />
                               {p.prompt_count > 0 ? (
                                 <button
                                   onClick={() =>

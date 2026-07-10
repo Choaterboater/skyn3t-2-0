@@ -76,6 +76,61 @@ def test_bare_and_aliased_imports_are_not_flagged(tmp_path):
     assert res.passed is True
 
 
+def test_proof_fails_when_declared_node_tests_fail(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    _scaffold_react(tmp_path, main_jsx="import App from './App.jsx'\n")
+    monkeypatch.setattr(
+        proof_mod,
+        "_run_node_build",
+        lambda *_args, **_kwargs: (True, True, "build passed"),
+    )
+    monkeypatch.setattr(
+        proof_mod,
+        "_run_node_tests",
+        lambda *_args, **_kwargs: (True, False, "1 test failed"),
+    )
+
+    result = proof_mod.proof_run(
+        tmp_path,
+        stack="react",
+        execution_backend="inline",
+        run_tests=True,
+        run_build=True,
+    )
+
+    assert result.passed is False
+    assert result.detail["node_tests"] == "failed"
+    assert "<node-tests>" in result.missing
+
+
+def test_proof_skips_declared_node_tests_when_tests_disabled(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    _scaffold_react(tmp_path, main_jsx="import App from './App.jsx'\n")
+    monkeypatch.setattr(
+        proof_mod,
+        "_run_node_build",
+        lambda *_args, **_kwargs: (True, True, "build passed"),
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("node tests must not run when run_tests is false")
+
+    monkeypatch.setattr(proof_mod, "_run_node_tests", fail_if_called)
+
+    result = proof_mod.proof_run(
+        tmp_path,
+        stack="react",
+        execution_backend="inline",
+        run_tests=False,
+        run_build=True,
+    )
+
+    assert result.passed is True
+    assert "node_tests" not in result.detail
+
+
 def test_proof_ignores_generated_astro_metadata(tmp_path):
     (tmp_path / "package.json").write_text(
         '{"name":"golf","scripts":{"build":"astro build"},'

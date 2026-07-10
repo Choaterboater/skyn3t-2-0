@@ -75,9 +75,10 @@ export function projectBuildMetadata(project = {}) {
     stageCostTotal += cost;
     stageCostCount += 1;
   }
-  const runCost = finiteNumber(
-    costTruth.llm_cost_usd ?? project.cost_usd ?? scorecard.cost_usd,
-  );
+  const llmCostKnown = costTruth.llm_cost_known !== false;
+  const runCost = llmCostKnown
+    ? finiteNumber(costTruth.llm_cost_usd ?? project.cost_usd ?? scorecard.cost_usd)
+    : null;
   const modelOverride = firstText(trace.model_override, project.model_override);
   const codegenModel = firstText(
     trace.codegen_model,
@@ -95,7 +96,9 @@ export function projectBuildMetadata(project = {}) {
       ? "codegen override"
       : "auto route";
   const runCostLabel = formatMetadataUsd(runCost);
-  const stageCostLabel = stageCostCount
+  const stageCostLabel = !llmCostKnown
+    ? "unknown"
+    : stageCostCount
     ? `${formatMetadataUsd(stageCostTotal)} / ${stageCostCount}`
     : "—";
   const countLabel = (value) => value == null ? "—" : String(value);
@@ -127,6 +130,7 @@ export function projectBuildMetadata(project = {}) {
     skillCount,
     recallCount,
     runCost,
+    llmCostKnown,
     runCostLabel,
     stageCostCount,
     stageCostTotal,

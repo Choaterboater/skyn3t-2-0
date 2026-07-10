@@ -202,6 +202,9 @@ class CostTracker:
                     "usage_evidence": [
                         dict(item) for item in finished.get("usage_evidence", [])
                     ],
+                    "usage_evidence_source_counts": dict(
+                        finished.get("usage_evidence_source_counts", {})
+                    ),
                 }
             return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0, "stages": []}
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
@@ -213,6 +216,7 @@ class CostTracker:
         exposure = 0.0
         failed_attempts = 0
         usage_evidence: list[dict[str, Any]] = []
+        usage_evidence_source_counts: dict[str, int] = {}
         for r in calls[entry["base_calls"]:]:
             owner = getattr(r, "build_id", _MISSING_BUILD_ID)
             if owner is not _MISSING_BUILD_ID:
@@ -233,28 +237,40 @@ class CostTracker:
             backend = str(getattr(r, "backend", "") or "unknown")
             if (
                 backend == "openrouter"
+                or backend.endswith("_cli")
                 or generation_id
                 or status.startswith("failed_")
                 or status == "malformed_response"
             ):
-                usage_evidence.append({
+                cost_source = str(getattr(r, "cost_source", "") or "unknown")
+                evidence = {
                     "generation_id": generation_id or None,
                     "model": str(getattr(r, "model", "") or "unknown"),
                     "backend": backend,
                     "status": status,
                     "cost_usd": round(max(0.0, float(getattr(r, "cost_usd", 0.0))), 8),
-                    "cost_source": str(getattr(r, "cost_source", "") or "unknown"),
+                    "cost_source": cost_source,
                     "max_unconfirmed_exposure_usd": round(
                         max(0.0, float(getattr(r, "estimated_exposure_usd", 0.0))),
                         8,
                     ),
-                })
+                }
+                if cost_source == "not_reported_by_cli":
+                    evidence["cost_usd"] = None
+                    evidence["cost_usd_known"] = False
+                usage_evidence.append(evidence)
+                usage_evidence_source_counts[cost_source] = (
+                    usage_evidence_source_counts.get(cost_source, 0) + 1
+                )
         entry["cost_usd"] = round(max(0.0, cost), 6)
         entry["tokens"] = max(0, tokens)
         entry["failed_attempts"] = failed_attempts
         entry["max_unconfirmed_exposure_usd"] = round(max(0.0, exposure), 6)
         entry["usage_evidence"] = usage_evidence[-256:]
         entry["usage_evidence_truncated"] = max(0, len(usage_evidence) - 256)
+        entry["usage_evidence_source_counts"] = dict(
+            sorted(usage_evidence_source_counts.items())
+        )
         entry["duration_s"] = round(time() - entry["started"], 3)
         token = entry.pop("_budget_token", None)
         finish = getattr(self.budget, "end_build", None)
@@ -271,6 +287,7 @@ class CostTracker:
                           "max_unconfirmed_exposure_usd",
                           "usage_evidence",
                           "usage_evidence_truncated",
+                          "usage_evidence_source_counts",
                       )
                   }}
         self._finished_builds[build_id] = report
@@ -280,6 +297,9 @@ class CostTracker:
             **report,
             "stages": [dict(stage) for stage in report["stages"]],
             "usage_evidence": [dict(item) for item in report["usage_evidence"]],
+            "usage_evidence_source_counts": dict(
+                report["usage_evidence_source_counts"]
+            ),
         }
 
     def close_build(self, build_id: str) -> None:

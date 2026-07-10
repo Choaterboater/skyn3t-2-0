@@ -104,6 +104,24 @@ test("provider cost truth wins over a stale top-level total", () => {
   assert.equal(meta.runCostLabel, "$1.5000");
 });
 
+test("unknown CLI billing never falls back to a misleading top-level zero", () => {
+  const meta = projectBuildMetadata({
+    cost_usd: 0,
+    stage_costs: [{ stage: "code", cost_usd: 0 }],
+    cost_truth: {
+      llm_cost_usd: null,
+      llm_cost_known: false,
+      llm_cost_classification: "unknown",
+      llm_cost_label: "CLI account usage; exact dollars unavailable",
+    },
+  });
+
+  assert.equal(meta.llmCostKnown, false);
+  assert.equal(meta.runCost, null);
+  assert.equal(meta.runCostLabel, "—");
+  assert.equal(meta.stageCostLabel, "unknown");
+});
+
 test("queued overrides stay labeled as codegen-only before an effective model is recorded", () => {
   const meta = projectBuildMetadata({
     status: "queued",

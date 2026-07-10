@@ -1,7 +1,15 @@
 export function describeCostTruth(project = {}) {
   const truth = project.cost_truth;
   if (!truth || typeof truth !== "object" || !Object.keys(truth).length) {
-    return { label: "", classification: "unknown", externalUnknown: false, title: "" };
+    return {
+      label: "",
+      classification: "unknown",
+      externalUnknown: false,
+      llmCostKnown: null,
+      knownCostUsd: null,
+      amountLabel: "",
+      title: "",
+    };
   }
 
   const classification = String(truth.llm_cost_classification || "unknown");
@@ -12,7 +20,22 @@ export function describeCostTruth(project = {}) {
         ? "estimate"
         : classification === "mixed"
           ? "mixed"
-          : "unverified";
+          : classification === "partial"
+            ? "partial - CLI unknown"
+            : "CLI cost unknown";
+  const llmCostKnown = truth.llm_cost_known !== false;
+  const rawKnownCost = llmCostKnown
+    ? truth.llm_cost_usd ?? project.cost_usd
+    : truth.llm_known_cost_usd;
+  const knownCost = Number(rawKnownCost);
+  const knownCostUsd = Number.isFinite(knownCost) && knownCost >= 0 ? knownCost : null;
+  const amountLabel = llmCostKnown
+    ? knownCostUsd == null
+      ? "unknown"
+      : `$${knownCostUsd.toFixed(4)}`
+    : knownCostUsd != null && knownCostUsd > 0
+      ? `>= $${knownCostUsd.toFixed(4)}`
+      : "unknown";
   const external =
     truth.external_asset_usage && typeof truth.external_asset_usage === "object"
       ? truth.external_asset_usage
@@ -48,5 +71,13 @@ export function describeCostTruth(project = {}) {
       `up to $${Number(truth.max_unconfirmed_exposure_usd).toFixed(4)} unconfirmed exposure`,
     );
   }
-  return { label, classification, externalUnknown, title: notes.join("; ") };
+  return {
+    label,
+    classification,
+    externalUnknown,
+    llmCostKnown,
+    knownCostUsd,
+    amountLabel,
+    title: notes.join("; "),
+  };
 }

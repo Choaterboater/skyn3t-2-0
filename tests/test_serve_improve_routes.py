@@ -309,6 +309,31 @@ def test_fanout_dispatches_distinct_slugs_and_emits(tmp_path):
     assert EventType.FANOUT_STARTED in kinds and EventType.FANOUT_COMPLETED in kinds
 
 
+def test_fanout_rejects_missing_explicit_backend_before_dispatch(tmp_path):
+    studio = _FanStudio()
+    state = _fan_state(tmp_path, studio)
+    state.settings.llm_backend = "openrouter"
+    state.settings.openrouter_api_key = ""
+
+    with pytest.raises(ValueError, match="OpenRouter was explicitly selected"):
+        asyncio.run(fanout_project(state, "a todo app", ["react", "static"]))
+
+    assert studio.started == []
+
+
+def test_fanout_rejects_unavailable_codegen_cli_before_dispatch(tmp_path):
+    studio = _FanStudio()
+    state = _fan_state(tmp_path, studio)
+    state.settings.llm_backend = "auto"
+    state.settings.codegen_cli_provider = "codex"
+    state.llm_client = SimpleNamespace(_cli_available=lambda _provider: False)
+
+    with pytest.raises(ValueError, match="codegen_cli_provider='codex'.*unavailable"):
+        asyncio.run(fanout_project(state, "a todo app", ["react", "static"]))
+
+    assert studio.started == []
+
+
 def test_fanout_preserves_full_build_contract_for_every_candidate(tmp_path):
     studio = _FanStudio()
     state = _fan_state(tmp_path, studio)
@@ -339,7 +364,7 @@ def test_fanout_preserves_full_build_contract_for_every_candidate(tmp_path):
     for extra in studio.extras:
         assert extra["build_profile"] == "fast"
         assert extra["full_app_contract"] is True
-        assert extra["asset_gen"] is True
+        assert extra["asset_gen"] is False
         assert extra["parallel_code_slices"] is True
         assert extra["parallel_code_slices_min_files"] == 4
         assert extra["model_override"] == "vendor/model"
@@ -366,7 +391,7 @@ def test_fanout_profile_policy_never_weakens_full_app_contract(tmp_path, profile
 
     for extra in studio.extras:
         assert extra["full_app_contract"] is True
-        assert extra["asset_gen"] is True
+        assert extra["asset_gen"] is False
         assert extra["visual_self_heal"] is True
         if profile == "cheap_learned":
             assert extra["best_of_n"] == 1

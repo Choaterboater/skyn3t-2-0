@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from skyn3t.worktree import create_worktree, merge_back
+import skyn3t.worktree as worktree_mod
+from skyn3t.worktree import create_worktree, merge_back, source_tree_snapshot
 
 
 def test_create_worktree_rejects_path_traversal_slug(tmp_path):
@@ -34,8 +35,11 @@ def test_merge_back_rejects_symlink_to_outside_file(tmp_path):
     (src / "public").mkdir()
     (src / "public" / "leak.txt").symlink_to(outside)
 
+    snapshot = source_tree_snapshot(src)
     copied = merge_back(src, dst)
 
+    assert snapshot["valid"] is False
+    assert snapshot["unsafe_aliases"] == ["public/leak.txt"]
     assert "public/leak.txt" not in copied
     assert not (dst / "public" / "leak.txt").exists()
 
@@ -73,3 +77,51 @@ def test_merge_back_excludes_swiftpm_build_artifacts(tmp_path):
     assert ".swiftpm/configuration/registries.json" not in copied
     assert not (dst / ".build").exists()
     assert not (dst / ".swiftpm").exists()
+
+
+def test_source_tree_snapshot_excludes_generated_dirs_at_any_depth(tmp_path):
+    source = tmp_path / "src" / "app.js"
+    source.parent.mkdir()
+    source.write_text("export const app = true;\n", encoding="utf-8")
+    manifest = tmp_path / "skyn3t_manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    before = source_tree_snapshot(tmp_path)
+    for generated in (
+        tmp_path / "dist" / "index.html",
+        tmp_path / "packages" / "web" / ".next" / "cache" / "entry",
+        tmp_path / "packages" / "web" / "coverage" / "report.json",
+        tmp_path / "packages" / "web" / ".astro" / "content.d.ts",
+    ):
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        generated.write_text("generated", encoding="utf-8")
+    after = source_tree_snapshot(tmp_path)
+
+    assert before["valid"] is True
+    assert before["sha256"] == after["sha256"]
+    assert after["files"] == ["src/app.js"]
+    assert after["file_count"] == 1
+
+
+def test_source_tree_snapshot_fails_closed_on_unreadable_directory(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    real_walk = worktree_mod.os.walk
+
+    def walk_with_error(root, *, topdown, onerror, followlinks):
+        onerror(PermissionError(13, "denied", str(tmp_path / "private")))
+        yield from real_walk(
+            root,
+            topdown=topdown,
+            onerror=onerror,
+            followlinks=followlinks,
+        )
+
+    monkeypatch.setattr(worktree_mod.os, "walk", walk_with_error)
+
+    snapshot = source_tree_snapshot(tmp_path)
+
+    assert snapshot["valid"] is False
+    assert snapshot["sha256"] == ""
+    assert snapshot["unreadable_files"]

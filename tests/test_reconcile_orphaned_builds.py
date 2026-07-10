@@ -41,6 +41,67 @@ async def test_reconcile_noop_when_nothing_running(tmp_path):
     assert await store.reconcile_orphaned_builds() == 0
 
 
+async def test_latest_builds_by_slug_returns_newest_compact_db_record(tmp_path):
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    await store.save_build(
+        build_id="older",
+        slug="same-project",
+        status="completed",
+        verdict="go",
+        cost_usd=1.0,
+        manifest={
+            "build_id": "older",
+            "slug": "same-project",
+            "status": "completed",
+            "verdict": "go",
+        },
+    )
+    await store.save_build(
+        build_id="newer",
+        slug="same-project",
+        status="cancelled",
+        cost_usd=2.0,
+        manifest={
+            "build_id": "newer",
+            "slug": "same-project",
+            "status": "running",
+            "extra": {
+                "build_profile": "fast",
+                "build_cost_usd": 2.0,
+                "prompts": [{"stage": "code"}],
+            },
+        },
+    )
+    await store.save_build(build_id="other", slug="other-project", status="failed")
+    await store.save_build(
+        build_id="failed-stale-manifest",
+        slug="failed-project",
+        status="failed",
+        cost_usd=3.0,
+        manifest={
+            "build_id": "failed-stale-manifest",
+            "slug": "failed-project",
+            "status": "running",
+        },
+    )
+
+    rows = await store.latest_builds_by_slug(
+        ["same-project", "failed-project", "missing"]
+    )
+
+    indexed = {row["slug"]: row for row in rows}
+    assert set(indexed) == {"same-project", "failed-project"}
+    assert indexed["same-project"]["build_id"] == "newer"
+    assert indexed["same-project"]["status"] == "cancelled"
+    assert indexed["same-project"]["cost_usd"] == 2.0
+    assert indexed["same-project"]["build_profile"] == "fast"
+    assert indexed["same-project"]["model_trace"]["prompt_count"] == 1
+    assert indexed["failed-project"]["status"] == "failed"
+    assert indexed["failed-project"]["cost_usd"] == 3.0
+    await store.close()
+
+
 async def test_reconcile_leaves_live_owner_interrupts_dead(tmp_path):
     """A running row owned by a LIVE process (current server or concurrent
     same-host build) is left; only a dead/unknown owner is interrupted (#25)."""
@@ -180,7 +241,7 @@ async def test_recent_builds_keeps_interrupted_status_over_stale_running_manifes
         "brief": "old build",
         "stack": "react",
         "status": "running",
-        "extra": {},
+        "extra": {"llm_backend": "codex_cli", "build_cost_usd": 0.0},
     }))
     await store.save_build(
         build_id="b3",
@@ -189,12 +250,19 @@ async def test_recent_builds_keeps_interrupted_status_over_stale_running_manifes
         stack="react",
         status="interrupted",
         artifact_dir=str(project),
-        manifest={"build_id": "b3", "slug": "zombie", "status": "running", "extra": {}},
+        manifest={
+            "build_id": "b3",
+            "slug": "zombie",
+            "status": "running",
+            "extra": {"llm_backend": "codex_cli", "build_cost_usd": 0.0},
+        },
     )
 
     row = (await store.recent_builds(limit=1))[0]
 
     assert row["status"] == "interrupted"
+    assert row["cost_truth"]["llm_cost_known"] is False
+    assert row["cost_truth"]["llm_cost_usd"] is None
 
 
 async def test_recent_builds_keeps_cancelled_status_over_stale_running_manifest(tmp_path):

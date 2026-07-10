@@ -243,6 +243,7 @@ async def test_cancelled_build_recovers_candidate_before_worktree_cleanup(tmp_pa
     assert summary["model_trace"]["profile"] == "cheap_learned"
     assert summary["quality_scorecard"]["status"] == "cancelled"
     assert summary["quality_scorecard"]["cost_truth"]["llm_cost_usd"] >= 0
+    assert summary["non_shippable_spend_usd"] == summary["build_cost_usd"]
     assert snapshots and snapshots[0]["file_count"] >= 1
     recovery = Path(snapshots[0]["path"])
     assert recovery.is_relative_to((settings.data_dir / "recovery").resolve())

@@ -1154,6 +1154,8 @@ def _run_proof_command(
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=safe_env,
         )
@@ -1967,8 +1969,17 @@ def sanitize_package_json_deps(root: str | Path) -> list[str]:
             trimmed = name.strip()
             candidate = {section: {trimmed: version}}
             if trimmed and not _invalid_npm_package_names(candidate):
-                rebuilt[trimmed] = version
-                if trimmed != name:
+                normalized_version = version
+                if isinstance(version, str) and re.fullmatch(
+                    r"\s*[~^]?0\.0\.0(?:-0)?\s*", version
+                ):
+                    # Code generators sometimes emit a semver-shaped placeholder
+                    # that npm treats as a real, usually nonexistent release.
+                    # Prefer a curated compatible pin; otherwise let npm resolve
+                    # a real published version so proof can test compatibility.
+                    normalized_version = _KNOWN_NPM_VERSIONS.get(trimmed, "latest")
+                rebuilt[trimmed] = normalized_version
+                if trimmed != name or normalized_version != version:
                     changed.append(name)
                 continue
             changed.append(name)
@@ -2349,6 +2360,80 @@ def ensure_path_alias_config(root: str | Path) -> list[str]:
     paths["@/*"] = ["./src/*"] if src_layout else ["./*"]
     try:
         target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return [target.name]
+
+
+def ensure_vitest_alias_config(root: str | Path) -> list[str]:
+    """Make ``@/`` imports in Vitest suites resolve like the application.
+
+    Astro reads aliases from ``astro.config`` and TypeScript reads ``paths``, but
+    standalone Vitest reads neither. Create a small Vitest config only when the
+    project has Vitest, an aliased test import, and no Vite/Vitest config of its
+    own. Existing executable configs are never overwritten.
+    """
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared = {
+        name
+        for section in ("dependencies", "devDependencies")
+        if isinstance(pkg.get(section), dict)
+        for name in pkg[section]
+    }
+    raw_scripts = pkg.get("scripts")
+    scripts: dict[str, Any] = raw_scripts if isinstance(raw_scripts, dict) else {}
+    if "vitest" not in declared and not any(
+        "vitest" in str(command) for command in scripts.values()
+    ):
+        return []
+    config_names = (
+        "vitest.config.js", "vitest.config.mjs", "vitest.config.ts",
+        "vitest.config.mts", "vite.config.js", "vite.config.mjs",
+        "vite.config.ts", "vite.config.mts",
+    )
+    if any((root / name).is_file() for name in config_names):
+        return []
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir():
+        return []
+    uses_alias = False
+    for test_file in _iter_files(tests_dir):
+        if test_file.suffix not in (".js", ".jsx", ".ts", ".tsx", ".mjs"):
+            continue
+        try:
+            if _AT_IMPORT_RE.search(
+                test_file.read_text(encoding="utf-8", errors="replace")
+            ):
+                uses_alias = True
+                break
+        except OSError:
+            continue
+    if not uses_alias:
+        return []
+    alias_target = "./src" if (root / "src").is_dir() else "."
+    target = root / "vitest.config.mjs"
+    content = (
+        "import { fileURLToPath } from 'node:url';\n"
+        "import { defineConfig } from 'vitest/config';\n\n"
+        "export default defineConfig({\n"
+        "  resolve: {\n"
+        "    alias: {\n"
+        f"      '@': fileURLToPath(new URL('{alias_target}', import.meta.url)),\n"
+        "    },\n"
+        "  },\n"
+        "});\n"
+    )
+    try:
+        target.write_text(content, encoding="utf-8")
     except OSError:
         return []
     return [target.name]
@@ -2760,6 +2845,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # statements from .js files — two common cheap-model defects that otherwise
     # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
     alias_cfg = ensure_path_alias_config(project_dir)
+    vitest_alias_cfg = ensure_vitest_alias_config(project_dir)
     ts_stripped = strip_ts_type_in_js(project_dir)
     react_entry = repair_react_vite_entrypoint_to_tsx(project_dir, stack=stack)
     # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
@@ -2792,6 +2878,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "use_client_added": use_client,
         "source_fences_stripped": source_fences,
         "path_alias_config": alias_cfg,
+        "vitest_alias_config": vitest_alias_cfg,
         "ts_in_js_stripped": ts_stripped,
         "react_entrypoint_repaired": react_entry,
         "lucide_icons_fixed": lucide,
@@ -3109,7 +3196,7 @@ def proof_run(
 
     # Mock-LLM proof seam: for an LLM-calling project, boot the local mock so the
     # generated app's OWN tests (below) run headlessly at $0. Started once here,
-    # torn down in the finally — it wraps BOTH test steps (python + advisory node).
+    # torn down in the finally - it wraps both Python and Node test steps.
     mock_enabled = enable_mock_llm if enable_mock_llm is not None else _mock_llm_default_enabled()
     mock_seam = (
         _start_proof_mock_llm(pdir, cmd_ctx, enabled=mock_enabled)
@@ -3154,11 +3241,14 @@ def proof_run(
                         if "<build>" not in missing:
                             missing = [*missing, "<build>"]
                     elif run_tests:
-                        # Advisory `swift test` (never hard-gates a compiling app).
                         t_ran, t_ok, t_sum = _run_swift_tests(pdir, test_timeout, cmd_ctx)
                         if t_ran:
                             detail["swift_tests"] = "passed" if t_ok else "failed"
                             detail["swift_tests_summary"] = t_sum
+                            if not t_ok:
+                                passed = False
+                                if "<swift-tests>" not in missing:
+                                    missing = [*missing, "<swift-tests>"]
                 else:
                     detail.setdefault("build", "skipped")
                     if summary:
@@ -3172,20 +3262,32 @@ def proof_run(
                         passed = False
                         if "<build>" not in missing:
                             missing = [*missing, "<build>"]
-                    else:
-                        # Advisory JS/TS test run: node_modules is now installed, so run
-                        # the project's test script if a real runner is declared. This is
-                        # NOT a hard gate — a subtly-wrong generated test must not no_go a
-                        # building app; the result is recorded for score dampening only.
-                        t_ran, t_ok, t_sum = _run_node_tests(
-                            pdir, test_timeout, cmd_ctx, extra_env=mock_env)
-                        if t_ran:
-                            detail["node_tests"] = "passed" if t_ok else "failed"
-                            detail["node_tests_summary"] = t_sum
                 else:
                     detail.setdefault("build", "skipped")
                     if summary:
                         detail["build_summary"] = summary
+
+        # Node tests are an independent declared validation surface. They must
+        # still run when a project has no build script or build execution was
+        # disabled; tying them to a successful npm build silently skipped native
+        # ``node --test`` suites and test-only packages.
+        if (
+            run_tests
+            and passed
+            and (pdir / "package.json").is_file()
+            and (stack or "").lower() not in _SWIFT_STACKS
+        ):
+            t_ran, t_ok, t_sum = _run_node_tests(
+                pdir, test_timeout, cmd_ctx, extra_env=mock_env)
+            if t_ran:
+                detail["node_tests"] = "passed" if t_ok else "failed"
+                detail["node_tests_summary"] = t_sum
+                if not t_ok:
+                    passed = False
+                    if "<node-tests>" not in missing:
+                        missing = [*missing, "<node-tests>"]
+            elif t_sum:
+                detail["node_tests_summary"] = t_sum
     finally:
         if mock_seam is not None:
             mock_seam.stop()
@@ -3704,8 +3806,70 @@ _NODE_STACKS = (
 )
 
 
-_NODE_TEST_RUNNERS = ("vitest", "jest", "mocha", "@testing-library/react",
-                      "@testing-library/vue", "ava")
+_NODE_TEST_RUNNERS = frozenset({
+    "vitest",
+    "jest",
+    "mocha",
+    "@testing-library/react",
+    "@testing-library/vue",
+    "ava",
+    "@playwright/test",
+    "playwright",
+    "cypress",
+    "tap",
+    "uvu",
+})
+_NODE_TEST_COMMANDS = frozenset({
+    "vitest",
+    "jest",
+    "mocha",
+    "ava",
+    "playwright",
+    "cypress",
+    "tap",
+    "uvu",
+})
+
+
+def package_declares_node_tests(package: dict[str, Any]) -> bool:
+    """Return whether ``package.json`` declares an executable Node test suite.
+
+    Dependencies alone remain useful evidence for conventional runners, while
+    command inspection covers dependency-free ``node --test`` and scripts that
+    invoke Playwright/Cypress/tap/uvu through wrappers such as ``npx``.
+    """
+    scripts = package.get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    command = str(scripts.get("test") or "").strip().lower()
+    if not command:
+        return False
+    dependencies = {
+        str(name).strip().lower()
+        for section in ("dependencies", "devDependencies", "optionalDependencies")
+        if isinstance(package.get(section), dict)
+        for name in package[section]
+    }
+    if dependencies.intersection(_NODE_TEST_RUNNERS):
+        return True
+    if re.search(r"\bnode(?:\.exe)?\s+--test(?:\s|$)", command):
+        return True
+    command_tokens = {
+        token
+        for token in re.split(r"[^a-z0-9@/_.-]+", command)
+        if token
+    }
+    return bool(command_tokens.intersection(_NODE_TEST_COMMANDS))
+
+
+def _native_node_test_script(package: dict[str, Any]) -> bool:
+    scripts = package.get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    return bool(
+        re.search(
+            r"\bnode(?:\.exe)?\s+--test(?:\s|$)",
+            str(scripts.get("test") or "").strip().lower(),
+        )
+    )
 
 
 def _run_node_tests(
@@ -3715,14 +3879,14 @@ def _run_node_tests(
     *,
     extra_env: dict[str, str] | None = None,
 ) -> tuple[bool, bool, str]:
-    """Advisory: run the project's JS/TS test script when a REAL runner is
-    declared and node_modules is present. Returns ``(ran, passed, summary)``.
+    """Run the project's JS/TS test script when a real runner is declared.
+
+    Returns ``(ran, passed, summary)``. When a suite actually runs, its result
+    is objective proof evidence and callers gate delivery on a failure.
 
     ``ran=False`` (no runner / no script / launch failure / timeout) means
-    'could not assess' — callers must treat this as advisory and never hard-fail
-    a build on it (node runners lack pytest's clean 'no tests' exit code, so a
-    flaky/jsdom test would otherwise false-fail a valid app). Runs under CI=1 so
-    vitest/jest execute once instead of entering watch mode. Never raises."""
+    'could not assess' and remains a soft skip. Runs under CI=1 so vitest/jest
+    execute once instead of entering watch mode. Never raises."""
     import json as _json
     import os
     import shutil
@@ -3732,7 +3896,7 @@ def _run_node_tests(
     use_container_names = _use_container_command_names(cmd_ctx)
     if npm is None and not use_container_names:
         return (False, False, "")
-    if not pkg_path.exists() or not (pdir / "node_modules").is_dir():
+    if not pkg_path.exists():
         return (False, False, "")
     try:
         pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
@@ -3740,16 +3904,19 @@ def _run_node_tests(
         return (False, False, "")
     if not isinstance(pkg, dict) or "test" not in (pkg.get("scripts") or {}):
         return (False, False, "no test script")
-    all_deps = {**(pkg.get("dependencies") or {}), **(pkg.get("devDependencies") or {})}
-    if not any(r in all_deps for r in _NODE_TEST_RUNNERS):
+    if not package_declares_node_tests(pkg):
         return (False, False, "no recognized test runner")
+    if not (pdir / "node_modules").is_dir() and not _native_node_test_script(pkg):
+        return (False, False, "test dependencies are not installed")
     env = {**os.environ, "CI": "1", "npm_config_audit": "false",
            "npm_config_fund": "false", **(extra_env or {})}
     npm_cmd = "npm" if use_container_names else str(npm)
     res = _run_proof_command(
         cmd_ctx, [npm_cmd, "test", "--silent"], cwd=pdir, timeout=timeout, env=env)
-    if res.timed_out or res.returncode == 127:
-        return (False, False, "node tests timed out / failed to launch")
+    if res.timed_out:
+        return (True, False, "node tests timed out")
+    if res.returncode == 127:
+        return (False, False, "node tests failed to launch")
     out = ((res.stdout or "") + (res.stderr or "")).strip()
     return (True, res.returncode == 0, out[-500:])
 
@@ -3888,6 +4055,94 @@ def _discard_node_modules(pdir: Path) -> None:
         pass
 
 
+def _prepare_node_dependencies(
+    pdir: Path,
+    *,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Install declared Node dependencies and stabilize the lockfile once."""
+    npm = shutil.which("npm")
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if npm is None and not use_container_names:
+        return (False, False, "npm could not be launched")
+    npm_cmd = "npm" if use_container_names else str(npm)
+    env = _node_build_env(container=use_container_names)
+    foreign_deps = "" if use_container_names else discard_foreign_node_modules(pdir)
+    if _node_install_current(pdir, container=use_container_names):
+        return (True, True, "npm install skipped (dependencies current)")
+
+    inst = _run_proof_command(
+        cmd_ctx,
+        _node_npm_install_args(npm_cmd, "install", container=use_container_names),
+        cwd=pdir,
+        timeout=max(1, int(timeout)),
+        env=env,
+        network=True,
+    )
+    if inst.timed_out:
+        _discard_node_modules(pdir)
+        return (True, False, f"npm install timed out after {timeout}s")
+    if inst.returncode == 127:
+        return (False, False, "npm install could not be launched")
+    if inst.returncode != 0:
+        out = ((inst.stdout or "") + (inst.stderr or "")).strip()
+        _discard_node_modules(pdir)
+        if _npm_install_is_offline(out):
+            return (False, False, "npm install failed (offline registry)")
+        return (True, False, out[-700:])
+    _mark_node_install_current(pdir, container=use_container_names)
+    summary = "npm install ok"
+    if foreign_deps:
+        summary = f"{summary} after replacing {foreign_deps} node_modules"
+    return (True, True, summary)
+
+
+def stabilize_node_dependencies(
+    project_dir: str | Path,
+    *,
+    execution_backend: str = "auto",
+    stack: str = "",
+    timeout: int = 300,
+    run_tests: bool = True,
+    run_build: bool = True,
+) -> tuple[bool, bool, str]:
+    """Install dependencies before a caller binds a source-tree digest.
+
+    ``npm install`` is allowed to create or normalize a lockfile. Reverify uses
+    this phase before its candidate snapshot, so the later proof remains strict
+    about every source mutation without falsely blaming the expected lockfile.
+    """
+    pdir = Path(project_dir)
+    package_path = pdir / "package.json"
+    if not package_path.is_file() or not (run_tests or run_build):
+        return (False, False, "no Node dependency phase required")
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return (True, False, "package.json could not be parsed")
+    if not isinstance(package, dict):
+        return (True, False, "package.json is not an object")
+    invalid_names = _invalid_npm_package_names(package)
+    if invalid_names:
+        return (True, False, "invalid npm package names: " + ", ".join(invalid_names[:8]))
+    scripts = package.get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    needs_build = run_build and any(name in scripts for name in ("build", "typecheck", "check"))
+    needs_tests = run_tests and package_declares_node_tests(package)
+    if not (needs_build or needs_tests):
+        return (False, False, "no declared Node build or test command")
+
+    cmd_ctx = _proof_command_context(execution_backend, stack)
+    cmd_ctx.docker_available = _sandbox_available(cmd_ctx, execution_backend)
+    install_budget = max(120, int(timeout * 0.6))
+    return _prepare_node_dependencies(
+        pdir,
+        timeout=install_budget,
+        cmd_ctx=cmd_ctx,
+    )
+
+
 def _run_node_build(
     pdir: Path,
     stack: str,
@@ -3929,67 +4184,82 @@ def _run_node_build(
 
     env = _node_build_env(container=use_container_names)
     npm_cmd = "npm" if use_container_names else str(npm)
-    foreign_deps = "" if use_container_names else discard_foreign_node_modules(pdir)
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
     # fix-loop sees the error. ONLY a genuine connectivity failure (offline
     # registry) soft-skips. Floor the budget at 120s so a slow-but-valid install
     # isn't starved into a false timeout.
     install_budget = max(120, int(timeout * 0.6))
-    install_summary = "npm install skipped (dependencies current)"
-    if not _node_install_current(pdir, container=use_container_names):
-        inst = _run_proof_command(
-            cmd_ctx,
-            _node_npm_install_args(npm_cmd, "install", container=use_container_names),
-            cwd=pdir,
-            timeout=install_budget,
-            env=env,
-            network=True,
-        )
-        if inst.timed_out:
-            # A hang/too-slow install is a delivery problem, not a free pass.
-            _discard_node_modules(pdir)
-            return (True, False, f"npm install timed out after {install_budget}s")
-        if inst.returncode == 127:
-            # npm could not even be launched -> environmental, soft-skip.
-            return (False, False, "npm install could not be launched — build skipped")
-        if inst.returncode != 0:
-            out = ((inst.stdout or "") + (inst.stderr or "")).strip()
-            _discard_node_modules(pdir)
-            if _npm_install_is_offline(out):
-                return (False, False, "npm install failed (offline registry) — build skipped")
-            return (True, False, out[-700:])
-        _mark_node_install_current(pdir, container=use_container_names)
-        install_summary = "npm install ok"
-        if foreign_deps:
-            install_summary = f"{install_summary} after replacing {foreign_deps} node_modules"
-
-    if npm_build_current(pdir, build_cmd):
-        return (
-            True,
-            True,
-            f"{install_summary}; npm run {build_cmd} skipped (build current)",
-        )
-
-    bld = _run_proof_command(
-        cmd_ctx,
-        [npm_cmd, "run", build_cmd],
-        cwd=pdir,
-        timeout=max(30, timeout - install_budget),
-        env=env,
+    install_ran, install_ok, install_summary = _prepare_node_dependencies(
+        pdir,
+        timeout=install_budget,
+        cmd_ctx=cmd_ctx,
     )
-    if bld.timed_out:
-        return (True, False, f"npm run {build_cmd} timed out after build budget")
-    if bld.returncode == 127:
-        return (False, False, "")
-    out = ((bld.stdout or "") + (bld.stderr or "")).strip()
-    if bld.returncode == 0:
+    if not install_ok:
+        if not install_ran:
+            return (False, False, f"{install_summary} — build skipped")
+        return (True, False, install_summary)
+
+    summaries = [install_summary]
+    if npm_build_current(pdir, build_cmd):
+        summaries.append(f"npm run {build_cmd} skipped (build current)")
+    else:
+        bld = _run_proof_command(
+            cmd_ctx,
+            [npm_cmd, "run", build_cmd],
+            cwd=pdir,
+            timeout=max(30, timeout - install_budget),
+            env=env,
+        )
+        if bld.timed_out:
+            return (True, False, f"npm run {build_cmd} timed out after build budget")
+        if bld.returncode == 127:
+            return (False, False, "")
+        out = ((bld.stdout or "") + (bld.stderr or "")).strip()
+        if bld.returncode != 0:
+            # Surface file/symbol diagnostics so the fix-loop targets the real
+            # compiler cause instead of receiving an unhelpful output tail.
+            return (True, False, _distill_build_errors(out))
         mark_npm_build_current(pdir, build_cmd)
-        tail = out[-300:]
-        return (True, True, f"{install_summary}; {tail}" if tail else install_summary)
-    # Surface the file/symbol-naming diagnostics (not just the tail) so the
-    # fix-loop's improver can target the real cause (e.g. a missing export).
-    return (True, False, _distill_build_errors(out))
+        summaries.append(out[-300:] if out else f"npm run {build_cmd} ok")
+
+    # A production build can transpile while strict framework/TypeScript checks
+    # still fail. Honor a separately declared validation script instead of
+    # certifying the app from the build alone. Prefer the explicit typecheck
+    # command; Astro projects conventionally expose the equivalent as `check`.
+    validation_cmd = None
+    if build_cmd != "typecheck" and "typecheck" in scripts:
+        validation_cmd = "typecheck"
+    elif build_cmd != "check" and "check" in scripts:
+        validation_cmd = "check"
+    if validation_cmd:
+        validation = _run_proof_command(
+            cmd_ctx,
+            [npm_cmd, "run", validation_cmd],
+            cwd=pdir,
+            timeout=max(30, min(120, timeout // 3)),
+            env=env,
+        )
+        if validation.timed_out:
+            return (True, False, f"npm run {validation_cmd} timed out")
+        if validation.returncode == 127:
+            return (False, False, "")
+        validation_out = (
+            (validation.stdout or "") + (validation.stderr or "")
+        ).strip()
+        incomplete_prompt = (
+            "requires the following dependency to be installed" in validation_out
+            or "Continue?" in validation_out
+        )
+        if validation.returncode != 0 or incomplete_prompt:
+            return (True, False, _distill_build_errors(validation_out))
+        summaries.append(
+            validation_out[-300:]
+            if validation_out
+            else f"npm run {validation_cmd} ok"
+        )
+
+    return (True, True, "; ".join(part for part in summaries if part))
 
 
 # Swift is NOT a node stack: it has no package.json and builds via Swift Package
@@ -4055,13 +4325,13 @@ def _run_swift_tests(
     timeout: int,
     cmd_ctx: _ProofCommandContext | None = None,
 ) -> tuple[bool, bool, str]:
-    """Advisory: run ``swift test`` when a test target is declared. Returns
-    ``(ran, passed, summary)``.
+    """Run ``swift test`` when a test target is declared.
+
+    Returns ``(ran, passed, summary)``. An executed suite is delivery-gating
+    proof evidence.
 
     ``ran=False`` (no toolchain / no test target / launch failure / timeout) means
-    'could not assess' — callers treat it as advisory and never hard-fail a
-    building app on it (a subtly-wrong generated test must not no_go a compiling
-    app). Never raises."""
+    'could not assess' and remains a soft skip. Never raises."""
     import shutil
 
     manifest = pdir / "Package.swift"
@@ -4087,8 +4357,10 @@ def _run_swift_tests(
     res = _run_proof_command(
         cmd_ctx, [swift_cmd, "test"], cwd=pdir, timeout=timeout, env=swift_env,
         network=True)
-    if res.timed_out or res.returncode == 127:
-        return (False, False, "swift test timed out / failed to launch")
+    if res.timed_out:
+        return (True, False, "swift test timed out")
+    if res.returncode == 127:
+        return (False, False, "swift test failed to launch")
     out = ((res.stdout or "") + (res.stderr or "")).strip()
     if "sandbox-exec: sandbox_apply: Operation not permitted" in out:
         return (False, False, "swift sandbox-exec blocked by host sandbox")

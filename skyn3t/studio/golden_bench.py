@@ -84,10 +84,10 @@ _LLM_BACKENDS = frozenset(
         "auto",
         "stub",
         "openrouter",
+        "codex_cli",
         "claude_cli",
         "kimi_cli",
         "copilot_cli",
-        "openai_cli",
     }
 )
 _EXECUTION_BACKENDS = frozenset({"auto", "docker", "inline"})

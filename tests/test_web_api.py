@@ -170,6 +170,29 @@ def test_build_routes_parse_string_booleans_exactly(endpoint):
     assert invalid.status_code == 422
 
 
+def test_llm_backend_route_rejects_unknown_backend_with_422():
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    st = _state()
+    st.settings.auth_token = "secret"
+    app = FastAPI()
+    app.include_router(routes.build_router(st))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/llm/backend",
+        json={"backend": "not-a-backend"},
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 422
+    assert "Unsupported LLM backend" in response.json()["detail"]
+
+
 # ---- websocket auth (token via subprotocol, never query string) -----------
 class _FakeWS:
     def __init__(self, *, headers=None, subprotocols=None, client_host="127.0.0.1"):
@@ -526,7 +549,7 @@ async def test_submit_build_without_studio_emits_terminal_failure_event():
     assert row.status == "failed"
 
 
-async def test_best_quality_profile_requests_visual_self_heal():
+async def test_best_quality_profile_requests_visual_self_heal_without_forcing_assets():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -536,12 +559,13 @@ async def test_best_quality_profile_requests_visual_self_heal():
 
     studio = _Studio()
     st = _state(studio=studio)
+    st.settings.asset_gen = False
     res = await routes.submit_build(st, brief="a polished golf website", build_profile="best_quality")
 
     assert res["build_profile"] == "best_quality"
     assert studio.extra["best_of_n"] == 2
     assert studio.extra["best_of_n_across_models"] is True
-    assert studio.extra["asset_gen"] is True
+    assert studio.extra["asset_gen"] is False
     assert studio.extra["visual_self_heal"] is True
 
 
@@ -583,7 +607,7 @@ async def test_fast_profile_uses_single_candidate_without_truncating_codegen():
     assert "agentic_timeout" not in studio.extra
 
 
-async def test_fast_full_app_keeps_scope_and_assets_without_redundant_candidates():
+async def test_fast_full_app_keeps_scope_without_forcing_paid_assets():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -593,6 +617,7 @@ async def test_fast_full_app_keeps_scope_and_assets_without_redundant_candidates
 
     studio = _Studio()
     st = _state(studio=studio)
+    st.settings.asset_gen = False
     res = await routes.submit_build(
         st,
         brief="a complete golf tutorial website",
@@ -606,7 +631,7 @@ async def test_fast_full_app_keeps_scope_and_assets_without_redundant_candidates
     assert studio.extra["max_debug_attempts"] == 1
     assert studio.extra["parallel_code_slices"] is True
     assert studio.extra["parallel_code_slices_min_files"] == 4
-    assert studio.extra["asset_gen"] is True
+    assert studio.extra["asset_gen"] is False
     assert studio.extra["visual_self_heal"] is True
     assert studio.extra["agentic_timeout"] == 1200
 
@@ -620,8 +645,10 @@ async def test_cheap_full_app_uses_parallel_specialists_without_duplicate_apps()
             self.extra = extra
 
     studio = _Studio()
+    st = _state(studio=studio)
+    st.settings.asset_gen = False
     res = await routes.submit_build(
-        _state(studio=studio),
+        st,
         brief="a complete HVAC company website",
         build_profile="cheap_learned",
         full_app=True,
@@ -632,36 +659,12 @@ async def test_cheap_full_app_uses_parallel_specialists_without_duplicate_apps()
     assert studio.extra["best_of_n_across_models"] is False
     assert studio.extra["parallel_code_slices"] is True
     assert studio.extra["parallel_code_slices_min_files"] == 4
-    assert studio.extra["asset_gen"] is True
+    assert studio.extra["asset_gen"] is False
     assert studio.extra["visual_self_heal"] is True
     assert studio.extra["max_debug_attempts"] == 4
 
 
-async def test_balanced_full_app_keeps_full_app_assets_and_visual_repair():
-    class _Studio:
-        def __init__(self):
-            self.extra = None
-
-        def start(self, brief, slug=None, extra=None):
-            self.extra = extra
-
-    studio = _Studio()
-    await routes.submit_build(
-        _state(studio=studio),
-        brief="a complete beginner golf website",
-        build_profile="balanced",
-        full_app=True,
-    )
-
-    assert studio.extra["full_app_contract"] is True
-    assert studio.extra["asset_gen"] is True
-    assert studio.extra["visual_self_heal"] is True
-    assert studio.extra["best_of_n"] == 2
-    assert studio.extra["max_debug_attempts"] == 2
-
-
-
-async def test_full_app_option_requests_contract_assets_and_extra_repair_budget():
+async def test_balanced_full_app_keeps_scope_and_visual_repair_without_paid_assets():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -671,6 +674,33 @@ async def test_full_app_option_requests_contract_assets_and_extra_repair_budget(
 
     studio = _Studio()
     st = _state(studio=studio)
+    st.settings.asset_gen = False
+    await routes.submit_build(
+        st,
+        brief="a complete beginner golf website",
+        build_profile="balanced",
+        full_app=True,
+    )
+
+    assert studio.extra["full_app_contract"] is True
+    assert studio.extra["asset_gen"] is False
+    assert studio.extra["visual_self_heal"] is True
+    assert studio.extra["best_of_n"] == 2
+    assert studio.extra["max_debug_attempts"] == 2
+
+
+
+async def test_full_app_option_requests_contract_and_extra_repair_budget():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    st.settings.asset_gen = False
     res = await routes.submit_build(
         st,
         brief="a complete golf tutorial website",
@@ -682,10 +712,33 @@ async def test_full_app_option_requests_contract_assets_and_extra_repair_budget(
     assert res["build_profile"] == "manual"
     assert res["full_app"] is True
     assert studio.extra["full_app_contract"] is True
-    assert studio.extra["asset_gen"] is True
+    assert studio.extra["asset_gen"] is False
     assert studio.extra["max_debug_attempts"] == 4
     assert studio.extra["visual_self_heal"] is True
     assert studio.extra["model_override"] == "openrouter/test-model"
+
+
+async def test_full_app_honors_explicit_asset_generation_setting():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    st.settings.asset_gen = True
+
+    await routes.submit_build(
+        st,
+        brief="a complete golf tutorial website",
+        build_profile="fast",
+        full_app=True,
+    )
+
+    assert studio.extra["full_app_contract"] is True
+    assert studio.extra["asset_gen"] is True
 
 
 async def test_studio_runner_persists_full_app_contract_extra(tmp_path):
@@ -745,11 +798,11 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
     class _StopAfterInitialSave(Exception):
         pass
 
-    async def _saved_codegen_model(label: str, *, cli_available: bool, extra=None) -> str:
+    async def _saved_codegen_model(label: str, *, extra=None) -> str:
         monkeypatch.setattr(
             LLMClient,
             "_cli_available",
-            lambda self, provider: cli_available and provider == "claude",
+            lambda self, provider: provider == "claude",
         )
         root = tmp_path / label
         settings = Settings(
@@ -786,15 +839,22 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
 
     assert await _saved_codegen_model(
         "cli-available",
-        cli_available=True,
         extra={"model_override": "openrouter/manual"},
     ) == "sonnet"
 
-    assert await _saved_codegen_model(
-        "cli-unavailable",
-        cli_available=False,
-        extra={"openrouter_codegen_model": ""},
-    ) == "openrouter/codegen"
+    monkeypatch.setattr(LLMClient, "_cli_available", lambda self, provider: False)
+    root = tmp_path / "cli-unavailable"
+    settings = Settings(
+        projects_dir=root / "Projects",
+        data_dir=root / "data",
+        logs_dir=root / "logs",
+        llm_backend="stub",
+        codegen_cli_provider="claude",
+    )
+    bus = EventBus()
+    runner = StudioRunner(bus, Orchestrator(bus), settings=settings, memory=None)
+    with pytest.raises(ValueError, match="codegen_cli_provider='claude'.*unavailable"):
+        await runner.start("Build a python tool", slug="codegen-trace-cli-unavailable")
 
 
 async def test_studio_runner_codegen_model_trace_reports_cli_default(

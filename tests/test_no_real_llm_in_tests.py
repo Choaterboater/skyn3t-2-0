@@ -5,7 +5,9 @@ accident. Two seams are fenced in conftest:
 1. `_no_cli_vision` neuters visual_check's CLI fallback (a dev machine with
    `claude` on PATH would otherwise spawn a REAL `claude -p` from any test
    that reaches an actual screenshot+judge — the 2026-07-01 quota leak).
-2. `_isolate_data_dir` scrubs the LLM key env vars, so a shell-exported
+2. `_no_real_llm_cli` makes auto routing ignore host CLIs unless a focused test
+   installs a mocked detector + subprocess.
+3. `_isolate_data_dir` scrubs the LLM key env vars, so a shell-exported
    SKYN3T_OPENROUTER_API_KEY can't flip LLMClient from "stub" to a real paid
    backend for the whole suite.
 
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import os
 
+from skyn3t.adapters.llm import LLMClient
 from skyn3t.config.settings import Settings
 from skyn3t.studio import visual_check
 
@@ -27,6 +30,7 @@ def test_llm_key_env_vars_are_scrubbed():
     s = Settings()
     assert s.openrouter_api_key == ""
     assert s.has_any_llm is False
+    assert LLMClient(s).backend == "stub"
 
 
 def test_llm_key_from_shell_export_does_not_reach_settings(monkeypatch):

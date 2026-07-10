@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import math
 import mimetypes
 import os
@@ -19,6 +20,8 @@ import shutil
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -32,7 +35,7 @@ from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 from skyn3t.core.model_router import live_catalog, prime_live_catalog
 from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.build_summary import build_summary
-from skyn3t.studio.manifest import BuildManifest
+from skyn3t.studio.manifest import MANIFEST_FILENAME, BuildManifest
 from skyn3t.web.deps import (
     AppState,
     BuildRecord,
@@ -47,7 +50,12 @@ from skyn3t.web.model_value import (
     model_value_annotation,
     workload_payload,
 )
-from skyn3t.worktree import PREVIEW_SUBDIR, list_files
+from skyn3t.worktree import (
+    PREVIEW_SUBDIR,
+    SOURCE_TREE_EXCLUDED_DIR_NAMES,
+    list_files,
+    source_tree_snapshot,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -117,6 +125,8 @@ def _reap_build_task(task: Any) -> None:
 
 # Strong references to in-flight background improve tasks (prevent GC mid-run).
 _IMPROVE_TASKS: set = set()
+_REVERIFYING_PROJECTS: set[str] = set()
+_REVERIFY_WORKERS: dict[str, Any] = {}
 
 
 def _reap_improve_task(task: Any) -> None:
@@ -174,14 +184,35 @@ async def budget_payload(state: AppState) -> dict[str, Any]:
 # ---- live build preview (cockpit, Phase A) --------------------------------
 _DELIVERED_PROJECT_STATUSES = frozenset({"completed", "completed_no_go"})
 _ACTIVE_PROJECT_STATUSES = frozenset({"pending", "queued", "running"})
-_PROJECT_SIZE_EXCLUDED_ROOTS = frozenset({
-    ".preview", ".git", ".skyn3t-recovery", ".venv", ".next",
-    "node_modules", "dist", "build", "out", "__pycache__",
+_NON_SHIPPABLE_PROJECT_STATUSES = frozenset({
+    "cancelled",
+    "completed_no_go",
+    "failed",
+    "interrupted",
+    "rejected",
 })
+_PROJECT_SIZE_EXCLUDED_ROOTS = SOURCE_TREE_EXCLUDED_DIR_NAMES
 
 
 class ProjectNotDeliveredError(RuntimeError):
     """A project directory exists, but no completed build owns it yet."""
+
+
+class ProjectReverifyError(RuntimeError):
+    """A project cannot safely enter the local reverify workflow."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 409,
+        preserve_staging: bool = False,
+        recovery_path: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.preserve_staging = preserve_staging
+        self.recovery_path = recovery_path
 
 
 class DeployPreflightError(RuntimeError):
@@ -536,6 +567,37 @@ def _nonnegative_build_cost(value: Any) -> float | None:
     return cost if math.isfinite(cost) and cost >= 0 else None
 
 
+def _project_non_shippable_spend_usd(
+    *,
+    status: str,
+    verdict: str,
+    cost_usd: Any,
+    persisted_value: Any = None,
+) -> float | None:
+    """Return recorded spend for a terminal build that produced no shippable app.
+
+    This is cost attribution, not a claim about provider invoice certainty. Callers
+    must keep exposing ``cost_truth`` alongside it for confirmed/estimated labels.
+    """
+    normalized_status = str(status or "").strip().lower()
+    normalized_verdict = str(verdict or "").strip().lower()
+    if normalized_status in _ACTIVE_PROJECT_STATUSES or normalized_status == "building":
+        return None
+    terminal_unshipped = (
+        normalized_status in _NON_SHIPPABLE_PROJECT_STATUSES
+        or (
+            normalized_verdict == "no_go"
+            and normalized_status in {"", "completed"}
+        )
+    )
+    if not terminal_unshipped:
+        return None
+    persisted = _nonnegative_build_cost(persisted_value)
+    if persisted is not None:
+        return persisted
+    return _nonnegative_build_cost(cost_usd)
+
+
 def _cost_truth_amount(value: Any) -> float | None:
     if not isinstance(value, dict):
         return None
@@ -796,7 +858,7 @@ def _normalize_model_override(model: str) -> str:
     return _normalize_model_id(model)
 
 
-def _profile_extra(profile: str) -> dict[str, Any]:
+def _profile_extra(profile: str, *, asset_gen_enabled: bool) -> dict[str, Any]:
     if profile == "fast":
         return {
             "best_of_n": 1,
@@ -824,18 +886,18 @@ def _profile_extra(profile: str) -> dict[str, Any]:
             "best_of_n_across_models": True,
             "max_debug_attempts": 3,
             "agentic_timeout": 900,
-            "asset_gen": True,
+            "asset_gen": asset_gen_enabled,
             "visual_self_heal": True,
         }
     if profile == "full_app":
-        return _full_app_extra()
+        return _full_app_extra(asset_gen_enabled=asset_gen_enabled)
     return {}
 
 
-def _full_app_extra() -> dict[str, Any]:
+def _full_app_extra(*, asset_gen_enabled: bool) -> dict[str, Any]:
     return {
         "full_app_contract": True,
-        "asset_gen": True,
+        "asset_gen": asset_gen_enabled,
         "best_of_n": 2,
         "best_of_n_across_models": True,
         "max_debug_attempts": 4,
@@ -844,20 +906,41 @@ def _full_app_extra() -> dict[str, Any]:
     }
 
 
-def _orchestration_extra(profile: str, *, full_app: bool) -> dict[str, Any]:
+def _orchestration_extra(
+    profile: str,
+    *,
+    full_app: bool,
+    asset_gen_enabled: bool,
+) -> dict[str, Any]:
     """Compose profile policy without weakening the requested app contract."""
-    extra = _full_app_extra() if full_app else {}
-    extra.update(_profile_extra(profile))
+    extra = (
+        _full_app_extra(asset_gen_enabled=asset_gen_enabled)
+        if full_app
+        else {}
+    )
+    extra.update(_profile_extra(profile, asset_gen_enabled=asset_gen_enabled))
     if full_app:
         # Profiles may trade retries/candidates for latency, but a full app still
-        # includes its visual and asset passes. Cheap/fast use parallel specialist
-        # slices instead of duplicating an entire app trajectory.
+        # includes its visual pass. Paid asset generation remains an explicit
+        # operator setting; full scope must never override asset_gen=false.
         extra["full_app_contract"] = True
-        extra["asset_gen"] = True
+        extra["asset_gen"] = asset_gen_enabled
         extra["visual_self_heal"] = True
         if profile in {"fast", "cheap_learned"}:
             extra["parallel_code_slices_min_files"] = 4
     return extra
+
+
+def _enforce_build_routing(state: AppState) -> None:
+    """Reject unusable explicit routes before an API request creates build state."""
+    from skyn3t.adapters.llm import enforce_explicit_routing_lock
+
+    client = getattr(state, "llm_client", None)
+    probe = getattr(client, "_cli_available", None)
+    enforce_explicit_routing_lock(
+        state.settings,
+        cli_available=probe if callable(probe) else None,
+    )
 
 
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
@@ -872,6 +955,15 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     """
     if not brief or not brief.strip():
         raise ValueError("brief is required")
+    _enforce_build_routing(state)
+    requested_slug = slug.strip()
+    if requested_slug:
+        projects_root = Path(state.settings.projects_dir).resolve()
+        candidate = (projects_root / requested_slug).resolve()
+        if candidate == projects_root or not candidate.is_relative_to(projects_root):
+            raise ValueError("invalid slug")
+        if str(candidate) in _REVERIFYING_PROJECTS:
+            raise ValueError("project local re-verification is still running")
     build_id = state.new_build_id()
     profile = _normalize_build_profile(build_profile)
     requested_model = _normalize_model_override(model_override)
@@ -928,7 +1020,13 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         "build_id": build_id,
         "build_profile": profile,
     }
-    build_extra.update(_orchestration_extra(profile, full_app=full_app_requested))
+    build_extra.update(
+        _orchestration_extra(
+            profile,
+            full_app=full_app_requested,
+            asset_gen_enabled=bool(getattr(state.settings, "asset_gen", False)),
+        )
+    )
     if model:
         build_extra["model_override"] = model
     if ref_paths:
@@ -1307,37 +1405,1087 @@ async def cleanup_builds(
 
 def _project_visible_stats(project: Path) -> tuple[int, int]:
     """Return source/delivery bytes and file count, excluding internal previews."""
-    total = 0
-    count = 0
+    snapshot = source_tree_snapshot(project)
+    return int(snapshot["byte_count"]), int(snapshot["file_count"])
+
+
+def _canonical_evidence_sha256(value: Any) -> str:
     try:
-        files = project.rglob("*")
-        for path in files:
-            try:
-                relative = path.relative_to(project)
-                if (
-                    relative.parts
-                    and relative.parts[0].casefold() in _PROJECT_SIZE_EXCLUDED_ROOTS
-                ):
-                    continue
-                if path.is_file():
-                    total += path.stat().st_size
-                    count += 1
-            except OSError:
-                continue
+        payload = json.dumps(
+            value,
+            allow_nan=False,
+            default=str,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        payload = repr(value).encode("utf-8", errors="replace")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _completed_brief_review(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Return the latest completed canonical reviewer-stage evidence.
+
+    The manifest's final verdict is not enough: cancellation can happen after a
+    structural rescore or before finalization. The canonical ``reviewer`` stage
+    is the existing brief-aware signal used by the main build pipeline.
+    """
+    stages = manifest.get("stages")
+    if not isinstance(stages, list):
+        stages = []
+    for value in reversed(stages):
+        if not isinstance(value, dict):
+            continue
+        if str(value.get("agent_type") or "").strip().lower() != "reviewer":
+            continue
+        if str(value.get("status") or "").strip().lower() != "completed":
+            continue
+        summary = value.get("output_summary")
+        summary = summary if isinstance(summary, dict) else {}
+        verdict = str(summary.get("verdict") or "").strip().lower()
+        score_value = summary.get("score", value.get("score"))
+        try:
+            score = float(score_value) if score_value is not None else None
+        except (TypeError, ValueError):
+            score = None
+        if score is not None and not math.isfinite(score):
+            score = None
+        snapshot_valid_value = summary.get("source_tree_snapshot_valid")
+        snapshot_valid = (
+            snapshot_valid_value if isinstance(snapshot_valid_value, bool) else None
+        )
+        return {
+            "found": True,
+            "stage": str(value.get("name") or "review"),
+            "verdict": verdict,
+            "score": score,
+            "evidence_sha256": _canonical_evidence_sha256(value),
+            "source_tree_sha256": str(
+                summary.get("source_tree_sha256") or ""
+            ).strip(),
+            "source_tree_digest_algorithm": str(
+                summary.get("source_tree_digest_algorithm") or ""
+            ).strip(),
+            "source_tree_snapshot_valid": snapshot_valid,
+        }
+    return {
+        "found": False,
+        "stage": "",
+        "verdict": "",
+        "score": None,
+        "evidence_sha256": "",
+        "source_tree_sha256": "",
+        "source_tree_digest_algorithm": "",
+        "source_tree_snapshot_valid": None,
+    }
+
+
+def _terminal_non_delivered_manifest(manifest: dict[str, Any]) -> bool:
+    status = _normalize_status(str(manifest.get("status") or ""))
+    verdict = str(manifest.get("verdict") or "").strip().lower()
+    return status in _NON_SHIPPABLE_PROJECT_STATUSES or (
+        status == "completed" and verdict == "no_go"
+    )
+
+
+def _reverify_file_count(project: Path, visible_file_count: int | None = None) -> int:
+    """Count project-owned files, excluding the manifest itself.
+
+    ``_project_visible_stats`` already excludes dependency/build caches and
+    recovery/preview internals. Reuse its count when a list row already paid for
+    that scan; otherwise perform the same bounded scan here.
+    """
+    return (
+        _project_visible_stats(project)[1]
+        if visible_file_count is None
+        else max(0, int(visible_file_count))
+    )
+
+
+def _project_reverify_eligibility(
+    project: Path,
+    manifest: dict[str, Any] | None,
+    *,
+    status: str,
+    active: bool,
+    visible_file_count: int,
+) -> tuple[bool, str]:
+    if manifest is None:
+        return False, "No build manifest is available."
+    if active:
+        return False, "The build is still active."
+    if str(project.resolve()) in _REVERIFYING_PROJECTS:
+        return False, "Local re-verification is already running."
+    if not _terminal_non_delivered_manifest(manifest):
+        if _normalize_status(status) == "completed" and (
+            str(manifest.get("verdict") or "").strip().lower() == "go"
+        ):
+            return False, "The project is already delivered."
+        return False, "The build is not a terminal non-delivered project."
+    if _reverify_file_count(project, visible_file_count) <= 0:
+        return False, "No project files are available to verify."
+    review = _completed_brief_review(manifest)
+    if review["verdict"] != "go":
+        return False, "A completed brief-aware review with verdict go is required."
+    return True, ""
+
+
+def _reverified_project_files(project: Path) -> list[str]:
+    snapshot = source_tree_snapshot(project)
+    return list(snapshot["files"])
+
+
+def _active_reverify_status(value: Any) -> bool:
+    status = _normalize_status(str(value or ""))
+    return bool(status) and not _build_is_terminal(status)
+
+
+async def _project_has_active_build(
+    state: AppState,
+    *,
+    slug: str,
+    build_id: str,
+) -> bool:
+    """Check live and durable projections before mutating a project tree."""
+    for record in getattr(state, "builds", {}).values():
+        record_slug = str(getattr(record, "slug", "") or "")
+        record_id = str(getattr(record, "build_id", "") or "")
+        if (record_slug == slug or (build_id and record_id == build_id)) and (
+            _active_reverify_status(getattr(record, "status", ""))
+        ):
+            return True
+
+    memory = getattr(state, "memory", None)
+    if memory is None:
+        return False
+    rows: list[dict[str, Any]] = []
+    if build_id and hasattr(memory, "get_build"):
+        try:
+            row = await memory.get_build(build_id)
+            if isinstance(row, dict):
+                rows.append(row)
+        except Exception:  # noqa: BLE001 - the disk manifest remains authoritative
+            pass
+    try:
+        if hasattr(memory, "latest_builds_by_slug"):
+            values = await memory.latest_builds_by_slug([slug])
+        elif hasattr(memory, "recent_builds"):
+            values = await memory.recent_builds(limit=200)
+        else:
+            values = []
+        rows.extend(value for value in values if isinstance(value, dict))
+    except Exception:  # noqa: BLE001 - a store read failure must not crash the API
+        pass
+    return any(
+        (
+            str(row.get("slug") or "") == slug
+            or (build_id and str(row.get("build_id") or "") == build_id)
+        )
+        and _active_reverify_status(row.get("status"))
+        for row in rows
+    )
+
+
+def _resolved_artifact_matches(project: Path, value: Any) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        return Path(raw).resolve() == project.resolve()
     except OSError:
-        return 0, 0
-    return total, count
+        return False
 
 
-def _project_build_record(state: AppState, slug: str) -> Any | None:
+async def _validate_reverify_identity(
+    state: AppState,
+    project: Path,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the direct project, manifest, live cache, and durable row agree."""
+    from skyn3t.studio.cleanup import _load_manifest
+
+    canonical_slug = project.name
+    manifest_slug = str(manifest.get("slug") or "").strip()
+    build_id = str(manifest.get("build_id") or "").strip()
+    if not manifest_slug or manifest_slug != canonical_slug:
+        raise ProjectReverifyError("manifest slug does not match the project directory")
+    if not build_id:
+        raise ProjectReverifyError("manifest build_id is required for local re-verification")
+    artifact_dir = manifest.get("artifact_dir")
+    if not artifact_dir:
+        raise ProjectReverifyError("manifest artifact_dir is required for local re-verification")
+    if not _resolved_artifact_matches(project, artifact_dir):
+        raise ProjectReverifyError("manifest artifact_dir does not match the project directory")
+
+    projects_root = Path(state.settings.projects_dir).resolve()
+    try:
+        siblings = [path for path in projects_root.iterdir() if path.is_dir() and path != project]
+    except OSError as exc:
+        raise ProjectReverifyError(
+            "could not validate project identity",
+            status_code=500,
+        ) from exc
+    for sibling in siblings:
+        other = _load_manifest(sibling)
+        if isinstance(other, dict) and str(other.get("build_id") or "").strip() == build_id:
+            raise ProjectReverifyError("build_id is already owned by another project")
+
+    for record in getattr(state, "builds", {}).values():
+        record_id = str(getattr(record, "build_id", "") or "").strip()
+        record_slug = str(getattr(record, "slug", "") or "").strip()
+        if record_id == build_id and record_slug and record_slug != canonical_slug:
+            raise ProjectReverifyError("live build_id is owned by another project")
+
+    durable_row: dict[str, Any] | None = None
+    latest_row: dict[str, Any] | None = None
+    memory = getattr(state, "memory", None)
+    if memory is not None:
+        try:
+            if hasattr(memory, "get_build"):
+                value = await memory.get_build(build_id)
+                durable_row = value if isinstance(value, dict) else None
+            if hasattr(memory, "latest_builds_by_slug"):
+                values = await memory.latest_builds_by_slug([canonical_slug])
+            elif hasattr(memory, "recent_builds"):
+                values = await memory.recent_builds(limit=200)
+            else:
+                values = []
+        except Exception as exc:  # noqa: BLE001 - identity must fail closed
+            raise ProjectReverifyError(
+                "durable build identity could not be validated",
+                status_code=503,
+            ) from exc
+        latest_row = next(
+            (
+                value
+                for value in values
+                if isinstance(value, dict)
+                and str(value.get("slug") or "").strip() == canonical_slug
+            ),
+            None,
+        )
+
+    if durable_row is not None:
+        durable_slug = str(durable_row.get("slug") or "").strip()
+        if durable_slug and durable_slug != canonical_slug:
+            raise ProjectReverifyError("durable build_id is owned by another project")
+        durable_artifact = durable_row.get("artifact_dir")
+        if durable_artifact and not _resolved_artifact_matches(project, durable_artifact):
+            raise ProjectReverifyError("durable artifact_dir does not match the project")
+    if latest_row is not None and str(latest_row.get("build_id") or "").strip() != build_id:
+        raise ProjectReverifyError("a newer durable build owns this project slug")
+
+    return {
+        "slug": canonical_slug,
+        "build_id": build_id,
+        "project_relpath": canonical_slug,
+        "validated": True,
+        "durable_row": durable_row,
+        "latest_row": latest_row,
+    }
+
+
+def _run_local_project_reverify(
+    project: Path,
+    *,
+    stack: str,
+    brief: str,
+    settings: Any,
+) -> dict[str, Any]:
+    """Repair and prove an isolated candidate without touching the live tree."""
+    from skyn3t.studio.planner import file_checklist
+    from skyn3t.studio.proof_run import (
+        apply_deterministic_repairs,
+        proof_run,
+        stabilize_node_dependencies,
+    )
+
+    staging_root, staged_project, live_source = _copy_reverify_candidate(project)
+    try:
+        repairs = apply_deterministic_repairs(staged_project, stack=stack)
+        before_dependencies = source_tree_snapshot(staged_project)
+        if not bool(before_dependencies.get("valid")):
+            raise ProjectReverifyError(
+                "local re-verification candidate is ambiguous or unreadable"
+            )
+
+        run_tests = bool(getattr(settings, "run_generated_tests", True))
+        run_build = bool(getattr(settings, "run_generated_build", True))
+        build_timeout = int(getattr(settings, "generated_build_timeout", 300))
+        execution_backend = str(
+            getattr(settings, "execution_backend", "auto") or "auto"
+        )
+        dependency_ran, dependency_ok, dependency_summary = (
+            stabilize_node_dependencies(
+                staged_project,
+                execution_backend=execution_backend,
+                stack=stack,
+                timeout=build_timeout,
+                run_tests=run_tests,
+                run_build=run_build,
+            )
+        )
+        candidate = source_tree_snapshot(staged_project)
+        if not bool(candidate.get("valid")):
+            raise ProjectReverifyError(
+                "local re-verification candidate is ambiguous or unreadable"
+            )
+        proof = proof_run(
+            staged_project,
+            checklist=file_checklist(stack),
+            execution_backend=execution_backend,
+            stack=stack,
+            run_tests=run_tests,
+            test_timeout=int(getattr(settings, "generated_test_timeout", 90)),
+            run_build=run_build,
+            build_timeout=build_timeout,
+            enable_mock_llm=bool(getattr(settings, "mock_llm_proof_enabled", True)),
+            install_python_deps=bool(
+                getattr(settings, "proof_install_python_deps", True)
+            ),
+            python_deps_timeout=int(
+                getattr(settings, "proof_python_deps_timeout", 120)
+            ),
+            brief=brief,
+        )
+        after_proof = source_tree_snapshot(staged_project)
+        return {
+            "staging_root": staging_root,
+            "project": staged_project,
+            "live_source": live_source,
+            "repairs": repairs,
+            "dependency_stabilization": {
+                "ran": dependency_ran,
+                "passed": dependency_ok if dependency_ran else None,
+                "summary": dependency_summary,
+            },
+            "candidate": candidate,
+            "proof": proof,
+            "after_proof": after_proof,
+        }
+    except BaseException:
+        _cleanup_reverify_staging(staging_root)
+        raise
+
+
+def _cleanup_reverify_staging(staging_root: Path | None) -> None:
+    if staging_root is None:
+        return
+    try:
+        shutil.rmtree(staging_root)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        log.warning("project.reverify_staging_cleanup_failed", path=str(staging_root))
+
+
+def _copy_reverify_candidate(project: Path) -> tuple[Path, Path, dict[str, Any]]:
+    """Copy the canonical source view and verify the copy before any command."""
+    live_source = source_tree_snapshot(project)
+    if not bool(live_source.get("valid")):
+        raise ProjectReverifyError(
+            "local re-verification source tree is ambiguous or unreadable"
+        )
+    staging_root = project.parent / (
+        f".skyn3t-reverify-{project.name}-{uuid.uuid4().hex}"
+    )
+    staged_project = staging_root / "candidate"
+    try:
+        staging_root.mkdir()
+        if (
+            staging_root.is_symlink()
+            or staging_root.resolve().parent != project.parent.resolve()
+        ):
+            raise ProjectReverifyError("local re-verification staging path is unsafe")
+        staged_project.mkdir()
+        project_root = project.resolve()
+        for relative_value in live_source.get("files") or []:
+            relative = Path(str(relative_value))
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise ProjectReverifyError(
+                    "local re-verification source snapshot contains an unsafe path"
+                )
+            source_path = project / relative
+            if source_path.is_symlink():
+                raise ProjectReverifyError(
+                    "local re-verification source changed while it was copied"
+                )
+            source = source_path.resolve()
+            if not source.is_relative_to(project_root):
+                raise ProjectReverifyError(
+                    "local re-verification source changed while it was copied"
+                )
+            target = staged_project / relative
+            if not target.resolve().is_relative_to(staged_project.resolve()):
+                raise ProjectReverifyError(
+                    "local re-verification source snapshot contains an unsafe path"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        copied = source_tree_snapshot(staged_project)
+        if (
+            not bool(copied.get("valid"))
+            or copied.get("algorithm") != live_source.get("algorithm")
+            or copied.get("sha256") != live_source.get("sha256")
+        ):
+            raise ProjectReverifyError(
+                "local re-verification source changed while it was copied"
+            )
+    except BaseException:
+        _cleanup_reverify_staging(staging_root)
+        raise
+    return staging_root, staged_project, live_source
+
+
+def _promote_reverify_candidate(
+    project: Path,
+    staged_project: Path,
+    staging_root: Path,
+) -> None:
+    """Swap a proven sibling candidate into the canonical project path."""
+    backup = staging_root / "original"
+    recovery = project / ".skyn3t-recovery"
+    if recovery.is_dir() and not (staged_project / recovery.name).exists():
+        shutil.copytree(recovery, staged_project / recovery.name)
+    try:
+        os.replace(project, backup)
+    except OSError as exc:
+        raise ProjectReverifyError(
+            "verified candidate could not replace the live project",
+            status_code=500,
+        ) from exc
+    try:
+        os.replace(staged_project, project)
+    except OSError as exc:
+        rollback_failed = False
+        try:
+            os.replace(backup, project)
+        except OSError:
+            rollback_failed = True
+            log.exception("project.reverify_rollback_failed", slug=project.name)
+        raise ProjectReverifyError(
+            "verified candidate could not replace the live project",
+            status_code=500,
+            preserve_staging=rollback_failed,
+            recovery_path=str(backup) if rollback_failed else "",
+        ) from exc
+    try:
+        shutil.rmtree(backup)
+    except OSError:
+        log.warning("project.reverify_backup_cleanup_failed", path=str(backup))
+
+
+def _review_binding(
+    project: Path,
+    manifest: dict[str, Any],
+    review: dict[str, Any],
+    identity: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    brief = str(manifest.get("brief") or "")
+    base = {
+        "verdict": str(review.get("verdict") or ""),
+        "evidence_sha256": str(review.get("evidence_sha256") or ""),
+        "brief_sha256": hashlib.sha256(brief.encode("utf-8")).hexdigest(),
+        "binding": "unbound",
+        "approved_current_tree": False,
+        "source": "build_manifest",
+        "valid": False,
+    }
+    reviewed_tree = str(review.get("source_tree_sha256") or "").strip()
+    snapshot_valid = review.get("source_tree_snapshot_valid")
+    if snapshot_valid is False or (snapshot_valid is True and not reviewed_tree):
+        base["binding"] = "review_tree_invalid"
+        return base
+    if reviewed_tree:
+        reviewed_algorithm = str(
+            review.get("source_tree_digest_algorithm") or ""
+        ).strip()
+        exact_match = (
+            reviewed_algorithm == str(candidate.get("algorithm") or "")
+            and reviewed_tree == str(candidate.get("sha256") or "")
+        )
+        base["binding"] = (
+            "exact_tree"
+            if exact_match
+            else "exact_tree_mismatch"
+        )
+        base["approved_current_tree"] = base["binding"] == "exact_tree"
+        base["valid"] = bool(base["approved_current_tree"])
+        base["reviewed_tree_sha256"] = reviewed_tree
+        return base
+
+    durable_row = identity.get("durable_row")
+    durable_manifest = (
+        durable_row.get("manifest")
+        if isinstance(durable_row, dict)
+        and isinstance(durable_row.get("manifest"), dict)
+        else None
+    )
+    if durable_manifest is None:
+        return base
+    durable_row_dict = durable_row if isinstance(durable_row, dict) else {}
+    identity_fields = ("build_id", "slug", "brief", "stack")
+    if any(
+        str(durable_manifest.get(field) or "").strip()
+        != str(manifest.get(field) or "").strip()
+        for field in identity_fields
+    ):
+        base["binding"] = "legacy_identity_mismatch"
+        return base
+    durable_artifact = durable_manifest.get("artifact_dir") or durable_row_dict.get(
+        "artifact_dir"
+    )
+    if not _resolved_artifact_matches(project, durable_artifact):
+        base["binding"] = "legacy_identity_mismatch"
+        return base
+    durable_review = _completed_brief_review(durable_manifest)
+    if (
+        durable_review.get("verdict") != "go"
+        or durable_review.get("evidence_sha256") != review.get("evidence_sha256")
+    ):
+        base["binding"] = "legacy_review_mismatch"
+        return base
+    base.update(
+        {
+            "binding": "legacy_durable_brief",
+            "approved_current_tree": False,
+            "source": "durable_build_row",
+            "valid": True,
+        }
+    )
+    return base
+
+
+def _project_validation_requirements(project: Path, stack: str) -> dict[str, bool]:
+    from skyn3t.studio.proof_run import package_declares_node_tests
+
+    requirements = {
+        "node_build": False,
+        "node_tests": False,
+        "python_tests": False,
+        "swift_build": False,
+        "swift_tests": False,
+    }
+    package_path = project / "package.json"
+    if package_path.is_file():
+        try:
+            package = json.loads(package_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            package = {}
+        if isinstance(package, dict):
+            scripts = package.get("scripts")
+            scripts = scripts if isinstance(scripts, dict) else {}
+            requirements["node_build"] = any(
+                name in scripts for name in ("build", "typecheck", "check")
+            )
+            requirements["node_tests"] = package_declares_node_tests(package)
+    snapshot = source_tree_snapshot(project)
+    source_files = [str(value) for value in snapshot.get("files", [])]
+    requirements["python_tests"] = any(
+        Path(value).name.startswith("test_") and Path(value).suffix == ".py"
+        for value in source_files
+    )
+    manifest_path = project / "Package.swift"
+    if (stack or "").strip().lower() == "swift" or manifest_path.is_file():
+        requirements["swift_build"] = manifest_path.is_file()
+        try:
+            swift_manifest = manifest_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            swift_manifest = ""
+        requirements["swift_tests"] = "testTarget" in swift_manifest
+    return requirements
+
+
+def _reverify_promotion_checks(
+    project: Path,
+    stack: str,
+    proof: Any,
+    review_binding: dict[str, Any],
+    candidate: dict[str, Any],
+    after_proof: dict[str, Any],
+    live_source: dict[str, Any],
+    live_after_worker: dict[str, Any],
+) -> dict[str, Any]:
+    detail = getattr(proof, "detail", None)
+    detail = detail if isinstance(detail, dict) else {}
+    requirements = _project_validation_requirements(project, stack)
+    failures: list[str] = []
+    if not bool(getattr(proof, "passed", False)):
+        failures.append("fresh proof failed")
+    if not bool(candidate.get("valid")) or not bool(after_proof.get("valid")):
+        failures.append("source tree snapshot was ambiguous or unreadable")
+    unchanged = bool(candidate.get("sha256")) and (
+        candidate.get("sha256") == after_proof.get("sha256")
+    )
+    if not unchanged:
+        failures.append("source tree changed while proof commands ran")
+    live_unchanged = (
+        bool(live_source.get("valid"))
+        and bool(live_after_worker.get("valid"))
+        and live_source.get("algorithm") == live_after_worker.get("algorithm")
+        and live_source.get("sha256") == live_after_worker.get("sha256")
+    )
+    if not live_unchanged:
+        failures.append("live source tree changed while the candidate was verified")
+    if not review_binding.get("valid"):
+        failures.append("review evidence is not bound or durably corroborated")
+    expected = {
+        "node_build": ("build", "passed"),
+        "node_tests": ("node_tests", "passed"),
+        "python_tests": ("tests", "passed"),
+        "swift_build": ("build", "passed"),
+        "swift_tests": ("swift_tests", "passed"),
+    }
+    validation: dict[str, str] = {}
+    for requirement, required in requirements.items():
+        detail_key, passing_value = expected[requirement]
+        actual = str(detail.get(detail_key) or "not_applicable")
+        validation[requirement] = actual if required else "not_applicable"
+        if required and actual != passing_value:
+            failures.append(f"declared {requirement.replace('_', ' ')} did not pass")
+    if detail.get("missing_features"):
+        failures.append("fresh proof found brief features missing from the project")
+    if detail.get("scaffold_stub"):
+        failures.append("fresh proof detected an unchanged scaffold")
+    environment = detail.get("proof_environment")
+    environment = environment if isinstance(environment, dict) else {}
+    degraded_reasons = [
+        str(value) for value in environment.get("degraded_reasons", [])
+    ]
+    blocking_degradation = [
+        reason
+        for reason in degraded_reasons
+        if not reason.startswith("docker sandbox unavailable")
+        and not (
+            reason.startswith("tests skipped")
+            and not any(
+                requirements[name]
+                for name in ("node_tests", "python_tests", "swift_tests")
+            )
+        )
+    ]
+    if blocking_degradation:
+        failures.extend(f"proof degraded: {reason}" for reason in blocking_degradation)
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "requirements": requirements,
+        "validation": validation,
+        "source_unchanged_during_proof": unchanged,
+        "live_source_unchanged": live_unchanged,
+        "blocking_degradation": blocking_degradation,
+    }
+
+
+def _reverify_execution_evidence(proof: Any) -> dict[str, Any]:
+    detail = getattr(proof, "detail", None)
+    detail = detail if isinstance(detail, dict) else {}
+    environment = detail.get("proof_environment")
+    environment = environment if isinstance(environment, dict) else {}
+    backend = str(environment.get("command_backend") or "unknown")
+    isolation = (
+        "not_enforced"
+        if backend in {"local", "subprocess", "unknown", "not_run"}
+        else "mixed_network_phases"
+        if backend == "docker"
+        else "unknown"
+    )
+    return {
+        "skyn3t_model_invocations": 0,
+        "skyn3t_model_cost_usd": 0.0,
+        "claim_scope": "reverify_controller_only",
+        "provider_adapter_constructed": False,
+        "project_command_network_isolation": isolation,
+        "external_requests_observed": None,
+        "external_cost_usd": None,
+    }
+
+
+def _release_reverify_worker(claim: str, task: Any) -> None:
+    result = None
+    try:
+        result = task.result()
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001 - callback cleanup
+        pass
+    if isinstance(result, dict):
+        staging_value = result.get("staging_root")
+        _cleanup_reverify_staging(
+            staging_value if isinstance(staging_value, Path) else None
+        )
+    if _REVERIFY_WORKERS.get(claim) is task:
+        _REVERIFY_WORKERS.pop(claim, None)
+        _REVERIFYING_PROJECTS.discard(claim)
+
+
+def _reverify_score(
+    proof: Any,
+    review: dict[str, Any],
+    settings: Any,
+    extra: dict[str, Any],
+) -> float:
+    from skyn3t.studio.runner import StudioRunner
+
+    proof_score = float(getattr(proof, "score", 0.0) or 0.0)
+    review_score = review.get("score")
+    score = (
+        proof_score
+        if review_score is None
+        else 0.6 * float(review_score) + 0.4 * proof_score
+    )
+    detail = getattr(proof, "detail", None)
+    environment = detail.get("proof_environment") if isinstance(detail, dict) else None
+    if isinstance(environment, dict) and environment.get("degraded") is True:
+        cap = float(getattr(settings, "degraded_proof_score_cap", 74.0))
+        score = min(score, cap)
+        extra["proof_environment_gate"] = {
+            "degraded": True,
+            "score_cap": cap,
+            "reasons": list(environment.get("degraded_reasons") or []),
+        }
+    score = StudioRunner._shape_final_score(
+        SimpleNamespace(extra=extra),
+        proof,
+        score,
+        "go",
+    )
+    return round(max(0.0, min(100.0, score)), 2)
+
+
+async def _persist_reverified_build(
+    state: AppState,
+    project: Path,
+    manifest: dict[str, Any],
+) -> bool | None:
+    """Refresh the process cache and durable build row from one manifest."""
+    build_id = str(manifest.get("build_id") or "")
+    extra = manifest.get("extra")
+    extra = extra if isinstance(extra, dict) else {}
+    summary = build_summary(manifest)
+    recorded_costs = [
+        value
+        for raw in (manifest.get("cost_usd"), extra.get("build_cost_usd"))
+        if (value := _nonnegative_build_cost(raw)) is not None
+    ]
+    cost = max(recorded_costs, default=0.0)
+    record = getattr(state, "builds", {}).get(build_id)
+    if record is None:
+        record = BuildRecord(
+            build_id=build_id,
+            brief=str(manifest.get("brief") or ""),
+            slug=str(manifest.get("slug") or project.name),
+            stack=str(manifest.get("stack") or ""),
+        )
+        state.builds[build_id] = record
+    updates = {
+        "brief": str(manifest.get("brief") or ""),
+        "slug": str(manifest.get("slug") or project.name),
+        "stack": str(manifest.get("stack") or ""),
+        "status": str(manifest.get("status") or ""),
+        "score": manifest.get("score"),
+        "verdict": str(manifest.get("verdict") or ""),
+        "cost_usd": cost,
+        "model_trace": dict(summary.get("model_trace") or {}),
+        "quality_scorecard": dict(summary.get("quality_scorecard") or {}),
+        "updated_at": time.time(),
+    }
+    for name, update_value in updates.items():
+        try:
+            setattr(record, name, update_value)
+        except (AttributeError, TypeError):
+            continue
+
+    memory = getattr(state, "memory", None)
+    if memory is None or not hasattr(memory, "save_build"):
+        return None
+    try:
+        await memory.save_build(
+            build_id=build_id,
+            slug=updates["slug"],
+            brief=updates["brief"],
+            stack=updates["stack"],
+            status=updates["status"],
+            score=updates["score"],
+            verdict=updates["verdict"],
+            cost_usd=cost,
+            artifact_dir=str(project),
+            manifest=manifest,
+        )
+    except Exception as exc:  # noqa: BLE001 - disk/live state still remains usable
+        log.warning(
+            "project.reverify_persist_failed",
+            slug=updates["slug"],
+            error=str(exc)[:200],
+        )
+        return False
+    return True
+
+
+async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
+    """Locally repair and re-prove a terminal non-delivered project.
+
+    The controller constructs no model/provider adapter. Project-owned commands
+    may still have host network access, which is reported as unknown external
+    activity rather than mislabeled as zero total provider usage.
+    """
+    from skyn3t.studio.cleanup import _load_manifest
+
+    project = _resolve_project_dir(state, slug)
+    manifest = _load_manifest(project)
+    if not isinstance(manifest, dict):
+        raise ProjectReverifyError("project has no valid build manifest")
+
+    manifest_slug = str(manifest.get("slug") or "").strip()
+    build_id = str(manifest.get("build_id") or "").strip()
+    status = _normalize_status(str(manifest.get("status") or ""))
+    if not _terminal_non_delivered_manifest(manifest):
+        raise ProjectReverifyError("project is not a terminal non-delivered build")
+    if _reverify_file_count(project) <= 0:
+        raise ProjectReverifyError("project has no files to verify")
+
+    claim = str(project.resolve())
+    if claim in _REVERIFYING_PROJECTS:
+        raise ProjectReverifyError("local re-verification is already running")
+    _REVERIFYING_PROJECTS.add(claim)
+    release_claim = True
+    staging_root: Path | None = None
+    preserve_staging = False
+    try:
+        identity = await _validate_reverify_identity(state, project, manifest)
+        manifest_slug = str(identity["slug"])
+        build_id = str(identity["build_id"])
+        if _active_reverify_status(status) or await _project_has_active_build(
+            state,
+            slug=manifest_slug,
+            build_id=build_id,
+        ):
+            raise ProjectReverifyError("project belongs to an active build")
+        review = _completed_brief_review(manifest)
+        if review.get("verdict") != "go":
+            raise ProjectReverifyError(
+                "a completed brief-aware review with verdict go is required"
+            )
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                _run_local_project_reverify,
+                project,
+                stack=str(manifest.get("stack") or ""),
+                brief=str(manifest.get("brief") or ""),
+                settings=state.settings,
+            )
+        )
+        _REVERIFY_WORKERS[claim] = worker
+        try:
+            result = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            release_claim = False
+            worker.add_done_callback(partial(_release_reverify_worker, claim))
+            raise
+        except ProjectReverifyError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - return a controlled API failure
+            log.exception("project.reverify_failed", slug=manifest_slug)
+            raise ProjectReverifyError(
+                "local re-verification failed to run",
+                status_code=500,
+            ) from exc
+
+        staging_root = result["staging_root"]
+        staged_project = result["project"]
+        live_source = result["live_source"]
+        repairs = result["repairs"]
+        dependency_stabilization = result["dependency_stabilization"]
+        candidate = result["candidate"]
+        proof = result["proof"]
+        after_proof = result["after_proof"]
+        live_after_worker = source_tree_snapshot(project)
+        proof_dict = proof.to_dict()
+        binding = _review_binding(
+            project,
+            manifest,
+            review,
+            identity,
+            candidate,
+        )
+        promotion_checks = _reverify_promotion_checks(
+            staged_project,
+            str(manifest.get("stack") or ""),
+            proof,
+            binding,
+            candidate,
+            after_proof,
+            live_source,
+            live_after_worker,
+        )
+        promoted = bool(promotion_checks["passed"])
+        previous = {
+            "status": str(manifest.get("status") or ""),
+            "verdict": str(manifest.get("verdict") or ""),
+            "score": manifest.get("score"),
+        }
+        manifest["slug"] = manifest_slug
+        manifest["files"] = list(
+            (after_proof if promoted else live_after_worker).get("files") or []
+        )
+        extra_value = manifest.get("extra")
+        extra = dict(extra_value) if isinstance(extra_value, dict) else {}
+        extra["proof"] = proof_dict
+        if promoted:
+            manifest["status"] = "completed"
+            manifest["verdict"] = "go"
+            manifest["score"] = _reverify_score(
+                proof,
+                review,
+                state.settings,
+                extra,
+            )
+            extra.pop("wasted_usd", None)
+            extra.pop("non_shippable_spend_usd", None)
+            manifest.pop("wasted_usd", None)
+            manifest.pop("non_shippable_spend_usd", None)
+            extra["delivery_source_tree"] = {
+                "algorithm": after_proof.get("algorithm"),
+                "sha256": after_proof.get("sha256"),
+                "file_count": after_proof.get("file_count"),
+                "byte_count": after_proof.get("byte_count"),
+                "verdict": "go",
+            }
+            if binding.get("binding") == "exact_tree":
+                reason = "Fresh local proof passed against the exact reviewed source tree."
+            else:
+                reason = (
+                    "Fresh local proof passed and durable build history corroborated the "
+                    "legacy brief-aware review."
+                )
+        else:
+            reason = "; ".join(promotion_checks["failures"]) or (
+                "Local re-verification did not satisfy every promotion check."
+            )
+        verified_at = datetime.now(UTC).isoformat()
+        execution = _reverify_execution_evidence(proof)
+        candidate_evidence = {
+            "digest_algorithm": after_proof.get("algorithm"),
+            "tree_sha256": after_proof.get("sha256"),
+            "file_count": after_proof.get("file_count"),
+            "byte_count": after_proof.get("byte_count"),
+            "excluded_entries": after_proof.get("excluded_entries"),
+            "unchanged_during_proof": promotion_checks[
+                "source_unchanged_during_proof"
+            ],
+        }
+        extra["reverify"] = {
+            "schema_version": 2,
+            "policy": "local-reverify-v2",
+            "verified_at": verified_at,
+            "promoted": promoted,
+            "reason": reason,
+            "previous": previous,
+            "identity": {
+                key: identity[key]
+                for key in ("slug", "build_id", "project_relpath", "validated")
+            },
+            "candidate": candidate_evidence,
+            "review": binding,
+            "execution": execution,
+            "promotion_checks": promotion_checks,
+            "repairs": repairs,
+            "repairs_committed": promoted,
+            "dependency_stabilization": dependency_stabilization,
+            "proof": proof_dict,
+        }
+        manifest["extra"] = extra
+        manifest["updated_at"] = verified_at
+        manifest_target = staged_project if promoted else project
+        atomic_write_text(
+            manifest_target / MANIFEST_FILENAME,
+            json.dumps(manifest, indent=2, sort_keys=False),
+        )
+        if promoted:
+            try:
+                _promote_reverify_candidate(project, staged_project, staging_root)
+            except ProjectReverifyError as exc:
+                preserve_staging = bool(exc.preserve_staging)
+                raise
+        memory_persisted = await _persist_reverified_build(state, project, manifest)
+        return {
+            "slug": manifest_slug,
+            "build_id": build_id,
+            "promoted": promoted,
+            "status": str(manifest.get("status") or ""),
+            "verdict": str(manifest.get("verdict") or ""),
+            "score": manifest.get("score"),
+            "reason": reason,
+            "skyn3t_model_invocations": 0,
+            "execution": execution,
+            "repairs": repairs,
+            "proof": proof_dict,
+            "review": binding,
+            "candidate": candidate_evidence,
+            "promotion_checks": promotion_checks,
+            "memory_persisted": memory_persisted,
+        }
+    finally:
+        if preserve_staging:
+            log.error(
+                "project.reverify_recovery_preserved",
+                path=str(staging_root),
+            )
+        else:
+            _cleanup_reverify_staging(staging_root)
+        if release_claim:
+            _REVERIFY_WORKERS.pop(claim, None)
+            _REVERIFYING_PROJECTS.discard(claim)
+
+
+def _project_build_record(
+    state: AppState,
+    slug: str,
+    persisted: dict[str, Any] | None = None,
+) -> Any | None:
     matches = [
         record
         for record in getattr(state, "builds", {}).values()
         if str(getattr(record, "slug", "") or "") == slug
     ]
-    if not matches:
-        return None
-    return max(matches, key=lambda record: float(getattr(record, "updated_at", 0.0) or 0.0))
+    if matches:
+        return max(
+            matches,
+            key=lambda record: float(getattr(record, "updated_at", 0.0) or 0.0),
+        )
+    return SimpleNamespace(**persisted) if persisted else None
+
+
+async def _persisted_project_builds(
+    state: AppState,
+    slugs: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Index the newest persisted build per slug for post-restart project hydration."""
+    memory = getattr(state, "memory", None)
+    if memory is None or not slugs:
+        return {}
+    try:
+        if hasattr(memory, "latest_builds_by_slug"):
+            rows = await memory.latest_builds_by_slug(slugs)
+        elif hasattr(memory, "recent_builds"):
+            limit = max(50, min(500, len(slugs) * 4))
+            rows = await memory.recent_builds(limit=limit)
+        else:
+            return {}
+    except Exception:  # noqa: BLE001 - project listing degrades to disk/live state
+        return {}
+    indexed: dict[str, dict[str, Any]] = {}
+    for value in rows:
+        if not isinstance(value, dict):
+            continue
+        slug = str(value.get("slug") or "").strip()
+        if slug and slug not in indexed:
+            indexed[slug] = value
+    return indexed
 
 
 def _project_has_static_preview(state: AppState, slug: str) -> bool:
@@ -1409,13 +2557,15 @@ def _incomplete_project_row(
     state: AppState,
     project: Path,
     manifest: dict[str, Any] | None,
+    persisted: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw = manifest or {}
     slug = str(raw.get("slug") or project.name)
-    record = _project_build_record(state, slug)
+    record = _project_build_record(state, slug, persisted)
     build_status = str(getattr(record, "status", "") or raw.get("status") or "")
     normalized = build_status.strip().lower()
     active = normalized in _ACTIVE_PROJECT_STATUSES
+    reverify_active = _active_reverify_status(build_status)
     status = "building" if active else normalized or "incomplete"
     delivery_state = "building" if status == "building" else "incomplete"
     size_bytes, file_count = _project_visible_stats(project)
@@ -1452,10 +2602,23 @@ def _incomplete_project_row(
     recall_used = raw_extra.get("recall_used")
     stage_skills_used = raw_extra.get("stage_skills_used")
     ai_fields = _compact_project_ai_fields(raw, record)
+    non_shippable_spend = _project_non_shippable_spend_usd(
+        status=status,
+        verdict=str(raw.get("verdict") or getattr(record, "verdict", "") or ""),
+        cost_usd=display_cost,
+        persisted_value=raw_extra.get("non_shippable_spend_usd"),
+    )
     reason = "build is still in progress" if delivery_state == "building" else (
         "no completed build manifest"
         if status == "incomplete"
         else f"build {status} before delivery"
+    )
+    can_reverify, reverify_reason = _project_reverify_eligibility(
+        project,
+        manifest,
+        status=status,
+        active=reverify_active,
+        visible_file_count=file_count,
     )
     return {
         "slug": slug,
@@ -1478,9 +2641,12 @@ def _incomplete_project_row(
         "serve_kind": "",
         "serve_reason": reason,
         "has_manifest": manifest is not None,
+        "can_reverify": can_reverify,
+        "reverify_reason": reverify_reason,
         "cost_usd": display_cost,
         "cost_truth": cost_truth,
         "wasted_usd": raw_extra.get("wasted_usd"),
+        "non_shippable_spend_usd": non_shippable_spend,
         "prompt_count": len(prompts) if isinstance(prompts, list) else 0,
         "skills_used": list(skills_used) if isinstance(skills_used, list) else [],
         "recall_used": list(recall_used) if isinstance(recall_used, list) else [],
@@ -1504,10 +2670,22 @@ async def list_projects(state: AppState) -> dict[str, Any]:
     pdir = Path(state.settings.projects_dir)
     out: list[dict[str, Any]] = []
     if pdir.is_dir():
-        for d in sorted(p for p in pdir.iterdir() if p.is_dir() and not p.name.startswith(".")):
-            man = _load_manifest(d)
+        project_manifests = [
+            (project, _load_manifest(project))
+            for project in sorted(
+                p for p in pdir.iterdir() if p.is_dir() and not p.name.startswith(".")
+            )
+        ]
+        project_slugs = [
+            str((manifest or {}).get("slug") or project.name)
+            for project, manifest in project_manifests
+        ]
+        persisted_builds = await _persisted_project_builds(state, project_slugs)
+        for d, man in project_manifests:
+            manifest_slug = str((man or {}).get("slug") or d.name)
+            persisted = persisted_builds.get(manifest_slug)
             if not _manifest_is_delivered(man):
-                out.append(_incomplete_project_row(state, d, man))
+                out.append(_incomplete_project_row(state, d, man, persisted))
                 continue
             m = man or {}
             extra = m.get("extra") or {}
@@ -1599,9 +2777,26 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             size_bytes, file_count = _project_visible_stats(d)
             slug = str(m.get("slug", d.name))
             has_preview = _project_has_static_preview(state, slug)
-            record = _project_build_record(state, slug)
+            record = _project_build_record(state, slug, persisted)
+            record_active = _active_reverify_status(
+                getattr(record, "status", "") if record is not None else ""
+            )
             summary = build_summary(m)
             ai_fields = _compact_project_ai_fields(m, record)
+            project_cost = extra.get("build_cost_usd")
+            non_shippable_spend = _project_non_shippable_spend_usd(
+                status=status,
+                verdict=verdict,
+                cost_usd=project_cost,
+                persisted_value=extra.get("non_shippable_spend_usd"),
+            )
+            can_reverify, reverify_reason = _project_reverify_eligibility(
+                d,
+                m,
+                status=status,
+                active=record_active,
+                visible_file_count=file_count,
+            )
             out.append({
                 "slug": slug,
                 "stack": m.get("stack", ""),
@@ -1626,10 +2821,13 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "serve_kind": serve_kind,
                 "serve_reason": serve_reason,
                 "has_manifest": man is not None,
+                "can_reverify": can_reverify,
+                "reverify_reason": reverify_reason,
                 # Spec 2 cost attribution (None when a build predates it).
-                "cost_usd": extra.get("build_cost_usd"),
+                "cost_usd": project_cost,
                 "cost_truth": summary.get("cost_truth", {}),
                 "wasted_usd": extra.get("wasted_usd"),
+                "non_shippable_spend_usd": non_shippable_spend,
                 # Prompts are captured per-build but can be large (10-50 KB each),
                 # so the list carries only a flag/count — the text loads lazily via
                 # GET /projects/{slug}/prompts when the panel is expanded.
@@ -1676,6 +2874,8 @@ async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
         raise ValueError(f"invalid slug: {slug!r}")
     if not target.is_dir():
         raise FileNotFoundError(slug)
+    if str(target) in _REVERIFYING_PROJECTS:
+        raise ValueError("project local re-verification is still running")
     _TERMINAL = frozenset(
         {"failed", "completed", "completed_no_go", "cancelled", "approved", "rejected"}
     )
@@ -2154,6 +3354,9 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
     any work starts."""
     if not goal or not goal.strip():
         raise ValueError("goal is required")
+    project = _resolve_project_dir(state, slug)
+    if str(project) in _REVERIFYING_PROJECTS:
+        raise ValueError("project local re-verification is still running")
     _require_delivered_project(state, slug)
     if getattr(state, "orchestrator", None) is None:
         return {"accepted": False, "slug": slug, "reason": "orchestrator unavailable"}
@@ -2194,6 +3397,7 @@ async def fanout_project(
         raise ValueError("at least two stacks are required to fan out")
     if getattr(state, "studio", None) is None:
         return {"accepted": False, "brief": brief.strip(), "reason": "studio unavailable"}
+    _enforce_build_routing(state)
     from skyn3t.studio.fanout import FanCandidate, fan_out
     from skyn3t.studio.runner import _slugify
     cands = [FanCandidate(id=s, label=s, spec={"stack": s}) for s in ids]
@@ -2210,7 +3414,11 @@ async def fanout_project(
     )
     common_extra: dict[str, Any] = {
         "build_profile": profile,
-        **_orchestration_extra(profile, full_app=full_app_requested),
+        **_orchestration_extra(
+            profile,
+            full_app=full_app_requested,
+            asset_gen_enabled=bool(getattr(state.settings, "asset_gen", False)),
+        ),
     }
     if model:
         common_extra["model_override"] = model
@@ -3702,7 +4910,12 @@ async def set_integration_credential(
 async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -> dict[str, Any]:
     import os
 
-    backend = (backend or "auto").lower()
+    from skyn3t.adapters.llm import SUPPORTED_LLM_BACKENDS
+
+    backend = (backend or "auto").strip().lower()
+    if backend not in SUPPORTED_LLM_BACKENDS:
+        allowed = ", ".join(SUPPORTED_LLM_BACKENDS)
+        raise ValueError(f"Unsupported LLM backend {backend!r}; use one of: {allowed}")
     state.settings.llm_backend = backend
     os.environ["SKYN3T_LLM_BACKEND"] = backend
     if state.llm_client is not None:
@@ -3728,7 +4941,7 @@ _MODEL_PIN_FIELDS = {
     "strong": "model_strong",
     "docs": "model_docs",
 }
-_CODEGEN_CLI_PROVIDERS = {"", "claude", "kimi", "copilot"}
+_CODEGEN_CLI_PROVIDERS = {"", "codex", "claude", "kimi", "copilot"}
 
 
 async def set_llm_routing(
@@ -4183,8 +5396,14 @@ def build_router(state: AppState) -> Any:
     async def _cleanup_report() -> dict[str, Any]:
         from skyn3t.studio.cleanup import scan as cleanup_scan
         wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
-        active = sorted({getattr(r, "slug", "") for r in state.builds.values()
-                         if getattr(r, "status", "") == "running" and getattr(r, "slug", "")})
+        active = sorted(
+            {
+                getattr(r, "slug", "")
+                for r in state.builds.values()
+                if getattr(r, "status", "") == "running" and getattr(r, "slug", "")
+            }
+            | {Path(claim).name for claim in _REVERIFYING_PROJECTS}
+        )
         rep = cleanup_scan(state.settings.projects_dir, wt, active_slugs=active)
         return {n: [{"path": str(i.path), "reason": i.reason, "size_bytes": i.size_bytes}
                     for i in getattr(rep, n)]
@@ -4196,8 +5415,14 @@ def build_router(state: AppState) -> Any:
         from skyn3t.studio.cleanup import apply as cleanup_apply
         from skyn3t.studio.cleanup import scan as cleanup_scan
         wt = state.settings.projects_dir.parent / ".skyn3t_worktrees"
-        active = sorted({getattr(r, "slug", "") for r in state.builds.values()
-                         if getattr(r, "status", "") == "running" and getattr(r, "slug", "")})
+        active = sorted(
+            {
+                getattr(r, "slug", "")
+                for r in state.builds.values()
+                if getattr(r, "status", "") == "running" and getattr(r, "slug", "")
+            }
+            | {Path(claim).name for claim in _REVERIFYING_PROJECTS}
+        )
         rep = cleanup_scan(state.settings.projects_dir, wt, active_slugs=active)
         trash = state.settings.projects_dir.parent / ".skyn3t_trash"
         res = cleanup_apply(rep, trash_dir=trash,
@@ -4227,13 +5452,29 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=500, detail="failed to trash project") from exc
 
     # MUST be registered before the /{slug}/{path:path} catch-all below, or the
-    # catch-all treats "prompts" as a file path and this never matches.
+    # catch-all treats these endpoint names as project file paths.
     @router.get("/projects/{slug}/prompts", dependencies=[auth])
     async def _project_prompts(slug: str) -> dict[str, Any]:
         try:
             return await get_project_prompts(state, slug)
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid project") from None
+
+    @router.post("/projects/{slug}/reverify", dependencies=[auth])
+    async def _project_reverify(slug: str) -> dict[str, Any]:
+        try:
+            return await reverify_project(state, slug)
+        except ProjectReverifyError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="failed to persist local re-verification",
+            ) from exc
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[project_auth])
     async def _project_file(slug: str, path: str) -> Any:
@@ -4297,7 +5538,10 @@ def build_router(state: AppState) -> Any:
 
     @router.post("/llm/backend", dependencies=[auth])
     async def _set_llm_backend(body: dict[str, Any] = empty_body) -> dict[str, Any]:
-        return await set_llm_backend(state, str(body.get("backend", "auto")))
+        try:
+            return await set_llm_backend(state, str(body.get("backend", "auto")))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/llm/routing", dependencies=[auth])
     async def _set_llm_routing(body: dict[str, Any] = empty_body) -> dict[str, Any]:

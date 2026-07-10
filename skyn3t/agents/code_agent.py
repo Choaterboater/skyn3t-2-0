@@ -745,7 +745,15 @@ class CodeAgent(BaseAgent):
             stack, model_override, p)
         if _codegen_unavailable:
             run_metadata["codegen_override_unavailable"] = _codegen_unavailable
-        if self.llm.backend == "stub" and not _codegen_cli_ok:
+            run_metadata["codegen_override_reason"] = (
+                f"{_codegen_unavailable} CLI was explicitly selected for codegen but "
+                "is unavailable; kept the offline scaffold without an OpenRouter fallback."
+            )
+        if _codegen_unavailable:
+            # An explicit provider choice is a routing lock. Keep the runnable
+            # offline scaffold rather than silently spending through OpenRouter.
+            pass
+        elif self.llm.backend == "stub" and not _codegen_cli_ok:
             # Offline: deliver the runnable scaffold as-is.
             pass
         elif getattr(self.llm, "supports_agentic", False) or _codegen_cli_ok:
@@ -966,7 +974,7 @@ class CodeAgent(BaseAgent):
             "worktree_dir": str(worktree),
             "stack": stack,
             "files": written,
-            "backend": self.llm.backend,
+            "backend": "stub" if _codegen_unavailable else self.llm.backend,
             # The exact prompt(s) this stage sent the model (empty on the offline
             # scaffold path). The runner lifts these into manifest.extra["prompts"].
             "prompts": run_metadata.get("prompts", []),
@@ -1015,6 +1023,9 @@ class CodeAgent(BaseAgent):
         codegen_unavailable = run_metadata.get("codegen_override_unavailable")
         if codegen_unavailable:
             out["codegen_override_unavailable"] = codegen_unavailable
+        codegen_reason = run_metadata.get("codegen_override_reason")
+        if codegen_reason:
+            out["codegen_override_reason"] = codegen_reason
 
         return TaskResult(
             task_id=task.task_id, success=True,
@@ -1378,8 +1389,18 @@ class CodeAgent(BaseAgent):
                 "stack": stack,
                 **runtime,
             }, ""
-        unavailable = codegen_provider if codegen_provider else ""
-        return False, {"model": model_override, "stack": stack, **runtime}, unavailable
+        if codegen_provider:
+            # Keep the explicit provider in the call contract as defence in
+            # depth: even if a future caller ignores ``unavailable``,
+            # LLMClient.agentic_build will reject this provider instead of
+            # switching to the global OpenRouter backend.
+            return False, {
+                "provider": codegen_provider,
+                "model": codegen_model,
+                "stack": stack,
+                **runtime,
+            }, codegen_provider
+        return False, {"model": model_override, "stack": stack, **runtime}, ""
 
     # ---- parallel code slicing (Hermes orchestrator-worker) --------------
     async def _execute_slice(
@@ -1404,11 +1425,17 @@ class CodeAgent(BaseAgent):
             stack, model_override, p)
         if codegen_unavailable:
             self._task_metadata["codegen_override_unavailable"] = codegen_unavailable
+            self._task_metadata["codegen_override_reason"] = (
+                f"{codegen_unavailable} CLI was explicitly selected for codegen but "
+                "is unavailable; kept the offline slice without an OpenRouter fallback."
+            )
         knowledge = knowledge_block(p)
         files: dict[str, str] = {}
         degraded_reason = ""
 
-        if self.llm.backend == "stub" and not codegen_cli_ok:
+        if codegen_unavailable:
+            files = self._slice_stub(stack, app_name, brief, slice_files)
+        elif self.llm.backend == "stub" and not codegen_cli_ok:
             # Offline: emit a minimal non-empty stub per slice file so the
             # orchestration is testable and the merge produces real files.
             files = self._slice_stub(stack, app_name, brief, slice_files)
@@ -1547,7 +1574,8 @@ class CodeAgent(BaseAgent):
         )
         out: dict[str, Any] = {
             "files_written": len(written), "worktree_dir": str(worktree),
-            "stack": stack, "files": written, "backend": self.llm.backend,
+            "stack": stack, "files": written,
+            "backend": "stub" if codegen_unavailable else self.llm.backend,
             "slice": name,
             "prompts": self._task_metadata.get("prompts", []),
         }
@@ -1574,6 +1602,9 @@ class CodeAgent(BaseAgent):
         codegen_unavailable_out = self._task_metadata.get("codegen_override_unavailable")
         if codegen_unavailable_out:
             out["codegen_override_unavailable"] = codegen_unavailable_out
+        codegen_reason_out = self._task_metadata.get("codegen_override_reason")
+        if codegen_reason_out:
+            out["codegen_override_reason"] = codegen_reason_out
         return TaskResult(task_id=task.task_id, success=True, output=out)
 
     def _agentic_slice_prompt(

@@ -14,6 +14,15 @@ import {
   formatModelOption,
 } from "../modelValue.js";
 import {
+  BACKEND_OPTIONS,
+  CODEGEN_CLI_OPTIONS,
+  backendOption,
+  backendOptionLabel,
+  cliAccountBillingText,
+  cliBackendStatus,
+  cliProviderStatus,
+} from "../cliBackends.js";
+import {
   PageHeader,
   Panel,
   PanelHead,
@@ -31,9 +40,7 @@ function Row({ label, value }) {
   );
 }
 
-const BACKENDS = ["auto", "stub", "claude_cli", "kimi_cli", "copilot_cli", "openrouter"];
 const PROVIDERS = ["openrouter", "anthropic", "openai", "kimi"];
-const CODEGEN_PROVIDERS = ["", "claude", "kimi", "copilot"];
 const MODEL_TIERS = ["cheap", "ui", "backend", "strong", "docs"];
 const CHANNELS = ["telegram", "discord", "slack"];
 const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app", "saas_product", "game", "api_service", "developer_tool", "data_viz", "mobile_app", "desktop_app"];
@@ -66,6 +73,13 @@ export default function Settings() {
   const secrets = useQuery({
     queryKey: ["llm-secrets"],
     queryFn: queryFn("/llm/secrets"),
+    retry: 0,
+    refetchInterval: 4000,
+  });
+
+  const llmBackends = useQuery({
+    queryKey: ["llm-backends"],
+    queryFn: queryFn("/llm/backends"),
     retry: 0,
     refetchInterval: 4000,
   });
@@ -409,8 +423,16 @@ export default function Settings() {
   async function pickBackend(b) {
     try {
       const r = await apiPost("/llm/backend", { backend: b });
-      setBackendMsg(`backend → ${r.active}`);
-      secrets.refetch();
+      const state = r.routing?.state ? ` (${r.routing.state})` : "";
+      setBackendMsg(`saved globally -> requested ${r.requested || b}; active ${r.active}${state}`);
+      queryClient.setQueryData(["llm-secrets"], (old) => ({
+        ...(old || {}),
+        backend_pref: r.requested || b,
+        backend: r.active,
+        routing: r.routing || old?.routing,
+      }));
+      void secrets.refetch();
+      void llmBackends.refetch();
     } catch (e) {
       setBackendMsg(String(e.message));
     }
@@ -484,9 +506,19 @@ export default function Settings() {
   const active = secrets.data?.backend;
   const routing = secrets.data?.routing || {};
   const codegen = routing.codegen || {};
+  const requestedBackend = secrets.data?.backend_pref || routing.requested || "auto";
+  const selectedBackendOption = backendOption(requestedBackend);
+  const selectedBackendStatus = cliBackendStatus(llmBackends.data, requestedBackend);
+  const selectedBackendBilling = cliAccountBillingText(requestedBackend);
   const providerConfigured = !!secrets.data?.providers?.[provider];
   const openrouterConfigured =
     !!secrets.data?.providers?.openrouter || !!routing.openrouter_configured;
+  const openrouterRequired = requestedBackend === "openrouter";
+  const openrouterStateText = openrouterConfigured
+    ? "API key configured"
+    : openrouterRequired
+      ? "required by selected backend - missing"
+      : "optional - no API key";
   const selectedDeployConfigured = deployProviderConfigured(
     deploySettings.data,
     deployProvider
@@ -546,28 +578,59 @@ export default function Settings() {
           />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
-              <span className="font-mono text-bone">auto</span> uses OpenRouter if a
-              key is set, else a local CLI (claude/kimi/copilot), else the offline
-              stub. Pick one to pin it.
+              This choice is persisted for every future Foundry run. CLI backends use
+              the installed command and its signed-in provider account. OpenRouter is
+              optional and only works when its API key is configured.
             </p>
-            <div className="flex flex-wrap gap-2">
-              {BACKENDS.map((b) => {
-                const sel = secrets.data?.backend_pref === b;
+            <p className="mb-4 text-[11px] text-ash/80">
+              An explicitly selected CLI never falls back to OpenRouter. If its command
+              is unavailable, the backend reports <span className="font-mono text-bone">cli_missing</span>{" "}
+              and uses the offline stub.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {BACKEND_OPTIONS.map((option) => {
+                const sel = requestedBackend === option.id;
+                const status = cliBackendStatus(llmBackends.data, option.id);
+                const unavailable = option.kind === "cli" && status.available !== true;
                 return (
                   <button
-                    key={b}
-                    onClick={() => pickBackend(b)}
-                    className={`badge font-mono transition-colors ${
+                    key={option.id}
+                    type="button"
+                    onClick={() => pickBackend(option.id)}
+                    disabled={unavailable && !sel}
+                    aria-pressed={sel}
+                    title={
+                      option.kind === "cli"
+                        ? `${backendOptionLabel(option, llmBackends.data)}. ${cliAccountBillingText(option.id)}`
+                        : `Persist ${option.label} as the global Foundry backend`
+                    }
+                    className={`min-h-10 rounded border px-3 py-2 text-left font-mono text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       sel
                         ? "border-ember/60 bg-ember/10 text-ember"
                         : "border-hairline text-ash hover:border-ember/40 hover:text-bone"
                     }`}
                   >
-                    {b}
+                    {backendOptionLabel(option, llmBackends.data)}
                   </button>
                 );
               })}
             </div>
+            {selectedBackendOption?.kind === "cli" ? (
+              <div className="mt-3 border-l-2 border-hairline pl-3 text-[11px] text-ash">
+                <p className={selectedBackendStatus.available ? "text-plasma" : "text-ember"}>
+                  {selectedBackendStatus.available
+                    ? `${selectedBackendOption.label} command available${
+                        selectedBackendStatus.detail?.path
+                          ? ` at ${selectedBackendStatus.detail.path}`
+                          : ""
+                      }.`
+                    : selectedBackendStatus.checked
+                      ? `${selectedBackendOption.label} command was not found on PATH.`
+                      : `${selectedBackendOption.label} availability is being checked.`}
+                </p>
+                <p className="mt-1">{selectedBackendBilling}</p>
+              </div>
+            ) : null}
             {backendMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{backendMsg}</p>
             ) : null}
@@ -594,7 +657,10 @@ export default function Settings() {
             <div className="mb-4 overflow-hidden rounded border border-hairline/60">
               <Row label="requested" value={routing.requested || "auto"} />
               <Row label="active" value={routing.active || active || "stub"} />
-              <Row label="OpenRouter" value={openrouterConfigured ? "configured" : "not set"} />
+              <Row
+                label="OpenRouter"
+                value={openrouterStateText}
+              />
               <Row label="reason" value={routing.reason || "ready"} />
               <Row label="codegen" value={codegen.reason || "follows active backend"} />
             </div>
@@ -695,26 +761,48 @@ export default function Settings() {
                 <p className="mt-2 font-mono text-[11px] text-plasma">{modelMsg}</p>
               ) : null}
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="mt-4 border-t border-hairline pt-4">
+              <p className="mb-2 text-sm text-ash">
+                Advanced codegen-only override. This is separate from the global
+                Foundry backend above and only changes the CodeAgent route.
+              </p>
+              <p className="mb-3 text-[11px] text-ash/80">
+                A CLI override uses that CLI&apos;s signed-in account. Usage limits and
+                billing follow the provider account&apos;s plan or subscription. Unavailable
+                commands cannot be selected.
+              </p>
+              <div className="flex flex-wrap gap-2">
               <select
                 aria-label="CLI codegen provider"
                 value={codegenCliProvider}
                 onChange={(e) => setCodegenCliProvider(e.target.value)}
-                className="field max-w-[12rem]"
+                className="field max-w-[16rem]"
               >
-                {CODEGEN_PROVIDERS.map((p) => (
-                  <option key={p || "none"} value={p}>
-                    codegen · {p || "none"}
-                  </option>
-                ))}
+                {CODEGEN_CLI_OPTIONS.map((option) => {
+                  const status = cliProviderStatus(llmBackends.data, option.provider);
+                  const unavailable = option.kind === "cli" && status.available !== true;
+                  return (
+                    <option
+                      key={option.provider || "none"}
+                      value={option.provider}
+                      disabled={unavailable && codegenCliProvider !== option.provider}
+                    >
+                      {option.kind === "cli"
+                        ? `${option.label} - ${status.availabilityLabel}`
+                        : option.label}
+                    </option>
+                  );
+                })}
               </select>
               <input
                 type="text"
                 className="field min-w-[10rem] flex-1"
                 aria-label="CLI codegen model"
-                placeholder="CLI codegen model"
+                placeholder="CLI model (optional)"
                 value={codegenCliModel}
                 onChange={(e) => setCodegenCliModel(e.target.value)}
+                disabled={!codegenCliProvider}
+                title="Optional model flag for the selected codegen CLI"
               />
               <div className="min-w-0 flex-1 sm:min-w-[14rem]">
                 <input
@@ -744,6 +832,7 @@ export default function Settings() {
                     />
                   ))}
                 </datalist>
+              </div>
               </div>
             </div>
             {selectedCodegenValue ? (
@@ -848,21 +937,28 @@ export default function Settings() {
             label="API key"
             right={
               <Pill tone={providerConfigured ? "plasma" : "ash"}>
-                {providerConfigured ? `${provider} configured ✓` : `${provider} not set`}
+                {providerConfigured
+                  ? `${provider} configured ✓`
+                  : provider === "openrouter"
+                    ? openrouterRequired
+                      ? "openrouter required - no key"
+                      : "openrouter optional - no key"
+                    : `${provider} no key`}
               </Pill>
             }
           />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
               Stored in the server&apos;s <code className="font-mono text-bone">.env</code>.
-              Setting an OpenRouter key switches{" "}
-              <span className="font-mono text-bone">auto</span> to real cloud
-              generation immediately.
+              OpenRouter is optional when a CLI backend is selected. Add its key only
+              when you intend to use the OpenRouter route;{" "}
+              <span className="font-mono text-bone">auto</span> may resolve to that route
+              after a key is configured.
             </p>
             <div className="mb-3">
               <Row
                 label="OpenRouter"
-                value={openrouterConfigured ? "configured ✓" : "not set"}
+                value={openrouterConfigured ? "API key configured ✓" : openrouterStateText}
               />
             </div>
             <div className="flex flex-wrap gap-2">

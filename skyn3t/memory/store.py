@@ -33,6 +33,14 @@ EVENT_BATCH_MAX_ITEMS = 128
 EVENT_BATCH_FLUSH_SECONDS = 0.2
 EVENT_BATCH_MAX_ATTEMPTS = 3
 EVENT_BATCH_RETRY_SECONDS = 0.05
+_TERMINAL_BUILD_STATUSES = frozenset({
+    "cancelled",
+    "completed",
+    "completed_no_go",
+    "failed",
+    "interrupted",
+    "rejected",
+})
 
 _EVENT_META_KEY = "__skyn3t_event__"
 _EVENT_IDENTITY_KEYS = (
@@ -522,39 +530,95 @@ class MemoryStore:
             rows = (await s.execute(
                 select(BuildRow).order_by(BuildRow.created_at.desc()).limit(limit)
             )).scalars().all()
-            out: list[dict[str, Any]] = []
-            for r in rows:
-                manifest = self._disk_manifest_for_row(r) or (
-                    r.manifest if isinstance(r.manifest, dict) else {}
+            return [
+                self._build_row_summary(
+                    row,
+                    self._disk_manifest_for_row(row)
+                    or (row.manifest if isinstance(row.manifest, dict) else {}),
                 )
-                raw_extra = manifest.get("extra")
-                extra = raw_extra if isinstance(raw_extra, dict) else {}
-                raw_classification = extra.get("classification")
-                classification = raw_classification if isinstance(raw_classification, dict) else {}
-                raw_stack_selection = extra.get("stack_selection")
-                stack_selection = raw_stack_selection if isinstance(raw_stack_selection, dict) else {}
-                disk_status = manifest.get("status")
-                status = disk_status or r.status
-                if r.status in ("interrupted", "cancelled") and disk_status in ("running", "queued", "pending"):
-                    status = r.status
-                row = {
-                    "build_id": manifest.get("build_id") or r.build_id,
-                    "slug": manifest.get("slug") or r.slug,
-                    "brief": manifest.get("brief") or r.brief,
-                    "stack": manifest.get("stack") or r.stack,
-                    "app_type": classification.get("app_type", ""),
-                    "engine": classification.get("engine", ""),
-                    "stack_selection": stack_selection,
-                    "classification": classification,
-                    "status": status,
-                    "score": manifest.get("score", r.score),
-                    "verdict": manifest.get("verdict") or r.verdict,
-                    "cost_usd": manifest.get("cost_usd", r.cost_usd),
-                    "artifact_dir": manifest.get("artifact_dir") or r.artifact_dir,
-                }
-                row.update(build_summary(manifest))
-                out.append(row)
-            return out
+                for row in rows
+            ]
+
+    async def latest_builds_by_slug(self, slugs: list[str]) -> list[dict[str, Any]]:
+        """Return the newest compact DB build per requested slug.
+
+        Unlike :meth:`recent_builds`, this targeted lookup does not probe project
+        manifests on disk. It is used to hydrate manifestless project directories
+        without turning every Projects poll into a full historical disk scan.
+        """
+        wanted = list(dict.fromkeys(str(slug).strip() for slug in slugs if str(slug).strip()))
+        if not wanted:
+            return []
+        async with self._session() as s:
+            ranked = (
+                select(
+                    BuildRow.build_id.label("build_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=BuildRow.slug,
+                        order_by=(BuildRow.created_at.desc(), BuildRow.build_id.desc()),
+                    )
+                    .label("row_number"),
+                )
+                .where(BuildRow.slug.in_(wanted))
+                .subquery()
+            )
+            rows = (
+                await s.execute(
+                    select(BuildRow)
+                    .join(ranked, ranked.c.build_id == BuildRow.build_id)
+                    .where(ranked.c.row_number == 1)
+                    .order_by(BuildRow.created_at.desc(), BuildRow.build_id.desc())
+                )
+            ).scalars().all()
+            newest: list[dict[str, Any]] = []
+            for row in rows:
+                manifest = row.manifest if isinstance(row.manifest, dict) else {}
+                newest.append(self._build_row_summary(row, manifest))
+            return newest
+
+    @staticmethod
+    def _build_row_summary(row: BuildRow, manifest: dict[str, Any]) -> dict[str, Any]:
+        raw_extra = manifest.get("extra")
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
+        raw_classification = extra.get("classification")
+        classification = (
+            raw_classification if isinstance(raw_classification, dict) else {}
+        )
+        raw_stack_selection = extra.get("stack_selection")
+        stack_selection = (
+            raw_stack_selection if isinstance(raw_stack_selection, dict) else {}
+        )
+        manifest_status = manifest.get("status")
+        status = manifest_status or row.status
+        if row.status in _TERMINAL_BUILD_STATUSES and manifest_status in (
+            "running",
+            "queued",
+            "pending",
+        ):
+            status = row.status
+        result = {
+            "build_id": manifest.get("build_id") or row.build_id,
+            "slug": manifest.get("slug") or row.slug,
+            "brief": manifest.get("brief") or row.brief,
+            "stack": manifest.get("stack") or row.stack,
+            "app_type": classification.get("app_type", ""),
+            "engine": classification.get("engine", ""),
+            "stack_selection": stack_selection,
+            "classification": classification,
+            "status": status,
+            "score": manifest.get("score", row.score),
+            "verdict": manifest.get("verdict") or row.verdict,
+            "cost_usd": manifest.get("cost_usd", row.cost_usd),
+            "artifact_dir": manifest.get("artifact_dir") or row.artifact_dir,
+        }
+        summary_manifest = {
+            **manifest,
+            "status": status,
+            "verdict": result["verdict"],
+        }
+        result.update(build_summary(summary_manifest))
+        return result
 
     @staticmethod
     def _disk_manifest_for_row(row: BuildRow) -> dict[str, Any] | None:

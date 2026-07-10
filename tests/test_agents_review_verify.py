@@ -145,6 +145,22 @@ def test_detect_reward_hacking_flags_skips_even_with_assertions(tmp_path):
     assert any("skipped/xfailed" in flag for flag in result["flags"])
 
 
+def test_detect_reward_hacking_allows_generated_pending_acceptance_contract(tmp_path):
+    root = tmp_path / "generated-contract"
+    tests_dir = root / "tests"
+    tests_dir.mkdir(parents=True)
+    (root / "app.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (tests_dir / "test_acceptance_app.py").write_text(
+        render_test_file(["the application provides a working feature"], "app", "app"),
+        encoding="utf-8",
+    )
+
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+
+    assert not result["suspicious"]
+    assert result["flags"] == []
+
+
 def test_detect_reward_hacking_clean(tmp_path):
     root = _good_project(tmp_path)
     (root / "test_main.js").write_text("test('add', () => { expect(add(1,2)).toBe(3); });\n")

@@ -53,6 +53,7 @@ class EventType(StrEnum):
     BUILD_STAGE_COMPLETED = "build.stage.completed"
     BUILD_COMPLETED = "build.completed"
     BUILD_FAILED = "build.failed"
+    FIX_STALLED = "fix.stalled"
     # Per-stage autonomous debug loop + live artifact snapshots (cockpit, Phase A)
     STAGE_DEBUG_STARTED = "build.stage.debug.started"
     STAGE_DEBUG_ATTEMPT = "build.stage.debug.attempt"

@@ -56,8 +56,12 @@ the complete verification lifecycle.
 ```bash
 python -m skyn3t.cli.main doctor
 python -m skyn3t.cli.main studio build "a task tracker with due dates"
+python -m skyn3t.cli.main studio liveness <project> --require-visual
 python -m pytest -q
 ```
+
+The liveness command writes desktop/mobile browser evidence as described in
+[Responsive Visual Proof](RESPONSIVE_VISUAL_PROOF.md).
 
 ## Offline Defaults
 

@@ -72,9 +72,21 @@ def test_report_to_dict_roundtrip():
 
 
 def test_visual_failures_are_reported_in_health(tmp_path, monkeypatch):
-    from skyn3t.studio import visual_check
+    from skyn3t.studio import visual_check, visual_proof
+    from skyn3t.studio.visual_proof import ResponsiveVisualProof, ViewportProof
 
-    monkeypatch.setattr(visual_check, "screenshot", lambda _url, path: path)
+    def fake_responsive(pages, artifact_dir, **kwargs):
+        return [ResponsiveVisualProof(
+            url=pages[0][1],
+            route=pages[0][0],
+            stack="",
+            passed=True,
+            viewports=[ViewportProof(
+                "desktop", 1440, 900, passed=True, screenshot="root/desktop.png",
+            )],
+        )]
+
+    monkeypatch.setattr(visual_proof, "audit_responsive_pages", fake_responsive)
     monkeypatch.setattr(
         visual_check,
         "inspect",
@@ -96,3 +108,84 @@ def test_visual_failures_are_reported_in_health(tmp_path, monkeypatch):
         assert d["visual_failed"] == 1
     finally:
         srv.shutdown()
+
+
+def test_deterministic_visual_proof_runs_without_vision_provider(tmp_path, monkeypatch):
+    from skyn3t.studio import visual_proof
+    from skyn3t.studio.visual_proof import ResponsiveVisualProof, ViewportProof
+
+    def fake_responsive(pages, artifact_dir, **kwargs):
+        return [ResponsiveVisualProof(
+            url=pages[0][1],
+            route=pages[0][0],
+            stack=kwargs["stack"],
+            passed=True,
+            viewports=[
+                ViewportProof("desktop", 1440, 900, passed=True),
+                ViewportProof("mobile", 390, 844, passed=True),
+            ],
+        )]
+
+    monkeypatch.setattr(visual_proof, "audit_responsive_pages", fake_responsive)
+    srv, base = _serve()
+    try:
+        report = asyncio.run(check_liveness(
+            base,
+            [Route("/")],
+            screenshot_dir=str(tmp_path),
+            artifact_dir_label=".skyn3t/visual-proof",
+            stack="react",
+        ))
+    finally:
+        srv.shutdown()
+
+    assert report.visual_total == 1
+    assert report.visual_failed == 0
+    assert report.visual_skipped == 0
+    assert report.visual_health == 1.0
+    assert report.results[0].visual["matches"] is True
+    assert report.results[0].visual["vision"]["skipped"] is True
+    report_json = (tmp_path / "liveness-report.json")
+    assert report_json.is_file()
+    assert '"visual_artifact_dir": ".skyn3t/visual-proof"' in report_json.read_text()
+
+
+def test_missing_browser_visual_evidence_is_skipped_not_passed(tmp_path, monkeypatch):
+    from skyn3t.studio import visual_proof
+    from skyn3t.studio.visual_proof import ResponsiveVisualProof, ViewportProof
+
+    def fake_responsive(pages, artifact_dir, **kwargs):
+        return [ResponsiveVisualProof(
+            url=pages[0][1],
+            route=pages[0][0],
+            stack=kwargs["stack"],
+            passed=False,
+            skipped=True,
+            reason="playwright chromium unavailable",
+            viewports=[ViewportProof(
+                "desktop", 1440, 900, skipped=True,
+                reason="playwright chromium unavailable",
+            )],
+        )]
+
+    monkeypatch.setattr(visual_proof, "audit_responsive_pages", fake_responsive)
+    srv, base = _serve()
+    try:
+        report = asyncio.run(check_liveness(
+            base,
+            [Route("/")],
+            screenshot_dir=str(tmp_path),
+            stack="react",
+        ))
+    finally:
+        srv.shutdown()
+
+    assert report.visual_total == 0
+    assert report.visual_failed == 0
+    assert report.visual_skipped == 1
+    assert report.visual_health is None
+    assert report.results[0].visual["matches"] is None
+    assert report.results[0].visual["skipped"] is True
+    serialized = report.to_dict()
+    assert serialized["visual_health"] is None
+    assert serialized["visual_skipped_routes"] == ["/"]

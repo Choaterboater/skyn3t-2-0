@@ -3,7 +3,12 @@ import asyncio
 from types import SimpleNamespace
 
 import skyn3t.studio.liveness as lv
-from skyn3t.studio.liveness import LivenessReport, RouteResult, liveness_self_improve
+from skyn3t.studio.liveness import (
+    LivenessReport,
+    RouteResult,
+    _repair_goal,
+    liveness_self_improve,
+)
 
 
 class _App:
@@ -42,7 +47,10 @@ def test_skipped_when_no_preview(tmp_path):
 
 
 def test_healthy_first_round_no_improve(tmp_path, monkeypatch):
+    seen = {}
+
     async def fake_check(base, routes, **k):
+        seen.update(k)
         return LivenessReport(results=[RouteResult("/", "GET", 200, True, "page")],
                               total=1, ok=1, dead=0, dead_routes=[], health=1.0)
     monkeypatch.setattr(lv, "check_liveness", fake_check)
@@ -54,6 +62,8 @@ def test_healthy_first_round_no_improve(tmp_path, monkeypatch):
     out = asyncio.run(liveness_self_improve(tmp_path, app_runner=_App("http://127.0.0.1:1"),
                                             improve_engine=_Improve(), max_rounds=2))
     assert out.passed is True and out.rounds == 1
+    assert seen["artifact_dir_label"] == ".skyn3t/visual-proof"
+    assert seen["screenshot_dir"] == str(tmp_path / ".skyn3t" / "visual-proof")
 
 
 def test_repairs_dead_routes_then_reports(tmp_path, monkeypatch):
@@ -95,3 +105,27 @@ def test_unfixable_returns_not_passed(tmp_path, monkeypatch):
     out = asyncio.run(liveness_self_improve(tmp_path, app_runner=_App("http://127.0.0.1:1"),
                                             improve_engine=_Improve(), max_rounds=2))
     assert out.passed is False and out.skipped is False and out.report.dead == 1
+
+
+def test_visual_repair_goal_includes_deterministic_browser_findings():
+    report = LivenessReport(results=[RouteResult(
+        "/pricing",
+        "GET",
+        200,
+        True,
+        "page",
+        {
+            "matches": False,
+            "skipped": False,
+            "issues": [
+                "mobile: page is 84px wider than the viewport",
+                "desktop: 1 visible image did not load",
+            ],
+        },
+    )])
+
+    goal = _repair_goal(report)
+
+    assert "/pricing" in goal
+    assert "84px wider" in goal
+    assert "image did not load" in goal

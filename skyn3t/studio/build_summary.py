@@ -57,6 +57,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     stage_costs = _as_list(extra.get("stage_costs"))
     proof = _as_dict(extra.get("proof"))
     proof_detail = _as_dict(proof.get("detail"))
+    responsive_visual = _as_dict(extra.get("responsive_visual_proof"))
     model_trace = {
         "profile": extra.get("build_profile", ""),
         "model_override": extra.get("model_override", ""),
@@ -88,6 +89,20 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "rescore": _as_dict(extra.get("rescore")),
         "liveness_health": extra.get("liveness_health"),
         "visual_health": extra.get("liveness_visual_health"),
+        "responsive_visual": {
+            key: responsive_visual.get(key)
+            for key in (
+                "schema_version",
+                "status",
+                "routes_checked",
+                "routes_failed",
+                "routes_skipped",
+                "artifact_dir",
+                "report_path",
+                "viewports",
+            )
+            if responsive_visual.get(key) is not None
+        },
         "headless_passed": _ok(extra.get("headless_gate")),
         "qa_passed": _ok(extra.get("qa_playtest")),
         "game_visual_passed": _ok(extra.get("game_visual")),

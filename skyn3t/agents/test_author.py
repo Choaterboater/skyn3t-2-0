@@ -21,6 +21,10 @@ from skyn3t.agents import _verify_common as vc
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+from skyn3t.studio.acceptance_contract import (
+    GENERATED_ACCEPTANCE_HEADER,
+    GENERATED_ACCEPTANCE_PENDING_MARKER,
+)
 
 # Sentence-ish splitter for turning a brief into discrete acceptance criteria.
 _SPLIT = re.compile(r"[.\n;]|(?:\band\b)|(?:\bthen\b)")
@@ -179,7 +183,7 @@ def render_test_file(
     criteria are not yet machine-verified (no fabricated green — rule #3).
     """
     lines: list[str] = [
-        '"""Acceptance suite authored test-first from the brief.',
+        f'"""{GENERATED_ACCEPTANCE_HEADER}',
         "",
         f"Brief: {brief[:300]}",
         '"""',
@@ -328,7 +332,7 @@ def render_test_file(
         # confidence). The structural tests above DO assert, so the file still
         # carries real coverage. Replace skip with real assertions per criterion
         # as the implementation lands.
-        '@pytest.mark.skip(reason="behavioral assertion pending — criterion documented, not yet verified")',
+        f'@pytest.mark.skip(reason="{GENERATED_ACCEPTANCE_PENDING_MARKER}")',
         '@pytest.mark.parametrize("criterion", ACCEPTANCE)',
         "def test_acceptance_criterion_documented(criterion):",
         '    """Each derived acceptance criterion is recorded for verification.',

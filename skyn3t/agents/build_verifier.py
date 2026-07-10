@@ -34,6 +34,7 @@ from skyn3t.npm_utils import (
     npm_install_args,
     npm_install_current,
 )
+from skyn3t.studio.acceptance_contract import is_system_acceptance_contract
 
 # --- reward-hacking heuristics ------------------------------------------------
 
@@ -130,7 +131,9 @@ def detect_reward_hacking(artifact_dir: str | Path | None,
         text = vc.safe_read(tf)
         lowered = text.lower()
         if ("pytest.skip" in lowered or "@pytest.mark.skip" in lowered
-                or "xfail" in lowered):
+                or "xfail" in lowered) and not is_system_acceptance_contract(
+                    tf, root, content=text
+                ):
             flags.append(f"{tf.name}: tests skipped/xfailed instead of asserting")
 
     # 4) Fabricated success logs committed as files (vs real tool output).

@@ -402,6 +402,17 @@ class AppState:
     # ---- snapshots used by /api/status -----------------------------------
     def status(self) -> dict[str, Any]:
         s = self.settings
+        # Settings.has_any_llm intentionally only reflects API credentials.
+        # The resolved client backend is the execution truth for local CLIs:
+        # an installed selected CLI is usable without a SkyN3t-managed key,
+        # while a selected-but-missing CLI resolves to the offline stub.
+        try:
+            active_llm_backend = str(
+                getattr(self.llm_client, "backend", "") or ""
+            ).strip().lower()
+        except Exception:  # noqa: BLE001 - status probes must never raise
+            active_llm_backend = ""
+        runtime_llm_available = active_llm_backend not in {"", "stub", "unknown"}
         return {
             "app": s.app_name,
             "version": s.version,
@@ -426,7 +437,7 @@ class AppState:
                 "no_claude": s.no_claude,
                 "autonomous_builds": s.autonomous_builds,
                 "approval_gates": s.approval_gates,
-                "has_any_llm": s.has_any_llm,
+                "has_any_llm": bool(s.has_any_llm or runtime_llm_available),
                 "claude_available": s.claude_available,
                 # The build KNOWS it can generate real images when a Replicate
                 # token is set; the asset-gen step additionally needs asset_gen.

@@ -311,6 +311,39 @@ def test_status_and_budget_snapshots():
     assert "tiers" in backends and "budget" in backends
 
 
+async def test_health_counts_available_cli_as_llm_without_api_key(monkeypatch):
+    from skyn3t.adapters.llm import KNOWN_CLI_PROVIDERS, LLMClient
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_cache",
+        {provider: provider == "codex" for provider in KNOWN_CLI_PROVIDERS},
+    )
+    settings = Settings(llm_backend="codex_cli")
+    assert settings.has_any_llm is False
+
+    st = _state(settings=settings)
+
+    assert st.llm_client.backend == "codex_cli"
+    payload = await routes.health_payload(st)
+    assert payload["policy"]["has_any_llm"] is True
+
+
+def test_status_does_not_count_missing_selected_cli_as_llm(monkeypatch):
+    from skyn3t.adapters.llm import KNOWN_CLI_PROVIDERS, LLMClient
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_cache",
+        {provider: False for provider in KNOWN_CLI_PROVIDERS},
+    )
+    settings = Settings(llm_backend="codex_cli")
+    st = _state(settings=settings)
+
+    assert st.llm_client.backend == "stub"
+    assert st.status()["policy"]["has_any_llm"] is False
+
+
 def test_app_state_close_stops_long_lived_resources():
     calls: list[str] = []
 

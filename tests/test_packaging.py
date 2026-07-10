@@ -18,6 +18,14 @@ def test_cli_playtest_driver_is_a_runtime_dependency() -> None:
     assert any(dependency.startswith("pexpect>=4.9") for dependency in dependencies)
 
 
+def test_golden_suite_is_declared_as_package_data() -> None:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert config["tool"]["setuptools"]["package-data"]["skyn3t.benchmarks"] == [
+        "golden-v1.json"
+    ]
+
+
 def test_setuptools_discovery_rejects_implicit_namespace_directories() -> None:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     discovery = config["tool"]["setuptools"]["packages"]["find"]

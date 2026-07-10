@@ -91,6 +91,8 @@ include = ["skyn3t*"]
 namespaces = false
 
 [tool.setuptools.package-data]
+# Golden acceptance data must be available from installed wheels, not just a checkout.
+"skyn3t.benchmarks" = ["golden-v1.json"]
 # The dashboard is part of the installed application, not a source-only extra.
 "skyn3t.web" = [
     "ui/dist/index.html",

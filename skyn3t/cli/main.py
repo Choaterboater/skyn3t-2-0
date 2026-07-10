@@ -48,12 +48,17 @@ studio_app = typer.Typer(help="Run and steer brief->app builds.", no_args_is_hel
 project_app = typer.Typer(help="Inspect delivered projects / builds.", no_args_is_help=True)
 domain_app = typer.Typer(help="Ingest external knowledge (RAG corpus).", no_args_is_help=True)
 bench_app = typer.Typer(help="Benchmark/regression harness (Spec 2).", no_args_is_help=True)
+golden_bench_app = typer.Typer(
+    help="Validate and run the repeatable golden app suite.",
+    no_args_is_help=True,
+)
 cortex_app = typer.Typer(help="Inspect the autonomy layer (cortex).", no_args_is_help=True)
 audit_app = typer.Typer(help="Audit SkyN3t itself as an app factory.", no_args_is_help=True)
 app.add_typer(studio_app, name="studio")
 app.add_typer(project_app, name="project")
 app.add_typer(domain_app, name="domain")
 app.add_typer(bench_app, name="bench")
+bench_app.add_typer(golden_bench_app, name="golden")
 app.add_typer(cortex_app, name="cortex")
 app.add_typer(audit_app, name="audit")
 
@@ -194,7 +199,12 @@ def build_agents(*, event_bus: Any, llm: Any = None, memory: Any = None) -> list
 # ---------------------------------------------------------------------------
 # Spine assembly — shared by ``start`` and ``studio build``.
 # ---------------------------------------------------------------------------
-async def _assemble_spine(*, with_memory: bool = True, event_bus: Any | None = None) -> dict[str, Any]:
+async def _assemble_spine(
+    *,
+    with_memory: bool = True,
+    event_bus: Any | None = None,
+    settings_override: Any | None = None,
+) -> dict[str, Any]:
     """Wire event bus, orchestrator, llm, router, memory, and agents.
 
     Returns a dict of collaborators. Every piece degrades independently.
@@ -204,7 +214,7 @@ async def _assemble_spine(*, with_memory: bool = True, event_bus: Any | None = N
     from skyn3t.core.events import EventBus
     from skyn3t.core.orchestrator import Orchestrator
 
-    settings = get_settings()
+    settings = settings_override or get_settings()
     event_bus = event_bus or EventBus()
 
     llm = None
@@ -1062,6 +1072,292 @@ def fanout_cmd(
                       f"· {'a candidate passed' if out.any_passed else 'none passed — most complete'}")
     else:
         console.print("[red]No candidates produced a result.[/red]")
+
+
+async def _golden_run_async(
+    suite,
+    *,
+    out_path: Path,
+    report_path: Path,
+    repeats: int,
+    seed: int,
+    execution_backend: str,
+    llm_backend: str,
+    work_root: Path | None,
+):
+    """Execute golden cases through fresh, isolated ``StudioRunner.start`` paths."""
+    from skyn3t.adapters.llm import BudgetTracker
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.golden_bench import (
+        benchmark_settings_profile,
+        isolated_settings,
+        run_golden,
+    )
+    from skyn3t.studio.runner import StudioRunner
+
+    base_settings = get_settings()
+    settings_profile = benchmark_settings_profile(base_settings, llm_backend=llm_backend)
+    shared_budget = None
+
+    async def build_fn(case, context):
+        nonlocal shared_budget
+        settings = isolated_settings(
+            base_settings,
+            context.workspace_dir,
+            llm_backend=llm_backend,
+            execution_backend=execution_backend,
+        )
+        spine = await _assemble_spine(settings_override=settings)
+        rag = None
+        try:
+            # State and projects are isolated per attempt, but daily spend is a
+            # process-wide safety boundary. Reuse the host ledger across every
+            # fresh LLM client while CostTracker resets only the per-build counter.
+            llm = spine.get("llm")
+            if llm is not None:
+                if shared_budget is None:
+                    shared_budget = BudgetTracker(
+                        per_build_cap=base_settings.per_build_usd_cap,
+                        daily_cap=base_settings.daily_usd_cap,
+                        token_cap=base_settings.daily_token_cap,
+                        ledger_path=base_settings.data_dir / "budget" / "daily_usage.json",
+                    )
+                llm.budget = shared_budget
+                _reset_bench_budget(llm)
+            learning, patterns, skills, rag = _build_intelligence(
+                settings, spine["event_bus"], spine["memory"]
+            )
+            cost_tracker, budget_guard = _build_observability(settings, spine["llm"])
+            runner = StudioRunner(
+                spine["event_bus"],
+                spine["orchestrator"],
+                settings=settings,
+                memory=spine["memory"],
+                learning=learning,
+                patterns=patterns,
+                skills=skills,
+                cost_tracker=cost_tracker,
+                budget_guard=budget_guard,
+                rag=rag,
+            )
+            return await runner.start(
+                case.brief,
+                slug=context.slug,
+                extra={
+                    "stack": case.stack,
+                    "build_id": f"golden-{context.seed:016x}",
+                    "best_of_n": 1,
+                    "parallel_code_slices": False,
+                    "attended": False,
+                },
+            )
+        finally:
+            ingestor = getattr(rag, "_skyn3t_ingestor", None)
+            stop = getattr(ingestor, "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001 - cleanup must not hide build evidence
+                    pass
+            close = getattr(spine.get("memory"), "close", None)
+            if callable(close):
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:  # noqa: BLE001 - cleanup must not hide build evidence
+                    pass
+
+    return await run_golden(
+        suite,
+        build_fn,
+        out_path=out_path,
+        report_path=report_path,
+        repeats=repeats,
+        seed=seed,
+        llm_backend=llm_backend,
+        execution_backend=execution_backend,
+        work_root=work_root,
+        safety_profile=settings_profile,
+    )
+
+
+@golden_bench_app.command("validate")
+def golden_validate(
+    suite_path: str = typer.Option(
+        "",
+        "--suite",
+        help="Golden suite JSON (default: packaged golden-v1.json).",
+    ),
+) -> None:
+    """Strictly validate the suite schema, paths, gate policy, and digest."""
+    from skyn3t.studio.golden_bench import GoldenBenchError, load_suite, suite_digest
+
+    console = _console()
+    try:
+        suite = load_suite(suite_path or None)
+    except GoldenBenchError as exc:
+        console.print(f"[red]Invalid golden suite:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    stacks = len({case.stack for case in suite.cases})
+    console.print(
+        f"[green]Valid[/green] [bold]{suite.suite_id}[/bold]: "
+        f"{len(suite.cases)} cases across {stacks} stacks"
+    )
+    console.print(f"SHA-256: [cyan]{suite_digest(suite)}[/cyan]")
+
+
+@golden_bench_app.command("run")
+def golden_run(
+    suite_path: str = typer.Option(
+        "",
+        "--suite",
+        help="Golden suite JSON (default: packaged golden-v1.json).",
+    ),
+    out: str = typer.Option(
+        "artifacts/golden/run.json",
+        "--out",
+        help="Atomic JSON ledger output.",
+    ),
+    report: str = typer.Option(
+        "artifacts/golden/run.md",
+        "--report",
+        help="Atomic Markdown report output.",
+    ),
+    repeats: int = typer.Option(
+        2,
+        "--repeats",
+        min=1,
+        max=10,
+        help="Independent repetitions per case (1-10).",
+    ),
+    seed: int = typer.Option(
+        20260709,
+        "--seed",
+        min=0,
+        max=2**63 - 1,
+        help="Deterministic benchmark seed.",
+    ),
+    execution_backend: str = typer.Option(
+        "inline",
+        "--execution-backend",
+        help="Execution backend: inline, docker, or auto.",
+    ),
+    llm_backend: str = typer.Option(
+        "stub",
+        "--llm-backend",
+        help="LLM backend; stub is the safe deterministic default.",
+    ),
+    work_root: str = typer.Option(
+        "",
+        "--work-root",
+        help="Optional root for isolated per-attempt state and projects.",
+    ),
+) -> None:
+    """Run every golden contract through StudioRunner and write durable evidence."""
+    from skyn3t.studio.golden_bench import GoldenBenchError, load_suite
+
+    console = _console()
+    out_path = Path(out).expanduser()
+    report_path = Path(report).expanduser()
+    try:
+        suite = load_suite(suite_path or None)
+        console.print(
+            f"[cyan]Golden benchmark[/cyan] {suite.suite_id}: "
+            f"{len(suite.cases)} cases x {repeats} repeats through StudioRunner"
+        )
+        ledger = asyncio.run(
+            _golden_run_async(
+                suite,
+                out_path=out_path,
+                report_path=report_path,
+                repeats=repeats,
+                seed=seed,
+                execution_backend=execution_backend.strip().lower(),
+                llm_backend=llm_backend.strip().lower(),
+                work_root=Path(work_root).expanduser() if work_root.strip() else None,
+            )
+        )
+    except (GoldenBenchError, OSError) as exc:
+        console.print(f"[red]Golden benchmark error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+    except KeyboardInterrupt as exc:  # pragma: no cover - manual interruption
+        console.print(f"[yellow]Interrupted.[/yellow] Partial ledger: {out_path}")
+        raise typer.Exit(code=130) from exc
+
+    overall = ledger.summary.overall
+    console.print(
+        f"[{'green' if overall.failed == 0 else 'red'}]"
+        f"{overall.passed}/{overall.attempts} passed"
+        f"[/{'green' if overall.failed == 0 else 'red'}] "
+        f"(Wilson 95% {overall.wilson.low * 100:.1f}-{overall.wilson.high * 100:.1f}%)"
+    )
+    console.print(f"Ledger: [cyan]{out_path}[/cyan]")
+    console.print(f"Report: [cyan]{report_path}[/cyan]")
+    if ledger.status != "completed":
+        raise typer.Exit(code=2)
+    if overall.failed:
+        raise typer.Exit(code=1)
+
+
+@golden_bench_app.command("compare")
+def golden_compare(
+    baseline: str = typer.Option(..., "--baseline", help="Completed baseline ledger JSON."),
+    candidate: str = typer.Option(..., "--candidate", help="Completed candidate ledger JSON."),
+    out: str = typer.Option(
+        "artifacts/golden/comparison.json",
+        "--out",
+        help="Atomic comparison JSON output.",
+    ),
+    report: str = typer.Option(
+        "artifacts/golden/comparison.md",
+        "--report",
+        help="Atomic comparison Markdown output.",
+    ),
+    max_suite_pass_rate_drop: float = typer.Option(
+        0.0,
+        "--max-suite-pass-rate-drop",
+        min=0.0,
+        max=1.0,
+        help="Maximum tolerated aggregate pass-rate drop (0-1).",
+    ),
+    min_case_pass_rate: float = typer.Option(
+        1.0,
+        "--min-case-pass-rate",
+        min=0.0,
+        max=1.0,
+        help="Minimum candidate pass rate required for every case (0-1).",
+    ),
+) -> None:
+    """Compare compatible completed ledgers and exit nonzero on regression."""
+    from skyn3t.studio.golden_bench import compare_ledger_files
+
+    console = _console()
+    out_path = Path(out).expanduser()
+    report_path = Path(report).expanduser()
+    try:
+        comparison = compare_ledger_files(
+            Path(baseline).expanduser(),
+            Path(candidate).expanduser(),
+            out_path=out_path,
+            report_path=report_path,
+            max_suite_pass_rate_drop=max_suite_pass_rate_drop,
+            min_case_pass_rate=min_case_pass_rate,
+        )
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Golden comparison error:[/red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    tone = "green" if comparison.status == "passed" else "red"
+    console.print(f"[{tone}]Golden comparison: {comparison.status}[/{tone}]")
+    for reason in comparison.reasons:
+        console.print(f"- {reason}")
+    console.print(f"Comparison: [cyan]{out_path}[/cyan]")
+    console.print(f"Report: [cyan]{report_path}[/cyan]")
+    if comparison.status == "error":
+        raise typer.Exit(code=2)
+    if comparison.status != "passed":
+        raise typer.Exit(code=1)
 
 
 @bench_app.command("run")

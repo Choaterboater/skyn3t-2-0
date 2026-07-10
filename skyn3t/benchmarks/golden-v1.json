@@ -1,0 +1,398 @@
+{
+  "schema_version": 1,
+  "suite_id": "golden-v1",
+  "name": "SkyN3t Golden Suite v1",
+  "description": "Thirty concrete acceptance contracts spanning every real builder stack and the highest-risk scaffold variants. Thresholds are quality requirements, not previously measured results.",
+  "cases": [
+    {
+      "id": "weather-react",
+      "brief": "Build a React weather dashboard with city search, current conditions, and a five-day forecast showing temperature, precipitation, and wind.",
+      "stack": "react",
+      "tags": ["web", "frontend", "weather", "dashboard"],
+      "expectations": {
+        "expected_stack": "react",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "src/App.jsx", "src/styles.css"]
+      }
+    },
+    {
+      "id": "habit-expo",
+      "brief": "Build an Expo mobile habit tracker with daily check-ins, streak history, missed-day states, and an accessible add-habit flow for iOS and Android.",
+      "stack": "react_native",
+      "tags": ["mobile", "frontend", "productivity", "habits"],
+      "expectations": {
+        "expected_stack": "react_native",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof"],
+        "required_artifacts": ["package.json", "app.json", "App.tsx"]
+      }
+    },
+    {
+      "id": "editorial-nextjs",
+      "brief": "Build a Next.js editorial blog with a server-rendered home index, article detail pages, author metadata, and category navigation.",
+      "stack": "nextjs",
+      "tags": ["web", "fullstack", "publishing", "ssr"],
+      "expectations": {
+        "expected_stack": "nextjs",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "app/layout.jsx", "app/page.jsx"]
+      }
+    },
+    {
+      "id": "sdk-docs-astro",
+      "brief": "Build an Astro documentation site for a Python SDK with sidebar navigation, installation steps, API reference sections, and syntax-highlighted code examples.",
+      "stack": "astro",
+      "tags": ["web", "content", "documentation", "developer-tools"],
+      "expectations": {
+        "expected_stack": "astro",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "astro.config.mjs", "src/pages/index.astro"]
+      }
+    },
+    {
+      "id": "outdoor-store-remix",
+      "brief": "Build a Remix outdoor-gear storefront with a searchable product catalog, product detail routes, quantity controls, and a persistent shopping cart page.",
+      "stack": "remix",
+      "tags": ["web", "fullstack", "commerce", "storefront"],
+      "expectations": {
+        "expected_stack": "remix",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "app/routes/_index.tsx", "app/routes/cart.tsx"]
+      }
+    },
+    {
+      "id": "support-ops-vue",
+      "brief": "Build a Vue 3 support-ticket operations dashboard with priority filters, assignee controls, status columns, response-time metrics, and an empty state.",
+      "stack": "vue",
+      "tags": ["web", "frontend", "support", "operations"],
+      "expectations": {
+        "expected_stack": "vue",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "seo"],
+        "required_artifacts": ["package.json", "src/main.ts", "src/App.vue"]
+      }
+    },
+    {
+      "id": "billing-portal-sveltekit",
+      "brief": "Build a SvelteKit customer portal with account settings, invoice history, payment-status badges, and a support message center with unread states.",
+      "stack": "sveltekit",
+      "tags": ["web", "fullstack", "billing", "customer-portal"],
+      "expectations": {
+        "expected_stack": "sveltekit",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "seo"],
+        "required_artifacts": ["package.json", "svelte.config.js", "src/routes/+page.svelte"]
+      }
+    },
+    {
+      "id": "inventory-react-ts",
+      "brief": "Build a TypeScript React inventory dashboard with SKU search, warehouse filters, low-stock alerts, inline quantity editing, and typed inventory records.",
+      "stack": "react_ts",
+      "tags": ["web", "frontend", "inventory", "typescript"],
+      "expectations": {
+        "expected_stack": "react_ts",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "seo"],
+        "required_artifacts": ["package.json", "tsconfig.json", "src/App.tsx"]
+      }
+    },
+    {
+      "id": "notes-fastapi",
+      "brief": "Build a FastAPI notes service with create, list, update, and delete endpoints, input validation, persistent storage, and deterministic API tests.",
+      "stack": "fastapi",
+      "tags": ["api", "backend", "notes", "crud"],
+      "expectations": {
+        "expected_stack": "fastapi",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check"],
+        "required_artifacts": ["main.py", "test_main.py", "requirements.txt"]
+      }
+    },
+    {
+      "id": "restaurant-static",
+      "brief": "Build a static neighborhood restaurant website with a dinner menu, opening hours, street location, dietary labels, and a prominent reservation call to action.",
+      "stack": "static",
+      "tags": ["web", "static", "hospitality", "local-business"],
+      "expectations": {
+        "expected_stack": "static",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["index.html", "styles.css", "main.js"]
+      }
+    },
+    {
+      "id": "csv-cleaner-python",
+      "brief": "Build a Python command-line CSV cleaner that removes duplicate rows, normalizes whitespace, reports changed-row counts, and writes to an explicit output file.",
+      "stack": "python",
+      "tags": ["cli", "data-processing", "csv", "developer-tools"],
+      "expectations": {
+        "expected_stack": "python",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "cli_check"],
+        "required_artifacts": ["pyproject.toml", "main.py", "tests/test_core.py"]
+      }
+    },
+    {
+      "id": "shortener-express",
+      "brief": "Build a Node Express URL-shortener API with create and redirect endpoints, collision-safe short codes, an in-memory store, validation errors, and a test command.",
+      "stack": "express",
+      "tags": ["api", "backend", "url-shortener", "node"],
+      "expectations": {
+        "expected_stack": "express",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check"],
+        "required_artifacts": ["package.json", "server.js", "test.js"]
+      }
+    },
+    {
+      "id": "markdown-notes-tauri",
+      "brief": "Build a Tauri desktop markdown notes application with local file open, edit, save, recent-document navigation, unsaved-change warnings, and keyboard-accessible controls.",
+      "stack": "tauri",
+      "tags": ["desktop", "frontend", "notes", "local-files"],
+      "expectations": {
+        "expected_stack": "tauri",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof"],
+        "required_artifacts": ["package.json", "src-tauri/Cargo.toml", "src-tauri/src/main.rs"]
+      }
+    },
+    {
+      "id": "parcel-platformer-phaser",
+      "brief": "Build a Phaser browser platformer where a bicycle courier jumps hazards, collects three parcels, reaches a delivery van, and can restart after winning or losing.",
+      "stack": "phaser",
+      "tags": ["game", "browser", "platformer", "simulation"],
+      "expectations": {
+        "expected_stack": "phaser",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "headless_gate"],
+        "required_artifacts": ["package.json", "src/sim.js", "src/main.js"]
+      }
+    },
+    {
+      "id": "focus-timer-swift",
+      "brief": "Build a native macOS SwiftUI focus timer with duration presets, start pause and reset controls, completed-session history, and a keyboard-driven headless companion.",
+      "stack": "swift",
+      "tags": ["desktop", "native", "productivity", "swiftui"],
+      "expectations": {
+        "expected_stack": "swift",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "cli_playtest"],
+        "required_artifacts": ["Package.swift", "Sources/AppCore/AppModel.swift", "Sources/App/MainApp.swift", ".skyn3t-cli-playtest.json"]
+      }
+    },
+    {
+      "id": "sqlite-tools-mcp",
+      "brief": "Build an MCP server exposing tools to inspect SQLite table schemas and run read-only parameterized queries while rejecting mutations and malformed arguments.",
+      "stack": "mcp",
+      "tags": ["ai-native", "protocol", "database", "developer-tools"],
+      "expectations": {
+        "expected_stack": "mcp",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "mcp_check"],
+        "required_artifacts": ["server.py", "tools.py", "tests/test_tools.py"]
+      }
+    },
+    {
+      "id": "document-chat-rag",
+      "brief": "Build a RAG service that ingests text documents, returns cited semantic search results, answers grounded questions, exposes corpus statistics, and rejects empty ingestion.",
+      "stack": "rag",
+      "tags": ["ai-native", "api", "retrieval", "documents"],
+      "expectations": {
+        "expected_stack": "rag",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "rag_check"],
+        "required_artifacts": ["rag_core.py", "main.py", "test_rag_core.py", "corpus/seed.md"]
+      }
+    },
+    {
+      "id": "webhook-digest-workflow",
+      "brief": "Build an automation workflow that fetches a URL, summarizes its content, emits a dry-run webhook payload, records each step in a run ledger, and reports skipped delivery.",
+      "stack": "workflow",
+      "tags": ["ai-native", "automation", "webhook", "orchestration"],
+      "expectations": {
+        "expected_stack": "workflow",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "workflow_check"],
+        "required_artifacts": ["workflow_core.py", "main.py", "test_workflow_core.py"]
+      }
+    },
+    {
+      "id": "marketing-agent-pack",
+      "brief": "Build an agent persona pack for a startup marketing team with distinct researcher, copywriter, editor, and campaign lead roles plus catalog validation and conversion tooling.",
+      "stack": "agent_pack",
+      "tags": ["ai-native", "content", "marketing", "multi-agent"],
+      "expectations": {
+        "expected_stack": "agent_pack",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof"],
+        "required_artifacts": ["catalog.json", "pack_tools.py", "main.py", "test_agent_pack.py"]
+      }
+    },
+    {
+      "id": "lamp-configurator-threejs",
+      "brief": "Build a React Three.js product configurator for a desk lamp with orbit controls, shade and base material choices, selected-option summaries, and a live price total.",
+      "stack": "react",
+      "tags": ["web", "frontend", "3d", "commerce", "variant"],
+      "expectations": {
+        "expected_stack": "react",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "src/App.jsx", "src/main.jsx"]
+      }
+    },
+    {
+      "id": "museum-threejs-static",
+      "brief": "Build a static Three.js virtual museum with keyboard navigation, labeled exhibits, a reset-view control, and an accessible text list describing every exhibit.",
+      "stack": "static",
+      "tags": ["web", "static", "3d", "culture", "variant"],
+      "expectations": {
+        "expected_stack": "static",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["index.html", "styles.css", "main.js"]
+      }
+    },
+    {
+      "id": "ohlcv-market-data-api",
+      "brief": "Build a market data API with historical OHLCV candles for AAPL, symbol metadata, explicit as-of dates, an offline vendor fixture, and typed no-data errors.",
+      "stack": "fastapi",
+      "tags": ["api", "finance", "market-data", "variant"],
+      "expectations": {
+        "expected_stack": "fastapi",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check"],
+        "required_artifacts": ["vendors.py", "main.py", "test_main.py"]
+      }
+    },
+    {
+      "id": "paper-trading-fastapi",
+      "brief": "Build a paper trading simulator with dated candles, moving-average buy and sell signals, cash and position validation, an auditable order ledger, and a portfolio dashboard.",
+      "stack": "fastapi",
+      "tags": ["api", "finance", "paper-trading", "variant"],
+      "expectations": {
+        "expected_stack": "fastapi",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check"],
+        "required_artifacts": ["market.py", "strategy.py", "ledger.py", "main.py"]
+      }
+    },
+    {
+      "id": "model-router-fastapi",
+      "brief": "Build an LLM gateway with OpenAI-compatible chat completions, a priced model catalog, priority routing, cheap-task selection, provider fallback, and exact usage cost tracking.",
+      "stack": "fastapi",
+      "tags": ["api", "ai-native", "llm-gateway", "variant"],
+      "expectations": {
+        "expected_stack": "fastapi",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check"],
+        "required_artifacts": ["router_core.py", "providers.py", "main.py", "test_main.py"]
+      }
+    },
+    {
+      "id": "release-copilot-python",
+      "brief": "Build a terminal copilot for release notes that reads workspace files, emits typed JSON events, supports an offline interactive prompt loop, and requires explicit permission before writes.",
+      "stack": "python",
+      "tags": ["cli", "ai-native", "release-engineering", "variant"],
+      "expectations": {
+        "expected_stack": "python",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "cli_check", "cli_playtest"],
+        "required_artifacts": ["cli_core.py", "main.py", "scenarios.json", ".skyn3t-cli-playtest.json"]
+      }
+    },
+    {
+      "id": "supabase-auth-nextjs",
+      "brief": "Build a Next.js Supabase auth dashboard with sign up, sign in, sign out, protected profile content, browser-safe public environment variables, and a clear missing-config state.",
+      "stack": "nextjs",
+      "tags": ["web", "fullstack", "authentication", "supabase", "variant"],
+      "expectations": {
+        "expected_stack": "nextjs",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", ".env.example", "lib/supabaseClient.js", "app/page.jsx"]
+      }
+    },
+    {
+      "id": "local-tasks-nextjs",
+      "brief": "Build a Next.js task tracker with a local SQLite backend, account registration and login, create and complete actions, persistent server-side storage, and validation errors.",
+      "stack": "nextjs",
+      "tags": ["web", "fullstack", "local-backend", "tasks", "variant"],
+      "expectations": {
+        "expected_stack": "nextjs",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["skyn3t-backend.json", "lib/localBackend.js", "app/api/items/route.js", "app/page.jsx"]
+      }
+    },
+    {
+      "id": "memory-chat-rag",
+      "brief": "Build a RAG chatbot that remembers me by preserving prior conversation facts across restarts while still grounding every answer in ingested documents and reporting memory statistics.",
+      "stack": "rag",
+      "tags": ["ai-native", "retrieval", "memory", "chat", "variant"],
+      "expectations": {
+        "expected_stack": "rag",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "rag_check"],
+        "required_artifacts": ["rag_core.py", "main.py", "memory_store.py", "test_memory_store.py"]
+      }
+    },
+    {
+      "id": "dino-runner-phaser",
+      "brief": "Build a Phaser endless dino runner where the dinosaur jumps cacti, horizontal speed increases over time, score rises while alive, collision ends the run, and restart resets state.",
+      "stack": "phaser",
+      "tags": ["game", "browser", "endless-runner", "variant"],
+      "expectations": {
+        "expected_stack": "phaser",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "headless_gate"],
+        "required_artifacts": ["package.json", "src/sim.js", "src/main.js"]
+      }
+    },
+    {
+      "id": "security-agent-pack",
+      "brief": "Build an agent persona pack for a security review team with distinct threat modeler, dependency auditor, code reviewer, and report editor roles plus catalog linting.",
+      "stack": "agent_pack",
+      "tags": ["ai-native", "security", "multi-agent", "content"],
+      "expectations": {
+        "expected_stack": "agent_pack",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof"],
+        "required_artifacts": ["catalog.json", "pack_tools.py", "main.py", "test_agent_pack.py"]
+      }
+    }
+  ]
+}

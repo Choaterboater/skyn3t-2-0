@@ -1,0 +1,149 @@
+name: Golden Benchmark
+
+on:
+  pull_request:
+    paths:
+      - "skyn3t/benchmarks/golden-v1.json"
+      - "benchmarks/golden-baseline-v1.json"
+      - "skyn3t/studio/golden_bench.py"
+      - "skyn3t/cli/main.py"
+      - ".github/workflows/golden-bench.yml"
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: Independent repetitions per golden case (1-10)
+        required: true
+        default: "2"
+        type: string
+      seed:
+        description: Deterministic benchmark seed
+        required: true
+        default: "20260709"
+        type: string
+      baseline_path:
+        description: Optional checked-out baseline JSON path
+        required: false
+        default: "benchmarks/golden-baseline-v1.json"
+        type: string
+
+concurrency:
+  group: golden-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOLDEN_SUITE: skyn3t/benchmarks/golden-v1.json
+
+jobs:
+  validate:
+    name: Validate golden suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install SkyN3t
+        run: python -m pip install -e "."
+
+      - name: Validate suite only
+        run: skyn3t bench golden validate --suite "$GOLDEN_SUITE"
+
+  run:
+    name: Run deterministic golden benchmark
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: macos-latest
+    timeout-minutes: 180
+    env:
+      SKYN3T_LLM_BACKEND: stub
+      SKYN3T_EXECUTION_BACKEND: inline
+      SKYN3T_ALLOW_REMOTE_DEPLOY: "false"
+      SKYN3T_ASSET_GEN: "false"
+      SKYN3T_AUTONOMOUS_LEARNING: "false"
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deterministic benchmark environment
+        run: python -m pip install -e ".[dev]"
+
+      - name: Verify native Swift toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Run repository golden suite
+        id: golden_run
+        continue-on-error: true
+        env:
+          GOLDEN_REPEATS: ${{ github.event.inputs.repeats || '2' }}
+          GOLDEN_SEED: ${{ github.event.inputs.seed || '20260709' }}
+        run: |
+          mkdir -p artifacts/golden
+          skyn3t bench golden run \
+            --suite "$GOLDEN_SUITE" \
+            --out artifacts/golden/run.json \
+            --report artifacts/golden/run.md \
+            --repeats "$GOLDEN_REPEATS" \
+            --seed "$GOLDEN_SEED" \
+            --execution-backend inline \
+            --llm-backend stub
+
+      - name: Compare with baseline when available
+        id: golden_compare
+        if: always()
+        continue-on-error: true
+        env:
+          REQUESTED_BASELINE: ${{ github.event.inputs.baseline_path || 'benchmarks/golden-baseline-v1.json' }}
+        run: |
+          if [[ -f "$REQUESTED_BASELINE" ]]; then
+            skyn3t bench golden compare \
+              --baseline "$REQUESTED_BASELINE" \
+              --candidate artifacts/golden/run.json \
+              --out artifacts/golden/comparison.json \
+              --report artifacts/golden/comparison.md \
+              --max-suite-pass-rate-drop 0 \
+              --min-case-pass-rate 1
+          else
+            printf '# Golden comparison\n\nNo baseline was available at `%s`; run validation and artifacts are still published.\n' \
+              "$REQUESTED_BASELINE" > artifacts/golden/comparison.md
+          fi
+
+      - name: Upload golden benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: golden-bench-${{ github.run_id }}
+          path: artifacts/golden/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Enforce golden result
+        if: always()
+        env:
+          GOLDEN_RUN_OUTCOME: ${{ steps.golden_run.outcome }}
+          GOLDEN_COMPARE_OUTCOME: ${{ steps.golden_compare.outcome }}
+        run: |
+          if [[ "$GOLDEN_RUN_OUTCOME" != "success" ]]; then
+            echo "Golden run did not pass: $GOLDEN_RUN_OUTCOME"
+            exit 1
+          fi
+          if [[ "$GOLDEN_COMPARE_OUTCOME" != "success" ]]; then
+            echo "Golden comparison did not pass: $GOLDEN_COMPARE_OUTCOME"
+            exit 1
+          fi

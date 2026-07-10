@@ -125,6 +125,16 @@ class ImproveEngine:
             except Exception as exc:  # noqa: BLE001 - repairs never break an improve
                 _log.warning("improve.deterministic_repairs_failed", slug=slug, error=str(exc))
 
+            # Config surfacing can write source/config files. Run it in the
+            # isolated worktree before proof so those writes are covered by the
+            # same transaction instead of mutating the delivered project after
+            # it was already verified.
+            await self._emit(EventType.IMPROVE_STAGE,
+                             {"slug": slug, "stage": "finalizing"}, cid)
+            config_summary = await self._surface_config(
+                Path(wt.dir), goal, stack, slug, cid
+            )
+
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "verifying"}, cid)
             proof = proof_run(
@@ -135,6 +145,54 @@ class ImproveEngine:
                 run_build=bool(getattr(self.settings, "run_generated_build", False)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             )
+            proof_payload = proof.to_dict()
+            if not proof.passed:
+                # The original project has not been touched yet. Record the
+                # rejected attempt without replacing its still-valid GO/proof
+                # evidence, then return an honest failed outcome.
+                if self.record_history and manifest is not None:
+                    try:
+                        self._record_history(
+                            manifest,
+                            project_dir,
+                            goal,
+                            list_files(project_dir),
+                            proof,
+                            stack,
+                            slug,
+                            files_changed=files_changed,
+                            delivered_change=False,
+                        )
+                    except Exception as rec_exc:  # noqa: BLE001
+                        _log.warning(
+                            "improve.record_rejection_failed",
+                            slug=slug,
+                            error=str(rec_exc),
+                        )
+                failure_detail: dict[str, Any] = {
+                    "delivered": 0,
+                    "proof": proof_payload,
+                    "improver_success": improver_ok,
+                    "improver_error": improver_err,
+                    "delivery_blocked": "proof_failed",
+                    "project_preserved": True,
+                }
+                if skipped:
+                    failure_detail["skipped"] = skipped
+                outcome = ImproveOutcome(
+                    project_dir=str(project_dir),
+                    slug=slug,
+                    stack=stack,
+                    goal=goal,
+                    files_changed=sorted(files_changed),
+                    proof_passed=False,
+                    score=float(proof.score),
+                    status="failed",
+                    detail=failure_detail,
+                )
+                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                return outcome
+
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "delivering"}, cid)
             # clean=True WIPES project_dir before copying, and merge_back swallows
@@ -143,34 +201,51 @@ class ImproveEngine:
             # lands fewer files than the worktree holds, so improve() never leaves
             # a working project broken (design rule #1).
             source_files = list_files(wt.dir)
+            expected_files = set(source_files)
+            original_files = set(list_files(project_dir))
             backup = Path(tempfile.mkdtemp(prefix=f"improve-bak-{slug}-"))
-            backed_up = False
             try:
-                merge_back(str(project_dir), str(backup), overwrite=True, clean=False)
-                backed_up = True
-            except Exception:  # noqa: BLE001 - backup is best-effort
-                pass
-            delivered = merge_back(wt.dir, str(project_dir), overwrite=True, clean=True)
-            if backed_up and len(list_files(str(project_dir))) < len(source_files):
-                _log.warning("improve.partial_merge_restored", slug=slug,
-                             delivered=len(list_files(str(project_dir))),
-                             expected=len(source_files))
-                merge_back(str(backup), str(project_dir), overwrite=True, clean=True)
-                delivered = list_files(str(project_dir))
-            shutil.rmtree(backup, ignore_errors=True)
-            # merge_back returns [] when the worktree held only ignored files (it
-            # already cleaned project_dir) — fall back to what's actually on disk
-            # so a real delivery is never reported as empty (design rule #1).
-            if not delivered:
-                delivered = list_files(str(project_dir))
-            # Config surfacing: an improve goal may introduce a new API/setting.
-            # Re-detect from the goal + the (now edited) code, (re)generate the
-            # settings UI for any client keys, and verify wiring. Best-effort.
-            await self._emit(EventType.IMPROVE_STAGE,
-                             {"slug": slug, "stage": "finalizing"}, cid)
-            config_summary = await self._surface_config(project_dir, goal, stack, slug, cid)
-            if config_summary.get("files_written"):
-                delivered = list_files(str(project_dir))
+                backup_files = set(
+                    merge_back(
+                        str(project_dir),
+                        str(backup),
+                        overwrite=True,
+                        clean=False,
+                    )
+                )
+                if backup_files != original_files:
+                    raise RuntimeError("improve backup was incomplete; delivery aborted")
+
+                delivered = merge_back(
+                    wt.dir,
+                    str(project_dir),
+                    overwrite=True,
+                    clean=True,
+                )
+                landed_files = set(list_files(project_dir))
+                if landed_files != expected_files:
+                    _log.warning(
+                        "improve.partial_merge_restoring",
+                        slug=slug,
+                        delivered=len(landed_files),
+                        expected=len(expected_files),
+                    )
+                    merge_back(
+                        str(backup),
+                        str(project_dir),
+                        overwrite=True,
+                        clean=True,
+                    )
+                    restored_files = set(list_files(project_dir))
+                    if restored_files != original_files:
+                        raise RuntimeError(
+                            "improve delivery and rollback were incomplete"
+                        )
+                    raise RuntimeError(
+                        "improve delivery was incomplete; original project restored"
+                    )
+            finally:
+                shutil.rmtree(backup, ignore_errors=True)
 
             # Delivery already happened. A failure while recording history must NOT
             # relabel a successful deliver as 'failed' (no partial-result lie).
@@ -183,7 +258,7 @@ class ImproveEngine:
                     _log.warning("improve.record_history_failed", slug=slug, error=str(rec_exc))
 
             detail: dict[str, Any] = {
-                "delivered": len(delivered), "proof": proof.to_dict(),
+                "delivered": len(delivered), "proof": proof_payload,
                 "improver_success": improver_ok, "improver_error": improver_err,
             }
             if skipped:
@@ -263,7 +338,8 @@ class ImproveEngine:
                         goal: str, delivered: list[str], proof: Any,
                         stack: str, slug: str,
                         config_summary: dict[str, Any] | None = None,
-                        files_changed: list[str] | None = None) -> None:
+                        files_changed: list[str] | None = None,
+                        delivered_change: bool = True) -> None:
         from datetime import datetime
 
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
@@ -274,9 +350,15 @@ class ImproveEngine:
         hist.append({"goal": goal, "files": len(delivered),
                      "files_changed": len(files_changed or []),
                      "at": datetime.now(UTC).isoformat(),
-                     "proof_passed": bool(proof.passed), "score": float(proof.score)})
-        if config_summary:
+                     "proof_passed": bool(proof.passed), "score": float(proof.score),
+                     "delivered": bool(delivered_change)})
+        if delivered_change and config_summary:
             man.extra["config_spec"] = config_summary.get("config_spec", {})
             man.extra["config_wiring"] = config_summary.get("wiring", {})
+        if delivered_change:
+            man.status = "completed"
+            man.verdict = "go"
+            man.files = list(delivered)
+            man.extra["proof"] = proof.to_dict()
         man.touch()
         man.save(project_dir)

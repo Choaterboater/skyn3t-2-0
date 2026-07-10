@@ -51,6 +51,15 @@ def _seed_project(root: Path, files: dict[str, str], *, stack: str = "") -> Path
     return root
 
 
+def _mark_proven(project: Path) -> None:
+    manifest = BuildManifest.load(project)
+    assert manifest is not None
+    manifest.status = "completed"
+    manifest.verdict = "go"
+    manifest.extra["proof"] = {"passed": True}
+    manifest.save(project)
+
+
 # ---------------------------------------------------------------------------
 # CLI: skyn3t deploy
 # ---------------------------------------------------------------------------
@@ -67,7 +76,7 @@ def test_deploy_cli_plans_a_container_for_a_fastapi_build(monkeypatch, tmp_path)
     assert "container" in out
     assert "fly" in out            # a named host
     assert "Dockerfile" in out     # a server ships an artifact
-    assert "fly launch" in out     # the exact one-command deploy
+    assert "flyctl launch" in out  # the exact one-command deploy
 
 
 def test_deploy_cli_reads_the_stack_from_the_manifest(monkeypatch, tmp_path):
@@ -126,6 +135,134 @@ def test_deploy_cli_target_changes_the_emitted_command(monkeypatch, tmp_path):
     assert "netlify deploy" in result.output, "the --target host's command must be emitted"
 
 
+def test_deploy_cli_executes_the_planners_fallback_not_rejected_target(monkeypatch, tmp_path):
+    import skyn3t.agents.deploy_agent as deploy_agent_module
+
+    _isolate(monkeypatch, tmp_path)
+    proj = _seed_project(
+        tmp_path / "api-fallback",
+        {"main.py": "from fastapi import FastAPI\napp=FastAPI()", "requirements.txt": "fastapi"},
+        stack="fastapi",
+    )
+    _mark_proven(proj)
+    captured = {}
+
+    class FakeDeployAgent:
+        def deploy(self, directory, target="static", port=0, *, plan=None):
+            captured.update(directory=directory, target=target, plan=plan, port=port)
+            return {
+                "ok": True,
+                "url": "https://fallback.fly.dev",
+                "provider": "fly",
+                "target": target,
+                "status": "succeeded",
+                "commands": [{"step": "deploy", "argv": ["flyctl", "launch"], "status": "succeeded"}],
+                "remote_deploy_performed": True,
+                "error": None,
+            }
+
+    monkeypatch.setattr(deploy_agent_module, "DeployAgent", FakeDeployAgent)
+    result = runner.invoke(
+        app,
+        ["deploy", str(proj), "--target", "vercel", "--now", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["target"] == "fly"
+    assert captured["plan"].targets[0] == "fly"
+    assert "vercel" in captured["plan"].notes
+
+
+def test_deploy_cli_now_rejects_unproved_project_before_agent_call(
+    monkeypatch,
+    tmp_path,
+):
+    import skyn3t.agents.deploy_agent as deploy_agent_module
+
+    _isolate(monkeypatch, tmp_path)
+    proj = _seed_project(
+        tmp_path / "unproved-site",
+        {"index.html": "<h1>not proven</h1>"},
+        stack="static",
+    )
+    called = False
+
+    class FakeDeployAgent:
+        def deploy(self, *args, **kwargs):
+            nonlocal called
+            called = True
+            return {"ok": True, "url": "https://unsafe.vercel.app"}
+
+    monkeypatch.setattr(deploy_agent_module, "DeployAgent", FakeDeployAgent)
+    result = runner.invoke(app, ["deploy", str(proj), "--now", "--yes"])
+
+    assert result.exit_code == 1
+    assert "objective build proof is required" in result.output
+    assert called is False
+
+
+def test_deploy_cli_unverified_initial_deploy_does_not_set_live_url(
+    monkeypatch,
+    tmp_path,
+):
+    import skyn3t.agents.deploy_agent as deploy_agent_module
+    from skyn3t.studio import deploy_check as deploy_check_module
+    from skyn3t.studio.gate_verdict import GateVerdict
+
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("SKYN3T_DEPLOY_CHECK_ENABLED", "true")
+    proj = _seed_project(
+        tmp_path / "unverified-site",
+        {"index.html": "<h1>waiting for DNS</h1>"},
+        stack="static",
+    )
+    _mark_proven(proj)
+
+    class FakeDeployAgent:
+        def deploy(self, directory, target="static", port=0, *, plan=None):
+            return {
+                "ok": True,
+                "url": "https://unverified.vercel.app",
+                "provider": "vercel",
+                "target": target,
+                "status": "succeeded",
+                "commands": [{"step": "deploy", "status": "succeeded"}],
+                "remote_deploy_attempted": True,
+                "remote_deploy_performed": True,
+                "remote_state": "deployed",
+            }
+
+    async def fake_check(url, stack):
+        return GateVerdict(
+            skipped=True,
+            checked={"url": url, "stack": stack},
+            reason="DNS not propagated",
+        )
+
+    monkeypatch.setattr(deploy_agent_module, "DeployAgent", FakeDeployAgent)
+    monkeypatch.setattr(deploy_check_module, "check_deploy", fake_check)
+
+    result = runner.invoke(
+        app,
+        ["deploy", str(proj), "--target", "vercel", "--now", "--yes"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Deployment activation blocked" in result.output
+    manifest = BuildManifest.load(proj)
+    assert manifest is not None
+    assert "live_url" not in manifest.extra
+    attempt = manifest.extra["deployments"][-1]
+    assert attempt["ok"] is False
+    assert attempt["status"] == "deployed_unverified"
+    assert attempt["provider_command_ok"] is True
+    assert attempt["remote_deploy_performed"] is True
+    assert attempt["url"] == "https://unverified.vercel.app"
+    assert attempt["deploy_check"]["skipped"] is True
+    assert attempt["manifest_pointer_active"] is False
+    assert manifest.extra["latest_deploy_check"]["skipped"] is True
+
+
 def test_deploy_cli_resolves_a_bare_slug_under_projects_dir(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     proj = _seed_project(
@@ -170,6 +307,84 @@ def test_record_deployment_persists_live_url(tmp_path):
     assert man.extra["deployments"][-1]["target"] == "cloudflare-pages"
 
 
+def test_record_deployment_persists_provider_command_and_status_evidence(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment
+
+    proj = _seed_project(
+        tmp_path / "site-evidence",
+        {"index.html": "<h1>hi</h1>"},
+        stack="static",
+    )
+    plan = plan_deploy(proj, "static")
+    record = record_deployment(
+        proj,
+        result={
+            "ok": True,
+            "url": "http://127.0.0.1:8123",
+            "target": "static",
+            "provider": "local-static",
+            "status": "running",
+            "remote_deploy_performed": False,
+            "commands": [{
+                "step": "serve",
+                "operation": "ThreadingHTTPServer.serve_forever",
+                "status": "running",
+            }],
+        },
+        plan=plan,
+        target="static",
+    )
+
+    assert record["provider"] == "local-static"
+    assert record["status"] == "running"
+    assert record["commands"][0]["operation"] == "ThreadingHTTPServer.serve_forever"
+    assert record["remote_deploy_performed"] is False
+    persisted = BuildManifest.load(proj).extra["deployments"][-1]
+    assert persisted == record
+
+
+def test_failed_deployment_is_durable_but_does_not_advance_live_pointer(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment
+
+    proj = _seed_project(
+        tmp_path / "site-failure",
+        {"index.html": "<h1>hi</h1>"},
+        stack="static",
+    )
+    plan = plan_deploy(proj, "static")
+    record_deployment(
+        proj,
+        result={
+            "ok": True,
+            "url": "https://healthy.pages.dev",
+            "provider": "cloudflare",
+            "status": "succeeded",
+        },
+        plan=plan,
+        target="cloudflare-pages",
+    )
+    failed = record_deployment(
+        proj,
+        result={
+            "ok": False,
+            "url": None,
+            "provider": "netlify",
+            "status": "deploy_failed",
+            "error": "provider rejected upload",
+            "commands": [{"step": "deploy", "argv": ["netlify", "deploy"], "status": "failed"}],
+            "remote_deploy_performed": False,
+        },
+        plan=plan,
+        target="netlify",
+    )
+
+    manifest = BuildManifest.load(proj)
+    assert manifest.extra["live_url"] == "https://healthy.pages.dev"
+    assert manifest.extra["deployments"][-1] == failed
+    assert failed["status"] == "deploy_failed"
+    assert failed["manifest_pointer_active"] is False
+
+
 def test_rollback_deployment_restores_previous_live_url(tmp_path):
     from skyn3t.studio.deploy import plan_deploy, record_deployment, rollback_deployment
 
@@ -199,8 +414,79 @@ def test_rollback_deployment_restores_previous_live_url(tmp_path):
     assert rollback["to_url"] == "https://v1.pages.dev"
     man = BuildManifest.load(proj)
     assert man.extra["live_url"] == "https://v1.pages.dev"
-    assert man.extra["deployments"][-1]["rolled_back"] is True
+    latest = man.extra["deployments"][-1]
+    assert latest["manifest_pointer_rolled_back"] is True
+    assert latest["manifest_pointer_active"] is False
+    assert rollback["operation"] == "manifest_pointer"
+    assert rollback["remote_rollback_performed"] is False
     assert man.extra["deployment_rollbacks"][-1]["reason"] == "smoke check failed"
+
+
+def test_rollback_rejects_invalid_selection_without_changing_pointer(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment, rollback_deployment
+
+    proj = _seed_project(
+        tmp_path / "site-invalid-rollback",
+        {"index.html": "<h1>hi</h1>"},
+        stack="static",
+    )
+    plan = plan_deploy(proj, "static")
+    for url in ("https://v1.pages.dev", "https://v2.pages.dev"):
+        record_deployment(
+            proj,
+            result={"ok": True, "url": url, "provider": "cloudflare"},
+            plan=plan,
+            target="cloudflare-pages",
+        )
+
+    result = rollback_deployment(proj, deployment_index=99)
+    manifest = BuildManifest.load(proj)
+    assert result["ok"] is False
+    assert result["status"] == "invalid_selection"
+    assert result["remote_rollback_performed"] is False
+    assert manifest.extra["live_url"] == "https://v2.pages.dev"
+
+
+def test_rollback_rejects_in_range_non_active_or_failed_selection(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment, rollback_deployment
+
+    proj = _seed_project(
+        tmp_path / "site-safe-selection",
+        {"index.html": "<h1>hi</h1>"},
+        stack="static",
+    )
+    plan = plan_deploy(proj, "static")
+    record_deployment(
+        proj,
+        result={"ok": True, "url": "https://v1.pages.dev", "provider": "cloudflare"},
+        plan=plan,
+        target="cloudflare-pages",
+    )
+    record_deployment(
+        proj,
+        result={
+            "ok": False,
+            "url": None,
+            "provider": "cloudflare",
+            "status": "deploy_failed",
+        },
+        plan=plan,
+        target="cloudflare-pages",
+    )
+    record_deployment(
+        proj,
+        result={"ok": True, "url": "https://v2.pages.dev", "provider": "cloudflare"},
+        plan=plan,
+        target="cloudflare-pages",
+    )
+
+    historical = rollback_deployment(proj, deployment_index=0)
+    failed = rollback_deployment(proj, deployment_index=1)
+
+    assert historical["status"] == "invalid_selection"
+    assert failed["status"] == "invalid_selection"
+    manifest = BuildManifest.load(proj)
+    assert manifest.extra["live_url"] == "https://v2.pages.dev"
 
 
 # ---------------------------------------------------------------------------

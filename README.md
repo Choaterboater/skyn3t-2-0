@@ -63,17 +63,20 @@ and a ready `Dockerfile` for servers:
 | --- | --- | --- |
 | `static` | react/astro/remix-static/phaser/static | Cloudflare Pages / Netlify / Vercel |
 | `node_ssr` | nextjs, remix | Vercel / Railway / Fly |
-| `container` | fastapi, rag, workflow, express | Fly / Railway / Render (Dockerfile emitted) |
+| `container` | fastapi, rag, workflow, express | Fly / Railway (Dockerfile emitted) |
 | `artifact` | python/cli, agent_pack, mcp, swift, tauri | PyPI / GitHub Release |
 | `mobile` | react_native | Expo EAS |
 
 ```bash
 skyn3t deploy <build>            # show the plan (hosts + one-command deploy)
 skyn3t deploy <build> --write    # also drop the generated Dockerfile
+skyn3t deploy <build> --now      # confirm, deploy, health-check, then activate
 ```
 
-Nothing is deployed without you — it's the honest "…and here's how it ships"
-answer. Token-gated one-command execution is the next slice.
+Nothing is deployed without explicit confirmation. Live deploys require the
+selected provider credential, stage only the files that provider needs, persist
+the provider response, and activate a new live URL only after its health check
+passes. A failed verification keeps the previous healthy URL active.
 
 ---
 
@@ -88,8 +91,9 @@ answer. Token-gated one-command execution is the next slice.
   `skyn3t bench run --suite all` or `--suite games` when you intentionally want
   game/full-stack coverage. Before/after gating keeps a change from lifting the
   average while silently regressing one app type.
-- **Safe + cheap by default.** Offline stub on, autonomy gated behind approval,
-  hard per-build/daily USD + token caps, loopback-only web access.
+- **Safe + observable by default.** Offline stub on, autonomy gated behind
+  approval, optional USD/token ceilings disabled unless you configure them,
+  exact provider cost evidence where available, and loopback-only web access.
 - **Degrade, don't crash.** Every optional dependency (FastAPI, Docker, ChromaDB,
   Playwright, embeddings, …) is guarded; missing deps degrade to a deterministic
   offline path.
@@ -149,7 +153,7 @@ and a live preview.
 | `skyn3t start [--web] [--host H] [--port P]` | Boot the orchestrator, register agents, optionally serve the Foundry UI. |
 | `skyn3t doctor` | Readiness table: python, deps, db, llm backend, sandbox, projects-dir. |
 | `skyn3t studio build "<brief>" [--best-of N] [--no-critic] [--slug S]` | Run a build end to end; print result + artifact path. |
-| `skyn3t deploy <slug-or-path> [--target H] [--write]` | Show the keyless deploy plan; `--write` drops the Dockerfile. |
+| `skyn3t deploy <slug-or-path> [--target H] [--write] [--now]` | Show the deploy plan; optionally stage artifacts or confirm a live, health-gated deploy. |
 | `skyn3t studio approve <id>` / `reject <id>` | Decide a gated build. |
 | `skyn3t project list [--limit N]` | List recent builds from memory. |
 | `skyn3t snapshot [--out PATH]` | Save the event-history snapshot to JSON. |

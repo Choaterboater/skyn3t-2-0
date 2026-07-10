@@ -8,6 +8,7 @@ absent (design rule #6).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -27,8 +28,9 @@ import structlog
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
-from skyn3t.core.model_router import live_catalog
+from skyn3t.core.model_router import live_catalog, prime_live_catalog
 from skyn3t.process_utils import is_process_alive
+from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import (
     AppState,
@@ -38,6 +40,11 @@ from skyn3t.web.deps import (
     extract_bearer,
     is_cross_origin_browser_request,
     is_loopback,
+)
+from skyn3t.web.model_value import (
+    catalog_value_annotations,
+    model_value_annotation,
+    workload_payload,
 )
 from skyn3t.worktree import PREVIEW_SUBDIR, list_files
 
@@ -174,6 +181,14 @@ _PROJECT_SIZE_EXCLUDED_ROOTS = frozenset({
 
 class ProjectNotDeliveredError(RuntimeError):
     """A project directory exists, but no completed build owns it yet."""
+
+
+class DeployPreflightError(RuntimeError):
+    """A live deploy request failed validation before any side effect."""
+
+    def __init__(self, message: str, *, status_code: int = 409) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _manifest_is_delivered(manifest: BuildManifest | dict[str, Any] | None) -> bool:
@@ -393,6 +408,38 @@ def _save_reference_image(
         return ""
 
 
+def _save_reference_images(
+    state: AppState,
+    build_id: str,
+    reference_image: str = "",
+    reference_images: list[str] | None = None,
+) -> tuple[str, list[str]]:
+    """Persist the validated reference-image inputs shared by build entrypoints."""
+    primary = ""
+    saved_paths: list[str] = []
+    if reference_image and reference_image.strip():
+        primary = _save_reference_image(state, build_id, reference_image.strip())
+    raw_refs = [
+        str(item)
+        for item in (reference_images or [])[:4]
+        if str(item).strip()
+    ]
+    for index, raw_ref in enumerate(raw_refs, start=1):
+        saved = _save_reference_image(
+            state,
+            build_id,
+            raw_ref.strip(),
+            index=index,
+        )
+        if saved:
+            saved_paths.append(saved)
+    if primary and primary not in saved_paths:
+        saved_paths.insert(0, primary)
+    if saved_paths and not primary:
+        primary = saved_paths[0]
+    return primary, saved_paths
+
+
 _BUILD_PROFILES = {
     "cheap_learned",
     "fast",
@@ -560,7 +607,14 @@ def _profile_extra(profile: str) -> dict[str, Any]:
     if profile == "fast":
         return {
             "best_of_n": 1,
+            "best_of_n_across_models": False,
             "max_debug_attempts": 1,
+            "parallel_code_slices": True,
+        }
+    if profile == "cheap_learned":
+        return {
+            "best_of_n": 1,
+            "best_of_n_across_models": False,
             "parallel_code_slices": True,
         }
     if profile == "balanced":
@@ -595,6 +649,22 @@ def _full_app_extra() -> dict[str, Any]:
         "agentic_timeout": 1200,
         "visual_self_heal": True,
     }
+
+
+def _orchestration_extra(profile: str, *, full_app: bool) -> dict[str, Any]:
+    """Compose profile policy without weakening the requested app contract."""
+    extra = _full_app_extra() if full_app else {}
+    extra.update(_profile_extra(profile))
+    if full_app:
+        # Profiles may trade retries/candidates for latency, but a full app still
+        # includes its visual and asset passes. Cheap/fast use parallel specialist
+        # slices instead of duplicating an entire app trajectory.
+        extra["full_app_contract"] = True
+        extra["asset_gen"] = True
+        extra["visual_self_heal"] = True
+        if profile in {"fast", "cheap_learned"}:
+            extra["parallel_code_slices_min_files"] = 4
+    return extra
 
 
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
@@ -650,19 +720,12 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     # falling back to a legacy submit(...) if present. The build runs as a
     # background task so the endpoint returns immediately with the build_id.
     # Optional reference image: decode + save (degrades to data-URL pass-through).
-    ref_path = ""
-    ref_paths: list[str] = []
-    if reference_image and reference_image.strip():
-        ref_path = _save_reference_image(state, build_id, reference_image.strip())
-    raw_refs = [str(item) for item in (reference_images or [])[:4] if str(item).strip()]
-    for idx, raw_ref in enumerate(raw_refs, start=1):
-        saved = _save_reference_image(state, build_id, raw_ref.strip(), index=idx)
-        if saved:
-            ref_paths.append(saved)
-    if ref_path and ref_path not in ref_paths:
-        ref_paths.insert(0, ref_path)
-    if ref_paths and not ref_path:
-        ref_path = ref_paths[0]
+    ref_path, ref_paths = _save_reference_images(
+        state,
+        build_id,
+        reference_image,
+        reference_images,
+    )
 
     studio = state.studio
     dispatched = False
@@ -672,17 +735,7 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         "build_id": build_id,
         "build_profile": profile,
     }
-    if full_app_requested:
-        build_extra.update(_full_app_extra())
-    # The selected profile is the operator's explicit orchestration policy.
-    # Apply it last so `fast + full_app` stays single-candidate without imposing
-    # a hard generation deadline or dropping full-app assets/content quality.
-    build_extra.update(_profile_extra(profile))
-    if full_app_requested and profile == "fast":
-        # Full-app architect plans commonly start with 4-7 load-bearing files.
-        # Keep the override per build: global small-app behavior remains at the
-        # conservative default while fast full apps actually fan out specialists.
-        build_extra["parallel_code_slices_min_files"] = 4
+    build_extra.update(_orchestration_extra(profile, full_app=full_app_requested))
     if model:
         build_extra["model_override"] = model
     if ref_paths:
@@ -1113,6 +1166,27 @@ def _incomplete_project_row(
     stack = str(raw.get("stack") or getattr(record, "stack", "") or "")
     created_at = raw.get("created_at") or getattr(record, "created_at", "")
     updated_at = raw.get("updated_at") or getattr(record, "updated_at", "")
+    raw_extra_value = raw.get("extra")
+    raw_extra: dict[str, Any] = (
+        dict(raw_extra_value) if isinstance(raw_extra_value, dict) else {}
+    )
+    summary = build_summary(raw) if raw else {}
+    record_scorecard = getattr(record, "quality_scorecard", {})
+    record_cost_truth = (
+        record_scorecard.get("cost_truth")
+        if isinstance(record_scorecard, dict)
+        and isinstance(record_scorecard.get("cost_truth"), dict)
+        else {}
+    )
+    cost_truth = record_cost_truth
+    if not cost_truth and "build_cost_usd" in raw_extra:
+        cost_truth = summary.get("cost_truth", {})
+    record_cost = getattr(record, "cost_usd", None)
+    manifest_cost = raw_extra.get("build_cost_usd", raw.get("cost_usd"))
+    prompts = raw_extra.get("prompts")
+    skills_used = raw_extra.get("skills_used")
+    recall_used = raw_extra.get("recall_used")
+    stage_skills_used = raw_extra.get("stage_skills_used")
     reason = "build is still in progress" if delivery_state == "building" else (
         "no completed build manifest"
         if status == "incomplete"
@@ -1139,13 +1213,15 @@ def _incomplete_project_row(
         "serve_kind": "",
         "serve_reason": reason,
         "has_manifest": manifest is not None,
-        "cost_usd": getattr(record, "cost_usd", None),
-        "wasted_usd": None,
-        "prompt_count": 0,
-        "skills_used": [],
-        "recall_used": [],
-        "stage_skills_used": {},
-        "quality_scorecard": {},
+        "cost_usd": record_cost if record_cost is not None else manifest_cost,
+        "cost_truth": cost_truth,
+        "wasted_usd": raw_extra.get("wasted_usd"),
+        "prompt_count": len(prompts) if isinstance(prompts, list) else 0,
+        "skills_used": list(skills_used) if isinstance(skills_used, list) else [],
+        "recall_used": list(recall_used) if isinstance(recall_used, list) else [],
+        "stage_skills_used": dict(stage_skills_used)
+        if isinstance(stage_skills_used, dict) else {},
+        "quality_scorecard": dict(summary.get("quality_scorecard") or {}),
         "scaffold_stub_gate": {},
         "deploy_plan": {},
         "deployments": [],
@@ -1258,6 +1334,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             slug = str(m.get("slug", d.name))
             has_preview = _project_has_static_preview(state, slug)
             record = _project_build_record(state, slug)
+            summary = build_summary(m)
             out.append({
                 "slug": slug,
                 "stack": m.get("stack", ""),
@@ -1284,6 +1361,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "has_manifest": man is not None,
                 # Spec 2 cost attribution (None when a build predates it).
                 "cost_usd": extra.get("build_cost_usd"),
+                "cost_truth": summary.get("cost_truth", {}),
                 "wasted_usd": extra.get("wasted_usd"),
                 # Prompts are captured per-build but can be large (10-50 KB each),
                 # so the list carries only a flag/count — the text loads lazily via
@@ -1505,7 +1583,35 @@ async def deploy_plan_project(
     stack = man.stack
     from skyn3t.studio.deploy import plan_deploy
 
-    plan = plan_deploy(pdir, stack, target=target or None)
+    requested_target = str(target or "").strip().lower()
+    base_plan = plan_deploy(pdir, stack)
+    valid_targets = list(base_plan.targets)
+    plan = (
+        plan_deploy(pdir, stack, target=requested_target)
+        if requested_target in valid_targets
+        else base_plan
+    )
+    provider_options = await _deploy_provider_options(
+        state,
+        pdir,
+        man,
+        base_plan,
+        stack,
+    )
+    preflight = next(
+        (item for item in provider_options if item["target"] == requested_target),
+        None,
+    )
+    if requested_target and preflight is None:
+        preflight = {
+            "target": requested_target,
+            "provider": _deploy_provider_key(requested_target),
+            "target_supported": False,
+            "ready": False,
+            "blockers": [
+                f"target '{requested_target}' is not supported for this {base_plan.kind} build"
+            ],
+        }
     extra = man.extra if isinstance(man.extra, dict) else {}
     return {
         "slug": slug,
@@ -1514,7 +1620,95 @@ async def deploy_plan_project(
         "live_url": str(extra.get("live_url") or ""),
         "deployments": list(extra.get("deployments") or [])
         if isinstance(extra.get("deployments"), list) else [],
+        "deploy_check": dict(extra.get("deploy_check") or {})
+        if isinstance(extra.get("deploy_check"), dict) else {},
+        "provider_options": provider_options,
+        "preflight": preflight,
     }
+
+
+def _deploy_provider_key(target: str) -> str:
+    normalized = str(target or "").strip().lower()
+    return {
+        "cloudflare-pages": "cloudflare",
+        "cloudflare_pages": "cloudflare",
+        "pages": "cloudflare",
+        "flyctl": "fly",
+    }.get(normalized, normalized)
+
+
+def _deploy_quality_gate(manifest: BuildManifest) -> dict[str, Any]:
+    from skyn3t.studio.deploy import deployment_quality_gate
+
+    return deployment_quality_gate(manifest)
+
+
+async def _deploy_provider_options(
+    state: AppState,
+    project_dir: Path,
+    manifest: BuildManifest,
+    base_plan: Any,
+    stack: str,
+) -> list[dict[str, Any]]:
+    from skyn3t.studio.deploy import plan_deploy
+
+    settings = await deploy_settings_payload(state)
+    quality = _deploy_quality_gate(manifest)
+    options: list[dict[str, Any]] = []
+    for target in base_plan.targets:
+        provider = _deploy_provider_key(target)
+        detail = settings["provider_details"].get(provider, {})
+        selected_plan = plan_deploy(project_dir, stack, target=target)
+        blockers = list(quality["blockers"])
+        if not bool(base_plan.serves_url):
+            blockers.append("this plan produces an artifact, not a live URL")
+        if not bool(settings["allow_remote_deploy"]):
+            blockers.append("remote deploy is disabled in Settings")
+        if not bool(detail.get("configured")):
+            blockers.append(f"{provider} credential is not configured")
+        if not bool(detail.get("cli_available")):
+            blockers.append(f"{detail.get('cli') or provider} CLI is not installed")
+        if selected_plan.kind == "static":
+            output = Path(str(selected_plan.output_dir or "."))
+            try:
+                artifact = (project_dir / output).resolve(strict=True)
+                artifact.relative_to(project_dir.resolve(strict=True))
+                static_artifact_ready = (
+                    not output.is_absolute()
+                    and ".." not in output.parts
+                    and artifact.is_dir()
+                    and (artifact / "index.html").is_file()
+                )
+            except (OSError, ValueError):
+                static_artifact_ready = False
+            if not static_artifact_ready:
+                blockers.append(
+                    f"verified static artifact '{selected_plan.output_dir}' is missing"
+                )
+        else:
+            static_artifact_ready = None
+        options.append({
+            "target": target,
+            "provider": provider,
+            "target_supported": True,
+            "configured": bool(detail.get("configured")),
+            "cli": str(detail.get("cli") or ""),
+            "cli_available": bool(detail.get("cli_available")),
+            "remote_allowed": bool(settings["allow_remote_deploy"]),
+            "quality_gate": quality,
+            "ready": not blockers,
+            "blockers": blockers,
+            "command": selected_plan.command,
+            "build_command": selected_plan.build_command,
+            "build_command_execution": "verified earlier; not rerun during deploy",
+            "static_artifact_ready": static_artifact_ready,
+            "kind": selected_plan.kind,
+            "artifacts": sorted(selected_plan.artifacts),
+            "health_check_enabled": bool(
+                getattr(state.settings, "deploy_check_enabled", False)
+            ),
+        })
+    return options
 
 
 async def deploy_project(
@@ -1528,11 +1722,30 @@ async def deploy_project(
     pdir, man = _require_delivered_project(state, slug)
     stack = man.stack
     from skyn3t.agents.deploy_agent import DeployAgent
-    from skyn3t.studio.deploy import plan_deploy, record_deployment, write_deploy_artifacts
+    from skyn3t.studio.deploy import (
+        apply_deploy_health_gate,
+        plan_deploy,
+        record_deployment,
+        write_deploy_artifacts,
+    )
 
-    plan = plan_deploy(pdir, stack, target=target or None)
-    if write:
-        write_deploy_artifacts(plan, pdir)
+    requested_target = str(target or "").strip().lower()
+    if not requested_target:
+        raise DeployPreflightError(
+            "deploy target is required; request the deploy plan and choose a provider",
+            status_code=422,
+        )
+    if requested_target == "static":
+        raise DeployPreflightError(
+            "local static deploys are not durable; use the managed Serve preview instead"
+        )
+    base_plan = plan_deploy(pdir, stack)
+    if requested_target not in base_plan.targets:
+        raise DeployPreflightError(
+            f"target '{requested_target}' is not supported for this {base_plan.kind} build",
+            status_code=422,
+        )
+    plan = plan_deploy(pdir, stack, target=requested_target)
     if not plan.deployable:
         return {
             "slug": slug,
@@ -1551,7 +1764,7 @@ async def deploy_project(
                 "error": "deploy plan creates an artifact, not a live URL",
             },
         }
-    provider = target or (plan.targets[0] if plan.targets else "")
+    provider = plan.targets[0] if plan.targets else ""
     if not provider:
         return {
             "slug": slug,
@@ -1559,23 +1772,44 @@ async def deploy_project(
             "plan": plan.to_dict(),
             "result": {"ok": False, "url": None, "error": "no deploy target available"},
         }
-    agent = DeployAgent(event_bus=state.event_bus)
-    result = agent.deploy(pdir, target=provider, plan=plan)
-    record: dict[str, Any] | None = None
+    options = await _deploy_provider_options(state, pdir, man, base_plan, stack)
+    preflight = next(
+        (item for item in options if item["target"] == requested_target),
+        None,
+    )
+    if preflight is None or not preflight["ready"]:
+        blockers = list((preflight or {}).get("blockers") or ["deploy preflight failed"])
+        raise DeployPreflightError("; ".join(str(item) for item in blockers))
+
+    artifacts_written = (
+        write_deploy_artifacts(plan, pdir) if (write or plan.artifacts) else []
+    )
+    deploy_config = {
+        "allow_remote_deploy": bool(
+            getattr(state.settings, "allow_remote_deploy", False)
+        ),
+        **{
+            field: value
+            for field in _DEPLOY_PROVIDER_FIELDS.values()
+            if (value := str(getattr(state.settings, field, "") or ""))
+        },
+    }
+    agent = DeployAgent(event_bus=state.event_bus, config=deploy_config)
+    result = await asyncio.to_thread(
+        agent.deploy,
+        pdir,
+        target=provider,
+        plan=plan,
+    )
     deploy_check: dict[str, Any] | None = None
     if result.get("ok") and result.get("url"):
-        record = record_deployment(pdir, result=result, plan=plan, target=provider)
         if getattr(state.settings, "deploy_check_enabled", False):
             try:
                 from skyn3t.studio.deploy_check import check_deploy
 
                 verdict = await check_deploy(str(result.get("url") or ""), stack)
                 deploy_check = verdict.to_dict()
-                manifest = BuildManifest.load(pdir)
-                if manifest is not None:
-                    manifest.extra["deploy_check"] = deploy_check
-                    manifest.save(pdir)
-            except Exception as exc:  # noqa: BLE001 - deploy check is advisory
+            except Exception as exc:  # noqa: BLE001 - persist an unverified attempt
                 deploy_check = {
                     "ok": False,
                     "skipped": True,
@@ -1584,6 +1818,14 @@ async def deploy_project(
                     "reason": f"deploy check unavailable: {str(exc)[:160]}",
                     "gaps": [],
                 }
+            result = apply_deploy_health_gate(result, deploy_check)
+    record: dict[str, Any] | None = record_deployment(
+        pdir,
+        result=result,
+        plan=plan,
+        target=provider,
+    )
+    if result.get("ok") and result.get("url"):
         await state.event_bus.emit(
             EventType.SYSTEM,
             source="web.api",
@@ -1594,6 +1836,18 @@ async def deploy_project(
                 "target": provider,
             },
         )
+    elif result.get("activation_blocked"):
+        await state.event_bus.emit(
+            EventType.SYSTEM,
+            source="web.api",
+            payload={
+                "event": "deploy.activation_blocked",
+                "slug": slug,
+                "url": result.get("url"),
+                "target": provider,
+                "reason": result.get("activation_blocker"),
+            },
+        )
     return {
         "slug": slug,
         "ok": bool(result.get("ok") and result.get("url")),
@@ -1602,7 +1856,27 @@ async def deploy_project(
         "result": result,
         "deployment": record,
         "deploy_check": deploy_check,
+        "artifacts_written": artifacts_written,
     }
+
+
+async def rollback_project_deployment(
+    state: AppState,
+    slug: str,
+    *,
+    reason: str = "",
+    deployment_index: int | None = None,
+) -> dict[str, Any]:
+    """Move only the delivered project's local live-URL pointer backward."""
+    pdir, _ = _require_delivered_project(state, slug)
+    from skyn3t.studio.deploy import rollback_deployment
+
+    result = rollback_deployment(
+        pdir,
+        reason=reason,
+        deployment_index=deployment_index,
+    )
+    return {"slug": slug, **result}
 
 
 async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, Any]:
@@ -1631,7 +1905,17 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
     return {"accepted": True, "slug": slug, "goal": goal.strip(), "correlation_id": cid}
 
 
-async def fanout_project(state: AppState, brief: str, stacks: list[str]) -> dict[str, Any]:
+async def fanout_project(
+    state: AppState,
+    brief: str,
+    stacks: list[str],
+    *,
+    build_profile: str = "cheap_learned",
+    model_override: str = "",
+    full_app: bool = False,
+    reference_image: str = "",
+    reference_images: list[str] | None = None,
+) -> dict[str, Any]:
     """Dispatch a Spec 4 fan-out — build N divergent stack candidates for one
     brief in parallel — as a background task streaming FANOUT_* events to the
     cockpit. Each candidate builds to a distinct slug so they don't collide."""
@@ -1647,19 +1931,48 @@ async def fanout_project(state: AppState, brief: str, stacks: list[str]) -> dict
     cands = [FanCandidate(id=s, label=s, spec={"stack": s}) for s in ids]
     cid = uuid.uuid4().hex
     base = _slugify(brief)
+    profile = _normalize_build_profile(build_profile)
+    model = _normalize_model_override(model_override)
+    full_app_requested = bool(full_app) or profile == "full_app"
+    ref_path, ref_paths = _save_reference_images(
+        state,
+        cid,
+        reference_image,
+        reference_images,
+    )
+    common_extra: dict[str, Any] = {
+        "build_profile": profile,
+        **_orchestration_extra(profile, full_app=full_app_requested),
+    }
+    if model:
+        common_extra["model_override"] = model
+    if ref_paths:
+        common_extra["reference_images"] = ref_paths
+    if ref_path:
+        common_extra["reference_image"] = ref_path
 
     async def build_fn(c):
         stack = (c.spec or {}).get("stack", "")
+        candidate_extra = {**common_extra, "stack": stack}
         return await state.studio.start(
             brief.strip(), slug=f"{base}-{c.id}",
-            extra={"stack": stack} if stack else {})
+            extra=candidate_extra)
 
     import asyncio
     task = asyncio.ensure_future(
         fan_out(cands, build_fn, event_bus=state.event_bus, correlation_id=cid))
     _FANOUT_TASKS.add(task)
     task.add_done_callback(_reap_fanout_task)
-    return {"accepted": True, "brief": brief.strip(), "stacks": ids, "correlation_id": cid}
+    return {
+        "accepted": True,
+        "brief": brief.strip(),
+        "stacks": ids,
+        "correlation_id": cid,
+        "build_profile": profile,
+        "model_override": model,
+        "full_app": full_app_requested,
+        "reference_images": len(ref_paths),
+    }
 
 
 def _resolve_live_gate(state: AppState, build_id: str, approved: bool, reason: str) -> int:
@@ -2069,6 +2382,30 @@ _PROVIDER_FIELDS = {
     "kimi": "kimi_api_key",
 }
 
+_DEPLOY_PROVIDER_FIELDS = {
+    "fly": "fly_api_token",
+    "vercel": "vercel_token",
+    "cloudflare": "cloudflare_api_token",
+    "netlify": "netlify_auth_token",
+    "railway": "railway_token",
+}
+
+_DEPLOY_PROVIDER_NATIVE_ENV = {
+    "fly": "FLY_API_TOKEN",
+    "vercel": "VERCEL_TOKEN",
+    "cloudflare": "CLOUDFLARE_API_TOKEN",
+    "netlify": "NETLIFY_AUTH_TOKEN",
+    "railway": "RAILWAY_TOKEN",
+}
+
+_DEPLOY_PROVIDER_CLIS = {
+    "fly": "flyctl",
+    "vercel": "vercel",
+    "cloudflare": "wrangler",
+    "netlify": "netlify",
+    "railway": "railway",
+}
+
 
 def _persist_env_var(name: str, value: str) -> None:
     """Upsert ``NAME=value`` in the repo .env (best-effort; never raises)."""
@@ -2220,6 +2557,96 @@ async def set_replicate_token(
         "configured": bool(token),
         "model": getattr(state.settings, "replicate_model", "") or "",
     }
+
+
+async def deploy_settings_payload(state: AppState) -> dict[str, Any]:
+    """Return deploy credential presence without returning credential values."""
+    providers = {
+        provider: bool(
+            getattr(state.settings, field, "")
+            or os.environ.get(f"SKYN3T_{field.upper()}")
+            or os.environ.get(_DEPLOY_PROVIDER_NATIVE_ENV[provider])
+        )
+        for provider, field in _DEPLOY_PROVIDER_FIELDS.items()
+    }
+    allow_remote = bool(getattr(state.settings, "allow_remote_deploy", False))
+    cli_available = {
+        provider: bool(shutil.which(cli))
+        for provider, cli in _DEPLOY_PROVIDER_CLIS.items()
+    }
+    provider_details = {
+        provider: {
+            "configured": configured,
+            "cli": _DEPLOY_PROVIDER_CLIS[provider],
+            "cli_available": cli_available[provider],
+            "ready": bool(allow_remote and configured and cli_available[provider]),
+        }
+        for provider, configured in providers.items()
+    }
+    return {
+        "providers": providers,
+        "allow_remote_deploy": allow_remote,
+        "cli_available": cli_available,
+        "provider_details": provider_details,
+        "selectable_providers": list(_DEPLOY_PROVIDER_FIELDS),
+    }
+
+
+async def set_deploy_credential(
+    state: AppState,
+    provider: str,
+    token: str,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Set or clear one allowlisted provider credential.
+
+    Only the managed ``SKYN3T_*`` variable is changed; the token is never
+    included in the response.
+    """
+    provider = (provider or "").strip().lower()
+    config = _DEPLOY_PROVIDER_FIELDS.get(provider)
+    if config is None:
+        raise ValueError(f"unknown deploy provider {provider!r}")
+    token = (token or "").strip()
+    if "\r" in token or "\n" in token:
+        raise ValueError("deploy credentials must be a single line")
+
+    field = config
+    try:
+        setattr(state.settings, field, token)
+    except Exception:  # noqa: BLE001 - keep the live route available for validated models
+        pass
+    env_name = f"SKYN3T_{field.upper()}"
+    if persist:
+        if token:
+            os.environ[env_name] = token
+        else:
+            os.environ.pop(env_name, None)
+        _persist_env_var(env_name, token)
+
+    payload = await deploy_settings_payload(state)
+    return {
+        "provider": provider,
+        "configured": payload["providers"][provider],
+    }
+
+
+async def set_allow_remote_deploy(
+    state: AppState,
+    enabled: bool,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Set the explicit master gate for provider-side deploy commands."""
+    enabled = bool(enabled)
+    try:
+        state.settings.allow_remote_deploy = enabled
+    except Exception:  # noqa: BLE001 - keep the live route available for validated models
+        pass
+    value = "true" if enabled else "false"
+    if persist:
+        os.environ["SKYN3T_ALLOW_REMOTE_DEPLOY"] = value
+        _persist_env_var("SKYN3T_ALLOW_REMOTE_DEPLOY", value)
+    return {"allow_remote_deploy": enabled}
 
 
 async def set_asset_gen(state: AppState, enabled: bool, persist: bool = True) -> dict[str, Any]:
@@ -2393,10 +2820,13 @@ def _estimate_openrouter_cost(
         if "request" in pricing:
             return pricing.get("request")
         return None
+    if prompt_rate is None or completion_rate is None:
+        return None
 
-    prompt_cost = max(0, int(prompt_tokens)) * float(prompt_rate or 0.0)
-    completion_cost = max(0, int(completion_tokens)) * float(completion_rate or 0.0)
-    return round(prompt_cost + completion_cost, 10)
+    prompt_cost = max(0, int(prompt_tokens)) * prompt_rate
+    completion_cost = max(0, int(completion_tokens)) * completion_rate
+    request_cost = float(pricing.get("request") or 0.0)
+    return round(prompt_cost + completion_cost + request_cost, 10)
 
 
 def _model_pricing_summary(model_record: dict[str, Any] | None) -> str:
@@ -2442,23 +2872,30 @@ def _catalog_model_family(model_id: str) -> str:
     return model_id.split("/", 1)[1].split(":", 1)[0].split("-", 1)[0].strip() if "/" in model_id else ""
 
 
-def _build_model_catalog_item(model_record: dict[str, Any]) -> dict[str, Any]:
+def _build_model_catalog_item(
+    model_record: dict[str, Any],
+    value: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     model_id = str(model_record.get("id") or "").strip()
     pricing = _normalize_openrouter_pricing(model_record)
     prompt_rate = pricing.get("prompt", pricing.get("input"))
     completion_rate = pricing.get("completion", pricing.get("output"))
     request_rate = pricing.get("request")
+    value = value or model_value_annotation([model_record], model_id)
     return {
         "id": model_id,
+        "name": str(model_record.get("name") or model_id),
         "provider": _catalog_model_provider(model_id),
         "family": _catalog_model_family(model_id),
         "created": int(model_record.get("created", 0) or 0),
+        "context_length": int(model_record.get("context_length", 0) or 0),
         "is_free": _is_free_model_id(model_id),
         "pricing_summary": _model_pricing_summary(model_record),
         "pricing_raw": pricing,
         "prompt_rate": prompt_rate,
         "completion_rate": completion_rate,
         "request_rate": request_rate,
+        **value,
     }
 
 async def _load_openrouter_catalog(
@@ -2475,7 +2912,9 @@ async def _load_openrouter_catalog(
         and _MODELS_CACHE["catalog"] is not None
         and now - float(_MODELS_CACHE["ts"]) < 300
     ):
-        return _MODELS_CACHE["catalog"], _MODELS_CACHE.get("note")
+        cached_catalog = _MODELS_CACHE["catalog"]
+        prime_live_catalog(cached_catalog, fetched_at=float(_MODELS_CACHE["ts"]))
+        return cached_catalog, _MODELS_CACHE.get("note")
 
     try:
         import httpx
@@ -2511,6 +2950,7 @@ async def _load_openrouter_catalog(
                         catalog=catalog,
                         note="ok",
                     )
+                    prime_live_catalog(catalog, fetched_at=now)
                     return catalog, "ok"
                 except Exception as exc:  # noqa: BLE001 - try each auth mode, then fail safely
                     last_exc = exc
@@ -2518,11 +2958,13 @@ async def _load_openrouter_catalog(
 
             note = f"could not load OpenRouter catalog: {last_exc}"
             catalog = _MODELS_CACHE.get("catalog") or []
+            prime_live_catalog(catalog, fetched_at=float(_MODELS_CACHE.get("ts") or now))
             _MODELS_CACHE.update(ts=now, note=note)
             return catalog, note
     except Exception as exc:  # noqa: BLE001 - degrade to cache/empty on API/network
         note = f"could not load OpenRouter catalog: {exc}"
         catalog = _MODELS_CACHE.get("catalog") or []
+        prime_live_catalog(catalog, fetched_at=float(_MODELS_CACHE.get("ts") or now))
         _MODELS_CACHE.update(ts=now, note=note)
         return catalog, note
 
@@ -2538,8 +2980,19 @@ async def list_openrouter_models(
         catalog, note = await _load_openrouter_catalog(state, refresh)
     except TypeError:
         catalog, note = await _load_openrouter_catalog(state)
-    models = sorted({str(m.get("id")) for m in catalog if isinstance(m.get("id"), str)})
-    payload = {"models": models, "count": len(models)}
+    # Keep the dropdown/bootstrap endpoint compact. Full pricing, benchmarks,
+    # and value alternatives live on the filtered/paginated /models/catalog
+    # endpoint; returning them here as well duplicated roughly 482 KiB.
+    models = sorted(
+        str(model.get("id"))
+        for model in catalog
+        if isinstance(model, dict) and isinstance(model.get("id"), str)
+    )
+    payload = {
+        "models": models,
+        "count": len(models),
+        "details_endpoint": "/models/catalog",
+    }
     if note:
         payload["note"] = note
     return payload
@@ -2568,6 +3021,7 @@ async def list_openrouter_model_catalog(
     normalized_order = (order or "asc").strip().lower()
     normalized_sort = (sort or "id").strip().lower()
 
+    value_by_model = catalog_value_annotations(catalog)
     filtered: list[dict[str, Any]] = []
     for m in catalog:
         if not isinstance(m, dict):
@@ -2590,7 +3044,7 @@ async def list_openrouter_model_catalog(
         if normalized_family and normalized_family not in family_name.lower():
             continue
 
-        filtered.append(_build_model_catalog_item(m))
+        filtered.append(_build_model_catalog_item(m, value_by_model.get(model_id)))
 
     def _sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
         if normalized_sort in {"created", "newest"}:
@@ -2599,6 +3053,9 @@ async def list_openrouter_model_catalog(
             return (item["provider"], item["family"], item["id"])
         if normalized_sort == "price":
             unknown = float("inf")
+            example_cost = item.get("example_cost_usd")
+            if isinstance(example_cost, (int, float)):
+                return (float(example_cost), item["id"])
             prompt_rate = item.get("prompt_rate")
             completion_rate = item.get("completion_rate")
             request_rate = item.get("request_rate")
@@ -2627,6 +3084,7 @@ async def list_openrouter_model_catalog(
         "offset": start,
         "limit": limit,
         "note": note or "",
+        "example_workload": workload_payload(),
     }
 
 async def model_routing_preview_payload(
@@ -2634,10 +3092,11 @@ async def model_routing_preview_payload(
     build_profile: str = "cheap_learned",
     model_override: str = "",
 ) -> dict[str, Any]:
-    """Resolve the currently selected model per router tier and attach pricing.
+    """Estimate the currently selected model per router tier and attach pricing.
 
-    This lets Studio show exactly what will be sent to OpenRouter before submit,
-    including manual/model-preference override, backend/policy context, and pricing tags.
+    Build-time codegen, vision, slice, failover, and task-specific learned routes
+    have additional precedence, so this endpoint must not claim to be an exact
+    execution trace. Completed build manifests remain authoritative.
     """
     from skyn3t.core.model_router import (
         _FREE_DEFAULTS,
@@ -2717,12 +3176,15 @@ async def model_routing_preview_payload(
             source = "free_only" if blocked_paid_pin else "fallback"
 
         pricing = _normalize_openrouter_pricing(catalog_map.get(str(model)))
+        value = model_value_annotation(catalog, str(model), profile=tier.value)
         tier_models.append({
             "tier": tier.value,
             "model": str(model),
             "source": source,
+            "resolution_kind": "estimate",
             "pricing": _model_pricing_summary(catalog_map.get(str(model))),
             "pricing_raw": pricing,
+            **value,
             "cost_estimates_usd": {
                 "prompt_1k_completion_1k": _estimate_openrouter_cost(
                     pricing,
@@ -2743,6 +3205,12 @@ async def model_routing_preview_payload(
         })
 
     return {
+        "resolution_kind": "estimate",
+        "authoritative": False,
+        "estimate_reason": (
+            "Tier-level estimate from current settings and catalog; build-time codegen, "
+            "vision, slice, failover, and task-specific learned routing may differ."
+        ),
         "backend": backend,
         "build_profile": profile,
         "model_override": override,
@@ -2751,6 +3219,7 @@ async def model_routing_preview_payload(
         "catalog_note": catalog_note,
         "catalog_age_seconds": catalog_age_seconds,
         "catalog_model_count": len(catalog),
+        "example_workload": workload_payload(),
         "tiers": tier_models,
     }
 
@@ -3171,7 +3640,11 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "visual_self_heal", "visual_self_heal_max_rounds",
             "improve_agentic", "improve_agentic_timeout",
             "parallel_code_slices", "parallel_code_slices_min_files")
-    return {k: getattr(s, k, None) for k in keys}
+    payload = {k: getattr(s, k, None) for k in keys}
+    deploy = await deploy_settings_payload(state)
+    payload["allow_remote_deploy"] = deploy["allow_remote_deploy"]
+    payload["deploy_providers"] = deploy["providers"]
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -3275,7 +3748,7 @@ def build_router(state: AppState) -> Any:
                 if isinstance(body.get("reference_images"), list) else None,
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
-                full_app=bool(body.get("full_app", False)),
+                full_app=_coerce_bool(body.get("full_app", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3489,6 +3962,33 @@ def build_router(state: AppState) -> Any:
             model=str(body.get("model", "")),
         )
 
+    @router.get("/settings/deploy", dependencies=[auth])
+    async def _deploy_settings() -> dict[str, Any]:
+        return await deploy_settings_payload(state)
+
+    @router.post("/settings/deploy/credential", dependencies=[auth])
+    async def _set_deploy_credential(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await set_deploy_credential(
+                state,
+                str(body.get("provider", "")),
+                str(body.get("token", body.get("key", ""))),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/settings/deploy/allow_remote", dependencies=[auth])
+    async def _set_allow_remote_deploy(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            enabled = _coerce_bool(body.get("enabled", body.get("on", False)))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await set_allow_remote_deploy(state, enabled)
+
     @router.post("/settings/asset_gen", dependencies=[auth])
     async def _set_asset_gen(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_asset_gen(state, bool(body.get("enabled", body.get("on", False))))
@@ -3622,7 +4122,7 @@ def build_router(state: AppState) -> Any:
                 if isinstance(body.get("reference_images"), list) else None,
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
-                full_app=bool(body.get("full_app", False)),
+                full_app=_coerce_bool(body.get("full_app", False)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -3722,8 +4222,28 @@ def build_router(state: AppState) -> Any:
             )
         except ProjectNotDeliveredError:
             raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except DeployPreflightError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid slug") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
+
+    @router.post("/studio/deploy/rollback", dependencies=[auth])
+    async def _deploy_rollback(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        raw_index = body.get("deployment_index")
+        try:
+            index = None if raw_index in (None, "") else int(raw_index)
+            return await rollback_project_deployment(
+                state,
+                str(body.get("slug", "")),
+                reason=str(body.get("reason", "")),
+                deployment_index=index,
+            )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid rollback selection") from None
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="not found") from None
 
@@ -3744,8 +4264,19 @@ def build_router(state: AppState) -> Any:
         stacks = body.get("stacks")
         if isinstance(stacks, str):
             stacks = [s.strip() for s in stacks.split(",") if s.strip()]
+        raw_references = body.get("reference_images")
+        references = raw_references if isinstance(raw_references, list) else []
         try:
-            return await fanout_project(state, str(body.get("brief", "")), stacks or [])
+            return await fanout_project(
+                state,
+                str(body.get("brief", "")),
+                stacks or [],
+                build_profile=str(body.get("build_profile", "cheap_learned")),
+                model_override=str(body.get("model_override", "")),
+                full_app=_coerce_bool(body.get("full_app", False)),
+                reference_image=str(body.get("reference_image", "")),
+                reference_images=[str(item) for item in references],
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
 

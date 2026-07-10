@@ -258,6 +258,61 @@ def asset_gen_enabled(settings: Settings) -> bool:
     )
 
 
+_MAX_PREDICTION_EVIDENCE = 64
+
+
+async def _generate_images_with_usage(
+    cli: Any, prompt: str, *, model: str
+) -> tuple[list[bytes], list[dict[str, Any]]]:
+    evidence_method = getattr(cli, "generate_images_with_evidence", None)
+    if callable(evidence_method):
+        result = await evidence_method(prompt, n=1, model=model)
+        if isinstance(result, tuple) and len(result) == 2:
+            images, evidence = result
+            return (
+                list(images) if isinstance(images, list) else [],
+                [dict(item) for item in evidence if isinstance(item, dict)]
+                if isinstance(evidence, list)
+                else [],
+            )
+    images = await cli.generate_images(prompt, n=1, model=model)
+    return (list(images) if isinstance(images, list) else []), []
+
+
+def _replicate_usage_manifest(evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    allowed = (
+        "prediction_id",
+        "model",
+        "status",
+        "predict_time_seconds",
+        "total_time_seconds",
+        "purpose",
+        "attempt",
+    )
+    cleaned = [
+        {key: item.get(key) for key in allowed if item.get(key) is not None}
+        for item in evidence
+        if isinstance(item, dict)
+    ]
+    prediction_count = sum(
+        1 for item in cleaned if str(item.get("prediction_id") or "").strip()
+    )
+    return {
+        "provider": "replicate",
+        "attempt_count": len(cleaned),
+        "prediction_count": prediction_count,
+        "unidentified_attempt_count": len(cleaned) - prediction_count,
+        "predictions": cleaned[-_MAX_PREDICTION_EVIDENCE:],
+        "predictions_truncated": max(0, len(cleaned) - _MAX_PREDICTION_EVIDENCE),
+        "cost_usd": None,
+        "cost_source": "not_provided_by_replicate_api",
+        "note": (
+            "External Replicate prediction usage; dollar cost is not included "
+            "in the provider-confirmed LLM cost."
+        ),
+    }
+
+
 async def generate_assets(
     project_dir: str,
     brief: str,
@@ -314,16 +369,25 @@ async def generate_assets(
     # Generate in tiny batches. Capacity is shared across simultaneous builds so
     # independent fan-out cannot overload the provider. Only failed subjects retry;
     # successful predictions stay on the single-attempt path.
-    async def _gen(subject: str) -> tuple[str, bytes | None]:
+    async def _gen(
+        subject: str,
+    ) -> tuple[str, bytes | None, list[dict[str, Any]]]:
         prompt = asset_prompt(style, subject)
+        subject_usage: list[dict[str, Any]] = []
         for attempt in range(1, ASSET_PROVIDER_MAX_ATTEMPTS + 1):
             error = "empty result"
             try:
                 async with _provider_slot():
-                    images = await cli.generate_images(prompt, n=1, model=model)
+                    images, attempt_usage = await _generate_images_with_usage(
+                        cli, prompt, model=model
+                    )
+                subject_usage.extend(
+                    {**item, "purpose": subject, "attempt": attempt}
+                    for item in attempt_usage
+                )
                 data = images[0] if images else None
                 if data:
-                    return subject, data
+                    return subject, data, subject_usage
             except Exception as exc:  # noqa: BLE001 - never break the build over a subject
                 error = str(exc)[:160]
             if attempt < ASSET_PROVIDER_MAX_ATTEMPTS:
@@ -341,16 +405,16 @@ async def generate_assets(
                     attempts=attempt,
                     error=error,
                 )
-        return subject, None
+        return subject, None, subject_usage
 
-    results: list[tuple[str, bytes | None]] = []
+    results: list[tuple[str, bytes | None, list[dict[str, Any]]]] = []
     failures = 0
     batch_size = max(1, ASSET_PROVIDER_BATCH_SIZE)
     for i in range(0, len(subjects), batch_size):
         batch = subjects[i:i + batch_size]
         batch_results = await asyncio.gather(*(_gen(s) for s in batch))
         results.extend(batch_results)
-        batch_failures = sum(1 for _, data in batch_results if not data)
+        batch_failures = sum(1 for _, data, _usage in batch_results if not data)
         failures += batch_failures
         if failures >= ASSET_PROVIDER_FAILURE_LIMIT:
             log.warning(
@@ -365,7 +429,12 @@ async def generate_assets(
             if rest:
                 results.extend(await asyncio.gather(*(_gen(s) for s in rest)))
             break
-    for subject, data in results:
+    prediction_usage = [
+        item
+        for _subject, _data, result_usage in results
+        for item in result_usage
+    ]
+    for subject, data, _usage in results:
         if not data:
             continue
         fname = f"{re.sub(r'[^a-z0-9]+', '-', subject.lower()).strip('-') or 'asset'}.{_ext_for(data)}"
@@ -383,6 +452,7 @@ async def generate_assets(
         "style": style,
         "model": model,
         "assets": written,
+        "usage": _replicate_usage_manifest(prediction_usage),
     }
     if written:
         try:
@@ -713,18 +783,24 @@ def _key_bg_to_alpha(png_bytes: bytes) -> bytes:
         return png_bytes
 
 
-async def _generate_role_image(cli: Any, prompt: str) -> tuple[bytes | None, str | None]:
+async def _generate_role_image(
+    cli: Any, prompt: str
+) -> tuple[bytes | None, str | None, list[dict[str, Any]]]:
     """Try each sprite model in order; return (bytes, model) for the first that yields
     an image, with the solid background keyed to transparent, else (None, None).
     Resilient to a single model outage. Never raises."""
+    usage: list[dict[str, Any]] = []
     for mdl in _SPRITE_ROLE_MODELS:
         try:
-            images = await cli.generate_images(prompt, n=1, model=mdl)
+            images, model_usage = await _generate_images_with_usage(
+                cli, prompt, model=mdl
+            )
+            usage.extend(model_usage)
         except Exception:  # noqa: BLE001 - try the next model
             images = []
         if images and images[0]:
-            return _key_bg_to_alpha(images[0]), mdl
-    return None, None
+            return _key_bg_to_alpha(images[0]), mdl, usage
+    return None, None, usage
 
 
 def _role_art_source(settings: Settings) -> str:
@@ -816,17 +892,22 @@ async def generate_role_sprites(
 
     # One independent prediction per SPRITE role, run CONCURRENTLY (the build hot
     # path). Primitive roles are never generated — they render from the palette.
-    async def _gen(role: str, rp) -> tuple[str, bytes | None]:
+    async def _gen(
+        role: str, rp
+    ) -> tuple[str, bytes | None, list[dict[str, Any]]]:
         try:
-            data, _mdl = await _generate_role_image(cli, rp.prompt)
-            return role, data
+            data, _mdl, usage = await _generate_role_image(cli, rp.prompt)
+            return role, data, [{**item, "purpose": role} for item in usage]
         except Exception as exc:  # noqa: BLE001 - never break the build over one role
             log.warning("role_sprites.role_failed", role=role, error=str(exc)[:160])
-            return role, None
+            return role, None, []
 
     results = await asyncio.gather(*(_gen(role, rp) for role, rp in sprite_roles.items()))
     role_map: dict[str, str] = {}
-    for role, data in results:
+    prediction_usage = [
+        item for _role, _data, result_usage in results for item in result_usage
+    ]
+    for role, data, _usage in results:
         if not data:
             continue  # omitted -> the scaffold renders a colored primitive for this role
         # Force .png: the scaffold's preload() loads {role}.png, and the sprite
@@ -856,6 +937,7 @@ async def generate_role_sprites(
         "genre": plan.genre,
         "palette": list(plan.palette),
         "role_map": role_map,
+        "usage": _replicate_usage_manifest(prediction_usage),
     }
     if role_map:
         try:

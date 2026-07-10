@@ -11,7 +11,13 @@ from __future__ import annotations
 from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, knowledge_block, parse_json, slugify
+from skyn3t.agents._common import (
+    canonical_project_relpath,
+    detect_stack,
+    knowledge_block,
+    parse_json,
+    slugify,
+)
 from skyn3t.agents._scaffold import scaffold_for
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
@@ -31,7 +37,9 @@ _SYSTEM = (
     "so the response remains valid JSON."
 )
 
-_FULL_APP_ARCHITECT_TOKENS = 12_000
+# A full application plan is scope-defining; truncating it can silently remove
+# routes or subsystems. ``None`` omits the provider output ceiling.
+_FULL_APP_ARCHITECT_TOKENS = None
 _STANDARD_ARCHITECT_TOKENS = 4_096
 
 _BINARY_ASSET_SUFFIXES = frozenset({
@@ -39,6 +47,12 @@ _BINARY_ASSET_SUFFIXES = frozenset({
     ".ogg", ".otf", ".pdf", ".png", ".ttf", ".wav", ".webm", ".webp",
     ".woff", ".woff2",
 })
+
+_TRAILING_DOT_JSON_ALIASES = {
+    "jsconfig.": "jsconfig.json",
+    "package.": "package.json",
+    "tsconfig.": "tsconfig.json",
+}
 
 # A model plan remains the primary architecture. These entries are the deterministic
 # recovery contract when structured output is truncated or omits an explicit feature
@@ -60,6 +74,25 @@ _FEATURE_ROUTES: tuple[tuple[tuple[str, ...], str, str], ...] = (
 )
 
 
+def _canonical_plan_path(raw: Any) -> str | None:
+    """Apply root config aliases, then enforce the shared path contract."""
+    if not isinstance(raw, str):
+        return None
+    path = str(raw).replace("\\", "/")
+    meaningful = [
+        (index, segment)
+        for index, segment in enumerate(path.split("/"))
+        if segment not in {"", "."}
+    ]
+    if len(meaningful) == 1:
+        index, segment = meaningful[0]
+        if alias := _TRAILING_DOT_JSON_ALIASES.get(segment.casefold()):
+            parts = path.split("/")
+            parts[index] = alias
+            path = "/".join(parts)
+    return canonical_project_relpath(path)
+
+
 def _merge_file_plans(*groups: list[Any]) -> list[dict[str, str]]:
     """Merge model and recovery files by path while preserving model intent."""
     merged: list[dict[str, str]] = []
@@ -67,17 +100,21 @@ def _merge_file_plans(*groups: list[Any]) -> list[dict[str, str]]:
     for group in groups:
         for item in group:
             if isinstance(item, str):
-                path, purpose = item.strip(), "Required project file"
+                raw_path: Any = item
+                purpose = "Required project file"
             elif isinstance(item, dict):
-                path = str(item.get("path") or "").strip()
+                raw_path = item.get("path")
                 purpose = str(item.get("purpose") or "Required project file").strip()
             else:
                 continue
-            key = path.replace("\\", "/").lower()
-            if not path or key in seen:
+            canonical_path = _canonical_plan_path(raw_path)
+            if canonical_path is None:
+                continue
+            key = canonical_path.casefold()
+            if key in seen:
                 continue
             seen.add(key)
-            merged.append({"path": path, "purpose": purpose})
+            merged.append({"path": canonical_path, "purpose": purpose})
     return merged
 
 
@@ -97,10 +134,13 @@ def _drop_binary_asset_plans(files: list[Any]) -> list[Any]:
 def _page_route_identity(raw: Any, stack: str) -> str | None:
     """Canonical URL identity for collision-prone file-routed web pages."""
     if isinstance(raw, dict):
-        path = str(raw.get("path") or raw.get("file") or "")
+        candidate = raw.get("path") or raw.get("file")
     else:
-        path = str(raw or "")
-    path = path.strip().replace("\\", "/").lstrip("/").casefold()
+        candidate = raw
+    canonical = _canonical_plan_path(candidate)
+    if canonical is None:
+        return None
+    path = canonical.casefold()
     if stack == "astro":
         if path.startswith("src/pages/"):
             path = path[len("src/pages/"):]
@@ -385,7 +425,7 @@ class ArchitectAgent(BaseAgent):
         # Always include the stack so downstream stages agree.
         parsed.setdefault("stack", stack)
         parsed["stack"] = parsed.get("stack") or stack
-        files = parsed.get("files") or []
+        files = _merge_file_plans(list(parsed.get("files") or []))
         # Keep the plan .jsx-consistent with the scaffold floor (D8): a .tsx plan
         # leaves the .jsx scaffold entry rendering the counter stub. Next.js shares
         # the .jsx floor, so normalize it the same way.
@@ -393,7 +433,7 @@ class ArchitectAgent(BaseAgent):
             files = _jsx_only(files)
         elif parsed["stack"] in _GAME_STACKS:
             files = _plain_js(files)
-        files = _drop_binary_asset_plans(files)
+        files = _merge_file_plans(_drop_binary_asset_plans(files))
         plan = {
             "stack": parsed["stack"],
             "summary": parsed.get("summary", f"Plan for {stack}: {brief}"),

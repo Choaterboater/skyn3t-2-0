@@ -166,20 +166,51 @@ class ReplicateClient:
         prediction / a malformed or unreadable output — never raises. ``model``
         overrides the configured/default model for this call ("owner/name").
         """
+        images, _usage = await self.generate_images_with_evidence(
+            prompt, n=n, model=model, timeout=timeout
+        )
+        return images
+
+    async def generate_images_with_evidence(
+        self,
+        prompt: str,
+        n: int = 1,
+        *,
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> tuple[list[bytes], list[dict[str, Any]]]:
+        """Generate images and return bounded provider prediction evidence.
+
+        Replicate's prediction response exposes identity, status, and timing but
+        not an exact dollar charge. The evidence intentionally records only those
+        provider facts; callers must not turn timing into an invented price.
+        """
         if not self.available:
-            return []
+            return [], []
         n = max(1, min(int(n), self._max_images))
         deadline = float(timeout or self._default_timeout)
         mdl = (model or self.model).strip()
         try:
             return await asyncio.wait_for(
-                self._run(mdl, prompt, n), timeout=deadline + 5.0
+                self._run_with_evidence(mdl, prompt, n), timeout=deadline + 5.0
             )
         except Exception as exc:  # noqa: BLE001 - incl. TimeoutError; never raise
             log.warning("replicate.generate_failed", model=mdl, error=str(exc)[:160])
-            return []
+            return [], [{
+                "prediction_id": "",
+                "model": mdl,
+                "status": "request_failed",
+                "predict_time_seconds": None,
+                "total_time_seconds": None,
+            }]
 
     async def _run(self, model: str, prompt: str, n: int) -> list[bytes]:
+        images, _usage = await self._run_with_evidence(model, prompt, n)
+        return images
+
+    async def _run_with_evidence(
+        self, model: str, prompt: str, n: int
+    ) -> tuple[list[bytes], list[dict[str, Any]]]:
         async with httpx.AsyncClient(timeout=self._default_timeout) as client:
             # One prediction per image (num_outputs isn't universal), but run them
             # CONCURRENTLY so total wall-clock is ~one prediction, not n sequential
@@ -191,9 +222,14 @@ class ReplicateClient:
                 return_exceptions=True,
             )
             urls: list[str] = []
+            usage: list[dict[str, Any]] = []
             for got in preds:
-                if isinstance(got, list):
-                    urls.extend(got)
+                if isinstance(got, tuple) and len(got) == 2:
+                    prediction_urls, prediction_usage = got
+                    if isinstance(prediction_urls, list):
+                        urls.extend(prediction_urls)
+                    if isinstance(prediction_usage, dict):
+                        usage.append(prediction_usage)
                 elif isinstance(got, BaseException):
                     # gather(return_exceptions=True) previously swallowed the
                     # actionable HTTP/provider error and surfaced only an empty
@@ -203,16 +239,24 @@ class ReplicateClient:
                         error_type=type(got).__name__,
                         error=str(got)[:240],
                     )
+                    usage.append({
+                        "prediction_id": "",
+                        "model": model,
+                        "status": "request_failed",
+                        "predict_time_seconds": None,
+                        "total_time_seconds": None,
+                    })
             urls = urls[:n]
             fetched = await asyncio.gather(
                 *(self._fetch_image(client, u) for u in urls),
                 return_exceptions=True,
             )
-            return [d for d in fetched if isinstance(d, (bytes, bytearray)) and d]
+            images = [d for d in fetched if isinstance(d, (bytes, bytearray)) and d]
+            return images, usage[:n]
 
     async def _one_prediction(
         self, client: httpx.AsyncClient, model: str, prompt: str
-    ) -> list[str]:
+    ) -> tuple[list[str], dict[str, Any]]:
         """Create one prediction and poll it to a terminal state. Returns the
         list of output image URLs (possibly empty). Never raises."""
         create_url = f"{_API_BASE}/models/{model}/predictions"
@@ -245,7 +289,9 @@ class ReplicateClient:
         deadline = asyncio.get_event_loop().time() + self._default_timeout
         while status not in ("succeeded", "failed", "canceled"):
             if not pred_id or asyncio.get_event_loop().time() > deadline:
-                return []
+                return [], self._prediction_evidence(
+                    data, model=model, status="timed_out"
+                )
             await asyncio.sleep(self._poll_interval)
             poll = await client.get(
                 f"{_API_BASE}/predictions/{pred_id}", headers=self._headers()
@@ -256,8 +302,36 @@ class ReplicateClient:
 
         if status != "succeeded":
             log.warning("replicate.prediction_not_ok", status=status, id=pred_id)
-            return []
-        return self._output_urls(data.get("output"))
+            return [], self._prediction_evidence(data, model=model)
+        return (
+            self._output_urls(data.get("output")),
+            self._prediction_evidence(data, model=model),
+        )
+
+    @staticmethod
+    def _prediction_evidence(
+        data: Any, *, model: str, status: str = ""
+    ) -> dict[str, Any]:
+        payload = data if isinstance(data, dict) else {}
+        metrics = payload.get("metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+
+        def seconds(value: Any) -> float | None:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            if parsed < 0 or parsed != parsed or parsed == float("inf"):
+                return None
+            return round(parsed, 6)
+
+        return {
+            "prediction_id": str(payload.get("id") or "")[:160],
+            "model": str(payload.get("model") or model or "")[:240],
+            "status": str(status or payload.get("status") or "unknown")[:80],
+            "predict_time_seconds": seconds(metrics.get("predict_time")),
+            "total_time_seconds": seconds(metrics.get("total_time")),
+        }
 
     @staticmethod
     def _create_retry_delay(response: Any, attempt: int) -> float:

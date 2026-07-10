@@ -241,6 +241,16 @@ def test_slice_activity_is_named_in_activity_and_cockpit() -> None:
     )
 
 
+def test_studio_fanout_sends_the_selected_build_contract() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+
+    assert 'apiPost("/studio/fanout", payload)' in studio
+    assert "build_profile: effectiveBuildProfile" in studio
+    assert "full_app: fullApp" in studio
+    assert "payload.model_override = normalizedModelOverride" in studio
+    assert "payload.reference_image = refImage.url" in studio
+
+
 def test_build_terminal_settles_active_slice_rows() -> None:
     helper = SRC / "agentSignals.js"
     script = f"""
@@ -368,18 +378,21 @@ def test_projects_surfaces_ai_guidance_evidence() -> None:
     assert 'label: "shippable"' in projects
     assert 'label: "wasted"' in projects
     assert "function ShipCell" in projects
-    assert 'apiFetch(`/studio/deploy/plan?slug=${encodeURIComponent(slug)}`)' in projects
-    assert 'apiPost("/studio/deploy", { slug, target: defaultTarget })' in projects
+    assert "function DeployInline" in projects
+    assert 'apiFetch(`/studio/deploy/plan?${params.toString()}`)' in projects
+    assert 'apiPost("/studio/deploy", { slug, target })' in projects
+    assert 'apiPost("/studio/deploy/rollback"' in projects
+    assert "Review deploy" in projects
+    assert "Local pointer only" in projects
+    assert "provider_options" in projects
     assert "live ↗" in projects
-    assert "deployCheck" in projects
-    assert "verified" in projects
-    assert "deploy check skipped" in projects
+    assert "deploymentHealthLabel" in projects
 
 
 def test_projects_does_not_offer_completed_app_actions_for_live_builds() -> None:
     projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
 
-    assert "const isComplete = project.is_complete !== false;" in projects
+    assert "if (project.is_complete === false)" in projects
     assert 'project.delivery_state === "building" ? "Building" : "Not delivered"' in projects
     assert "if (project.is_complete === false) return false;" in projects
     assert "canServe={p.has_serve !== false}" in projects
@@ -448,6 +461,24 @@ def test_settings_wires_visual_self_heal_toggle() -> None:
     assert "/settings/visual_self_heal" in settings
     assert "visual_self_heal" in settings
     assert "Drive rendered UI" in settings
+
+
+def test_settings_wires_presence_only_deploy_controls() -> None:
+    settings = (ROUTES / "Settings.jsx").read_text(encoding="utf-8")
+    helper = (SRC / "deploySettings.js").read_text(encoding="utf-8")
+
+    assert 'id="deploy"' in settings
+    assert 'queryFn("/settings/deploy")' in settings
+    assert 'apiPost("/settings/deploy/credential"' in settings
+    assert 'apiPost("/settings/deploy/allow_remote"' in settings
+    assert 'type="password"' in settings
+    assert "Save credential" in settings
+    assert "Allow remote deploy" in settings
+    assert "DEPLOY_PROVIDERS" in helper
+    assert "deployProviderConfigured" in helper
+    assert "deployProviderDetail" in helper
+    assert '"render"' not in helper
+    assert 'setDeployToken("")' in settings
 
 
 def test_settings_explains_model_precedence() -> None:
@@ -551,7 +582,9 @@ def test_studio_has_command_deck_summary() -> None:
     assert "reference" in studio
     assert "fan-out" in studio
     assert "assetState.label" in studio
-    assert "Routing preview" in studio
+    assert "Routing estimate" in studio
+    assert "estimate_reason" in studio
+    assert "Explicit model pins remain unrestricted" in studio
     assert "selectedStacks.size" in studio
     assert "Cleanup completed" in studio
     assert "onClick={() => cleanupCompletedBuilds.mutate()}" in studio
@@ -570,6 +603,18 @@ def test_studio_foundry_layout_avoids_stretched_empty_card() -> None:
     assert '<Panel className="p-4">' in studio
     assert '<Panel className="order-2 p-3 xl:order-2">' in studio
     assert '<Panel className="mb-6 p-4">' not in studio
+
+
+def test_studio_mounts_model_catalog_only_while_disclosure_is_open() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+    cockpit = (COMPONENTS / "cockpit.jsx").read_text(encoding="utf-8")
+    assert 'const [modelCatalogOpen, setModelCatalogOpen] = useState(false)' in studio
+    assert "open={modelCatalogOpen}" in studio
+    assert "setModelCatalogOpen(event.currentTarget.open)" in studio
+    assert "{modelCatalogOpen ? (" in studio
+    assert "data-visual-overlap-ok" in cockpit
+    assert "md:grid-cols-[minmax(0,1fr)_auto]" in studio
+    assert "md:col-span-2" in studio
 
 
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
@@ -595,8 +640,10 @@ def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:
     assert "function aiCostMeta(build)" in studio
     assert "quality_scorecard?.cost_usd" in studio
     assert "trace.stage_costs" in studio
-    assert "run {ai.costLabel}" in studio
-    assert "stage cost {ai.stageCostLabel}" in studio
+    assert "costTruth.llm_cost_usd" in studio
+    assert "{ai.costLabel} {ai.costQualifier}" in studio
+    assert "Replicate prediction" in studio
+    assert ">LLM cost</th>" in studio
 
 
 def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None:

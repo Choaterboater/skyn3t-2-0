@@ -13,8 +13,8 @@ changing zero files. Three stacked defects:
 3. Both paths reported success upward: the agent said success=True, the engine
    said completed/score-100, the UI rendered a green checkmark.
 
-These tests pin the fix: a size-aware output budget, one budget-doubling retry
-on an invalid (truncation-shaped) rewrite, an ALREADY_SATISFIED escape hatch so
+These tests pin the fix: uncapped full-file output, one clean retry on an invalid
+(truncation-shaped) rewrite, an ALREADY_SATISFIED escape hatch so
 honest no-ops are distinguishable from failures, per-file skip reasons in the
 agent output, and an engine outcome/history that records what actually changed.
 """
@@ -79,33 +79,27 @@ async def _run_improver(tmp_path: Path, llm, goal="add a pricing section"):
                  "gaps": [goal], "files": ["app/page.jsx"]}))
 
 
-def test_output_budget_scales_with_file_size():
-    # Small files keep the historical floor; big files get proportional room;
-    # the ceiling matches the agentic codegen loop's proven 16384.
-    assert _output_budget("x" * 1000) == 4096
-    assert _output_budget("x" * 30000) == 30000 // 3 + 2048
-    assert _output_budget("x" * 200000) == 16384
+def test_full_file_output_budget_is_uncapped():
+    assert _output_budget("x" * 1000) is None
+    assert _output_budget("x" * 200000) is None
 
 
-def test_improve_requests_size_aware_budget(tmp_path):
+def test_improve_requests_uncapped_output(tmp_path):
     llm = _ScriptedLLM([_VALID_REWRITE])
     result = asyncio.run(_run_improver(tmp_path, llm))
     assert result.success
     assert result.output["files"] == ["app/page.jsx"]
-    # The one LLM call must have asked for more than the flat legacy 4096.
-    assert llm.calls[0]["max_tokens"] == _output_budget(_BIG_JSX)
-    assert llm.calls[0]["max_tokens"] > 4096
+    assert llm.calls[0]["max_tokens"] is None
 
 
-def test_improve_retries_truncated_rewrite_with_doubled_budget(tmp_path):
+def test_improve_retries_truncated_rewrite_without_adding_a_cap(tmp_path):
     llm = _ScriptedLLM([_TRUNCATED_REWRITE, _VALID_REWRITE])
     result = asyncio.run(_run_improver(tmp_path, llm))
     assert result.success
     assert result.output["files"] == ["app/page.jsx"]
     assert (tmp_path / "app" / "page.jsx").read_text() == _VALID_REWRITE
     assert len(llm.calls) == 2
-    first, second = (c["max_tokens"] for c in llm.calls)
-    assert second > first  # the retry escalates the output budget
+    assert all(call["max_tokens"] is None for call in llm.calls)
 
 
 def test_improve_gives_up_after_retry_and_reports_reason(tmp_path):

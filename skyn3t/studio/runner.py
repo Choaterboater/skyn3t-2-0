@@ -67,6 +67,8 @@ from skyn3t.security.audit import AuditLog
 from skyn3t.security.permissions import PermissionManager, auto_approve_safe_fn
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.acceptance_contract import (
+    acceptance_contract_clones,
+    reconcile_acceptance_contract_clones,
     restore_acceptance_contracts,
     snapshot_acceptance_contracts,
 )
@@ -82,6 +84,7 @@ from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.proof_run import (
+    _esm_named_export_mismatches,
     _unresolved_local_imports,
     _unresolved_python_imports,
     apply_deterministic_repairs,
@@ -323,7 +326,7 @@ class StudioRunner:
             pass
 
     # ---- best-of-N cross-model sampling (Phase 2) -----------------------
-    def _bon_model_pool(self, n: int) -> list[str]:
+    def _bon_model_pool(self, n: int, profile: str = "balanced") -> list[str]:
         """Candidate models for cross-model best-of-N, honouring policy.
 
         Drawn from ``settings.tournament_model_pool`` (comma-separated), or from
@@ -339,12 +342,11 @@ class StudioRunner:
                 str(getattr(self.settings, "preferred_model", "") or "").strip(),
             ]
             try:
-                from skyn3t.core.model_router import ModelRouter
+                from skyn3t.core.model_router import ModelRouter, Tier
 
                 router = ModelRouter(self.settings)
-                described = router.describe()
                 configured.extend(
-                    str(described.get(tier, "") or "").strip()
+                    str(router.resolve(Tier(tier), profile=profile) or "").strip()
                     for tier in ("strong", "backend", "ui", "cheap", "docs")
                 )
             except Exception as exc:  # noqa: BLE001 - sampler fallback is best-effort
@@ -369,7 +371,7 @@ class StudioRunner:
         enabled = requested or bool(getattr(self.settings, "best_of_n_across_models", False))
         return enabled and len(pool) >= 2
 
-    def _codegen_trace_model(self, model_override: str) -> str:
+    def _codegen_trace_model(self, model_override: str, profile: str = "balanced") -> str:
         """Model label for persisted codegen diagnostics.
 
         Match CodeAgent routing: an available codegen CLI override owns codegen.
@@ -398,17 +400,43 @@ class StudioRunner:
             or str(getattr(self.settings, "preferred_model", "") or "").strip()
         )
         if configured:
-            return configured
+            from skyn3t.core.model_router import is_free_model_id
+
+            if not bool(getattr(self.settings, "free_only", False)) or is_free_model_id(
+                configured
+            ):
+                return configured
+            log.warning(
+                "studio.codegen_trace_ignored_paid_pin",
+                requested_model=configured,
+                reason="free_only",
+            )
         try:
             from skyn3t.core.model_router import ModelRouter, Tier
 
-            return ModelRouter(self.settings).resolve(Tier.BACKEND)
+            return ModelRouter(self.settings).resolve(Tier.BACKEND, profile=profile)
         except Exception as exc:  # noqa: BLE001 - diagnostics must not break a build
             log.warning(
                 "studio.codegen_trace_router_fallback_failed",
                 error=str(exc)[:120],
             )
             return ""
+
+    @staticmethod
+    def _record_effective_codegen_trace(manifest: Any, result: Any) -> str:
+        """Persist the model that actually produced the selected code result."""
+        output = getattr(result, "output", None)
+        output = output if isinstance(output, dict) else {}
+        raw_agentic = output.get("agentic")
+        agentic = raw_agentic if isinstance(raw_agentic, dict) else {}
+        effective = str(
+            agentic.get("model") or getattr(result, "model_id", None) or ""
+        ).strip()
+        if effective:
+            manifest.extra["effective_codegen_model"] = effective
+            # Compatibility alias consumed by existing UI/API clients.
+            manifest.extra["codegen_model"] = effective
+        return effective
 
     @staticmethod
     def _candidate_buckets(candidate: Any, spec: StageSpec) -> set[str]:
@@ -560,13 +588,43 @@ class StudioRunner:
         if not isinstance(build_cost, dict):
             return {}
         try:
-            manifest.cost_usd = max(0.0, float(build_cost.get("cost_usd") or 0.0))
+            settled_cost = max(0.0, float(build_cost.get("cost_usd") or 0.0))
+            # Compatibility with custom/legacy trackers that are not idempotent:
+            # a duplicate settlement may return zero after popping its ledger.
+            # Never erase a terminal nonzero value already copied to the manifest.
+            if settled_cost > 0 or manifest.cost_usd <= 0:
+                manifest.cost_usd = settled_cost
         except (TypeError, ValueError):
             pass
         manifest.extra["build_cost_usd"] = manifest.cost_usd
         stages = build_cost.get("stages")
         if isinstance(stages, list) and stages:
             manifest.extra["stage_costs"] = stages
+        try:
+            failed_attempts = max(0, int(build_cost.get("failed_attempts") or 0))
+        except (TypeError, ValueError):
+            failed_attempts = 0
+        try:
+            exposure = max(
+                0.0, float(build_cost.get("max_unconfirmed_exposure_usd") or 0.0)
+            )
+        except (TypeError, ValueError):
+            exposure = 0.0
+        if failed_attempts:
+            manifest.extra["failed_llm_attempts"] = failed_attempts
+        if exposure > 0:
+            # This is a conservative maximum for requests that timed out after
+            # dispatch, not a claimed provider charge. Exact successful costs
+            # remain in ``cost_usd`` from OpenRouter usage accounting.
+            manifest.extra["max_unconfirmed_exposure_usd"] = exposure
+        usage_evidence = build_cost.get("usage_evidence")
+        if isinstance(usage_evidence, list) and usage_evidence:
+            manifest.extra["llm_usage_evidence"] = [
+                dict(item) for item in usage_evidence if isinstance(item, dict)
+            ][-256:]
+        truncated = build_cost.get("usage_evidence_truncated")
+        if isinstance(truncated, int) and truncated > 0:
+            manifest.extra["llm_usage_evidence_truncated"] = truncated
         if manifest.verdict and manifest.verdict != "go":
             manifest.extra["wasted_usd"] = manifest.cost_usd
         return build_cost
@@ -1813,7 +1871,7 @@ class StudioRunner:
             log.warning("runner.final_consistency_repairs_failed", error=str(exc))
             final_repairs = {}
         changed_keys = ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
-                        "imports_scaffolded", "use_client_added",
+                        "imports_relinked", "imports_scaffolded", "use_client_added",
                         "source_fences_stripped", "ts_in_js_stripped",
                         "react_entrypoint_repaired", "phaser_entrypoint_repaired")
         if any(final_repairs.get(k) for k in changed_keys):
@@ -1824,6 +1882,18 @@ class StudioRunner:
             log.info("runner.final_consistency_repaired",
                      **manifest.extra["final_consistency_repairs"])
         self._record_contrast_issues(manifest, final_repairs)
+        final_contracts = snapshot_acceptance_contracts(project_dir)
+        contract_clones_removed = reconcile_acceptance_contract_clones(
+            project_dir, final_contracts
+        )
+        contract_clones_remaining = acceptance_contract_clones(
+            project_dir, final_contracts
+        )
+        if contract_clones_removed:
+            manifest.files = list_files(project_dir)
+            manifest.extra["final_acceptance_contract_clones_removed"] = (
+                contract_clones_removed
+            )
         try:
             pdir = Path(project_dir)
             final_unresolved = _unresolved_local_imports(pdir) + _unresolved_python_imports(pdir)
@@ -1836,6 +1906,31 @@ class StudioRunner:
                 "note": "a post-repair stage left the delivered tree unbootable",
             }
             log.warning("runner.final_consistency_no_go", unresolved=final_unresolved[:10])
+            return "no_go"
+        try:
+            final_export_mismatches = _esm_named_export_mismatches(Path(project_dir))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("runner.final_consistency_export_scan_failed", error=str(exc))
+            final_export_mismatches = []
+        if final_export_mismatches:
+            manifest.extra["final_consistency_check"] = {
+                "named_export_mismatches": final_export_mismatches[:10],
+                "note": "a post-proof stage left an invalid ESM named import/export contract",
+            }
+            log.warning(
+                "runner.final_consistency_no_go",
+                named_export_mismatches=final_export_mismatches[:10],
+            )
+            return "no_go"
+        if contract_clones_remaining:
+            manifest.extra["final_consistency_check"] = {
+                "acceptance_contract_clones": contract_clones_remaining[:10],
+                "note": "pytest-conflicting signed acceptance-test clones remain",
+            }
+            log.warning(
+                "runner.final_consistency_no_go",
+                acceptance_contract_clones=contract_clones_remaining[:10],
+            )
             return "no_go"
         return verdict
 
@@ -3122,11 +3217,23 @@ class StudioRunner:
             contracts_restored = restore_acceptance_contracts(
                 root, acceptance_contracts
             )
+            contract_clones_removed = reconcile_acceptance_contract_clones(
+                root, acceptance_contracts
+            )
+            contract_clones_remaining = acceptance_contract_clones(
+                root, acceptance_contracts
+            )
             if contracts_restored:
                 log.warning(
                     "fix.acceptance_contract_restored",
                     attempt=attempt,
                     files=contracts_restored,
+                )
+            if contract_clones_removed:
+                log.warning(
+                    "fix.acceptance_contract_clones_removed",
+                    attempt=attempt,
+                    files=contract_clones_removed,
                 )
             manifest.files = list_files(project_dir)
             # Offload the synchronous proof_run (it shells out to pytest/npm) so
@@ -3158,6 +3265,8 @@ class StudioRunner:
                 "passed": proof.passed,
                 "repairs": repairs,
                 "acceptance_contracts_restored": contracts_restored,
+                "acceptance_contract_clones_removed": contract_clones_removed,
+                "acceptance_contract_clones_remaining": contract_clones_remaining,
                 "tree_signature": current_tree_signature,
                 "proof_signature": current_proof_signature,
                 "unchanged": unchanged,
@@ -3175,6 +3284,8 @@ class StudioRunner:
                         "passed": bool(proof.passed),
                         "repairs": repairs,
                         "acceptance_contracts_restored": contracts_restored,
+                        "acceptance_contract_clones_removed": contract_clones_removed,
+                        "acceptance_contract_clones_remaining": contract_clones_remaining,
                         "unchanged": unchanged,
                         "unchanged_rounds": unchanged_rounds,
                     })
@@ -3185,6 +3296,8 @@ class StudioRunner:
                     "stage": f"fix#{attempt}",
                     "passed": proof.passed,
                     "acceptance_contracts_restored": contracts_restored,
+                    "acceptance_contract_clones_removed": contract_clones_removed,
+                    "acceptance_contract_clones_remaining": contract_clones_remaining,
                     "unchanged": unchanged,
                     "unchanged_rounds": unchanged_rounds,
                 },
@@ -3650,6 +3763,13 @@ class StudioRunner:
         build_extra = dict(extra or {})
         if not build_extra.get("build_id"):
             build_extra["build_id"] = uuid.uuid4().hex
+        # Normalize once before stack selection or any agent runs. Every later
+        # payload, best-of-N candidate, repair, and persisted manifest must use
+        # this same value; otherwise an omitted profile was recorded as economy
+        # while the shared LLM context silently routed it as balanced.
+        build_extra["build_profile"] = str(
+            build_extra.get("build_profile") or "cheap_learned"
+        ).strip() or "cheap_learned"
         build_id = str(build_extra["build_id"])
         self._obs_call(self.cost_tracker, "start_build", build_id)
         try:
@@ -3697,6 +3817,15 @@ class StudioRunner:
             except Exception:  # noqa: BLE001 - never break a build over selection
                 sel_llm = None
             self._sel_llm = sel_llm
+        if sel_llm is not None and hasattr(sel_llm, "begin_run_capture"):
+            try:
+                sel_llm.begin_run_capture(
+                    routing_profile=str(extra["build_profile"])
+                )
+            except TypeError:
+                sel_llm.begin_run_capture()
+            except Exception as exc:  # noqa: BLE001 - stack selection still has keyword fallback
+                log.debug("studio.selector_profile_capture_failed", error=str(exc)[:120])
         from skyn3t.studio.stack_selector import classify_build, select_stack
         pin = _resolve_stack_pin(extra)
         choice = await select_stack(
@@ -3731,7 +3860,7 @@ class StudioRunner:
         import socket as _socket
         manifest.extra["owner_pid"] = _os.getpid()
         manifest.extra["owner_host"] = _socket.gethostname()
-        build_profile = str(extra.get("build_profile") or "cheap_learned")
+        build_profile = str(extra["build_profile"])
         model_override = str(extra.get("model_override") or "").strip()
         manifest.extra["build_profile"] = build_profile
         if extra.get("full_app_contract"):
@@ -3747,7 +3876,17 @@ class StudioRunner:
                 pass
         if model_override:
             manifest.extra["model_override"] = model_override
-        manifest.extra["codegen_model"] = self._codegen_trace_model(model_override)
+        manifest.extra["requested_model_override"] = model_override
+        manifest.extra["requested_codegen_model"] = (
+            model_override
+            or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
+            or str(getattr(self.settings, "preferred_model", "") or "").strip()
+        )
+        predicted_codegen_model = self._codegen_trace_model(
+            model_override, profile=build_profile
+        )
+        manifest.extra["effective_codegen_model"] = predicted_codegen_model
+        manifest.extra["codegen_model"] = predicted_codegen_model
         manifest.extra["llm_backend"] = str(getattr(self.settings, "llm_backend", ""))
         manifest.extra["clarification"] = clar.to_dict()
         manifest.extra["stack_selection"] = {
@@ -3958,6 +4097,9 @@ class StudioRunner:
                         failed["degraded_reason"] = result.error or "code stage failed"
                     prior[spec.name] = failed
 
+                if spec.agent_type == "code":
+                    self._record_effective_codegen_trace(manifest, result)
+
                 # Capture the exact prompt(s) codegen sent the model, per-build, so
                 # they're inspectable in the dashboard's Prompts panel — built,
                 # sent, and until now discarded (recorded beside skills_used).
@@ -3978,6 +4120,18 @@ class StudioRunner:
                                 "stalled",
                                 "stall_reason",
                                 "turn_timeouts",
+                                "turns",
+                                "provider_requests",
+                                "context_bytes_sent",
+                                "max_context_bytes_sent",
+                                "tool_calls",
+                                "write_tool_calls",
+                                "single_write_calls",
+                                "batch_write_calls",
+                                "write_argument_bytes_compacted",
+                                "cached_tokens",
+                                "cache_write_tokens",
+                                "session_id",
                                 "error",
                             )
                             if _agentic.get(k) not in (None, "")
@@ -4090,6 +4244,25 @@ class StudioRunner:
                         )
                 except Exception as exc:  # noqa: BLE001 - visual asset wiring must not break builds
                     log.warning("runner.web_assets_apply_failed", error=str(exc)[:160])
+
+            # A repair/code session can copy the signed acceptance module out of
+            # tests/ into the project root. Pytest then aborts collection with an
+            # import-file mismatch even though the canonical contract is intact.
+            # Reconcile only basenames backed by a signed canonical snapshot;
+            # ordinary user tests are never touched.
+            delivery_contracts = snapshot_acceptance_contracts(project_dir)
+            contract_clones_removed = reconcile_acceptance_contract_clones(
+                project_dir, delivery_contracts
+            )
+            if contract_clones_removed:
+                manifest.extra["acceptance_contract_clones_removed"] = (
+                    contract_clones_removed
+                )
+                manifest.files = list_files(project_dir)
+                log.warning(
+                    "runner.acceptance_contract_clones_removed",
+                    files=contract_clones_removed,
+                )
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous
@@ -4641,6 +4814,16 @@ class StudioRunner:
                 "cancelled_at": manifest.updated_at,
                 "recovery": recovered,
             }
+            # Cancellation is still a terminal, billable outcome. Build the same
+            # summary payload used by normal completion so the live dashboard
+            # immediately exposes provider-confirmed cost, stage evidence, model
+            # routing, and recovery state instead of shadowing the durable row
+            # with an empty in-memory BuildRecord until the next restart.
+            cancellation_summary = build_summary(manifest.to_dict())
+            manifest.extra["model_trace"] = cancellation_summary["model_trace"]
+            manifest.extra["quality_scorecard"] = cancellation_summary[
+                "quality_scorecard"
+            ]
             try:
                 self.approval_gate.clear(build_id)
             except Exception:  # noqa: BLE001 - cancellation must keep unwinding
@@ -4663,6 +4846,7 @@ class StudioRunner:
                     "reason": "build cancelled",
                     "recovery": recovered,
                     **self._terminal_event_fields(manifest),
+                    **cancellation_summary,
                 },
                 correlation_id=correlation_id,
             )
@@ -4748,7 +4932,10 @@ class StudioRunner:
         # the router's pick (today's behaviour). When best_of_n exceeds the pool,
         # models cycle (index % len) — diversity where possible, not guaranteed
         # unique.
-        pool = self._bon_model_pool(plan.best_of_n)
+        pool = self._bon_model_pool(
+            plan.best_of_n,
+            profile=str(extra.get("build_profile") or "balanced"),
+        )
         across_models = self._bon_across_models(
             pool,
             requested=bool(extra.get("best_of_n_across_models")),
@@ -4903,10 +5090,23 @@ class StudioRunner:
             min_files = max(2, int(raw_min))
         except (TypeError, ValueError):
             min_files = max(2, int(configured_min))
-        slices = slice_plan(files, plan.stack, min_files=min_files)
+        slices = slice_plan(
+            files,
+            plan.stack,
+            min_files=min_files,
+            semantic_frontend=bool(
+                (extra or {}).get("full_app_contract")
+                or (extra or {}).get("semantic_frontend_slices")
+            ),
+        )
         return slices or None
 
-    def _slice_model(self, tier_name: str, llm: Any | None = None) -> str | None:
+    def _slice_model(
+        self,
+        tier_name: str,
+        llm: Any | None = None,
+        profile: str = "balanced",
+    ) -> str | None:
         """Resolve a concrete model for one whole-project agentic slice.
 
         Explicit ``slice_tier_models`` mappings apply to every agentic backend.
@@ -4933,10 +5133,11 @@ class StudioRunner:
                     tier=tier,
                     setting_names=("openrouter_codegen_model", "preferred_model"),
                     task_type="codegen",
+                    profile=profile,
                 ))
             router = getattr(llm, "router", None)
             if router is not None:
-                return str(router.resolve(tier, task_type="codegen"))
+                return str(router.resolve(tier, task_type="codegen", profile=profile))
         except Exception as exc:  # noqa: BLE001 - routing must not break a slice
             log.warning(
                 "runner.slice_model_resolution_failed",
@@ -5011,7 +5212,11 @@ class StudioRunner:
                 "manifest": manifest,
             }
             if agentic_backend and not payload.get("model_override"):
-                model = self._slice_model(slice_tier(name), slice_llm)
+                model = self._slice_model(
+                    slice_tier(name),
+                    slice_llm,
+                    profile=str(extra.get("build_profile") or "balanced"),
+                )
                 if model:
                     payload["model_override"] = model
             return name, await self._run_slice_agent(base_agent, spec, payload, correlation_id, name)

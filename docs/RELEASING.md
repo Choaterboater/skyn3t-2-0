@@ -4,7 +4,9 @@ Releases are built from version tags by `.github/workflows/release.yml`. The
 workflow tests the repository, rebuilds the committed dashboard, builds the
 wheel and source distribution twice, and requires byte-identical output after
 normalizing source-archive member order, timestamps, ownership metadata, and
-gzip header to the commit epoch.
+gzip header to the commit epoch. Every third-party release action is pinned to
+a verified full commit SHA; version comments record the corresponding upstream
+tag for review and automated updates.
 
 ## Prepare a release
 
@@ -15,17 +17,31 @@ gzip header to the commit epoch.
    frontend tests, the frontend build, wheel inspection, and sdist-to-wheel
    parity before publishing.
 3. Create a tag that exactly matches the package version, such as `v2.0.0`.
-   `scripts/prepare_release.py` rejects a tag/version mismatch.
+   `scripts/prepare_release.py` rejects a tag/version mismatch, and the tagged
+   commit must be contained in `origin/main` when the release starts.
 4. Push the tag. Do not rebuild or upload distributions from a workstation.
 
 Rerunning a release is byte-idempotent. Existing assets are downloaded and
 compared with the reproducible rebuild; a changed asset is never overwritten,
-while an asset missing from a partially completed release may be added.
+while an asset missing from a partially completed release may be added. An
+existing release may contain only the wheel, source archive, `SHA256SUMS`, and
+companion signature or certificate assets named by appending `.asc`, `.sig`,
+`.pem`, `.crt`, `.bundle`, or `.sigstore.json` to one of those exact filenames.
+Any other attached asset stops publication for manual review.
+
+Before upload, both the directly built wheel and the wheel rebuilt from the
+source archive are installed with the `web` extra into a separate clean virtual
+environment. Each environment must pass `pip check`, import the installed
+runtime outside the repository checkout, construct the FastAPI control plane,
+load the packaged golden suite and dashboard files, resolve every dashboard
+asset reference, and run the installed `skyn3t --help` console command.
 
 The build job has read-only repository permission and no OIDC permission. The
 separate attestation and publishing jobs download the already-built artifact,
 so package build scripts never run in a job that can mint a signing or PyPI
-identity token.
+identity token. The immutable GitHub release completes before the PyPI job can
+start, so a registry package is never published without its matching GitHub
+release and checksums already available.
 
 ## PyPI setup
 

@@ -25,6 +25,7 @@ from skyn3t.studio.proof_run import (
     extract_error_gaps,
     missing_brief_features,
     proof_run,
+    scan_persisted_write_receipts,
     scan_placeholder_markers,
 )
 
@@ -65,6 +66,38 @@ def test_scan_placeholder_markers_never_deletes(tmp_path) -> None:
     _write(tmp_path, {"src/a.js": "// rest of code...\n"})
     scan_placeholder_markers(tmp_path)
     assert (tmp_path / "src/a.js").exists()  # gaps only, never auto-delete
+
+
+def test_persisted_write_receipts_are_a_fatal_delivery_gap(tmp_path) -> None:
+    receipt = "[persisted to workspace: 912 UTF-8 bytes; use read_file to inspect]"
+    _write(tmp_path, {
+        "index.html": (
+            "<!doctype html><html><body><h1>Complete app</h1>"
+            "<script src='./app.js'></script></body></html>"
+        ),
+        "app.js": "console.log('complete');\n",
+        "content/unplanned.md": receipt,
+        "dist/bad.html": receipt,
+        "out/bad.js": receipt,
+        "build/bad.css": receipt,
+    })
+
+    assert sorted(scan_persisted_write_receipts(tmp_path)) == [
+        "build/bad.css",
+        "content/unplanned.md",
+        "dist/bad.html",
+        "out/bad.js",
+    ]
+    result = proof_run(tmp_path, stack="static_html", execution_backend="inline")
+
+    assert result.passed is False
+    assert set(result.detail["persisted_write_receipts"]) == {
+        "build/bad.css",
+        "content/unplanned.md",
+        "dist/bad.html",
+        "out/bad.js",
+    }
+    assert any("receipt" in gap.lower() for gap in result.error_gaps())
 
 
 # --- B8: reality-checker ------------------------------------------------------

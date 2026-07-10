@@ -80,17 +80,18 @@ def test_improve_record_history_failure_keeps_completed(tmp_path):
     assert (project / "main.py").read_text() == "print('improved')\n"
 
 
-def test_improve_empty_mergeback_falls_back_to_list_files(tmp_path, monkeypatch):
-    # If merge_back returns [] but the project dir has files, delivered must
-    # reflect them (not report 0 — design rule #1: delivered != empty).
+def test_improve_empty_mergeback_aborts_without_touching_original(tmp_path, monkeypatch):
+    # A copy primitive that reports no files is not a successful delivery. The
+    # transaction must fail while the original project remains intact.
     settings = _settings(tmp_path)
-    _seed(settings.projects_dir, "demo")
+    project = _seed(settings.projects_dir, "demo")
     engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings)
     monkeypatch.setattr(improve_mod, "merge_back", lambda *a, **k: [])
 
     outcome = asyncio.run(engine.improve("demo", "g"))
-    assert outcome.status == "completed"
-    assert outcome.detail["delivered"] > 0  # fell back to on-disk files
+    assert outcome.status == "failed"
+    assert "backup was incomplete" in outcome.detail["error"]
+    assert (project / "main.py").read_text() == "print('original')\n"
 
 
 # --- runner: a mid-build exception must still yield a no_go verdict, not "" ---

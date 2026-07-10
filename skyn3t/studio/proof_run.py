@@ -35,6 +35,10 @@ from skyn3t.npm_utils import (
     npm_install_current,
     npm_install_fingerprint,
 )
+from skyn3t.persisted_write import (
+    PERSISTED_WRITE_RECEIPT_MAX_BYTES,
+    is_persisted_write_receipt_body,
+)
 
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
 # NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
@@ -136,6 +140,254 @@ def _unresolved_local_imports(root: Path) -> list[str]:
             if not _import_resolves(f, spec, root):
                 out.append(f"{f.relative_to(root)} -> {spec}")
     return out
+
+
+# A browser treats an ESM named import as a hard module-instantiation contract:
+# `import { bootstrap } from './js/main.js'` cannot consume
+# `export default { bootstrap }`.  A static-site build often has no compile step,
+# so that defect otherwise survives objective proof and appears only as a blank
+# page in the browser.  Keep this check deliberately narrow: local ESM modules,
+# explicit named imports, and export forms whose surface we can enumerate with
+# confidence.  Re-export stars or unfamiliar/dynamic module shapes degrade open.
+_ESM_NAMED_IMPORT_RE = re.compile(
+    r"^[ \t]*import[ \t]+(?!type\b)"
+    r"(?:[A-Za-z_$][\w$]*[ \t]*,[ \t]*)?"
+    r"\{(?P<named>[^}]*)\}[ \t\r\n]*"
+    r"from[ \t\r\n]*['\"](?P<spec>\.\.?/[^'\"]+)['\"]",
+    re.MULTILINE,
+)
+_ESM_EXPORT_LIST_RE = re.compile(
+    r"^[ \t]*export[ \t]+(?:type[ \t]+)?\{(?P<named>[^}]*)\}",
+    re.MULTILINE,
+)
+_ESM_EXPORT_DECL_RE = re.compile(
+    r"^[ \t]*export[ \t]+(?:declare[ \t]+)?(?:async[ \t]+)?"
+    r"(?:function|class|interface|type|enum|namespace)[ \t]+"
+    r"(?P<name>[A-Za-z_$][\w$]*)",
+    re.MULTILINE,
+)
+_ESM_EXPORT_VAR_RE = re.compile(
+    r"^[ \t]*export[ \t]+(?:declare[ \t]+)?(?:const|let|var)[ \t]+"
+    r"(?P<body>[^;\r\n]+)",
+    re.MULTILINE,
+)
+_ESM_EXPORT_STAR_RE = re.compile(
+    r"^[ \t]*export[ \t]+\*(?![ \t]+as\b)[ \t]+from\b",
+    re.MULTILINE,
+)
+_ESM_EXPORT_STAR_AS_RE = re.compile(
+    r"^[ \t]*export[ \t]+\*[ \t]+as[ \t]+(?P<name>[A-Za-z_$][\w$]*)"
+    r"[ \t]+from\b",
+    re.MULTILINE,
+)
+_ESM_EXPORT_DEFAULT_RE = re.compile(
+    r"^[ \t]*export[ \t]+default\b",
+    re.MULTILINE,
+)
+
+
+def _mask_js_non_code(text: str, *, preserve_strings: bool) -> str:
+    """Mask comments/templates, and optionally quoted strings, preserving shape.
+
+    Regexes can then stay line-anchored without treating a block comment or a
+    multi-line template literal as authored module syntax.  Import parsing keeps
+    quoted strings for the module specifier; export parsing does not need them.
+    This is a scanner, not a JavaScript parser, and intentionally degrades toward
+    missed findings instead of guessing across unfamiliar syntax.
+    """
+    chars = list(text)
+    out = list(text)
+    state = "code"
+    escaped = False
+    i = 0
+    while i < len(chars):
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < len(chars) else ""
+        if state == "code":
+            if ch == "/" and nxt == "/":
+                out[i] = out[i + 1] = " "
+                state = "line_comment"
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                out[i] = out[i + 1] = " "
+                state = "block_comment"
+                i += 2
+                continue
+            if ch == "`":
+                out[i] = " "
+                state = "template"
+                escaped = False
+            elif ch == "'":
+                if not preserve_strings:
+                    out[i] = " "
+                state = "single"
+                escaped = False
+            elif ch == '"':
+                if not preserve_strings:
+                    out[i] = " "
+                state = "double"
+                escaped = False
+        elif state == "line_comment":
+            if ch in "\r\n":
+                state = "code"
+            else:
+                out[i] = " "
+        elif state == "block_comment":
+            if ch == "*" and nxt == "/":
+                out[i] = out[i + 1] = " "
+                state = "code"
+                i += 2
+                continue
+            if ch not in "\r\n":
+                out[i] = " "
+        elif state == "template":
+            if ch not in "\r\n":
+                out[i] = " "
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "`":
+                state = "code"
+        else:  # single/double quoted string
+            if not preserve_strings and ch not in "\r\n":
+                out[i] = " "
+            quote = "'" if state == "single" else '"'
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                state = "code"
+            elif ch in "\r\n":
+                # Invalid/unescaped multiline strings must not hide all later
+                # source from a best-effort proof scan.
+                state = "code"
+        i += 1
+    return "".join(out)
+
+
+def _binding_names(raw: str, *, imported: bool) -> set[str]:
+    """Names from an ESM `{ a, b as c }` list.
+
+    Imports contract against the source name (left side); exports publish the
+    destination name (right side).  Unsupported string-named bindings are
+    skipped rather than guessed.
+    """
+    out: set[str] = set()
+    for item in raw.split(","):
+        clean = re.sub(r"\s+", " ", item).strip()
+        if clean.startswith("type "):
+            clean = clean[5:].strip()
+        if not clean:
+            continue
+        parts = re.split(r"\s+as\s+", clean, maxsplit=1)
+        candidate = parts[0] if imported or len(parts) == 1 else parts[1]
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", candidate):
+            out.add(candidate)
+    return out
+
+
+def _esm_export_surface(text: str) -> tuple[set[str], bool]:
+    """Return (explicit named exports, indeterminate surface)."""
+    code = _mask_js_non_code(text, preserve_strings=False)
+    names: set[str] = set()
+    spans: list[tuple[int, int]] = []
+
+    for pattern in (
+        _ESM_EXPORT_LIST_RE,
+        _ESM_EXPORT_DECL_RE,
+        _ESM_EXPORT_VAR_RE,
+        _ESM_EXPORT_STAR_RE,
+        _ESM_EXPORT_STAR_AS_RE,
+        _ESM_EXPORT_DEFAULT_RE,
+    ):
+        spans.extend(match.span() for match in pattern.finditer(code))
+
+    for match in _ESM_EXPORT_LIST_RE.finditer(code):
+        names.update(_binding_names(match.group("named"), imported=False))
+    for match in _ESM_EXPORT_DECL_RE.finditer(code):
+        names.add(match.group("name"))
+    for match in _ESM_EXPORT_STAR_AS_RE.finditer(code):
+        names.add(match.group("name"))
+    if _ESM_EXPORT_DEFAULT_RE.search(code):
+        # `import { default as X }` is a legal (if uncommon) spelling of a
+        # default import and must satisfy the same contract.
+        names.add("default")
+
+    indeterminate = bool(_ESM_EXPORT_STAR_RE.search(code))
+    for match in _ESM_EXPORT_VAR_RE.finditer(code):
+        body = match.group("body").strip()
+        declared = re.match(r"([A-Za-z_$][\w$]*)\b", body)
+        if declared and "," not in body:
+            names.add(declared.group(1))
+        else:
+            # Destructuring and multi-declarator exports are legal but require a
+            # parser to enumerate safely.  Do not turn them into a false failure.
+            indeterminate = True
+
+    # Unknown export syntax (for example TypeScript's `export =`) makes the
+    # surface non-enumerable to this intentionally small scanner.
+    for keyword in re.finditer(r"\bexport\b", code):
+        if not any(start <= keyword.start() < end for start, end in spans):
+            indeterminate = True
+            break
+    if re.search(r"\b(?:module\.exports|exports\s*\.)", code):
+        indeterminate = True
+    return names, indeterminate
+
+
+def _esm_named_export_mismatches(root: Path) -> list[dict[str, Any]]:
+    """Definite local ESM named-import/export contract violations.
+
+    Each finding carries both the raw specifier and its canonical project-relative
+    target so the fix loop edits the module that owns the missing export instead
+    of guessing from a basename.
+    """
+    project = root.resolve()
+    findings: list[dict[str, Any]] = []
+    importer_suffixes = frozenset((*_JS_SUFFIXES, ".astro", ".vue", ".svelte"))
+    for importer in _iter_files(project):
+        if importer.suffix.lower() not in importer_suffixes:
+            continue
+        try:
+            imports = _mask_js_non_code(
+                importer.read_text(encoding="utf-8", errors="replace"),
+                preserve_strings=True,
+            )
+            importer_rel = importer.relative_to(project).as_posix()
+        except (OSError, ValueError):
+            continue
+        for match in _ESM_NAMED_IMPORT_RE.finditer(imports):
+            requested = _binding_names(match.group("named"), imported=True)
+            if not requested:
+                continue
+            spec = match.group("spec")
+            target = _resolve_import_file(importer, spec)
+            if target is None or target.suffix.lower() not in _JS_SUFFIXES:
+                continue
+            try:
+                target = target.resolve()
+                if _confine(project, target) != target or target.is_symlink():
+                    continue
+                target_rel = target.relative_to(project).as_posix()
+                exported, indeterminate = _esm_export_surface(
+                    target.read_text(encoding="utf-8", errors="replace")
+                )
+            except (OSError, ValueError):
+                continue
+            if indeterminate:
+                continue
+            missing = sorted(requested - exported)
+            if missing:
+                findings.append({
+                    "importer": importer_rel,
+                    "specifier": spec,
+                    "module": target_rel,
+                    "missing": missing,
+                })
+    return findings
 
 
 # Parses `import Default, * as NS, { A, B as C } from 'spec'` capturing the names.
@@ -1106,6 +1358,24 @@ def extract_error_gaps(
     # Unresolved relative imports — each entry is "<importer> -> <spec>".
     for imp in (d.get("unresolved_imports") or []):
         gaps.append(f"UNRESOLVED IMPORT — create the missing target or fix the path: {imp}")
+    # Definite ESM named-import/export contract violations.  Put the resolved
+    # module first in a stable sentence shape consumed by CodeImproverAgent, so
+    # repair targets never have to infer a relative specifier's true location.
+    for mismatch in (d.get("named_export_mismatches") or []):
+        if not isinstance(mismatch, dict):
+            continue
+        module = str(mismatch.get("module") or "").strip()
+        importer = str(mismatch.get("importer") or "").strip()
+        specifier = str(mismatch.get("specifier") or "").strip()
+        missing_names = mismatch.get("missing") or []
+        missing = ", ".join(str(name) for name in missing_names if str(name).strip())
+        if not module or not importer or not missing:
+            continue
+        gaps.append(
+            f"NAMED EXPORT MISMATCH — module {module} is missing named export(s) "
+            f"{missing}; imported by {importer} via {specifier}. Export the requested "
+            "binding(s), or update the importer to use the module's actual API."
+        )
     # Generated components exist but the entry reaches none of them.
     if d.get("unwired_components"):
         gaps.append(f"UNWIRED ENTRY — wire the entry to render the real app: {d['unwired_components']}")
@@ -1117,6 +1387,11 @@ def extract_error_gaps(
         gaps.append(
             "PLACEHOLDER MARKER — remove the incomplete-code placeholder and write "
             f"the COMPLETE file: {pm}"
+        )
+    for rel in (d.get("persisted_write_receipts") or []):
+        gaps.append(
+            "PERSISTED-WRITE RECEIPT — replace history metadata with the real "
+            f"complete file contents: {rel}"
         )
     for feat in (d.get("missing_features") or []):
         gaps.append(
@@ -1146,6 +1421,22 @@ def _iter_files(root: Path):
         if p.is_dir():
             continue
         if any(part in _NON_SOURCE_DIRS for part in p.relative_to(root).parts):
+            continue
+        yield p
+
+
+_RECEIPT_SCAN_IGNORED_DIRS = _NON_SOURCE_DIRS - {"build", "dist", "out"}
+
+
+def _iter_receipt_scan_files(root: Path):
+    """Yield authored and deploy-output files, excluding dependencies/caches."""
+    for p in root.rglob("*"):
+        if p.is_dir():
+            continue
+        if any(
+            part in _RECEIPT_SCAN_IGNORED_DIRS
+            for part in p.relative_to(root).parts
+        ):
             continue
         yield p
 
@@ -1245,6 +1536,24 @@ def scan_placeholder_markers(root: str | Path) -> list[str]:
             if marker in low and (rel, marker) not in seen:
                 seen.add((rel, marker))
                 out.append(f"{rel}: {marker}")
+        if len(out) >= 40:
+            break
+    return out
+
+
+def scan_persisted_write_receipts(root: str | Path) -> list[str]:
+    """Find receipt-only files left by historical codegen replay corruption."""
+    root = Path(root)
+    out: list[str] = []
+    for f in _iter_receipt_scan_files(root):
+        try:
+            if f.stat().st_size > PERSISTED_WRITE_RECEIPT_MAX_BYTES:
+                continue
+            body = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if is_persisted_write_receipt_body(body):
+            out.append(str(f.relative_to(root)).replace("\\", "/"))
         if len(out) >= 40:
             break
     return out
@@ -2771,6 +3080,21 @@ def proof_run(
             if "<imports>" not in missing:
                 missing = [*missing, "<imports>"]
 
+    # Static/browser-only sites commonly have no compiler command.  Verify the
+    # ESM linkage contract offline so a missing named export fails here instead
+    # of shipping a blank page and waiting for responsive browser proof.
+    if total > 0:
+        export_mismatches = _esm_named_export_mismatches(pdir)
+        if export_mismatches:
+            passed = False
+            detail["named_export_mismatches"] = export_mismatches[:10]
+            detail.setdefault(
+                "reason",
+                f"{len(export_mismatches)} ESM named import/export mismatch(es)",
+            )
+            if "<exports>" not in missing:
+                missing = [*missing, "<exports>"]
+
     # Behaviour, not vibes (rule #3): a delivered app that ships real components
     # but an entry which reaches NONE of them renders an unwired/stub entry, not
     # the app — it has NOT been proven.
@@ -2887,6 +3211,13 @@ def proof_run(
     # and a shipped-scaffold-stub. NONE flips `passed` — they only add gaps the
     # fix-loop consumes + observability. Each is defensive; never breaks the proof.
     if total > 0:
+        try:
+            receipt_files = scan_persisted_write_receipts(pdir)
+            if receipt_files:
+                detail["persisted_write_receipts"] = receipt_files[:20]
+                passed = False
+        except Exception:  # noqa: BLE001 - scanner failure must not break proof
+            pass
         try:
             markers = scan_placeholder_markers(pdir)
             if markers:

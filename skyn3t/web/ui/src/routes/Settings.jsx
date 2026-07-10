@@ -2,6 +2,18 @@ import React, { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, queryFn, apiPost, saveAuthToken } from "../api.js";
 import {
+  DEPLOY_PROVIDERS,
+  deployProviderDetail,
+  deployProviderConfigured,
+  withDeployCredentialStatus,
+} from "../deploySettings.js";
+import {
+  describeExampleWorkload,
+  describeModelValue,
+  findModelValue,
+  formatModelOption,
+} from "../modelValue.js";
+import {
   PageHeader,
   Panel,
   PanelHead,
@@ -32,6 +44,7 @@ const SETTINGS_SECTIONS = [
   ["metadata", "Build"],
   ["keys", "Keys"],
   ["github", "GitHub"],
+  ["deploy", "Deploy"],
   ["images", "Images"],
   ["visual", "Visual"],
   ["improve", "Improve"],
@@ -55,6 +68,12 @@ export default function Settings() {
     queryFn: queryFn("/llm/secrets"),
     retry: 0,
     refetchInterval: 4000,
+  });
+
+  const deploySettings = useQuery({
+    queryKey: ["deploy-settings"],
+    queryFn: queryFn("/settings/deploy"),
+    retry: 0,
   });
 
   const integrations = useQuery({
@@ -97,6 +116,10 @@ export default function Settings() {
   const [ghToken, setGhToken] = useState("");
   const [ghMsg, setGhMsg] = useState("");
 
+  const [deployProvider, setDeployProvider] = useState("fly");
+  const [deployToken, setDeployToken] = useState("");
+  const [deployMsg, setDeployMsg] = useState("");
+
   const [repToken, setRepToken] = useState("");
   const [repModel, setRepModel] = useState("");
   const [repMsg, setRepMsg] = useState("");
@@ -109,6 +132,30 @@ export default function Settings() {
   const models = useQuery({
     queryKey: ["models"],
     queryFn: queryFn("/models"),
+    retry: 0,
+  });
+  const [modelCatalogActive, setModelCatalogActive] = useState(false);
+  const [modelCatalogQuery, setModelCatalogQuery] = useState("");
+  const [debouncedModelCatalogQuery, setDebouncedModelCatalogQuery] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setDebouncedModelCatalogQuery(modelCatalogQuery.trim()),
+      180,
+    );
+    return () => window.clearTimeout(timer);
+  }, [modelCatalogQuery]);
+  const pricedModels = useQuery({
+    queryKey: ["models", "settings-catalog", debouncedModelCatalogQuery],
+    queryFn: () => {
+      const params = new URLSearchParams({
+        limit: "50",
+        sort: "price",
+        order: "asc",
+      });
+      if (debouncedModelCatalogQuery) params.set("q", debouncedModelCatalogQuery);
+      return apiFetch(`/models/catalog?${params.toString()}`);
+    },
+    enabled: modelCatalogActive,
     retry: 0,
   });
   const [model, setModel] = useState("");
@@ -219,7 +266,10 @@ export default function Settings() {
         routing: r.routing || (old && old.routing),
       }));
       secrets.refetch();
-      if (provider === "openrouter") models.refetch();
+      if (provider === "openrouter") {
+        models.refetch();
+        if (modelCatalogActive) pricedModels.refetch();
+      }
     } catch (e) {
       setKeyMsg(String(e.message));
     }
@@ -233,6 +283,38 @@ export default function Settings() {
       secrets.refetch();
     } catch (e) {
       setGhMsg(String(e.message));
+    }
+  }
+
+  async function saveDeployCredential(clear = false) {
+    try {
+      const r = await apiPost("/settings/deploy/credential", {
+        provider: deployProvider,
+        token: clear ? "" : deployToken,
+      });
+      setDeployToken("");
+      setDeployMsg(`${deployProvider}: ${r.configured ? "configured" : "cleared"}`);
+      queryClient.setQueryData(["deploy-settings"], (old) =>
+        withDeployCredentialStatus(old, deployProvider, r.configured)
+      );
+      void deploySettings.refetch();
+    } catch (e) {
+      setDeployMsg(String(e.message));
+    }
+  }
+
+  async function saveAllowRemoteDeploy(enabled) {
+    try {
+      const r = await apiPost("/settings/deploy/allow_remote", { enabled });
+      queryClient.setQueryData(["deploy-settings"], (old) => ({
+        ...(old || {}),
+        allow_remote_deploy: !!r.allow_remote_deploy,
+      }));
+      setDeployMsg(`remote deploy ${r.allow_remote_deploy ? "enabled" : "disabled"}`);
+      settings.refetch();
+      void deploySettings.refetch();
+    } catch (e) {
+      setDeployMsg(String(e.message));
     }
   }
 
@@ -405,16 +487,27 @@ export default function Settings() {
   const providerConfigured = !!secrets.data?.providers?.[provider];
   const openrouterConfigured =
     !!secrets.data?.providers?.openrouter || !!routing.openrouter_configured;
+  const selectedDeployConfigured = deployProviderConfigured(
+    deploySettings.data,
+    deployProvider
+  );
+  const selectedDeployDetail = deployProviderDetail(
+    deploySettings.data,
+    deployProvider,
+  );
   const chData = integrations.data?.channels || {};
   const openrouterModels = models.data?.models || [];
-  const primaryModelChoices =
-    model && !openrouterModels.includes(model)
-      ? [model, ...openrouterModels]
-      : openrouterModels;
-  const codegenModelChoices =
-    openrouterCodegenModel && !openrouterModels.includes(openrouterCodegenModel)
-      ? [openrouterCodegenModel, ...openrouterModels]
-      : openrouterModels;
+  const openrouterModelItems = Array.isArray(pricedModels.data?.items)
+    ? pricedModels.data.items
+    : [];
+  const primaryModelChoices = openrouterModelItems;
+  const codegenModelChoices = openrouterModelItems;
+  const selectedPrimaryValue = findModelValue(openrouterModelItems, model);
+  const selectedCodegenValue = findModelValue(openrouterModelItems, openrouterCodegenModel);
+  const selectedTierValues = MODEL_TIERS.map((tier) => ({
+    tier,
+    value: findModelValue(openrouterModelItems, modelPins[tier]),
+  })).filter((entry) => entry.value);
   const routingCockpit = [
     { label: "requested backend", value: routing.requested || "auto" },
     { label: "active route", value: routing.active || active || "stub" },
@@ -513,6 +606,9 @@ export default function Settings() {
                 a more specific override. The OpenRouter codegen model below wins for
                 whole-app builds when it is set.
               </p>
+              <p className="mb-2 text-[11px] text-ash/75">
+                {describeExampleWorkload(pricedModels.data?.example_workload)} High-price choices remain selectable; benchmark-near cheaper peers are shown when OpenRouter publishes enough comparison data.
+              </p>
               <div className="flex flex-wrap items-center gap-2">
                   <div className="min-w-0 flex-1 sm:min-w-[16rem]">
                     <input
@@ -520,7 +616,10 @@ export default function Settings() {
                       aria-label="Primary OpenRouter model"
                       list="preferred-models"
                       value={model}
-                      onChange={(e) => setModel(e.target.value)}
+                      onChange={(e) => {
+                        setModel(e.target.value);
+                        setModelCatalogQuery(e.target.value);
+                      }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -528,21 +627,35 @@ export default function Settings() {
                       }
                     }}
                     onBlur={() => saveModel(model)}
-                    onFocus={() => refreshModelValidation(model)}
+                    onFocus={() => {
+                      setModelCatalogActive(true);
+                      setModelCatalogQuery(model);
+                      refreshModelValidation(model);
+                    }}
                     placeholder="auto — smart routing"
                     className="field"
                   />
                   <datalist id="preferred-models">
                     <option value="">auto — smart routing</option>
-                    {primaryModelChoices.map((m) => (
-                      <option key={m} value={m} />
+                    {primaryModelChoices.map((item) => (
+                      <option
+                        key={item.id}
+                        value={item.id}
+                        label={formatModelOption(item)}
+                      />
                     ))}
                   </datalist>
                 </div>
                 <button className="btn-ghost" onClick={() => saveModel(model)}>
                   Set
                 </button>
-                <button onClick={() => models.refetch()} className="btn-ghost">
+                <button
+                  onClick={() => {
+                    models.refetch();
+                    if (modelCatalogActive) pricedModels.refetch();
+                  }}
+                  className="btn-ghost"
+                >
                   Refresh models
                 </button>
                 <span className="font-mono text-[11px] text-ash/60">
@@ -571,6 +684,11 @@ export default function Settings() {
                       ? `; try: ${modelValidation.suggestions.join(", ")}`
                       : ""
                     : ""}
+                </p>
+              ) : null}
+              {selectedPrimaryValue ? (
+                <p className="mt-1 break-words font-mono text-[11px] text-ash/75">
+                  {describeModelValue(selectedPrimaryValue, "primary")}
                 </p>
               ) : null}
               {modelMsg ? (
@@ -605,18 +723,34 @@ export default function Settings() {
                   aria-label="OpenRouter codegen model"
                   list="openrouter-codegen-models"
                   value={openrouterCodegenModel}
-                  onChange={(e) => setOpenrouterCodegenModel(e.target.value)}
+                  onChange={(e) => {
+                    setOpenrouterCodegenModel(e.target.value);
+                    setModelCatalogQuery(e.target.value);
+                  }}
+                  onFocus={() => {
+                    setModelCatalogActive(true);
+                    setModelCatalogQuery(openrouterCodegenModel);
+                  }}
                   title="OpenRouter codegen model; overrides primary for whole-app builds"
                   placeholder="OpenRouter codegen · auto"
                 />
                 <datalist id="openrouter-codegen-models">
                   <option value="" />
-                  {codegenModelChoices.map((m) => (
-                    <option key={m} value={m} />
+                  {codegenModelChoices.map((item) => (
+                    <option
+                      key={item.id}
+                      value={item.id}
+                      label={formatModelOption(item)}
+                    />
                   ))}
                 </datalist>
               </div>
             </div>
+            {selectedCodegenValue ? (
+              <p className="mt-2 break-words font-mono text-[10px] text-ash/75">
+                {describeModelValue(selectedCodegenValue, "whole-app codegen")}
+              </p>
+            ) : null}
             <div className="mt-3 grid gap-2 md:grid-cols-5">
               {MODEL_TIERS.map((tier) => (
                 <input
@@ -625,13 +759,37 @@ export default function Settings() {
                   className="field min-w-0"
                   placeholder={`${tier} model`}
                   aria-label={tier + " model"}
+                  list="routing-tier-models"
                   value={modelPins[tier] || ""}
-                  onChange={(e) =>
-                    setModelPins((prev) => ({ ...prev, [tier]: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    setModelPins((prev) => ({ ...prev, [tier]: e.target.value }));
+                    setModelCatalogQuery(e.target.value);
+                  }}
+                  onFocus={() => {
+                    setModelCatalogActive(true);
+                    setModelCatalogQuery(modelPins[tier] || "");
+                  }}
                 />
               ))}
             </div>
+            <datalist id="routing-tier-models">
+              {openrouterModelItems.map((item) => (
+                <option
+                  key={item.id}
+                  value={item.id}
+                  label={formatModelOption(item)}
+                />
+              ))}
+            </datalist>
+            {selectedTierValues.length ? (
+              <div className="mt-2 space-y-1">
+                {selectedTierValues.map(({ tier, value }) => (
+                  <p key={tier} className="break-words font-mono text-[10px] text-ash/75">
+                    {describeModelValue(value, tier === "cheap" ? "economy-task role" : `${tier} role`)}
+                  </p>
+                ))}
+              </div>
+            ) : null}
             <button onClick={saveRouting} className="btn-ember mt-3">
               Save routing
             </button>
@@ -773,6 +931,94 @@ export default function Settings() {
             </div>
             {ghMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{ghMsg}</p>
+            ) : null}
+          </div>
+        </Panel>
+
+        <Panel id="deploy">
+          <PanelHead
+            label="Production deploy"
+            right={
+              deploySettings.error ? (
+                <Pill tone="ember">unreachable</Pill>
+              ) : (
+                <Pill tone={selectedDeployConfigured ? "plasma" : "ash"}>
+                  {deployProvider} · {selectedDeployConfigured ? "configured ✓" : "not set"}
+                </Pill>
+              )
+            }
+          />
+          <div className="p-4">
+            <div className="flex flex-wrap gap-2">
+              <select
+                aria-label="Deploy provider"
+                value={deployProvider}
+                onChange={(e) => {
+                  setDeployProvider(e.target.value);
+                  setDeployToken("");
+                  setDeployMsg("");
+                }}
+                className="field max-w-[12rem]"
+              >
+                {DEPLOY_PROVIDERS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                    {deployProviderConfigured(deploySettings.data, p) ? " ✓" : ""}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="password"
+                className="field min-w-[12rem] flex-1"
+                placeholder={`${deployProvider} credential`}
+                aria-label={deployProvider + " deploy credential"}
+                autoComplete="off"
+                value={deployToken}
+                onChange={(e) => setDeployToken(e.target.value)}
+              />
+              <button
+                onClick={() => saveDeployCredential(false)}
+                className="btn-ember"
+                disabled={!deployToken.trim()}
+              >
+                Save credential
+              </button>
+              <button
+                onClick={() => saveDeployCredential(true)}
+                className="btn-ghost"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="mt-3 grid gap-1 font-mono text-[10px] text-ash sm:grid-cols-3">
+              <span>
+                credential {selectedDeployDetail.configured ? "ready" : "missing"}
+              </span>
+              <span>
+                {selectedDeployDetail.cli || deployProvider} CLI {selectedDeployDetail.cli_available ? "installed" : "missing"}
+              </span>
+              <span className={selectedDeployDetail.ready ? "text-plasma" : "text-ash/70"}>
+                remote path {selectedDeployDetail.ready ? "ready" : "not ready"}
+              </span>
+            </div>
+            <label className="mt-4 flex items-center gap-2 text-sm text-bone">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-ember"
+                checked={!!deploySettings.data?.allow_remote_deploy}
+                onChange={(e) => saveAllowRemoteDeploy(e.target.checked)}
+              />
+              <span>
+                Allow remote deploy
+                {deploySettings.data?.allow_remote_deploy ? (
+                  <span className="text-ember"> · ON</span>
+                ) : (
+                  <span className="text-ash"> · off</span>
+                )}
+              </span>
+            </label>
+            {deployMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{deployMsg}</p>
             ) : null}
           </div>
         </Panel>

@@ -239,6 +239,10 @@ async def test_cancelled_build_recovers_candidate_before_worktree_cleanup(tmp_pa
     assert cancelled
     cancellation = cancelled[-1]["manifest"]["extra"]["cancellation"]
     snapshots = cancellation["recovery"]
+    summary = cancelled[-1]["manifest"]["extra"]
+    assert summary["model_trace"]["profile"] == "cheap_learned"
+    assert summary["quality_scorecard"]["status"] == "cancelled"
+    assert summary["quality_scorecard"]["cost_truth"]["llm_cost_usd"] >= 0
     assert snapshots and snapshots[0]["file_count"] >= 1
     recovery = Path(snapshots[0]["path"])
     assert recovery.is_relative_to((settings.data_dir / "recovery").resolve())
@@ -249,9 +253,14 @@ async def test_cancelled_build_recovers_candidate_before_worktree_cleanup(tmp_pa
     assert disk_manifest is not None
     assert disk_manifest.status == "cancelled"
     assert disk_manifest.extra["cancellation"]["recovery"][0]["path"] == str(recovery)
+    assert disk_manifest.extra["quality_scorecard"]["status"] == "cancelled"
+    assert disk_manifest.extra["model_trace"]["profile"] == "cheap_learned"
 
     # Worktrees are still cleaned, but only after the recovery copy exists.
     assert not any((settings.projects_dir.parent / ".skyn3t_worktrees").glob("*cancel-recovery*"))
     cancelled_events = [e for e in bus.history() if e.type is EventType.BUILD_FAILED]
     assert cancelled_events[-1].payload["status"] == "cancelled"
     assert cancelled_events[-1].payload["recovery"][0]["path"] == str(recovery)
+    assert cancelled_events[-1].payload["quality_scorecard"]["status"] == "cancelled"
+    assert cancelled_events[-1].payload["model_trace"]["profile"] == "cheap_learned"
+    assert cancelled_events[-1].payload["cost_truth"]["llm_cost_usd"] >= 0

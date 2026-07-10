@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -7,6 +8,15 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "release.yml"
 GUIDE_PATH = ROOT / "docs" / "RELEASING.md"
+ACTION_SHAS = {
+    "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+    "actions/setup-node": "48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",
+    "pypa/gh-action-pypi-publish": "cef221092ed1bacb1cc03d23a2d87d1d172e277b",
+}
 
 
 def _workflow() -> dict:
@@ -39,6 +49,23 @@ def test_release_workflow_is_tag_only_and_separates_privileged_jobs() -> None:
     assert jobs["pypi"]["environment"]["name"] == "pypi"
 
 
+def test_release_actions_are_pinned_to_verified_commits() -> None:
+    workflow = _workflow()
+    seen: set[str] = set()
+
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            uses = step.get("uses")
+            if not uses:
+                continue
+            assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", uses), uses
+            action, sha = uses.split("@", maxsplit=1)
+            assert ACTION_SHAS[action] == sha
+            seen.add(action)
+
+    assert seen == set(ACTION_SHAS)
+
+
 def test_release_build_proves_quality_and_byte_reproducibility() -> None:
     workflow = _workflow()
     build = workflow["jobs"]["build"]
@@ -49,12 +76,17 @@ def test_release_build_proves_quality_and_byte_reproducibility() -> None:
     assert "python -m pytest -q" in script
     assert script.count("python -m build --no-isolation") == 2
     assert "prepare_release.py check-tag" in script
+    assert "prepare_release.py check-ancestry" in script
+    assert "refs/heads/main:refs/remotes/origin/main" in script
     assert "prepare_release.py verify" in script
     assert "check_release_wheel.py" in script
     assert "sha256sum --check SHA256SUMS" in script
+    assert "smoke_release_install.py \"$WHEEL\" \"$SDIST_WHEEL\"" in script
 
     upload = next(step for step in build["steps"] if "upload-artifact@" in step.get("uses", ""))
-    assert upload["uses"] == "actions/upload-artifact@v7.0.1"
+    assert upload["uses"] == (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    )
     assert upload["with"]["archive"] == "true"
     assert upload["with"]["compression-level"] == "0"
     assert upload["with"]["if-no-files-found"] == "error"
@@ -65,20 +97,24 @@ def test_release_attests_before_github_and_optional_pypi_publish() -> None:
     jobs = workflow["jobs"]
 
     attest = next(step for step in jobs["attest"]["steps"] if step.get("uses", "").startswith("actions/attest@"))
-    assert attest["uses"] == "actions/attest@v4.1.1"
+    assert attest["uses"] == "actions/attest@a1948c3f048ba23858d222213b7c278aabede763"
     assert attest["if"] == "vars.ARTIFACT_ATTESTATION_ENABLED == 'true'"
     assert "*.whl" in attest["with"]["subject-path"]
     assert "*.tar.gz" in attest["with"]["subject-path"]
     assert set(jobs["github-release"]["needs"]) == {"build", "attest"}
-    assert set(jobs["pypi"]["needs"]) == {"build", "attest"}
+    assert set(jobs["pypi"]["needs"]) == {"build", "attest", "github-release"}
     assert jobs["pypi"]["if"] == "vars.PYPI_PUBLISH_ENABLED == 'true'"
     pypi_action = next(
         step for step in jobs["pypi"]["steps"] if step.get("uses", "").startswith("pypa/")
     )
-    assert pypi_action["uses"] == "pypa/gh-action-pypi-publish@v1.14.0"
+    assert pypi_action["uses"] == (
+        "pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b"
+    )
     assert "secrets." not in WORKFLOW_PATH.read_text(encoding="utf-8")
     release_script = _script(jobs["github-release"])
     assert "gh release download" in release_script
+    assert "prepare_release.py check-assets" in release_script
+    assert ".assets[].name" in release_script
     assert "cmp --silent" in release_script
     assert "--clobber" not in release_script
 
@@ -94,3 +130,7 @@ def test_release_guide_documents_verification_and_required_setup() -> None:
     assert "SHA256SUMS" in guide
     assert "project.version" in guide
     assert "never overwritten" in guide
+    assert "contained in `origin/main`" in guide
+    assert "clean virtual" in guide and "environment" in guide
+    assert "companion signature" in guide
+    assert "full commit SHA" in guide

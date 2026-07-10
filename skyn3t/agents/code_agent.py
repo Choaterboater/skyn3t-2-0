@@ -991,6 +991,18 @@ class CodeAgent(BaseAgent):
                     "files_written",
                     "planned_files",
                     "missing_files",
+                    "turns",
+                    "provider_requests",
+                    "context_bytes_sent",
+                    "max_context_bytes_sent",
+                    "tool_calls",
+                    "write_tool_calls",
+                    "single_write_calls",
+                    "batch_write_calls",
+                    "write_argument_bytes_compacted",
+                    "cached_tokens",
+                    "cache_write_tokens",
+                    "session_id",
                     "error",
                 )
                 if agentic.get(k) not in (None, "")
@@ -1547,6 +1559,11 @@ class CodeAgent(BaseAgent):
                     "ok", "backend", "model", "completed", "complete",
                     "auto_converged", "timed_out",
                     "files_written", "planned_files", "missing_files",
+                    "turns", "provider_requests", "context_bytes_sent",
+                    "max_context_bytes_sent", "tool_calls", "write_tool_calls",
+                    "single_write_calls", "batch_write_calls",
+                    "write_argument_bytes_compacted", "cached_tokens",
+                    "cache_write_tokens", "session_id",
                     "out_of_scope_files", "error",
                 )
                 if agentic.get(key) not in (None, "")
@@ -1568,7 +1585,7 @@ class CodeAgent(BaseAgent):
         # design tokens so it doesn't ship the generic emoji-template UI. Other
         # slices (config/tests/backend) stay lean.
         design_block = ""
-        if slice_name == "frontend":
+        if slice_name == "frontend" or slice_name.startswith("frontend_"):
             design_block = f"\n\n{_DESIGN_DIRECTIVE}"
             summary = self._design_summary(design)
             if summary:
@@ -2401,7 +2418,8 @@ class CodeAgent(BaseAgent):
             + (f"\n{_MANIFEST_INSTR}" if is_manifest else "")
         )
         result = await self.llm.complete(
-            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=16384,  # large data/page files truncated at 8192 -> mid-function EOF syntax error -> no_go
+            prompt, tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path,
+            max_tokens=None,  # codegen must not truncate complete files at a fixed output ceiling
             task_type=self.agent_type, model_override=model_override,
         )
         # If the call degraded to the stub backend (CLI failure/timeout, missing
@@ -2415,7 +2433,8 @@ class CodeAgent(BaseAgent):
             retry = await self.llm.complete(
                 prompt + f"\n\nThe previous attempt had an error: {err}\n"
                 "Return the COMPLETE corrected file.",
-                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path, max_tokens=16384,  # large data/page files truncated at 8192 -> mid-function EOF syntax error -> no_go
+                tier=tier, system=self.system_prompt(_SYSTEM), file_hint=rel_path,
+                max_tokens=None,
                 task_type=self.agent_type, model_override=model_override,
             )
             if retry.backend != "stub":

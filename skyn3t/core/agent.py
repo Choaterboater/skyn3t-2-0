@@ -152,7 +152,17 @@ class BaseAgent(ABC):
             # concurrent runs. Fall back to routes.clear() for test doubles.
             if hasattr(llm, "begin_run_capture"):
                 with contextlib.suppress(Exception):
-                    llm.begin_run_capture()
+                    extra = task.payload.get("extra")
+                    nested_profile = extra.get("build_profile") if isinstance(extra, dict) else ""
+                    routing_profile = str(
+                        task.payload.get("build_profile") or nested_profile or "balanced"
+                    )
+                    try:
+                        llm.begin_run_capture(routing_profile=routing_profile)
+                    except TypeError:
+                        # Back-compatible with narrow test doubles/plugins that
+                        # implement the old zero-argument capture hook.
+                        llm.begin_run_capture()
             elif hasattr(llm, "routes"):
                 with contextlib.suppress(Exception):
                     llm.routes.clear()

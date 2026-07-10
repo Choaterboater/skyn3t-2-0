@@ -93,6 +93,8 @@ async def test_list_models_uses_public_endpoint_without_key(monkeypatch):
     res = await list_openrouter_models(state)
 
     assert res["models"] == ["provider/model-a", "provider/model-b"]
+    assert "items" not in res
+    assert res["details_endpoint"] == "/models/catalog"
     assert called_headers
     assert "Authorization" not in (called_headers[0] or {})
     assert res["note"] == "ok"
@@ -299,6 +301,13 @@ async def test_model_routing_preview_reports_tier_models_and_pricing(monkeypatch
     assert out["tiers"][1]["pricing"].startswith("prompt:")
     assert out["catalog_note"] == "ok"
     assert out["catalog_model_count"] == 2
+    assert out["resolution_kind"] == "estimate"
+    assert out["authoritative"] is False
+    assert all(entry["resolution_kind"] == "estimate" for entry in out["tiers"])
+    assert "may differ" in out["estimate_reason"]
+    # Missing completion pricing is unknown, never silently estimated as free.
+    backend = next(entry for entry in out["tiers"] if entry["tier"] == "backend")
+    assert backend["cost_estimates_usd"]["prompt_1k_completion_1k"] is None
 
 
 async def test_model_routing_preview_uses_manual_override_for_every_tier(monkeypatch):

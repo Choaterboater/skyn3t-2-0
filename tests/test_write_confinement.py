@@ -14,6 +14,44 @@ from skyn3t.agents.packaging_agent import PackagingAgent
 from skyn3t.studio.config_spec import ConfigKey, ConfigSpec
 
 
+def test_canonical_project_relpath_is_portable_and_fail_closed() -> None:
+    from skyn3t.agents._common import canonical_project_relpath
+
+    assert canonical_project_relpath("src//pages/./index.astro") == (
+        "src/pages/index.astro"
+    )
+    assert canonical_project_relpath(r"src\pages\index.astro") == (
+        "src/pages/index.astro"
+    )
+
+    unsafe = [
+        "/src/pages/index.astro",
+        "../outside.py",
+        "src/pages/../index.astro",
+        r"C:\src\pages\index.astro",
+        r"C:src\pages\index.astro",
+        r"\\server\share\index.astro",
+        "src/pages/control\x00.astro",
+        "src/pages/control\x1f.astro",
+        "src/pages/file.js:payload",
+        "src./pages/index.astro",
+        "src /pages/index.astro",
+        "src/pages/index.astro ",
+        "CON",
+        "src/PRN.txt",
+        "src/AUX",
+        "src/nul.json",
+        "src/COM1.js",
+        "src/lpt9.txt",
+    ]
+    for path in unsafe:
+        assert canonical_project_relpath(path) is None, path
+
+    for forbidden in '<>"|?*':
+        path = f"src/pages/bad{forbidden}name.astro"
+        assert canonical_project_relpath(path) is None, forbidden
+
+
 def test_confined_path_fails_closed_on_unresolvable_rel(tmp_path):
     """A rel that makes resolve() itself raise (e.g. an embedded NUL byte) must
     yield the guard's documented fail-closed None — never an uncaught
@@ -21,6 +59,15 @@ def test_confined_path_fails_closed_on_unresolvable_rel(tmp_path):
     from skyn3t.agents._common import confined_path
 
     assert confined_path(tmp_path, "a\0b") is None
+
+
+def test_confined_path_uses_portable_relative_path_contract(tmp_path):
+    from skyn3t.agents._common import confined_path
+
+    assert confined_path(tmp_path, "src//./main.js") == tmp_path / "src" / "main.js"
+    assert confined_path(tmp_path, "/src/main.js") is None
+    assert confined_path(tmp_path, r"C:\src\main.js") is None
+    assert confined_path(tmp_path, "src/CON.txt") is None
 
 
 def test_package_dir_skips_write_through_symlinked_dir(tmp_path):

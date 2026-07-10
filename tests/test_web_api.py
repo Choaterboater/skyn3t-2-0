@@ -9,6 +9,8 @@ hooks) is always tested.
 from __future__ import annotations
 
 import json
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,6 +128,46 @@ def test_auth_self_test_route_exercises_http_auth_flow():
     assert body["ok"] is True
     assert body["method"] == "bearer"
     assert body["token_configured"] is True
+
+
+@pytest.mark.parametrize("endpoint", ["/api/builds", "/api/studio/build"])
+def test_build_routes_parse_string_booleans_exactly(endpoint):
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    class _Studio:
+        def __init__(self):
+            self.extras = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.extras.append(extra)
+
+    studio = _Studio()
+    st = _state(studio=studio)
+    st.settings.auth_token = "secret"
+    app = FastAPI()
+    app.include_router(routes.build_router(st))
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer secret"}
+
+    response = client.post(
+        endpoint,
+        json={"brief": "complete site", "full_app": "false"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["full_app"] is False
+    assert "full_app_contract" not in studio.extras[-1]
+
+    invalid = client.post(
+        endpoint,
+        json={"brief": "complete site", "full_app": "sometimes"},
+        headers=headers,
+    )
+    assert invalid.status_code == 422
 
 
 # ---- websocket auth (token via subprotocol, never query string) -----------
@@ -393,6 +435,55 @@ async def test_fast_full_app_keeps_scope_and_assets_without_redundant_candidates
     assert studio.extra["agentic_timeout"] == 1200
 
 
+async def test_cheap_full_app_uses_parallel_specialists_without_duplicate_apps():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    res = await routes.submit_build(
+        _state(studio=studio),
+        brief="a complete HVAC company website",
+        build_profile="cheap_learned",
+        full_app=True,
+    )
+
+    assert res["full_app"] is True
+    assert studio.extra["best_of_n"] == 1
+    assert studio.extra["best_of_n_across_models"] is False
+    assert studio.extra["parallel_code_slices"] is True
+    assert studio.extra["parallel_code_slices_min_files"] == 4
+    assert studio.extra["asset_gen"] is True
+    assert studio.extra["visual_self_heal"] is True
+    assert studio.extra["max_debug_attempts"] == 4
+
+
+async def test_balanced_full_app_keeps_full_app_assets_and_visual_repair():
+    class _Studio:
+        def __init__(self):
+            self.extra = None
+
+        def start(self, brief, slug=None, extra=None):
+            self.extra = extra
+
+    studio = _Studio()
+    await routes.submit_build(
+        _state(studio=studio),
+        brief="a complete beginner golf website",
+        build_profile="balanced",
+        full_app=True,
+    )
+
+    assert studio.extra["full_app_contract"] is True
+    assert studio.extra["asset_gen"] is True
+    assert studio.extra["visual_self_heal"] is True
+    assert studio.extra["best_of_n"] == 2
+    assert studio.extra["max_debug_attempts"] == 2
+
+
 
 async def test_full_app_option_requests_contract_assets_and_extra_repair_budget():
     class _Studio:
@@ -490,6 +581,7 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
             data_dir=root / "data",
             logs_dir=root / "logs",
             llm_backend="stub",
+            free_only=False,
             codegen_cli_provider="claude",
             codegen_cli_model="sonnet",
             openrouter_codegen_model="openrouter/codegen",
@@ -1431,7 +1523,12 @@ async def test_web_deploy_plan_for_project(tmp_path):
     project.mkdir(parents=True)
     (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
     BuildManifest(
-        slug="site", brief="site", stack="static", status="completed", verdict="go"
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+        extra={"proof": {"passed": True}},
     ).save(project)
     st = _state(settings=Settings(projects_dir=projects, data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"))
 
@@ -1471,42 +1568,313 @@ async def test_web_deploy_is_token_gated(tmp_path):
     project.mkdir(parents=True)
     (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
     BuildManifest(
-        slug="site", brief="site", stack="static", status="completed", verdict="go"
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+        extra={"proof": {"passed": True}},
     ).save(project)
     st = _state(settings=Settings(projects_dir=projects, data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"))
+
+    with pytest.raises(routes.DeployPreflightError, match="remote deploy is disabled"):
+        await routes.deploy_project(st, "site", target="cloudflare-pages")
+
+
+async def test_web_deploy_rejects_unsupported_target_without_fallback(
+    tmp_path, monkeypatch
+):
+    projects = tmp_path / "Projects"
+    project = projects / "api"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("from fastapi import FastAPI\napp=FastAPI()")
+    (project / "requirements.txt").write_text("fastapi\nuvicorn\n")
+    BuildManifest(
+        slug="api", brief="api", stack="fastapi", status="completed", verdict="go"
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+    captured = {}
+
+    def fake_deploy(self, directory, target="static", port=0, *, plan=None):
+        captured.update(
+            thread=threading.get_ident(),
+            target=target,
+            command=plan.command,
+        )
+        return {
+            "ok": True,
+            "url": "https://planned.fly.dev",
+            "provider": "fly",
+            "target": target,
+            "status": "succeeded",
+            "commands": [{"step": "deploy", "status": "succeeded"}],
+            "remote_deploy_attempted": True,
+            "remote_deploy_performed": True,
+            "remote_state": "deployed",
+        }
+
+    from skyn3t.agents import deploy_agent as deploy_module
+
+    monkeypatch.setattr(deploy_module.DeployAgent, "deploy", fake_deploy)
+    main_thread = threading.get_ident()
+
+    with pytest.raises(routes.DeployPreflightError, match="not supported") as exc:
+        await routes.deploy_project(st, "api", target="vercel")
+
+    assert exc.value.status_code == 422
+    assert captured == {}
+    assert threading.get_ident() == main_thread
+    assert not (project / "Dockerfile").exists()
+    assert not (project / ".dockerignore").exists()
+
+
+async def test_web_deploy_persists_failed_attempt_evidence(tmp_path, monkeypatch):
+    projects = tmp_path / "Projects"
+    project = projects / "site"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>hello</main>")
+    BuildManifest(
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+        extra={"proof": {"passed": True}},
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        allow_remote_deploy=True,
+        cloudflare_api_token="cloudflare-secret",
+    ))
+
+    def fake_deploy(self, directory, target="static", port=0, *, plan=None):
+        return {
+            "ok": False,
+            "url": None,
+            "provider": "cloudflare",
+            "target": target,
+            "status": "deploy_failed",
+            "commands": [{"step": "deploy", "status": "failed", "returncode": 1}],
+            "remote_deploy_attempted": True,
+            "remote_deploy_performed": None,
+            "remote_state": "unknown",
+            "error": "provider rejected upload",
+        }
+
+    from skyn3t.agents import deploy_agent as deploy_module
+
+    monkeypatch.setattr(deploy_module.DeployAgent, "deploy", fake_deploy)
+    monkeypatch.setattr(routes.shutil, "which", lambda command: f"/tools/{command}")
 
     out = await routes.deploy_project(st, "site", target="cloudflare-pages")
 
     assert out["ok"] is False
-    assert out["target"] == "cloudflare-pages"
-    assert "remote deploy is gated" in out["result"]["error"]
+    assert out["deployment"]["persisted"] is True
+    assert out["deployment"]["remote_deploy_attempted"] is True
+    assert out["deployment"]["remote_deploy_performed"] is None
+    persisted = BuildManifest.load(project).extra["deployments"][-1]
+    assert persisted["status"] == "deploy_failed"
+    assert persisted["remote_state"] == "unknown"
 
 
-async def test_web_deploy_records_live_check_when_enabled(tmp_path):
+async def test_web_deploy_rollback_updates_only_manifest_pointer(tmp_path):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment
+
+    projects = tmp_path / "Projects"
+    project = projects / "site"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>hello</main>")
+    BuildManifest(
+        slug="site", brief="site", stack="static", status="completed", verdict="go"
+    ).save(project)
+    plan = plan_deploy(project, "static")
+    for url in ("https://v1.vercel.app", "https://v2.vercel.app"):
+        record_deployment(
+            project,
+            result={"ok": True, "url": url, "provider": "vercel"},
+            plan=plan,
+            target="vercel",
+        )
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    result = await routes.rollback_project_deployment(
+        st, "site", reason="health regression"
+    )
+
+    assert result["ok"] is True
+    assert result["to_url"] == "https://v1.vercel.app"
+    assert result["remote_rollback_performed"] is False
+    assert BuildManifest.load(project).extra["live_url"] == "https://v1.vercel.app"
+
+
+async def test_web_deploy_records_live_check_when_enabled(tmp_path, monkeypatch):
     projects = tmp_path / "Projects"
     project = projects / "site"
     project.mkdir(parents=True)
     (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
     BuildManifest(
-        slug="site", brief="site", stack="static", status="completed", verdict="go"
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+        extra={"proof": {"passed": True}},
     ).save(project)
     st = _state(settings=Settings(
         projects_dir=projects,
         data_dir=tmp_path / "data",
         logs_dir=tmp_path / "logs",
         deploy_check_enabled=True,
+        allow_remote_deploy=True,
+        vercel_token="vercel-secret",
     ))
 
-    out = await routes.deploy_project(st, "site", target="static")
+    def fake_deploy(self, directory, target="static", port=0, *, plan=None):
+        return {
+            "ok": True,
+            "url": "https://checked.vercel.app",
+            "provider": "vercel",
+            "target": target,
+            "status": "succeeded",
+            "commands": [{"step": "deploy", "status": "succeeded"}],
+            "remote_deploy_attempted": True,
+            "remote_deploy_performed": True,
+            "remote_state": "deployed",
+        }
+
+    async def fake_check(url, stack):
+        return SimpleNamespace(to_dict=lambda: {
+            "ok": True,
+            "skipped": False,
+            "issues": [],
+            "checked": {"url": url, "stack": stack},
+            "reason": "healthy",
+            "gaps": [],
+        })
+
+    from skyn3t.agents import deploy_agent as deploy_module
+    from skyn3t.studio import deploy_check as deploy_check_module
+
+    monkeypatch.setattr(deploy_module.DeployAgent, "deploy", fake_deploy)
+    monkeypatch.setattr(deploy_check_module, "check_deploy", fake_check)
+    monkeypatch.setattr(routes.shutil, "which", lambda command: f"/tools/{command}")
+
+    out = await routes.deploy_project(st, "site", target="vercel")
 
     assert out["ok"] is True
     assert out["deploy_check"]["ok"] is True
-    assert out["deploy_check"]["checked"]["url"].startswith("http://127.0.0.1:")
+    assert out["deploy_check"]["checked"]["url"] == "https://checked.vercel.app"
     man = BuildManifest.load(project)
     assert man.extra["deploy_check"]["ok"] is True
     listed = await routes.list_projects(st)
     row = next(p for p in listed["projects"] if p["slug"] == "site")
     assert row["deploy_check"]["ok"] is True
+
+
+async def test_web_unhealthy_deploy_preserves_prior_live_pointer(
+    tmp_path,
+    monkeypatch,
+):
+    from skyn3t.studio.deploy import plan_deploy, record_deployment
+
+    projects = tmp_path / "Projects"
+    project = projects / "site"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>hello</main>", encoding="utf-8")
+    BuildManifest(
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+        extra={"proof": {"passed": True}},
+    ).save(project)
+    old_check = {
+        "ok": True,
+        "skipped": False,
+        "issues": [],
+        "checked": {"url": "https://healthy.vercel.app"},
+        "reason": "healthy",
+        "gaps": [],
+    }
+    record_deployment(
+        project,
+        result={
+            "ok": True,
+            "url": "https://healthy.vercel.app",
+            "provider": "vercel",
+            "status": "succeeded",
+            "deploy_check": old_check,
+        },
+        plan=plan_deploy(project, "static", target="vercel"),
+        target="vercel",
+    )
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        deploy_check_enabled=True,
+        allow_remote_deploy=True,
+        vercel_token="vercel-secret",
+    ))
+
+    def fake_deploy(self, directory, target="static", port=0, *, plan=None):
+        return {
+            "ok": True,
+            "url": "https://broken.vercel.app",
+            "provider": "vercel",
+            "target": target,
+            "status": "succeeded",
+            "commands": [{"step": "deploy", "status": "succeeded"}],
+            "remote_deploy_attempted": True,
+            "remote_deploy_performed": True,
+            "remote_state": "deployed",
+        }
+
+    async def fake_check(url, stack):
+        return SimpleNamespace(to_dict=lambda: {
+            "ok": False,
+            "skipped": False,
+            "issues": ["root returned 500"],
+            "checked": {"url": url, "stack": stack, "root_status": 500},
+            "reason": "live deploy has 1 issue",
+            "gaps": ["root returned 500"],
+        })
+
+    from skyn3t.agents import deploy_agent as deploy_module
+    from skyn3t.studio import deploy_check as deploy_check_module
+
+    monkeypatch.setattr(deploy_module.DeployAgent, "deploy", fake_deploy)
+    monkeypatch.setattr(deploy_check_module, "check_deploy", fake_check)
+    monkeypatch.setattr(routes.shutil, "which", lambda command: f"/tools/{command}")
+
+    out = await routes.deploy_project(st, "site", target="vercel")
+
+    assert out["ok"] is False
+    assert out["result"]["status"] == "deployed_unhealthy"
+    assert out["result"]["provider_command_ok"] is True
+    assert out["result"]["remote_deploy_performed"] is True
+    assert out["deployment"]["persisted"] is True
+    manifest = BuildManifest.load(project)
+    assert manifest is not None
+    assert manifest.extra["live_url"] == "https://healthy.vercel.app"
+    attempts = manifest.extra["deployments"]
+    assert attempts[-2]["manifest_pointer_active"] is True
+    assert attempts[-1]["manifest_pointer_active"] is False
+    assert attempts[-1]["url"] == "https://broken.vercel.app"
+    assert attempts[-1]["deploy_check"]["ok"] is False
+    assert manifest.extra["deploy_check"] == old_check
+    assert manifest.extra["latest_deploy_check"]["ok"] is False
 
 
 async def test_list_projects_normalizes_legacy_no_go_status(tmp_path):
@@ -1532,6 +1900,49 @@ async def test_list_projects_normalizes_legacy_no_go_status(tmp_path):
 
     assert row["status"] == "completed_no_go"
     assert row["verdict"] == "no_go"
+
+
+async def test_list_projects_labels_historical_cost_and_unknown_asset_dollars(tmp_path):
+    projects = tmp_path / "Projects"
+    project = projects / "historical-cost"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<main>complete</main>", encoding="utf-8")
+    BuildManifest(
+        slug="historical-cost",
+        brief="historical product app",
+        stack="static",
+        status="cancelled",
+        verdict="",
+        extra={
+            "build_cost_usd": 7.586062,
+            "prompts": [{"stage": "code", "text": "build the app"}],
+            "skills_used": ["frontend-ui-engineering"],
+            "recall_used": [{"text": "prior lesson"}],
+            "assets": {
+                "generated": 3,
+                "model": "black-forest-labs/flux-1.1-pro",
+            },
+        },
+    ).save(project)
+    st = _state(settings=Settings(
+        projects_dir=projects,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+    ))
+
+    listed = await routes.list_projects(st)
+    row = next(p for p in listed["projects"] if p["slug"] == "historical-cost")
+
+    assert row["cost_usd"] == 7.586062
+    assert row["status"] == "cancelled"
+    assert row["prompt_count"] == 1
+    assert row["skills_used"] == ["frontend-ui-engineering"]
+    assert row["recall_used"] == [{"text": "prior lesson"}]
+    assert row["cost_truth"]["llm_cost_classification"] == "estimate"
+    external = row["cost_truth"]["external_asset_usage"]
+    assert external["historical_generated_asset_count"] == 3
+    assert external["dollar_cost_known"] is False
+    assert row["cost_truth"]["combined_total_known"] is False
 
 
 async def test_list_projects_normalizes_legacy_scaffold_stub_success(tmp_path):

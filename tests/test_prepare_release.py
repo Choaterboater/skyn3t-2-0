@@ -3,14 +3,19 @@ from __future__ import annotations
 import gzip
 import hashlib
 import io
+import subprocess
 import tarfile
 from pathlib import Path
 
 import pytest
 
 from scripts.prepare_release import (
+    SIGNATURE_ASSET_SUFFIXES,
     normalize_gzip_mtime,
     normalize_sdist_archive,
+    release_asset_names,
+    validate_existing_release_assets,
+    validate_release_ancestry,
     validate_release_tag,
     verify_reproducible,
     write_checksums,
@@ -56,12 +61,76 @@ def _release_pair(root: Path, *, left_time: int = 10, right_time: int = 20) -> t
     return left, right
 
 
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def test_release_tag_must_match_project_version() -> None:
     assert validate_release_tag("v2.0.0", "2.0.0") == "2.0.0"
     with pytest.raises(ValueError, match="does not match"):
         validate_release_tag("v2.0.1", "2.0.0")
     with pytest.raises(ValueError, match="form"):
         validate_release_tag("release-2.0.0", "2.0.0")
+
+
+def test_release_commit_must_be_contained_in_main(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main")
+    _git(repo, "config", "user.email", "release-test@example.invalid")
+    _git(repo, "config", "user.name", "Release Test")
+    (repo / "proof.txt").write_text("main\n", encoding="utf-8")
+    _git(repo, "add", "proof.txt")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "main")
+    main_sha = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "switch", "-c", "unmerged-release")
+    (repo / "proof.txt").write_text("unmerged\n", encoding="utf-8")
+    _git(repo, "add", "proof.txt")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "unmerged")
+    unmerged_sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "switch", "main")
+
+    assert validate_release_ancestry(main_sha, "main", repo=repo) == (main_sha, main_sha)
+    with pytest.raises(ValueError, match="not contained in main"):
+        validate_release_ancestry(unmerged_sha, "main", repo=repo)
+
+
+def test_existing_release_assets_allow_only_exact_files_and_companion_signatures(
+    tmp_path: Path,
+) -> None:
+    release, _ = _release_pair(tmp_path)
+    write_checksums(
+        [
+            release / "skyn3t-2.0.0-py3-none-any.whl",
+            release / "skyn3t-2.0.0.tar.gz",
+        ],
+        release / "SHA256SUMS",
+    )
+    expected = release_asset_names(release)
+    wheel = next(name for name in expected if name.endswith(".whl"))
+    existing = expected | {f"{wheel}.sig", "SHA256SUMS.asc"}
+
+    assert validate_existing_release_assets(existing, expected) == existing
+    assert ".sig" in SIGNATURE_ASSET_SUFFIXES
+    with pytest.raises(ValueError, match="unexpected assets"):
+        validate_existing_release_assets(existing | {"release-notes.txt"}, expected)
+    with pytest.raises(ValueError, match="unexpected assets"):
+        validate_existing_release_assets(existing | {"unrelated-payload.sig"}, expected)
+
+
+def test_release_asset_names_requires_checksum_manifest(tmp_path: Path) -> None:
+    release, _ = _release_pair(tmp_path)
+
+    with pytest.raises(ValueError, match="checksum manifest is missing"):
+        release_asset_names(release)
 
 
 def test_gzip_timestamp_normalization_preserves_payload(tmp_path: Path) -> None:

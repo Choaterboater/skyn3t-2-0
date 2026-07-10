@@ -164,7 +164,8 @@ def test_agentic_system_prompt_forbids_elision():
     for stack in ("phaser", "react_vite", "nextjs", "expo", "fastapi", "cli"):
         sys = _agentic_system_for(stack).lower()
         assert "unchanged" in sys, f"missing anti-elision rule for {stack}"
-        assert "from scratch" in sys or "no pre-existing" in sys
+        assert "author the whole app yourself" in sys
+        assert "write every code file you create or replace in full" in sys
 
 
 # ---------------------------------------------------------------------------

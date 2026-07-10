@@ -3,7 +3,9 @@ from __future__ import annotations
 from skyn3t.studio.acceptance_contract import (
     GENERATED_ACCEPTANCE_HEADER,
     GENERATED_ACCEPTANCE_PENDING_MARKER,
+    acceptance_contract_clones,
     is_system_acceptance_contract,
+    reconcile_acceptance_contract_clones,
     restore_acceptance_contracts,
     snapshot_acceptance_contracts,
 )
@@ -90,3 +92,43 @@ def test_restore_rebuilds_tests_directory_replaced_by_a_file(tmp_path):
     assert restored == ["tests/test_acceptance_app.py"]
     assert tests.is_dir()
     assert system.read_bytes() == original
+
+
+def test_reconcile_removes_same_basename_clones_of_signed_contract(tmp_path):
+    root = tmp_path / "project"
+    tests = root / "tests"
+    tests.mkdir(parents=True)
+    canonical = tests / "test_acceptance_app.py"
+    canonical.write_text(_generated_contract(), encoding="utf-8")
+    root_clone = root / canonical.name
+    root_clone.write_text("def test_model_copy():\n    assert True\n", encoding="utf-8")
+    nested_clone = root / "generated" / canonical.name
+    nested_clone.parent.mkdir()
+    nested_clone.write_text("def test_second_copy():\n    assert True\n", encoding="utf-8")
+    unrelated = root / "test_acceptance_user.py"
+    unrelated.write_text("def test_user():\n    assert True\n", encoding="utf-8")
+    snapshot = snapshot_acceptance_contracts(root)
+
+    assert acceptance_contract_clones(root, snapshot) == [
+        "generated/test_acceptance_app.py",
+        "test_acceptance_app.py",
+    ]
+    removed = reconcile_acceptance_contract_clones(root, snapshot)
+
+    assert removed == [
+        "generated/test_acceptance_app.py",
+        "test_acceptance_app.py",
+    ]
+    assert canonical.is_file()
+    assert unrelated.is_file()
+    assert acceptance_contract_clones(root, snapshot) == []
+
+
+def test_reconcile_does_not_touch_clone_without_signed_canonical(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    clone = root / "test_acceptance_app.py"
+    clone.write_text("def test_user():\n    assert True\n", encoding="utf-8")
+
+    assert reconcile_acceptance_contract_clones(root, {}) == []
+    assert clone.is_file()

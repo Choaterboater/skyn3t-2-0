@@ -11,7 +11,14 @@ slice; this is the foundation and it's fully offline-provable.
 
 from __future__ import annotations
 
-from skyn3t.studio.deploy import DEPLOY_KIND, plan_deploy, write_deploy_artifacts
+from skyn3t.studio.deploy import (
+    DEPLOY_KIND,
+    plan_deploy,
+    record_deployment,
+    rollback_deployment,
+    write_deploy_artifacts,
+)
+from skyn3t.studio.manifest import BuildManifest
 
 
 def _write(tmp_path, files):
@@ -37,7 +44,8 @@ def test_static_web_build_plans_a_static_host(tmp_path):
     plan = plan_deploy(tmp_path, "static")
     assert plan.deployable and plan.kind == "static"
     assert "cloudflare-pages" in plan.targets
-    assert "wrangler pages deploy" in plan.command
+    assert plan.targets[0] == "vercel"
+    assert "vercel deploy" in plan.command
     assert plan.artifacts == {}  # static needs no Dockerfile
 
 
@@ -58,7 +66,34 @@ def test_fastapi_server_plans_a_container_with_a_dockerfile(tmp_path):
     assert "python:" in dockerfile
     assert "requirements.txt" in dockerfile
     assert "PORT" in dockerfile, "the container must bind the platform's $PORT"
-    assert 'CMD ["python", "main.py"]' in dockerfile
+    assert "uvicorn main:app" in dockerfile
+    assert "--host 0.0.0.0" in dockerfile
+    assert "${PORT:-8080}" in dockerfile
+    assert ".dockerignore" in plan.artifacts
+    assert ".env.*" in plan.artifacts[".dockerignore"]
+    assert "skyn3t_manifest.json" in plan.artifacts[".dockerignore"]
+
+
+def test_express_container_runs_the_declared_start_script(tmp_path):
+    _write(tmp_path, {
+        "package.json": '{"scripts":{"start":"node server.js"}}',
+        "server.js": "require('express')()",
+    })
+
+    plan = plan_deploy(tmp_path, "node_express")
+
+    assert 'CMD ["npm", "start"]' in plan.artifacts["Dockerfile"]
+
+
+def test_python_container_discovers_nested_asgi_application(tmp_path):
+    _write(tmp_path, {
+        "app/main.py": "from fastapi import FastAPI\napi = FastAPI()\n",
+        "requirements.txt": "fastapi\nuvicorn\n",
+    })
+
+    plan = plan_deploy(tmp_path, "fastapi")
+
+    assert "uvicorn app.main:api" in plan.artifacts["Dockerfile"]
 
 
 def test_rag_and_workflow_servers_are_containers(tmp_path):
@@ -73,6 +108,58 @@ def test_nextjs_is_ssr_not_a_static_drop(tmp_path):
     plan = plan_deploy(tmp_path, "nextjs")
     assert plan.kind == "node_ssr"
     assert "vercel" in plan.targets
+
+
+def test_sveltekit_adapter_auto_is_ssr_source_deploy(tmp_path):
+    _write(tmp_path, {
+        "package.json": (
+            '{"scripts":{"build":"vite build"},"devDependencies":'
+            '{"@sveltejs/adapter-auto":"latest","@sveltejs/kit":"latest"}}'
+        ),
+        "svelte.config.js": (
+            "import adapter from '@sveltejs/adapter-auto';\n"
+            "export default { kit: { adapter: adapter() } };\n"
+        ),
+    })
+
+    plan = plan_deploy(tmp_path, "sveltekit")
+
+    assert plan.kind == "node_ssr"
+    assert plan.output_dir == "."
+    assert plan.build_command == ""
+    assert plan.targets[0] == "vercel"
+    assert plan.command == "vercel deploy --prod --yes"
+
+
+def test_sveltekit_adapter_static_uses_real_build_output(tmp_path):
+    _write(tmp_path, {
+        "package.json": (
+            '{"scripts":{"build":"vite build"},"devDependencies":'
+            '{"@sveltejs/adapter-static":"latest","@sveltejs/kit":"latest"}}'
+        ),
+        "svelte.config.js": (
+            "import adapter from '@sveltejs/adapter-static';\n"
+            "export default { kit: { adapter: adapter() } };\n"
+        ),
+    })
+
+    plan = plan_deploy(tmp_path, "sveltekit")
+
+    assert plan.kind == "static"
+    assert plan.output_dir == "build"
+    assert "vercel deploy build" in plan.command
+
+
+def test_static_plan_prefers_the_existing_built_artifact(tmp_path):
+    _write(tmp_path, {
+        "package.json": '{"scripts":{"build":"custom-build"}}',
+        "out/index.html": "<main>built</main>",
+    })
+
+    plan = plan_deploy(tmp_path, "react")
+
+    assert plan.output_dir == "out"
+    assert "vercel deploy out" in plan.command
 
 
 def test_cli_and_pack_are_honest_artifacts_not_urls(tmp_path):
@@ -110,13 +197,95 @@ def test_target_selects_the_host_specific_command(tmp_path):
     assert "wrangler" not in picked.command  # the default command was replaced
 
 
+def test_every_live_plan_target_has_an_executable_provider_registry_entry(tmp_path):
+    from skyn3t.agents.deploy_agent import _PROVIDER_CLIS, _normalize_provider
+
+    roots = {
+        "static": _write(tmp_path / "site", {"index.html": "<h1>x</h1>"}),
+        "nextjs": _write(
+            tmp_path / "next",
+            {"package.json": '{"dependencies":{"next":"15"}}'},
+        ),
+        "fastapi": _write(
+            tmp_path / "api",
+            {"main.py": "x", "requirements.txt": "fastapi"},
+        ),
+    }
+    for stack, root in roots.items():
+        plan = plan_deploy(root, stack)
+        assert plan.serves_url
+        assert all(_normalize_provider(target) in _PROVIDER_CLIS for target in plan.targets)
+        assert not plan.command.startswith("npx ")
+
+
+def test_render_is_not_advertised_as_zero_config_local_source_deploy(tmp_path):
+    _write(tmp_path, {"main.py": "x", "requirements.txt": "fastapi"})
+    plan = plan_deploy(tmp_path, "fastapi", target="render")
+    assert "render" not in plan.targets
+    assert plan.targets[0] == "fly"
+    assert "isn't available" in plan.notes
+    assert "render blueprint launch" not in plan.command
+
+
 def test_unavailable_target_keeps_default_and_explains(tmp_path):
     # A container can't deploy to vercel — keep the default host and say why.
     _write(tmp_path, {"main.py": "x", "requirements.txt": "fastapi"})
     plan = plan_deploy(tmp_path, "fastapi", target="vercel")
     assert plan.targets[0] == "fly"          # default host kept
-    assert "fly launch" in plan.command
+    assert "flyctl launch" in plan.command
     assert "vercel" in plan.notes            # the ignored preference is explained
+
+
+def test_fly_launch_plan_uses_current_noninteractive_flags(tmp_path):
+    _write(tmp_path, {"main.py": "x", "requirements.txt": "fastapi"})
+
+    plan = plan_deploy(tmp_path, "fastapi")
+
+    assert "flyctl launch" in plan.command
+    assert "--yes" in plan.command
+    assert "--now" not in plan.command
+
+
+def test_existing_fly_app_uses_deploy_instead_of_launch(tmp_path):
+    _write(tmp_path, {
+        "main.py": "x",
+        "requirements.txt": "fastapi",
+        "fly.toml": "app = 'existing'",
+    })
+
+    plan = plan_deploy(tmp_path, "fastapi")
+
+    assert plan.command == "flyctl deploy --remote-only --yes"
+
+
+def test_rollback_reports_persistence_failure_as_failure(tmp_path, monkeypatch):
+    _write(tmp_path, {"index.html": "<main>site</main>"})
+    BuildManifest(
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+    ).save(tmp_path)
+    plan = plan_deploy(tmp_path, "static")
+    for url in ("https://v1.vercel.app", "https://v2.vercel.app"):
+        record_deployment(
+            tmp_path,
+            result={"ok": True, "url": url, "provider": "vercel"},
+            plan=plan,
+            target="vercel",
+        )
+
+    def fail_save(self, project_dir):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(BuildManifest, "save", fail_save)
+    result = rollback_deployment(tmp_path, reason="health regression")
+
+    assert result["ok"] is False
+    assert result["status"] == "persistence_failed"
+    assert result["persisted"] is False
+    assert "disk full" in result["error"]
 
 
 def test_content_detection_classifies_nextjs_as_ssr_not_static(tmp_path):

@@ -33,6 +33,27 @@ def test_frontend_slice_prompt_has_design_bar_and_tokens():
     assert "#6750f2" in p and "Inter" in p  # design tokens surfaced
 
 
+def test_semantic_frontend_specialists_keep_design_contract():
+    for name in (
+        "frontend_content",
+        "frontend_components",
+        "frontend_pages",
+        "frontend_styles",
+        "frontend_core",
+    ):
+        prompt = _agent()._agentic_slice_prompt(
+            "expense tracker",
+            "react",
+            name,
+            ["src/owned.tsx"],
+            "  src/App.jsx — ui",
+            "KNOW ",
+            design=_DESIGN,
+        )
+        assert "DESIGN BAR" in prompt
+        assert "#6750f2" in prompt
+
+
 def test_non_frontend_slices_stay_lean():
     for name in ("config", "tests", "backend"):
         p = _agent()._agentic_slice_prompt(

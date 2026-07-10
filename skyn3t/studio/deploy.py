@@ -8,8 +8,8 @@ every stack the builder can produce, or an honest "not a hosted app" verdict.
 
 Registry-driven (the same idiom as ``core.stacks``): every builder stack maps to
 a deploy KIND, so a new stack is never silently un-shippable. Real, token-gated
-one-command deploy (invoking the emitted command) is a later slice; this is the
-foundation and it is fully offline-provable.
+deployment is handled by :class:`DeployAgent`; this planner stays side-effect
+free so its output can be inspected and persisted safely.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ from typing import Any
 # is present (a drift test asserts it). Kinds:
 #   static    — a built static bundle → a static host (Cloudflare Pages/Netlify)
 #   node_ssr  — a full-stack Node app → Vercel / a Node container
-#   container — an HTTP server → Fly / Railway / Render (Dockerfile emitted)
+#   container — an HTTP server → Fly / Railway (Dockerfile emitted)
 #   artifact  — not a hosted URL: a publishable/runnable binary or package
 #   mobile    — an app binary → Expo EAS
 DEPLOY_KIND: dict[str, str] = {
     # static-hostable web builds
     "react_vite": "static", "react": "static", "react_ts": "static",
-    "vue": "static", "sveltekit": "static",
+    "vue": "static", "sveltekit": "node_ssr",
     "static_html": "static", "static": "static",
     "astro": "static", "phaser": "static",
     # full-stack Node (SSR/routing) — not a plain static drop
@@ -54,10 +54,10 @@ _PY_DOCKERFILE = (
     "COPY requirements.txt ./\n"
     "RUN pip install --no-cache-dir -r requirements.txt\n"
     "COPY . .\n"
-    "# Platforms (Fly/Railway/Render) inject $PORT; main.py reads it.\n"
+    "# Platforms (Fly/Railway) inject $PORT.\n"
     "ENV PORT=8080\n"
     "EXPOSE 8080\n"
-    'CMD ["python", "main.py"]\n'
+    'CMD ["sh", "-c", "uvicorn __ASGI_TARGET__ --host 0.0.0.0 --port ${PORT:-8080}"]\n'
 )
 
 _NODE_DOCKERFILE = (
@@ -69,7 +69,55 @@ _NODE_DOCKERFILE = (
     "COPY . .\n"
     "ENV PORT=8080\n"
     "EXPOSE 8080\n"
-    'CMD ["node", "src/index.js"]\n'
+    'CMD ["npm", "start"]\n'
+)
+
+_DOCKERIGNORE = (
+    ".git\n"
+    ".git-credentials\n"
+    ".env\n"
+    ".env.*\n"
+    ".dev.vars*\n"
+    ".npmrc\n"
+    ".netrc\n"
+    ".pypirc\n"
+    ".aws\n"
+    ".azure\n"
+    ".docker\n"
+    ".kube\n"
+    ".ssh\n"
+    ".terraform\n"
+    ".terraformrc\n"
+    ".vault-token\n"
+    ".wrangler\n"
+    ".vercel\n"
+    ".netlify\n"
+    ".railway\n"
+    ".skyn3t\n"
+    ".venv\n"
+    "__pycache__\n"
+    "*.py[cod]\n"
+    "*.pem\n"
+    "*.key\n"
+    "*.p12\n"
+    "*.pfx\n"
+    "*.jks\n"
+    "*.keystore\n"
+    "id_rsa\n"
+    "id_ed25519\n"
+    "application_default_credentials.json\n"
+    "pip.conf\n"
+    "pip.ini\n"
+    "credentials.json\n"
+    "secrets.json\n"
+    "skyn3t_manifest.json\n"
+    "node_modules\n"
+    ".pytest_cache\n"
+    ".mypy_cache\n"
+    ".coverage\n"
+    "coverage\n"
+    "tests\n"
+    "test_*\n"
 )
 
 
@@ -101,6 +149,51 @@ class DeployPlan:
         }
 
 
+def deployment_quality_gate(manifest: Any | None) -> dict[str, Any]:
+    """Return the objective evidence required before a remote deployment.
+
+    A completed/GO label is not sufficient on its own: older, interrupted, or
+    externally edited manifests can carry those strings without a proof run.
+    Remote entrypoints share this helper so CLI, web, and agent dispatch cannot
+    silently disagree about whether an artifact is proven.
+    """
+    if manifest is None:
+        status = ""
+        verdict = ""
+        extra: dict[str, Any] = {}
+    elif isinstance(manifest, dict):
+        status = str(manifest.get("status") or "").strip().lower()
+        verdict = str(manifest.get("verdict") or "").strip().lower()
+        raw_extra = manifest.get("extra")
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
+    else:
+        status = str(getattr(manifest, "status", "") or "").strip().lower()
+        verdict = str(getattr(manifest, "verdict", "") or "").strip().lower()
+        raw_extra = getattr(manifest, "extra", None)
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
+
+    proof_present = isinstance(extra.get("proof"), dict)
+    proof = extra.get("proof") if proof_present else None
+    proof_passed = proof.get("passed") is True if isinstance(proof, dict) else None
+    blockers: list[str] = []
+    if status != "completed":
+        blockers.append("build status must be completed")
+    if verdict != "go":
+        blockers.append("build verdict must be GO")
+    if not proof_present:
+        blockers.append("objective build proof is required")
+    elif proof_passed is not True:
+        blockers.append("build proof exists but did not pass")
+    return {
+        "passed": not blockers,
+        "status": status,
+        "verdict": verdict,
+        "proof_present": proof_present,
+        "proof_passed": proof_passed,
+        "blockers": blockers,
+    }
+
+
 def _normalize(stack: str) -> str:
     s = (stack or "").strip().lower()
     if s in DEPLOY_KIND:
@@ -113,10 +206,33 @@ def _normalize(stack: str) -> str:
         return s
 
 
+def _path_is_link_like(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
+
+
+def _safe_project_file(project_dir: Path, path: Path) -> bool:
+    try:
+        return (
+            path.is_file()
+            and not _path_is_link_like(path)
+            and path.resolve(strict=True).is_relative_to(project_dir.resolve(strict=True))
+        )
+    except OSError:
+        return False
+
+
 def _detect_kind(project_dir: Path, stack: str) -> str:
     """The deploy kind for a stack; when the stack is unknown/empty, fall back to
     content detection via the same run-spec the local preview uses."""
     norm = _normalize(stack)
+    if norm == "sveltekit":
+        return "static" if _sveltekit_is_static(project_dir) else "node_ssr"
     if norm in DEPLOY_KIND:
         return DEPLOY_KIND[norm]
     try:
@@ -138,7 +254,7 @@ def _detect_kind(project_dir: Path, stack: str) -> str:
 
 def _has_build_script(project_dir: Path) -> bool:
     pkg = project_dir / "package.json"
-    if not pkg.exists():
+    if not _safe_project_file(project_dir, pkg):
         return False
     try:
         scripts = (json.loads(pkg.read_text(encoding="utf-8")) or {}).get("scripts") or {}
@@ -156,10 +272,10 @@ def _is_ssr_node(project_dir: Path) -> bool:
     check config files AND package.json deps/scripts."""
     for name in ("next.config.js", "next.config.mjs", "next.config.ts",
                  "next.config.cjs", "remix.config.js"):
-        if (project_dir / name).exists():
+        if _safe_project_file(project_dir, project_dir / name):
             return True
     pkg = project_dir / "package.json"
-    if not pkg.exists():
+    if not _safe_project_file(project_dir, pkg):
         return False
     try:
         data = json.loads(pkg.read_text(encoding="utf-8")) or {}
@@ -170,6 +286,98 @@ def _is_ssr_node(project_dir: Path) -> bool:
         return True
     scripts = " ".join(str(v) for v in (data.get("scripts") or {}).values())
     return bool(re.search(r"\b(next|remix)\b", scripts))
+
+
+def _sveltekit_is_static(project_dir: Path) -> bool:
+    """Return true only when SvelteKit explicitly uses adapter-static.
+
+    ``adapter-auto`` can select an SSR platform adapter at deploy time and does
+    not produce a generic ``dist`` tree. Treating every SvelteKit project as a
+    static Vite app created plans that could never upload the built application.
+    """
+    config_text = ""
+    for name in (
+        "svelte.config.js",
+        "svelte.config.mjs",
+        "svelte.config.ts",
+        "svelte.config.cjs",
+    ):
+        path = project_dir / name
+        if not _safe_project_file(project_dir, path):
+            continue
+        try:
+            config_text += "\n" + path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+    if "@sveltejs/adapter-static" in config_text or "adapter-static" in config_text:
+        return True
+    pkg = project_dir / "package.json"
+    if _safe_project_file(project_dir, pkg):
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8")) or {}
+            deps = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+            return "@sveltejs/adapter-static" in deps
+        except (OSError, ValueError, TypeError):
+            pass
+    return False
+
+
+def _existing_static_output(project_dir: Path) -> str | None:
+    """Return a real built static artifact, preferring framework outputs."""
+    for relative in ("dist", "build", "out"):
+        candidate = project_dir / relative
+        if (
+            candidate.is_dir()
+            and not _path_is_link_like(candidate)
+            and _safe_project_file(project_dir, candidate / "index.html")
+        ):
+            return relative
+    return "." if _safe_project_file(project_dir, project_dir / "index.html") else None
+
+
+def _static_output_dir(project_dir: Path, stack: str, built: bool) -> str:
+    existing = _existing_static_output(project_dir)
+    if existing and (existing != "." or not built):
+        return existing
+    if _normalize(stack) == "sveltekit" and _sveltekit_is_static(project_dir):
+        return "build"
+    return "dist" if built else "."
+
+
+def _python_asgi_target(project_dir: Path) -> str:
+    """Find the FastAPI/Starlette application import used by the container."""
+    candidates = sorted(
+        (
+            path for path in project_dir.rglob("*.py")
+            if _safe_project_file(project_dir, path)
+            if len(path.relative_to(project_dir).parts) <= 4
+            and not any(
+                part.lower() in {"tests", ".venv", "venv", "__pycache__"}
+                for part in path.relative_to(project_dir).parts
+            )
+        ),
+        key=lambda path: (
+            path.name != "main.py",
+            len(path.relative_to(project_dir).parts),
+            path.as_posix(),
+        ),
+    )
+    assignment = re.compile(
+        r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*(?:FastAPI|Starlette)\s*\("
+    )
+    for path in candidates:
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        match = assignment.search(source)
+        if match is None:
+            continue
+        relative = path.relative_to(project_dir).with_suffix("")
+        if not all(part.isidentifier() for part in relative.parts):
+            continue
+        return f"{'.'.join(relative.parts)}:{match.group(1)}"
+    return "main:app"
 
 
 def _apply_target(requested: str | None, pairs: list[tuple[str, str]]) -> tuple[list[str], str, str]:
@@ -191,6 +399,13 @@ def _apply_target(requested: str | None, pairs: list[tuple[str, str]]) -> tuple[
     return names, cmds[names[0]], note
 
 
+def _provider_project_name(project_dir: Path) -> str:
+    """Return a conservative provider-compatible project/site name."""
+    normalized = re.sub(r"[^a-z0-9-]+", "-", project_dir.name.lower())
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+    return (normalized or "skyn3t-app")[:63].rstrip("-")
+
+
 def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None = None) -> DeployPlan:
     """Classify ``project_dir`` and return a keyless :class:`DeployPlan`. Never
     raises; a missing dir or unknown stack still yields a sane plan.
@@ -201,51 +416,91 @@ def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None 
     target keeps the default and is explained in ``notes``."""
     try:
         pdir = Path(project_dir)
+        if not pdir.is_dir() or _path_is_link_like(pdir):
+            return DeployPlan(
+                deployable=False,
+                kind="none",
+                notes="Deploy planning requires a real, non-linked project directory.",
+            )
         kind = _detect_kind(pdir, stack)
 
         if kind == "static":
             built = _has_build_script(pdir)
-            out = "dist" if built else "."
+            out = _static_output_dir(pdir, stack, built)
+            project_name = _provider_project_name(pdir)
+            vercel_name = "" if (pdir / ".vercel" / "project.json").is_file() else (
+                f" --name {project_name}"
+            )
+            netlify_site = "" if (pdir / ".netlify" / "state.json").is_file() else (
+                f" --site-name {project_name}"
+            )
             targets, command, note = _apply_target(target, [
-                ("cloudflare-pages", f"npx wrangler pages deploy {out}"),
-                ("netlify", f"npx netlify deploy --prod --dir {out}"),
-                ("vercel", "npx vercel deploy --prod"),
+                ("vercel", f"vercel deploy {out} --prod --yes{vercel_name}"),
+                (
+                    "netlify",
+                    f"netlify deploy --prod --json --no-build --dir {out}{netlify_site}",
+                ),
+                (
+                    "cloudflare-pages",
+                    f"wrangler pages deploy {out} --project-name {project_name}",
+                ),
             ])
             return DeployPlan(
                 deployable=True, kind="static", serves_url=True,
                 targets=targets, output_dir=out,
                 build_command="npm run build" if built else "",
                 command=command,
-                notes="A static bundle — deploy the built output to any static host." + note,
+                notes=(
+                    "A static bundle — Vercel is the zero-config default; Netlify "
+                    "creates or reuses a site, while Cloudflare Pages requires a "
+                    "matching account/project."
+                    + note
+                ),
             )
 
         if kind == "node_ssr":
+            fly_command = (
+                "flyctl deploy --remote-only --yes"
+                if (pdir / "fly.toml").is_file()
+                else "flyctl launch --yes"
+            )
             targets, command, note = _apply_target(target, [
-                ("vercel", "npx vercel deploy --prebuilt"),
-                ("railway", "railway up"),
-                ("fly", "fly launch --now"),
+                ("vercel", "vercel deploy --prod --yes"),
+                ("railway", "railway up --ci"),
+                ("fly", fly_command),
             ])
             return DeployPlan(
                 deployable=True, kind="node_ssr", serves_url=True,
-                targets=targets, output_dir=".", build_command="npm run build",
+                targets=targets, output_dir=".", build_command="",
                 command=command,
                 notes="A full-stack Node app — Vercel is zero-config; Railway/Fly work via a Node container." + note,
             )
 
         if kind == "container":
             norm = _normalize(stack)
-            dockerfile = _NODE_DOCKERFILE if norm in ("node_express", "express") else _PY_DOCKERFILE
+            dockerfile = (
+                _NODE_DOCKERFILE
+                if norm in ("node_express", "express")
+                else _PY_DOCKERFILE.replace(
+                    "__ASGI_TARGET__", _python_asgi_target(pdir)
+                )
+            )
+            fly_command = (
+                "flyctl deploy --remote-only --yes"
+                if (pdir / "fly.toml").is_file()
+                else "flyctl launch --dockerfile Dockerfile --yes"
+            )
             targets, command, note = _apply_target(target, [
-                ("fly", "fly launch --dockerfile Dockerfile --now"),
-                ("railway", "railway up"),
-                ("render", "render blueprint launch"),
+                ("fly", fly_command),
+                ("railway", "railway up --ci"),
             ])
             return DeployPlan(
                 deployable=True, kind="container", serves_url=True,
                 targets=targets, output_dir=".", build_command="",
                 command=command,
-                artifacts={"Dockerfile": dockerfile},
-                notes="An HTTP server — ships as a container. Set any keys as platform secrets." + note,
+                artifacts={"Dockerfile": dockerfile, ".dockerignore": _DOCKERIGNORE},
+                notes=("An HTTP server — ships as a container to Fly or Railway. "
+                       "Set any keys as platform secrets." + note),
             )
 
         if kind == "mobile":
@@ -291,8 +546,22 @@ def write_deploy_artifacts(plan: DeployPlan, project_dir: str | Path) -> list[st
     written: list[str] = []
     pdir = Path(project_dir)
     for name, content in (plan.artifacts or {}).items():
-        target = pdir / name
-        if target.exists():
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or _path_is_link_like(pdir):
+            continue
+        target = pdir / relative
+        cursor = pdir
+        unsafe_link = False
+        for part in relative.parts:
+            cursor = cursor / part
+            if _path_is_link_like(cursor):
+                unsafe_link = True
+                break
+        try:
+            target.resolve(strict=False).relative_to(pdir.resolve())
+        except (OSError, ValueError):
+            continue
+        if unsafe_link or target.exists():
             continue  # non-destructive: respect a hand-authored file
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +572,45 @@ def write_deploy_artifacts(plan: DeployPlan, project_dir: str | Path) -> list[st
     return written
 
 
+def apply_deploy_health_gate(
+    result: dict[str, Any],
+    deploy_check: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach live-health evidence and decide whether a deploy may become active.
+
+    A provider can successfully create a deployment that is unhealthy or cannot
+    yet be verified. Preserve that remote execution truth and URL, but make the
+    overall result unsuccessful so :func:`record_deployment` cannot advance the
+    manifest's active pointer.
+    """
+    gated = dict(result or {})
+    check = dict(deploy_check or {})
+    gated["deploy_check"] = check
+    if not (gated.get("ok") and gated.get("url")):
+        return gated
+    if check.get("ok") is True and not check.get("skipped"):
+        return gated
+
+    skipped = bool(check.get("skipped"))
+    issues = check.get("issues")
+    issue_text = "; ".join(
+        str(item) for item in issues if str(item).strip()
+    ) if isinstance(issues, list) else ""
+    detail = str(check.get("reason") or issue_text or "live URL did not pass health verification")
+    if issue_text and issue_text not in detail:
+        detail = f"{detail}: {issue_text}"
+    gated.update({
+        "provider_command_ok": True,
+        "provider_status": str(gated.get("status") or "succeeded"),
+        "ok": False,
+        "status": "deployed_unverified" if skipped else "deployed_unhealthy",
+        "activation_blocked": True,
+        "activation_blocker": "deploy_check_skipped" if skipped else "deploy_check_failed",
+        "error": f"provider deployed the URL, but activation was blocked: {detail}",
+    })
+    return gated
+
+
 def record_deployment(
     project_dir: str | Path,
     *,
@@ -310,38 +618,79 @@ def record_deployment(
     plan: DeployPlan,
     target: str,
 ) -> dict[str, Any]:
-    """Persist a successful live deployment onto the build manifest.
+    """Persist a deployment attempt and its execution evidence.
 
-    The record is append-only under ``extra.deployments`` and the latest URL is
-    mirrored to ``extra.live_url`` for dashboards that only need the current link.
-    Never raises; returns the record it attempted to persist.
+    Records are append-only under ``extra.deployments``. Only a successful result
+    with a URL advances the manifest's ``live_url`` pointer. Never raises; returns
+    the record it attempted to persist.
     """
-    url = str((result or {}).get("url") or "")
+    result = result or {}
+    url = str(result.get("url") or "")
+    ok = bool(result.get("ok"))
+    provider = str(result.get("provider") or result.get("target") or "")
+    raw_commands = result.get("commands")
+    commands = [dict(item) for item in raw_commands if isinstance(item, dict)] \
+        if isinstance(raw_commands, list) else []
     record = {
         "ts": time(),
-        "target": str(target or (result or {}).get("target") or ""),
-        "provider": str((result or {}).get("target") or ""),
+        "target": str(target or result.get("target") or ""),
+        "provider": provider,
         "url": url,
         "kind": plan.kind,
         "serves_url": bool(plan.serves_url),
+        "ok": ok,
+        "status": str(result.get("status") or ("succeeded" if ok else "failed")),
+        "commands": commands,
+        "remote_deploy_attempted": bool(result.get("remote_deploy_attempted")),
+        "remote_deploy_performed": result.get("remote_deploy_performed", False),
+        "remote_state": str(result.get("remote_state") or "not_started"),
+        "manifest_pointer_active": bool(ok and url),
+        "persisted": False,
     }
+    if "provider_command_ok" in result:
+        record["provider_command_ok"] = bool(result.get("provider_command_ok"))
+    if result.get("provider_status"):
+        record["provider_status"] = str(result.get("provider_status"))
+    if result.get("activation_blocked"):
+        record["activation_blocked"] = True
+        record["activation_blocker"] = str(result.get("activation_blocker") or "")
+    deploy_check = result.get("deploy_check")
+    if isinstance(deploy_check, dict):
+        record["deploy_check"] = dict(deploy_check)
+    if result.get("error"):
+        record["error"] = str(result.get("error"))
+    if result.get("output_tail"):
+        record["output_tail"] = str(result.get("output_tail"))[-500:]
     try:
         from skyn3t.studio.manifest import BuildManifest
 
         pdir = Path(project_dir)
         manifest = BuildManifest.load(pdir)
         if manifest is None:
+            record["persistence_error"] = "manifest not found"
             return record
         deployments = manifest.extra.get("deployments")
         if not isinstance(deployments, list):
             deployments = []
+        if ok and url:
+            for previous in deployments:
+                if isinstance(previous, dict):
+                    previous["manifest_pointer_active"] = False
         deployments.append(record)
         manifest.extra["deployments"] = deployments[-20:]
-        if url:
+        if isinstance(deploy_check, dict):
+            # The latest attempt's evidence is useful even when activation was
+            # blocked. ``deploy_check`` itself describes only the active URL.
+            manifest.extra["latest_deploy_check"] = dict(deploy_check)
+        if ok and url:
             manifest.extra["live_url"] = url
+            if isinstance(deploy_check, dict):
+                manifest.extra["deploy_check"] = dict(deploy_check)
+        record["persisted"] = True
         manifest.save(pdir)
-    except Exception:  # noqa: BLE001 - recording must not make deploy fail
-        pass
+    except Exception as exc:  # noqa: BLE001 - recording must not make deploy fail
+        record["persisted"] = False
+        record["persistence_error"] = str(exc)[:160]
     return record
 
 
@@ -351,11 +700,13 @@ def rollback_deployment(
     reason: str = "",
     deployment_index: int | None = None,
 ) -> dict[str, Any]:
-    """Mark the current deployment as rolled back and restore the previous URL.
+    """Move the manifest's live URL pointer to an earlier deployment.
 
-    This records intent only; provider-specific rollback commands stay outside
-    this offline manifest layer. Never raises, and returns an ``ok`` record so
-    callers can expose the result directly.
+    This function never invokes a provider and never claims that remote traffic,
+    aliases, releases, or infrastructure changed. ``ok`` reports only whether the
+    local manifest pointer was updated; ``remote_rollback_performed`` is always
+    false. Provider rollback requires provider-specific immutable deployment IDs,
+    which legacy deployment records do not contain.
     """
     ts = time()
     record: dict[str, Any] = {
@@ -364,6 +715,10 @@ def rollback_deployment(
         "reason": str(reason or ""),
         "from_url": "",
         "to_url": "",
+        "operation": "manifest_pointer",
+        "status": "not_started",
+        "persisted": False,
+        "remote_rollback_performed": False,
     }
     try:
         from skyn3t.studio.manifest import BuildManifest
@@ -380,16 +735,37 @@ def rollback_deployment(
 
         candidates = [
             idx for idx, dep in enumerate(deployments)
-            if isinstance(dep, dict) and dep.get("url") and not dep.get("rolled_back")
+            if (
+                isinstance(dep, dict)
+                and dep.get("url")
+                and dep.get("ok", True)
+                and not dep.get("manifest_pointer_rolled_back")
+            )
         ]
         if not candidates:
             record["error"] = "no active deployment found"
             return record
-        current_idx = (
-            deployment_index
-            if deployment_index is not None and 0 <= deployment_index < len(deployments)
-            else candidates[-1]
+        if deployment_index is not None and not 0 <= deployment_index < len(deployments):
+            record["status"] = "invalid_selection"
+            record["error"] = "deployment_index is out of range"
+            return record
+
+        live_url = str(manifest.extra.get("live_url") or "")
+        active = [
+            idx for idx in candidates
+            if bool(deployments[idx].get("manifest_pointer_active"))
+        ]
+        matching_live = [
+            idx for idx in candidates
+            if str(deployments[idx].get("url") or "") == live_url
+        ]
+        current_idx = active[-1] if active else (
+            matching_live[-1] if matching_live else candidates[-1]
         )
+        if deployment_index is not None and deployment_index != current_idx:
+            record["status"] = "invalid_selection"
+            record["error"] = "selected deployment is not the active manifest pointer"
+            return record
         current = deployments[current_idx]
         if not isinstance(current, dict) or not current.get("url"):
             record["error"] = "selected deployment has no URL"
@@ -405,18 +781,24 @@ def rollback_deployment(
             record["error"] = "no previous live deployment found"
             return record
 
-        current["rolled_back"] = True
-        current["rolled_back_at"] = ts
+        current["manifest_pointer_active"] = False
+        current["manifest_pointer_rolled_back"] = True
+        current["manifest_pointer_rolled_back_at"] = ts
         if reason:
-            current["rollback_reason"] = str(reason)
+            current["manifest_pointer_rollback_reason"] = str(reason)
+        previous["manifest_pointer_active"] = True
 
         record.update({
             "ok": True,
+            "status": "pointer_updated",
+            "persisted": True,
             "from_index": current_idx,
             "to_index": previous_idx,
             "from_url": str(current.get("url") or ""),
             "to_url": str(previous.get("url") or ""),
             "target": str(previous.get("target") or ""),
+            "provider": str(previous.get("provider") or ""),
+            "note": "Local manifest pointer updated; no provider rollback was performed.",
         })
         rollbacks = manifest.extra.get("deployment_rollbacks")
         if not isinstance(rollbacks, list):
@@ -427,5 +809,10 @@ def rollback_deployment(
         manifest.extra["live_url"] = record["to_url"]
         manifest.save(pdir)
     except Exception as exc:  # noqa: BLE001 - rollback records must not crash callers
-        record["error"] = str(exc)[:160]
+        record.update({
+            "ok": False,
+            "status": "persistence_failed",
+            "persisted": False,
+            "error": str(exc)[:160],
+        })
     return record

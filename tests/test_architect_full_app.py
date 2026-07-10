@@ -47,7 +47,7 @@ async def test_full_app_truncated_plan_gets_brief_derived_astro_contract() -> No
     ))
 
     paths = {item["path"] for item in result.output["plan"]["files"]}
-    assert llm.calls[0]["max_tokens"] == 12_000
+    assert llm.calls[0]["max_tokens"] is None
     assert {
         "src/pages/lessons.astro",
         "src/pages/drills.astro",
@@ -143,6 +143,82 @@ async def test_full_app_recovery_does_not_duplicate_astro_index_routes() -> None
 
 
 @pytest.mark.asyncio
+async def test_full_app_canonicalizes_aliases_and_dedupes_recovery_files() -> None:
+    llm = _ArchitectLLM(json.dumps({
+        "stack": "astro",
+        "summary": "Malformed config paths",
+        "files": [
+            {"path": "package.", "purpose": "package alias"},
+            {"path": "package.json", "purpose": "duplicate package"},
+            {"path": "tsconfig.", "purpose": "TypeScript config alias"},
+            {"path": "tsconfig.json", "purpose": "duplicate TypeScript config"},
+            {"path": "src/pages/index.astro", "purpose": "home"},
+            {"path": "src/content/notes.", "purpose": "ambiguous trailing dot"},
+        ],
+    }))
+    agent = ArchitectAgent(event_bus=EventBus(), llm=llm)  # type: ignore[arg-type]
+
+    result = await agent.execute(TaskRequest(
+        type="architecture",
+        payload={
+            "brief": "A complete Astro golf site with lesson paths",
+            "stack": "astro",
+            "extra": {"full_app_contract": True},
+        },
+    ))
+
+    files = result.output["plan"]["files"]
+    paths = [item["path"] for item in files]
+    assert paths.count("package.json") == 1
+    assert paths.count("tsconfig.json") == 1
+    assert "package." not in paths
+    assert "tsconfig." not in paths
+    assert "src/content/notes." not in paths
+    assert len(paths) == len({path.casefold() for path in paths})
+    assert result.output["plan"]["build_order"] == paths
+
+
+@pytest.mark.asyncio
+async def test_unsafe_model_routes_cannot_shadow_full_app_recovery() -> None:
+    unsafe_routes = [
+        "/src/pages/lessons.astro",
+        "../src/pages/drills.astro",
+        r"C:\src\pages\equipment.astro",
+        r"\\server\share\src\pages\resources.astro",
+        "src/pages/book.astro:payload",
+    ]
+    llm = _ArchitectLLM(json.dumps({
+        "stack": "astro",
+        "summary": "Unsafe routes",
+        "files": [
+            {"path": path, "purpose": "unsafe route"}
+            for path in unsafe_routes
+        ] + [
+            {"path": "src//pages/./index.astro", "purpose": "home"},
+        ],
+    }))
+    agent = ArchitectAgent(event_bus=EventBus(), llm=llm)  # type: ignore[arg-type]
+
+    result = await agent.execute(TaskRequest(
+        type="architecture",
+        payload={
+            "brief": (
+                "A golf site with lesson paths, drills, equipment, tutorial "
+                "resources, and tee-time booking"
+            ),
+            "stack": "astro",
+            "extra": {"full_app_contract": True},
+        },
+    ))
+
+    paths = [item["path"] for item in result.output["plan"]["files"]]
+    assert "src/pages/index.astro" in paths
+    for route in ("lessons", "drills", "equipment", "resources", "book"):
+        assert paths.count(f"src/pages/{route}.astro") == 1
+    assert not set(unsafe_routes) & set(paths)
+
+
+@pytest.mark.asyncio
 async def test_standard_architect_accepts_plan_wrapper_and_uses_larger_floor() -> None:
     llm = _ArchitectLLM(json.dumps({
         "plan": {
@@ -161,3 +237,51 @@ async def test_standard_architect_accepts_plan_wrapper_and_uses_larger_floor() -
     assert llm.calls[0]["max_tokens"] == 4_096
     assert result.output["plan"]["summary"] == "wrapped"
     assert result.output["plan"]["files"][0]["path"] == "src/pages/index.astro"
+
+
+@pytest.mark.asyncio
+async def test_standard_plan_canonicalizes_only_known_trailing_dot_aliases() -> None:
+    llm = _ArchitectLLM(json.dumps({
+        "stack": "astro",
+        "summary": "config aliases",
+        "files": [
+            {"path": "./package.", "purpose": "package alias"},
+            {"path": "PACKAGE.JSON", "purpose": "case-insensitive duplicate"},
+            {"path": "tsconfig.", "purpose": "TypeScript config alias"},
+            {"path": "jsconfig.", "purpose": "JavaScript config alias"},
+            {"path": "vite.config.", "purpose": "ambiguous extension"},
+            {"path": "/src/pages/absolute.astro", "purpose": "absolute"},
+            {"path": "../outside.js", "purpose": "traversal"},
+            {"path": r"C:\src\pages\drive.astro", "purpose": "drive"},
+            {"path": r"\\server\share\unc.astro", "purpose": "UNC"},
+            {"path": "src//pages//about.astro", "purpose": "repeated separators"},
+            {"path": "src/pages/./contact.astro", "purpose": "dot segment"},
+            {"path": "src./pages/bad.astro", "purpose": "trailing dot segment"},
+            {"path": "src /pages/bad.astro", "purpose": "trailing space segment"},
+            {"path": "src/pages/bad.astro ", "purpose": "trailing space"},
+            {"path": "src/pages/control\x00.astro", "purpose": "control"},
+            {"path": ["src", "pages", "list.astro"], "purpose": "list"},
+            {"path": {"file": "src/pages/object.astro"}, "purpose": "object"},
+            {"path": 123, "purpose": "number"},
+            {"path": "src/pages/index.astro", "purpose": "home"},
+        ],
+    }))
+    agent = ArchitectAgent(event_bus=EventBus(), llm=llm)  # type: ignore[arg-type]
+
+    result = await agent.execute(TaskRequest(
+        type="architecture",
+        payload={"brief": "Astro brochure", "stack": "astro"},
+    ))
+
+    files = result.output["plan"]["files"]
+    paths = [item["path"] for item in files]
+    assert paths == [
+        "package.json",
+        "tsconfig.json",
+        "jsconfig.json",
+        "src/pages/about.astro",
+        "src/pages/contact.astro",
+        "src/pages/index.astro",
+    ]
+    assert files[0]["purpose"] == "package alias"
+    assert result.output["plan"]["build_order"] == paths

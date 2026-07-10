@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
@@ -11,6 +11,14 @@ import {
   SignalGrid,
   verdictTone,
 } from "../components/ui.jsx";
+import {
+  activeDeploymentIndex,
+  canMoveDeploymentPointerBack,
+  chooseDeployTarget,
+  deploymentHealthLabel,
+  safeDeploymentUrl,
+} from "../deployWorkflow.js";
+import { describeCostTruth } from "../costTruth.js";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -469,47 +477,11 @@ function ServeCell({ slug, served, busy, err, canServe = true, serveReason = "",
   );
 }
 
-function ShipCell({ project }) {
-  const qc = useQueryClient();
-  const [plan, setPlan] = useState(null);
-  const [err, setErr] = useState(null);
-  const slug = project.slug;
-  const isComplete = project.is_complete !== false;
+function ShipCell({ project, open, onToggle }) {
   const deployments = Array.isArray(project.deployments) ? project.deployments : [];
   const latest = deployments.length ? deployments[deployments.length - 1] : null;
-  const liveUrl = project.live_url || latest?.url || "";
-  const manifestPlan = project.deploy_plan?.deployable ? project.deploy_plan : null;
-  const visiblePlan = plan?.plan || manifestPlan;
-  const defaultTarget = visiblePlan?.targets?.[0] || "";
-
-  const deploy = useMutation({
-    mutationFn: () => apiPost("/studio/deploy", { slug, target: defaultTarget }),
-    onSuccess: (result) => {
-      setPlan(result);
-      qc.invalidateQueries({ queryKey: ["projects"] });
-    },
-    onError: (e) => setErr(String(e.message || e)),
-  });
-  const deployCheck = deploy.data?.deploy_check || project.deploy_check || null;
-  const deployCheckLabel = deployCheck?.ok
-    ? "verified"
-    : deployCheck?.skipped
-      ? "deploy check skipped"
-      : Array.isArray(deployCheck?.issues) && deployCheck.issues.length
-        ? "deploy issues"
-        : "";
-
-  async function loadPlan() {
-    setErr(null);
-    try {
-      const result = await apiFetch(`/studio/deploy/plan?slug=${encodeURIComponent(slug)}`);
-      setPlan(result);
-    } catch (e) {
-      setErr(String(e.message || e));
-    }
-  }
-
-  if (!isComplete) {
+  const liveUrl = safeDeploymentUrl(project.live_url || latest?.url || "");
+  if (project.is_complete === false) {
     const label = project.delivery_state === "building" ? "Building" : "Not delivered";
     return (
       <span
@@ -534,58 +506,269 @@ function ShipCell({ project }) {
           live ↗
         </a>
       ) : null}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={loadPlan}
-          className="btn-ghost text-plasma/80 hover:text-plasma"
-          title="View deploy plan"
-        >
-          Plan
-        </button>
-        {visiblePlan?.serves_url ? (
-          <button
-            onClick={() => deploy.mutate()}
-            disabled={deploy.isPending || !defaultTarget}
-            className="btn-ghost text-ember/80 hover:text-ember disabled:opacity-50"
-            title="Deploy using the first available target"
-          >
-            {deploy.isPending ? "…" : "Ship"}
-          </button>
-        ) : null}
+      {latest ? (
+        <span className={`font-mono text-[10px] ${latest.ok ? "text-plasma" : "text-ember"}`}>
+          {latest.provider || latest.target || "deploy"} · {latest.status || (latest.ok ? "succeeded" : "failed")}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`btn-ghost w-fit ${open ? "text-ember" : "text-plasma/80"}`}
+        aria-expanded={open}
+        aria-controls={`deploy-${project.slug}`}
+      >
+        {open ? "Close deploy" : "Deploy"}
+      </button>
+    </div>
+  );
+}
+
+function DeployInline({ project, onClose }) {
+  const qc = useQueryClient();
+  const slug = project.slug;
+  const [target, setTarget] = useState("");
+  const [confirmDeploy, setConfirmDeploy] = useState(false);
+  const [confirmRollback, setConfirmRollback] = useState(false);
+
+  const planQuery = useQuery({
+    queryKey: ["deploy-plan", slug, target],
+    queryFn: () => {
+      const params = new URLSearchParams({ slug });
+      if (target) params.set("target", target);
+      return apiFetch(`/studio/deploy/plan?${params.toString()}`);
+    },
+    retry: 0,
+  });
+  const options = Array.isArray(planQuery.data?.provider_options)
+    ? planQuery.data.provider_options
+    : [];
+  useEffect(() => {
+    const next = chooseDeployTarget(options, target);
+    if (next && next !== target) setTarget(next);
+  }, [options, target]);
+
+  const selected =
+    planQuery.data?.preflight?.target === target
+      ? planQuery.data.preflight
+      : options.find((item) => item.target === target) || null;
+  const deployments = Array.isArray(planQuery.data?.deployments)
+    ? planQuery.data.deployments
+    : Array.isArray(project.deployments)
+      ? project.deployments
+      : [];
+  const currentLiveUrl = planQuery.data?.live_url || project.live_url || "";
+  const activeIndex = activeDeploymentIndex(deployments, currentLiveUrl);
+  const rollbackReady = canMoveDeploymentPointerBack(deployments, currentLiveUrl);
+
+  const refreshEvidence = async () => {
+    await Promise.all([
+      planQuery.refetch(),
+      qc.invalidateQueries({ queryKey: ["projects"] }),
+    ]);
+  };
+  const deploy = useMutation({
+    mutationFn: () => apiPost("/studio/deploy", { slug, target }),
+    onSuccess: async () => {
+      setConfirmDeploy(false);
+      await refreshEvidence();
+    },
+  });
+  const rollback = useMutation({
+    mutationFn: () => apiPost("/studio/deploy/rollback", {
+      slug,
+      deployment_index: activeIndex,
+      reason: "dashboard local-pointer rollback",
+    }),
+    onSuccess: async () => {
+      setConfirmRollback(false);
+      await refreshEvidence();
+    },
+  });
+
+  const result = deploy.data?.result || null;
+  const liveUrl = safeDeploymentUrl(result?.url || rollback.data?.to_url || currentLiveUrl);
+  const health = deploy.data?.deploy_check || planQuery.data?.deploy_check || project.deploy_check || {};
+  const healthLabel = deploymentHealthLabel(health);
+  const blockers = Array.isArray(selected?.blockers) ? selected.blockers : [];
+  const latestEvidence = deployments.length ? deployments[deployments.length - 1] : null;
+  const evidenceStatus = result?.status || latestEvidence?.status || "not deployed";
+  const evidenceOk = result ? Boolean(result.ok) : Boolean(latestEvidence?.ok);
+  const healthDetail = health.reason ||
+    (Array.isArray(health.issues) && health.issues.length ? health.issues.join(" · ") : "");
+
+  return (
+    <div id={`deploy-${slug}`} className="border-y border-hairline bg-void/25 px-4 py-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="eyebrow text-[9px]">Production deploy · {slug}</div>
+        </div>
+        <button type="button" onClick={onClose} className="btn-ghost">Close</button>
       </div>
-      {visiblePlan ? (
-        <div className="font-mono text-[10px] leading-snug text-ash/70">
-          <div className="truncate" title={visiblePlan.command || visiblePlan.notes}>
-            {visiblePlan.kind || "deploy"} · {defaultTarget || "no target"}
+
+      {planQuery.isLoading ? (
+        <div className="mt-3 font-mono text-[11px] text-ash">Loading deploy preflight...</div>
+      ) : planQuery.isError ? (
+        <div className="mt-3 font-mono text-[11px] text-ember">
+          {String(planQuery.error?.message || planQuery.error)}
+        </div>
+      ) : (
+        <>
+          <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(12rem,0.7fr)_minmax(20rem,1.3fr)]">
+            <div className="space-y-2">
+              <label className="block font-mono text-[10px] text-ash" htmlFor={`provider-${slug}`}>
+                Provider
+              </label>
+              <select
+                id={`provider-${slug}`}
+                aria-label={`Deploy provider for ${slug}`}
+                value={target}
+                onChange={(event) => {
+                  setTarget(event.target.value);
+                  setConfirmDeploy(false);
+                }}
+                className="field"
+              >
+                {options.map((item) => (
+                  <option key={item.target} value={item.target}>
+                    {item.target}{item.ready ? " · ready" : " · setup needed"}
+                  </option>
+                ))}
+              </select>
+              {selected?.command ? (
+                <div className="space-y-1 break-all font-mono text-[10px] text-ash/70">
+                  {selected.build_command ? (
+                    <div>
+                      Build command ({selected.build_command_execution || "verified earlier; not rerun during deploy"}): {selected.build_command}
+                    </div>
+                  ) : null}
+                  <div>Deploy command: {selected.command}</div>
+                </div>
+              ) : null}
+              <Link to="/settings#deploy" className="font-mono text-[10px] text-plasma underline">
+                Deploy settings
+              </Link>
+            </div>
+
+            <div className="grid gap-1 sm:grid-cols-2">
+              {[
+                ["release", selected?.quality_gate?.passed, selected?.quality_gate?.passed ? "completed · GO · proof passed" : "release gate blocked"],
+                ["remote gate", selected?.remote_allowed, selected?.remote_allowed ? "enabled" : "disabled"],
+                ["credential", selected?.configured, selected?.configured ? "configured" : "missing"],
+                ["provider CLI", selected?.cli_available, selected?.cli_available ? `${selected?.cli} installed` : `${selected?.cli || "provider"} missing`],
+              ].map(([label, ok, value]) => (
+                <div key={label} className="flex items-center justify-between border-b border-hairline/60 py-1.5 font-mono text-[10px]">
+                  <span className="text-ash">{label}</span>
+                  <span className={ok ? "text-plasma" : "text-ember"}>{value}</span>
+                </div>
+              ))}
+            </div>
           </div>
-          {visiblePlan.command ? (
-            <div className="truncate text-ash/50" title={visiblePlan.command}>
-              {visiblePlan.command}
+
+          {blockers.length ? (
+            <div className="mt-3 border-l-2 border-ember pl-3 font-mono text-[10px] text-ember">
+              {blockers.join(" · ")}
             </div>
           ) : null}
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            {!confirmDeploy ? (
+              <button
+                type="button"
+                onClick={() => setConfirmDeploy(true)}
+                disabled={!selected?.ready || deploy.isPending}
+                className="btn-ember disabled:opacity-40"
+              >
+                Review deploy
+              </button>
+            ) : (
+              <>
+                <span className="font-mono text-[11px] text-ember">
+                  Deploy {slug} to {target} now?
+                </span>
+                <button
+                  type="button"
+                  onClick={() => deploy.mutate()}
+                  disabled={deploy.isPending}
+                  className="btn-ember disabled:opacity-40"
+                >
+                  {deploy.isPending ? "Deploying..." : `Deploy to ${target}`}
+                </button>
+                <button type="button" onClick={() => setConfirmDeploy(false)} className="btn-ghost">
+                  Cancel
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {deploy.isError ? (
+        <div className="mt-3 font-mono text-[11px] text-ember">
+          {String(deploy.error?.message || deploy.error)}
         </div>
       ) : null}
-      {deployCheckLabel ? (
-        <span
-          className={
-            deployCheck?.ok
-              ? "font-mono text-[10px] text-mint"
-              : "font-mono text-[10px] text-ember"
-          }
-          title={deployCheck?.reason || deployCheckLabel}
-        >
-          {deployCheckLabel}
-        </span>
+      {result?.error ? (
+        <div className="mt-2 font-mono text-[10px] text-ember">{result.error}</div>
       ) : null}
-      {deploy.data?.result?.error ? (
-        <span className="truncate font-mono text-[10px] text-ember" title={deploy.data.result.error}>
-          {deploy.data.result.error}
-        </span>
-      ) : err ? (
-        <span className="truncate font-mono text-[10px] text-ember" title={err}>
-          {err}
-        </span>
+      {result || latestEvidence || liveUrl ? (
+        <div className="mt-4 grid gap-2 border-t border-hairline pt-3 font-mono text-[10px] sm:grid-cols-4">
+          <span>status <b className={evidenceOk ? "text-plasma" : "text-ember"}>{evidenceStatus}</b></span>
+          <span>remote <b className="text-bone">{String(result?.remote_state || latestEvidence?.remote_state || "unknown")}</b></span>
+          <span title={healthDetail}>health <b className={health.ok ? "text-plasma" : healthLabel === "unhealthy" ? "text-ember" : "text-ash"}>{healthLabel}</b></span>
+          {liveUrl ? <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="truncate text-plasma underline">live URL</a> : <span>live URL unavailable</span>}
+        </div>
       ) : null}
+
+      <div className="mt-4 border-t border-hairline pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="eyebrow text-[9px]">Deployment history</div>
+            <div className="mt-1 font-mono text-[10px] text-ash/70">
+              Rollback below changes only SkyN3t's local live-URL pointer. Provider traffic is not changed.
+            </div>
+          </div>
+          {!confirmRollback ? (
+            <button
+              type="button"
+              onClick={() => setConfirmRollback(true)}
+              disabled={!rollbackReady || rollback.isPending}
+              className="btn-ghost disabled:opacity-40"
+              title={rollbackReady ? "Move local pointer to the previous successful URL" : "Two successful deployments are required"}
+            >
+              Move pointer back
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] text-ember">Local pointer only. Continue?</span>
+              <button type="button" onClick={() => rollback.mutate()} className="btn-ember">Confirm</button>
+              <button type="button" onClick={() => setConfirmRollback(false)} className="btn-ghost">Cancel</button>
+            </div>
+          )}
+        </div>
+        {rollback.isError ? (
+          <div className="mt-2 font-mono text-[10px] text-ember">{String(rollback.error?.message || rollback.error)}</div>
+        ) : rollback.data?.error ? (
+          <div className="mt-2 font-mono text-[10px] text-ember">{rollback.data.error}</div>
+        ) : rollback.data?.note ? (
+          <div className="mt-2 font-mono text-[10px] text-plasma">{rollback.data.note}</div>
+        ) : null}
+        <div className="mt-2 max-h-40 overflow-auto border-t border-hairline/60">
+          {deployments.length ? deployments.slice().reverse().map((item, reverseIndex) => {
+            const index = deployments.length - reverseIndex - 1;
+            return (
+              <div key={`${item.ts || index}-${index}`} className="grid gap-1 border-b border-hairline/50 py-1.5 font-mono text-[10px] sm:grid-cols-[8rem_7rem_minmax(10rem,1fr)_8rem]">
+                <span className="text-ash">{fmtDate(item.ts ? item.ts * 1000 : null)}</span>
+                <span className={item.ok ? "text-plasma" : "text-ember"}>{item.provider || item.target || "unknown"} · {item.status || "unknown"}</span>
+                {safeDeploymentUrl(item.url) ? <a href={safeDeploymentUrl(item.url)} target="_blank" rel="noopener noreferrer" className="truncate text-bone underline">{item.url}</a> : <span className="text-ash/60">no URL</span>}
+                <span className="text-ash/70">{item.manifest_pointer_active ? "active pointer" : item.remote_state || "not active"}</span>
+              </div>
+            );
+          }) : (
+            <div className="py-2 font-mono text-[10px] text-ash/60">No deployment attempts recorded.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -595,6 +778,7 @@ export default function Projects({ stream }) {
   const [confirmSlug, setConfirmSlug] = useState(null);
   const [improveSlug, setImproveSlug] = useState(null);
   const [promptsSlug, setPromptsSlug] = useState(null);
+  const [deploySlug, setDeploySlug] = useState(null);
   const [busy, setBusy] = useState({}); // slug -> "serving" | "stopping"
   const [serveErr, setServeErr] = useState({}); // slug -> message
   const [sort, setSort] = useState({ key: "updated_at", dir: "desc" });
@@ -745,7 +929,7 @@ export default function Projects({ stream }) {
                   <SortHeader label="Status" sortKey="status" sort={sort} setSort={setSort} />
                   <SortHeader label="Score" sortKey="score" sort={sort} setSort={setSort} />
                   <th className="px-4 py-2 font-normal">AI</th>
-                  <SortHeader label="Cost" sortKey="cost_usd" sort={sort} setSort={setSort} />
+                  <SortHeader label="LLM cost" sortKey="cost_usd" sort={sort} setSort={setSort} />
                   <SortHeader label="Size" sortKey="size_bytes" sort={sort} setSort={setSort} />
                   <SortHeader label="Updated" sortKey="updated_at" sort={sort} setSort={setSort} />
                   <th className="px-4 py-2 font-normal">Serve</th>
@@ -759,7 +943,9 @@ export default function Projects({ stream }) {
                   const isConfirming = confirmSlug === p.slug;
                   const isImproving = improveSlug === p.slug;
                   const isShowingPrompts = promptsSlug === p.slug;
+                  const isDeploying = deploySlug === p.slug;
                   const ai = aiEvidence(p);
+                  const costTruth = describeCostTruth(p);
                   return (
                     <React.Fragment key={p.slug}>
                       <tr>
@@ -792,9 +978,32 @@ export default function Projects({ stream }) {
                           </div>
                         </td>
                         <td className="px-4 py-2 font-mono text-xs">
-                          <span className={p.wasted_usd ? "text-ember" : "text-ash"}>
+                          <span
+                            className={p.wasted_usd ? "text-ember" : "text-ash"}
+                            title={costTruth.title}
+                          >
                             {fmtCost(p.cost_usd)}
                           </span>
+                          {costTruth.label ? (
+                            <span
+                              className={
+                                "ml-1 text-[10px] " +
+                                (costTruth.classification === "provider_confirmed"
+                                  ? "text-plasma"
+                                  : costTruth.classification === "estimate"
+                                    ? "text-bone/70"
+                                    : "text-ember/70")
+                              }
+                              title={costTruth.title}
+                            >
+                              {costTruth.label}
+                            </span>
+                          ) : null}
+                          {costTruth.externalUnknown ? (
+                            <div className="text-[10px] text-ember/70" title={costTruth.title}>
+                              + assets unknown
+                            </div>
+                          ) : null}
                           {p.wasted_usd ? (
                             <span
                               className="ml-1 text-[10px] text-ember/70"
@@ -829,7 +1038,11 @@ export default function Projects({ stream }) {
                           />
                         </td>
                         <td className="px-4 py-2">
-                          <ShipCell project={p} />
+                          <ShipCell
+                            project={p}
+                            open={isDeploying}
+                            onToggle={() => setDeploySlug(isDeploying ? null : p.slug)}
+                          />
                         </td>
                         <td className="px-4 py-2">
                           <div className="flex items-center gap-3">
@@ -923,6 +1136,13 @@ export default function Projects({ stream }) {
                           )}
                         </td>
                       </tr>
+                      {isDeploying ? (
+                        <tr>
+                          <td colSpan={12} className="p-0">
+                            <DeployInline project={p} onClose={() => setDeploySlug(null)} />
+                          </td>
+                        </tr>
+                      ) : null}
                       {isImproving ? (
                         <tr>
                           <td colSpan={12} className="p-0">

@@ -130,6 +130,28 @@ def test_agentic_loop_writes_validated_file_batch(tmp_path, monkeypatch):
     assert (tmp_path / "pyproject.toml").exists()
 
 
+def test_agentic_batch_has_no_arbitrary_file_count_cap(tmp_path, monkeypatch):
+    files = [
+        {"path": f"src/module_{index}.py", "content": f"value = {index}\n"}
+        for index in range(20)
+    ]
+    turns = [
+        _tool_turn("write_files", {"files": files}),
+        _tool_turn("finish", {}, "t2"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    result = asyncio.run(
+        _client()._openrouter_agentic(
+            "build", str(tmp_path), "m", stack="fastapi", verify_on_stop=False
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["files_written"] == 20
+    assert all((tmp_path / item["path"]).is_file() for item in files)
+
+
 def test_agentic_batch_rejects_all_files_if_one_path_escapes(tmp_path, monkeypatch):
     turns = [
         _tool_turn("write_files", {"files": [
@@ -341,6 +363,128 @@ def test_changed_rewrite_counts_as_real_progress(tmp_path, monkeypatch):
     assert (tmp_path / "changed.py").read_text() == "value = 2\n"
 
 
+def test_agentic_aborts_cyclic_rewrites_that_never_advance_planned_coverage(
+    tmp_path, monkeypatch
+):
+    turns = [
+        _tool_turn(
+            "write_file",
+            {"path": "src/a.py", "content": f"value = {index}\n"},
+            f"t{index}",
+        )
+        for index in range(1, 14)
+    ]
+    turns.append(_tool_turn("finish", {}, "finish"))
+    fake = _FakeClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    result = asyncio.run(
+        _client()._openrouter_agentic(
+            "build every planned file",
+            str(tmp_path),
+            "m",
+            stack="fastapi",
+            allowed_paths=["src/a.py", "src/b.py", "src/c.py"],
+            planned_paths=["src/a.py", "src/b.py", "src/c.py"],
+            enforce_antistub=False,
+            verify_on_stop=False,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["completed"] is False
+    assert result["files_written"] == 13
+    assert "coverage progress" in result["error"]
+    assert fake.i == 13
+    assert (tmp_path / "src" / "a.py").read_text() == "value = 13\n"
+    assert not (tmp_path / "src" / "b.py").exists()
+    assert not (tmp_path / "src" / "c.py").exists()
+
+
+def test_coverage_window_shrinks_with_files_remaining(tmp_path, monkeypatch):
+    planned = [f"src/file_{index}.py" for index in range(20)]
+    for rel in planned[:-1]:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("value = 0\n", encoding="utf-8")
+    turns = [
+        _tool_turn(
+            "write_file",
+            {"path": planned[0], "content": f"value = {index}\n"},
+            f"rewrite-{index}",
+        )
+        for index in range(1, 13)
+    ]
+    fake = _FakeClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    result = asyncio.run(
+        _client()._openrouter_agentic(
+            "finish the one remaining planned file",
+            str(tmp_path),
+            "m",
+            stack="fastapi",
+            allowed_paths=planned,
+            planned_paths=planned,
+            enforce_antistub=False,
+            verify_on_stop=False,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["files_written"] == 12
+    assert "coverage progress" in result["error"]
+    assert fake.i == 12
+    assert not (tmp_path / planned[-1]).exists()
+
+
+def test_planned_coverage_progress_resets_stagnation_warning(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_file", {"path": "src/a.py", "content": "value = 1\n"}, "a1"),
+        *[
+            _tool_turn(
+                "write_file",
+                {"path": "src/a.py", "content": f"value = {index}\n"},
+                f"a{index}",
+            )
+            for index in range(2, 8)
+        ],
+        _tool_turn("write_file", {"path": "src/b.py", "content": "value = 1\n"}, "b1"),
+        *[
+            _tool_turn(
+                "write_file",
+                {"path": "src/a.py", "content": f"value = {index}\n"},
+                f"a{index}",
+            )
+            for index in range(8, 14)
+        ],
+        _tool_turn("write_file", {"path": "src/c.py", "content": "value = 1\n"}, "c1"),
+        _tool_turn("finish", {}, "finish"),
+    ]
+    fake = _FakeClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    result = asyncio.run(
+        _client()._openrouter_agentic(
+            "build every planned file",
+            str(tmp_path),
+            "m",
+            stack="fastapi",
+            allowed_paths=["src/a.py", "src/b.py", "src/c.py"],
+            planned_paths=["src/a.py", "src/b.py", "src/c.py"],
+            enforce_antistub=False,
+            verify_on_stop=False,
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["completed"] is True
+    assert result["files_written"] == 15
+    assert result["error"] == ""
+    assert fake.i == len(turns)
+    assert all((tmp_path / "src" / name).is_file() for name in ("a.py", "b.py", "c.py"))
+
+
 def test_agentic_loop_records_effective_model(tmp_path, monkeypatch):
     turns = [
         _tool_turn("write_file", {"path": "app/page.jsx", "content": "export default function P(){return null}"}),
@@ -383,6 +527,37 @@ def test_agentic_loop_stall_falls_over_to_configured_fast_model(tmp_path, monkey
     assert (tmp_path / "server.py").exists()
 
 
+def test_agentic_idle_stall_records_one_failed_attempt(tmp_path, monkeypatch):
+    delayed = _DelayedClient(
+        [{"choices": [{"message": {"content": "too late"}}]}],
+        delay=0.05,
+    )
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: delayed)
+    client = LLMClient(Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        free_only=False,
+        llm_max_retries=0,
+        llm_fallback_enabled=False,
+        agentic_verify_on_stop=False,
+    ))
+    client.settings.agentic_idle_timeout = 0.01
+
+    result = asyncio.run(
+        client._openrouter_agentic(
+            "build", str(tmp_path), "primary/slow", stack="fastapi"
+        )
+    )
+
+    failures = [
+        call for call in client.budget.calls if call.status.startswith("failed_")
+    ]
+    assert result["ok"] is False
+    assert result["turn_timeouts"] == 1
+    assert len(failures) == 1
+    assert failures[0].estimated_exposure_usd > 0
+
+
 def test_agentic_loop_records_openrouter_usage_for_budget(tmp_path, monkeypatch):
     turns = [
         {
@@ -418,6 +593,65 @@ def test_agentic_loop_records_openrouter_usage_for_budget(tmp_path, monkeypatch)
     assert client.budget.spent_build > 0.0
 
 
+def test_agentic_malformed_paid_response_keeps_provider_cost(tmp_path, monkeypatch):
+    turns = [{
+        "id": "gen-paid-malformed",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": "bad",
+            "completion_tokens": 3,
+            "cost": 0.37,
+        },
+    }]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    client = LLMClient(Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        free_only=False,
+    ))
+
+    result = asyncio.run(
+        client._openrouter_agentic(
+            "build", str(tmp_path), "provider/paid", stack="fastapi"
+        )
+    )
+
+    assert result["ok"] is False
+    assert client.budget.spent_build == pytest.approx(0.37)
+    recorded = client.budget.calls[-1]
+    assert recorded.generation_id == "gen-paid-malformed"
+    assert recorded.status == "malformed_response"
+    assert recorded.cost_source == "provider"
+
+
+def test_agentic_null_usage_still_records_malformed_paid_response(tmp_path, monkeypatch):
+    turns = [{
+        "id": "gen-paid-null-usage",
+        "choices": [],
+        "usage": None,
+    }]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+    client = LLMClient(Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        free_only=False,
+    ))
+
+    result = asyncio.run(
+        client._openrouter_agentic(
+            "build", str(tmp_path), "provider/paid", stack="fastapi"
+        )
+    )
+
+    assert result["ok"] is False
+    assert len(client.budget.calls) == 1
+    recorded = client.budget.calls[0]
+    assert recorded.generation_id == "gen-paid-null-usage"
+    assert recorded.status == "malformed_response"
+    assert recorded.cost_usd > 0
+    assert recorded.cost_source.endswith("estimate")
+
+
 def test_agentic_loop_confines_paths(tmp_path, monkeypatch):
     sub = tmp_path / "proj"
     sub.mkdir()
@@ -430,6 +664,46 @@ def test_agentic_loop_confines_paths(tmp_path, monkeypatch):
     res = asyncio.run(_client()._openrouter_agentic("x", str(sub), "m"))
     assert not outside.exists()   # path traversal blocked
     assert res["ok"] is False     # nothing written
+
+
+def test_agentic_loop_rejects_windows_special_paths_on_every_host(
+    tmp_path, monkeypatch
+):
+    turns = [
+        _tool_turn("write_file", {"path": path, "content": "hidden"}, f"bad-{i}")
+        for i, path in enumerate((
+            "NUL",
+            "src/CON.txt",
+            "src/file.txt:stream",
+            "src/bad?.txt",
+            r"C:\outside.txt",
+        ))
+    ] + [
+        _tool_turn(
+            "write_file",
+            {"path": "src/valid.txt", "content": "real content"},
+            "valid",
+        ),
+        _tool_turn("finish", {}, "finish"),
+    ]
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: _FakeClient(turns))
+
+    result = asyncio.run(_client()._openrouter_agentic(
+        "build",
+        str(tmp_path),
+        "m",
+        enforce_antistub=False,
+        verify_on_stop=False,
+    ))
+
+    assert result["ok"] is True
+    assert result["files_written"] == 1
+    assert (tmp_path / "src" / "valid.txt").read_text(encoding="utf-8") == (
+        "real content"
+    )
+    assert sorted(path.name for path in (tmp_path / "src").iterdir()) == [
+        "valid.txt"
+    ]
 
 
 def test_agentic_loop_pushes_past_a_stub(tmp_path, monkeypatch):

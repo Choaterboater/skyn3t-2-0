@@ -50,7 +50,7 @@ def test_openrouter_codegen_model_pin_used_for_agentic(monkeypatch, tmp_path):
     )
     captured = {}
 
-    async def _fake(prompt, workdir, model, timeout=None, stack=""):
+    async def _fake(prompt, workdir, model, timeout=None, stack="", **_kwargs):
         captured["model"] = model
         return {"ok": True, "backend": "openrouter"}
 
@@ -70,7 +70,7 @@ def test_preferred_model_used_for_openrouter_agentic_codegen(monkeypatch, tmp_pa
     )
     captured = {}
 
-    async def _fake(prompt, workdir, model, timeout=None, stack=""):
+    async def _fake(prompt, workdir, model, timeout=None, stack="", **_kwargs):
         captured["model"] = model
         return {"ok": True, "backend": "openrouter"}
 
@@ -91,7 +91,7 @@ def test_free_only_ignores_paid_openrouter_agentic_codegen_pin(monkeypatch, tmp_
     )
     captured = {}
 
-    async def _fake(prompt, workdir, model, timeout=None, stack=""):
+    async def _fake(prompt, workdir, model, timeout=None, stack="", **_kwargs):
         captured["model"] = model
         return {"ok": True, "backend": "openrouter"}
 

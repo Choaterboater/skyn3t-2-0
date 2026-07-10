@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 from enum import StrEnum
 from pathlib import Path
 
@@ -200,6 +201,52 @@ def live_catalog(timeout: float = 8.0) -> list[dict]:
     return fresh
 
 
+def prime_live_catalog(records: list[dict], fetched_at: float | None = None) -> None:
+    """Share an already-fetched OpenRouter catalog with the core router.
+
+    The web API and core router historically maintained independent caches and
+    could issue two identical network requests during one routing preview. This
+    accepts only normal catalog records, refuses to replace a newer snapshot,
+    and primes both paid and free lookup paths without exposing mutable caller
+    objects as the cache itself.
+    """
+    global _LIVE_CATALOG, _LIVE_CATALOG_AT, _LIVE_FREE_AT, _LIVE_FREE_IDS
+    import time as _t
+
+    try:
+        stamp = float(fetched_at) if fetched_at is not None else _t.time()
+    except (TypeError, ValueError):
+        stamp = _t.time()
+    if not math.isfinite(stamp) or stamp <= 0:
+        stamp = _t.time()
+    if _LIVE_CATALOG is not None and stamp < _LIVE_CATALOG_AT:
+        return
+
+    catalog: list[dict] = []
+    free_ids: list[str] = []
+    for raw in records:
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            continue
+        item = deepcopy(raw)
+        item["created"] = int(item.get("created", 0) or 0)
+        catalog.append(item)
+        model_id = str(item.get("id") or "").strip()
+        if (
+            model_id
+            and is_free_model_id(model_id)
+            and _model_accepts_text(item)
+            and _model_supports_text(item)
+            and not any(marker in model_id.lower() for marker in _FREE_FAILOVER_EXCLUDE)
+            and model_id not in free_ids
+        ):
+            free_ids.append(model_id)
+
+    _LIVE_CATALOG = catalog
+    _LIVE_CATALOG_AT = stamp
+    _LIVE_FREE_IDS = free_ids
+    _LIVE_FREE_AT = stamp
+
+
 # Substrings that disqualify a model from "newest" auto-pick: reasoning/base/
 # experimental/preview variants aren't general codegen-chat models.
 # Previews ARE allowed in the coder pool (opted in) — the cortex tournament learns
@@ -290,6 +337,31 @@ _PROFILE_WEIGHTS = {
 
 _FAST_MARKERS = ("flash", "mini", "lite", "fast", "turbo", "small")
 
+# ``cheap`` must be an enforceable price class, not merely a label on a soft
+# ranking weight. OpenRouter catalog prices are USD/token, so these are $1/M
+# input and $3/M output. They constrain only automatic model selection; an
+# operator's explicit model pin remains authoritative and generation itself is
+# never token/file/feature limited by this policy.
+_CHEAP_MAX_INPUT_USD_PER_TOKEN = 1.0 / 1_000_000.0
+_CHEAP_MAX_OUTPUT_USD_PER_TOKEN = 3.0 / 1_000_000.0
+
+# Grok pricing varies by model, but the operator has explicitly classified the
+# family as premium. Keep it out of automatic economy routes even when a single
+# catalog entry currently falls below the numeric price ceiling. Explicit model
+# pins remain authoritative.
+_CHEAP_AUTO_EXCLUDED_PREFIXES = ("x-ai/grok",)
+
+# Last-known cheap paid backstop for an offline catalog. Automatic cheap routing
+# deliberately does not consume the generic paid cache: that cache may contain a
+# previously selected balanced/best-quality model whose current price is unknown.
+_CHEAP_PAID_OFFLINE_DEFAULTS: dict[Tier, str] = {
+    Tier.CHEAP: "deepseek/deepseek-v4-flash",
+    Tier.UI: "qwen/qwen3-coder-next",
+    Tier.BACKEND: "z-ai/glm-5.2",
+    Tier.STRONG: "z-ai/glm-5.2",
+    Tier.DOCS: "deepseek/deepseek-v4-flash",
+}
+
 
 def _normalized_profile(profile: str = "balanced") -> str:
     return _PROFILE_ALIASES.get(str(profile or "").strip().lower().replace("-", "_"), "balanced")
@@ -305,16 +377,82 @@ def _parse_price(raw: object) -> float | None:
     return value
 
 
+def _price_field(pricing: dict, primary: str, alternate: str) -> float | None:
+    raw = pricing.get(primary)
+    if raw is None:
+        raw = pricing.get(alternate)
+    return _parse_price(raw)
+
+
 def _model_token_cost(model: dict) -> float | None:
     pricing = model.get("pricing")
     if not isinstance(pricing, dict):
         return None
-    prompt = _parse_price(pricing.get("prompt") or pricing.get("input"))
-    completion = _parse_price(pricing.get("completion") or pricing.get("output"))
+    prompt = _price_field(pricing, "prompt", "input")
+    completion = _price_field(pricing, "completion", "output")
     if prompt is None and completion is None:
         request = _parse_price(pricing.get("request"))
         return request
     return float(prompt or 0.0) * 0.55 + float(completion or 0.0) * 0.45
+
+
+def model_price_info(model: dict, model_id: str = "") -> dict[str, float | str | bool | None]:
+    """Normalized input/output pricing and the automatic-cheap classification.
+
+    OpenRouter exposes prices per token, while operators reason about dollars per
+    million tokens. Keep both forms in one public helper so routing, telemetry,
+    and API/UI presentation cannot disagree about whether a model is cheap.
+    Request-only or incomplete paid pricing is ``unknown`` and is not eligible
+    for automatic cheap routing; an explicit pin can still use it.
+    """
+    resolved_id = str(model_id or model.get("id") or "").strip()
+    pricing = model.get("pricing")
+    if not isinstance(pricing, dict):
+        pricing = {}
+    prompt = _price_field(pricing, "prompt", "input")
+    completion = _price_field(pricing, "completion", "output")
+    request = _parse_price(pricing.get("request"))
+    free = is_free_model_id(resolved_id) or (
+        prompt == 0.0 and completion == 0.0 and request in (None, 0.0)
+    )
+    known = free or (prompt is not None and completion is not None)
+    cheap = bool(
+        free
+        or (
+            prompt is not None
+            and completion is not None
+            and prompt <= _CHEAP_MAX_INPUT_USD_PER_TOKEN
+            and completion <= _CHEAP_MAX_OUTPUT_USD_PER_TOKEN
+            and request in (None, 0.0)
+        )
+    )
+    price_class = "free" if free else "cheap" if cheap else "expensive" if known else "unknown"
+    return {
+        "model": resolved_id,
+        "price_class": price_class,
+        "cheap_eligible": cheap,
+        "prompt_usd_per_token": prompt,
+        "completion_usd_per_token": completion,
+        "request_usd": request,
+        "prompt_usd_per_million": None if prompt is None else prompt * 1_000_000.0,
+        "completion_usd_per_million": None if completion is None else completion * 1_000_000.0,
+    }
+
+
+def _requires_cheap_price(tier: Tier, profile: str) -> bool:
+    """Whether this automatic route promises cheap per-token pricing."""
+    # ``fast`` optimizes latency/throughput and may select a premium fast model;
+    # it is not a price promise. Tier.CHEAP and Cheap+learned are price promises.
+    return tier is Tier.CHEAP or _normalized_profile(profile) == "cheap_learned"
+
+
+def _cheap_family_allowed(model_id: str) -> bool:
+    low = str(model_id or "").strip().lower()
+    return not any(low.startswith(prefix) for prefix in _CHEAP_AUTO_EXCLUDED_PREFIXES)
+
+
+def _cheap_catalog_model(model: dict) -> bool:
+    return bool(model_price_info(model).get("cheap_eligible"))
 
 
 def _model_supports_text(model: dict) -> bool:
@@ -493,11 +631,15 @@ def ranked_live_free_model_ids(tier: Tier, limit: int = _FREE_FAILOVER_LIMIT) ->
             if len(out) >= limit:
                 return out
 
-    for model_id in live_free_model_ids():
-        if model_id not in out:
-            out.append(model_id)
-            if len(out) >= limit:
-                break
+    # A populated full catalog is authoritative, including the absence of named
+    # free models. Only hit the legacy free-list endpoint when the full catalog
+    # itself is unavailable; otherwise this would duplicate the same fetch.
+    if not catalog:
+        for model_id in live_free_model_ids():
+            if model_id not in out:
+                out.append(model_id)
+                if len(out) >= limit:
+                    break
     return out
 
 
@@ -510,6 +652,12 @@ def _catalog_model_score(model: dict, tier: Tier, profile: str, newest_created: 
         return None
     if not _model_supports_text(model):
         return None
+    # A soft cost penalty can always be overwhelmed by a newly released model's
+    # benchmark/recency score. Cheap routes instead have a hard price-class
+    # boundary based on both normalized input and output rates.
+    if _requires_cheap_price(tier, profile):
+        if not _cheap_family_allowed(model_id) or not _cheap_catalog_model(model):
+            return None
     token_cost = _model_token_cost(model)
     if token_cost is None:
         return None
@@ -541,14 +689,17 @@ def _catalog_model_score(model: dict, tier: Tier, profile: str, newest_created: 
     return score
 
 
-def best_paid_model(tier: Tier, profile: str = "balanced", *, no_claude: bool = False) -> str | None:
-    """Best current paid model for ``tier`` from OpenRouter's live catalog.
-
-    This is benchmark-aware, not family-name-only. It prefers current models that
-    score well for the tier's job, while profile weights tune cost/quality bias.
-    Returns ``None`` when the live catalog is unavailable or too sparse; callers
-    keep the older newest-family fallback in that case.
-    """
+def ranked_paid_models(
+    tier: Tier,
+    profile: str = "balanced",
+    *,
+    no_claude: bool = False,
+    limit: int = _FREE_FAILOVER_LIMIT,
+) -> list[str]:
+    """Current paid catalog models ranked for a tier/profile."""
+    limit = max(0, int(limit or 0))
+    if limit <= 0:
+        return []
     catalog = live_catalog()
     newest_created = max((int(m.get("created", 0) or 0) for m in catalog), default=0)
     scored: list[tuple[float, int, str]] = []
@@ -560,10 +711,20 @@ def best_paid_model(tier: Tier, profile: str = "balanced", *, no_claude: bool = 
         if score is None:
             continue
         scored.append((score, int(m.get("created", 0) or 0), model_id))
-    if not scored:
-        return None
     scored.sort(reverse=True)
-    return scored[0][2]
+    return [model_id for _score, _created, model_id in scored[:limit]]
+
+
+def best_paid_model(tier: Tier, profile: str = "balanced", *, no_claude: bool = False) -> str | None:
+    """Best current paid model for ``tier`` from OpenRouter's live catalog.
+
+    This is benchmark-aware, not family-name-only. It prefers current models that
+    score well for the tier's job, while profile weights tune cost/quality bias.
+    Returns ``None`` when the live catalog is unavailable or too sparse; callers
+    keep the older newest-family fallback in that case.
+    """
+    ranked = ranked_paid_models(tier, profile=profile, no_claude=no_claude, limit=1)
+    return ranked[0] if ranked else None
 
 
 def newest_paid_model(family: str) -> str | None:
@@ -654,6 +815,7 @@ class ModelRouter:
     def _default_model(self, tier: Tier, profile: str = "balanced") -> str:
         if self.settings.free_only:
             return _FREE_DEFAULTS[tier]
+        catalog_available = bool(live_catalog())
         live = best_paid_model(
             tier,
             profile=profile,
@@ -668,7 +830,71 @@ class ModelRouter:
             )
             self._cache_paid_model(tier, live)
             return live
+        if _requires_cheap_price(tier, profile):
+            # A populated catalog that contains no eligible paid model is proof
+            # that stale offline assumptions must not be used. Route through the
+            # live free router instead. Last-known paid defaults are only an
+            # offline availability backstop when there is no catalog evidence.
+            fallback = (
+                _OPENROUTER_FREE_ROUTER
+                if catalog_available
+                else _CHEAP_PAID_OFFLINE_DEFAULTS[tier]
+            )
+            log.info(
+                (
+                    "router.cheap_no_eligible_paid"
+                    if catalog_available
+                    else "router.cheap_offline_fallback"
+                ),
+                profile=_normalized_profile(profile),
+                model=fallback,
+                tier=tier.value,
+            )
+            return fallback
         return self._resolve_newest_model(tier, _PAID_DEFAULTS[tier])
+
+    @staticmethod
+    def _tier_for_file(tier: Tier, file_hint: str | None = None) -> Tier:
+        if file_hint:
+            ext = Path(file_hint).suffix.lower()
+            if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}:
+                return Tier.UI
+            if ext in {".py", ".go", ".rs", ".java", ".rb", ".sql"}:
+                return Tier.BACKEND
+        return tier
+
+    def _has_explicit_tier_pin(self, tier: Tier) -> bool:
+        runtime_pin = str(getattr(self.settings, f"model_{tier.value}", "") or "").strip()
+        return bool(runtime_pin or self._overrides.get(tier.value))
+
+    def model_cost_info(self, model_id: str) -> dict[str, float | str | bool | None]:
+        """Live normalized pricing/classification for one model id."""
+        model_id = str(model_id or "").strip()
+        if is_free_model_id(model_id):
+            return model_price_info({"id": model_id, "pricing": {"prompt": 0, "completion": 0}})
+        record = next(
+            (m for m in live_catalog() if str(m.get("id") or "").strip() == model_id),
+            None,
+        )
+        return model_price_info(record or {}, model_id=model_id)
+
+    def auto_model_allowed(self, model_id: str, tier: Tier, profile: str = "balanced") -> bool:
+        """Whether an automatically learned/cached model may serve this route."""
+        if not _requires_cheap_price(tier, profile):
+            return True
+        if not _cheap_family_allowed(model_id):
+            return False
+        info = self.model_cost_info(model_id)
+        if bool(info.get("cheap_eligible")):
+            return True
+        # The live catalog is unavailable, not evidence that these last-known
+        # cheap backstops became expensive. Keep offline failover functional while
+        # refusing arbitrary unpriced tournament/cache entries.
+        return (
+            info.get("price_class") == "unknown"
+            and model_id in set(_CHEAP_PAID_OFFLINE_DEFAULTS.values())
+            and not live_catalog()
+        )
 
     def _load_overrides(self) -> dict[str, str]:
         path = self.settings.data_dir / "model_tier_overrides.json"
@@ -691,22 +917,19 @@ class ModelRouter:
         ``task_type`` is accepted (and ignored) here so callers can pass it
         uniformly; only the LearnedModelRouter subclass uses it."""
         # Per-file specialization: route UI vs backend by extension.
-        if file_hint:
-            ext = Path(file_hint).suffix.lower()
-            if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}:
-                tier = Tier.UI
-            elif ext in {".py", ".go", ".rs", ".java", ".rb", ".sql"}:
-                tier = Tier.BACKEND
+        tier = self._tier_for_file(tier, file_hint)
 
         # Runtime/env lock wins over persisted tuning, except free_only remains
         # the hard cost guard and rewrites paid pins below.
         runtime_pin = str(getattr(self.settings, f"model_{tier.value}", "") or "").strip()
         runtime_locked = bool(runtime_pin)
+        explicit_source = "runtime" if runtime_locked else ""
         if runtime_locked:
             model = runtime_pin
         # Persisted manual lock wins over defaults.
         elif tier.value in self._overrides:
             model = self._overrides[tier.value]
+            explicit_source = "persisted"
         else:
             model = self._default_model(tier, profile=profile)
 
@@ -716,10 +939,30 @@ class ModelRouter:
         if model.startswith("newest:"):
             model = self._resolve_newest_model(tier, model)
 
+        if explicit_source:
+            try:
+                info = self.model_cost_info(model)
+                log.info(
+                    "router.explicit_model_pin",
+                    source=explicit_source,
+                    tier=tier.value,
+                    profile=_normalized_profile(profile),
+                    model=model,
+                    price_class=info.get("price_class"),
+                    input_per_million=info.get("prompt_usd_per_million"),
+                    output_per_million=info.get("completion_usd_per_million"),
+                )
+            except Exception as exc:  # noqa: BLE001 - classification never blocks a pin
+                log.debug(
+                    "router.explicit_model_pin_unclassified",
+                    model=model,
+                    error=str(exc)[:120],
+                )
+
         if runtime_locked and not self.settings.free_only:
             return model
 
-        model = self._apply_policy(model, tier)
+        model = self._apply_policy(model, tier, profile=profile)
         # Self-heal a retired :free id against OpenRouter's LIVE catalog (only
         # worth a fetch when an OpenRouter key is configured — otherwise the
         # backend is claude/stub and the model id is unused).
@@ -742,7 +985,7 @@ class ModelRouter:
                     return m
         return live[0]
 
-    def _apply_policy(self, model: str, tier: Tier) -> str:
+    def _apply_policy(self, model: str, tier: Tier, profile: str = "balanced") -> str:
         low = model.lower()
         # no-claude: rewrite Claude picks to a non-Claude tier default — staying
         # in the user's PAID catalog when they're paid (free_only=False). Forcing
@@ -752,7 +995,7 @@ class ModelRouter:
             model = (
                 _FREE_DEFAULTS[tier]
                 if self.settings.free_only
-                else self._default_model(tier)
+                else self._default_model(tier, profile=profile)
             )
             log.info("router.rewrote_claude", tier=tier.value, to=model)
         # free-only: force a :free model.
@@ -760,7 +1003,12 @@ class ModelRouter:
             model = _FREE_DEFAULTS[tier]
         return model
 
-    def fallback_candidates(self, tier: Tier, primary: str | None = None) -> list[str]:
+    def fallback_candidates(
+        self,
+        tier: Tier,
+        primary: str | None = None,
+        profile: str = "balanced",
+    ) -> list[str]:
         """Ordered alternative model ids to try when ``primary`` fails with a
         model-level error (retired :free id, invalid model, no endpoints) or
         persistent transient errors.
@@ -782,13 +1030,40 @@ class ModelRouter:
                     d = _FREE_DEFAULTS[t]
                     if d not in cands:
                         cands.append(d)
+            elif _requires_cheap_price(tier, profile):
+                catalog_available = bool(live_catalog())
+                for m in ranked_paid_models(
+                    tier,
+                    profile=profile,
+                    no_claude=bool(getattr(self.settings, "no_claude", False)),
+                ):
+                    if m not in cands:
+                        cands.append(m)
+                if catalog_available:
+                    for m in ranked_live_free_model_ids(tier):
+                        if m not in cands:
+                            cands.append(m)
+                    if _OPENROUTER_FREE_ROUTER not in cands:
+                        cands.append(_OPENROUTER_FREE_ROUTER)
+                else:
+                    for t in Tier:
+                        d = _CHEAP_PAID_OFFLINE_DEFAULTS[t]
+                        if d not in cands:
+                            cands.append(d)
             else:
+                for m in ranked_paid_models(
+                    tier,
+                    profile=profile,
+                    no_claude=bool(getattr(self.settings, "no_claude", False)),
+                ):
+                    if m not in cands:
+                        cands.append(m)
                 for fam in _CODER_FAMILIES:  # newest live model per strong-coder family
                     live_model = newest_paid_model(fam)
                     if live_model and live_model not in cands:
                         cands.append(live_model)
                 for t in Tier:
-                    d = self._default_model(t)
+                    d = self._default_model(t, profile=profile)
                     if d not in cands:
                         cands.append(d)
         except Exception as exc:  # noqa: BLE001 - fallback resolution must never raise
@@ -796,11 +1071,16 @@ class ModelRouter:
             if self.settings.free_only:
                 cands = list(_FREE_DEFAULTS.values())
             else:
-                cands = [self._default_model(t) for t in Tier]
+                cands = [self._default_model(t, profile=profile) for t in Tier]
         out: list[str] = []
         for m in cands:
-            m2 = self._apply_policy(m, tier)  # honor no_claude / free_only
-            if m2 and m2 != primary and m2 not in out:
+            m2 = self._apply_policy(m, tier, profile=profile)  # honor policy + profile
+            if (
+                m2
+                and m2 != primary
+                and m2 not in out
+                and self.auto_model_allowed(m2, tier, profile)
+            ):
                 out.append(m2)
         return out
 

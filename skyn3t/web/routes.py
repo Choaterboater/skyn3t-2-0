@@ -932,7 +932,12 @@ def _orchestration_extra(
 
 
 def _enforce_build_routing(state: AppState) -> None:
-    """Reject unusable explicit routes before an API request creates build state."""
+    """Reject unusable routes before an API request creates build state.
+
+    Dashboard ``auto`` builds are local Codex-only. A configured OpenRouter key
+    is never implicit consent to use it, so surface a missing Codex CLI before
+    queueing a build or allocating its ledger.
+    """
     from skyn3t.adapters.llm import enforce_explicit_routing_lock
 
     client = getattr(state, "llm_client", None)
@@ -940,6 +945,7 @@ def _enforce_build_routing(state: AppState) -> None:
     enforce_explicit_routing_lock(
         state.settings,
         cli_available=probe if callable(probe) else None,
+        require_codex_for_auto=hasattr(state.settings, "llm_backend"),
     )
 
 

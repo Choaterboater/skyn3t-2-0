@@ -78,6 +78,56 @@ def test_stage_completed_carries_agent_name_and_duration():
     asyncio.run(go())
 
 
+def test_stage_completed_persists_backend_and_cost_truth_on_record():
+    async def go():
+        bus, runner = _runner()
+        seen = []
+
+        class Tracker:
+            def end_stage(self, _build_id, _stage):
+                return {
+                    "stage": "code",
+                    "cost_usd": 0.0,
+                    "tokens": 123,
+                    "call_count": 1,
+                    "backend": "codex_cli",
+                    "backends": {"codex_cli": 1},
+                    "models": ["gpt-5.6-codex"],
+                    "cost_source_counts": {"not_reported_by_cli": 1},
+                    "cost_usd_known": False,
+                    "cost_classification": "unknown",
+                    "failed_attempts": 0,
+                    "max_unconfirmed_exposure_usd": 0.0,
+                }
+
+        runner.cost_tracker = Tracker()
+
+        async def cap(ev):
+            seen.append(ev)
+
+        bus.subscribe(EventType.BUILD_STAGE_COMPLETED, cap)
+        rec = StageRecord(name="code", agent_type="code", capability="codegen")
+        rec.output_summary = {
+            "execution": {
+                "backend": "codex_cli",
+                "task": {
+                    "build_id": "build-1",
+                    "worktree_role": "main",
+                },
+            }
+        }
+        await runner._emit_stage_done("build-1", rec, "cid")
+
+        truth = rec.output_summary["cost_truth"]
+        assert truth["backend"] == "codex_cli"
+        assert truth["cost_usd_known"] is False
+        assert truth["cost_classification"] == "unknown"
+        assert seen[-1].payload["cost_truth"] == truth
+        assert seen[-1].payload["backend"] == "codex_cli"
+
+    asyncio.run(go())
+
+
 def test_stage_completed_omits_agent_and_duration_when_absent():
     async def go():
         bus, runner = _runner()

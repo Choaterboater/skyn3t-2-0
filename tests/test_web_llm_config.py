@@ -38,15 +38,15 @@ async def test_secrets_payload_shape():
     assert "model_pins" in p
 
 
-async def test_set_key_flips_backend_to_openrouter():
-    r = await set_llm_key(_state(llm_backend="auto"), "openrouter", "sk-or-x", persist=False)
+async def test_set_key_does_not_change_explicit_stub_backend():
+    r = await set_llm_key(_state(llm_backend="stub"), "openrouter", "sk-or-x", persist=False)
     assert r["configured"] is True
-    assert r["backend"] == "openrouter"
+    assert r["backend"] == "stub"
 
 
 async def test_set_key_persist_false_does_not_mutate_env(monkeypatch):
     monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
-    st = _state(llm_backend="auto")
+    st = _state(llm_backend="stub")
 
     r = await set_llm_key(st, "openrouter", "sk-or-x", persist=False)
 
@@ -58,27 +58,27 @@ async def test_set_key_persist_false_does_not_mutate_env(monkeypatch):
 
 async def test_secrets_payload_reports_openrouter_env_key(monkeypatch):
     monkeypatch.setenv("SKYN3T_OPENROUTER_API_KEY", "sk-or-env")
-    p = await llm_secrets_payload(_state(llm_backend="auto"))
+    p = await llm_secrets_payload(_state(llm_backend="stub"))
     assert p["providers"]["openrouter"] is True
 
 
 async def test_secrets_payload_routes_plain_openrouter_env_key(monkeypatch):
     monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
-    p = await llm_secrets_payload(_state(llm_backend="auto"))
+    p = await llm_secrets_payload(_state(llm_backend="stub"))
     assert p["providers"]["openrouter"] is True
-    assert p["backend"] == "openrouter"
+    assert p["backend"] == "stub"
     assert p["routing"]["openrouter_configured"] is True
 
 
 async def test_clear_key():
-    st = _state(llm_backend="auto", openrouter_api_key="sk-or-x")
+    st = _state(llm_backend="stub", openrouter_api_key="sk-or-x")
     r = await set_llm_key(st, "openrouter", "", persist=False)
     assert r["configured"] is False
 
 
 async def test_switch_backend():
-    r = await set_llm_backend(_state(llm_backend="auto"), "stub", persist=False)
+    r = await set_llm_backend(_state(llm_backend="stub"), "stub", persist=False)
     assert r["active"] == "stub"
     assert r["routing"]["requested"] == "stub"
 

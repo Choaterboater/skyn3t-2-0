@@ -324,7 +324,9 @@ def test_fanout_rejects_missing_explicit_backend_before_dispatch(tmp_path):
 def test_fanout_rejects_unavailable_codegen_cli_before_dispatch(tmp_path):
     studio = _FanStudio()
     state = _fan_state(tmp_path, studio)
-    state.settings.llm_backend = "auto"
+    # This endpoint test is about the explicit codegen-provider lock, not the
+    # automatic executor policy.
+    state.settings.llm_backend = "stub"
     state.settings.codegen_cli_provider = "codex"
     state.llm_client = SimpleNamespace(_cli_available=lambda _provider: False)
 

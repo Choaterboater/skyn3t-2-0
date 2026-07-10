@@ -157,35 +157,107 @@ class CostTracker:
         self.sync()
         entry = self._builds.get(build_id)
         if entry is None:
-            return {"stage": stage, "cost_usd": 0.0, "tokens": 0}
+            return {
+                "stage": stage,
+                "cost_usd": 0.0,
+                "tokens": 0,
+                "call_count": 0,
+                "backend": "none",
+                "backends": {},
+                "models": [],
+                "cost_source_counts": {},
+                "cost_usd_known": True,
+                "cost_classification": "none",
+            }
         # Consume the base (pop, not get) so each start/end is paired — robust
         # even if a stage name repeats across iterations. An unpaired/duplicate
         # end_stage (no recorded start boundary) must attribute NOTHING rather
         # than fall back to build-start, which would re-count every prior stage.
         stage_base = entry.get("_stage_base", {})
         if stage not in stage_base:
-            return {"stage": stage, "cost_usd": 0.0, "tokens": 0}
+            return {
+                "stage": stage,
+                "cost_usd": 0.0,
+                "tokens": 0,
+                "call_count": 0,
+                "backend": "none",
+                "backends": {},
+                "models": [],
+                "cost_source_counts": {},
+                "cost_usd_known": True,
+                "cost_classification": "none",
+            }
         base = stage_base.pop(stage)
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
         cost = 0.0
         tokens = 0
         exposure = 0.0
         failed_attempts = 0
+        call_count = 0
+        backends: dict[str, int] = {}
+        models: list[str] = []
+        cost_source_counts: dict[str, int] = {}
         for r in calls[base:]:
             owner = getattr(r, "build_id", _MISSING_BUILD_ID)
             if owner is not _MISSING_BUILD_ID and owner != build_id:
                 continue
+            call_count += 1
             cost += getattr(r, "cost_usd", 0.0)
             tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
             exposure += getattr(r, "estimated_exposure_usd", 0.0)
             if str(getattr(r, "status", "")).startswith("failed_"):
                 failed_attempts += 1
+            backend = str(getattr(r, "backend", "") or "unknown")
+            backends[backend] = backends.get(backend, 0) + 1
+            model = str(getattr(r, "model", "") or "")
+            if model and model not in models and len(models) < 16:
+                models.append(model)
+            source = str(getattr(r, "cost_source", "") or "unknown")
+            if source == "none" and backend == "stub":
+                source = "offline_stub"
+            cost_source_counts[source] = cost_source_counts.get(source, 0) + 1
+
+        # A local CLI deliberately reports a $0 placeholder because the CLI
+        # owns billing. Keep that amount separate from whether it is KNOWN, so
+        # a stage can never be read as free merely because SkyN3t lacks a dollar
+        # receipt. Catalog/flat provider prices are estimates, not confirmations.
+        unknown_sources = {"unknown", "unconfirmed", "not_reported_by_cli"}
+        estimate_sources = {"catalog_estimate", "flat_estimate"}
+        source_names = set(cost_source_counts)
+        if not call_count:
+            cost_classification = "none"
+            cost_usd_known = True
+        elif source_names & unknown_sources:
+            cost_classification = "partial" if len(source_names) > 1 else "unknown"
+            cost_usd_known = False
+        elif source_names & estimate_sources:
+            cost_classification = "mixed" if len(source_names) > 1 else "estimate"
+            cost_usd_known = False
+        elif source_names <= {"offline_stub"}:
+            cost_classification = "offline"
+            cost_usd_known = True
+        else:
+            cost_classification = "provider_confirmed"
+            cost_usd_known = True
+
+        backend = (
+            next(iter(backends))
+            if len(backends) == 1
+            else "mixed" if backends else "none"
+        )
         rec = {
             "stage": stage,
             "cost_usd": round(max(0.0, cost), 6),
             "tokens": max(0, tokens),
             "failed_attempts": failed_attempts,
             "max_unconfirmed_exposure_usd": round(max(0.0, exposure), 6),
+            "call_count": call_count,
+            "backend": backend,
+            "backends": dict(sorted(backends.items())),
+            "models": models,
+            "cost_source_counts": dict(sorted(cost_source_counts.items())),
+            "cost_usd_known": cost_usd_known,
+            "cost_classification": cost_classification,
         }
         entry.setdefault("stages", []).append(rec)
         return rec

@@ -126,9 +126,13 @@ class Settings(BaseSettings):
     allow_remote_deploy: bool = False
 
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
-    # auto picks: openrouter (if key) -> a detected CLI -> stub.
+    # ``auto`` is intentionally local Codex CLI only. It never uses OpenRouter
+    # merely because a key is configured; select ``openrouter`` explicitly in
+    # Settings when a hosted provider is intended.
     llm_backend: str = "auto"  # auto|stub|openrouter|codex_cli|claude_cli|kimi_cli|copilot_cli
-    cli_llm_provider: str = "claude"  # which CLI when auto selects one
+    # Used by manually selected CLI-adjacent features (for example vision
+    # checks). Automatic build execution always uses Codex CLI.
+    cli_llm_provider: str = "claude"
     # Route ONLY the codegen (code agent) stage to a coding-agent CLI's agentic
     # whole-app build, while every OTHER stage keeps the global backend (e.g. cheap
     # OpenRouter models). Empty = no override (codegen follows the global backend).

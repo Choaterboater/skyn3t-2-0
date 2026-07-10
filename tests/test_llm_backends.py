@@ -25,13 +25,15 @@ def test_openrouter_requires_key():
     assert _client("openrouter", openrouter_api_key="sk-or-test").backend == "openrouter"
 
 
-def test_openrouter_plain_env_key_is_routable(monkeypatch):
+def test_openrouter_plain_env_key_is_routable_only_when_explicit(monkeypatch):
     monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
     assert _client("openrouter").backend == "openrouter"
     status = _client("auto").backend_status()
-    assert status["active"] == "openrouter"
+    assert status["active"] == "stub"
     assert status["openrouter_configured"] is True
+    assert status["automatic_execution"]["backend"] == "codex_cli"
+    assert status["automatic_execution"]["openrouter_fallback"] is False
 
 
 def test_explicit_openrouter_missing_key_is_reported():
@@ -223,18 +225,26 @@ def test_budget_tracker_per_build_zero_disables_build_cap(tmp_path):
     client.budget.check()
 
 
-def test_auto_prefers_cli_when_available(monkeypatch):
+def test_auto_uses_codex_cli_when_available(monkeypatch):
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {}, raising=False)
     monkeypatch.setattr(llm_mod.shutil, "which", lambda b: f"/usr/bin/{b}")
-    assert _client("auto").backend == "claude_cli"
+    assert _client("auto").backend == "codex_cli"
     assert _client("kimi_cli").backend == "kimi_cli"
 
 
-def test_auto_falls_back_to_stub_without_cli(monkeypatch):
+def test_auto_falls_back_to_stub_without_codex_or_hosted_fallback(monkeypatch):
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
-    monkeypatch.setattr(llm_mod.shutil, "which", lambda b: None)
-    assert _client("auto").backend == "stub"
-    assert _client("claude_cli").backend == "stub"
+    monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {}, raising=False)
+    # A signed-in Claude CLI and an OpenRouter key do not satisfy the automatic
+    # executor contract. Both require intentional manual selection.
+    monkeypatch.setattr(
+        llm_mod.shutil,
+        "which",
+        lambda b: "/usr/bin/claude" if b == "claude" else None,
+    )
+    assert _client("auto", openrouter_api_key="sk-or-present").backend == "stub"
+    assert _client("claude_cli").backend == "claude_cli"
 
 
 def test_cli_availability_cache_refreshes_after_ttl(monkeypatch):

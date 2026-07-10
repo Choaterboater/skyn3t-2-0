@@ -389,7 +389,8 @@ class _FakeState:
         self.studio = studio
         self.event_bus = _FakeBus()
         self.builds = {}
-        self.settings = SimpleNamespace(data_dir="data", llm_backend="auto")
+        # This endpoint fixture exercises image handoff, not automatic routing.
+        self.settings = SimpleNamespace(data_dir="data", llm_backend="stub")
         self._n = 0
 
     def new_build_id(self):

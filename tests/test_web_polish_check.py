@@ -28,6 +28,18 @@ def test_web_polish_accepts_structured_page(tmp_path):
     assert check_web_polish(tmp_path, "static")["ok"] is True
 
 
+def test_web_polish_flags_decorative_emoji_ui(tmp_path):
+    (tmp_path / "index.html").write_text(
+        "<main class='grid hero'><h1>Planner</h1><button>" + chr(0x1F3CC) + " Start</button></main>",
+        encoding="utf-8",
+    )
+
+    verdict = check_web_polish(tmp_path, "static")
+
+    assert verdict["ok"] is False
+    assert "decorative emoji glyphs detected in UI source" in verdict["issues"]
+
+
 def test_web_polish_flags_unwired_stylesheet(tmp_path):
     styles = tmp_path / "src" / "styles"
     styles.mkdir(parents=True)

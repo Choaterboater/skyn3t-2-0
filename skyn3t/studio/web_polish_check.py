@@ -28,6 +28,9 @@ _CSS_LINK_RE = re.compile(
     r"<link\b(?=[^>]*\brel\s*=\s*['\"]stylesheet['\"])(?=[^>]*\bhref\s*=\s*['\"][^'\"]+\.css(?:[?#][^'\"]*)?['\"])[^>]*>",
     re.I,
 )
+# Decorative pictographs are a frequent signal of placeholder UI. Product builds
+# should use their icon system or meaningful imagery instead.
+_DECORATIVE_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u26FF]")
 
 
 def check_web_polish(project_dir: str | Path, stack: str = "") -> dict[str, Any]:
@@ -65,6 +68,8 @@ def check_web_polish(project_dir: str | Path, stack: str = "") -> dict[str, Any]
             issues.append("no user action/link/form control detected")
         if not _STYLE_RE.search(text):
             issues.append("no meaningful styling/layout signal detected")
+        if _DECORATIVE_EMOJI_RE.search("\n".join(markup)):
+            issues.append("decorative emoji glyphs detected in UI source")
         if stylesheets:
             markup_text = "\n".join(markup)
             if not (_CSS_IMPORT_RE.search(markup_text) or _CSS_LINK_RE.search(markup_text)):

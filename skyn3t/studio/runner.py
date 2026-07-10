@@ -3921,6 +3921,15 @@ class StudioRunner:
                     else:
                         result = await call
 
+                # Best-of-N freezes this compact evidence before disposable
+                # candidate trees are cleaned. Promote it out of TaskResult so
+                # stage history, the delivered manifest, and /builds all retain
+                # why the winner beat every alternative. Preserve it even when
+                # the winning trajectory reported a late session failure.
+                best_of_n_evidence = result.output.get("best_of_n")
+                if isinstance(best_of_n_evidence, dict):
+                    manifest.extra["best_of_n"] = best_of_n_evidence
+
                 # Record outcome.
                 if result.success:
                     record.status = "completed"
@@ -3940,6 +3949,8 @@ class StudioRunner:
                     record.error = result.error
                     record.agent_name = result.agent_name
                     record.output_summary = {"error": result.error}
+                    if isinstance(best_of_n_evidence, dict):
+                        record.output_summary["best_of_n"] = best_of_n_evidence
                     failed: dict[str, Any] = {"error": result.error}
                     if spec.agent_type == "code":
                         failed["backend"] = "failed"
@@ -4765,7 +4776,14 @@ class StudioRunner:
         )
 
         if selection.winner is None:
-            return TaskResult(task_id=uuid.uuid4().hex, success=False, error="best_of_n: no candidate")
+            evidence = selection.to_evidence()
+            return TaskResult(
+                task_id=uuid.uuid4().hex,
+                success=False,
+                output={"best_of_n": evidence},
+                error="best_of_n: no candidate",
+                metadata={"best_of_n": evidence},
+            )
 
         # Merge the winning trajectory into the main worktree so downstream
         # stages and final delivery see the chosen files.
@@ -4775,8 +4793,11 @@ class StudioRunner:
             success=selection.winner.passed,
             output={"files_written": selection.winner.files_written},
         )
+        evidence = selection.to_evidence()
+        result.output = dict(result.output)
+        result.output["best_of_n"] = evidence
         result.metadata = dict(result.metadata)
-        result.metadata["best_of_n"] = selection.to_dict()
+        result.metadata["best_of_n"] = evidence
         # Record the multi-way match (winner vs the losing candidates' models).
         # Only flag the result as recorded when it actually persisted, so a failed
         # match-record falls back to the per-stage solo feed instead of silently
@@ -5133,7 +5154,7 @@ class StudioRunner:
     def _summarize(output: dict[str, Any]) -> dict[str, Any]:
         keep = (
             "score", "verdict", "files_written", "gaps", "worktree_dir",
-            "codegen_override_unavailable",
+            "codegen_override_unavailable", "best_of_n",
         )
         summary = {k: output[k] for k in keep if k in output}
         if not summary:

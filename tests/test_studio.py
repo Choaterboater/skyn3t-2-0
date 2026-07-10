@@ -455,6 +455,21 @@ def test_studio_runner_best_of_n(tmp_path):
         outcome = await runner.start("Build a python tool", slug="bon", extra={"best_of_n": 3})
         assert outcome.status == "completed"
         assert (Path(outcome.project_dir) / "src" / "main.py").exists()
+        evidence = outcome.manifest["extra"]["best_of_n"]
+        assert evidence["candidate_count"] == 3
+        assert evidence["any_proof_passed"] is True
+        assert sum(candidate["selected"] for candidate in evidence["candidates"]) == 1
+        code_stage = next(
+            stage for stage in outcome.manifest["stages"] if stage["name"] == "code"
+        )
+        assert code_stage["output_summary"]["best_of_n"] == evidence
+        on_disk = BuildManifest.load(outcome.project_dir)
+        assert on_disk is not None and on_disk.extra["best_of_n"] == evidence
+        completed = [event for event in bus.history() if event.type is EventType.BUILD_COMPLETED]
+        live_evidence = completed[-1].payload["best_of_n"]
+        assert live_evidence["winner_index"] == evidence["winner_index"]
+        assert live_evidence["candidate_count"] == 3
+        assert len(live_evidence["candidates"]) == 3
 
     asyncio.run(run())
 

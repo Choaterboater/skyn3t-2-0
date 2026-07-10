@@ -48,6 +48,63 @@ def _compact_agentic(value: Any) -> dict[str, Any]:
     }
 
 
+def _compact_best_of_n(value: Any) -> dict[str, Any]:
+    """Bound best-of-N evidence for list APIs; never copy raw proof logs."""
+    data = _as_dict(value)
+    if not data:
+        return {}
+    candidates: list[dict[str, Any]] = []
+    for raw in _as_list(data.get("candidates"))[:8]:
+        candidate = _as_dict(raw)
+        proof = _as_dict(candidate.get("proof"))
+        candidates.append({
+            key: candidate.get(key)
+            for key in (
+                "index",
+                "selected",
+                "proof_passed",
+                "trajectory_complete",
+                "trajectory_success",
+                "duration_ms",
+                "trajectory_duration_ms",
+                "proof_duration_ms",
+                "files_written",
+                "source_bytes",
+                "model_id",
+                "error",
+            )
+            if candidate.get(key) not in (None, "")
+        } | {
+            "proof": {
+                key: proof.get(key)
+                for key in (
+                    "passed",
+                    "score",
+                    "mode",
+                    "files_total",
+                    "files_substantive",
+                    "checklist_total",
+                    "checklist_present",
+                    "missing",
+                    "syntax_error_count",
+                    "build",
+                    "tests",
+                    "failure_reasons",
+                )
+                if proof.get(key) not in (None, "")
+            }
+        })
+    return {
+        "schema_version": data.get("schema_version", 1),
+        "winner_index": data.get("winner_index"),
+        "candidate_count": data.get("candidate_count", len(candidates)),
+        "any_proof_passed": bool(data.get("any_proof_passed")),
+        "selection_class": str(data.get("selection_class") or ""),
+        "reason": str(data.get("reason") or "")[:240],
+        "candidates": candidates,
+    }
+
+
 def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     """Return compact model/profile/quality fields from a manifest dict."""
 
@@ -58,6 +115,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     proof = _as_dict(extra.get("proof"))
     proof_detail = _as_dict(proof.get("detail"))
     responsive_visual = _as_dict(extra.get("responsive_visual_proof"))
+    best_of_n = _compact_best_of_n(extra.get("best_of_n"))
     model_trace = {
         "profile": extra.get("build_profile", ""),
         "model_override": extra.get("model_override", ""),
@@ -118,6 +176,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "build_profile": str(extra.get("build_profile") or ""),
         "model_trace": model_trace,
         "quality_scorecard": quality_scorecard,
+        "best_of_n": best_of_n,
         "skills_used": list(_as_list(extra.get("skills_used"))),
         "recall_used": list(_as_list(extra.get("recall_used"))),
     }

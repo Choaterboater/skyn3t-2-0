@@ -12,8 +12,10 @@ Import has zero side effects.
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 from skyn3t.core.agent import TaskResult
@@ -39,6 +41,8 @@ class Candidate:
     proof: ProofResult | None = None
     files_written: int = 0
     source_bytes: int = 0  # largest implementation file — substance/richness
+    duration_ms: float = 0.0
+    proof_duration_ms: float = 0.0
     error: str | None = None
 
     @property
@@ -56,28 +60,111 @@ class Candidate:
 
     @property
     def passed(self) -> bool:
-        return bool(self.proof and self.proof.passed and not self.degraded)
+        """Whether proof passed and the trajectory reported a complete session.
+
+        This remains the strongest candidate state for ranking within the
+        proof-passing class. Selection uses :attr:`proof_passed` as its primary
+        class so a late agent timeout cannot make a proved tree lose to a broken
+        one.
+        """
+        return self.proof_passed and not self.degraded
+
+    @property
+    def proof_passed(self) -> bool:
+        """The objective proof result, independent of agent-session metadata."""
+        return bool(self.proof and self.proof.passed)
 
     @property
     def rank_key(self) -> tuple:
         """Higher is better. Substance (source_bytes) outranks raw file count so
-        a rich implementation beats a thin stub that merely has more files."""
+        a rich implementation beats a thin stub that merely has more files.
+
+        Objective proof is the first and absolute class boundary. Trajectory
+        completeness remains the next boundary, preserving the prior preference
+        for a complete architecture when multiple candidates share a proof class.
+        The final index term makes exact ties deterministic regardless of input
+        list order.
+        """
         p = self.proof
         return (
-            1 if self.passed else 0,
-            p.score if p else 0.0,
+            1 if self.proof_passed else 0,
+            1 if not self.degraded else 0,
+            float(getattr(p, "score", 0.0) or 0.0),
             self.source_bytes,
-            p.files_substantive if p else 0,
+            int(getattr(p, "files_substantive", 0) or 0),
             self.files_written,
+            -self.index,
         )
+
+    def to_evidence(self, *, selected: bool = False) -> dict[str, Any]:
+        """Return bounded, path-free evidence suitable for durable manifests."""
+        proof = self.proof
+        raw_detail = getattr(proof, "detail", None)
+        detail = raw_detail if isinstance(raw_detail, dict) else {}
+        failures: list[str] = []
+        if proof is not None and not proof.passed:
+            try:
+                failures.extend(str(item) for item in proof.error_gaps())
+            except (AttributeError, TypeError, ValueError):
+                pass
+
+        result = self.result
+        trajectory_issue = str(self.error or (result.error if result else "") or "")
+        if not trajectory_issue and result is not None and self.degraded:
+            output = result.output if isinstance(result.output, dict) else {}
+            raw_agentic = output.get("agentic")
+            agentic: dict[str, Any] = raw_agentic if isinstance(raw_agentic, dict) else {}
+            trajectory_issue = str(
+                output.get("degraded_reason")
+                or agentic.get("stall_reason")
+                or agentic.get("error")
+                or "trajectory reported incomplete or degraded"
+            )
+
+        def bounded(items: list[Any], *, limit: int = 8, width: int = 240) -> list[str]:
+            return [str(item)[:width] for item in items[:limit]]
+
+        proof_evidence = {
+            "passed": self.proof_passed,
+            "score": round(float(getattr(proof, "score", 0.0) or 0.0), 2),
+            "mode": str(getattr(proof, "mode", "") or ""),
+            "files_total": int(getattr(proof, "files_total", 0) or 0),
+            "files_substantive": int(getattr(proof, "files_substantive", 0) or 0),
+            "checklist_total": int(getattr(proof, "checklist_total", 0) or 0),
+            "checklist_present": int(getattr(proof, "checklist_present", 0) or 0),
+            "missing": bounded(list(getattr(proof, "missing", []) or [])),
+            "syntax_error_count": len(getattr(proof, "syntax_errors", []) or []),
+            "build": str(detail.get("build") or ""),
+            "tests": str(detail.get("tests") or ""),
+            "failure_reasons": bounded(failures),
+        }
+        return {
+            "index": self.index,
+            "selected": bool(selected),
+            "proof_passed": self.proof_passed,
+            "trajectory_complete": not self.degraded,
+            "trajectory_success": bool(result and result.success),
+            "duration_ms": round(float(self.duration_ms), 2),
+            "trajectory_duration_ms": round(float(result.duration_ms), 2) if result else 0.0,
+            "proof_duration_ms": round(float(self.proof_duration_ms), 2),
+            "files_written": int(self.files_written),
+            "source_bytes": int(self.source_bytes),
+            "model_id": str(result.model_id or "") if result else "",
+            "proof": proof_evidence,
+            "error": trajectory_issue[:500],
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "index": self.index,
             "worktree_dir": self.worktree.dir,
             "passed": self.passed,
+            "proof_passed": self.proof_passed,
             "degraded": self.degraded,
             "files_written": self.files_written,
+            "source_bytes": self.source_bytes,
+            "duration_ms": self.duration_ms,
+            "proof_duration_ms": self.proof_duration_ms,
             "proof": self.proof.to_dict() if self.proof else None,
             "error": self.error,
         }
@@ -89,6 +176,56 @@ class SelectionResult:
     candidates: list[Candidate] = field(default_factory=list)
     any_passed: bool = False
     reason: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+    def freeze_evidence(self) -> None:
+        """Capture candidate diagnostics while all temporary trees still exist."""
+        winner_index = self.winner.index if self.winner else None
+
+        def candidate_evidence(candidate: Any) -> dict[str, Any]:
+            serializer = getattr(candidate, "to_evidence", None)
+            if callable(serializer):
+                return serializer(selected=candidate.index == winner_index)
+            proof = getattr(candidate, "proof", None)
+            return {
+                "index": int(getattr(candidate, "index", 0)),
+                "selected": getattr(candidate, "index", None) == winner_index,
+                "proof_passed": bool(proof and getattr(proof, "passed", False)),
+                "trajectory_complete": True,
+                "trajectory_success": True,
+                "duration_ms": 0.0,
+                "trajectory_duration_ms": 0.0,
+                "proof_duration_ms": 0.0,
+                "files_written": int(getattr(candidate, "files_written", 0) or 0),
+                "source_bytes": int(getattr(candidate, "source_bytes", 0) or 0),
+                "model_id": "",
+                "proof": {
+                    "passed": bool(proof and getattr(proof, "passed", False)),
+                    "score": float(getattr(proof, "score", 0.0) or 0.0),
+                    "files_substantive": int(
+                        getattr(proof, "files_substantive", 0) or 0
+                    ),
+                },
+                "error": "",
+            }
+
+        self.evidence = {
+            "schema_version": 1,
+            "winner_index": winner_index,
+            "candidate_count": len(self.candidates),
+            "any_proof_passed": bool(self.any_passed),
+            "selection_class": "proof_passed" if self.any_passed else "fallback",
+            "reason": self.reason,
+            "candidates": [
+                candidate_evidence(candidate)
+                for candidate in sorted(self.candidates, key=lambda item: item.index)
+            ],
+        }
+
+    def to_evidence(self) -> dict[str, Any]:
+        if not self.evidence:
+            self.freeze_evidence()
+        return copy.deepcopy(self.evidence)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +233,7 @@ class SelectionResult:
             "any_passed": self.any_passed,
             "reason": self.reason,
             "candidates": [c.to_dict() for c in self.candidates],
+            "evidence": self.to_evidence(),
         }
 
 
@@ -165,6 +303,7 @@ async def sample(
             worktree_registry.append(wt)
 
     async def _run(cand: Candidate) -> None:
+        started = perf_counter()
         try:
             cand.result = await trajectory(cand.worktree, cand.index)
         except Exception as exc:  # noqa: BLE001 - isolate failures per candidate
@@ -176,6 +315,7 @@ async def sample(
         # docker ping); offload it so it neither blocks the event loop nor
         # serializes the N candidates under gather. Keep it inside the try so a
         # proof_run crash is isolated to this candidate, not the whole gather.
+        proof_started = perf_counter()
         try:
             cand.proof = await asyncio.to_thread(
                 proof_run,
@@ -188,6 +328,9 @@ async def sample(
             cand.proof = None
             if cand.error is None:
                 cand.error = f"proof_run failed: {exc}"
+        finally:
+            cand.proof_duration_ms = (perf_counter() - proof_started) * 1000.0
+            cand.duration_ms = (perf_counter() - started) * 1000.0
 
     selection: SelectionResult | None = None
     cancelled = False
@@ -213,19 +356,38 @@ async def sample(
 def select(candidates: list[Candidate]) -> SelectionResult:
     """Pick the best-passing trajectory, else the most-complete one."""
     if not candidates:
-        return SelectionResult(winner=None, candidates=[], any_passed=False, reason="no candidates")
+        selection = SelectionResult(
+            winner=None, candidates=[], any_passed=False, reason="no candidates"
+        )
+        selection.freeze_evidence()
+        return selection
 
-    passed = [c for c in candidates if c.passed]
+    # Objective proof is authoritative for selecting the deliverable tree. A
+    # trajectory can time out after writing every planned file; its session is
+    # degraded, but if the resulting tree passes the same build/test proof, it
+    # must still beat every proof-failing candidate. Completeness remains the
+    # second rank component within this proof class.
+    passed = [
+        c
+        for c in candidates
+        if bool(getattr(c, "proof_passed", getattr(getattr(c, "proof", None), "passed", False)))
+    ]
     if passed:
         winner = max(passed, key=lambda c: c.rank_key)
-        return SelectionResult(
+        selection = SelectionResult(
             winner=winner,
             candidates=candidates,
             any_passed=True,
-            reason=f"best of {len(passed)} passing trajectories",
+            reason=f"best of {len(passed)} proof-passing trajectories",
         )
+        selection.freeze_evidence()
+        return selection
 
     # Fall back to most-complete (never deliver nothing if anything was made).
     winner = max(candidates, key=lambda c: c.rank_key)
     reason = "no trajectory passed proof; selected most-complete fallback"
-    return SelectionResult(winner=winner, candidates=candidates, any_passed=False, reason=reason)
+    selection = SelectionResult(
+        winner=winner, candidates=candidates, any_passed=False, reason=reason
+    )
+    selection.freeze_evidence()
+    return selection

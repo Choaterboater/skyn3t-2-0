@@ -69,6 +69,7 @@ class BuildRecord:
     build_profile: str = ""
     model_trace: dict[str, Any] = field(default_factory=dict)
     quality_scorecard: dict[str, Any] = field(default_factory=dict)
+    best_of_n: dict[str, Any] = field(default_factory=dict)
     skills_used: list[str] = field(default_factory=list)
     recall_used: list[dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -94,6 +95,7 @@ class BuildRecord:
             "build_profile": self.build_profile,
             "model_trace": self.model_trace,
             "quality_scorecard": self.quality_scorecard,
+            "best_of_n": self.best_of_n,
             "skills_used": self.skills_used,
             "recall_used": self.recall_used,
             "created_at": self.created_at,
@@ -329,7 +331,13 @@ class AppState:
             for k in ("slug", "stack", "app_type", "engine", "build_profile"):
                 if ev.payload.get(k):
                     setattr(rec, k, str(ev.payload[k]))
-            for k in ("stack_selection", "classification", "model_trace", "quality_scorecard"):
+            for k in (
+                "stack_selection",
+                "classification",
+                "model_trace",
+                "quality_scorecard",
+                "best_of_n",
+            ):
                 if isinstance(ev.payload.get(k), dict):
                     setattr(rec, k, dict(ev.payload[k]))
             for k in ("skills_used", "recall_used"):

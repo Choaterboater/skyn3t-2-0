@@ -135,6 +135,24 @@ def test_historical_cost_without_generation_evidence_is_labeled_estimate():
     assert "source unavailable" in truth["llm_cost_label"]
 
 
+def test_legacy_openrouter_zero_without_usage_evidence_is_unknown():
+    truth = build_summary({
+        "status": "failed",
+        "extra": {
+            "llm_backend": "auto",
+            "codegen_model": "deepseek/deepseek-v4-flash",
+            "agentic": {"backend": "openrouter", "ok": False},
+            "build_cost_usd": 0.0,
+        },
+    })["cost_truth"]
+
+    assert truth["llm_known_cost_usd"] == 0.0
+    assert truth["llm_cost_usd"] is None
+    assert truth["llm_cost_known"] is False
+    assert truth["llm_cost_classification"] == "unknown"
+    assert "legacy provider usage evidence unavailable" in truth["llm_cost_label"]
+
+
 def test_historical_replicate_assets_never_claim_zero_external_cost():
     summary = build_summary({
         "extra": {

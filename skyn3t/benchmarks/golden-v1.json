@@ -26,7 +26,7 @@
         "expected_stack": "react_native",
         "min_score": 60,
         "min_intent_score": 80,
-        "required_gates": ["proof"],
+        "required_gates": ["proof", "security_check"],
         "required_artifacts": ["package.json", "app.json", "App.tsx"]
       }
     },
@@ -78,7 +78,7 @@
         "expected_stack": "vue",
         "min_score": 60,
         "min_intent_score": 80,
-        "required_gates": ["proof", "seo"],
+        "required_gates": ["proof", "security_check", "seo"],
         "required_artifacts": ["package.json", "src/main.ts", "src/App.vue"]
       }
     },
@@ -91,7 +91,7 @@
         "expected_stack": "sveltekit",
         "min_score": 60,
         "min_intent_score": 80,
-        "required_gates": ["proof", "seo"],
+        "required_gates": ["proof", "security_check", "seo"],
         "required_artifacts": ["package.json", "svelte.config.js", "src/routes/+page.svelte"]
       }
     },
@@ -104,7 +104,7 @@
         "expected_stack": "react_ts",
         "min_score": 60,
         "min_intent_score": 80,
-        "required_gates": ["proof", "seo"],
+        "required_gates": ["proof", "security_check", "seo"],
         "required_artifacts": ["package.json", "tsconfig.json", "src/App.tsx"]
       }
     },
@@ -169,7 +169,7 @@
         "expected_stack": "tauri",
         "min_score": 60,
         "min_intent_score": 80,
-        "required_gates": ["proof"],
+        "required_gates": ["proof", "security_check"],
         "required_artifacts": ["package.json", "src-tauri/Cargo.toml", "src-tauri/src/main.rs"]
       }
     },

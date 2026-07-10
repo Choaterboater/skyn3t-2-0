@@ -109,6 +109,6 @@ class BuildManifest:
         if not path.exists():
             return None
         try:
-            return cls.from_dict(json.loads(path.read_text()))
-        except (json.JSONDecodeError, TypeError, KeyError):
+            return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError, UnicodeError, TypeError, KeyError):
             return None

@@ -242,7 +242,10 @@ async def test_cancelled_build_recovers_candidate_before_worktree_cleanup(tmp_pa
     summary = cancelled[-1]["manifest"]["extra"]
     assert summary["model_trace"]["profile"] == "cheap_learned"
     assert summary["quality_scorecard"]["status"] == "cancelled"
-    assert summary["quality_scorecard"]["cost_truth"]["llm_cost_usd"] >= 0
+    cost_truth = summary["quality_scorecard"]["cost_truth"]
+    assert cost_truth["llm_cost_usd"] is None
+    assert cost_truth["llm_known_cost_usd"] == 0.0
+    assert cost_truth["llm_cost_known"] is False
     assert summary["non_shippable_spend_usd"] == summary["build_cost_usd"]
     assert snapshots and snapshots[0]["file_count"] >= 1
     recovery = Path(snapshots[0]["path"])
@@ -264,4 +267,7 @@ async def test_cancelled_build_recovers_candidate_before_worktree_cleanup(tmp_pa
     assert cancelled_events[-1].payload["recovery"][0]["path"] == str(recovery)
     assert cancelled_events[-1].payload["quality_scorecard"]["status"] == "cancelled"
     assert cancelled_events[-1].payload["model_trace"]["profile"] == "cheap_learned"
-    assert cancelled_events[-1].payload["cost_truth"]["llm_cost_usd"] >= 0
+    event_cost_truth = cancelled_events[-1].payload["cost_truth"]
+    assert event_cost_truth["llm_cost_usd"] is None
+    assert event_cost_truth["llm_known_cost_usd"] == 0.0
+    assert event_cost_truth["llm_cost_known"] is False

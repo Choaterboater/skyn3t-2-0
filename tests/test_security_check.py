@@ -23,6 +23,31 @@ def test_security_check_flags_bundled_secret(tmp_path):
     assert any("secret" in issue.lower() for issue in verdict["issues"])
 
 
+def test_security_check_covers_web_stack_alias_component_files(tmp_path):
+    (tmp_path / "App.vue").write_text(
+        "<script>const apiKey = 'sk-live-1234567890abcdef';</script>\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "vuejs")
+
+    assert verdict["skipped"] is False
+    assert verdict["ok"] is False
+    assert any("App.vue" in issue for issue in verdict["issues"])
+
+
+def test_security_check_covers_vite_and_react_native_sources(tmp_path):
+    (tmp_path / "App.tsx").write_text(
+        "export const apiKey = 'sk-live-1234567890abcdef';\n",
+        encoding="utf-8",
+    )
+
+    for stack in ("vite", "react_native"):
+        verdict = check_security(tmp_path, stack)
+        assert verdict["skipped"] is False
+        assert verdict["ok"] is False
+
+
 def test_security_check_skips_artifact_stack(tmp_path):
     (tmp_path / "main.py").write_text("print('hi')\n", encoding="utf-8")
 

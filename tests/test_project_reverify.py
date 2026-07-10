@@ -147,7 +147,8 @@ def _write_project(
     (project / "skyn3t_manifest.json").write_text(json.dumps(manifest))
     if with_file:
         (project / "index.html").write_text(
-            "<!doctype html><html><body><main>Complete app</main></body></html>"
+            "<!doctype html><html><body><main class='grid'>"
+            "<h1>Complete app</h1><a href='/'>Home</a></main></body></html>"
         )
     if isinstance(getattr(state, "memory", None), _Memory):
         memory = state.memory
@@ -246,6 +247,10 @@ async def test_reverify_promotes_with_local_proof_and_persists_evidence(
     assert response["skyn3t_model_invocations"] == 0
     assert response["execution"]["external_cost_usd"] is None
     assert response["execution"]["project_command_network_isolation"] == "not_enforced"
+    assert response["gates"]["security"]["ok"] is True
+    assert response["gates"]["web_polish"]["ok"] is True
+    assert response["gates"]["runtime_liveness"]["ok"] is True
+    assert all(response["promotion_checks"]["candidate_gates"].values())
     assert response["status"] == "completed"
     assert response["verdict"] == "go"
     assert response["score"] == 82.0
@@ -283,6 +288,7 @@ async def test_reverify_promotes_with_local_proof_and_persists_evidence(
     )
     assert persisted["extra"]["reverify"]["promoted"] is True
     assert persisted["extra"]["reverify"]["repairs_committed"] is True
+    assert persisted["extra"]["reverify"]["gates"]["runtime_liveness"]["ok"] is True
     assert persisted["extra"]["reverify"]["review"]["binding"] == "legacy_durable_brief"
     assert persisted["extra"]["reverify"]["review"]["approved_current_tree"] is False
     assert persisted["extra"]["reverify"]["candidate"]["unchanged_during_proof"] is True
@@ -669,6 +675,170 @@ async def test_reverify_declared_build_and_tests_must_not_be_skipped(
     failures = response["promotion_checks"]["failures"]
     assert any("node build did not pass" in value for value in failures)
     assert any("node tests did not pass" in value for value in failures)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failed_gate", "expected_failure"),
+    [
+        ("security", "security check failed"),
+        ("web_polish", "web polish check failed"),
+    ],
+)
+async def test_reverify_static_candidate_gates_block_promotion(
+    tmp_path,
+    monkeypatch,
+    failed_gate,
+    expected_failure,
+):
+    memory = _Memory({"build_id": f"build-{failed_gate}", "slug": failed_gate})
+    state = _state(tmp_path, memory=memory)
+    project, _ = _write_project(state, failed_gate)
+    original_source = (project / "index.html").read_text(encoding="utf-8")
+    _wire_passing_proof(monkeypatch)
+    monkeypatch.setattr(
+        "skyn3t.web.routes._run_reverify_runtime_liveness",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "skipped": False,
+            "routes": [{"path": "/", "status": 200, "ok": True}],
+            "dead_routes": [],
+        },
+    )
+    failing = lambda *_args, **_kwargs: {  # noqa: E731 - injectable gate stub
+        "ok": False,
+        "skipped": False,
+        "issues": [f"deliberate {failed_gate} failure"],
+        "checked": ["index.html"],
+    }
+    monkeypatch.setattr(
+        f"skyn3t.studio.{'security_check' if failed_gate == 'security' else 'web_polish_check'}."
+        f"{'check_security' if failed_gate == 'security' else 'check_web_polish'}",
+        failing,
+    )
+
+    response = await reverify_project(state, project.name)
+
+    assert response["promoted"] is False
+    assert response["promotion_checks"]["candidate_gates"][failed_gate] is False
+    assert expected_failure in response["reason"]
+    assert (project / "index.html").read_text(encoding="utf-8") == original_source
+    assert not list(state.settings.projects_dir.glob(".skyn3t-reverify-*"))
+
+
+@pytest.mark.asyncio
+async def test_reverify_dead_runtime_route_blocks_promotion(tmp_path, monkeypatch):
+    memory = _Memory({"build_id": "build-runtime-dead", "slug": "runtime-dead"})
+    state = _state(tmp_path, memory=memory)
+    project, _ = _write_project(state, "runtime-dead")
+    original_source = (project / "index.html").read_text(encoding="utf-8")
+    _wire_passing_proof(monkeypatch)
+    monkeypatch.setattr(
+        "skyn3t.web.routes._run_reverify_runtime_liveness",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "skipped": False,
+            "reason": "1 runtime route(s) did not respond",
+            "routes": [{"path": "/broken", "status": 500, "ok": False}],
+            "dead_routes": ["/broken"],
+        },
+    )
+
+    response = await reverify_project(state, project.name)
+
+    assert response["promoted"] is False
+    assert response["promotion_checks"]["candidate_gates"]["runtime_liveness"] is False
+    assert "runtime liveness check failed: /broken" in response["reason"]
+    assert response["gates"]["runtime_liveness"]["dead_routes"] == ["/broken"]
+    assert (project / "index.html").read_text(encoding="utf-8") == original_source
+    assert not list(state.settings.projects_dir.glob(".skyn3t-reverify-*"))
+
+
+def test_reverify_runtime_probe_disables_secrets_and_stops_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    import skyn3t.studio.app_runner as app_runner
+    import skyn3t.studio.liveness as liveness
+    import skyn3t.web.routes as routes
+
+    project = tmp_path / "candidate"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>Candidate</h1>", encoding="utf-8")
+    calls: dict = {}
+    running = SimpleNamespace(
+        status="running",
+        url="http://127.0.0.1:9876",
+        detail={},
+        kind="static",
+        pid=None,
+        log_path=None,
+    )
+
+    class FakeRunner:
+        async def start(self, root, stack, **kwargs):
+            calls["start"] = (Path(root), stack, kwargs)
+            return running
+
+        def stop(self, app):
+            calls["stopped"] = app
+
+    async def no_crawled_routes(_url):
+        return []
+
+    async def dead_report(_url, _routes):
+        return liveness.LivenessReport(
+            results=[
+                liveness.RouteResult("/broken", "GET", 500, False, "page")
+            ],
+            total=1,
+            ok=0,
+            dead=1,
+            dead_routes=["/broken"],
+            health=0.0,
+        )
+
+    monkeypatch.setattr(app_runner, "AppRunner", FakeRunner)
+    monkeypatch.setattr(liveness, "enumerate_routes", lambda *_args: [liveness.Route("/broken")])
+    monkeypatch.setattr(liveness, "crawl_routes", no_crawled_routes)
+    monkeypatch.setattr(liveness, "check_liveness", dead_report)
+
+    result = routes._run_reverify_runtime_liveness(
+        project,
+        stack="static",
+        settings=SimpleNamespace(generated_build_timeout=3),
+    )
+
+    assert result["ok"] is False
+    assert result["dead_routes"] == ["/broken"]
+    assert calls["start"][0] == project
+    assert calls["start"][2]["allow_secret_passthrough"] is False
+    assert calls["stopped"] is running
+
+
+def test_app_run_spec_secret_override_wins_over_global_opt_in(tmp_path, monkeypatch):
+    import skyn3t.studio.app_runner as app_runner
+
+    (tmp_path / "index.html").write_text("<h1>Candidate</h1>", encoding="utf-8")
+    monkeypatch.setenv("SKYN3T_PREVIEW_SECRET_PASSTHROUGH", "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-secret-value")
+    monkeypatch.setattr(
+        app_runner,
+        "needed_secret_names",
+        lambda *_args, **_kwargs: {"OPENROUTER_API_KEY"},
+    )
+
+    spec = app_runner.build_run_spec(
+        tmp_path,
+        "static",
+        port=9876,
+        allow_secret_passthrough=False,
+    )
+
+    assert spec is not None
+    assert "OPENROUTER_API_KEY" not in spec.env
+    assert spec.injected == ()
+    assert spec.missing_secrets == ("OPENROUTER_API_KEY",)
 
 
 @pytest.mark.asyncio

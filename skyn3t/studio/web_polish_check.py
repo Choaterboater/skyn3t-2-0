@@ -10,8 +10,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-_UI_STACKS = {"react", "react_vite", "nextjs", "astro", "remix", "static"}
-_SUFFIXES = {".html", ".jsx", ".tsx", ".js", ".ts", ".astro", ".css"}
+from skyn3t.core.stacks import UI_WEB_STACKS
+
+_UI_STACKS = UI_WEB_STACKS - {"phaser"}
+_SUFFIXES = {
+    ".html", ".jsx", ".tsx", ".js", ".ts", ".astro", ".vue", ".svelte", ".css",
+}
 _SKIP_DIRS = {"node_modules", ".next", "dist", "build", "out"}
 _HEADING_RE = re.compile(r"<h1\b|className=.*text-[34]|font-size\s*:\s*(?:[2-9]rem|[3-9][0-9]px)", re.I | re.S)
 _ACTION_RE = re.compile(r"<(?:button|a|input|select|textarea)\b|onClick=|href=", re.I)

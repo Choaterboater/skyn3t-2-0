@@ -268,8 +268,18 @@ def _preview_secret_passthrough_enabled() -> bool:
     }
 
 
-def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None = None) -> RunSpec | None:
-    """Map a project to a run command by inspecting its contents. None = no web preview."""
+def build_run_spec(
+    project_dir: str | Path,
+    stack: str = "",
+    *,
+    port: int | None = None,
+    allow_secret_passthrough: bool | None = None,
+) -> RunSpec | None:
+    """Map a project to a run command by inspecting its contents.
+
+    ``allow_secret_passthrough=False`` is a per-call hard override for probes
+    that must never expose host credentials to generated code.
+    """
     pdir = Path(project_dir)
 
     def _port() -> int:
@@ -281,7 +291,12 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
     # needed names already present in the host env; `resolved` carries values that
     # came from the store (and so aren't in the host env).
     needed = needed_secret_names(pdir, stack)
-    if _preview_secret_passthrough_enabled():
+    passthrough_enabled = (
+        _preview_secret_passthrough_enabled()
+        if allow_secret_passthrough is None
+        else allow_secret_passthrough
+    )
+    if passthrough_enabled:
         resolved, missing = resolve_serve_secrets(needed)
     else:
         resolved = {}
@@ -469,10 +484,22 @@ def _kill_group(pid: int, *, wait_s: float = 5.0) -> None:
 class AppRunner:
     """Launch/stop a generated app as a live localhost server. Never raises."""
 
-    async def start(self, project_dir: str | Path, stack: str = "", *,
-                    port: int | None = None, ready_timeout: int = 20) -> RunningApp:
+    async def start(
+        self,
+        project_dir: str | Path,
+        stack: str = "",
+        *,
+        port: int | None = None,
+        ready_timeout: int = 20,
+        allow_secret_passthrough: bool | None = None,
+    ) -> RunningApp:
         pdir = Path(project_dir)
-        spec = build_run_spec(pdir, stack, port=port)
+        spec = build_run_spec(
+            pdir,
+            stack,
+            port=port,
+            allow_secret_passthrough=allow_secret_passthrough,
+        )
         if spec is None:
             return RunningApp(url="", port=0, pid=None, kind="none",
                               project_dir=str(pdir), status="no_preview",

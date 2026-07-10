@@ -42,6 +42,8 @@ export function step(state, input = {}, dt = 1 / 60) {
   if (state.score >= 5) state.over = true;
   return state;
 }
+export function isWin(state) { return state.score >= 5; }
+export function isLose() { return false; }
 """
 
 # Same exports, but step() forces a NaN at runtime — the real gate must flag it.
@@ -54,6 +56,8 @@ export function step(state, input = {}, dt = 1 / 60) {
   state.x = (state.x * 0) / 0; // NaN
   return state;
 }
+export function isWin() { return false; }
+export function isLose() { return false; }
 """
 
 
@@ -61,7 +65,14 @@ def _scaffold(root: Path, sim: str) -> None:
     (root / "src").mkdir(parents=True, exist_ok=True)
     (root / "src" / "sim.js").write_text(sim)
     (root / "src" / "main.js").write_text(
-        "// entry\nimport { createState, step } from './sim.js';\n")
+        "// entry\n"
+        "import { createState, step } from './sim.js';\n"
+        "let state = createState(1);\n"
+        "export function frame() {\n"
+        "  state = step(state, {left:false,right:false,up:false,down:false,"
+        "action:false,pause:false}, 1 / 60);\n"
+        "}\n"
+    )
     (root / "src" / "renderer.js").write_text("// draw\n")
     (root / "package.json").write_text(
         '{"name":"itest","scripts":{"dev":"vite","build":"vite build"}}')

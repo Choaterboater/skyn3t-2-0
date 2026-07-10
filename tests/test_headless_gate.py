@@ -346,6 +346,115 @@ def test_gate_passes_minimal_good_sim(tmp_path):
 
 
 @requires_node
+def test_gate_blocks_decoy_sim_disconnected_from_browser_entry(tmp_path):
+    _write(tmp_path, {
+        "src/sim.js": _GOODISH,
+        "src/main.js": "console.log('unrelated inline prototype')\n",
+    })
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.applicable is True
+    assert res.passed is False
+    assert any("disconnected" in violation for violation in res.violations)
+
+
+@requires_node
+def test_gate_blocks_imported_sim_that_browser_never_advances(tmp_path):
+    _write(tmp_path, {
+        "src/sim.js": _GOODISH,
+        "src/main.js": (
+            "import { createState, step } from './sim.js'\n"
+            "const state = createState(1234)\n"
+            "console.log(state, step)\n"
+        ),
+    })
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.passed is False
+    assert any("never calls step" in violation for violation in res.violations)
+
+
+@requires_node
+def test_gate_passes_sim_invoked_by_reachable_browser_entry(tmp_path):
+    _write(tmp_path, {
+        "src/sim.js": _GOODISH,
+        "src/main.js": (
+            "import { createState, step } from './sim.js'\n"
+            "let state = createState(1234)\n"
+            "export function update(delta) {\n"
+            "  state = step(state, {left:false,right:true,up:false,down:false,"
+            "action:false,pause:false}, delta / 1000)\n"
+            "}\n"
+        ),
+    })
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.applicable is True
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_gate_accepts_aliased_sim_bindings(tmp_path):
+    _write(tmp_path, {
+        "src/sim.js": _GOODISH,
+        "src/main.js": (
+            "import { createState as init, step as advance } from './sim.js'\n"
+            "let state = init(1234)\n"
+            "state = advance(state, {left:false,right:true,up:false,down:false,"
+            "action:false,pause:false}, 1 / 60)\n"
+        ),
+    })
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_gate_accepts_sim_reexported_through_reachable_module(tmp_path):
+    _write(tmp_path, {
+        "src/sim.js": _GOODISH,
+        "src/core.js": "export { createState, step } from './sim.js'\n",
+        "src/main.js": (
+            "import { createState, step } from './core.js'\n"
+            "let state = createState(1234)\n"
+            "state = step(state, {left:false,right:false,up:false,down:false,"
+            "action:true,pause:false}, 1 / 60)\n"
+        ),
+    })
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.passed is True, res.violations
+
+
+@requires_node
+def test_comment_import_does_not_connect_decoy_sim(tmp_path):
+    _write(tmp_path, {
+        "src/sim.js": _GOODISH,
+        "src/main.js": (
+            "// import { createState, step } from './sim.js'\n"
+            "console.log('primitive-only prototype')\n"
+        ),
+    })
+    res = run_headless_gate(tmp_path, ticks=120)
+    assert res.passed is False
+    assert any("disconnected" in violation for violation in res.violations)
+
+
+@requires_node
+def test_explicit_html_entry_ignores_orphaned_alternative_main_module(tmp_path):
+    _write(tmp_path, {
+        "index.html": '<script type="module" src="/src/main.js"></script>\n',
+        "src/sim.js": _GOODISH,
+        "src/main.js": "console.log('actual primitive-only game')\n",
+        "src/main.ts": (
+            "import { createState, step } from './sim.js'\n"
+            "let state = createState(1)\n"
+            "state = step(state, {}, 1 / 60)\n"
+        ),
+    })
+
+    res = run_headless_gate(tmp_path, ticks=120)
+
+    assert res.passed is False
+    assert any("disconnected" in violation for violation in res.violations)
+
+
+@requires_node
 def test_gate_runs_nested_sim_core(tmp_path):
     # FIX A end-to-end: a located nested sim is GATED (applicable), not skipped
     # open — so the gate stays load-bearing for games that split src/sim/.
@@ -529,6 +638,45 @@ def test_broken_sim_blocks_rather_than_skips(tmp_path):
     assert res.applicable is True
     assert res.passed is False
     assert res.violations
+
+
+@requires_node
+def test_sim_missing_terminal_contract_exports_blocks(tmp_path):
+    _write(tmp_path, {"src/sim.js": (
+        "export function createState(seed){ return {x:0, rng:seed>>>0} }\n"
+        "export function step(state){ return state }\n"
+    )})
+    res = run_headless_gate(tmp_path, ticks=30)
+    assert res.applicable is True
+    assert res.passed is False
+    blob = " ".join(res.violations)
+    assert "isWin" in blob and "isLose" in blob
+
+
+@requires_node
+def test_sim_with_primitive_initial_state_blocks(tmp_path):
+    _write(tmp_path, {"src/sim.js": (
+        "export function createState(){ return 0 }\n"
+        "export function step(state){ return state }\n"
+        "export function isWin(){ return false }\n"
+        "export function isLose(){ return false }\n"
+    )})
+    res = run_headless_gate(tmp_path, ticks=30)
+    assert res.passed is False
+    assert any("object state" in violation for violation in res.violations)
+
+
+@requires_node
+def test_sim_that_replaces_state_with_a_primitive_blocks(tmp_path):
+    _write(tmp_path, {"src/sim.js": (
+        "export function createState(seed){ return {x:0, rng:seed>>>0} }\n"
+        "export function step(){ return 7 }\n"
+        "export function isWin(){ return false }\n"
+        "export function isLose(){ return false }\n"
+    )})
+    res = run_headless_gate(tmp_path, ticks=30)
+    assert res.passed is False
+    assert any("object state" in violation for violation in res.violations)
 
 
 @requires_node

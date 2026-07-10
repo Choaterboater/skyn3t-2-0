@@ -754,7 +754,12 @@ class CodeAgent(BaseAgent):
                     "chars": len(prompt),
                     "text": prompt,
                 })
-                res = await self.llm.agentic_build(prompt, str(worktree), **_agentic_kwargs)
+                res = await self.llm.agentic_build(
+                    prompt,
+                    str(worktree),
+                    planned_paths=sorted(expected_planned),
+                    **_agentic_kwargs,
+                )
                 self._restore_preexisting_assets(worktree, preexisting_assets)
                 agentic_ok = bool(res.get("ok", True))
                 agentic_confirmed = agentic_ok and bool(

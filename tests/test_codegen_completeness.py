@@ -36,9 +36,11 @@ class _ScriptedAgenticLLM:
     def __init__(self, callback):
         self.callback = callback
         self.prompts: list[str] = []
+        self.kwargs: list[dict] = []
 
     async def agentic_build(self, prompt, workdir, **kwargs):
         self.prompts.append(prompt)
+        self.kwargs.append(dict(kwargs))
         return await self.callback(len(self.prompts), Path(workdir))
 
 
@@ -103,6 +105,9 @@ async def test_resume_prompt_is_compact_and_can_complete_missing_architecture(tm
     _agent, result = await _run(tmp_path, llm, plan)
 
     assert len(llm.prompts) == 2
+    assert llm.kwargs[0]["planned_paths"] == sorted(
+        item["path"] for item in plan["files"]
+    )
     assert len(llm.prompts[1]) < len(llm.prompts[0])
     assert "RESUME IN PLACE" in llm.prompts[1]
     assert plan["files"][1]["path"] in llm.prompts[1]

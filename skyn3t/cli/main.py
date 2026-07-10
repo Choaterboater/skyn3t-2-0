@@ -245,6 +245,7 @@ async def _assemble_spine(
 
             memory = MemoryStore(settings)
             await memory.init_db()
+            memory.attach_event_bus(event_bus)
         except Exception:  # noqa: BLE001
             memory = None
 

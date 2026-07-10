@@ -144,7 +144,20 @@ def test_list_projects_surfaces_ai_guidance_evidence(tmp_path):
         "status": "completed",
         "verdict": "go",
         "score": 88,
+        "stages": [
+            {
+                "name": "code",
+                "agent_name": "frontend",
+                "status": "completed",
+                "duration_ms": 1200,
+            },
+        ],
         "extra": {
+            "build_profile": "balanced",
+            "llm_backend": "openrouter",
+            "codegen_model": "deepseek/deepseek-v4-flash",
+            "model_override": "deepseek/deepseek-v4-flash",
+            "stage_costs": [{"stage": "code", "cost_usd": 0.42}],
             "skills_used": ["react-ui", "seo-copy"],
             "recall_used": [{"score": 0.91, "text": "prior winner"}],
             "stage_skills_used": {"code": ["react-code-role"]},
@@ -163,6 +176,88 @@ def test_list_projects_surfaces_ai_guidance_evidence(tmp_path):
     assert row["stage_skills_used"] == {"code": ["react-code-role"]}
     assert row["prompt_count"] == 1
     assert row["quality_scorecard"]["proof_passed"] is True
+    assert row["build_profile"] == "balanced"
+    assert row["backend"] == "openrouter"
+    assert row["llm_backend"] == "openrouter"
+    assert row["codegen_model"] == "deepseek/deepseek-v4-flash"
+    assert row["model_override"] == "deepseek/deepseek-v4-flash"
+    assert row["model_trace"]["prompt_count"] == 1
+    assert row["stages"] == [{
+        "name": "code",
+        "agent": "frontend",
+        "status": "completed",
+        "score": None,
+        "duration_ms": 1200,
+    }]
+    assert row["stage_costs"] == [{"stage": "code", "cost_usd": 0.42}]
+
+
+def test_list_projects_surfaces_ai_trace_for_cancelled_manifest(tmp_path):
+    state = _state(tmp_path, builds={
+        "1ad8020b6327": SimpleNamespace(
+            build_id="1ad8020b6327",
+            slug="cancelled-guided",
+            stack="react",
+            status="cancelled",
+            cost_usd=0.0,
+            model_trace={
+                "profile": "cheap_learned",
+                "prompt_count": 0,
+                "stages": [],
+            },
+            created_at=10.0,
+            updated_at=30.0,
+        ),
+    })
+    d = state.settings.projects_dir / "cancelled-guided"
+    d.mkdir(parents=True)
+    stages = [
+        {
+            "name": f"stage-{index}",
+            "agent_type": "frontend",
+            "status": "completed" if index < 11 else "cancelled",
+        }
+        for index in range(12)
+    ]
+    (d / "skyn3t_manifest.json").write_text(json.dumps({
+        "build_id": "1ad8020b6327",
+        "slug": "cancelled-guided",
+        "stack": "react",
+        "status": "cancelled",
+        "stages": stages,
+        "extra": {
+            "build_profile": "cheap_learned",
+            "llm_backend": "auto",
+            "codegen_model": "deepseek/deepseek-v4-flash",
+            "model_override": "deepseek/deepseek-v4-flash",
+            "build_cost_usd": 7.586062,
+            "prompts": [{"stage": "brainstorm"}, {"stage": "code"}],
+            "stage_costs": [
+                {"stage": stage["name"], "cost_usd": 0.1}
+                for stage in stages
+            ],
+            "skills_used": ["api", "frontend", "delivered-empty"],
+            "recall_used": [],
+        },
+    }))
+    (d / "src").mkdir()
+    (d / "src" / "App.jsx").write_text("export default function App(){return null}\n")
+
+    out = asyncio.run(list_projects(state))
+    row = {project["slug"]: project for project in out["projects"]}["cancelled-guided"]
+
+    assert row["status"] == "cancelled"
+    assert row["build_id"] == "1ad8020b6327"
+    assert row["delivery_state"] == "incomplete"
+    assert row["build_profile"] == "cheap_learned"
+    assert row["backend"] == "auto"
+    assert row["codegen_model"] == "deepseek/deepseek-v4-flash"
+    assert row["model_trace"]["prompt_count"] == 2
+    assert len(row["stages"]) == 12
+    assert len(row["stage_costs"]) == 12
+    assert row["skills_used"] == ["api", "frontend", "delivered-empty"]
+    assert row["recall_used"] == []
+    assert row["cost_usd"] == pytest.approx(7.586062)
 
 
 def test_delete_project_moves_to_trash(tmp_path):

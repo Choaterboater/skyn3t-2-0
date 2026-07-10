@@ -6,11 +6,15 @@ the studio (build records), and the learning loop (graded lessons).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import hashlib
 import json
 import shutil
 from pathlib import Path
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -21,12 +25,276 @@ from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME
 
+log = structlog.get_logger(__name__)
+
+EVENT_PAYLOAD_MAX_BYTES = 64 * 1024
+EVENT_QUEUE_MAX_ITEMS = 4096
+EVENT_BATCH_MAX_ITEMS = 128
+EVENT_BATCH_FLUSH_SECONDS = 0.2
+EVENT_BATCH_MAX_ATTEMPTS = 3
+EVENT_BATCH_RETRY_SECONDS = 0.05
+
+_EVENT_META_KEY = "__skyn3t_event__"
+_EVENT_IDENTITY_KEYS = (
+    "build_id",
+    "slug",
+    "stage",
+    "capability",
+    "status",
+    "verdict",
+    "score",
+    "cost_usd",
+    "tokens",
+    "task_id",
+    "proposal_id",
+    "agent_name",
+    "agent_type",
+    "reason",
+    "error",
+)
+
+
+def _json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        default=str,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _bounded_scalar(value: Any, limit: int = 2048) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    text = str(value)
+    return text if len(text) <= limit else f"{text[:limit]}...[truncated]"
+
+
+def bound_event_payload(payload: Any) -> dict[str, Any]:
+    """Return a JSON-safe event payload capped to a durable per-row budget."""
+    raw = payload if isinstance(payload, dict) else {"value": payload}
+    try:
+        encoded = _json_bytes(raw)
+    except (TypeError, ValueError, RecursionError):
+        preview = repr(raw)
+        return {
+            "_truncated": True,
+            "_truncation_reason": "payload was not JSON serializable",
+            "_payload_preview": preview[:4096],
+        }
+    if len(encoded) <= EVENT_PAYLOAD_MAX_BYTES:
+        # Round-trip through JSON so SQLAlchemy never receives Paths, enums, or
+        # other objects accepted only by the serializer's ``default=str`` hook.
+        return json.loads(encoded.decode("utf-8"))
+
+    identity = {
+        key: _bounded_scalar(raw[key])
+        for key in _EVENT_IDENTITY_KEYS
+        if key in raw
+    }
+    meta = raw.get(_EVENT_META_KEY)
+    if isinstance(meta, dict):
+        identity[_EVENT_META_KEY] = {
+            key: _bounded_scalar(meta[key])
+            for key in ("id", "timestamp")
+            if key in meta
+        }
+    return {
+        **identity,
+        "_truncated": True,
+        "_truncation_reason": (
+            f"payload exceeded {EVENT_PAYLOAD_MAX_BYTES} UTF-8 bytes"
+        ),
+        "_original_size_bytes": len(encoded),
+        "_payload_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _is_critical_event(event_type: str) -> bool:
+    return event_type.startswith(("build.", "task."))
+
+
+class _EventPersistenceSink:
+    """Nonblocking EventBus sink with bounded buffering and batched commits."""
+
+    def __init__(
+        self,
+        store: MemoryStore,
+        event_bus: Any,
+        *,
+        queue_size: int = EVENT_QUEUE_MAX_ITEMS,
+        batch_size: int = EVENT_BATCH_MAX_ITEMS,
+        flush_seconds: float = EVENT_BATCH_FLUSH_SECONDS,
+    ) -> None:
+        self.store = store
+        self.event_bus = event_bus
+        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
+            maxsize=max(1, int(queue_size))
+        )
+        self.batch_size = max(1, int(batch_size))
+        self.flush_seconds = max(0.0, float(flush_seconds))
+        self.dropped_noncritical = 0
+        self._closed = False
+        self._unsubscribe: Any = None
+        self._worker: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        from skyn3t.core.events import EventType
+
+        self._unsubscribe = self.event_bus.subscribe(EventType.ALL, self._on_event)
+        self._worker = asyncio.create_task(
+            self._run(), name="skyn3t-event-persistence"
+        )
+
+    async def _on_event(self, event: Any) -> None:
+        if self._closed:
+            return
+        event_type = str(getattr(getattr(event, "type", ""), "value", event.type))
+        payload = dict(getattr(event, "payload", {}) or {})
+        payload[_EVENT_META_KEY] = {
+            "id": str(getattr(event, "id", "")),
+            "timestamp": getattr(event, "timestamp", None),
+        }
+        row = {
+            "event_type": event_type,
+            "source": str(getattr(event, "source", "")),
+            "payload": bound_event_payload(payload),
+            "correlation_id": getattr(event, "correlation_id", None),
+        }
+        try:
+            self.queue.put_nowait(row)
+        except asyncio.QueueFull:
+            if _is_critical_event(event_type):
+                # Critical lifecycle evidence is never discarded. Backpressure
+                # waits only for queue capacity; the subscriber never performs a
+                # SQLite transaction itself.
+                log.warning(
+                    "event_persistence_backpressure",
+                    event_type=event_type,
+                    queue_size=self.queue.maxsize,
+                )
+                await self.queue.put(row)
+            else:
+                self.dropped_noncritical += 1
+                # Log the first drop and powers of two without flooding logs.
+                n = self.dropped_noncritical
+                if n == 1 or n & (n - 1) == 0:
+                    log.warning(
+                        "event_persistence_dropped_noncritical",
+                        event_type=event_type,
+                        dropped=n,
+                        queue_size=self.queue.maxsize,
+                    )
+
+    async def _persist_batch(self, batch: list[dict[str, Any]]) -> None:
+        for attempt in range(1, EVENT_BATCH_MAX_ATTEMPTS + 1):
+            try:
+                await self.store.save_events(batch)
+                return
+            except Exception as exc:  # noqa: BLE001 - retry transient DB failures
+                critical = sum(
+                    1
+                    for item in batch
+                    if _is_critical_event(str(item.get("event_type", "")))
+                )
+                final = attempt >= EVENT_BATCH_MAX_ATTEMPTS
+                log_method = log.error if final else log.warning
+                log_method(
+                    "event_persistence_batch_failed",
+                    attempt=attempt,
+                    final=final,
+                    batch_size=len(batch),
+                    critical_events=critical,
+                    error=str(exc)[:300],
+                )
+                if final:
+                    return
+                await asyncio.sleep(EVENT_BATCH_RETRY_SECONDS * (2 ** (attempt - 1)))
+
+    def _take_ready_batch(self, max_items: int | None = None) -> list[dict[str, Any]]:
+        limit = self.batch_size if max_items is None else max(0, int(max_items))
+        batch: list[dict[str, Any]] = []
+        while len(batch) < limit:
+            try:
+                batch.append(self.queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        return batch
+
+    def _mark_done(self, batch: list[dict[str, Any]]) -> None:
+        for _ in batch:
+            self.queue.task_done()
+
+    async def _drain_after_cancellation(self) -> None:
+        while batch := self._take_ready_batch():
+            try:
+                await self._persist_batch(batch)
+            finally:
+                self._mark_done(batch)
+
+    async def _run(self) -> None:
+        batch: list[dict[str, Any]] = []
+        try:
+            while True:
+                first = await self.queue.get()
+                batch = [first]
+                if self.flush_seconds:
+                    deadline = asyncio.get_running_loop().time() + self.flush_seconds
+                    while len(batch) < self.batch_size:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            batch.append(
+                                await asyncio.wait_for(
+                                    self.queue.get(), timeout=remaining
+                                )
+                            )
+                        except TimeoutError:
+                            break
+                else:
+                    batch.extend(self._take_ready_batch(self.batch_size - 1))
+                await self._persist_batch(batch)
+                self._mark_done(batch)
+                batch = []
+        except asyncio.CancelledError:
+            # One-shot CLI commands end their event loop without explicitly
+            # closing the store. Finish the in-flight batch and drain anything
+            # already accepted before allowing loop shutdown to complete.
+            if batch:
+                try:
+                    await self._persist_batch(batch)
+                finally:
+                    self._mark_done(batch)
+            await self._drain_after_cancellation()
+            raise
+
+    async def flush(self) -> None:
+        await self.queue.join()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        await self.flush()
+        if self._worker is not None:
+            self._worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker
+            self._worker = None
+
 
 class MemoryStore:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._engine: AsyncEngine = create_async_engine(self.settings.db_url, future=True)
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
+        self._event_sink: _EventPersistenceSink | None = None
 
     async def init_db(self) -> None:
         async with self._engine.begin() as conn:
@@ -108,7 +376,38 @@ class MemoryStore:
             pass
 
     async def close(self) -> None:
+        if self._event_sink is not None:
+            await self._event_sink.close()
+            self._event_sink = None
         await self._engine.dispose()
+
+    def attach_event_bus(
+        self,
+        event_bus: Any,
+        *,
+        queue_size: int = EVENT_QUEUE_MAX_ITEMS,
+        batch_size: int = EVENT_BATCH_MAX_ITEMS,
+        flush_seconds: float = EVENT_BATCH_FLUSH_SECONDS,
+    ) -> None:
+        """Persist bus events through one queue-backed batch worker."""
+        if self._event_sink is not None:
+            if self._event_sink.event_bus is event_bus:
+                return
+            raise RuntimeError("MemoryStore is already attached to an EventBus")
+        sink = _EventPersistenceSink(
+            self,
+            event_bus,
+            queue_size=queue_size,
+            batch_size=batch_size,
+            flush_seconds=flush_seconds,
+        )
+        sink.start()
+        self._event_sink = sink
+
+    async def flush_events(self) -> None:
+        """Wait until every currently queued event has been committed or reported."""
+        if self._event_sink is not None:
+            await self._event_sink.flush()
 
     # ---- tasks -----------------------------------------------------------
     async def save_task(self, task: TaskRequest, result: TaskResult) -> None:
@@ -141,9 +440,69 @@ class MemoryStore:
 
     # ---- events ----------------------------------------------------------
     async def save_event(self, event_type: str, source: str, payload: dict, correlation_id: str | None) -> None:
+        await self.save_events([{
+            "event_type": event_type,
+            "source": source,
+            "payload": payload,
+            "correlation_id": correlation_id,
+        }])
+
+    async def save_events(self, events: list[dict[str, Any]]) -> None:
+        """Persist an event batch in one transaction."""
+        if not events:
+            return
+        rows = [
+            MessageRow(
+                event_type=str(item.get("event_type", ""))[:64],
+                source=str(item.get("source", ""))[:128],
+                payload=bound_event_payload(item.get("payload", {})),
+                correlation_id=(
+                    str(item["correlation_id"])[:64]
+                    if item.get("correlation_id") is not None
+                    else None
+                ),
+            )
+            for item in events
+        ]
         async with self._session() as s:
-            s.add(MessageRow(event_type=event_type, source=source, payload=payload, correlation_id=correlation_id))
+            s.add_all(rows)
             await s.commit()
+
+    async def recent_events(
+        self,
+        limit: int = 200,
+        *,
+        correlation_id: str | None = None,
+        event_types: list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return durable events in chronological order for replay/debugging."""
+        query = select(MessageRow)
+        if correlation_id is not None:
+            query = query.where(MessageRow.correlation_id == correlation_id)
+        if event_types:
+            query = query.where(MessageRow.event_type.in_(tuple(event_types)))
+        # API callers apply their own explicit ceiling (currently 2,000). Keep
+        # the storage primitive honest instead of hiding a second, different cap.
+        query = query.order_by(MessageRow.id.desc()).limit(max(1, int(limit)))
+        async with self._session() as s:
+            rows = list((await s.execute(query)).scalars().all())
+        rows.reverse()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = row.payload if isinstance(row.payload, dict) else {}
+            event_meta = payload.get(_EVENT_META_KEY)
+            event_meta = event_meta if isinstance(event_meta, dict) else {}
+            out.append({
+                "id": row.id,
+                "event_id": str(event_meta.get("id") or ""),
+                "type": row.event_type,
+                "source": row.source,
+                "payload": payload,
+                "correlation_id": row.correlation_id,
+                "timestamp": event_meta.get("timestamp"),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            })
+        return out
 
     # ---- builds ----------------------------------------------------------
     async def save_build(self, **fields: Any) -> None:

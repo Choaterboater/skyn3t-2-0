@@ -366,11 +366,21 @@ def test_skills_wires_build_pattern_scoreboard() -> None:
 
 def test_projects_surfaces_ai_guidance_evidence() -> None:
     projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
+    metadata = (SRC / "projectMetadata.js").read_text(encoding="utf-8")
     assert "SignalGrid" in projects
     assert "function aiEvidence" in projects
-    assert "skills {ai.skills.length}" in projects
+    assert "projectBuildMetadata(project)" in projects
+    assert "{ai.profile} · {ai.backend}" in projects
+    assert "{ai.modelSource} · {ai.model}" in projects
+    assert 'prompts {ai.promptCount ?? "—"}' in projects
+    assert 'stages {ai.stageCount ?? "—"}' in projects
+    assert "run {ai.runCostLabel} · stage {ai.stageCostLabel}" in projects
+    assert 'skills {ai.skillCount ?? "—"}' in projects
+    assert 'recall {ai.recallCount ?? "—"}' in projects
     assert "roles {ai.roleStages}" in projects
-    assert "prompts {ai.promptCount}" in projects
+    assert "export function projectBuildMetadata" in metadata
+    assert "project.stage_costs" in metadata
+    assert "trace.stage_costs" in metadata
     assert "Cleanup recommendations" in projects
     assert "safe cleanup candidates" in projects
     assert "const projectSignals =" in projects
@@ -533,7 +543,8 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert "Balanced" in studio
     assert "Best quality" in studio
     assert "concurrent code specialists" in studio
-    assert "Manual model" in studio
+    assert "Manual codegen" in studio
+    assert "planning, design, and review still use profile routing" in studio
     assert "Full app" in studio
     assert "build_profile" in studio
     assert "full_app" in studio
@@ -541,6 +552,8 @@ def test_studio_wires_build_profiles_and_manual_model() -> None:
     assert 'queryFn("/models")' in studio
     assert "manualModelChoices" in studio
     assert "/models/routing-preview" in studio
+    assert 'params.set("model_override"' not in studio
+    assert "codegen→${normalizedModelOverride}" in studio
     assert "datalist id=\"studio-models\"" in studio
     assert "const DEFAULT_STACK_SELECTION = []" in studio
     assert "Web set" in studio
@@ -619,20 +632,20 @@ def test_studio_mounts_model_catalog_only_while_disclosure_is_open() -> None:
 
 def test_studio_recent_build_ai_meta_prefers_codegen_model() -> None:
     studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
-    assert 'const codegenModel = String(trace.codegen_model || "");' in studio
-    assert 'const modelOverride = String(trace.model_override || "");' in studio
-    assert 'model: codegenModel || modelOverride || "auto",' in studio
+    assert "const metadata = projectBuildMetadata(build);" in studio
+    assert "model: metadata.model" in studio
+    assert "modelSource: metadata.modelSource" in studio
 
 
 def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None:
     studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
-    assert "modelOverride && (!codegenModel || codegenModel === modelOverride)" in studio
-    assert '? "manual"' in studio
-    assert ': codegenModel ? "codegen" : "auto route"' in studio
+    assert "backend: metadata.backend" in studio
+    assert "promptCount: metadata.promptCount" in studio
+    assert "stageCount: metadata.stageCount" in studio
     assert "backend setting {ai.backend}" in studio
     assert "{ai.modelSource} · {ai.model}" in studio
-    assert "prompts {ai.promptCount}" in studio
-    assert "stages {ai.stageCount}" in studio
+    assert 'prompts {ai.promptCount ?? "—"}' in studio
+    assert 'stages {ai.stageCount ?? "—"}' in studio
 
 
 def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:

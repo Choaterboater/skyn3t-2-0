@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import math
 import mimetypes
 import os
 import shutil
@@ -474,6 +475,198 @@ def _normalize_status(value: str) -> str:
 
 def _build_is_terminal(value: str) -> bool:
     return _normalize_status(value) in _BUILD_TERMINAL_STATUSES
+
+
+def _build_evidence_weight(value: Any) -> int:
+    """Estimate how much diagnostic evidence a compact build field contains."""
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return 1 if value.strip() else 0
+    if isinstance(value, dict):
+        total = 0
+        for item in value.values():
+            weight = _build_evidence_weight(item)
+            if weight:
+                total += 1 + weight
+        return total
+    if isinstance(value, (list, tuple)):
+        total = 0
+        for item in value:
+            weight = _build_evidence_weight(item)
+            if weight:
+                total += 1 + weight
+        return total
+    return 1
+
+
+def _richer_build_evidence(live: Any, persisted: Any) -> Any:
+    """Prefer persisted evidence on ties, but never replace richer live evidence."""
+    if _build_evidence_weight(persisted) >= _build_evidence_weight(live):
+        return persisted
+    return live
+
+
+def _merge_build_model_trace(live: Any, persisted: Any) -> dict[str, Any]:
+    """Merge compact trace fields without dropping richer per-field evidence."""
+    live_trace = dict(live) if isinstance(live, dict) else {}
+    persisted_trace = dict(persisted) if isinstance(persisted, dict) else {}
+    merged = dict(live_trace)
+    for key, value in persisted_trace.items():
+        merged[key] = _richer_build_evidence(live_trace.get(key), value)
+
+    prompt_counts: list[int] = []
+    for value in (live_trace.get("prompt_count"), persisted_trace.get("prompt_count")):
+        if value is None:
+            continue
+        try:
+            prompt_counts.append(max(0, int(value)))
+        except (TypeError, ValueError):
+            continue
+    if prompt_counts:
+        merged["prompt_count"] = max(prompt_counts)
+    return merged
+
+
+def _nonnegative_build_cost(value: Any) -> float | None:
+    try:
+        cost = float(value)
+    except (TypeError, ValueError):
+        return None
+    return cost if math.isfinite(cost) and cost >= 0 else None
+
+
+def _cost_truth_amount(value: Any) -> float | None:
+    if not isinstance(value, dict):
+        return None
+    return _nonnegative_build_cost(value.get("llm_cost_usd"))
+
+
+def _same_build_cost(left: float | None, right: float | None) -> bool:
+    if left is None or right is None:
+        return True
+    return math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
+
+
+def _row_cost_truth(row: dict[str, Any]) -> dict[str, Any]:
+    direct = row.get("cost_truth")
+    if isinstance(direct, dict) and _build_evidence_weight(direct):
+        return direct
+    scorecard = row.get("quality_scorecard")
+    if isinstance(scorecard, dict):
+        nested = scorecard.get("cost_truth")
+        if isinstance(nested, dict) and _build_evidence_weight(nested):
+            return nested
+    return {}
+
+
+def _matching_row_cost_truth(
+    row: dict[str, Any],
+    cost: float,
+) -> dict[str, Any]:
+    truth = _row_cost_truth(row)
+    truth_cost = _cost_truth_amount(truth)
+    if truth_cost is not None and _same_build_cost(truth_cost, cost):
+        return truth
+    return {}
+
+
+def _set_scorecard_cost_fields(
+    row: dict[str, Any],
+    *,
+    cost: float | None = None,
+    cost_truth: dict[str, Any] | None = None,
+) -> None:
+    value = row.get("quality_scorecard")
+    if not isinstance(value, dict):
+        return
+    scorecard = dict(value)
+    if cost_truth is None:
+        scorecard.pop("cost_truth", None)
+        scorecard.pop("cost_usd", None)
+    else:
+        scorecard["cost_truth"] = cost_truth
+        scorecard["cost_usd"] = cost
+    row["quality_scorecard"] = scorecard
+
+
+def _merge_live_build_history(
+    live: dict[str, Any],
+    persisted: dict[str, Any],
+) -> dict[str, Any]:
+    """Hydrate a live-cache row with compact evidence from persisted history."""
+    merged = dict(live)
+    for key, value in persisted.items():
+        if _build_evidence_weight(value):
+            merged[key] = value
+
+    merged["model_trace"] = _merge_build_model_trace(
+        live.get("model_trace"), persisted.get("model_trace")
+    )
+    for key in (
+        "quality_scorecard",
+        "best_of_n",
+        "cost_truth",
+        "skills_used",
+        "recall_used",
+        "classification",
+        "stack_selection",
+    ):
+        selected = _richer_build_evidence(live.get(key), persisted.get(key))
+        if _build_evidence_weight(selected):
+            merged[key] = selected
+
+    live_cost = _nonnegative_build_cost(live.get("cost_usd"))
+    persisted_cost = _nonnegative_build_cost(persisted.get("cost_usd"))
+    persisted_cost_truth = _row_cost_truth(persisted)
+    live_cost_truth = _matching_row_cost_truth(live, live_cost) if live_cost else {}
+    persisted_truth_cost = _cost_truth_amount(persisted_cost_truth)
+    live_terminal = _build_is_terminal(str(live.get("status", "")))
+    if (
+        live_terminal
+        and persisted_cost is not None
+        and _build_evidence_weight(persisted_cost_truth)
+    ):
+        merged["cost_usd"] = (
+            persisted_truth_cost
+            if persisted_truth_cost is not None
+            else persisted_cost
+        )
+        merged["cost_truth"] = persisted_cost_truth
+    elif not live_terminal and live_cost is not None and live_cost > 0:
+        merged["cost_usd"] = live_cost
+        if _build_evidence_weight(live_cost_truth):
+            merged["cost_truth"] = live_cost_truth
+            _set_scorecard_cost_fields(
+                merged,
+                cost=live_cost,
+                cost_truth=live_cost_truth,
+            )
+        elif not (
+            _same_build_cost(persisted_cost, live_cost)
+            and _same_build_cost(persisted_truth_cost, live_cost)
+        ):
+            merged.pop("cost_truth", None)
+            _set_scorecard_cost_fields(merged)
+    elif persisted_cost is not None and _build_evidence_weight(persisted_cost_truth):
+        merged["cost_usd"] = (
+            persisted_truth_cost
+            if persisted_truth_cost is not None
+            else persisted_cost
+        )
+        merged["cost_truth"] = persisted_cost_truth
+    elif live_cost is not None and live_cost > 0:
+        merged["cost_usd"] = live_cost
+    elif persisted_cost is not None:
+        merged["cost_usd"] = persisted_cost
+    elif live_cost is not None:
+        merged["cost_usd"] = live_cost
+
+    # Persisted evidence may lag the current process; local lifecycle identity wins.
+    for key in ("build_id", "status", "created_at", "updated_at", "correlation_id"):
+        if key in live:
+            merged[key] = live[key]
+    return merged
 
 
 def _normalize_build_key(value: str) -> str:
@@ -986,14 +1179,19 @@ async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
     cached = sorted(state.builds.values(), key=lambda r: r.updated_at, reverse=True)
     builds.extend(r.to_dict() for r in cached[:limit])
     # Augment with persisted history when memory is available.
-    seen = {b["build_id"] for b in builds}
+    positions = {str(build.get("build_id", "")): index for index, build in enumerate(builds)}
     if state.memory is not None and hasattr(state.memory, "recent_builds"):
         try:  # pragma: no cover - depends on memory backend
             for row in await state.memory.recent_builds(limit=limit):
                 bid = str(row.get("build_id", ""))
-                if bid and bid not in seen:
-                    builds.append(row)
-                    seen.add(bid)
+                if not bid:
+                    continue
+                position = positions.get(bid)
+                if position is not None:
+                    builds[position] = _merge_live_build_history(builds[position], row)
+                    continue
+                positions[bid] = len(builds)
+                builds.append(row)
         except Exception:  # noqa: BLE001
             pass
     visible = [dict(build) for build in builds[:limit]]
@@ -1149,6 +1347,64 @@ def _project_has_static_preview(state: AppState, slug: str) -> bool:
         return False
 
 
+def _compact_project_ai_fields(
+    manifest: dict[str, Any],
+    record: Any | None = None,
+) -> dict[str, Any]:
+    """Project the compact model trace without copying large prompt bodies."""
+    summary = build_summary(manifest)
+    manifest_trace_value = summary.get("model_trace")
+    manifest_trace = (
+        dict(manifest_trace_value) if isinstance(manifest_trace_value, dict) else {}
+    )
+    record_trace_value = getattr(record, "model_trace", {})
+    record_trace = (
+        dict(record_trace_value) if isinstance(record_trace_value, dict) else {}
+    )
+    trace = _merge_build_model_trace(record_trace, manifest_trace)
+    extra_value = manifest.get("extra")
+    extra = extra_value if isinstance(extra_value, dict) else {}
+
+    profile = str(
+        trace.get("profile")
+        or summary.get("build_profile")
+        or getattr(record, "build_profile", "")
+        or extra.get("build_profile")
+        or ""
+    )
+    backend = str(trace.get("backend") or extra.get("llm_backend") or "")
+    codegen_model = str(
+        trace.get("codegen_model")
+        or trace.get("effective_codegen_model")
+        or extra.get("effective_codegen_model")
+        or extra.get("codegen_model")
+        or ""
+    )
+    model_override = str(
+        trace.get("model_override") or extra.get("model_override") or ""
+    )
+    stages_value = trace.get("stages")
+    stage_costs_value = trace.get("stage_costs")
+    trace["profile"] = profile
+    trace["backend"] = backend
+    trace["codegen_model"] = codegen_model
+    trace["model_override"] = model_override
+    trace["stages"] = list(stages_value) if isinstance(stages_value, list) else []
+    trace["stage_costs"] = (
+        list(stage_costs_value) if isinstance(stage_costs_value, list) else []
+    )
+    return {
+        "build_profile": profile,
+        "backend": backend,
+        "llm_backend": backend,
+        "codegen_model": codegen_model,
+        "model_override": model_override,
+        "model_trace": trace,
+        "stages": trace["stages"],
+        "stage_costs": trace["stage_costs"],
+    }
+
+
 def _incomplete_project_row(
     state: AppState,
     project: Path,
@@ -1183,10 +1439,19 @@ def _incomplete_project_row(
         cost_truth = summary.get("cost_truth", {})
     record_cost = getattr(record, "cost_usd", None)
     manifest_cost = raw_extra.get("build_cost_usd", raw.get("cost_usd"))
+    live_cost = _nonnegative_build_cost(record_cost)
+    durable_cost = _nonnegative_build_cost(manifest_cost)
+    if active and live_cost is not None and live_cost > 0:
+        display_cost: float | None = live_cost
+    elif durable_cost is not None:
+        display_cost = durable_cost
+    else:
+        display_cost = live_cost
     prompts = raw_extra.get("prompts")
     skills_used = raw_extra.get("skills_used")
     recall_used = raw_extra.get("recall_used")
     stage_skills_used = raw_extra.get("stage_skills_used")
+    ai_fields = _compact_project_ai_fields(raw, record)
     reason = "build is still in progress" if delivery_state == "building" else (
         "no completed build manifest"
         if status == "incomplete"
@@ -1197,7 +1462,7 @@ def _incomplete_project_row(
         "stack": stack,
         "status": status,
         "build_status": build_status or "manifest_missing",
-        "build_id": str(getattr(record, "build_id", "") or ""),
+        "build_id": str(getattr(record, "build_id", "") or raw.get("build_id") or ""),
         "build_active": active,
         "delivery_state": delivery_state,
         "is_complete": False,
@@ -1213,7 +1478,7 @@ def _incomplete_project_row(
         "serve_kind": "",
         "serve_reason": reason,
         "has_manifest": manifest is not None,
-        "cost_usd": record_cost if record_cost is not None else manifest_cost,
+        "cost_usd": display_cost,
         "cost_truth": cost_truth,
         "wasted_usd": raw_extra.get("wasted_usd"),
         "prompt_count": len(prompts) if isinstance(prompts, list) else 0,
@@ -1221,6 +1486,7 @@ def _incomplete_project_row(
         "recall_used": list(recall_used) if isinstance(recall_used, list) else [],
         "stage_skills_used": dict(stage_skills_used)
         if isinstance(stage_skills_used, dict) else {},
+        **ai_fields,
         "quality_scorecard": dict(summary.get("quality_scorecard") or {}),
         "scaffold_stub_gate": {},
         "deploy_plan": {},
@@ -1335,6 +1601,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             has_preview = _project_has_static_preview(state, slug)
             record = _project_build_record(state, slug)
             summary = build_summary(m)
+            ai_fields = _compact_project_ai_fields(m, record)
             out.append({
                 "slug": slug,
                 "stack": m.get("stack", ""),
@@ -1374,6 +1641,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "recall_used": list(recall_used) if isinstance(recall_used, list) else [],
                 "stage_skills_used": dict(stage_skills_used)
                 if isinstance(stage_skills_used, dict) else {},
+                **ai_fields,
                 "quality_scorecard": dict(extra.get("quality_scorecard") or {})
                 if isinstance(extra.get("quality_scorecard"), dict) else {},
                 "scaffold_stub_gate": scaffold_stub_gate,
@@ -3650,6 +3918,102 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # FastAPI wiring (only constructed when FastAPI is importable).
 # ---------------------------------------------------------------------------
+def _durable_trajectory_event(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert a MessageRow projection to the existing Event.to_dict shape."""
+    payload_value = row.get("payload")
+    payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+    payload.pop("__skyn3t_event__", None)
+    event_id = str(row.get("event_id") or f"persisted-{row.get('id', '')}")
+    timestamp_value = row.get("timestamp")
+    try:
+        if timestamp_value is None:
+            raise ValueError("missing durable event timestamp")
+        timestamp = float(timestamp_value)
+    except (TypeError, ValueError):
+        created_at = str(row.get("created_at") or "")
+        try:
+            from datetime import datetime
+
+            timestamp = datetime.fromisoformat(created_at).timestamp()
+        except (TypeError, ValueError):
+            timestamp = 0.0
+    return {
+        "type": str(row.get("type") or row.get("event_type") or ""),
+        "source": str(row.get("source") or ""),
+        "payload": payload,
+        "id": event_id,
+        "timestamp": timestamp,
+        "correlation_id": row.get("correlation_id"),
+    }
+
+
+async def trajectory_events(
+    state: AppState,
+    *,
+    limit: int = 200,
+    event_type: EventType | None = None,
+    correlation_id: str | None = None,
+    since: float | None = None,
+    until: float | None = None,
+) -> list[dict[str, Any]]:
+    """Merge durable and live trajectory evidence, preferring the live copy."""
+    requested = max(1, min(int(limit), 2000))
+    live = state.trajectory(
+        limit=requested,
+        event_type=event_type,
+        correlation_id=correlation_id,
+        since=since,
+        until=until,
+    )
+    durable: list[dict[str, Any]] = []
+    memory = getattr(state, "memory", None)
+    recent = getattr(memory, "recent_events", None)
+    if callable(recent):
+        try:
+            durable_limit = (
+                2000
+                if since is not None or until is not None
+                else min(2000, requested + len(live))
+            )
+            rows = await recent(
+                limit=durable_limit,
+                correlation_id=correlation_id,
+                event_types=[event_type.value] if event_type is not None else None,
+            )
+            for raw in rows or []:
+                if not isinstance(raw, dict):
+                    continue
+                event = _durable_trajectory_event(raw)
+                timestamp = float(event["timestamp"])
+                if since is not None and timestamp < since:
+                    continue
+                if until is not None and timestamp > until:
+                    continue
+                durable.append(event)
+        except Exception as exc:  # noqa: BLE001 - durable replay degrades to live history
+            log.warning("trajectory.durable_read_failed", error=str(exc)[:200])
+
+    # Durable rows are inserted first; a matching live event then replaces the
+    # DB projection with the original in-memory payload while retaining one row.
+    merged: dict[str, dict[str, Any]] = {}
+    for event in [*durable, *live]:
+        event_id = str(event.get("id") or "")
+        if not event_id:
+            event_id = (
+                f"anonymous:{event.get('timestamp')}:{event.get('type')}:"
+                f"{event.get('source')}:{event.get('correlation_id')}"
+            )
+        merged[event_id] = event
+    events = sorted(
+        merged.values(),
+        key=lambda event: (
+            float(event.get("timestamp") or 0.0),
+            str(event.get("id") or ""),
+        ),
+    )
+    return events[-requested:]
+
+
 def build_router(state: AppState) -> Any:
     """Build and return an ``APIRouter`` bound to ``state``.
 
@@ -4358,7 +4722,8 @@ def build_router(state: AppState) -> Any:
             # type, so filtering on it returns nothing. Treat it as "no filter".
             if et == EventType.ALL:
                 et = None
-        events = state.trajectory(
+        events = await trajectory_events(
+            state,
             limit=limit,
             event_type=et,
             correlation_id=correlation_id or None,

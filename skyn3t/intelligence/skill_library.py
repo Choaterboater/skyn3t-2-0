@@ -249,10 +249,7 @@ class SkillLibrary:
             return False
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
-            (self.dir / f"{skill.slug}.md").write_text(
-                skill.to_markdown(),
-                encoding="utf-8",
-            )
+            atomic_write_text(self.dir / f"{skill.slug}.md", skill.to_markdown())
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:
@@ -292,6 +289,8 @@ class SkillLibrary:
         source: str = "manual",
         slug: str | None = None,
     ) -> Skill:
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError("skill body must not be empty")
         slug = slug or _slugify(title)
         skill = Skill(
             slug=slug,

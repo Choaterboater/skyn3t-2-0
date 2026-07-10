@@ -26,6 +26,9 @@ _IGNORE_PARTS = frozenset({
     ".git", "node_modules", ".venv", "__pycache__", "dist", "build",
     ".next", "out", ".vite", ".svelte-kit", ".turbo", ".cache", "coverage", ".output",
 })
+_STATIC_FRAGMENT_PARTS = frozenset({
+    "includes", "_includes", "partials", "_partials", "templates", "_templates", "snippets",
+})
 
 
 @dataclass(slots=True)
@@ -81,6 +84,8 @@ def enumerate_routes(project_dir: str | Path, stack: str = "") -> list[Route]:
         if _IGNORE_PARTS.intersection(html.parts):
             continue
         rel = html.relative_to(root).as_posix()
+        if _STATIC_FRAGMENT_PARTS.intersection(Path(rel).parts[:-1]):
+            continue
         add("/" if rel == "index.html" else f"/{rel}")
     return list(seen.values())
 
@@ -95,6 +100,7 @@ _ASSET_ROUTE_SUFFIXES = (
     ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico",
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
     ".mp4", ".webm", ".mp3", ".wav", ".wasm", ".txt", ".xml",
+    ".webmanifest", ".manifest",
 )
 
 

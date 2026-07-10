@@ -64,6 +64,7 @@ _MIN_SUBSTANTIVE_BYTES = 16
 # exist on disk. This is the offline, deterministic gate that catches the
 # missing-stylesheet / unwired-module class of "looks done but won't boot".
 _JS_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+_RELATIVE_IMPORT_SOURCE_SUFFIXES = (*_JS_SUFFIXES, ".astro")
 _RESOLVE_EXTS = (
     ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json",
     ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
@@ -122,10 +123,10 @@ def _resolve_import_file(importer: Path, spec: str) -> Path | None:
 
 
 def _unresolved_local_imports(root: Path) -> list[str]:
-    """Relative imports in JS/TS files that resolve to no file. Pure & offline."""
+    """Relative imports in JS/TS/Astro files that resolve to no file."""
     out: list[str] = []
     for f in _iter_files(root):
-        if f.suffix not in _JS_SUFFIXES:
+        if f.suffix not in _RELATIVE_IMPORT_SOURCE_SUFFIXES:
             continue
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
@@ -306,6 +307,117 @@ def _confine(root: Path, target: Path) -> Path | None:
         return resolved
     except (OSError, ValueError):
         return None
+
+
+def relink_unresolved_relative_imports(root: str | Path) -> list[str]:
+    """Relink uniquely identifiable relative imports that point at the wrong depth.
+
+    Cheap codegen commonly writes an import as if a nested route lived one directory
+    higher, for example ``src/pages/drills/index.astro`` importing
+    ``../layouts/BaseLayout.astro``. Before creating a stub at that incorrect path,
+    look for exactly one existing project file with the requested basename and
+    rewrite only the import specifier. Ambiguous names, valid imports, symlinks, and
+    paths whose original target escapes the project are left untouched.
+
+    Returns stable evidence strings in ``importer: old -> new`` form.
+    """
+    project = Path(root).resolve()
+    target_suffixes = frozenset((*_RESOLVE_EXTS, ".astro"))
+    by_name: dict[str, list[Path]] = {}
+    by_stem: dict[str, list[Path]] = {}
+
+    for candidate in _iter_files(project):
+        try:
+            if (
+                not candidate.is_file()
+                or candidate.is_symlink()
+                or candidate.suffix not in target_suffixes
+            ):
+                continue
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if _confine(project, resolved) != resolved:
+            continue
+        by_name.setdefault(candidate.name, []).append(resolved)
+        by_stem.setdefault(candidate.stem, []).append(resolved)
+
+    evidence: list[str] = []
+    for importer in _iter_files(project):
+        if importer.suffix not in _RELATIVE_IMPORT_SOURCE_SUFFIXES or importer.is_symlink():
+            continue
+        try:
+            original = importer.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        changes: list[tuple[str, str]] = []
+
+        def _replacement(
+            match: re.Match[str],
+            *,
+            _importer: Path = importer,
+            _changes: list[tuple[str, str]] = changes,
+        ) -> str:
+            spec = match.group(1)
+            if _import_resolves(_importer, spec, project):
+                return match.group(0)
+
+            cut = len(spec)
+            for marker in ("?", "#"):
+                marker_at = spec.find(marker)
+                if marker_at >= 0:
+                    cut = min(cut, marker_at)
+            import_path, trailer = spec[:cut], spec[cut:]
+            normalized = import_path.replace("\\", "/")
+            basename = normalized.rsplit("/", 1)[-1]
+            if not basename or basename in {".", ".."}:
+                return match.group(0)
+
+            # Refuse to reinterpret an import that itself targets outside the
+            # project, even when a same-named file happens to exist inside it.
+            if _confine(project, _importer.parent / normalized) is None:
+                return match.group(0)
+
+            explicit_suffix = Path(basename).suffix
+            if explicit_suffix:
+                if explicit_suffix not in target_suffixes:
+                    return match.group(0)
+                matches = by_name.get(basename, [])
+            else:
+                matches = by_stem.get(basename, [])
+            unique = sorted(set(matches), key=lambda path: path.as_posix())
+            if len(unique) != 1 or unique[0] == _importer.resolve():
+                return match.group(0)
+
+            relinked = os.path.relpath(unique[0], _importer.parent).replace("\\", "/")
+            if not explicit_suffix and unique[0].suffix:
+                relinked = relinked[: -len(unique[0].suffix)]
+            if not relinked.startswith("."):
+                relinked = "./" + relinked
+            new_spec = relinked + trailer
+            if new_spec == spec:
+                return match.group(0)
+
+            _changes.append((spec, new_spec))
+            start, end = match.span(1)
+            offset = match.start()
+            return (
+                match.group(0)[: start - offset]
+                + new_spec
+                + match.group(0)[end - offset :]
+            )
+
+        rewritten = _REL_IMPORT_RE.sub(_replacement, original)
+        if rewritten == original:
+            continue
+        try:
+            importer.write_text(rewritten, encoding="utf-8")
+            importer_rel = importer.relative_to(project).as_posix()
+        except (OSError, ValueError):
+            continue
+        for old, new in dict.fromkeys(changes):
+            evidence.append(f"{importer_rel}: {old} -> {new}")
+    return evidence
 
 
 def scaffold_missing_imports(root: str | Path, *, stack: str = "") -> list[str]:
@@ -2328,6 +2440,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     repair's expected filesystem errors (each function is already defensive)."""
     source_fences = strip_markdown_fences_in_source_files(project_dir)
     sanitized = sanitize_package_json_deps(project_dir)
+    relinked = relink_unresolved_relative_imports(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
     added = reconcile_npm_deps(project_dir)
     peers = reconcile_next_config_peers(project_dir)
@@ -2365,6 +2478,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "npm_deps_added": added,
         "npm_deps_sanitized": sanitized,
         "next_config_peers": peers,
+        "imports_relinked": relinked,
         "imports_scaffolded": stubbed,
         "use_client_added": use_client,
         "source_fences_stripped": source_fences,

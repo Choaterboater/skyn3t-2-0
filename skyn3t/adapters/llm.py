@@ -606,6 +606,12 @@ _AUXILIARY_CHURN_NUDGE = (
     "directly, and call finish only after they are wired."
 )
 
+_PLAN_COMPLETE_NUDGE = (
+    "Every approved architecture file now exists. Make one final wiring and "
+    "consistency pass across the delivered app, fixing imports or integration "
+    "issues you find. Do not add redundant helper variants. Then call finish."
+)
+
 
 def _agentic_auxiliary_family(path: str) -> str:
     """Classify path-variant build wrappers without matching normal app files."""
@@ -1658,6 +1664,8 @@ class LLMClient:
         auxiliary_churn_paths: set[str] = set()
         auxiliary_churn_warned = False
         planned_missing_count = _planned_missing_count()
+        plan_complete_nudged = False
+        auto_converged = False
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
         # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
@@ -1884,6 +1892,57 @@ class LLMClient:
                             wrote=wrote,
                         )
                         continue
+                    if not finished and planned and planned_missing_count == 0:
+                        # Planned scope is a semantic completion contract, not a
+                        # size/turn/token cap. Give the model one final integration
+                        # pass, then accept a clean tree even if it forgets to call
+                        # finish. This stops productive full-app sessions from
+                        # drifting into endless rewrites after every approved file
+                        # already exists.
+                        if not plan_complete_nudged:
+                            plan_complete_nudged = True
+                            messages.append({"role": "user", "content": _PLAN_COMPLETE_NUDGE})
+                            log.info(
+                                "llm.or_agentic_plan_complete_nudge",
+                                planned=len(planned),
+                                wrote=wrote,
+                            )
+                            continue
+                        if (
+                            stub_nudge_applies
+                            and stub_nudges < _MAX_STUB_NUDGES
+                            and _looks_stub()
+                        ):
+                            stub_nudges += 1
+                            messages.append({"role": "user", "content": _ANTISTUB_NUDGE})
+                            log.info(
+                                "llm.or_agentic_antistub",
+                                nudge=stub_nudges,
+                                wrote=wrote,
+                            )
+                            continue
+                        if verify_on_stop_enabled and verify_denials < _MAX_VERIFY_DENIALS:
+                            problems = _agentic_verify_problems(root)
+                            if problems:
+                                verify_denials += 1
+                                messages.append({"role": "user", "content": (
+                                    "VERIFY-ON-STOP: the project has defects that WILL "
+                                    "fail the build. Fix ONLY these, then call finish "
+                                    "again:\n- " + "\n- ".join(problems))})
+                                log.info(
+                                    "llm.or_agentic_verify_denied",
+                                    denial=verify_denials,
+                                    problems=len(problems),
+                                )
+                                continue
+                        finished = True
+                        auto_converged = True
+                        log.info(
+                            "llm.or_agentic_plan_auto_converged",
+                            planned=len(planned),
+                            wrote=wrote,
+                        )
+                        break
                     if finished:
                         # Refuse a thin result: push the model to build the real UI instead
                         # of stopping at data/config scaffolding (cheap models do this).
@@ -1924,6 +1983,7 @@ class LLMClient:
                 "model": model, "attempted_model": attempted_model,
                 "fallback_model": fallback_model, "stalled": bool(turn_timeouts),
                 "stall_reason": stall_reason, "turn_timeouts": turn_timeouts,
+                "auto_converged": auto_converged,
                 "error": error}
 
     @property

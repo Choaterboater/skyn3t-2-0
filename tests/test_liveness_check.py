@@ -3,7 +3,7 @@ import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from skyn3t.studio.liveness import Route, check_liveness
+from skyn3t.studio.liveness import Route, check_liveness, enumerate_routes
 
 
 def _serve():
@@ -59,6 +59,28 @@ def test_unreachable_base_marks_all_dead():
 def test_empty_routes_is_healthy():
     report = asyncio.run(check_liveness("http://127.0.0.1:9", []))
     assert report.total == 0 and report.health == 1.0
+
+
+def test_static_route_discovery_excludes_fragments_but_keeps_real_pages(tmp_path):
+    (tmp_path / "index.html").write_text("<main>Home</main>", encoding="utf-8")
+    (tmp_path / "about.html").write_text("<main>About</main>", encoding="utf-8")
+    includes = tmp_path / "includes"
+    includes.mkdir()
+    (includes / "footer.html").write_text("<footer>Partial</footer>", encoding="utf-8")
+
+    paths = {route.path for route in enumerate_routes(tmp_path, "static")}
+
+    assert paths == {"/", "/about.html"}
+
+
+def test_crawled_manifest_link_is_not_a_page_route():
+    from skyn3t.studio.liveness import _extract_links
+
+    links = _extract_links(
+        '<link rel="manifest" href="/site.webmanifest"><a href="/about.html">About</a>'
+    )
+
+    assert links == {"/about.html"}
 
 
 def test_report_to_dict_roundtrip():

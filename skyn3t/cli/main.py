@@ -30,6 +30,7 @@ import html
 import inspect
 import json
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -73,6 +74,16 @@ class _RagWithIngestor(Protocol):
 # Console helpers — fall back to plain ``print`` when ``rich`` is absent.
 # ---------------------------------------------------------------------------
 def _console() -> Any:
+    # Windows terminals and redirected streams can still expose a legacy
+    # encoding such as CP1252. Rich ultimately writes to that TextIOWrapper;
+    # make unsupported glyphs degrade visibly instead of crashing the command.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
     try:
         from rich.console import Console
 
@@ -1651,8 +1662,8 @@ def studio_visual(
     console.print(f"[{tone}]Visual loop {'passed' if res.passed else 'incomplete'}[/{tone}] "
                   f"after {len(res.rounds)} round(s){'' if res.passed else ' — ' + res.reason}")
     for r in res.rounds:
-        mark = "✔" if r.matches else ("↻ improved" if r.improved else "✕")
-        issues = "" if r.matches else f" · {', '.join(r.issues[:3])}"
+        mark = "[OK]" if r.matches else ("[IMPROVED]" if r.improved else "[X]")
+        issues = "" if r.matches else f" | {', '.join(r.issues[:3])}"
         console.print(f"  round {r.index}: {mark}{issues}")
     if not res.passed:
         raise typer.Exit(code=2)
@@ -1746,14 +1757,14 @@ def studio_liveness(
             f"Evidence{qualifier}: [cyan]{_Path(artifact_dir) / report_path}[/cyan]"
         )
     for r in rep.results:
-        mark = "✔" if r.ok else "✕"
+        mark = "[OK]" if r.ok else "[X]"
         if not r.visual:
             vis = ""
         elif r.visual.get("skipped"):
-            vis = " · visual skipped"
+            vis = " | visual skipped"
         else:
-            vis = " · visual ok" if r.visual.get("matches") else " · visual failed"
-        console.print(f"  {mark} {r.method} {r.path} → {r.status}{vis}")
+            vis = " | visual ok" if r.visual.get("matches") else " | visual failed"
+        console.print(f"  {mark} {r.method} {r.path} -> {r.status}{vis}")
     if not res.passed:
         raise typer.Exit(code=2)
     if require_visual and (visual_total == 0 or visual_skipped):

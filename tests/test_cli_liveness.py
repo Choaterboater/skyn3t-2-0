@@ -4,6 +4,7 @@ the (already-tested) liveness loop."""
 from __future__ import annotations
 
 import inspect
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -90,3 +91,16 @@ def test_liveness_cli_require_visual_rejects_browser_skip(monkeypatch):
         cli_main.studio_liveness("demo", 1, "", True)
 
     assert exc.value.exit_code == 3
+
+
+def test_console_degrades_unencodable_windows_glyphs_instead_of_crashing(monkeypatch):
+    from skyn3t.cli import main as cli_main
+
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(cli_main.sys, "stdout", stream)
+
+    cli_main._console().print("route passed \u2714")
+    stream.flush()
+
+    assert b"route passed ?" in raw.getvalue()

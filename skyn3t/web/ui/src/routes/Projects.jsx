@@ -19,6 +19,7 @@ import {
   safeDeploymentUrl,
 } from "../deployWorkflow.js";
 import { describeCostTruth } from "../costTruth.js";
+import { projectBuildMetadata } from "../projectMetadata.js";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -30,23 +31,7 @@ function fmtCost(usd) {
 }
 
 function aiEvidence(project) {
-  const skills = Array.isArray(project.skills_used) ? project.skills_used : [];
-  const recall = Array.isArray(project.recall_used) ? project.recall_used : [];
-  const stageSkills =
-    project.stage_skills_used && typeof project.stage_skills_used === "object"
-      ? project.stage_skills_used
-      : {};
-  const roleStages = Object.values(stageSkills).filter(
-    (items) => Array.isArray(items) && items.length > 0,
-  ).length;
-  const promptCount = Number(project.prompt_count || 0);
-  const title = [
-    skills.length ? `skills: ${skills.join(", ")}` : "skills: 0",
-    `recall: ${recall.length}`,
-    `stage roles: ${roleStages}`,
-    `prompts: ${promptCount}`,
-  ].join(" · ");
-  return { skills, recall, roleStages, promptCount, title };
+  return projectBuildMetadata(project);
 }
 
 // created_at/updated_at may be epoch seconds, epoch ms, a numeric string, or an
@@ -964,17 +949,20 @@ export default function Projects({ stream }) {
                           {p.score ?? "—"}
                         </td>
                         <td className="px-4 py-2 font-mono text-[11px] text-ash">
-                          <div className="whitespace-nowrap" title={ai.title}>
-                            <span className={ai.skills.length ? "text-plasma" : "text-ash/50"}>
-                              skills {ai.skills.length}
-                            </span>
-                            <span className="mx-1 text-ash/40">·</span>
-                            <span className={ai.recall.length ? "text-bone" : "text-ash/50"}>
-                              recall {ai.recall.length}
-                            </span>
+                          <div className="max-w-[15rem] truncate text-bone" title={ai.title}>
+                            {ai.profile} · {ai.backend}
+                          </div>
+                          <div className="max-w-[15rem] truncate text-ash/80" title={ai.title}>
+                            {ai.modelSource} · {ai.model}
+                          </div>
+                          <div className="whitespace-nowrap text-ash/70" title={ai.title}>
+                            prompts {ai.promptCount ?? "—"} · stages {ai.stageCount ?? "—"}
+                          </div>
+                          <div className="whitespace-nowrap text-ash/70" title={ai.title}>
+                            run {ai.runCostLabel} · stage {ai.stageCostLabel}
                           </div>
                           <div className="whitespace-nowrap text-ash/60" title={ai.title}>
-                            roles {ai.roleStages} · prompts {ai.promptCount}
+                            skills {ai.skillCount ?? "—"} · recall {ai.recallCount ?? "—"} · roles {ai.roleStages}
                           </div>
                         </td>
                         <td className="px-4 py-2 font-mono text-xs">

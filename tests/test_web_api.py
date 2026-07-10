@@ -339,6 +339,182 @@ async def test_submit_and_list_builds():
     assert any(b["build_id"] == res["build_id"] for b in listed["builds"])
 
 
+async def test_list_builds_hydrates_sparse_cancelled_live_record_from_history():
+    build_id = "1ad8020b6327"
+    stages = [
+        {"name": f"stage-{index}", "status": "completed", "duration_ms": 100}
+        for index in range(12)
+    ]
+
+    class _Memory:
+        async def recent_builds(self, limit=25):
+            assert limit == 25
+            return [{
+                "build_id": build_id,
+                "slug": "a-golf-website-for-adult-beginners-with-lesson-p-12",
+                "status": "cancelled",
+                "cost_usd": 7.586062,
+                "build_profile": "cheap_learned",
+                "model_trace": {
+                    "profile": "cheap_learned",
+                    "backend": "auto",
+                    "model_override": "deepseek/deepseek-v4-flash",
+                    "prompt_count": 2,
+                    "stages": stages,
+                    "stage_costs": [
+                        {"stage": stage["name"], "cost_usd": 0.1}
+                        for stage in stages
+                    ],
+                },
+                "quality_scorecard": {
+                    "status": "cancelled",
+                    "skills_count": 3,
+                    "recall_count": 0,
+                },
+                "skills_used": ["api", "frontend", "delivered-empty"],
+                "recall_used": [],
+                "cost_truth": {"llm_cost_usd": 7.586062},
+            }]
+
+    st = _state(memory=_Memory())
+    live = BuildRecord(
+        build_id=build_id,
+        brief="golf lessons",
+        slug="a-golf-website-for-adult-beginners-with-lesson-p-12",
+        status="cancelled",
+        cost_usd=7.586062,
+        model_trace={
+            "profile": "cheap_learned",
+            "model_override": "deepseek/deepseek-v4-flash",
+            "prompt_count": 0,
+            "stages": [],
+        },
+    )
+    st.builds[build_id] = live
+
+    listed = await routes.list_builds(st)
+    matching = [row for row in listed["builds"] if row["build_id"] == build_id]
+
+    assert len(matching) == 1
+    row = matching[0]
+    assert row["status"] == "cancelled"
+    assert row["cost_usd"] == pytest.approx(7.586062)
+    assert row["model_trace"]["prompt_count"] == 2
+    assert len(row["model_trace"]["stages"]) == 12
+    assert len(row["model_trace"]["stage_costs"]) == 12
+    assert row["quality_scorecard"]["skills_count"] == 3
+    assert row["skills_used"] == ["api", "frontend", "delivered-empty"]
+    assert row["recall_used"] == []
+
+
+def test_terminal_history_merge_does_not_clobber_richer_live_evidence():
+    live = {
+        "build_id": "new-cancelled-build",
+        "status": "cancelled",
+        "cost_usd": 1.25,
+        "model_trace": {
+            "profile": "balanced",
+            "prompt_count": 2,
+            "stages": [{"name": "code", "status": "completed"}],
+        },
+        "skills_used": ["react-ui"],
+    }
+    stale = {
+        "build_id": "new-cancelled-build",
+        "status": "running",
+        "cost_usd": 0.0,
+        "model_trace": {
+            "profile": "balanced",
+            "prompt_count": 0,
+            "stages": [],
+        },
+        "skills_used": [],
+    }
+
+    merged = routes._merge_live_build_history(live, stale)
+
+    assert merged["status"] == "cancelled"
+    assert merged["cost_usd"] == 1.25
+    assert merged["model_trace"] == live["model_trace"]
+    assert merged["skills_used"] == ["react-ui"]
+
+
+async def test_list_builds_hydrates_running_record_without_replacing_live_state():
+    build_id = "running-build"
+    persisted_summary = build_summary({
+        "status": "running",
+        "stages": [{"name": "brainstorm", "status": "completed"}],
+        "extra": {
+            "build_profile": "balanced",
+            "build_cost_usd": 0.25,
+            "prompts": [{"stage": "brainstorm"}],
+            "stage_costs": [{"stage": "brainstorm", "cost_usd": 0.25}],
+            "skills_used": ["brainstorm"],
+            "llm_usage_evidence": [{"cost_source": "provider"}],
+        },
+    })
+
+    class _Memory:
+        async def recent_builds(self, limit=25):
+            return [{
+                "build_id": build_id,
+                "slug": "running-app",
+                "status": "queued",
+                "cost_usd": 0.25,
+                **persisted_summary,
+            }]
+
+    st = _state(memory=_Memory())
+    live = BuildRecord(
+        build_id=build_id,
+        brief="running app",
+        slug="running-app",
+        status="running",
+        cost_usd=0.5,
+        model_trace={"profile": "balanced", "prompt_count": 0, "stages": []},
+    )
+    st.builds[build_id] = live
+
+    row = (await routes.list_builds(st))["builds"][0]
+
+    assert row["build_id"] == build_id
+    assert row["status"] == "running"
+    assert row["cost_usd"] == 0.5
+    assert row["model_trace"]["prompt_count"] == 1
+    assert len(row["model_trace"]["stages"]) == 1
+    assert row["model_trace"]["stages"][0]["name"] == "brainstorm"
+    assert row["model_trace"]["stages"][0]["status"] == "completed"
+    assert row["skills_used"] == ["brainstorm"]
+    assert "cost_truth" not in row
+    assert row["quality_scorecard"]["status"] == "running"
+    assert "cost_truth" not in row["quality_scorecard"]
+    assert "cost_usd" not in row["quality_scorecard"]
+    assert "cost_truth" in persisted_summary["quality_scorecard"]
+
+
+def test_history_merge_uses_durable_corrected_terminal_cost_and_truth():
+    live = {
+        "build_id": "corrected-cost",
+        "status": "cancelled",
+        "cost_usd": 2.0,
+        "cost_truth": {"llm_cost_usd": 2.0, "llm_cost_classification": "estimate"},
+    }
+    persisted = {
+        "build_id": "corrected-cost",
+        "status": "cancelled",
+        "cost_usd": 1.75,
+        "cost_truth": {
+            "llm_cost_usd": 1.5,
+            "llm_cost_classification": "provider_confirmed",
+        },
+    }
+
+    merged = routes._merge_live_build_history(live, persisted)
+
+    assert merged["cost_usd"] == 1.5
+    assert merged["cost_truth"] == persisted["cost_truth"]
+
+
 async def test_submit_build_without_studio_emits_terminal_failure_event():
     st = _state()
 
@@ -2204,6 +2380,57 @@ async def test_trajectory_filtering_and_correlation():
     assert len(scoped) == 1 and scoped[0]["correlation_id"] == "c2"
     snap = st.trajectory_snapshot()
     assert "history" in snap
+
+
+async def test_trajectory_merges_durable_history_after_restart_and_dedupes(tmp_path):
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.events import Event
+    from skyn3t.memory.store import MemoryStore
+
+    settings = Settings(data_dir=tmp_path)
+    first_store = MemoryStore(settings)
+    await first_store.init_db()
+    first_bus = EventBus()
+    first_store.attach_event_bus(first_bus, flush_seconds=0)
+    historical = Event(
+        type=EventType.BUILD_STAGE_COMPLETED,
+        source="studio",
+        payload={"build_id": "restart-build", "stage": "code"},
+        id="same-event-id",
+        timestamp=100.0,
+        correlation_id="restart-correlation",
+    )
+    await first_bus.publish(historical)
+    await first_store.close()
+
+    reopened = MemoryStore(settings)
+    live_bus = EventBus()
+    st = AppState(event_bus=live_bus, memory=reopened)
+    try:
+        # Replayed live copy has the same original ID and must not duplicate the
+        # durable row. A second live event proves chronological merge + limit.
+        await live_bus.publish(historical)
+        await live_bus.emit(
+            EventType.BUILD_FAILED,
+            "studio",
+            {"build_id": "restart-build", "status": "cancelled"},
+            correlation_id="restart-correlation",
+        )
+        events = await routes.trajectory_events(
+            st,
+            limit=10,
+            correlation_id="restart-correlation",
+        )
+    finally:
+        await st.close()
+
+    assert len(events) == 2
+    assert [event["id"] for event in events].count("same-event-id") == 1
+    assert events[0] == historical.to_dict()
+    assert events[1]["type"] == EventType.BUILD_FAILED.value
+    assert set(events[0]) == {
+        "type", "source", "payload", "id", "timestamp", "correlation_id",
+    }
 
 
 # ---- websocket hub (framework-agnostic) -----------------------------------

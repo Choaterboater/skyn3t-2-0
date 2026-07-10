@@ -26,6 +26,7 @@ import {
   formatExampleUsd,
   formatModelOption,
 } from "../modelValue.js";
+import { projectBuildMetadata } from "../projectMetadata.js";
 
 // Fallback rail shown before the first `build.started` arrives. Once a build is
 // live, the rail is driven off the REAL emitted plan (build.started.stages) — so
@@ -69,7 +70,7 @@ function routingPolicyHint(profile) {
     return "Best-quality profile favors stronger models where reliability matters more.";
   }
   if (normalized === "manual") {
-    return "Manual mode pins one model for all stages; use only when you want fixed behavior.";
+    return "Manual codegen pins only the CodeAgent model; planning, design, and review still use profile routing.";
   }
   return "Cheap+learned profile keeps costs low while applying learned routing defaults by stage.";
 }
@@ -149,6 +150,10 @@ function catalogPrompt(inputModel) {
 }
 
 function routingPinSummary(tiers, modelOverride, preferredModel) {
+  const codegenOverride = String(modelOverride || "").trim();
+  if (codegenOverride) {
+    return `codegen override: ${codegenOverride}; planning, design, and review keep profile routing`;
+  }
   if (!Array.isArray(tiers) || tiers.length === 0) return null;
   const normalizedModels = tiers
     .map((tier) => String(tier?.model || "").trim())
@@ -164,9 +169,6 @@ function routingPinSummary(tiers, modelOverride, preferredModel) {
   );
   const prettySources = Array.from(sources).map((source) => `${source}`).join("/");
 
-  if (modelOverride) {
-    return `all tiers forced to one model from your build override (${model}); clear override to let routing vary by tier`;
-  }
   if (preferredModel) {
     return `all tiers forced to one model from preferred-model setting (${model}); clear preferred model in Settings to resume per-tier routing`;
   }
@@ -209,7 +211,7 @@ function describeRoutingLocks(secretsData, modelOverride, routingTiers) {
     String(routingTiers[0]?.source || "").toLowerCase() === "manual";
 
   const lines = [];
-  if (override) lines.push(`build override: ${override}`);
+  if (override) lines.push(`codegen override: ${override}`);
   if (preferred) lines.push(`preferred model: ${preferred}`);
   if (pinLines.length) lines.push(...pinLines);
   if (codegenOpenrouter) lines.push(`codegen model: ${codegenOpenrouter}`);
@@ -267,7 +269,11 @@ const BUILD_PROFILES = [
     hint: "Keeps cheap routing with a little extra reliability for cleaner results.",
   },
   { id: "best_quality", label: "Best quality", hint: "Runs best-of-N, richer assets when configured, and visual repair." },
-  { id: "manual", label: "Manual model", hint: "Pin one OpenRouter model for this build." },
+  {
+    id: "manual",
+    label: "Manual codegen",
+    hint: "Pin the CodeAgent model; planning, design, and review keep profile routing.",
+  },
 ];
 
 const BUILD_ACTIVE_STATUSES = new Set([
@@ -376,28 +382,17 @@ function buildMeta(build) {
 }
 
 function aiMeta(build) {
-  const trace = build.model_trace || {};
   const scorecard = build.quality_scorecard || {};
-  const stageCount = Array.isArray(trace.stages) ? trace.stages.length : 0;
-  const codegenModel = String(trace.codegen_model || "");
-  const modelOverride = String(trace.model_override || "");
-  const modelSource =
-    modelOverride && (!codegenModel || codegenModel === modelOverride)
-      ? "manual"
-      : codegenModel ? "codegen" : "auto route";
+  const metadata = projectBuildMetadata(build);
   return {
-    profile: build.build_profile || trace.profile || "cheap_learned",
-    model: codegenModel || modelOverride || "auto",
-    modelSource,
-    backend: trace.backend || "auto",
-    promptCount: trace.prompt_count || 0,
-    stageCount,
-    skills: Array.isArray(build.skills_used)
-      ? build.skills_used.length
-      : scorecard.skills_count || 0,
-    recall: Array.isArray(build.recall_used)
-      ? build.recall_used.length
-      : scorecard.recall_count || 0,
+    profile: metadata.profile,
+    model: metadata.model,
+    modelSource: metadata.modelSource,
+    backend: metadata.backend,
+    promptCount: metadata.promptCount,
+    stageCount: metadata.stageCount,
+    skills: metadata.skillCount,
+    recall: metadata.recallCount,
     proof: scorecard.proof_passed,
     build: scorecard.build,
     ...aiCostMeta(build),
@@ -412,9 +407,9 @@ function aiCostMeta(build) {
   const runCost = numericPricingValue(
     costTruth.llm_cost_usd ?? build.cost_usd ?? quality_scorecard?.cost_usd
   );
-  const stageCosts = Array.isArray(trace.stage_costs)
+  const stageCosts = Array.isArray(trace.stage_costs) && trace.stage_costs.length
     ? trace.stage_costs
-    : [];
+    : Array.isArray(build.stage_costs) ? build.stage_costs : [];
   const stageCostTotal = stageCosts.reduce((sum, item) => {
     const value = numericPricingValue(item?.cost_usd ?? item?.cost);
     return value == null ? sum : sum + value;
@@ -650,7 +645,6 @@ export default function Studio({ stream }) {
     queryKey: [
       "routing-preview",
       effectiveBuildProfile,
-      normalizedModelOverride,
       String(routingSecrets.preferred_model || ""),
       String(routingSecrets.codegen_cli_model || ""),
       String(routingSecrets.openrouter_codegen_model || ""),
@@ -664,9 +658,6 @@ export default function Studio({ stream }) {
     queryFn: () => {
       const params = new URLSearchParams();
       params.set("build_profile", effectiveBuildProfile);
-      if (normalizedModelOverride) {
-        params.set("model_override", normalizedModelOverride);
-      }
       return apiFetch(`/models/routing-preview?${params.toString()}`);
     },
     retry: 0,
@@ -920,10 +911,16 @@ export default function Studio({ stream }) {
     }`,
     model: (() => {
       const tiers = routingPreview.data?.tiers;
-      if (Array.isArray(tiers) && tiers.length > 0) {
-        return formatRoutingSummary(tiers);
+      const planningRoute = Array.isArray(tiers) && tiers.length > 0
+        ? formatRoutingSummary(tiers)
+        : "profile routing";
+      if (normalizedModelOverride) {
+        return `codegen→${normalizedModelOverride} · other stages ${planningRoute}`;
       }
-      return normalizedModelOverride || "learned routing";
+      if (Array.isArray(tiers) && tiers.length > 0) {
+        return planningRoute;
+      }
+      return "learned routing";
     })(),
     reference: refImage?.name || "no reference image",
     fanout: selectedStacks.size
@@ -1135,12 +1132,12 @@ export default function Studio({ stream }) {
                   <input
                     type="text"
                     list="studio-models"
-                    aria-label="Manual model override"
+                    aria-label="Manual codegen model override"
                     value={modelOverride}
                     onChange={(e) => setModelOverride(e.target.value)}
                     placeholder="openrouter model (optional)"
                     className="field"
-                    title="Pin one OpenRouter model for this build"
+                    title="Pin the CodeAgent model; other stages keep profile routing"
                   />
                   <datalist id="studio-models">
                     {manualModelChoices.map((item) => (
@@ -1155,8 +1152,8 @@ export default function Studio({ stream }) {
                     <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
                       {normalizedModelOverride
                         ? unknownModelOverride
-                          ? `Model override: ${normalizedModelOverride} (not in cached OpenRouter list)`
-                          : `Model override: ${normalizedModelOverride} (for this build)`
+                          ? `Codegen override: ${normalizedModelOverride} (not in cached OpenRouter list)`
+                          : `Codegen override: ${normalizedModelOverride} (for this build)`
                         : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
                     </span>
                     {normalizedModelOverride ? (
@@ -1749,9 +1746,9 @@ export default function Studio({ stream }) {
                         </div>
                         <div
                           className="max-w-[13rem] truncate text-ash/70"
-                          title={`prompts ${ai.promptCount} · stages ${ai.stageCount} · skills ${ai.skills} · recall ${ai.recall}`}
+                          title={`prompts ${ai.promptCount ?? "—"} · stages ${ai.stageCount ?? "—"} · skills ${ai.skills ?? "—"} · recall ${ai.recall ?? "—"}`}
                         >
-                          prompts {ai.promptCount} · stages {ai.stageCount}
+                          prompts {ai.promptCount ?? "—"} · stages {ai.stageCount ?? "—"}
                         </div>
                         <div
                           className="max-w-[13rem] truncate text-ash/70"

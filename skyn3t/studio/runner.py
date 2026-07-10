@@ -4910,6 +4910,12 @@ class StudioRunner:
             return self._outcome(manifest)
         finally:
             self._obs_call(self.budget_guard, "detach")
+            flush_events = getattr(self.memory, "flush_events", None)
+            if callable(flush_events):
+                try:
+                    await flush_events()
+                except Exception as exc:  # noqa: BLE001 - delivery must outlive telemetry
+                    log.warning("studio.event_flush_failed", error=str(exc)[:200])
             for wt in worktrees:
                 cleanup_worktree(wt)
 

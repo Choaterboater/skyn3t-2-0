@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.studio.asset_foundry import check_asset_outputs
+from skyn3t.studio.game_source_graph import reachable_game_sources
 from skyn3t.studio.visual_check import (
     _dom_start_click,
     _fit_viewport_to_canvas,
@@ -50,27 +51,25 @@ _MAX_CONSOLE_ERRORS = 8
 # / ``https://`` URLs from being eaten as line comments.
 _COMMENT_RE = re.compile(r"/\*.*?\*/|<!--.*?-->|(?<!:)//[^\n]*", re.DOTALL)
 
-# A quoted role only counts as "rendered" when it's the key of a real Phaser loader/texture
-# call — NOT any bareword string (role names routinely double as anim keys / logic types).
-_LOADER_CALL = (
-    r"(?:load\.(?:image|spritesheet|atlas)|textures\.exists"
-    r"|add\.(?:image|sprite|tileSprite))"
-)
-
-# A texture LOADER or RENDER call whose KEY argument is a bare IDENTIFIER (a variable /
-# member expression), not a quoted literal — the dominant idiomatic Phaser pattern the
-# literal-only scan above misses: loading a whole spriteList in a loop
+# A texture LOADER or RENDER call whose key argument is a bare identifier (a variable /
+# member expression), not a quoted literal. These cover the dominant idiomatic pattern:
+# loading a whole spriteList in a loop
 # (`for (const name of list) this.load.image(name, ...)`) and rendering via a computed key
 # (`let textureKey; textureKey = 'enemy'; this.add.sprite(x, y, textureKey)` /
-# `sprite.setTexture(tex)`). When such a call is present, a role literal appearing anywhere
-# in the (comment-stripped) source IS being fed through as a texture key — so counting it as
-# rendered stops the scan from false-flagging every correctly-built game that doesn't inline
-# literal keys (the real "a fully-rendered game scores no_go" bug). `.create`/`anims.create`
-# are deliberately NOT matched (anims.create({key:...}) is an animation key, not a texture).
-_VAR_KEYED_TEXTURE = re.compile(
+# `sprite.setTexture(tex)`). Load and render evidence are deliberately SEPARATE: preloading
+# an unused PNG is not rendering it, which was the production escape hatch this gate missed.
+_VAR_KEYED_LOAD = re.compile(
     r"\.load\.(?:image|spritesheet|atlas)\s*\(\s*[A-Za-z_$]"
-    r"|\.setTexture\s*\(\s*[A-Za-z_$]"
+)
+_VAR_KEYED_RENDER = re.compile(
+    r"\.setTexture\s*\(\s*[A-Za-z_$]"
     r"|(?:\.add|physics\.add)\.(?:sprite|image|tileSprite)\s*\([^)'\"`]*,\s*[A-Za-z_$][\w$.]*\s*[),]"
+    r"|\.create\s*\([^)'\"`]*,\s*[A-Za-z_$][\w$.]*\s*[),]"
+)
+# Backward-compatible aggregate used by texture_reconcile's conservative
+# "computed key present, do not synthesize a loader" guard.
+_VAR_KEYED_TEXTURE = re.compile(
+    rf"(?:{_VAR_KEYED_LOAD.pattern})|(?:{_VAR_KEYED_RENDER.pattern})"
 )
 
 # Benign console messages a fully-playable Phaser build emits anyway: the favicon 404 (the
@@ -167,40 +166,54 @@ class QaPlaytestVerdict:
 
 # ── pure: are generated sprites actually referenced? (no browser) ─────────────
 
-def _role_referenced(role: str, text: str) -> bool:
-    """True iff the delivered source shows the role sprite is LOADED/USED. Evidence is
-    EITHER the sprite asset path/filename (``<role>.png`` / ``assets/sprites/<role>``) OR
-    the role used as the QUOTED KEY of a real Phaser loader/texture call (``load.image``/
-    ``spritesheet``/``atlas`` / ``textures.exists`` / ``add.image``/``sprite``/
-    ``tileSprite``). Comments are stripped first, and a bare quoted ``'role'`` no longer
-    counts — so a role mentioned only in a comment or as a non-texture logic/anim string
-    (e.g. ``const TYPE = 'explosion'`` / ``anims.create({key:'explosion'})``) is correctly
-    flagged as never rendered (the exact bug #3 this gate exists to catch), while a real
-    load is never false-flagged."""
+def _role_referenced(role: str, text: str, html: str = "") -> bool:
+    """True iff reachable delivered code both loads and renders ``role``.
+
+    A preload-only reference, a ``textures.exists`` check, a comment, or a role found in
+    an orphaned module is not on-screen evidence. A real DOM ``img`` is self-contained
+    load+render evidence; Phaser usage requires independent loader and renderer calls.
+    """
     src = _COMMENT_RE.sub(" ", text)
+    markup = _COMMENT_RE.sub(" ", html)
     r = re.escape(role)
-    if re.search(rf"\b{r}\.png\b", src) or re.search(rf"assets/sprites/{r}\b", src):
+    quoted_role = re.search(rf"['\"`]{r}['\"`]", src) is not None
+
+    # A visible DOM image needs no separate Phaser loader call.
+    if re.search(
+        rf"<(?:img|image)\b[^>]*(?:src|href)\s*=\s*['\"][^'\"]*\b{r}\.png\b",
+        markup,
+        re.IGNORECASE,
+    ):
         return True
-    if re.search(rf"{_LOADER_CALL}\s*\([^)]*?['\"`]{r}['\"`]", src, re.DOTALL):
-        return True
-    # Variable-keyed load/render idiom: the game loads/renders textures via computed
-    # keys, and this role's literal appears in source (in the spriteList array, a
-    # `key = 'role'` assignment, a switch case, etc.) — so it IS being fed through as a
-    # texture key. Without this, the literal-only checks above false-flag the extremely
-    # common loop-load + computed-render pattern as "never rendered". A role whose
-    # literal never appears at all (the model invented its own key) is still correctly
-    # flagged, because the presence check below fails for it.
-    if _VAR_KEYED_TEXTURE.search(src) and re.search(rf"['\"`]{r}['\"`]", src):
-        return True
-    return False
+
+    literal_load = re.search(
+        rf"\.load\.(?:image|spritesheet|atlas)\s*\(\s*['\"`]{r}['\"`]\s*,\s*"
+        rf"['\"`](?:[^'\"`]*[/\\])?{r}\.png(?:[?#][^'\"`]*)?['\"`]",
+        src,
+    ) is not None
+    loaded = literal_load or (
+        quoted_role and bool(_VAR_KEYED_LOAD.search(src))
+    )
+
+    literal_render_patterns = (
+        rf"(?:\.add|physics\.add|\.make)\.(?:sprite|image|tileSprite)\s*"
+        rf"\([^)]*?['\"`]{r}['\"`]",
+        rf"\.setTexture\s*\(\s*['\"`]{r}['\"`]",
+        rf"\.create\s*\([^)]*?['\"`]{r}['\"`]",
+        rf"(?:\.add|physics\.add)\.group\s*\(\s*\{{[^}}]*\bkey\s*:\s*"
+        rf"['\"`]{r}['\"`]",
+    )
+    rendered = any(re.search(pattern, src, re.DOTALL) for pattern in literal_render_patterns)
+    rendered = rendered or (quoted_role and bool(_VAR_KEYED_RENDER.search(src)))
+    return loaded and rendered
 
 
 def check_sprites_rendered(project_dir: str | Path) -> tuple[bool, list[str]]:
     """Scan ``public/assets/sprites/*.png`` for generated role files; if none exist the
-    game uses primitives by design -> ``(True, [])``. Otherwise read the delivered game
-    source (``src/**/*.js`` + ``index.html``) and return ``(False, [roles that have a
-    file but are never referenced])`` when at least one generated sprite is never loaded/
-    used; else ``(True, [])``. Never raises."""
+    game uses primitives by design -> ``(True, [])``. Otherwise follow local imports
+    from the delivered browser entrypoint and return ``(False, [roles that have a file
+    but lack reachable load+render evidence])``. Orphaned modules and preload-only
+    references cannot satisfy the check. Never raises."""
     try:
         root = Path(project_dir)
         sprite_dir = root / _SPRITE_DIR
@@ -211,23 +224,21 @@ def check_sprites_rendered(project_dir: str | Path) -> tuple[bool, list[str]]:
             return True, []
 
         sources: list[str] = []
-        src = root / "src"
-        if src.is_dir():
-            for p in src.rglob("*.js"):
-                try:
-                    if p.is_file():
-                        sources.append(p.read_text(encoding="utf-8", errors="ignore"))
-                except Exception:  # noqa: BLE001
-                    pass
+        for p in sorted(reachable_game_sources(root)):
+            try:
+                sources.append(p.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:  # noqa: BLE001
+                pass
         index = root / "index.html"
+        html = ""
         if index.is_file():
             try:
-                sources.append(index.read_text(encoding="utf-8", errors="ignore"))
+                html = index.read_text(encoding="utf-8", errors="ignore")
             except Exception:  # noqa: BLE001
                 pass
         text = "\n".join(sources)
 
-        missing = [role for role in roles if not _role_referenced(role, text)]
+        missing = [role for role in roles if not _role_referenced(role, text, html)]
         if missing:
             return False, missing
         return True, []

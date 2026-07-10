@@ -48,6 +48,8 @@ from typing import Any
 
 import structlog
 
+from skyn3t.studio.game_source_graph import simulation_integration_violations
+
 log = structlog.get_logger(__name__)
 
 # Candidate locations for the pure sim core, most-specific first. Games that split
@@ -136,8 +138,11 @@ try {
   process.exit(0)
 }
 const { createState, step, isWin, isLose } = sim
-if (typeof createState !== 'function' || typeof step !== 'function') {
-  out({ applicable: false, reason: 'sim.js must export createState() and step()' })
+const missingExports = [
+  ['createState', createState], ['step', step], ['isWin', isWin], ['isLose', isLose],
+].filter(([, value]) => typeof value !== 'function').map(([name]) => name)
+if (missingExports.length) {
+  out({ applicable: false, reason: 'sim.js must export functions createState(), step(), isWin(), and isLose(); missing: ' + missingExports.join(', ') })
   process.exit(0)
 }
 
@@ -196,11 +201,18 @@ function scan(state) {
 
 function advance(s, input) {
   const r = step(s, input, DT)
-  return r === undefined ? s : r
+  const next = r === undefined ? s : r
+  if (next === null || typeof next !== 'object') {
+    throw new TypeError('step() must preserve or return a non-null object state')
+  }
+  return next
 }
 
 function run(ticks, inputFn) {
   let s = createState(SEED)
+  if (s === null || typeof s !== 'object') {
+    throw new TypeError('createState() must return a non-null object state')
+  }
   let firstBad = null, win = false, lose = false, winTick = -1, winEmptyArr = false
   // null-proto maps so `p in arrMid` only sees real keys (a state field literally
   // named 'constructor'/'toString' would otherwise read as inherited-present).
@@ -561,9 +573,14 @@ def run_headless_gate(
         )
 
     violations = [str(v) for v in (data.get("violations") or [])]
+    # A clean standalone sim is not enough: generated games used to ship a decoy
+    # src/sim.js while the browser ran unrelated scene-local logic. When an entrypoint
+    # exists, require the import graph to reach this exact core and observable calls to
+    # both createState() and step(). Pure sim fixtures with no browser entry stay valid.
+    violations.extend(simulation_integration_violations(pdir, sim))
     return HeadlessGateResult(
         applicable=True,
-        passed=bool(data.get("passed", not violations)),
+        passed=bool(data.get("passed", not violations)) and not violations,
         violations=violations,
         report=dict(data.get("report") or {}),
         detail={"sim": str(sim.relative_to(pdir)), "ticks": ticks, "seed": seed},

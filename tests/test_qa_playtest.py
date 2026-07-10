@@ -69,13 +69,13 @@ def _vision_response(text: str):
 
 # ── check_sprites_rendered (pure, no browser) ─────────────────────────────────
 
-def test_sprite_with_a_reference_is_rendered(tmp_path: Path):
+def test_preloaded_sprite_without_render_is_flagged(tmp_path: Path):
     _sprite(tmp_path, "player_plane")
     _src(tmp_path,
          "this.load.image('player_plane', 'assets/sprites/player_plane.png');\n")
     rendered, missing = check_sprites_rendered(tmp_path)
-    assert rendered is True
-    assert missing == []
+    assert rendered is False
+    assert missing == ["player_plane"]
 
 
 def test_generated_sprite_with_no_reference_is_flagged(tmp_path: Path):
@@ -100,13 +100,47 @@ def test_sprite_only_in_comment_or_logic_string_is_flagged(tmp_path: Path):
     assert missing == ["player_plane"]
 
 
-def test_sprite_referenced_as_loader_key_only_is_rendered(tmp_path: Path):
-    # precision guard: a real loader/texture call keyed by the role (no .png literal on
-    # the same token) still counts as rendered — we did not over-tighten.
+def test_rendered_sprite_without_loader_is_flagged(tmp_path: Path):
     _sprite(tmp_path, "boss")
     _src(tmp_path, "const k = 'boss';\nthis.add.sprite(x, y, 'boss');\n")
     rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is False and missing == ["boss"]
+
+
+def test_sprite_with_reachable_load_and_render_is_recognized(tmp_path: Path):
+    _sprite(tmp_path, "boss")
+    _src(
+        tmp_path,
+        "this.load.image('boss', 'assets/sprites/boss.png');\n"
+        "this.add.sprite(x, y, 'boss');\n",
+    )
+    rendered, missing = check_sprites_rendered(tmp_path)
     assert rendered is True and missing == []
+
+
+def test_role_key_loaded_from_a_different_file_does_not_claim_generated_sprite(tmp_path: Path):
+    _sprite(tmp_path, "boss")
+    _src(
+        tmp_path,
+        "this.load.image('boss', 'assets/sprites/placeholder.png');\n"
+        "this.add.sprite(x, y, 'boss');\n",
+    )
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is False and missing == ["boss"]
+
+
+def test_unrelated_filename_mention_cannot_legitimize_placeholder_loader(tmp_path: Path):
+    _sprite(tmp_path, "boss")
+    _src(
+        tmp_path,
+        "const unused = 'assets/sprites/boss.png';\n"
+        "this.load.image('boss', 'assets/sprites/placeholder.png');\n"
+        "this.add.sprite(x, y, 'boss');\n",
+    )
+
+    rendered, missing = check_sprites_rendered(tmp_path)
+
+    assert rendered is False and missing == ["boss"]
 
 
 # ── variable-keyed load/render (the dominant idiomatic Phaser pattern) ─────────
@@ -163,6 +197,45 @@ def test_role_absent_entirely_is_still_flagged_even_with_variable_rendering(tmp_
     rendered, missing = check_sprites_rendered(tmp_path)
     assert rendered is False
     assert missing == ["player"]
+
+
+def test_orphaned_scene_cannot_claim_a_sprite_is_rendered(tmp_path: Path):
+    _sprite(tmp_path, "enemy")
+    _src(tmp_path, "console.log('real entry uses primitives');\n")
+    _src(
+        tmp_path,
+        "this.load.image('enemy', 'assets/sprites/enemy.png');\n"
+        "this.add.sprite(0, 0, 'enemy');\n",
+        name="OrphanScene.js",
+    )
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is False and missing == ["enemy"]
+
+
+def test_imported_scene_can_claim_a_sprite_is_rendered(tmp_path: Path):
+    _sprite(tmp_path, "enemy")
+    _src(tmp_path, "import './GameScene.js';\n")
+    _src(
+        tmp_path,
+        "this.load.image('enemy', 'assets/sprites/enemy.png');\n"
+        "this.add.sprite(0, 0, 'enemy');\n",
+        name="GameScene.js",
+    )
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is True and missing == []
+
+
+def test_import_mentioned_only_in_comment_does_not_make_scene_reachable(tmp_path: Path):
+    _sprite(tmp_path, "enemy")
+    _src(tmp_path, "// import './OrphanScene.js'\nconsole.log('primitive game');\n")
+    _src(
+        tmp_path,
+        "this.load.image('enemy', 'assets/sprites/enemy.png');\n"
+        "this.add.sprite(0, 0, 'enemy');\n",
+        name="OrphanScene.js",
+    )
+    rendered, missing = check_sprites_rendered(tmp_path)
+    assert rendered is False and missing == ["enemy"]
 
 
 def test_no_sprite_files_is_rendered_true(tmp_path: Path):

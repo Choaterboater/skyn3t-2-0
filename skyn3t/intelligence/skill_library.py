@@ -215,6 +215,8 @@ class SkillLibrary:
         for f in sorted(self.dir.glob("*.md")):
             try:
                 sk = parse_skill(f.read_text(), fallback_slug=f.stem)
+                if not sk.body.strip():
+                    continue
                 self._skills[sk.slug] = sk
             except Exception as exc:  # noqa: BLE001
                 if _log:
@@ -551,6 +553,15 @@ _SEED_SKILLS = [
      "responsive layout, favicon/metadata, and at least one real interaction or "
      "form when the brief implies it. No external stock/CDN dependencies; use "
      "generated /assets paths when provided.", ["static", "html", "frontend", "web"]),
+    ("Astro visual delivery", "astro",
+     "Deliver an Astro site that is visibly complete, not merely buildable. Import "
+     "the global stylesheet from the shared base layout, then run Astro check and "
+     "a production build. Serve the built output and verify that rendered HTML links "
+     "a CSS asset which responds successfully. Establish one specific brand/title and "
+     "use real imagery as product context. Avoid generic icon-card grids and nested "
+     "cards: use purposeful layout bands, editorial link rows, and cards only for "
+     "repeated content. Before delivery, inspect desktop and mobile output when a "
+     "browser is available.", ["astro", "frontend", "web", "design", "visual", "verification"]),
     ("Phaser playable game shape", "phaser",
      "Deliver a real Phaser game with src/sim.js pure game logic, src/main.js "
      "renderer, preload for generated sprites, keyboard/touch controls, win/lose "

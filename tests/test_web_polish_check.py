@@ -28,6 +28,36 @@ def test_web_polish_accepts_structured_page(tmp_path):
     assert check_web_polish(tmp_path, "static")["ok"] is True
 
 
+def test_web_polish_flags_unwired_stylesheet(tmp_path):
+    styles = tmp_path / "src" / "styles"
+    styles.mkdir(parents=True)
+    (styles / "global.css").write_text("body { color: #123; }\n", encoding="utf-8")
+    layout = tmp_path / "src" / "layouts"
+    layout.mkdir()
+    (layout / "BaseLayout.astro").write_text(
+        "<main class='grid hero'><h1>Planner</h1><a href='/start'>Start</a></main>",
+        encoding="utf-8",
+    )
+
+    verdict = check_web_polish(tmp_path, "astro")
+
+    assert verdict["ok"] is False
+    assert "stylesheets exist but no CSS import or stylesheet link was found" in verdict["issues"]
+
+
+def test_web_polish_accepts_imported_stylesheet(tmp_path):
+    styles = tmp_path / "src" / "styles"
+    styles.mkdir(parents=True)
+    (styles / "global.css").write_text("body { color: #123; }\n", encoding="utf-8")
+    (tmp_path / "Layout.astro").write_text(
+        "---\nimport './src/styles/global.css';\n---\n"
+        "<main class='grid hero'><h1>Planner</h1><a href='/start'>Start</a></main>",
+        encoding="utf-8",
+    )
+
+    assert check_web_polish(tmp_path, "astro")["ok"] is True
+
+
 def test_web_polish_covers_web_stack_alias_component_files(tmp_path):
     (tmp_path / "App.svelte").write_text(
         "<main class='grid hero'><h1>Planner</h1><a href='/start'>Start</a></main>",

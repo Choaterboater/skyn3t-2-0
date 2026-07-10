@@ -46,6 +46,17 @@ def test_import_directory_missing_path_is_safe(tmp_path):
     assert lib.import_directory(tmp_path / "does-not-exist") == 0
 
 
+def test_load_ignores_empty_skill_files(tmp_path):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "empty.md").write_text("", encoding="utf-8")
+    (skills / "usable.md").write_text("Use a concrete quality gate.\n", encoding="utf-8")
+
+    library = SkillLibrary(skills_dir=skills)
+
+    assert [skill.slug for skill in library.all()] == ["usable"]
+
+
 def test_relevant_matches_new_factory_stack_aliases(tmp_path):
     lib = SkillLibrary(skills_dir=tmp_path / "lib")
     lib.add(
@@ -141,6 +152,7 @@ def test_seed_default_skills_cover_factory_stacks(tmp_path):
     seed_default_skills(lib)
 
     expected = {
+        "astro": "astro-visual-delivery",
         "static": "static-website-shape",
         "phaser": "phaser-playable-game-shape",
         "rag": "rag-app-contract",

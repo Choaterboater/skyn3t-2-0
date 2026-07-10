@@ -240,6 +240,88 @@ def test_planned_file_progress_resets_helper_family_guard(tmp_path, monkeypatch)
     assert len([text for text in _user_texts(fake.bodies) if "wrapper scripts" in text]) == 1
 
 
+def test_complete_plan_gets_final_wiring_pass_then_auto_converges(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn(
+            "write_file",
+            {"path": "src/App.astro", "content": "<main>complete application</main>\n"},
+            "planned",
+        ),
+        _tool_turn(
+            "write_file",
+            {
+                "path": "src/App.astro",
+                "content": "<main><h1>Complete application</h1></main>\n",
+            },
+            "wiring",
+        ),
+    ]
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(
+        _client()._openrouter_agentic(
+            "build",
+            str(tmp_path),
+            "m",
+            stack="astro",
+            planned_paths=["src/App.astro"],
+            enforce_antistub=False,
+        )
+    )
+
+    assert fake.i == 2
+    assert res["ok"] is True
+    assert res["completed"] is True
+    assert res["auto_converged"] is True
+    assert len([
+        text for text in _user_texts(fake.bodies)
+        if "approved architecture file" in text
+    ]) == 1
+
+
+def test_plan_auto_convergence_repairs_exact_verify_defects_first(
+    tmp_path, monkeypatch
+):
+    turns = [
+        _tool_turn(
+            "write_file",
+            {
+                "path": "src/main.js",
+                "content": "import './Missing.js';\nconsole.log('boot');\n",
+            },
+            "planned",
+        ),
+        _tool_turn("list_files", {}, "inspect"),
+        _tool_turn(
+            "write_file",
+            {"path": "src/Missing.js", "content": "export const ready = true;\n"},
+            "repair",
+        ),
+    ]
+    fake = _RecordingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(
+        _client()._openrouter_agentic(
+            "build",
+            str(tmp_path),
+            "m",
+            stack="phaser",
+            planned_paths=["src/main.js"],
+            enforce_antistub=False,
+        )
+    )
+
+    assert fake.i == 3
+    assert res["ok"] is True
+    assert res["auto_converged"] is True
+    denials = [text for text in _user_texts(fake.bodies) if "VERIFY-ON-STOP" in text]
+    assert len(denials) == 1
+    assert "Missing.js" in denials[0]
+    assert (tmp_path / "src/Missing.js").is_file()
+
+
 # ---------------------------------------------------------------------------
 # Verify-on-stop (item 19, degrade-open)
 # ---------------------------------------------------------------------------

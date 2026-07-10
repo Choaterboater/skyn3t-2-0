@@ -12,10 +12,12 @@ the :class:`ModelRouter`, then dispatches to a backend:
   test suite) runs with **no keys and no network**. This is what makes
   "brief -> runnable app" demonstrable out of the box.
 
-Backend selection (``settings.llm_backend``): ``auto`` prefers OpenRouter (if a
-key is set), then a detected CLI, then the stub. It can be pinned to any
-specific backend. Every call is metered and checked against budget caps —
-design rules #5 (cheap by default) and #6 (degrade, don't crash).
+Backend selection (``settings.llm_backend``): ``auto`` is intentionally local
+only: it resolves to Codex CLI when available and otherwise stays offline. It
+never selects OpenRouter merely because a key happens to be configured. Hosted
+providers remain available only through an explicit backend selection. Every
+call is metered and checked against budget caps — design rules #5 (cheap by
+default) and #6 (degrade, don't crash).
 """
 
 from __future__ import annotations
@@ -118,6 +120,11 @@ SUPPORTED_LLM_BACKENDS = (
     *(f"{provider}_cli" for provider in KNOWN_CLI_PROVIDERS),
 )
 _KNOWN_CLI_PROVIDERS = KNOWN_CLI_PROVIDERS
+# ``auto`` is the unattended/default execution policy. Keeping this separate
+# from ``cli_llm_provider`` is deliberate: the latter can still be used by
+# manually selected tooling (for example a vision workflow), but automatic
+# builds must never jump to a hosted API or an arbitrary signed-in CLI.
+_AUTO_EXECUTION_CLI_PROVIDER = "codex"
 _CLI_DISPLAY_NAMES = {
     "codex": "Codex CLI",
     "claude": "Claude Code CLI",
@@ -379,15 +386,22 @@ def explicit_routing_lock_error(
     settings: Any,
     *,
     cli_available: Callable[[str], bool] | None = None,
+    require_codex_for_auto: bool = False,
 ) -> str:
     """Return the blocking reason for an explicit route, or ``""``.
 
-    ``auto`` deliberately remains degrade-open: with no provider available it
-    may use the offline stub. Explicit selections are locks, however, and must
-    never be silently reinterpreted as a different provider. The CLI probe is
-    injectable so callers and tests can validate policy without running a
-    model command.
+    Explicit selections are locks and must never be silently reinterpreted as
+    a different provider. Callers that are about to start an unattended build
+    can also require the local Codex CLI for ``auto``; this turns a missing
+    executor into an upfront, zero-spend failure instead of a fake offline
+    scaffold. The CLI probe is injectable so callers and tests can validate
+    policy without running a model command.
     """
+    # Older narrow test doubles and third-party callers may provide only the
+    # fields they need for one feature. They never explicitly opted into the
+    # build-routing policy, so keep their historical offline behavior instead
+    # of treating a missing field as an intentional ``auto`` selection.
+    has_explicit_backend = hasattr(settings, "llm_backend")
     requested = str(getattr(settings, "llm_backend", "auto") or "auto").strip().lower()
     if requested not in SUPPORTED_LLM_BACKENDS:
         return f"Unsupported LLM backend {requested!r}."
@@ -432,6 +446,17 @@ def explicit_routing_lock_error(
                 f"codegen_cli_provider={codegen_provider!r} is explicitly selected "
                 "but unavailable; OpenRouter fallback is disabled."
             )
+
+    # An explicitly selected codegen provider is the tighter routing lock and
+    # is intentionally validated above. Only then apply the automatic Codex
+    # requirement, and only when the settings object actually exposes an LLM
+    # backend field (real Settings does; legacy minimal doubles may not).
+    if require_codex_for_auto and has_explicit_backend and requested == "auto":
+        if not provider_available(_AUTO_EXECUTION_CLI_PROVIDER):
+            return (
+                "Automatic builds require Codex CLI on PATH; OpenRouter fallback "
+                "is disabled. Select a backend explicitly to use another provider."
+            )
     return ""
 
 
@@ -439,9 +464,19 @@ def enforce_explicit_routing_lock(
     settings: Any,
     *,
     cli_available: Callable[[str], bool] | None = None,
+    require_codex_for_auto: bool = False,
 ) -> None:
-    """Raise before work begins when an explicit provider route is unusable."""
-    reason = explicit_routing_lock_error(settings, cli_available=cli_available)
+    """Raise before work begins when a selected route is unusable.
+
+    ``require_codex_for_auto`` is used by executable build paths. It preserves
+    the offline ``LLMClient`` behavior for library callers while making an
+    automatic application build fail closed before any model/API work starts.
+    """
+    reason = explicit_routing_lock_error(
+        settings,
+        cli_available=cli_available,
+        require_codex_for_auto=require_codex_for_auto,
+    )
     if reason:
         raise RoutingLockError(reason)
 
@@ -1369,13 +1404,12 @@ class LLMClient:
         if pref.endswith("_cli"):
             prov = pref[:-4]
             return f"{prov}_cli" if self._cli_available(prov) else "stub"
-        # auto: OpenRouter key wins, else a detected CLI, else stub.
-        if openrouter_key(self.settings):
-            return "openrouter"
-        preferred = (self.settings.cli_llm_provider or "claude").lower()
-        for prov in dict.fromkeys((preferred, *_KNOWN_CLI_PROVIDERS)):
-            if self._cli_available(prov):
-                return f"{prov}_cli"
+        # Auto is intentionally a local Codex-only policy. An OpenRouter key is
+        # configuration, not consent to spend: hosted routing requires the
+        # operator to explicitly select ``openrouter``. Do not fall through to
+        # other CLIs either; a different CLI is likewise an explicit choice.
+        if self._cli_available(_AUTO_EXECUTION_CLI_PROVIDER):
+            return f"{_AUTO_EXECUTION_CLI_PROVIDER}_cli"
         return "stub"
 
     def backend_status(self) -> dict:
@@ -1389,7 +1423,11 @@ class LLMClient:
         pref = str(self.settings.llm_backend or "auto").strip().lower()
         active = self.backend
         openrouter_configured = bool(openrouter_key(self.settings))
-        preferred_cli = (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
+        preferred_cli = (
+            _AUTO_EXECUTION_CLI_PROVIDER
+            if pref == "auto"
+            else (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
+        )
         cli_details = {p: self._cli_detail(p) for p in _KNOWN_CLI_PROVIDERS}
         cli_available = {p: detail["available"] for p, detail in cli_details.items()}
         state = "ready"
@@ -1404,8 +1442,10 @@ class LLMClient:
             state = "cli_missing"
             reason = f"{pref[:-4]} CLI was selected but is not available on PATH."
         elif pref == "auto" and active == "stub":
-            state = "auto_stub"
-            reason = "Auto found no OpenRouter key and no supported local CLI."
+            state = "auto_codex_missing"
+            reason = (
+                "Auto requires Codex CLI on PATH and never falls back to OpenRouter."
+            )
 
         codegen_provider = str(getattr(self.settings, "codegen_cli_provider", "") or "").strip().lower()
         codegen_model = str(getattr(self.settings, "codegen_cli_model", "") or "").strip()
@@ -1467,6 +1507,11 @@ class LLMClient:
             "reason": reason,
             "openrouter_configured": openrouter_configured,
             "preferred_cli": preferred_cli,
+            "automatic_execution": {
+                "backend": f"{_AUTO_EXECUTION_CLI_PROVIDER}_cli",
+                "available": cli_available.get(_AUTO_EXECUTION_CLI_PROVIDER, False),
+                "openrouter_fallback": False,
+            },
             "cli_available": cli_available,
             "cli_details": cli_details,
             "accounting": accounting,
@@ -3268,7 +3313,7 @@ class LLMClient:
         else:
             text = (
                 f"[stub:{model}] Offline response. "
-                f"Set SKYN3T_OPENROUTER_API_KEY for real generation.\n"
+                f"Install Codex CLI or select a backend explicitly for real generation.\n"
                 f"Prompt summary: {prompt[:160]}"
             )
         approx = max(1, len(prompt) // 4)

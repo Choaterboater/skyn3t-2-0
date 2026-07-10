@@ -18,12 +18,14 @@ class _Call:
         exposure=0.0,
         generation_id="",
         cost_source="unknown",
+        backend="fake",
+        model="fake",
     ):
         self.cost_usd = cost
         self.prompt_tokens = pt
         self.completion_tokens = ct
-        self.backend = "fake"
-        self.model = "fake"
+        self.backend = backend
+        self.model = model
         self.status = status
         self.estimated_exposure_usd = exposure
         self.generation_id = generation_id
@@ -90,6 +92,49 @@ def test_per_stage_cost_attribution_slices_the_ledger():
     # build-level total is all three calls; the per-stage slices partition it.
     assert round(rep["cost_usd"], 4) == 0.08
     assert round(stages["plan"]["cost_usd"] + stages["code"]["cost_usd"], 4) == 0.08
+
+
+def test_stage_cost_truth_distinguishes_local_cli_from_provider_receipts():
+    budget = _Budget()
+    ct = CostTracker(budget=budget)
+    ct.start_build("b1")
+
+    ct.start_stage("b1", "code")
+    budget.calls.append(_Call(
+        0.0,
+        120,
+        80,
+        backend="codex_cli",
+        model="gpt-5.6-codex",
+        cost_source="not_reported_by_cli",
+    ))
+    cli_stage = ct.end_stage("b1", "code")
+
+    assert cli_stage["call_count"] == 1
+    assert cli_stage["backend"] == "codex_cli"
+    assert cli_stage["backends"] == {"codex_cli": 1}
+    assert cli_stage["models"] == ["gpt-5.6-codex"]
+    assert cli_stage["cost_source_counts"] == {"not_reported_by_cli": 1}
+    assert cli_stage["cost_usd"] == 0.0
+    assert cli_stage["cost_usd_known"] is False
+    assert cli_stage["cost_classification"] == "unknown"
+
+    ct.start_stage("b1", "review")
+    budget.calls.append(_Call(
+        0.015,
+        80,
+        20,
+        backend="openrouter",
+        model="provider/manual-model",
+        cost_source="provider",
+    ))
+    provider_stage = ct.end_stage("b1", "review")
+
+    assert provider_stage["backend"] == "openrouter"
+    assert provider_stage["models"] == ["provider/manual-model"]
+    assert provider_stage["cost_source_counts"] == {"provider": 1}
+    assert provider_stage["cost_usd_known"] is True
+    assert provider_stage["cost_classification"] == "provider_confirmed"
 
 
 def test_per_stage_does_not_disturb_build_attribution():

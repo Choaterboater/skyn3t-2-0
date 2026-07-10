@@ -179,6 +179,17 @@ class BaseAgent(ABC):
             result = await self.execute(task)
             result.agent_name = self.name
             result.duration_ms = (time() - started) * 1000
+            # Preserve the build/worktree binding on the result as well as the
+            # live task event. This lets the Studio manifest prove which
+            # isolated tree a stage touched after the ephemeral event stream is
+            # gone. Keep it small and never copy arbitrary caller metadata.
+            task_context = {
+                key: task.metadata[key]
+                for key in ("build_id", "stage", "worktree_dir", "worktree_role")
+                if task.metadata.get(key) not in (None, "")
+            }
+            if task_context and "task_context" not in result.metadata:
+                result.metadata["task_context"] = task_context
             # Stamp the model the agent's LLM last used, so stage outcomes can
             # feed the ModelTournament. Single chokepoint: agents that hold a
             # ``self.llm`` get this for free without plumbing it through every

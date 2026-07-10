@@ -3538,6 +3538,15 @@ class StudioRunner:
     ) -> TaskResult:
         slice_scope = payload.get("slice_scope")
         metadata = {"stage": spec.name}
+        build_id = str(payload.get("build_id") or "").strip()
+        if build_id:
+            metadata["build_id"] = build_id
+        worktree_dir = str(payload.get("worktree_dir") or "").strip()
+        if worktree_dir:
+            metadata["worktree_dir"] = worktree_dir
+        worktree_role = str(payload.get("worktree_role") or "main").strip()
+        if worktree_role:
+            metadata["worktree_role"] = worktree_role
         if isinstance(slice_scope, dict) and slice_scope.get("name"):
             metadata["slice"] = str(slice_scope["name"])
         task = TaskRequest(
@@ -3608,6 +3617,7 @@ class StudioRunner:
             "slug": plan.slug,
             "project_dir": project_dir,
             "worktree_dir": worktree_dir,
+            "worktree_role": "main",
             "stack": plan.stack,
             "plan": effective_plan,
             "prior": prior,
@@ -3617,6 +3627,9 @@ class StudioRunner:
         if extra:
             extra = self._sanitize_assets_for_worktree(extra, worktree_dir, plan.brief)
             payload["extra"] = extra
+            build_id = str(extra.get("build_id") or "").strip()
+            if build_id:
+                payload["build_id"] = build_id
             # "Build from a picture": surface optional reference images at the
             # top level so the designer/architect agents can read them directly.
             ref = extra.get("reference_image")
@@ -3783,6 +3796,36 @@ class StudioRunner:
             )
         return recovered
 
+    @staticmethod
+    def _set_main_worktree_status(
+        manifest: BuildManifest,
+        worktree: Worktree,
+        *,
+        status: str,
+    ) -> None:
+        """Persist the main worktree's ownership/lifecycle without guessing.
+
+        The worktree is intentionally disposable, but a running build used to
+        have no durable pointer to the tree its agents owned until final
+        delivery. That made a restarted server unable to distinguish active
+        work from an orphan. Keep the build binding explicit from creation and
+        update only the lifecycle state the runner actually knows.
+        """
+        worktree.extra.update({
+            "owner_build_id": manifest.build_id,
+            "role": "main",
+            "status": status,
+        })
+        manifest.worktree_dir = worktree.dir
+        manifest.extra["worktree"] = {
+            "owner_build_id": manifest.build_id,
+            "role": "main",
+            "status": status,
+            "path": worktree.dir,
+            "is_git": bool(worktree.is_git),
+            "branch": worktree.branch or "",
+        }
+
     # ---- main entrypoint -------------------------------------------------
     async def start(
         self,
@@ -3791,12 +3834,16 @@ class StudioRunner:
         extra: dict[str, Any] | None = None,
     ) -> BuildOutcome:
         # All entrypoints (web, CLI, Cortex, autonomy, and messaging) converge
-        # here. Validate explicit provider locks before stack selection can make
-        # an LLM call or any build ledger is opened. ``auto`` remains allowed to
-        # degrade to the offline stub.
+        # here. Validate provider locks before stack selection can make an LLM
+        # call or any build ledger is opened. The automatic route is Codex-only:
+        # a missing local executor fails before it can silently emit a stub or
+        # spend through an ambient OpenRouter key.
         from skyn3t.adapters.llm import enforce_explicit_routing_lock
 
-        enforce_explicit_routing_lock(self.settings)
+        enforce_explicit_routing_lock(
+            self.settings,
+            require_codex_for_auto=hasattr(self.settings, "llm_backend"),
+        )
         # Establish identity and budget ownership before stack selection or any
         # other delegated work can spend. Copy the caller's mapping so injecting
         # an id does not mutate a request object that may be reused elsewhere.
@@ -3963,6 +4010,11 @@ class StudioRunner:
         # The main build worktree for non-code stages and final delivery.
         main_wt = create_worktree(str(projects_dir), slug)
         worktrees: list[Worktree] = [main_wt]
+        self._set_main_worktree_status(manifest, main_wt, status="active")
+        # Checkpoint the active worktree before any agent starts. This is what
+        # lets a restart/reconciler tell a live build's owned tree from an
+        # untracked directory even if the process dies during the first stage.
+        await self._save_build(manifest)
         reviewer_score = 0.0
         verdict = "no_go"
         reviewer_gaps: list[str] = []
@@ -4036,6 +4088,7 @@ class StudioRunner:
                     manifest.add_stage(record)
                     await self._save_build(manifest)
                     await self._emit_stage_done(build_id, record, correlation_id)
+                    await self._save_build(manifest)
                     continue
 
                 # No agent -> record skipped and continue (offline tolerance). But:
@@ -4053,6 +4106,7 @@ class StudioRunner:
                     manifest.add_stage(record)
                     await self._save_build(manifest)
                     await self._emit_stage_done(build_id, record, correlation_id)
+                    await self._save_build(manifest)
                     if spec.gated:
                         approval = self.approval_gate.request(
                             build_id, spec.name, {"reason": "no_agent", "score": 0}
@@ -4121,6 +4175,9 @@ class StudioRunner:
                     record.agent_name = result.agent_name
                     record.duration_ms = result.duration_ms
                     record.output_summary = self._summarize(result.output)
+                    execution = self._stage_execution_truth(result)
+                    if execution:
+                        record.output_summary["execution"] = execution
                     prior[spec.name] = result.output
                     if spec.name == "architect" or spec.capability == "architecture":
                         self._promote_architect_contract(
@@ -4133,6 +4190,9 @@ class StudioRunner:
                     record.error = result.error
                     record.agent_name = result.agent_name
                     record.output_summary = {"error": result.error}
+                    execution = self._stage_execution_truth(result)
+                    if execution:
+                        record.output_summary["execution"] = execution
                     if isinstance(best_of_n_evidence, dict):
                         record.output_summary["best_of_n"] = best_of_n_evidence
                     failed: dict[str, Any] = {"error": result.error}
@@ -4218,6 +4278,11 @@ class StudioRunner:
                 manifest.add_stage(record)
                 await self._save_build(manifest)
                 await self._emit_stage_done(build_id, record, correlation_id)
+                # `_emit_stage_done` closes the stage ledger and enriches this
+                # same record with its durable backend/cost truth. Persist a
+                # second, small checkpoint so a process crash immediately after
+                # the event cannot lose the attribution it just showed live.
+                await self._save_build(manifest)
 
                 # Per-stage autonomous debug + live preview snapshot (Phase A).
                 await self._debug_and_snapshot(
@@ -4241,7 +4306,7 @@ class StudioRunner:
             # instead of accumulating stale files from previous builds.
             copied = merge_back(main_wt.dir, project_dir, clean=True)
             manifest.files = copied or list_files(project_dir)
-            manifest.worktree_dir = main_wt.dir
+            self._set_main_worktree_status(manifest, main_wt, status="delivered")
             manifest.artifact_dir = project_dir
 
             # Deterministic, idempotent build repairs BEFORE the first proof:
@@ -4866,6 +4931,7 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             recovered = self._recover_cancelled_worktrees(build_id, worktrees)
             manifest.status = "cancelled"
+            self._set_main_worktree_status(manifest, main_wt, status="cancelled_recovered")
             self._settle_build_cost(manifest, build_id)
             manifest.touch()
             manifest.extra["cancellation"] = {
@@ -4914,6 +4980,7 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
                 used_lessons, helpful=False,
@@ -4940,6 +5007,7 @@ class StudioRunner:
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
                 used_lessons, helpful=False,
@@ -5008,6 +5076,7 @@ class StudioRunner:
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
             payload.update(spec.extra)
+            payload["worktree_role"] = f"candidate:{index}"
             payload["trajectory_index"] = index
             if across_models and not payload.get("model_override"):
                 payload["model_override"] = pool[index % len(pool)]
@@ -5268,6 +5337,7 @@ class StudioRunner:
             wt = slice_wts[name]
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
             payload.update(spec.extra)
+            payload["worktree_role"] = f"slice:{name}"
             # Scope codegen to THIS slice's files; pass the full contract for wiring.
             payload["plan"] = {**payload["plan"], "files": files}
             payload["slice_scope"] = {
@@ -5431,6 +5501,46 @@ class StudioRunner:
             summary = {k: v for k, v in list(output.items())[:3] if isinstance(v, (str, int, float, bool))}
         return summary
 
+    @staticmethod
+    def _stage_execution_truth(result: TaskResult) -> dict[str, Any]:
+        """Compact execution provenance retained with a stage record.
+
+        Agent output is intentionally heterogeneous, so take only the stable
+        backend/model/route/task binding fields rather than persisting every
+        provider payload. Cost truth is appended later by `_emit_stage_done`,
+        after the ledger has closed the stage boundary.
+        """
+        output = result.output if isinstance(result.output, dict) else {}
+        raw_agentic = output.get("agentic")
+        agentic = raw_agentic if isinstance(raw_agentic, dict) else {}
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        backend = str(agentic.get("backend") or output.get("backend") or "").strip()
+        model = str(agentic.get("model") or result.model_id or "").strip()
+        execution: dict[str, Any] = {}
+        if backend:
+            execution["backend"] = backend
+        if model:
+            execution["model"] = model
+        routes = metadata.get("routes")
+        if isinstance(routes, (list, tuple)):
+            normalized_routes = [
+                [str(part) for part in route[:3]]
+                for route in routes[:32]
+                if isinstance(route, (list, tuple)) and len(route) >= 3
+            ]
+            if normalized_routes:
+                execution["routes"] = normalized_routes
+        task_context = metadata.get("task_context")
+        if isinstance(task_context, dict):
+            binding = {
+                key: str(task_context[key])
+                for key in ("build_id", "stage", "worktree_dir", "worktree_role")
+                if task_context.get(key) not in (None, "")
+            }
+            if binding:
+                execution["task"] = binding
+        return execution
+
     async def _with_live_snapshots(
         self, coro, *, build_id: str, spec, main_wt, project_dir: str,
         correlation_id: str, interval: float = 4.0,
@@ -5528,6 +5638,28 @@ class StudioRunner:
         if isinstance(stage_cost, dict):
             payload["cost_usd"] = stage_cost.get("cost_usd")
             payload["tokens"] = stage_cost.get("tokens")
+            cost_truth = {
+                key: stage_cost.get(key)
+                for key in (
+                    "call_count",
+                    "backend",
+                    "backends",
+                    "models",
+                    "cost_source_counts",
+                    "cost_usd_known",
+                    "cost_classification",
+                    "failed_attempts",
+                    "max_unconfirmed_exposure_usd",
+                )
+                if key in stage_cost
+            }
+            if cost_truth:
+                summary = dict(record.output_summary or {})
+                summary["cost_truth"] = cost_truth
+                record.output_summary = summary
+                payload["cost_truth"] = cost_truth
+            if stage_cost.get("backend"):
+                payload["backend"] = stage_cost["backend"]
         gaps = record.output_summary.get("gaps") if isinstance(record.output_summary, dict) else None
         if gaps:
             payload["gaps"] = list(gaps)

@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from skyn3t.intelligence.skill_library import SkillLibrary, parse_skill, seed_default_skills
+from skyn3t.intelligence.skill_library import (
+    SkillLibrary,
+    content_sha256,
+    parse_skill,
+    seed_default_skills,
+)
 
 
 def test_parse_skill_accepts_name_description_frontmatter():
@@ -22,6 +27,38 @@ def test_parse_skill_accepts_name_description_frontmatter():
     assert sk.slug == "gate-every-build-with-a-smoke-test"
     assert "Add a fast smoke test" in sk.body  # description folded into body
     assert "ci" in sk.tags
+
+
+def test_parse_skill_preserves_agent_skills_optional_metadata():
+    md = (
+        "---\n"
+        "name: web-review\n"
+        "description: >\n"
+        "  Review web applications for accessibility and responsive defects.\n"
+        "license: Apache-2.0\n"
+        "compatibility: Requires a browser and a local server\n"
+        "metadata:\n"
+        "  author: example-org\n"
+        "  version: \"1.2\"\n"
+        "allowed-tools: Bash(git:*) Read\n"
+        "---\n"
+        "# Review\n\nInspect the rendered application.\n"
+    )
+
+    skill = parse_skill(md)
+
+    assert skill.description == "Review web applications for accessibility and responsive defects."
+    assert skill.provenance is not None
+    assert skill.provenance.license == "Apache-2.0"
+    assert skill.provenance.compatibility == "Requires a browser and a local server"
+    assert skill.provenance.tools == ("Bash(git:*)", "Read")
+    assert skill.provenance.metadata == {"author": "example-org", "version": "1.2"}
+
+    # The flattened SkyN3t representation still round-trips the standard fields.
+    reloaded = parse_skill(skill.to_markdown())
+    assert reloaded.description == skill.description
+    assert reloaded.provenance is not None
+    assert reloaded.provenance.to_dict() == skill.provenance.to_dict()
 
 
 def test_import_directory_one_skill_per_file(tmp_path):
@@ -39,6 +76,7 @@ def test_import_directory_one_skill_per_file(tmp_path):
 
     assert n == 2
     assert {s.title for s in lib.all()} == {"Skill A", "Skill B"}
+    assert all(s.provenance is None for s in lib.all())
     # persisted + reloadable from disk
     assert len(SkillLibrary(skills_dir=tmp_path / "lib").all()) == 2
 
@@ -46,6 +84,62 @@ def test_import_directory_one_skill_per_file(tmp_path):
 def test_import_directory_missing_path_is_safe(tmp_path):
     lib = SkillLibrary(skills_dir=tmp_path / "lib")
     assert lib.import_directory(tmp_path / "does-not-exist") == 0
+
+
+def test_import_curated_directory_records_pinned_provenance_and_hash(tmp_path):
+    source = tmp_path / "source" / "web-review"
+    source.mkdir(parents=True)
+    raw = (
+        "---\n"
+        "name: web-review\n"
+        "description: Review a production web UI.\n"
+        "license: Apache-2.0\n"
+        "allowed-tools: Bash(git:*) Read\n"
+        "metadata:\n"
+        "  author: upstream-org\n"
+        "---\n"
+        "Inspect responsive layout, browser errors, and accessible controls.\n"
+    )
+    skill_file = source / "SKILL.md"
+    skill_file.write_text(raw, encoding="utf-8")
+    lib = SkillLibrary(skills_dir=tmp_path / "lib")
+
+    imported = lib.import_curated_directory(
+        tmp_path / "source",
+        source_url="https://github.com/example-org/skills",
+        pinned_revision="f" * 40,
+        metadata={"curator": "skyn3t"},
+    )
+
+    assert imported == 1
+    skill = lib.get("web-review")
+    assert skill is not None
+    assert skill.source == "github-curated"
+    assert skill.provenance is not None
+    assert skill.provenance.source_url == "https://github.com/example-org/skills"
+    assert skill.provenance.pinned_revision == "f" * 40
+    assert skill.provenance.license == "Apache-2.0"
+    assert skill.provenance.tools == ("Bash(git:*)", "Read")
+    assert skill.provenance.content_hash == content_sha256(skill_file.read_bytes())
+    assert skill.provenance.metadata["curator"] == "skyn3t"
+    assert skill.provenance.source_path == "web-review/SKILL.md"
+
+    reloaded = SkillLibrary(skills_dir=tmp_path / "lib").get("web-review")
+    assert reloaded is not None and reloaded.provenance is not None
+    assert reloaded.provenance.to_dict() == skill.provenance.to_dict()
+    assert "allowed-tools:" in (tmp_path / "lib" / "web-review.md").read_text(encoding="utf-8")
+
+
+def test_import_curated_directory_requires_origin_and_pin(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "skill.md").write_text("Use a concrete quality gate.\n", encoding="utf-8")
+    lib = SkillLibrary(skills_dir=tmp_path / "lib")
+
+    with pytest.raises(ValueError, match="source_url"):
+        lib.import_curated_directory(source, source_url="", pinned_revision="abc123")
+    with pytest.raises(ValueError, match="pinned_revision"):
+        lib.import_curated_directory(source, source_url="https://example.test/skills", pinned_revision="")
 
 
 def test_load_ignores_empty_skill_files(tmp_path):

@@ -90,7 +90,13 @@ class ImproveEngine:
         from skyn3t.adapters.llm import RoutingLockError, enforce_explicit_routing_lock
 
         try:
-            enforce_explicit_routing_lock(self.settings)
+            # Improve is an executable automatic edit path, so ``auto`` must
+            # resolve to the local Codex CLI before it makes any model call or
+            # writes a worktree. Explicit hosted backends remain available.
+            enforce_explicit_routing_lock(
+                self.settings,
+                require_codex_for_auto=hasattr(self.settings, "llm_backend"),
+            )
         except RoutingLockError as exc:
             outcome = ImproveOutcome(
                 project_dir=str(project_dir),

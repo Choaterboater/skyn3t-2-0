@@ -13,7 +13,7 @@ from skyn3t.adapters.llm import (
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
-from skyn3t.studio.runner import BuildOutcome, StudioRunner
+from skyn3t.studio.runner import StudioRunner
 
 
 def _settings(tmp_path, **overrides) -> Settings:
@@ -50,6 +50,18 @@ def test_auto_without_explicit_cli_does_not_construct_llm_client(monkeypatch):
         codegen_cli_provider="",
     )
     assert explicit_routing_lock_error(settings) == ""
+
+
+def test_auto_codex_requirement_ignores_legacy_settings_without_backend_field():
+    # A narrow legacy settings double did not choose the automatic route, so it
+    # must not become a Codex requirement merely because `getattr` supplies the
+    # historical "auto" default.
+    settings = SimpleNamespace(codegen_cli_provider="")
+    assert explicit_routing_lock_error(
+        settings,
+        cli_available=lambda _provider: False,
+        require_codex_for_auto=True,
+    ) == ""
 
 
 @pytest.mark.parametrize(
@@ -103,7 +115,9 @@ async def test_runner_rejects_unavailable_explicit_codegen_cli_before_selection(
     runner = _runner(
         _settings(
             tmp_path,
-            llm_backend="openrouter",
+            # Explicit codegen routing has validation precedence over the
+            # automatic Codex executor requirement.
+            llm_backend="auto",
             openrouter_api_key="test-key-not-used",
             codegen_cli_provider="codex",
         )
@@ -133,27 +147,34 @@ async def test_runner_rejects_unavailable_explicit_global_cli(tmp_path, monkeypa
         await runner.start("build a dashboard")
 
 
-async def test_runner_preserves_auto_to_offline_stub_behavior(tmp_path, monkeypatch):
-    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+async def test_runner_rejects_auto_without_codex_before_build_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(
         LLMClient,
         "_cli_available",
         classmethod(lambda _cls, _provider: False),
     )
-    runner = _runner(_settings(tmp_path, llm_backend="auto", openrouter_api_key=""))
-    expected = BuildOutcome(
-        build_id="build-1",
-        slug="demo",
-        status="completed",
-        verdict="go",
-        score=100.0,
-        stack="python_cli",
-        project_dir=str(tmp_path / "Projects" / "demo"),
+    class Tracker:
+        starts = 0
+
+        def start_build(self, _build_id):
+            self.starts += 1
+
+    tracker = Tracker()
+    runner = _runner(
+        _settings(
+            tmp_path,
+            llm_backend="auto",
+            # A configured hosted key cannot become an implicit fallback.
+            openrouter_api_key="sk-or-present",
+        ),
+        cost_tracker=tracker,
     )
 
-    async def offline_build(*_args, **_kwargs):
-        return expected
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("automatic build reached stack selection")
 
-    monkeypatch.setattr(runner, "_start_build", offline_build)
-    assert await runner.start("build an offline tool") is expected
+    monkeypatch.setattr(runner, "_start_build", forbidden)
+    with pytest.raises(RoutingLockError, match="Automatic builds require Codex CLI"):
+        await runner.start("build an offline tool")
+
+    assert tracker.starts == 0

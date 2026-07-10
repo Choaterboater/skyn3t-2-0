@@ -48,6 +48,33 @@ async def test_productive_code_stage_outlives_generic_stage_timeout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stage_task_metadata_binds_build_and_isolated_worktree() -> None:
+    captured = {}
+
+    class CapturingCode:
+        async def submit(self, task):
+            captured.update(task.metadata)
+            return TaskResult(task_id=task.task_id, success=True)
+
+    await _runner(CapturingCode())._submit_stage(
+        _spec("code"),
+        {
+            "build_id": "build-42",
+            "worktree_dir": "C:/tmp/skyn3t-candidate",
+            "worktree_role": "candidate:1",
+        },
+        "cid",
+    )
+
+    assert captured == {
+        "stage": "code",
+        "build_id": "build-42",
+        "worktree_dir": "C:/tmp/skyn3t-candidate",
+        "worktree_role": "candidate:1",
+    }
+
+
+@pytest.mark.asyncio
 async def test_code_stage_preserves_adapter_stall_result_instead_of_outer_timeout() -> None:
     class AdapterWatchdog:
         async def submit(self, task):

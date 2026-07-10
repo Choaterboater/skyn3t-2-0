@@ -18,6 +18,7 @@ effects (design rule #4).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -42,6 +43,20 @@ except Exception:  # pragma: no cover - defensive
 PROMOTE_MIN_USES = 4
 PROMOTE_MIN_RATE = 0.66
 _SCORES_FILENAME = ".skill_scores.json"
+
+# Agent Skills-compatible metadata keys. The standard reserves ``metadata`` for
+# client-defined values, so SkyN3t keeps its import record namespaced there
+# rather than inventing extra top-level fields external clients would ignore.
+_PROVENANCE_SOURCE_URL = "skyn3t-source-url"
+_PROVENANCE_REVISION = "skyn3t-pinned-revision"
+_PROVENANCE_CONTENT_HASH = "skyn3t-content-sha256"
+_PROVENANCE_SOURCE_PATH = "skyn3t-source-path"
+_PROVENANCE_METADATA_KEYS = frozenset({
+    _PROVENANCE_SOURCE_URL,
+    _PROVENANCE_REVISION,
+    _PROVENANCE_CONTENT_HASH,
+    _PROVENANCE_SOURCE_PATH,
+})
 
 _UNIVERSAL_GENERIC_TAGS = frozenset({
     "quality", "verification", "testing", "ci", "delivery", "security",
@@ -106,6 +121,139 @@ def _skill_tags_compatible(stack: str, sk_tags: set[str]) -> bool:
     return True
 
 
+def content_sha256(content: str | bytes) -> str:
+    """Return the canonical SHA-256 identifier for imported skill content."""
+    raw = content.encode("utf-8") if isinstance(content, str) else content
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _optional_text(value: object) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _tool_list(value: object) -> tuple[str, ...]:
+    """Normalize Agent Skills' space-delimited ``allowed-tools`` field."""
+    if isinstance(value, str):
+        values = value.split()
+    elif isinstance(value, (list, tuple, set)):
+        values = [str(item).strip() for item in value]
+    else:
+        values = []
+    return tuple(item for item in values if item)
+
+
+@dataclass(slots=True)
+class SkillProvenance:
+    """Auditable origin metadata for a curated external skill import.
+
+    Agent Skills standardizes ``license``, ``metadata``, and experimental
+    ``allowed-tools`` fields. Source URL, immutable revision, and content hash
+    are SkyN3t-specific metadata stored under a namespaced key so standard
+    clients can safely ignore them. All fields remain optional for manually
+    authored and legacy flattened skills.
+    """
+
+    source_url: str | None = None
+    pinned_revision: str | None = None
+    license: str | None = None
+    content_hash: str | None = None
+    source_path: str | None = None
+    tools: tuple[str, ...] = ()
+    metadata: dict[str, str] = field(default_factory=dict)
+    compatibility: str | None = None
+
+    def __post_init__(self) -> None:
+        metadata = {
+            str(key).strip(): str(value).strip()
+            for key, value in dict(self.metadata or {}).items()
+            if str(key).strip() and value is not None and str(value).strip()
+        }
+        self.source_url = _optional_text(self.source_url or metadata.get(_PROVENANCE_SOURCE_URL))
+        self.pinned_revision = _optional_text(
+            self.pinned_revision or metadata.get(_PROVENANCE_REVISION)
+        )
+        self.license = _optional_text(self.license)
+        self.content_hash = _optional_text(
+            self.content_hash or metadata.get(_PROVENANCE_CONTENT_HASH)
+        )
+        self.source_path = _optional_text(self.source_path or metadata.get(_PROVENANCE_SOURCE_PATH))
+        self.compatibility = _optional_text(self.compatibility)
+        self.tools = _tool_list(self.tools)
+        self.metadata = {
+            key: value for key, value in metadata.items() if key not in _PROVENANCE_METADATA_KEYS
+        }
+
+    @property
+    def is_empty(self) -> bool:
+        return not any((
+            self.source_url,
+            self.pinned_revision,
+            self.license,
+            self.content_hash,
+            self.source_path,
+            self.tools,
+            self.metadata,
+            self.compatibility,
+        ))
+
+    def with_content_hash(self, content: str | bytes) -> SkillProvenance:
+        """Return a copy pinned to ``content`` unless a hash was supplied."""
+        return SkillProvenance(
+            source_url=self.source_url,
+            pinned_revision=self.pinned_revision,
+            license=self.license,
+            content_hash=self.content_hash or content_sha256(content),
+            source_path=self.source_path,
+            tools=self.tools,
+            metadata=dict(self.metadata),
+            compatibility=self.compatibility,
+        )
+
+    def with_source_path(self, source_path: str) -> SkillProvenance:
+        """Return a copy that records the file path below a curated source."""
+        return SkillProvenance(
+            source_url=self.source_url,
+            pinned_revision=self.pinned_revision,
+            license=self.license,
+            content_hash=self.content_hash,
+            source_path=source_path.replace("\\", "/") if source_path else self.source_path,
+            tools=self.tools,
+            metadata=dict(self.metadata),
+            compatibility=self.compatibility,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize provenance for APIs without exposing mutable internals."""
+        return {
+            "source_url": self.source_url,
+            "pinned_revision": self.pinned_revision,
+            "license": self.license,
+            "content_hash": self.content_hash,
+            "source_path": self.source_path,
+            "tools": list(self.tools),
+            "metadata": dict(self.metadata),
+            "compatibility": self.compatibility,
+        }
+
+    def frontmatter_metadata(self) -> dict[str, str]:
+        """Combine arbitrary metadata with SkyN3t's namespaced record."""
+        metadata = {
+            key: value
+            for key, value in self.metadata.items()
+            if key not in _PROVENANCE_METADATA_KEYS
+        }
+        if self.source_url:
+            metadata[_PROVENANCE_SOURCE_URL] = self.source_url
+        if self.pinned_revision:
+            metadata[_PROVENANCE_REVISION] = self.pinned_revision
+        if self.content_hash:
+            metadata[_PROVENANCE_CONTENT_HASH] = self.content_hash
+        if self.source_path:
+            metadata[_PROVENANCE_SOURCE_PATH] = self.source_path
+        return metadata
+
+
 @dataclass(slots=True)
 class Skill:
     slug: str
@@ -121,6 +269,10 @@ class Skill:
     # the binary `helpful` count for skills graded before this field existed, so
     # their score is unchanged (backward compatible).
     quality_sum: float | None = None
+    # Agent Skills-compatible discovery metadata. Legacy skills leave these
+    # empty and keep their existing serialized representation and behavior.
+    description: str = ""
+    provenance: SkillProvenance | None = None
 
     def __post_init__(self) -> None:
         if self.quality_sum is None:
@@ -148,11 +300,34 @@ class Skill:
             f"quality_sum: {self.quality_sum or 0.0:.4f}",
             f"score: {self.score:.3f}",
             f"source: {self.source}",
-            "---",
-            "",
-            self.body.strip(),
-            "",
         ]
+        # Preserve Agent Skills discovery metadata from a curated import. We
+        # intentionally leave old manually-authored skill files unchanged.
+        if self.description:
+            fm.extend([
+                f"name: {_frontmatter_scalar(self.slug)}",
+                f"description: {_frontmatter_scalar(self.description)}",
+            ])
+        if self.provenance is not None:
+            if self.provenance.license:
+                fm.append(f"license: {_frontmatter_scalar(self.provenance.license)}")
+            if self.provenance.compatibility:
+                fm.append(
+                    f"compatibility: {_frontmatter_scalar(self.provenance.compatibility)}"
+                )
+            if self.provenance.tools:
+                fm.append(
+                    "allowed-tools: "
+                    f"{_frontmatter_scalar(' '.join(self.provenance.tools))}"
+                )
+            metadata = self.provenance.frontmatter_metadata()
+            if metadata:
+                fm.append("metadata:")
+                fm.extend(
+                    f"  {key}: {_frontmatter_scalar(value)}"
+                    for key, value in sorted(metadata.items())
+                )
+        fm.extend(["---", "", self.body.strip(), ""])
         return "\n".join(fm)
 
     def as_advice(self) -> str:
@@ -167,36 +342,182 @@ def _slugify(text: str) -> str:
     return slug or "skill"
 
 
+def _frontmatter_scalar(value: object) -> str:
+    """Emit a YAML-compatible scalar without adding a YAML dependency."""
+    text = str(value)
+    # JSON double-quoted strings are valid YAML scalars and let the matching
+    # parser preserve URL/query strings, tool expressions, and colons safely.
+    if not re.fullmatch(r"[A-Za-z0-9._/@+:-]+", text):
+        return json.dumps(text, ensure_ascii=True)
+    return text
+
+
+def _parse_frontmatter_scalar(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return value[1:-1]
+        return parsed if isinstance(parsed, str) else str(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
+def _indent_width(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _parse_frontmatter(frontmatter: str) -> dict[str, object]:
+    """Read the small Agent Skills YAML subset used by imported SKILL.md files.
+
+    The core package deliberately has no PyYAML dependency. Agent Skills only
+    needs top-level scalars plus a string-to-string ``metadata`` map, so this
+    conservative parser also supports folded/literal scalar descriptions while
+    leaving unknown YAML constructs untouched instead of failing an import.
+    """
+    lines = frontmatter.splitlines()
+    meta: dict[str, object] = {}
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip() or line.lstrip().startswith("#") or _indent_width(line):
+            i += 1
+            continue
+        key, separator, raw_value = line.partition(":")
+        key = key.strip()
+        if not separator or not key:
+            i += 1
+            continue
+        value = raw_value.strip()
+        if value in {"|", "|-", ">", ">-"}:
+            block: list[str] = []
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or _indent_width(lines[i]) > 0):
+                child = lines[i]
+                block.append(child[2:] if child.startswith("  ") else child.lstrip(" "))
+                i += 1
+            if value.startswith(">"):
+                meta[key] = " ".join(part.strip() for part in block if part.strip())
+            else:
+                meta[key] = "\n".join(block).rstrip("\n")
+            continue
+        if not value:
+            nested: dict[str, str] = {}
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or _indent_width(lines[i]) > 0):
+                child = lines[i]
+                if not child.strip() or child.lstrip().startswith("#"):
+                    i += 1
+                    continue
+                child_key, child_separator, child_value = child.strip().partition(":")
+                if child_separator and child_key:
+                    nested[child_key.strip()] = _parse_frontmatter_scalar(child_value)
+                i += 1
+            meta[key] = nested
+            continue
+        meta[key] = _parse_frontmatter_scalar(value)
+        i += 1
+    return meta
+
+
+def _meta_text(meta: dict[str, object], key: str) -> str:
+    value = meta.get(key, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _provenance_from_frontmatter(meta: dict[str, object]) -> SkillProvenance | None:
+    raw_metadata = meta.get("metadata")
+    metadata = (
+        {str(key).strip(): str(value).strip() for key, value in raw_metadata.items()}
+        if isinstance(raw_metadata, dict)
+        else {}
+    )
+    provenance = SkillProvenance(
+        source_url=(
+            metadata.get(_PROVENANCE_SOURCE_URL)
+            or _meta_text(meta, "source_url")
+            or _meta_text(meta, "source-url")
+        ),
+        pinned_revision=(
+            metadata.get(_PROVENANCE_REVISION)
+            or _meta_text(meta, "pinned_revision")
+            or _meta_text(meta, "pinned-revision")
+        ),
+        license=_meta_text(meta, "license"),
+        content_hash=(
+            metadata.get(_PROVENANCE_CONTENT_HASH)
+            or _meta_text(meta, "content_hash")
+            or _meta_text(meta, "content-sha256")
+        ),
+        source_path=metadata.get(_PROVENANCE_SOURCE_PATH),
+        tools=_meta_text(meta, "allowed-tools"),
+        metadata=metadata,
+        compatibility=_meta_text(meta, "compatibility"),
+    )
+    return None if provenance.is_empty else provenance
+
+
 def parse_skill(text: str, *, fallback_slug: str = "skill") -> Skill:
     """Parse a markdown skill (front matter optional)."""
     m = _FM_RE.match(text)
-    meta: dict[str, str] = {}
+    meta: dict[str, object] = {}
     body = text
     if m:
         body = m.group(2)
-        for line in m.group(1).splitlines():
-            if ":" in line:
-                k, _, v = line.partition(":")
-                meta[k.strip()] = v.strip()
-    tags = [t.strip() for t in meta.get("tags", "").split(",") if t.strip()]
+        meta = _parse_frontmatter(m.group(1))
+    tags = [t.strip() for t in _meta_text(meta, "tags").split(",") if t.strip()]
     # Accept SkyN3t's own front matter (slug/title) AND external skill files
     # (e.g. addyosmani/agent-skills) that use `name`/`description`, so a repo of
     # markdown skills imports cleanly. (Phase B/B3)
-    title = meta.get("title") or meta.get("name") or fallback_slug
-    description = meta.get("description", "").strip()
+    title = _meta_text(meta, "title") or _meta_text(meta, "name") or fallback_slug
+    description = _meta_text(meta, "description")
     if description and description.lower() not in body.lower():
         body = f"{description}\n\n{body}"
     return Skill(
-        slug=meta.get("slug") or _slugify(title),
+        slug=_meta_text(meta, "slug") or _slugify(title),
         title=title,
         body=body.strip(),
         tags=tags,
-        stack=meta.get("stack", "generic"),
-        uses=int(meta.get("uses", "0") or 0),
-        helpful=int(meta.get("helpful", "0") or 0),
-        quality_sum=float(meta["quality_sum"]) if meta.get("quality_sum") else None,
-        source=meta.get("source", "manual"),
+        stack=_meta_text(meta, "stack") or "generic",
+        uses=int(_meta_text(meta, "uses") or 0),
+        helpful=int(_meta_text(meta, "helpful") or 0),
+        quality_sum=(
+            float(_meta_text(meta, "quality_sum"))
+            if _meta_text(meta, "quality_sum")
+            else None
+        ),
+        source=_meta_text(meta, "source") or "manual",
+        description=description,
+        provenance=_provenance_from_frontmatter(meta),
     )
+
+
+def _curated_provenance(
+    imported: SkillProvenance | None,
+    template: SkillProvenance | None,
+    *,
+    content: bytes,
+    source_path: str,
+) -> SkillProvenance | None:
+    """Merge source-provided Agent Skills metadata with curator-owned facts."""
+    if template is None or template.is_empty:
+        return imported
+    existing = imported or SkillProvenance()
+    metadata = dict(existing.metadata)
+    metadata.update(template.metadata)
+    return SkillProvenance(
+        # A curator's origin/pin is authoritative; source frontmatter fills any
+        # optional semantic fields the curator did not supply.
+        source_url=template.source_url or existing.source_url,
+        pinned_revision=template.pinned_revision or existing.pinned_revision,
+        license=template.license or existing.license,
+        content_hash=content_sha256(content),
+        tools=template.tools or existing.tools,
+        metadata=metadata,
+        compatibility=template.compatibility or existing.compatibility,
+    ).with_source_path(source_path)
 
 
 class SkillLibrary:
@@ -288,6 +609,8 @@ class SkillLibrary:
         tags: list[str] | None = None,
         source: str = "manual",
         slug: str | None = None,
+        description: str = "",
+        provenance: SkillProvenance | None = None,
     ) -> Skill:
         if not isinstance(body, str) or not body.strip():
             raise ValueError("skill body must not be empty")
@@ -299,6 +622,8 @@ class SkillLibrary:
             tags=tags or [],
             stack=stack,
             source=source,
+            description=description.strip(),
+            provenance=provenance,
         )
         self._skills[slug] = skill
         self._persist(skill)
@@ -331,14 +656,21 @@ class SkillLibrary:
         return bool((tagset & sk_tags) or (_UNIVERSAL_GENERIC_TAGS & sk_tags))
 
     def import_directory(
-        self, path: Path | str, *, stack: str = "generic", source: str = "imported"
+        self,
+        path: Path | str,
+        *,
+        stack: str = "generic",
+        source: str = "imported",
+        provenance: SkillProvenance | None = None,
     ) -> int:
         """Import every markdown file under ``path`` as ONE advisory skill (one
         per file) — e.g. a repo/dir of skill ``.md`` files like agent-skills.
 
         Recurses; for nested ``SKILL.md`` files the parent dir name is the slug
         basis. Idempotent by slug (re-import overwrites). Best-effort; never
-        raises. Returns the number imported.
+        raises. Returns the number imported. ``provenance`` is optional so the
+        legacy local import path stays behaviorally identical; curated callers
+        should use :meth:`import_curated_directory` to require an origin and pin.
         """
         base = Path(path)
         if not base.is_dir():
@@ -349,19 +681,67 @@ class SkillLibrary:
             # malformed front matter (parse_skill -> ValueError on a bad numeric
             # field) must skip that file, not abort the whole import.
             try:
-                text = f.read_text(encoding="utf-8")
+                raw = f.read_bytes()
+                text = raw.decode("utf-8")
                 fallback = _slugify(f.parent.name if f.name.lower() == "skill.md" else f.stem)
                 sk = parse_skill(text, fallback_slug=fallback)
-            except (OSError, ValueError):
+            except (OSError, UnicodeDecodeError, ValueError):
                 continue
             if not sk.body.strip():
                 continue
             if sk.source == "manual":
                 sk.source = source
+            sk.provenance = _curated_provenance(
+                sk.provenance,
+                provenance,
+                content=raw,
+                source_path=f.relative_to(base).as_posix(),
+            )
             self._skills[sk.slug] = sk
             self._persist(sk)
             count += 1
         return count
+
+    def import_curated_directory(
+        self,
+        path: Path | str,
+        *,
+        source_url: str,
+        pinned_revision: str,
+        license: str | None = None,
+        tools: str | list[str] | tuple[str, ...] | None = None,
+        metadata: dict[str, str] | None = None,
+        compatibility: str | None = None,
+        stack: str = "generic",
+        source: str = "github-curated",
+    ) -> int:
+        """Import a reviewed skill tree with reproducible provenance.
+
+        ``source_url`` identifies the upstream repository/location and
+        ``pinned_revision`` must be an immutable commit, tag, or artifact
+        revision chosen by the curator. Every imported Markdown file receives
+        its own SHA-256 and relative source path, so a later review can verify
+        exactly what was imported without executing any bundled scripts.
+        """
+        origin = _optional_text(source_url)
+        revision = _optional_text(pinned_revision)
+        if not origin:
+            raise ValueError("curated skill import requires source_url")
+        if not revision:
+            raise ValueError("curated skill import requires pinned_revision")
+        return self.import_directory(
+            path,
+            stack=stack,
+            source=source,
+            provenance=SkillProvenance(
+                source_url=origin,
+                pinned_revision=revision,
+                license=license,
+                tools=_tool_list(tools),
+                metadata=metadata or {},
+                compatibility=compatibility,
+            ),
+        )
 
     # ---- injection ----------------------------------------------------
     def relevant(

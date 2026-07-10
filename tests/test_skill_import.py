@@ -6,6 +6,8 @@ skill per file (not one per repo), which the build agents then inject.
 
 from __future__ import annotations
 
+import pytest
+
 from skyn3t.intelligence.skill_library import SkillLibrary, parse_skill, seed_default_skills
 
 
@@ -55,6 +57,30 @@ def test_load_ignores_empty_skill_files(tmp_path):
     library = SkillLibrary(skills_dir=skills)
 
     assert [skill.slug for skill in library.all()] == ["usable"]
+
+
+def test_add_rejects_empty_body_without_replacing_existing_skill(tmp_path):
+    skills = tmp_path / "skills"
+    library = SkillLibrary(skills_dir=skills)
+    existing = library.add(
+        "GitHub patterns",
+        "Keep the verified repository guidance.",
+        source="github-distilled",
+        slug="gh-owner-repo",
+    )
+    path = skills / "gh-owner-repo.md"
+    before = path.read_bytes()
+
+    with pytest.raises(ValueError, match="skill body must not be empty"):
+        library.add(
+            "GitHub patterns",
+            " \n\t",
+            source="github-distilled",
+            slug="gh-owner-repo",
+        )
+
+    assert path.read_bytes() == before
+    assert library.get("gh-owner-repo") is existing
 
 
 def test_relevant_matches_new_factory_stack_aliases(tmp_path):

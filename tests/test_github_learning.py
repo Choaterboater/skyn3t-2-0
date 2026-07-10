@@ -7,6 +7,7 @@ import asyncio
 import skyn3t.agents.github_fetch as gh
 from skyn3t.cortex.handlers import HandlerRegistry
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
+from skyn3t.intelligence.skill_library import SkillLibrary
 
 
 def _prop(payload: dict) -> Proposal:
@@ -114,6 +115,25 @@ def test_handler_distills_skill_on_ingest(monkeypatch):
     assert "flask" in sk["slug"]
     assert sk["stack"] == "python"  # mapped from language 'Python'
     assert "github-distilled" in sk["tags"]
+
+
+def test_handler_persists_unicode_github_skill_as_nonempty_utf8(tmp_path, monkeypatch):
+    rag = _FakeRag(n=1)
+    skills = SkillLibrary(tmp_path / "skills")
+    reg = HandlerRegistry(rag=rag, skills=skills)
+    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+
+    res = asyncio.run(reg.apply(_prop({
+        "url": "https://github.com/pallets/flask",
+        "description": "web framework",
+        "language": "Python",
+        "stars": 123,
+    })))
+
+    path = tmp_path / "skills" / f"{res['skill']}.md"
+    assert path.stat().st_size > 0
+    assert "123\u2605" in path.read_text(encoding="utf-8")
+    assert SkillLibrary(tmp_path / "skills").get(res["skill"]) is not None
 
 
 def test_handler_no_skills_lib_still_ingests(monkeypatch):

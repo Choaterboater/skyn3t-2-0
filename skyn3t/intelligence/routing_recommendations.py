@@ -103,9 +103,12 @@ class LearnedModelRouter(ModelRouter):
     ) -> str:  # type: ignore[override]
         # Respect manual locks / free-only via the base policy first as the
         # canonical fallback, then *prefer* a confident learned pick.
+        effective_tier = self._tier_for_file(tier, file_hint)
         base = super().resolve(tier, file_hint=file_hint, profile=profile)
+        if self._has_explicit_tier_pin(effective_tier):
+            return base
         try:
-            learned = self.recommender.recommend(tier, task_type)
+            learned = self.recommender.recommend(effective_tier, task_type)
         except Exception as exc:  # noqa: BLE001
             if _log:
                 _log.warning("routing.recommend_failed", error=str(exc))
@@ -113,19 +116,32 @@ class LearnedModelRouter(ModelRouter):
         if not learned:
             return base
         # Safety: don't override into a Claude model if the policy forbade it.
-        if self._forbidden(learned):
+        if self._forbidden(learned, effective_tier, profile):
             return base
         if _log:
-            _log.info("routing.learned", tier=tier.value, model=learned)
+            _log.info("routing.learned", tier=effective_tier.value, model=learned)
         return learned
 
-    def _forbidden(self, model: str) -> bool:
+    def _forbidden(self, model: str, tier: Tier, profile: str) -> bool:
         m = model.lower()
         no_claude = bool(getattr(self.settings, "no_claude", False))
         free_only = bool(getattr(self.settings, "free_only", False))
         if no_claude and ("claude" in m or "anthropic" in m):
             return True
         if free_only and not (m.endswith(":free") or "free" in m):
+            return True
+        if not self.auto_model_allowed(model, tier, profile):
+            if _log:
+                info = self.model_cost_info(model)
+                _log.info(
+                    "routing.learned_price_rejected",
+                    model=model,
+                    tier=tier.value,
+                    profile=profile,
+                    price_class=info.get("price_class"),
+                    input_per_million=info.get("prompt_usd_per_million"),
+                    output_per_million=info.get("completion_usd_per_million"),
+                )
             return True
         return False
 

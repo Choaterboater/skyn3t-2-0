@@ -8,12 +8,26 @@ from skyn3t.observability.cost_tracker import CostTracker
 
 
 class _Call:
-    def __init__(self, cost, pt=0, ct=0):
+    def __init__(
+        self,
+        cost,
+        pt=0,
+        ct=0,
+        *,
+        status="succeeded",
+        exposure=0.0,
+        generation_id="",
+        cost_source="unknown",
+    ):
         self.cost_usd = cost
         self.prompt_tokens = pt
         self.completion_tokens = ct
         self.backend = "fake"
         self.model = "fake"
+        self.status = status
+        self.estimated_exposure_usd = exposure
+        self.generation_id = generation_id
+        self.cost_source = cost_source
 
 
 class _Budget:
@@ -89,6 +103,68 @@ def test_per_stage_does_not_disturb_build_attribution():
     ct.end_stage("b1", "code")
     rep = ct.end_build("b1")
     assert round(rep["cost_usd"], 4) == 0.04 and rep["tokens"] == 200
+
+
+def test_end_build_is_idempotent_and_preserves_terminal_cost():
+    budget = _Budget()
+    ct = CostTracker(budget=budget)
+    ct.start_build("b1")
+    budget.calls.append(_Call(0.75, 100, 25))
+
+    first = ct.end_build("b1")
+    second = ct.end_build("b1")
+
+    assert second == first
+    assert second["cost_usd"] == 0.75
+    assert second["tokens"] == 125
+
+
+def test_provider_generation_cost_evidence_is_preserved():
+    budget = _Budget()
+    ct = CostTracker(budget=budget)
+    ct.start_build("b1")
+    budget.calls.append(_Call(
+        0.75,
+        100,
+        25,
+        generation_id="gen-123",
+        cost_source="provider",
+    ))
+
+    report = ct.end_build("b1")
+
+    assert report["usage_evidence"][0]["generation_id"] == "gen-123"
+    assert report["usage_evidence"][0]["cost_usd"] == 0.75
+    assert report["usage_evidence"][0]["cost_source"] == "provider"
+
+
+def test_failed_attempt_exposure_is_separate_from_confirmed_cost():
+    budget = _Budget()
+    ct = CostTracker(budget=budget)
+    ct.start_build("b1")
+    ct.start_stage("b1", "code")
+    budget.calls.extend([
+        _Call(0.0, status="failed_transient", exposure=1.25),
+        _Call(0.4, 100, 50),
+    ])
+
+    stage = ct.end_stage("b1", "code")
+    report = ct.end_build("b1")
+
+    assert report["cost_usd"] == 0.4
+    assert report["failed_attempts"] == 1
+    assert report["max_unconfirmed_exposure_usd"] == 1.25
+    assert report["usage_evidence"] == [{
+        "generation_id": None,
+        "model": "fake",
+        "backend": "fake",
+        "status": "failed_transient",
+        "cost_usd": 0.0,
+        "cost_source": "unknown",
+        "max_unconfirmed_exposure_usd": 1.25,
+    }]
+    assert stage["failed_attempts"] == 1
+    assert stage["max_unconfirmed_exposure_usd"] == 1.25
 
 
 def test_stage_methods_safe_for_unknown_build():

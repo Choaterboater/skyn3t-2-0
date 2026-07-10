@@ -79,6 +79,10 @@ class CostTracker:
     # id() of LLMResult call records already attributed to a finished build, so
     # overlapping builds never double-count the same call.
     _claimed_call_ids: set[int] = field(default_factory=set)
+    # Idempotent terminal reports. Finalization/persistence can fail after cost
+    # settlement and enter another exception path; a repeated end_build must
+    # return the original spend instead of fabricating a zero-cost failure.
+    _finished_builds: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_llm(cls, llm: Any, settings: Settings | None = None) -> CostTracker:
@@ -118,6 +122,7 @@ class CostTracker:
 
     # ---- build attribution ----------------------------------------------
     def start_build(self, build_id: str) -> None:
+        self._finished_builds.pop(build_id, None)
         # A BudgetTracker build context is isolated from overlapping builds but
         # deliberately shared with child asyncio tasks created by this build.
         begin = getattr(self.budget, "begin_build", None)
@@ -164,13 +169,24 @@ class CostTracker:
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
         cost = 0.0
         tokens = 0
+        exposure = 0.0
+        failed_attempts = 0
         for r in calls[base:]:
             owner = getattr(r, "build_id", _MISSING_BUILD_ID)
             if owner is not _MISSING_BUILD_ID and owner != build_id:
                 continue
             cost += getattr(r, "cost_usd", 0.0)
             tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
-        rec = {"stage": stage, "cost_usd": round(max(0.0, cost), 6), "tokens": max(0, tokens)}
+            exposure += getattr(r, "estimated_exposure_usd", 0.0)
+            if str(getattr(r, "status", "")).startswith("failed_"):
+                failed_attempts += 1
+        rec = {
+            "stage": stage,
+            "cost_usd": round(max(0.0, cost), 6),
+            "tokens": max(0, tokens),
+            "failed_attempts": failed_attempts,
+            "max_unconfirmed_exposure_usd": round(max(0.0, exposure), 6),
+        }
         entry.setdefault("stages", []).append(rec)
         return rec
 
@@ -178,6 +194,15 @@ class CostTracker:
         self.sync()
         entry = self._builds.pop(build_id, None)
         if entry is None:
+            finished = self._finished_builds.get(build_id)
+            if finished is not None:
+                return {
+                    **finished,
+                    "stages": [dict(stage) for stage in finished.get("stages", [])],
+                    "usage_evidence": [
+                        dict(item) for item in finished.get("usage_evidence", [])
+                    ],
+                }
             return {"build_id": build_id, "cost_usd": 0.0, "tokens": 0, "stages": []}
         calls = list(getattr(self.budget, "calls", [])) if self.budget else []
         # BudgetTracker records carry an owning build id, so completion order
@@ -185,6 +210,9 @@ class CostTracker:
         # records retain the legacy first-claimer behavior for fake/old budgets.
         cost = 0.0
         tokens = 0
+        exposure = 0.0
+        failed_attempts = 0
+        usage_evidence: list[dict[str, Any]] = []
         for r in calls[entry["base_calls"]:]:
             owner = getattr(r, "build_id", _MISSING_BUILD_ID)
             if owner is not _MISSING_BUILD_ID:
@@ -197,15 +225,62 @@ class CostTracker:
                 self._claimed_call_ids.add(rid)
             cost += getattr(r, "cost_usd", 0.0)
             tokens += getattr(r, "prompt_tokens", 0) + getattr(r, "completion_tokens", 0)
+            exposure += getattr(r, "estimated_exposure_usd", 0.0)
+            if str(getattr(r, "status", "")).startswith("failed_"):
+                failed_attempts += 1
+            generation_id = str(getattr(r, "generation_id", "") or "")
+            status = str(getattr(r, "status", "") or "succeeded")
+            backend = str(getattr(r, "backend", "") or "unknown")
+            if (
+                backend == "openrouter"
+                or generation_id
+                or status.startswith("failed_")
+                or status == "malformed_response"
+            ):
+                usage_evidence.append({
+                    "generation_id": generation_id or None,
+                    "model": str(getattr(r, "model", "") or "unknown"),
+                    "backend": backend,
+                    "status": status,
+                    "cost_usd": round(max(0.0, float(getattr(r, "cost_usd", 0.0))), 8),
+                    "cost_source": str(getattr(r, "cost_source", "") or "unknown"),
+                    "max_unconfirmed_exposure_usd": round(
+                        max(0.0, float(getattr(r, "estimated_exposure_usd", 0.0))),
+                        8,
+                    ),
+                })
         entry["cost_usd"] = round(max(0.0, cost), 6)
         entry["tokens"] = max(0, tokens)
+        entry["failed_attempts"] = failed_attempts
+        entry["max_unconfirmed_exposure_usd"] = round(max(0.0, exposure), 6)
+        entry["usage_evidence"] = usage_evidence[-256:]
+        entry["usage_evidence_truncated"] = max(0, len(usage_evidence) - 256)
         entry["duration_s"] = round(time() - entry["started"], 3)
         token = entry.pop("_budget_token", None)
         finish = getattr(self.budget, "end_build", None)
         if token is not None and callable(finish):
             finish(token)
-        return {"build_id": build_id, "stages": list(entry.get("stages", [])),
-                **{k: entry[k] for k in ("cost_usd", "tokens", "duration_s")}}
+        report = {"build_id": build_id, "stages": list(entry.get("stages", [])),
+                  **{
+                      k: entry[k]
+                      for k in (
+                          "cost_usd",
+                          "tokens",
+                          "duration_s",
+                          "failed_attempts",
+                          "max_unconfirmed_exposure_usd",
+                          "usage_evidence",
+                          "usage_evidence_truncated",
+                      )
+                  }}
+        self._finished_builds[build_id] = report
+        while len(self._finished_builds) > 256:
+            self._finished_builds.pop(next(iter(self._finished_builds)))
+        return {
+            **report,
+            "stages": [dict(stage) for stage in report["stages"]],
+            "usage_evidence": [dict(item) for item in report["usage_evidence"]],
+        }
 
     def close_build(self, build_id: str) -> None:
         """Release a build context after a failed/cancelled runner exit."""

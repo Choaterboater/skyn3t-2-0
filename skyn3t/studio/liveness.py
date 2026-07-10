@@ -80,13 +80,42 @@ def enumerate_routes(project_dir: str | Path, stack: str = "") -> list[Route]:
             add(m.group(2), m.group(1))
         for m in _REACT_ROUTE.finditer(text):
             add(m.group(1), "GET")
+    # Astro pages are file-system routes.  Depending on links crawled from `/`
+    # misses valid but temporarily unlinked pages, which is exactly how the
+    # broken `/drills`, `/equipment`, and `/tutorials` routes escaped complete
+    # liveness coverage.  Dynamic routes need concrete getStaticPaths values and
+    # are therefore left to the served-page crawler; static pages are exact.
+    if (stack or "").lower() == "astro":
+        pages = root / "src" / "pages"
+        if pages.is_dir():
+            for page in pages.rglob("*"):
+                if not page.is_file() or page.suffix.lower() not in {".astro", ".md", ".mdx"}:
+                    continue
+                try:
+                    relative = page.relative_to(pages).with_suffix("")
+                except ValueError:
+                    continue
+                parts = list(relative.parts)
+                if any("[" in part or "]" in part for part in parts):
+                    continue
+                if parts and parts[-1].lower() in {"404", "500"}:
+                    continue
+                if parts and parts[-1].lower() == "index":
+                    parts.pop()
+                add("/" + "/".join(parts) if parts else "/")
     for html in root.rglob("*.html"):
         if _IGNORE_PARTS.intersection(html.parts):
             continue
         rel = html.relative_to(root).as_posix()
         if _STATIC_FRAGMENT_PARTS.intersection(Path(rel).parts[:-1]):
             continue
-        add("/" if rel == "index.html" else f"/{rel}")
+        # Astro copies `public/*` to the served root; the directory name is not
+        # part of the URL.  Probing `/public/settings.html` creates a fake 404
+        # while the real `/settings.html` page is healthy.
+        served_rel = rel
+        if (stack or "").lower() == "astro" and rel.startswith("public/"):
+            served_rel = rel.removeprefix("public/")
+        add("/" if served_rel == "index.html" else f"/{served_rel}")
     return list(seen.values())
 
 

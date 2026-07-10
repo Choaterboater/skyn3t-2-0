@@ -31,6 +31,7 @@ def test_default_settings_do_not_truncate_full_app_builds():
     assert settings.per_build_usd_cap == 0
     assert settings.daily_usd_cap == 0
     assert settings.daily_token_cap == 0
+    assert settings.autonomous_daily_build_cap == 0
     assert settings.openrouter_max_concurrency >= 8
 
 

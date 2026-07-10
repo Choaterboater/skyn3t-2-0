@@ -2093,7 +2093,12 @@ def deploy(
     from pathlib import Path as _Path
 
     from skyn3t.config.settings import get_settings
-    from skyn3t.studio.deploy import plan_deploy, record_deployment, write_deploy_artifacts
+    from skyn3t.studio.deploy import (
+        apply_deploy_health_gate,
+        plan_deploy,
+        record_deployment,
+        write_deploy_artifacts,
+    )
 
     console = _console()
     s = get_settings()
@@ -2107,13 +2112,15 @@ def deploy(
     # Stack precedence: explicit --stack > the build manifest > content detection
     # (plan_deploy content-detects when the stack is empty/unknown).
     resolved_stack = stack
+    man = None
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+
+        man = BuildManifest.load(pdir)
+    except Exception:  # noqa: BLE001 - plan mode can still use content detection
+        man = None
     if not resolved_stack:
-        try:
-            from skyn3t.studio.manifest import BuildManifest
-            man = BuildManifest.load(pdir)
-            resolved_stack = man.stack if man else ""
-        except Exception:  # noqa: BLE001 - a missing/corrupt manifest is fine
-            resolved_stack = ""
+        resolved_stack = man.stack if man else ""
 
     plan = plan_deploy(pdir, resolved_stack, target=target or None)
 
@@ -2144,6 +2151,16 @@ def deploy(
         console.print(f"deploy: {plan.command}")
     console.print(f"[dim]{plan.notes}[/dim]")
 
+    if now:
+        from skyn3t.studio.deploy import deployment_quality_gate
+
+        quality = deployment_quality_gate(man)
+        if not quality["passed"]:
+            console.print(
+                "[red]Deploy blocked[/red]: " + "; ".join(quality["blockers"])
+            )
+            raise typer.Exit(code=1)
+
     if write and plan.artifacts:
         written = write_deploy_artifacts(plan, pdir)
         if written:
@@ -2162,7 +2179,10 @@ def deploy(
                       "package/binary, not a hosted URL. Publish it with: "
                       f"[cyan]{plan.command}[/cyan]")
         raise typer.Exit(code=0)
-    provider = (target or (plan.targets[0] if plan.targets else "")).strip()
+    # The planner may reject an incompatible requested target and deliberately
+    # choose a supported fallback. Execute the command/provider the displayed
+    # plan actually selected, never the rejected raw --target value.
+    provider = (plan.targets[0] if plan.targets else "").strip()
     if not provider:
         console.print("[red]No deploy target[/red] to deploy to.")
         raise typer.Exit(code=1)
@@ -2177,28 +2197,69 @@ def deploy(
 
     console.print(f"[yellow]Deploying[/yellow] {pdir.name} to [cyan]{provider}[/cyan]…")
     result = DeployAgent().deploy(str(pdir), target=provider, plan=plan)
-    if not (result.get("ok") and result.get("url")):
-        console.print(f"[red]Deploy did not complete[/red]: "
-                      f"{result.get('error') or 'unknown error'}")
-        raise typer.Exit(code=1)
-    url = result["url"]
-    record_deployment(pdir, result=result, plan=plan, target=provider)
-    console.print(f"[green]Live[/green] at [cyan]{url}[/cyan]")
+    deploy_check: dict[str, Any] | None = None
 
-    # Ship pillar's final rung: verify the LIVE url (opt-in via deploy_check_enabled).
-    if getattr(s, "deploy_check_enabled", False):
+    # A provider command succeeding does not make its URL the active release.
+    # When enabled, live health must pass before persistence advances live_url.
+    if (
+        result.get("ok")
+        and result.get("url")
+        and getattr(s, "deploy_check_enabled", False)
+    ):
         import asyncio as _asyncio
 
-        from skyn3t.studio.deploy_check import check_deploy
+        try:
+            from skyn3t.studio.deploy_check import check_deploy
 
-        verdict = _asyncio.run(check_deploy(url, resolved_stack))
-        if verdict.skipped:
-            console.print(f"[dim]deploy check skipped — {verdict.reason}[/dim]")
-        elif verdict.ok:
+            verdict = _asyncio.run(check_deploy(str(result["url"]), resolved_stack))
+            deploy_check = verdict.to_dict()
+        except Exception as exc:  # noqa: BLE001 - persist an unverified attempt
+            deploy_check = {
+                "ok": False,
+                "skipped": True,
+                "issues": [],
+                "checked": {},
+                "reason": f"deploy check unavailable: {str(exc)[:160]}",
+                "gaps": [],
+            }
+        result = apply_deploy_health_gate(result, deploy_check)
+
+    deployment_record = record_deployment(
+        pdir, result=result, plan=plan, target=provider
+    )
+    if not deployment_record.get("persisted"):
+        console.print(
+            "[yellow]Deployment evidence was not persisted[/yellow]: "
+            f"{deployment_record.get('persistence_error') or 'unknown manifest error'}"
+        )
+    if deploy_check:
+        if deploy_check.get("ok"):
             console.print("[green]deploy check[/green] — live url verified ✓")
+        elif deploy_check.get("skipped"):
+            console.print(
+                "[yellow]deploy check unverified[/yellow] — "
+                f"{deploy_check.get('reason') or 'could not verify live URL'}"
+            )
         else:
-            console.print(f"[yellow]deploy check[/yellow] — {verdict.reason}: "
-                          + "; ".join(verdict.issues[:5]))
+            issues = deploy_check.get("issues")
+            issue_text = "; ".join(str(item) for item in issues[:5]) \
+                if isinstance(issues, list) else ""
+            console.print(
+                f"[red]deploy check failed[/red] — "
+                f"{deploy_check.get('reason') or issue_text or 'unhealthy live URL'}"
+            )
+    if not (result.get("ok") and result.get("url")):
+        label = (
+            "Deployment activation blocked"
+            if result.get("activation_blocked")
+            else "Deploy did not complete"
+        )
+        console.print(
+            f"[red]{label}[/red]: {result.get('error') or 'unknown error'}"
+        )
+        raise typer.Exit(code=1)
+    url = result["url"]
+    console.print(f"[green]Deployed[/green] at [cyan]{url}[/cyan]")
 
 
 @domain_app.command("ingest")

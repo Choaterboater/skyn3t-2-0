@@ -274,9 +274,11 @@ class _FanStudio:
     """Stub StudioRunner.start that returns a canned go outcome per candidate."""
     def __init__(self):
         self.started = []
+        self.extras = []
 
     async def start(self, brief, slug=None, extra=None):
         self.started.append(slug)
+        self.extras.append(dict(extra or {}))
         stack = (extra or {}).get("stack", "")
         return SimpleNamespace(verdict="go", score=80.0, status="completed",
                                stack=stack, slug=slug,
@@ -305,6 +307,72 @@ def test_fanout_dispatches_distinct_slugs_and_emits(tmp_path):
     assert set(studio.started) == {"a-todo-app-react", "a-todo-app-static"}
     kinds = [e.type for e in state.event_bus.history()]
     assert EventType.FANOUT_STARTED in kinds and EventType.FANOUT_COMPLETED in kinds
+
+
+def test_fanout_preserves_full_build_contract_for_every_candidate(tmp_path):
+    studio = _FanStudio()
+    state = _fan_state(tmp_path, studio)
+    state.settings.data_dir = tmp_path / "data"
+    image = "data:image/png;base64,iVBORw0KGgo="
+
+    async def _run():
+        out = await fanout_project(
+            state,
+            "a complete portal",
+            ["react", "fastapi"],
+            build_profile="fast",
+            model_override="vendor/model",
+            full_app=True,
+            reference_image=image,
+        )
+        if routes._FANOUT_TASKS:
+            await asyncio.gather(*list(routes._FANOUT_TASKS))
+        return out
+
+    out = asyncio.run(_run())
+
+    assert out["build_profile"] == "fast"
+    assert out["model_override"] == "vendor/model"
+    assert out["full_app"] is True
+    assert out["reference_images"] == 1
+    assert {extra["stack"] for extra in studio.extras} == {"react", "fastapi"}
+    for extra in studio.extras:
+        assert extra["build_profile"] == "fast"
+        assert extra["full_app_contract"] is True
+        assert extra["asset_gen"] is True
+        assert extra["parallel_code_slices"] is True
+        assert extra["parallel_code_slices_min_files"] == 4
+        assert extra["model_override"] == "vendor/model"
+        assert Path(extra["reference_image"]).is_file()
+
+
+@pytest.mark.parametrize("profile", ["cheap_learned", "balanced"])
+def test_fanout_profile_policy_never_weakens_full_app_contract(tmp_path, profile):
+    studio = _FanStudio()
+    state = _fan_state(tmp_path, studio)
+
+    async def _run():
+        await fanout_project(
+            state,
+            "a complete service website",
+            ["react", "static"],
+            build_profile=profile,
+            full_app=True,
+        )
+        if routes._FANOUT_TASKS:
+            await asyncio.gather(*list(routes._FANOUT_TASKS))
+
+    asyncio.run(_run())
+
+    for extra in studio.extras:
+        assert extra["full_app_contract"] is True
+        assert extra["asset_gen"] is True
+        assert extra["visual_self_heal"] is True
+        if profile == "cheap_learned":
+            assert extra["best_of_n"] == 1
+            assert extra["best_of_n_across_models"] is False
+            assert extra["parallel_code_slices"] is True
+            assert extra["parallel_code_slices_min_files"] == 4
 
 
 def test_fanout_requires_two_stacks(tmp_path):

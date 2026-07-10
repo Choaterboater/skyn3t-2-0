@@ -1,11 +1,12 @@
 """Autonomous build loop with hard guardrails (2.0 P1).
 
 This is the riskiest part of the autonomy layer: a loop that can kick off
-builds without a human in the loop. It is therefore wrapped in three hard
-backstops so it can never run away (design rules #4 "safe by default" and #5
-"cheap by default"):
+builds without a human in the loop. It is therefore wrapped in three observable
+controls; operators may leave numeric ceilings disabled while retaining pause
+and approval gates:
 
-  1. Daily build cap  — never start more than ``autonomous_daily_build_cap``
+  1. Optional daily build cap — positive ``autonomous_daily_build_cap`` values
+     limit starts; zero or negative values leave autonomous builds unlimited.
      builds in a rolling 24h window.
   2. Budget caps      — refuse to start a new build if today's spend has hit
      ``daily_usd_cap`` (or the per-build cap would obviously overshoot).
@@ -151,7 +152,7 @@ class AutonomousLoop:
     # ---- guardrail checks ------------------------------------------------
     def _daily_cap_reached(self) -> bool:
         cap = self.settings.autonomous_daily_build_cap
-        return cap >= 0 and self.state.builds_today() >= cap
+        return cap > 0 and self.state.builds_today() >= cap
 
     def _next_build_estimate(self) -> float:
         """Optimistic cost estimate for the next build (per-build cap)."""

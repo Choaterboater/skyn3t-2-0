@@ -39,17 +39,17 @@ _SYSTEM = (
 _ALREADY_SATISFIED = "ALREADY_SATISFIED"
 
 
-def _output_budget(original: str) -> int:
-    """Output-token budget for a FULL-FILE rewrite of `original`.
+def _output_budget(original: str) -> None:
+    """Return the uncapped output policy for a full-file rewrite.
 
-    The flat legacy 4096 silently capped improves once a file grew past ~3.5k
-    tokens: an honest rewrite (echo + addition) truncated mid-stream, failed
-    the balance check, and was discarded while the run still reported success
-    (8 consecutive silent no-ops on the Apple-SEO homepage, 2026-07-02).
-    ~4 chars/token, so len//3 buys ~33% headroom over a pure echo, plus 2048
-    for the addition itself; the 16384 ceiling matches the agentic codegen
-    loop's proven cap."""
-    return min(16384, max(4096, len(original) // 3 + 2048))
+    Fixed response ceilings have repeatedly truncated otherwise valid large-file
+    repairs. Passing ``None`` lets the provider use its native output capacity;
+    syntax validation and the retry below still reject incomplete rewrites.
+    ``original`` remains in the signature for callers/tests that imported this
+    helper before the policy became uncapped.
+    """
+    del original
+    return None
 
 _CREATE_SYSTEM = (
     "You are a senior engineer completing a codebase. A file is imported by "
@@ -95,6 +95,13 @@ def _parse_discovery_lines(text: str) -> list[str]:
 # "<importer> -> <spec>" — the exact format extract_error_gaps() in proof_run.py
 # emits for an unresolved local import (proof_run.py:739).
 _UNRESOLVED_IMPORT_RE = re.compile(r"UNRESOLVED IMPORT.*?:\s*(\S+)\s*->\s*(\S+)")
+
+# Structured sentence emitted by proof_run.extract_error_gaps().  The resolved
+# module path is authoritative; do not guess it from the importer's relative
+# specifier or from a potentially ambiguous basename search.
+_NAMED_EXPORT_MISMATCH_RE = re.compile(
+    r"NAMED EXPORT MISMATCH.*?\bmodule\s+(.+?)\s+is missing named export"
+)
 
 # Every `<script ... src="X">` in an HTML document — the external entrypoints a page
 # loads (e.g. the Vite `/src/main.js` bundle). A rewrite that drops one renders a blank
@@ -362,17 +369,15 @@ class CodeImproverAgent(BaseAgent):
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
-            budget = _output_budget(original)
-            # One escalation retry: a rewrite that fails the balance check is
-            # overwhelmingly a truncated stream (the model tried to comply but
-            # ran out of output tokens) — give it double the room once before
-            # giving up, instead of silently discarding the attempt.
+            # Retry one invalid response, but never impose an application-level
+            # output ceiling. The provider's native context/output capacity is
+            # authoritative and source validation rejects incomplete rewrites.
             from skyn3t.agents.validate import validate_source
             got_real_response = False
-            for attempt_budget in (budget, min(16384, budget * 2)):
+            for _attempt in range(2):
                 try:
                     result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
-                                                     file_hint=rel, max_tokens=attempt_budget,
+                                                     file_hint=rel, max_tokens=None,
                                                      task_type=self.agent_type)
                 except Exception:  # noqa: BLE001 - fall through to deterministic touch-up
                     break
@@ -388,11 +393,9 @@ class CodeImproverAgent(BaseAgent):
                     if ok:
                         return fixed, ""
                 got_real_response = True
-                if attempt_budget >= 16384:
-                    break  # no more room to escalate into
             if got_real_response:
                 # The model answered but never produced a valid full file even
-                # with escalated room — report it rather than silently no-op.
+                # after a clean retry -- report it rather than silently no-op.
                 return original, "invalid_rewrite"
         return self._deterministic_fix(rel, original, stack), ""
 
@@ -432,11 +435,9 @@ class CodeImproverAgent(BaseAgent):
             f"and the {stack} stack."
         )
         try:
-            # 8192, not 4096: a brand-new file has no original to size a budget
-            # from, and a real page/component regularly needs >4k output tokens
-            # (the same cliff that silently no-op'd large-file improves).
             result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_CREATE_SYSTEM),
-                                             file_hint=rel, max_tokens=8192, task_type=self.agent_type)
+                                             file_hint=rel, max_tokens=None,
+                                             task_type=self.agent_type)
             if result.backend != "stub":
                 created = extract_code(result.text)
                 if created and created.strip():
@@ -501,6 +502,10 @@ class CodeImproverAgent(BaseAgent):
         candidates: list[str] = []
         for g in gaps:
             text = g if isinstance(g, str) else str(g)
+            named_export = _NAMED_EXPORT_MISMATCH_RE.search(text)
+            if named_export:
+                candidates.append(named_export.group(1))
+                continue
             unresolved = _UNRESOLVED_IMPORT_RE.search(text)
             if unresolved:
                 # "<importer> -> <spec>": spec is relative to the IMPORTER's own

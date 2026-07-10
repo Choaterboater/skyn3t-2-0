@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from skyn3t.config.settings import Settings
+from skyn3t.studio.manifest import BuildManifest
 from skyn3t.web.deps import AppState
 from skyn3t.web.routes import preview_payload, resolve_project_file
 
@@ -15,6 +16,9 @@ def _state(tmp_path):
     (proj / "src").mkdir(parents=True)
     (proj / "src" / "main.py").write_text("print('hi')\n")
     (proj / "index.html").write_text("<h1>hi</h1>\n")
+    BuildManifest(
+        slug="demo", brief="demo", stack="static", status="completed", verdict="go"
+    ).save(tmp_path / "demo")
     return state
 
 

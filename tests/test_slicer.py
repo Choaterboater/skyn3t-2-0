@@ -147,8 +147,143 @@ def test_ambiguous_js_defaults_by_stack():
 
 def test_slice_tier_hints():
     assert slice_tier("frontend") == "ui"
+    assert slice_tier("frontend_pages") == "ui"
+    assert slice_tier("frontend_components") == "ui"
     assert slice_tier("backend") == "strong"
     assert slice_tier("config") == "cheap"
     assert slice_tier("tests") == "cheap"
     assert slice_tier("unknown") == "backend"
     assert set(SLICE_TIERS) == {"frontend", "backend", "tests", "config"}
+
+
+def test_full_app_frontend_subslices_by_path_without_losing_files():
+    files = [
+        {"path": "src/data/site.ts", "purpose": "shared content"},
+        {"path": "src/content/lessons.json", "purpose": "lesson catalog"},
+        {"path": "src/components/LessonCard.astro", "purpose": "lesson card"},
+        {"path": "src/layouts/PageLayout.astro", "purpose": "shared layout"},
+        {"path": "src/pages/index.astro", "purpose": "home route"},
+        {"path": "src/pages/lessons/[slug].astro", "purpose": "lesson route"},
+        {"path": "src/styles/global.css", "purpose": "global styles"},
+        {"path": "src/lib/navigation.ts", "purpose": "frontend wiring"},
+        {"path": "tests/routes.test.ts", "purpose": "route test"},
+        {"path": "package.json", "purpose": "manifest"},
+    ]
+
+    slices = slice_plan(
+        files,
+        stack="astro",
+        min_files=4,
+        semantic_frontend=True,
+    )
+
+    assert list(slices) == [
+        "frontend_content",
+        "frontend_components",
+        "frontend_pages",
+        "frontend_styles",
+        "frontend_core",
+        "tests",
+        "config",
+    ]
+    paths = {
+        name: [entry["path"] for entry in entries]
+        for name, entries in slices.items()
+    }
+    assert paths["frontend_content"] == [
+        "src/data/site.ts",
+        "src/content/lessons.json",
+    ]
+    assert paths["frontend_components"] == [
+        "src/components/LessonCard.astro",
+        "src/layouts/PageLayout.astro",
+    ]
+    assert paths["frontend_pages"] == [
+        "src/pages/index.astro",
+        "src/pages/lessons/[slug].astro",
+    ]
+    assert paths["frontend_styles"] == ["src/styles/global.css"]
+    assert paths["frontend_core"] == ["src/lib/navigation.ts"]
+    assigned = [entry["path"] for entries in slices.values() for entry in entries]
+    assert assigned == [
+        "src/data/site.ts",
+        "src/content/lessons.json",
+        "src/components/LessonCard.astro",
+        "src/layouts/PageLayout.astro",
+        "src/pages/index.astro",
+        "src/pages/lessons/[slug].astro",
+        "src/styles/global.css",
+        "src/lib/navigation.ts",
+        "tests/routes.test.ts",
+        "package.json",
+    ]
+    assert len(assigned) == len(set(assigned)) == len(files)
+
+
+def test_semantic_frontend_is_opt_in_and_small_build_guard_still_wins():
+    files = [
+        {"path": "src/components/Card.jsx"},
+        {"path": "src/pages/Home.jsx"},
+        {"path": "src/styles.css"},
+        {"path": "package.json"},
+    ]
+
+    default = slice_plan(files, stack="react", min_files=4)
+    assert set(default) == {"frontend", "config"}
+    assert slice_plan(
+        files,
+        stack="react",
+        min_files=5,
+        semantic_frontend=True,
+    ) == {}
+
+
+def test_semantic_frontend_can_parallelize_a_frontend_only_full_app():
+    files = [
+        {"path": "src/data/catalog.ts"},
+        {"path": "src/components/Card.jsx"},
+        {"path": "src/components/Filter.jsx"},
+        {"path": "src/pages/Home.jsx"},
+        {"path": "src/pages/Detail.jsx"},
+        {"path": "src/styles/global.css"},
+        {"path": "src/App.jsx"},
+        {"path": "src/main.jsx"},
+    ]
+
+    assert slice_plan(files, stack="react") == {}
+    slices = slice_plan(files, stack="react", semantic_frontend=True)
+    assert list(slices) == [
+        "frontend_content",
+        "frontend_components",
+        "frontend_pages",
+        "frontend_styles",
+        "frontend_core",
+    ]
+    assert sum(len(entries) for entries in slices.values()) == len(files)
+
+
+def test_static_service_html_is_a_frontend_page_not_backend_service():
+    slices = slice_plan(
+        [
+            {"path": "index.html"},
+            {"path": "services/heating.html"},
+            {"path": "services/emergency.html"},
+            {"path": "services/quotes.py"},
+            {"path": "partials/header.html"},
+            {"path": "assets/css/pages.css"},
+            {"path": "data/site.js"},
+            {"path": "main.js"},
+            {"path": "package.json"},
+        ],
+        stack="static",
+        min_files=4,
+        semantic_frontend=True,
+    )
+
+    assert [entry["path"] for entry in slices["frontend_pages"]] == [
+        "index.html",
+        "services/heating.html",
+        "services/emergency.html",
+    ]
+    assert [entry["path"] for entry in slices["backend"]] == ["services/quotes.py"]
+    assert list(slices)[-1] == "config"

@@ -34,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -44,10 +45,23 @@ from typing import Any
 import httpx
 import structlog
 
+from skyn3t.agents._common import confined_path
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.model_router import ModelRouter, Tier
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
+from skyn3t.persisted_write import (
+    PERSISTED_WRITE_RECEIPT_KEY as _PERSISTED_WRITE_RECEIPT_KEY,
+)
+from skyn3t.persisted_write import (
+    PERSISTED_WRITE_RECEIPT_MAX_BYTES as _PERSISTED_WRITE_RECEIPT_MAX_BYTES,
+)
+from skyn3t.persisted_write import (
+    is_persisted_write_receipt as _is_persisted_write_receipt,
+)
+from skyn3t.persisted_write import (
+    is_persisted_write_receipt_body as _is_persisted_write_receipt_body,
+)
 
 # Per-asyncio-task LLM route capture. The LLMClient is SHARED across agents, but
 # each agent's run() is its own task; task-local vars isolate "the completions
@@ -57,6 +71,9 @@ from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 _LAST_MODEL: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_model", default=None)
 _LAST_ROUTE: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_route", default=None)
 _ROUTES: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_routes", default=None)
+_ROUTING_PROFILE: contextvars.ContextVar = contextvars.ContextVar(
+    "skyn3t_llm_routing_profile", default="balanced"
+)
 _BUDGET_LEDGER_LOCK = threading.RLock()
 _LEDGER_LOCK_TIMEOUT_S = 15.0
 
@@ -122,8 +139,9 @@ _AGENTIC_SYSTEM_CORE = (
     "is unchanged', '// ... existing code ...', or 'unchanged from the original'. Every "
     "function and class body must be fully implemented; an elided body ships a stub that "
     "crashes at run. "
-    "Work efficiently: use write_files to create 2-6 independent small or medium files "
-    "in one tool call; reserve write_file for a large core file that needs its own call. "
+    "Work efficiently: use write_files to create independent small or medium files "
+    "in one tool call, batching every file that fits naturally in the response; reserve "
+    "write_file for a large core file that needs its own call. "
     "Do not spend one model round-trip per tiny config, style, test, or support file. "
 )
 # Web sites / web apps: react_vite, nextjs, astro, remix, static_html.
@@ -382,11 +400,11 @@ _AGENTIC_TOOLS = [
     {"type": "function", "function": {
         "name": "write_files",
         "description": (
-            "Create or overwrite a batch of up to 8 project files. Prefer this for "
+            "Create or overwrite a batch of project files. Prefer this for "
             "independent config, style, test, documentation, and support files."
         ),
         "parameters": {"type": "object", "properties": {
-            "files": {"type": "array", "minItems": 1, "maxItems": 8,
+            "files": {"type": "array", "minItems": 1,
                       "items": {"type": "object", "properties": {
                           "path": {"type": "string", "description": "project-relative path"},
                           "content": {"type": "string", "description": "complete file content"}},
@@ -403,6 +421,11 @@ _AGENTIC_TOOLS = [
         "parameters": {"type": "object", "properties": {"summary": {"type": "string"}}}}},
 ]
 
+# Historical assistant tool calls stay in the conversation sent on every later
+# agentic turn. Successful write bodies are compacted to receipts below; those
+# receipts are context records, never executable file content. Keep an explicit
+# versioned sentinel for current/future formats and recognize the original
+# marker-only format produced before the sentinel existed.
 # Flags that make each headless CLI ignore the host's ambient MCP servers, so a
 # skyn3t build never boots the user's whole ~/.claude / ~/.copilot MCP fleet
 # (Aruba, context7, playwright, ...) on every codegen call. claude + kimi (a
@@ -518,6 +541,15 @@ def _err_reason(exc: BaseException | None) -> str:
     return f"http_{s}" if s is not None else type(exc).__name__
 
 
+def _usage_token_count(value: Any) -> int:
+    """Normalize malformed provider token telemetry without losing exact cost."""
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, parsed)
+
+
 class _AgenticTurnStall(TimeoutError):
     """A single agentic OpenRouter turn exceeded the no-progress watchdog."""
 
@@ -560,6 +592,12 @@ class LLMResult:
     completion_tokens: int = 0
     cost_usd: float = 0.0
     build_id: str | None = None
+    generation_id: str = ""
+    cost_source: str = "none"
+    status: str = "succeeded"
+    estimated_exposure_usd: float = 0.0
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 @dataclass
@@ -631,22 +669,41 @@ def _agentic_auxiliary_family(path: str) -> str:
 def _exclusive_ledger_lock(ledger_path: Path) -> Iterator[None]:
     """Lock a sibling file across processes without optional dependencies."""
     lock_path = ledger_path.with_name(f"{ledger_path.name}.lock")
+    deadline = time.monotonic() + _LEDGER_LOCK_TIMEOUT_S
+    handle = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = lock_path.open("a+b")
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            pass
+        else:
+            try:
+                os.write(fd, b"\0")
+            finally:
+                os.close(fd)
+        # Another process can observe the newly-created filename just before
+        # its creator writes the sentinel byte. Wait for completed atomic
+        # initialization instead of racing writes/flushes on Windows.
+        while handle is None:
+            candidate = lock_path.open("r+b")
+            candidate.seek(0, os.SEEK_END)
+            if candidate.tell() >= 1:
+                handle = candidate
+                break
+            candidate.close()
+            if time.monotonic() >= deadline:
+                raise BudgetExceeded("timed out initializing the budget ledger lock")
+            time.sleep(0.02)
     except OSError as exc:
         raise BudgetExceeded(f"budget ledger lock unavailable: {exc}") from exc
 
     locked = False
-    deadline = time.monotonic() + _LEDGER_LOCK_TIMEOUT_S
+    assert handle is not None
     try:
         if sys.platform == "win32":
             import msvcrt
 
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
             while not locked:
                 try:
                     handle.seek(0)
@@ -882,13 +939,14 @@ class LLMClient:
         self._unhealthy_models: dict[str, float] = {}
 
     # ---- per-run route capture (task-local + global fallback) ---------------
-    def begin_run_capture(self) -> None:
+    def begin_run_capture(self, routing_profile: str = "") -> None:
         """Start an isolated, task-local route capture for THIS run so concurrent
         agent runs that share this client don't clobber each other. Agents call
         this at run start (replacing a bare ``routes.clear()``)."""
         _LAST_MODEL.set(None)
         _LAST_ROUTE.set(None)
         _ROUTES.set([])
+        _ROUTING_PROFILE.set(str(routing_profile or "balanced"))
 
     def _resolve_pinned_model(
         self,
@@ -898,7 +956,9 @@ class LLMClient:
         setting_names: tuple[str, ...] = (),
         file_hint: str | None = None,
         task_type: str = "",
+        profile: str | None = None,
     ) -> str:
+        effective_profile = str(profile or _ROUTING_PROFILE.get() or "balanced")
         requested: list[str] = []
         if model_override:
             requested.append(str(model_override).strip())
@@ -910,8 +970,110 @@ class LLMClient:
             if bool(getattr(self.settings, "free_only", False)) and not _is_free_model_id(pinned):
                 log.warning("llm.free_only_ignored_paid_pin", model=pinned)
                 continue
+            try:
+                info = self.router.model_cost_info(pinned)
+                log.info(
+                    "llm.explicit_model_pin",
+                    model=pinned,
+                    profile=effective_profile,
+                    price_class=info.get("price_class"),
+                    input_per_million=info.get("prompt_usd_per_million"),
+                    output_per_million=info.get("completion_usd_per_million"),
+                )
+            except Exception as exc:  # noqa: BLE001 - classification is advisory for explicit pins
+                log.debug("llm.explicit_model_pin_unclassified", model=pinned, error=str(exc)[:120])
             return pinned
-        return self.router.resolve(tier, file_hint, task_type=task_type)
+        try:
+            return self.router.resolve(
+                tier,
+                file_hint,
+                task_type=task_type,
+                profile=effective_profile,
+            )
+        except TypeError:
+            # Compatibility for externally supplied routers implementing the
+            # pre-profile resolve contract.
+            return self.router.resolve(tier, file_hint, task_type=task_type)
+
+    def _openrouter_cost_details(
+        self, model: str, usage: dict[str, Any], pt: int, ct: int
+    ) -> tuple[float, str]:
+        """Exact provider-reported cost, with catalog-rate fallback.
+
+        OpenRouter includes ``usage.cost`` on normal responses. The previous flat
+        $0.50/M estimate badly understated premium output pricing and overstated
+        some value models, hiding why a supposedly cheap build was expensive.
+        """
+        raw_cost = usage.get("cost")
+        try:
+            exact = float(str(raw_cost))
+        except (TypeError, ValueError):
+            exact = math.nan
+        if math.isfinite(exact) and exact >= 0:
+            return exact, "provider"
+        try:
+            info = self.router.model_cost_info(model)
+            prompt_rate = info.get("prompt_usd_per_token")
+            completion_rate = info.get("completion_usd_per_token")
+            request_rate = info.get("request_usd")
+            if isinstance(prompt_rate, (int, float)) and isinstance(completion_rate, (int, float)):
+                request_cost = float(request_rate) if isinstance(request_rate, (int, float)) else 0.0
+                return (
+                    float(pt) * float(prompt_rate)
+                    + float(ct) * float(completion_rate)
+                    + request_cost,
+                    "catalog_estimate",
+                )
+        except Exception as exc:  # noqa: BLE001 - accounting fallback must not break a completion
+            log.warning("llm.catalog_cost_unavailable", model=model, error=str(exc)[:120])
+        # Last-resort compatibility estimate when both response cost and catalog
+        # metadata are unavailable. This is intentionally loud and never called
+        # a precise price.
+        log.warning("llm.cost_estimated_flat", model=model, tokens=pt + ct)
+        return (pt + ct) / 1_000_000.0 * 0.5, "flat_estimate"
+
+    def _openrouter_cost(self, model: str, usage: dict[str, Any], pt: int, ct: int) -> float:
+        return self._openrouter_cost_details(model, usage, pt, ct)[0]
+
+    def _record_failed_openrouter_attempt(
+        self,
+        model: str,
+        exc: BaseException,
+        *,
+        prompt_tokens: int,
+        max_completion_tokens: int,
+    ) -> None:
+        """Persist retry evidence without claiming an unverified provider charge."""
+        potentially_billed = isinstance(
+            exc,
+            (TimeoutError, httpx.TimeoutException, httpx.NetworkError, _AgenticTurnStall),
+        )
+        exposure = 0.0
+        if potentially_billed and not _is_free_model_id(model):
+            exposure = self._openrouter_cost(
+                model,
+                {},
+                max(0, int(prompt_tokens)),
+                max(0, int(max_completion_tokens)),
+            )
+        result = LLMResult(
+            text="",
+            model=model,
+            backend="openrouter",
+            generation_id="",
+            cost_source="unconfirmed",
+            status=f"failed_{classify_llm_error(exc)}",
+            estimated_exposure_usd=max(0.0, exposure),
+        )
+        self.budget.record(result)
+        log.warning(
+            "llm.openrouter_attempt_failed",
+            model=model,
+            status=result.status,
+            possible_billed=potentially_billed,
+            max_exposure_usd=round(exposure, 6),
+            error=_err_reason(exc),
+        )
 
     def _record_completion(self, tier: str, task_type: str, model: str) -> None:
         """Record one completion's route into both the task-local capture (if a
@@ -928,25 +1090,55 @@ class LLMClient:
             tl.append((tier, task_type, model))
 
     def _record_openrouter_agentic_usage(
-        self, model: str, data: dict[str, Any], sent: list[dict[str, Any]], msg: dict[str, Any]
-    ) -> None:
+        self,
+        model: str,
+        data: dict[str, Any],
+        sent: list[dict[str, Any]],
+        msg: dict[str, Any] | None,
+    ) -> LLMResult:
         usage = data.get("usage", {}) if isinstance(data, dict) else {}
-        pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+        if not isinstance(usage, dict):
+            usage = {}
+        pt = _usage_token_count(usage.get("prompt_tokens"))
+        ct = _usage_token_count(usage.get("completion_tokens"))
+        prompt_details = usage.get("prompt_tokens_details")
+        if not isinstance(prompt_details, dict):
+            prompt_details = {}
+        cached_tokens = _usage_token_count(
+            prompt_details.get("cached_tokens", usage.get("cached_tokens"))
+        )
+        cache_write_tokens = _usage_token_count(
+            prompt_details.get(
+                "cache_write_tokens", usage.get("cache_write_tokens")
+            )
+        )
         if not _is_free_model_id(model) and pt == 0 and ct == 0:
             pt = max(1, sum(self._msg_bytes(m) for m in sent) // 4)
-            ct = max(1, len(json.dumps(msg, sort_keys=True, default=str)) // 4)
+            raw_response = msg if msg is not None else data
+            ct = max(1, len(json.dumps(raw_response, sort_keys=True, default=str)) // 4)
             log.warning("llm.openrouter_agentic_usage_missing", model=model, est_tokens=pt + ct)
-        cost = 0.0 if _is_free_model_id(model) else (pt + ct) / 1_000_000 * 0.5
+        if _is_free_model_id(model):
+            cost, cost_source = 0.0, "free"
+        else:
+            cost, cost_source = self._openrouter_cost_details(
+                model, usage, pt, ct
+            )
         result = LLMResult(
-            text=str(msg.get("content") or ""),
+            text=str((msg or {}).get("content") or ""),
             model=model,
             backend="openrouter",
-            prompt_tokens=int(pt or 0),
-            completion_tokens=int(ct or 0),
+            prompt_tokens=pt,
+            completion_tokens=ct,
             cost_usd=cost,
+            generation_id=str(data.get("id") or ""),
+            cost_source=cost_source,
+            status="provider_response",
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
         self.budget.record(result)
         self.budget.check()
+        return result
 
     @property
     def last_model(self) -> str | None:
@@ -1114,7 +1306,11 @@ class LLMClient:
             if m and m != primary and m not in out:
                 out.append(m)
         try:
-            for m in self.router.fallback_candidates(tier, primary=primary):
+            for m in self.router.fallback_candidates(
+                tier,
+                primary=primary,
+                profile=str(_ROUTING_PROFILE.get() or "balanced"),
+            ):
                 if m and m != primary and m not in out:
                     out.append(m)
         except Exception as exc:  # noqa: BLE001 - fallback resolution must never crash a call
@@ -1148,7 +1344,15 @@ class LLMClient:
         self._unhealthy_models[model] = max(previous, until)
         log.warning("llm.model_quarantined", model=model, ttl_s=ttl, reason=_err_reason(exc))
 
-    async def _resilient_call(self, primary: str, tier: Tier, attempt_fn):
+    async def _resilient_call(
+        self,
+        primary: str,
+        tier: Tier,
+        attempt_fn,
+        *,
+        prompt_tokens: int = 0,
+        max_completion_tokens: int = 0,
+    ):
         """Run ``attempt_fn(model)`` with bounded transient retry + ordered model
         failover. ``attempt_fn`` is an async callable taking a model id and returning
         the call result or raising.
@@ -1176,6 +1380,12 @@ class LLMClient:
                 try:
                     return await attempt_fn(model)
                 except Exception as exc:  # noqa: BLE001 - classified for recovery
+                    self._record_failed_openrouter_attempt(
+                        model,
+                        exc,
+                        prompt_tokens=prompt_tokens,
+                        max_completion_tokens=max_completion_tokens,
+                    )
                     if first_exc is None:
                         first_exc = exc
                     model_exc = exc
@@ -1208,6 +1418,90 @@ class LLMClient:
             return len(json.dumps(m, ensure_ascii=False).encode("utf-8", "replace"))
         except Exception:  # noqa: BLE001
             return len(str(m).encode("utf-8", "replace"))
+
+    @staticmethod
+    def _compact_persisted_write_call(
+        tool_call: dict[str, Any], args: dict[str, Any], result: str
+    ) -> int:
+        """Drop duplicate file bodies from a successful historical write call.
+
+        OpenRouter receives the complete conversation on every agentic turn. Keeping
+        every prior ``write_file`` argument therefore resends the app-so-far over and
+        over, even though those exact bytes are already durable in the worktree and
+        can be recovered with ``read_file``. Replace only confirmed, fully persisted
+        writes with small semantic receipts. Rejected or failed writes retain their
+        original arguments so the model can diagnose them.
+
+        Returns the number of UTF-8 bytes removed from future request history.
+        This changes neither generated files nor the number/size of future writes.
+        """
+        try:
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                return 0
+            name = str(function.get("name") or "")
+            outcome = str(result or "")
+            if (
+                name not in {"write_file", "write_files"}
+                or not outcome.startswith("OK ")
+                or "rejected" in outcome.lower()
+            ):
+                return 0
+
+            original = str(function.get("arguments") or "{}")
+            compact = dict(args)
+            if name == "write_file":
+                body = str(args.get("content", ""))
+                size = len(body.encode("utf-8", "replace"))
+                compact[_PERSISTED_WRITE_RECEIPT_KEY] = {
+                    "version": 1,
+                    "kind": "write_file",
+                    "bytes": size,
+                }
+                compact["content"] = (
+                    f"[persisted to workspace: {size} UTF-8 bytes; "
+                    "use read_file to inspect]"
+                )
+            else:
+                files = args.get("files")
+                if not isinstance(files, list) or not files:
+                    return 0
+                receipts: list[dict[str, Any]] = []
+                for item in files:
+                    if not isinstance(item, dict):
+                        return 0
+                    receipt = dict(item)
+                    body = str(item.get("content", ""))
+                    size = len(body.encode("utf-8", "replace"))
+                    receipt[_PERSISTED_WRITE_RECEIPT_KEY] = {
+                        "version": 1,
+                        "kind": "write_file",
+                        "bytes": size,
+                    }
+                    receipt["content"] = (
+                        f"[persisted to workspace: {size} UTF-8 bytes; "
+                        "use read_file to inspect]"
+                    )
+                    receipts.append(receipt)
+                compact["files"] = receipts
+                compact[_PERSISTED_WRITE_RECEIPT_KEY] = {
+                    "version": 1,
+                    "kind": "write_files",
+                    "files": len(receipts),
+                }
+
+            serialized = json.dumps(
+                compact, ensure_ascii=False, separators=(",", ":")
+            )
+            function["arguments"] = serialized
+            return max(
+                0,
+                len(original.encode("utf-8", "replace"))
+                - len(serialized.encode("utf-8", "replace")),
+            )
+        except Exception as exc:  # noqa: BLE001 - optimization must degrade open
+            log.warning("llm.write_history_compaction_failed", error=str(exc)[:120])
+            return 0
 
     def _edit_context(self, messages: list[dict]) -> list[dict]:
         """Return a possibly-shrunk COPY of the agentic history for SENDING.
@@ -1258,7 +1552,7 @@ class LLMClient:
         *,
         system: str | None = None,
         file_hint: str | None = None,
-        max_tokens: int = 2048,
+        max_tokens: int | None = 2048,
         json_mode: bool = False,
         task_type: str = "",
         model_override: str | None = None,
@@ -1481,11 +1775,7 @@ class LLMClient:
         root = Path(workdir).resolve()
 
         def _safe(path: str) -> Path | None:
-            try:
-                p = (root / str(path)).resolve()
-            except Exception:  # noqa: BLE001
-                return None
-            return p if (p == root or str(p).startswith(str(root) + os.sep)) else None
+            return confined_path(root, str(path))
 
         allowed: set[str] | None = None
         if allowed_paths is not None:
@@ -1505,8 +1795,23 @@ class LLMClient:
                 if target is not None and target != root:
                     planned.add(os.path.normcase(str(target)))
 
+        def _planned_path_ready(raw: str) -> bool:
+            path = Path(raw)
+            if not path.is_file():
+                return False
+            try:
+                if path.stat().st_size > _PERSISTED_WRITE_RECEIPT_MAX_BYTES:
+                    return True
+                body = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                # Preserve the prior readiness behavior for an existing but
+                # momentarily unreadable file; proof/build validation owns I/O
+                # failures that are unrelated to compacted history receipts.
+                return True
+            return not _is_persisted_write_receipt_body(body)
+
         def _planned_missing_count() -> int:
-            return sum(1 for raw in planned if not Path(raw).is_file())
+            return sum(1 for raw in planned if not _planned_path_ready(raw))
 
         def _run_tool(name: str, args: dict) -> tuple[str, int]:
             """Run one tool and return ``(message, changed_file_count)``.
@@ -1515,6 +1820,12 @@ class LLMClient:
             successful no-op write is activity, but it is not build progress.
             """
             if name == "write_file":
+                if _is_persisted_write_receipt(args):
+                    return (
+                        "ERROR: persisted write receipt is history metadata, not file "
+                        "content; use read_file to inspect the existing file",
+                        0,
+                    )
                 rel = str(args.get("path", "")).strip()
                 p = _safe(rel)
                 if not rel or not p or p == root:
@@ -1539,14 +1850,29 @@ class LLMClient:
                 except OSError as e:
                     return f"ERROR: {e}", 0
             if name == "write_files":
+                if _is_persisted_write_receipt(args):
+                    return (
+                        "ERROR: persisted write receipt batch is history metadata and "
+                        "cannot be replayed",
+                        0,
+                    )
                 batch = args.get("files")
-                if not isinstance(batch, list) or not 1 <= len(batch) <= 8:
-                    return "ERROR: files must contain 1..8 file objects", 0
+                if not isinstance(batch, list) or not batch:
+                    return "ERROR: files must contain at least one file object", 0
                 checked: list[tuple[Path, str, str]] = []
                 targets: set[str] = set()
                 for item in batch:
                     if not isinstance(item, dict):
                         return "ERROR: every files item must be an object", 0
+                    if _is_persisted_write_receipt(item):
+                        # Reject the entire batch before validating or writing any
+                        # sibling. A receipt mixed with real bodies must never turn
+                        # a nominally atomic model action into a partial write.
+                        return (
+                            "ERROR: write_files batch contains a persisted write "
+                            "receipt and was rejected atomically",
+                            0,
+                        )
                     rel = str(item.get("path", "")).strip()
                     p = _safe(rel)
                     if not rel or not p or p == root:
@@ -1613,7 +1939,7 @@ class LLMClient:
                 if not p or not p.is_file():
                     return "ERROR: not found", 0
                 try:
-                    return p.read_text(encoding="utf-8", errors="replace")[:8000], 0
+                    return p.read_text(encoding="utf-8", errors="replace"), 0
                 except OSError as e:
                     return f"ERROR: {e}", 0
             if name == "list_files":
@@ -1621,8 +1947,6 @@ class LLMClient:
                 for f in root.rglob("*"):
                     if f.is_file() and not ({"node_modules", ".git", ".next", "dist"} & set(f.parts)):
                         out.append(str(f.relative_to(root)))
-                        if len(out) >= 200:
-                            break
                 return "\n".join(sorted(out)) or "(empty)", 0
             return "ERROR: unknown tool", 0
 
@@ -1649,6 +1973,17 @@ class LLMClient:
         fallback_model = ""
         turn_timeouts = 0
         stall_reason = ""
+        session_id = f"skyn3t-agentic-{uuid.uuid4().hex}"
+        provider_requests = 0
+        context_bytes_sent = 0
+        max_context_bytes_sent = 0
+        tool_call_count = 0
+        write_tool_calls = 0
+        single_write_calls = 0
+        batch_write_calls = 0
+        write_argument_bytes_compacted = 0
+        cached_tokens = 0
+        cache_write_tokens = 0
         idle_timeout = float(getattr(self.settings, "agentic_idle_timeout", 0) or 0)
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
         verify_on_stop_enabled = (
@@ -1664,6 +1999,9 @@ class LLMClient:
         auxiliary_churn_paths: set[str] = set()
         auxiliary_churn_warned = False
         planned_missing_count = _planned_missing_count()
+        coverage_stagnation_writes = 0
+        coverage_stagnation_warned = False
+        incomplete_finish_nudged = False
         plan_complete_nudged = False
         auto_converged = False
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
@@ -1690,14 +2028,28 @@ class LLMClient:
                     # byte budget (stub OLD read-dumps, keep the last K) — the
                     # canonical `messages` keeps growing untouched.
                     sent = self._edit_context(messages)
+                    sent_context_bytes = sum(self._msg_bytes(item) for item in sent)
 
-                    async def _do(m, _sent=sent, _turn=turn, _wrote=wrote):
+                    async def _do(
+                        m,
+                        _sent=sent,
+                        _turn=turn,
+                        _wrote=wrote,
+                        _sent_context_bytes=sent_context_bytes,
+                    ):
                         async def _post():
+                            nonlocal provider_requests, context_bytes_sent
+                            nonlocal max_context_bytes_sent
+                            provider_requests += 1
+                            context_bytes_sent += _sent_context_bytes
+                            max_context_bytes_sent = max(
+                                max_context_bytes_sent, _sent_context_bytes
+                            )
                             body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
-                                    "tool_choice": "auto", "max_tokens": 16384}
+                                    "tool_choice": "auto", "session_id": session_id}
                             resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
                             resp.raise_for_status()
-                            return resp.json(), m
+                            return resp, m
 
                         if idle_timeout > 0:
                             try:
@@ -1722,30 +2074,96 @@ class LLMClient:
                     # a live one and PINS it for the rest of the session (`model`),
                     # instead of the whole agentic build dying.
                     try:
-                        data, model = await asyncio.wait_for(
-                            self._resilient_call(model, Tier.CHEAP, _do),
+                        resp, model = await asyncio.wait_for(
+                            self._resilient_call(
+                                model,
+                                Tier.CHEAP,
+                                _do,
+                                prompt_tokens=max(
+                                    1, sum(self._msg_bytes(item) for item in sent) // 4
+                                ),
+                                max_completion_tokens=16_384,
+                            ),
                             timeout=max(0.01, remaining),
                         )
+                    except _AgenticTurnStall:
+                        # _resilient_call already recorded this exact provider
+                        # attempt. Do not double-count its unconfirmed exposure
+                        # when the exhausted stall propagates through wait_for.
+                        timed_out = True
+                        loop_error = stall_reason or "agentic provider turn stalled"
+                        break
                     except TimeoutError:
+                        self._record_failed_openrouter_attempt(
+                            model,
+                            TimeoutError("agentic request exceeded its progress window"),
+                            prompt_tokens=max(
+                                1, sum(self._msg_bytes(item) for item in sent) // 4
+                            ),
+                            max_completion_tokens=16_384,
+                        )
                         timed_out = True
                         loop_error = f"agentic request made no file-write progress for {budget}s"
                         log.warning("llm.or_agentic_timeout", turns=turn, wrote=wrote)
                         break
                     if model != attempted_model:
                         fallback_model = model
-                    msg = data["choices"][0]["message"]
                     try:
-                        self._record_openrouter_agentic_usage(model, data, sent, msg)
+                        data = resp.json()
+                    except (ValueError, TypeError) as exc:
+                        data = {"_raw_response": str(getattr(resp, "text", "") or "")}
+                        usage_result = self._record_openrouter_agentic_usage(
+                            model, data, sent, None
+                        )
+                        cached_tokens += usage_result.cached_tokens
+                        cache_write_tokens += usage_result.cache_write_tokens
+                        usage_result.status = "malformed_response"
+                        loop_error = "agentic provider returned malformed JSON after billing"
+                        log.warning("llm.or_agentic_malformed", error=str(exc)[:160])
+                        break
+                    raw_msg: Any = None
+                    if isinstance(data, dict):
+                        try:
+                            raw_msg = data["choices"][0]["message"]
+                        except (KeyError, IndexError, TypeError):
+                            raw_msg = None
+                    try:
+                        usage_result = self._record_openrouter_agentic_usage(
+                            model,
+                            data if isinstance(data, dict) else {},
+                            sent,
+                            raw_msg if isinstance(raw_msg, dict) else None,
+                        )
+                        cached_tokens += usage_result.cached_tokens
+                        cache_write_tokens += usage_result.cache_write_tokens
                     except BudgetExceeded as exc:
                         budget_error = str(exc)
                         log.warning("llm.or_agentic_budget_exceeded", error=budget_error)
                         break
+                    if not isinstance(raw_msg, dict):
+                        usage_result.status = "malformed_response"
+                        loop_error = "agentic provider response had no usable message after billing"
+                        log.warning("llm.or_agentic_malformed", error=loop_error)
+                        break
+                    usage_result.status = "succeeded"
+                    msg = raw_msg
+                    # Own a shallow structural copy so successful write arguments
+                    # can be compacted without mutating the provider response object.
+                    tcs: list[dict[str, Any]] = []
+                    for raw_tc in msg.get("tool_calls") or []:
+                        if not isinstance(raw_tc, dict):
+                            continue
+                        tc_copy = dict(raw_tc)
+                        raw_function = raw_tc.get("function")
+                        if isinstance(raw_function, dict):
+                            tc_copy["function"] = dict(raw_function)
+                        tcs.append(tc_copy)
                     messages.append({"role": "assistant", "content": msg.get("content") or "",
-                                     "tool_calls": msg.get("tool_calls") or []})
-                    tcs = msg.get("tool_calls") or []
+                                     "tool_calls": tcs})
                     wrote_before = wrote
                     if tcs:
                         for tc in tcs:
+                            tool_call_count += 1
                             fn = tc.get("function") or {}
                             name = fn.get("name", "")
                             try:
@@ -1755,6 +2173,12 @@ class LLMClient:
                             if name == "finish":
                                 finished, result = True, "OK"
                             else:
+                                if name == "write_file":
+                                    write_tool_calls += 1
+                                    single_write_calls += 1
+                                elif name == "write_files":
+                                    write_tool_calls += 1
+                                    batch_write_calls += 1
                                 result, changed_files = _run_tool(name, args)
                                 if changed_files:
                                     wrote += changed_files
@@ -1781,6 +2205,27 @@ class LLMClient:
                                         # productive exploration, not sustained churn.
                                         auxiliary_churn_paths.clear()
                                         auxiliary_churn_warned = False
+                                        coverage_stagnation_writes = 0
+                                        coverage_stagnation_warned = False
+                                        incomplete_finish_nudged = False
+                                    elif current_missing > 0:
+                                        # Wrapper/build-helper proliferation has
+                                        # its own family-aware guard below. Do not
+                                        # let this broader coverage guard preempt
+                                        # its better diagnostic after a single
+                                        # helper write on a one-file manifest.
+                                        non_helper_changes = sum(
+                                            1
+                                            for changed_path in changed_paths
+                                            if not _agentic_auxiliary_family(
+                                                changed_path.replace("\\", "/")
+                                                .strip()
+                                                .lower()
+                                            )
+                                        )
+                                        coverage_stagnation_writes += min(
+                                            changed_files, non_helper_changes
+                                        )
                                     planned_missing_count = current_missing
                                     for changed_path in changed_paths:
                                         target = _safe(changed_path)
@@ -1800,6 +2245,10 @@ class LLMClient:
                                              file=str(args.get("path", ""))[:80], n=wrote)
                                 doom_recent = (doom_recent
                                                + [(name, fn.get("arguments") or "")])[-3:]
+                                if name in {"write_file", "write_files"}:
+                                    write_argument_bytes_compacted += (
+                                        self._compact_persisted_write_call(tc, args, result)
+                                    )
                             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                                              "content": result})
                     else:
@@ -1892,6 +2341,65 @@ class LLMClient:
                             wrote=wrote,
                         )
                         continue
+                    if (
+                        not finished
+                        and planned_missing_count > 0
+                        and coverage_stagnation_writes
+                        >= max(
+                            _AUXILIARY_CHURN_THRESHOLD,
+                            planned_missing_count,
+                        )
+                    ):
+                        # One complete pass over the *remaining* manifest without
+                        # landing another planned file is coverage stagnation,
+                        # regardless of whether the model cycles through one path
+                        # or many. As coverage advances the window shrinks with the
+                        # work left, preventing a nearly-finished large slice from
+                        # buying another original-manifest-sized rewrite cycle.
+                        # This is a semantic progress guard, not a file/output cap:
+                        # productive sessions reset it every time planned coverage
+                        # increases and can create an arbitrarily large manifest.
+                        missing_paths = sorted(
+                            str(Path(raw).relative_to(root)).replace("\\", "/")
+                            for raw in planned
+                            if not _planned_path_ready(raw)
+                        )
+                        stagnant_writes = coverage_stagnation_writes
+                        coverage_stagnation_writes = 0
+                        if coverage_stagnation_warned:
+                            log.warning(
+                                "llm.or_agentic_coverage_stagnation_abort",
+                                missing=planned_missing_count,
+                                wrote=wrote,
+                                turns=turn,
+                            )
+                            loop_error = (
+                                "agentic aborted after two remaining-manifest write "
+                                "passes made no planned-file coverage progress"
+                            )
+                            break
+                        coverage_stagnation_warned = True
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "PLANNED-COVERAGE STALL: you changed "
+                                    f"{stagnant_writes} files without creating any "
+                                    f"of the {planned_missing_count} missing files in "
+                                    "your assigned manifest. Stop revising existing "
+                                    "files. Create these missing owned files now, in "
+                                    "one or more write_files calls, then integrate and "
+                                    "finish:\n- " + "\n- ".join(missing_paths)
+                                ),
+                            }
+                        )
+                        log.info(
+                            "llm.or_agentic_coverage_stagnation_nudge",
+                            missing=planned_missing_count,
+                            stagnant_writes=stagnant_writes,
+                            wrote=wrote,
+                        )
+                        continue
                     if not finished and planned and planned_missing_count == 0:
                         # Planned scope is a semantic completion contract, not a
                         # size/turn/token cap. Give the model one final integration
@@ -1944,6 +2452,41 @@ class LLMClient:
                         )
                         break
                     if finished:
+                        if planned and planned_missing_count > 0:
+                            missing_paths = sorted(
+                                str(Path(raw).relative_to(root)).replace("\\", "/")
+                                for raw in planned
+                                if not _planned_path_ready(raw)
+                            )
+                            finished = False
+                            if incomplete_finish_nudged:
+                                loop_error = (
+                                    "agentic finish rejected because planned files are "
+                                    "missing or contain persisted-write receipt metadata: "
+                                    + ", ".join(missing_paths)
+                                )
+                                log.warning(
+                                    "llm.or_agentic_incomplete_finish_abort",
+                                    missing=missing_paths,
+                                    wrote=wrote,
+                                )
+                                break
+                            incomplete_finish_nudged = True
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "FINISH DENIED: these planned files are absent or "
+                                    "contain only persisted-write receipt metadata. Write "
+                                    "their real complete contents before finishing:\n- "
+                                    + "\n- ".join(missing_paths)
+                                ),
+                            })
+                            log.info(
+                                "llm.or_agentic_incomplete_finish_nudge",
+                                missing=missing_paths,
+                                wrote=wrote,
+                            )
+                            continue
                         # Refuse a thin result: push the model to build the real UI instead
                         # of stopping at data/config scaffolding (cheap models do this).
                         if stub_nudge_applies and stub_nudges < _MAX_STUB_NUDGES and _looks_stub():
@@ -1979,12 +2522,23 @@ class LLMClient:
             )
         error = budget_error or loop_error or ("" if wrote > 0 else "agentic loop wrote no files")
         return {"ok": finished and wrote > 0 and not error, "completed": finished,
-                "timed_out": timed_out, "files_written": wrote, "backend": "openrouter",
-                "model": model, "attempted_model": attempted_model,
-                "fallback_model": fallback_model, "stalled": bool(turn_timeouts),
-                "stall_reason": stall_reason, "turn_timeouts": turn_timeouts,
-                "auto_converged": auto_converged,
-                "error": error}
+                 "timed_out": timed_out, "files_written": wrote, "backend": "openrouter",
+                 "model": model, "attempted_model": attempted_model,
+                 "fallback_model": fallback_model, "stalled": bool(turn_timeouts),
+                 "stall_reason": stall_reason, "turn_timeouts": turn_timeouts,
+                 "auto_converged": auto_converged,
+                 "turns": turn, "provider_requests": provider_requests,
+                 "context_bytes_sent": context_bytes_sent,
+                 "max_context_bytes_sent": max_context_bytes_sent,
+                 "tool_calls": tool_call_count,
+                 "write_tool_calls": write_tool_calls,
+                 "single_write_calls": single_write_calls,
+                 "batch_write_calls": batch_write_calls,
+                 "write_argument_bytes_compacted": write_argument_bytes_compacted,
+                 "cached_tokens": cached_tokens,
+                 "cache_write_tokens": cache_write_tokens,
+                 "session_id": session_id,
+                 "error": error}
 
     @property
     def supports_agentic(self) -> bool:
@@ -2280,7 +2834,9 @@ class LLMClient:
         }
 
         async def _do(m):
-            body = {"model": m, "messages": messages, "max_tokens": max_tokens}
+            body = {"model": m, "messages": messages}
+            if max_tokens is not None and int(max_tokens) > 0:
+                body["max_tokens"] = int(max_tokens)
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
             async with httpx.AsyncClient(timeout=120) as client:
@@ -2294,38 +2850,74 @@ class LLMClient:
         # Transient retry + ordered model failover around the call — survives a
         # retired default model (the deepseek-*:free 404 incident) instead of
         # degrading the whole build to the offline stub.
-        resp, model = await self._resilient_call(model, tier, _do)
-        # A 200 with a malformed/empty body must degrade, not crash the build —
-        # this includes a body that isn't valid JSON (truncation, gateway HTML),
-        # so resp.json() is inside the guard too (it raises ValueError/JSONDecodeError).
+        estimated_prompt_tokens = max(1, (len(system or "") + len(prompt or "")) // 4)
+        # This completion count is used only for unconfirmed failed-attempt cost
+        # exposure. It is never added to the provider request when max_tokens is
+        # None/0, so cap-free codegen can use the model's native output capacity.
+        exposure_completion_tokens = (
+            max(0, int(max_tokens))
+            if max_tokens is not None and int(max_tokens) > 0
+            else 16_384
+        )
+        resp, model = await self._resilient_call(
+            model,
+            tier,
+            _do,
+            prompt_tokens=estimated_prompt_tokens,
+            max_completion_tokens=exposure_completion_tokens,
+        )
+        malformed_error = ""
         try:
             data = resp.json()
+        except (ValueError, TypeError) as exc:
+            data = {}
+            malformed_error = str(exc)[:160]
+
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        if not isinstance(usage, dict):
+            usage = {}
+        pt = _usage_token_count(usage.get("prompt_tokens"))
+        ct = _usage_token_count(usage.get("completion_tokens"))
+        text = ""
+        if not malformed_error:
+            try:
             # content can be JSON null (tool-only/empty completions) — coalesce to
             # "" so the contract "text is always a str" holds (matches the CLI path)
             # and downstream len()/json parsing never hits None.
-            text = data["choices"][0]["message"]["content"] or ""
-            # OpenRouter models wrap structured output in a ```json fence; the CLI
-            # path strips it (see _cli_complete) but this one didn't — so the
-            # reviewer/intent/critic json.loads silently failed and the whole
-            # scoring brain went dark on the OpenRouter backend. Strip it here too.
-            if json_mode:
-                text = _strip_code_fences(text)
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            log.warning("llm.openrouter_malformed", error=str(exc)[:160])
-            return self._stub(model, prompt, system, json_mode)
-        usage = data.get("usage", {}) if isinstance(data, dict) else {}
-        pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+                text = data["choices"][0]["message"]["content"] or ""
+                # OpenRouter models wrap structured output in a ```json fence; the CLI
+                # path strips it (see _cli_complete) but this one didn't — so the
+                # reviewer/intent/critic json.loads silently failed and the whole
+                # scoring brain went dark on the OpenRouter backend. Strip it here too.
+                if json_mode:
+                    text = _strip_code_fences(text)
+            except (KeyError, IndexError, TypeError) as exc:
+                malformed_error = str(exc)[:160]
+        if malformed_error:
+            # Preserve pipeline degradation behavior, but retain the provider's
+            # usage/cost instead of returning a zero-cost offline stub.
+            text = self._stub(model, prompt, system, json_mode).text
+            log.warning("llm.openrouter_malformed", error=malformed_error)
         # OpenRouter sometimes omits `usage` on a 200. Defaulting to 0 made PAID
         # models report $0 — corrupting cost tracking + budget caps. Estimate
         # tokens from text length (~4 chars/token) so a paid call is never free.
         if not _is_free_model_id(model) and pt == 0 and ct == 0:
-            pt = max(1, (len(system or "") + len(prompt or "")) // 4)
-            ct = max(1, len(text or "") // 4)
+            pt = estimated_prompt_tokens
+            raw_response = getattr(resp, "text", "") or text
+            ct = max(1, len(raw_response) // 4)
             log.warning("llm.openrouter_usage_missing", model=model, est_tokens=pt + ct)
-        # :free models cost $0; otherwise rough estimate.
-        cost = 0.0 if _is_free_model_id(model) else (pt + ct) / 1_000_000 * 0.5
+        # :free models cost $0; paid models prefer OpenRouter's exact usage cost.
+        if _is_free_model_id(model):
+            cost, cost_source = 0.0, "free"
+        else:
+            cost, cost_source = self._openrouter_cost_details(
+                model, usage, int(pt or 0), int(ct or 0)
+            )
         return LLMResult(text=text, model=model, backend="openrouter",
-                         prompt_tokens=pt, completion_tokens=ct, cost_usd=cost)
+                         prompt_tokens=pt, completion_tokens=ct, cost_usd=cost,
+                         generation_id=str(data.get("id") or "") if isinstance(data, dict) else "",
+                         cost_source=cost_source,
+                         status="malformed_response" if malformed_error else "succeeded")
 
     def _stub(self, model, prompt, system, json_mode) -> LLMResult:
         """Deterministic offline response. Good enough to exercise the pipeline."""

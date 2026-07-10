@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import Any
@@ -38,17 +39,64 @@ KNOWN_STACKS = (
 
 DEFAULT_STACK = "react_vite"
 
+_CONTROL_PATH_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_WINDOWS_FORBIDDEN_PATH_RE = re.compile(r'[<>"|?*]')
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_WINDOWS_RESERVED_SEGMENT_RE = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)",
+    re.IGNORECASE,
+)
+
+
+def canonical_project_relpath(raw: Any) -> str | None:
+    """Return a portable, safe project-relative path or ``None``.
+
+    Normalization always uses POSIX path semantics so callers get the same
+    result on every host. Windows-invalid names are rejected on every platform
+    because generated projects may be copied to or built on Windows later.
+    """
+    if not isinstance(raw, (str, os.PathLike)):
+        return None
+    path = str(raw).replace("\\", "/")
+    if not path or path.startswith("/"):
+        return None
+    if (
+        _CONTROL_PATH_RE.search(path)
+        or _WINDOWS_FORBIDDEN_PATH_RE.search(path)
+        or _WINDOWS_DRIVE_RE.match(path)
+        or ":" in path
+    ):
+        return None
+
+    raw_segments = path.split("/")
+    if any(segment == ".." for segment in raw_segments):
+        return None
+
+    normalized = posixpath.normpath(path)
+    if normalized in {"", ".", ".."} or normalized.startswith("../"):
+        return None
+    segments = normalized.split("/")
+    for segment in segments:
+        if not segment or segment in {".", ".."}:
+            return None
+        if segment.endswith((".", " ")):
+            return None
+        if _WINDOWS_RESERVED_SEGMENT_RE.match(segment):
+            return None
+    return normalized
+
 
 def confined_path(root: Path | str, rel: str) -> Path | None:
     """Resolve ``root/rel`` and return it only if it stays inside ``root``
     (symlink-safe), else ``None``. The shared guard for agent file-write paths —
     even hardcoded rel paths can escape a GENERATED tree through a symlinked
     subdirectory. Same idiom as proof_run._confine / code_improver._confined."""
-    if "\x00" in rel:
+    canonical = canonical_project_relpath(rel)
+    if canonical is None:
         return None
     try:
         base = Path(root).resolve()
-        target = (base / rel).resolve()
+        target = base.joinpath(*canonical.split("/")).resolve()
         if os.path.commonpath([str(base), str(target)]) != str(base):
             return None
     except (ValueError, OSError):

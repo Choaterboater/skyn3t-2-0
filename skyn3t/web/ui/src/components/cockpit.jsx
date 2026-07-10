@@ -181,7 +181,10 @@ export function FilesSoFar({ events }) {
     return <p className="px-4 py-3 font-mono text-[11px] text-ash/70">No files yet.</p>;
   }
   return (
-    <ul className="max-h-64 overflow-y-auto px-4 py-2 font-mono text-[11px] text-ash">
+    <ul
+      data-visual-overlap-ok
+      className="max-h-64 overflow-y-auto px-4 py-2 font-mono text-[11px] text-ash"
+    >
       {files.map((f) => (
         <li key={f} className="truncate">
           {f}

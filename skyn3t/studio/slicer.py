@@ -2,9 +2,11 @@
 
 The monolithic code stage runs ONE agentic session over the whole app — the slow
 path for a non-trivial build. ``slice_plan`` groups the architect's planned files
-into a small set of independent workstreams (frontend / backend / tests / config)
-that scoped sub-agents can generate concurrently — the Hermes orchestrator-worker
-pattern — then merge + wire. Pure & offline; import has zero side effects.
+into independent workstreams (frontend / backend / tests / config) that scoped
+sub-agents can generate concurrently — the Hermes orchestrator-worker pattern —
+then merge + wire. Full applications may further decompose a broad frontend by
+path-owned responsibility (content / components / pages / styles / core). Pure &
+offline; import has zero side effects.
 
 The grouping is deliberately conservative: when an app is too small to benefit,
 or everything lands in one slice, ``slice_plan`` returns ``{}`` so the caller
@@ -33,11 +35,34 @@ SLICE_TIERS: dict[str, str] = {
 # merges LAST. The returned mapping is ordered to encode this for the caller.
 _MERGE_ORDER = ("frontend", "backend", "tests", "config")
 
+# Dependency-oriented order inside a semantically decomposed frontend. Shared
+# data and components establish contracts before pages consume them; the core
+# entrypoints that wire the application merge after the feature files. Every
+# path still has exactly one owner, so concurrent completion cannot create a
+# path conflict and the runner's final ordered merge remains deterministic.
+_FRONTEND_MERGE_ORDER = (
+    "frontend_content",
+    "frontend_components",
+    "frontend_pages",
+    "frontend_styles",
+    "frontend_core",
+)
+
 _BACKEND_EXTS = (".py", ".go", ".rs", ".rb", ".php", ".java", ".ex", ".exs")
 _FRONTEND_EXTS = (
     ".jsx", ".tsx", ".vue", ".svelte", ".astro",
     ".css", ".scss", ".sass", ".less", ".html",
 )
+_STYLE_EXTS = frozenset({".css", ".scss", ".sass", ".less", ".styl", ".stylus"})
+_CONTENT_EXTS = frozenset({".csv", ".json", ".md", ".mdx"})
+_STYLE_DIRS = frozenset({"css", "styles", "style", "theme", "themes"})
+_CONTENT_DIRS = frozenset({
+    "content", "copy", "data", "fixtures", "posts", "articles", "catalog",
+})
+_COMPONENT_DIRS = frozenset({
+    "components", "component", "layouts", "partials", "ui", "widgets",
+})
+_PAGE_DIRS = frozenset({"pages", "routes", "screens", "views"})
 _BACKEND_DIRS = frozenset({"api", "routes", "server", "backend", "services", "models", "db"})
 _FRONTEND_DIRS = frozenset({"components", "pages", "src", "styles", "ui", "views", "app"})
 _CONFIG_NAMES = frozenset({
@@ -100,6 +125,7 @@ def _classify(path: str, stack: str) -> str:
     p = path.replace("\\", "/").lower()
     parts = p.split("/")
     name = parts[-1]
+    normalized_stack = (stack or "").lower()
 
     # tests first — a test file's extension would otherwise miscategorise it.
     if (name.startswith("test_") or name.endswith("_test.py")
@@ -107,25 +133,80 @@ def _classify(path: str, stack: str) -> str:
             or "tests" in parts or "__tests__" in parts or "test" in parts):
         return "tests"
 
+    # A static app's index.html is its real page, not a bundler shell. Framework
+    # index files remain config-owned so their manifest/build wiring stays last.
+    static_homepage = (
+        name == "index.html" and normalized_stack in {"static", "static_html"}
+    )
     # config / manifests / lockfiles / build config.
-    if (name in _CONFIG_NAMES or ".config." in name
+    if ((name in _CONFIG_NAMES and not static_homepage) or ".config." in name
             or name.endswith((".config.js", ".config.ts", ".config.mjs", ".config.cjs"))
             or name.endswith((".yml", ".yaml", ".toml", ".ini", ".lock"))):
         return "config"
 
     suffix = "." + name.rsplit(".", 1)[-1] if "." in name else ""
 
-    # backend by extension or directory signal.
-    if suffix in _BACKEND_EXTS or _BACKEND_DIRS.intersection(parts) or name in (
-            "server.js", "server.ts", "server.mjs"):
+    # An explicit language/markup extension is stronger than an overloaded
+    # directory name. For example, ``services/heating.html`` is a static page,
+    # while ``services/heating.py`` is backend logic.
+    if suffix in _BACKEND_EXTS or name in ("server.js", "server.ts", "server.mjs"):
         return "backend"
+    if suffix in _FRONTEND_EXTS:
+        return "frontend"
 
-    # frontend by extension or directory signal.
-    if suffix in _FRONTEND_EXTS or _FRONTEND_DIRS.intersection(parts):
+    # Directory signals classify ambiguous JavaScript/TypeScript/data files.
+    if _BACKEND_DIRS.intersection(parts):
+        return "backend"
+    if _FRONTEND_DIRS.intersection(parts):
         return "frontend"
 
     # Ambiguous .js/.ts/.mjs (no dir signal) and everything else → stack default.
-    return "backend" if (stack or "").lower() in _BACKEND_STACKS else "frontend"
+    return "backend" if normalized_stack in _BACKEND_STACKS else "frontend"
+
+
+def _frontend_subslice(path: str) -> str:
+    """Return the deterministic frontend responsibility that owns ``path``."""
+    p = path.replace("\\", "/").lower()
+    parts = p.split("/")
+    name = parts[-1]
+    suffix = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+
+    if suffix in _STYLE_EXTS or _STYLE_DIRS.intersection(parts[:-1]):
+        return "frontend_styles"
+    if _CONTENT_DIRS.intersection(parts[:-1]) or suffix in _CONTENT_EXTS:
+        return "frontend_content"
+    if _COMPONENT_DIRS.intersection(parts[:-1]):
+        return "frontend_components"
+    if (
+        _PAGE_DIRS.intersection(parts[:-1])
+        or suffix in {".html", ".htm"}
+        or name.startswith(("+page.", "+layout."))
+        or name.startswith(("page.", "layout."))
+    ):
+        return "frontend_pages"
+    return "frontend_core"
+
+
+def _expand_frontend(
+    files: list[dict[str, Any]],
+) -> OrderedDict[str, list[dict[str, Any]]]:
+    """Split a broad frontend only when it has multiple semantic owners.
+
+    There is intentionally no per-slice file ceiling or chunk count. A category
+    owns every matching path, and a one-category frontend stays one ``frontend``
+    slice so semantic naming alone never adds orchestration work.
+    """
+    buckets: dict[str, list[dict[str, Any]]] = {
+        name: [] for name in _FRONTEND_MERGE_ORDER
+    }
+    for entry in files:
+        buckets[_frontend_subslice(entry["path"])].append(entry)
+    expanded = OrderedDict(
+        (name, buckets[name]) for name in _FRONTEND_MERGE_ORDER if buckets[name]
+    )
+    if len(expanded) < 2:
+        return OrderedDict({"frontend": files})
+    return expanded
 
 
 def slice_plan(
@@ -133,12 +214,18 @@ def slice_plan(
     stack: str = "",
     *,
     min_files: int = 8,
+    semantic_frontend: bool = False,
 ) -> OrderedDict[str, list[dict[str, Any]]]:
     """Group ``files`` into parallel build slices.
 
     ``files`` is the architect manifest — a list of ``{"path","purpose"}`` dicts
     (or plain path strings). Returns an ``OrderedDict`` ``{slice: [file, ...]}``
     containing only non-empty slices, ordered so authoritative slices merge LAST.
+
+    ``semantic_frontend`` is intended for full applications. It replaces a broad
+    frontend slice with deterministic path-owned responsibilities when at least
+    two such responsibilities exist. It does not split by size or truncate a
+    category.
 
     Returns an EMPTY dict when slicing isn't worthwhile — fewer than ``min_files``
     real files, or everything collapses into a single slice — so the caller keeps
@@ -166,9 +253,15 @@ def slice_plan(
     for f in normed:
         buckets[_classify(f["path"], stack)].append(f)
 
-    non_empty = OrderedDict(
-        (name, buckets[name]) for name in _MERGE_ORDER if buckets[name]
-    )
+    non_empty: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+    for name in _MERGE_ORDER:
+        owned = buckets[name]
+        if not owned:
+            continue
+        if name == "frontend" and semantic_frontend:
+            non_empty.update(_expand_frontend(owned))
+        else:
+            non_empty[name] = owned
     # Nothing to parallelise if it all lands in one slice.
     if len(non_empty) < 2:
         return OrderedDict()
@@ -177,4 +270,6 @@ def slice_plan(
 
 def slice_tier(slice_name: str) -> str:
     """model_router tier name a slice should prefer (defaults to 'backend')."""
+    if slice_name.startswith("frontend_"):
+        return "ui"
     return SLICE_TIERS.get(slice_name, "backend")

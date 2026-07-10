@@ -91,6 +91,48 @@ def test_maybe_slices_accepts_per_build_profile_override(tmp_path):
     assert {"frontend", "backend", "tests", "config"} <= set(slices)
 
 
+def test_full_app_enables_semantic_frontend_specialists(tmp_path):
+    r = _runner(tmp_path)
+    files = [
+        {"path": "src/data/site.ts"},
+        {"path": "src/components/Card.astro"},
+        {"path": "src/layouts/PageLayout.astro"},
+        {"path": "src/pages/index.astro"},
+        {"path": "src/pages/lessons.astro"},
+        {"path": "src/styles/global.css"},
+        {"path": "src/lib/navigation.ts"},
+        {"path": "package.json"},
+    ]
+    prior = {"architect": {"plan": {"files": files}}}
+
+    regular = r._maybe_slices(
+        _plan(stack="astro"),
+        prior,
+        {"parallel_code_slices": True, "parallel_code_slices_min_files": 4},
+    )
+    full_app = r._maybe_slices(
+        _plan(stack="astro"),
+        prior,
+        {
+            "parallel_code_slices": True,
+            "parallel_code_slices_min_files": 4,
+            "full_app_contract": True,
+        },
+    )
+
+    assert regular is not None and set(regular) == {"frontend", "config"}
+    assert full_app is not None
+    assert list(full_app) == [
+        "frontend_content",
+        "frontend_components",
+        "frontend_pages",
+        "frontend_styles",
+        "frontend_core",
+        "config",
+    ]
+    assert sum(len(entries) for entries in full_app.values()) == len(files)
+
+
 def test_per_build_slice_floor_activates_realistic_four_file_full_app(tmp_path):
     r = _runner(tmp_path, parallel_code_slices_min_files=8)
     prior = {"architect": {"plan": {"files": [

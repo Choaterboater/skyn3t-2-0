@@ -6,6 +6,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from skyn3t.config.settings import Settings  # noqa: E402
+from skyn3t.studio.manifest import BuildManifest  # noqa: E402
 from skyn3t.web.app import create_app  # noqa: E402
 from skyn3t.web.deps import AppState  # noqa: E402
 
@@ -37,6 +38,9 @@ def test_generated_project_keeps_its_stricter_sandbox_csp(tmp_path):
     preview = tmp_path / "demo" / ".preview"
     preview.mkdir(parents=True)
     (preview / "index.html").write_text("<h1>preview</h1>", encoding="utf-8")
+    BuildManifest(
+        slug="demo", brief="demo", stack="static", status="completed", verdict="go"
+    ).save(tmp_path / "demo")
     client = _client(tmp_path)
 
     response = client.get("/api/projects/demo/index.html")

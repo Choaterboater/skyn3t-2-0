@@ -474,6 +474,24 @@ async def test_loop_blocks_at_daily_cap():
     assert "daily build cap" in reason
 
 
+@pytest.mark.parametrize("disabled_cap", [0, -1])
+async def test_loop_allows_builds_when_daily_build_cap_is_disabled(disabled_cap):
+    bus = EventBus()
+    s = _settings(
+        autonomous_builds=True,
+        autonomous_daily_build_cap=disabled_cap,
+        daily_usd_cap=0,
+    )
+    loop = AutonomousLoop(Cortex(bus, settings=s), bus, settings=s)
+    for _ in range(25):
+        loop.state.record_build_start()
+
+    allowed, reason = loop.can_start_build()
+
+    assert allowed is True
+    assert reason == ""
+
+
 async def test_loop_blocks_when_budget_exhausted():
     bus = EventBus()
     s = _settings(autonomous_builds=True, daily_usd_cap=1.0)

@@ -5,7 +5,7 @@ def test_dev_extra_covers_test_and_live_web_imports() -> None:
     modules = (
         "PIL",
         "fastapi",
-        "httpx2",
+        "httpx",
         "jinja2",
         "playwright",
         "uvicorn",

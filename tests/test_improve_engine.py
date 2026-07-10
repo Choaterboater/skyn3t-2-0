@@ -66,6 +66,8 @@ def test_improve_delivers_change_and_records_history(tmp_path):
     import json
     man = json.loads((project / "skyn3t_manifest.json").read_text())
     assert man["extra"]["improve_history"][-1]["goal"] == "make it say improved"
+    assert man["extra"]["improve_history"][-1]["delivered"] is True
+    assert man["extra"]["proof"]["passed"] is True
     # no leftover worktree
     wt_root = settings.projects_dir.parent / ".skyn3t_worktrees"
     assert not any(p.name.startswith("improve-demo-") for p in wt_root.iterdir()) if wt_root.exists() else True
@@ -275,3 +277,49 @@ def test_improve_failed_improver_preserves_original(tmp_path):
     assert outcome.detail.get("improver_success") is False
     assert "unavailable" in outcome.detail.get("improver_error", "")
     assert outcome.files_changed == []
+
+
+def test_improve_failed_proof_rejects_edit_and_preserves_valid_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+
+    from skyn3t.studio import improve as improve_module
+    from skyn3t.studio.proof_run import ProofResult
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    manifest_path = project / "skyn3t_manifest.json"
+    original_manifest = json.loads(manifest_path.read_text())
+    original_manifest.update(verdict="go", status="completed")
+    original_manifest["extra"] = {"proof": {"passed": True, "score": 91.0}}
+    manifest_path.write_text(json.dumps(original_manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        improve_module,
+        "proof_run",
+        lambda *args, **kwargs: ProofResult(
+            passed=False,
+            mode="local",
+            score=12.0,
+            syntax_errors=["main.py: invalid syntax"],
+        ),
+    )
+    bus = EventBus()
+    engine = ImproveEngine(bus, _FakeOrchestrator(), settings=settings)
+
+    outcome = asyncio.run(engine.improve("demo", "break it"))
+
+    assert outcome.status == "failed"
+    assert outcome.proof_passed is False
+    assert outcome.detail["delivery_blocked"] == "proof_failed"
+    assert outcome.detail["project_preserved"] is True
+    assert (project / "main.py").read_text() == "print('original')\n"
+    persisted = json.loads(manifest_path.read_text())
+    assert persisted["status"] == "completed"
+    assert persisted["verdict"] == "go"
+    assert persisted["extra"]["proof"]["passed"] is True
+    rejected = persisted["extra"]["improve_history"][-1]
+    assert rejected["proof_passed"] is False
+    assert rejected["delivered"] is False
+    assert EventType.IMPROVE_FAILED in [event.type for event in bus.history()]

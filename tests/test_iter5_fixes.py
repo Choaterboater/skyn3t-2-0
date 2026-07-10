@@ -170,4 +170,24 @@ def test_openrouter_missing_usage_paid_model_nonzero_cost(monkeypatch):
 def test_openrouter_malformed_json_degrades_not_crash(monkeypatch):
     client = _llm_with(monkeypatch, _Resp(None, raises=json.JSONDecodeError("x", "y", 0)))
     res = asyncio.run(client._openrouter("deepseek/deepseek-chat", "a prompt", "", 100, False))
-    assert res.backend == "stub"  # degraded, did not raise
+    assert res.backend == "openrouter"  # paid provider call is retained for accounting
+    assert res.status == "malformed_response"
+    assert res.cost_usd > 0
+    assert res.text.startswith("[stub:")  # content still degrades without crashing
+
+
+def test_openrouter_malformed_choices_preserve_exact_provider_cost(monkeypatch):
+    client = _llm_with(monkeypatch, _Resp({
+        "id": "gen-malformed",
+        "choices": [],
+        "usage": {"prompt_tokens": 8, "completion_tokens": "bad", "cost": 0.42},
+    }))
+
+    result = asyncio.run(
+        client._openrouter("deepseek/deepseek-chat", "a prompt", "", 100, False)
+    )
+
+    assert result.status == "malformed_response"
+    assert result.generation_id == "gen-malformed"
+    assert result.cost_source == "provider"
+    assert result.cost_usd == 0.42

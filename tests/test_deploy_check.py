@@ -97,6 +97,25 @@ def test_check_deploy_allows_an_api_stacks_404_root():
         httpd.shutdown()
 
 
+def test_check_deploy_rejects_an_api_stack_500_root_without_routes():
+    class _CrashedApiRoot(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(500)
+            self.end_headers()
+
+        def log_message(self, *a):
+            return
+
+    httpd, port = _serve(handler=_CrashedApiRoot)
+    try:
+        v = asyncio.run(check_deploy(f"http://127.0.0.1:{port}", "fastapi"))
+        assert not v.skipped and not v.ok
+        assert v.checked["root_status"] == 500
+        assert any("500" in issue for issue in v.issues)
+    finally:
+        httpd.shutdown()
+
+
 def test_deploy_check_gate_is_opt_in_by_default():
     from skyn3t.config.settings import Settings
 

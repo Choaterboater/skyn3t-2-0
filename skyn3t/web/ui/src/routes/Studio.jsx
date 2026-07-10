@@ -19,6 +19,13 @@ import {
   StageLedger,
   pipelineFromEvents,
 } from "../components/cockpit.jsx";
+import {
+  describeExampleWorkload,
+  describeModelValue,
+  findModelValue,
+  formatExampleUsd,
+  formatModelOption,
+} from "../modelValue.js";
 
 // Fallback rail shown before the first `build.started` arrives. Once a build is
 // live, the rail is driven off the REAL emitted plan (build.started.stages) — so
@@ -43,7 +50,7 @@ const ROUTING_PREVIEW_ESTIMATES = [
 const MODEL_CATALOG_PAGE_SIZE = 24;
 
 const ROUTING_TIER_LABELS = {
-  cheap: "cheap",
+  cheap: "economy tasks",
   ui: "ui",
   backend: "backend",
   strong: "strong",
@@ -139,20 +146,6 @@ function catalogPrompt(inputModel) {
   if (promptRate == null) return `output ${formatRate(completionRate)}`;
   if (completionRate == null) return `input ${formatRate(promptRate)}`;
   return `${formatRate(promptRate)} / ${formatRate(completionRate)}`;
-}
-
-function catalogRunCost(inputModel, promptTokens, completionTokens) {
-  const pricing = inputModel?.pricing_raw || {};
-  const promptRate = numericPricingValue(pricing.prompt ?? pricing.input);
-  const completionRate = numericPricingValue(pricing.completion ?? pricing.output);
-  if ((promptRate == null || promptRate === 0) && (completionRate == null || completionRate === 0)) {
-    const requestRate = numericPricingValue(pricing.request);
-    if (requestRate == null) return null;
-    return requestRate;
-  }
-  const promptCost = (promptRate || 0) * Number(promptTokens || 0);
-  const completionCost = (completionRate || 0) * Number(completionTokens || 0);
-  return promptCost + completionCost;
 }
 
 function routingPinSummary(tiers, modelOverride, preferredModel) {
@@ -414,8 +407,10 @@ function aiMeta(build) {
 function aiCostMeta(build) {
   const trace = build.model_trace || {};
   const quality_scorecard = build.quality_scorecard || {};
+  const costTruth = build.cost_truth || quality_scorecard.cost_truth || {};
+  const externalAssets = costTruth.external_asset_usage || {};
   const runCost = numericPricingValue(
-    build.cost_usd ?? quality_scorecard?.cost_usd
+    costTruth.llm_cost_usd ?? build.cost_usd ?? quality_scorecard?.cost_usd
   );
   const stageCosts = Array.isArray(trace.stage_costs)
     ? trace.stage_costs
@@ -428,9 +423,36 @@ function aiCostMeta(build) {
     const value = numericPricingValue(item?.cost_usd ?? item?.cost);
     return value != null;
   }).length;
+  const costQualifier = String(
+    costTruth.llm_cost_label || "estimated LLM (source unavailable)"
+  );
+  const externalPredictionCount = Number(externalAssets.prediction_count || 0);
+  const externalAttemptCount = Number(
+    externalAssets.attempt_count || externalPredictionCount
+  );
+  const historicalAssetCount = Number(
+    externalAssets.historical_generated_asset_count || 0
+  );
+  const externalAssetLabel = externalAttemptCount > 0
+    ? `+ ${externalPredictionCount} confirmed Replicate prediction${externalPredictionCount === 1 ? "" : "s"}${externalAttemptCount > externalPredictionCount ? ` / ${externalAttemptCount} attempts` : ""}; dollars unavailable`
+    : historicalAssetCount > 0
+      ? `+ ${historicalAssetCount} historical Replicate asset${historicalAssetCount === 1 ? "" : "s"}; provider dollars unavailable`
+    : "no external asset charge recorded";
+  const unconfirmedExposure = numericPricingValue(
+    costTruth.max_unconfirmed_exposure_usd
+  );
 
   return {
     costLabel: runCost == null ? "—" : formatUsd(runCost),
+    costQualifier,
+    externalAssetLabel,
+    costTitle: [
+      `${runCost == null ? "unknown" : formatUsd(runCost)} ${costQualifier}`,
+      externalAssetLabel,
+      unconfirmedExposure > 0
+        ? `up to ${formatUsd(unconfirmedExposure)} unconfirmed timeout exposure`
+        : "",
+    ].filter(Boolean).join(" · "),
     stageCostLabel: stageCostCount
       ? `${formatUsd(stageCostTotal)} / ${stageCostCount}`
       : "—",
@@ -539,6 +561,7 @@ export default function Studio({ stream }) {
   const [modelOverride, setModelOverride] = useState("");
   const [variantSource, setVariantSource] = useState(null);
   const [showRoutingDetails, setShowRoutingDetails] = useState(false);
+  const [modelCatalogOpen, setModelCatalogOpen] = useState(false);
   const [modelCatalogQuery, setModelCatalogQuery] = useState("");
   const [modelCatalogSort, setModelCatalogSort] = useState("created");
   const [modelCatalogOrder, setModelCatalogOrder] = useState("desc");
@@ -648,13 +671,10 @@ export default function Studio({ stream }) {
     },
     retry: 0,
   });
-  const manualModelChoices = normalizedModelOverride &&
-    !modelOptions.includes(normalizedModelOverride)
-    ? [normalizedModelOverride, ...modelOptions]
-    : modelOptions;
   const modelCatalogRows = Array.isArray(catalog.data?.items)
     ? catalog.data.items
     : [];
+  const manualModelChoices = modelCatalogRows;
   const catalogTotal = catalog.data?.count ?? 0;
   const catalogShown = catalog.data?.returned ?? modelCatalogRows.length;
   const catalogShowingAll = catalogShown >= catalogTotal || catalogTotal === 0;
@@ -665,6 +685,12 @@ export default function Studio({ stream }) {
   const routingTiers = Array.isArray(routingPreview.data?.tiers)
     ? routingPreview.data.tiers
     : [];
+  const selectedManualModelValue =
+    findModelValue(modelCatalogRows, normalizedModelOverride) ||
+    routingTiers.find((tier) => tier?.model === normalizedModelOverride) ||
+    null;
+  const exampleWorkload =
+    catalog.data?.example_workload || routingPreview.data?.example_workload;
   const routingCatalogInfo = (() => {
     const count = routingPreview.data?.catalog_model_count;
     const age = routingPreview.data?.catalog_age_seconds;
@@ -826,11 +852,21 @@ export default function Studio({ stream }) {
   // FANOUT_* events on the shared socket. The selected stack ids are sent as a
   // comma-joined string (the /studio/fanout contract).
   const fanoutMut = useMutation({
-    mutationFn: () =>
-      apiPost("/studio/fanout", {
+    mutationFn: () => {
+      const payload = {
         brief: brief.trim(),
         stacks: [...selectedStacks].join(","),
-      }),
+        build_profile: effectiveBuildProfile,
+        full_app: fullApp,
+      };
+      if (normalizedModelOverride) {
+        payload.model_override = normalizedModelOverride;
+      }
+      if (refImage?.url) {
+        payload.reference_image = refImage.url;
+      }
+      return apiPost("/studio/fanout", payload);
+    },
   });
 
   const events = stream?.events || [];
@@ -917,6 +953,10 @@ export default function Studio({ stream }) {
     const completionRate = formatRate(
       numericPricingValue(pricing.completion ?? pricing.output)
     );
+    const modelValue = describeModelValue(
+      tier,
+      ROUTING_TIER_LABELS[tier.tier] || tier.tier,
+    );
 
     return {
       key: tier.tier,
@@ -944,6 +984,11 @@ export default function Studio({ stream }) {
           {costRows.length ? (
             <div className="grid min-w-0 grid-cols-1 gap-1 sm:grid-cols-3">
               {costRows}
+            </div>
+          ) : null}
+          {modelValue ? (
+            <div className="break-words font-mono text-[9px] text-ash/80">
+              {modelValue}
             </div>
           ) : null}
         </div>
@@ -1064,8 +1109,8 @@ export default function Studio({ stream }) {
             ) : null}
 
             <div className="mt-3 border-t border-hairline pt-3">
-              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex flex-wrap gap-2">
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+                <div className="flex flex-wrap gap-2 md:col-span-2">
                   {BUILD_PROFILES.map((p) => {
                     const on = buildProfile === p.id;
                     return (
@@ -1086,7 +1131,7 @@ export default function Studio({ stream }) {
                     );
                   })}
                 </div>
-                <div className="flex min-w-0 flex-1 flex-col gap-1 lg:max-w-[28rem]">
+                <div className="flex min-w-0 flex-col gap-1">
                   <input
                     type="text"
                     list="studio-models"
@@ -1098,8 +1143,12 @@ export default function Studio({ stream }) {
                     title="Pin one OpenRouter model for this build"
                   />
                   <datalist id="studio-models">
-                    {manualModelChoices.map((m) => (
-                      <option key={m} value={m} />
+                    {manualModelChoices.map((item) => (
+                      <option
+                        key={item.id}
+                        value={item.id}
+                        label={formatModelOption(item)}
+                      />
                     ))}
                   </datalist>
                   <div className="mt-1 flex items-center justify-between gap-2">
@@ -1120,11 +1169,21 @@ export default function Studio({ stream }) {
                       </button>
                     ) : null}
                   </div>
-                  <details className="mt-2 rounded border border-hairline/60">
+                  {selectedManualModelValue ? (
+                    <div className="break-words font-mono text-[10px] text-ash/80">
+                      {describeModelValue(selectedManualModelValue, "selected model")}
+                    </div>
+                  ) : null}
+                  <details
+                    open={modelCatalogOpen}
+                    onToggle={(event) => setModelCatalogOpen(event.currentTarget.open)}
+                    className="mt-2 rounded border border-hairline/60"
+                  >
                     <summary className="cursor-pointer px-2 py-1 font-mono text-[10px] text-ash">
                       Model catalog explorer
                     </summary>
-                    <div className="border-t border-hairline p-2">
+                    {modelCatalogOpen ? (
+                      <div className="border-t border-hairline p-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <input
                           type="text"
@@ -1177,6 +1236,9 @@ export default function Studio({ stream }) {
                             ? catalog.data.note
                             : `${catalogShown} shown · ${catalogTotal} total`}
                       </div>
+                      <div className="mt-1 text-[9px] text-ash/70">
+                        {describeExampleWorkload(exampleWorkload)}
+                      </div>
                       <div className="mt-1 max-h-56 overflow-auto rounded border border-hairline/60">
                         {modelCatalogRows.length ? (
                           modelCatalogRows.map((entry) => (
@@ -1184,21 +1246,26 @@ export default function Studio({ stream }) {
                               key={entry.id}
                               type="button"
                               onClick={() => setModelOverride(entry.id)}
-                              className="flex w-full border-b border-hairline/60 px-2 py-1 text-left transition-colors hover:bg-void/55 last:border-b-0"
-                              title={`pin model: ${entry.id}`}
+                              className="block w-full border-b border-hairline/60 px-2 py-1.5 text-left transition-colors hover:bg-void/55 last:border-b-0"
+                              title={`pin model: ${entry.id}; ${formatModelOption(entry)}`}
                             >
-                              <span className="shrink-0 pr-2 text-[9px] text-ash/80">
-                                {entry.provider}
+                              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                                <span className="text-[9px] text-ash/80">{entry.provider}</span>
+                                <span className="min-w-0 flex-1 break-all font-mono text-[10px] text-bone">
+                                  {entry.id}
+                                </span>
+                                <span className="text-[9px] text-ash">
+                                  {entry.is_free ? "free" : catalogPrompt(entry)}
+                                </span>
+                                <span className="text-[9px] text-plasma">
+                                  example {formatExampleUsd(entry.example_cost_usd)}
+                                </span>
                               </span>
-                              <span className="min-w-0 flex-1 break-all font-mono text-[10px] text-bone">
-                                {entry.id}
-                              </span>
-                              <span className="shrink-0 pl-2 text-[9px] text-ash">
-                                {entry.is_free ? "free" : catalogPrompt(entry)}
-                              </span>
-                              <span className="shrink-0 pl-2 text-[9px] text-ash">
-                                1k×1k {formatUsd(catalogRunCost(entry, 1000, 1000))}
-                              </span>
+                              {entry.value_alternative?.id ? (
+                                <span className="mt-0.5 block break-words font-mono text-[9px] text-ash/75">
+                                  cheaper peer {entry.value_alternative.id} {formatExampleUsd(entry.value_alternative.example_cost_usd)} · {entry.value_alternative.savings_percent}% less · {entry.value_alternative.reason}
+                                </span>
+                              ) : null}
                             </button>
                           ))
                         ) : (
@@ -1217,10 +1284,11 @@ export default function Studio({ stream }) {
                           </button>
                         ) : null}
                       </div>
-                    </div>
+                      </div>
+                    ) : null}
                   </details>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+                <div className="flex flex-wrap items-center gap-2 md:justify-end">
                   <label
                     className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
                     title="Force automatic routing to OpenRouter free models"
@@ -1367,7 +1435,7 @@ export default function Studio({ stream }) {
           <Panel className="order-2 p-3 xl:order-2">
             <div className="mb-3 border-b border-hairline pb-3">
               <div className="flex items-start justify-between gap-2">
-                <div className="eyebrow text-[9px]">Routing preview</div>
+                <div className="eyebrow text-[9px]">Routing estimate</div>
                 {routingRows.length ? (
                   <button
                     type="button"
@@ -1388,6 +1456,11 @@ export default function Studio({ stream }) {
               {routingCatalogInfo ? (
                 <div className="mt-1 break-words text-[9px] text-ash/70">
                   {routingCatalogInfo}
+                </div>
+              ) : null}
+              {routingPreview.data?.estimate_reason ? (
+                <div className="mt-1 break-words text-[9px] text-ash/70">
+                  {routingPreview.data.estimate_reason}
                 </div>
               ) : null}
               {routingPin ? (
@@ -1439,12 +1512,15 @@ export default function Studio({ stream }) {
                 </ErrorText>
               ) : null}
               <div className="mt-1 text-[9px] text-ash/80">{routingPolicy}</div>
+              <div className="mt-1 text-[9px] text-ash/70">
+                Automatic economy routes enforce the router's cheap price class. Explicit model pins remain unrestricted.
+              </div>
             </div>
             {showRoutingDetails && routingRows.length ? (
               <>
                 <div className="mt-2 border-t border-hairline pt-2">
                   <div className="text-[9px] text-ash/80">
-                    Cost presets shown per tier: small (1k/1k), standard (5k/2k), heavy (20k/8k)
+                    Cost presets shown per tier: small (1k/1k), standard (5k/2k), heavy (20k/8k). {describeExampleWorkload(exampleWorkload)}
                   </div>
                 </div>
                 <div className="mt-2 overflow-hidden rounded border border-hairline/60">
@@ -1638,7 +1714,7 @@ export default function Studio({ stream }) {
                   <th className="px-4 py-2 font-normal">AI</th>
                   <th className="px-4 py-2 font-normal">Status</th>
                   <th className="px-4 py-2 font-normal">Score</th>
-                  <th className="px-4 py-2 font-normal">Cost</th>
+                  <th className="px-4 py-2 font-normal">LLM cost</th>
                   <th className="px-4 py-2 font-normal"></th>
                 </tr>
               </thead>
@@ -1679,9 +1755,9 @@ export default function Studio({ stream }) {
                         </div>
                         <div
                           className="max-w-[13rem] truncate text-ash/70"
-                          title={`run ${ai.costLabel} · stage cost ${ai.stageCostLabel}`}
+                          title={ai.costTitle}
                         >
-                          run {ai.costLabel} · stage cost {ai.stageCostLabel}
+                          {ai.costLabel} {ai.costQualifier} · stages {ai.stageCostLabel}
                         </div>
                         <div
                           className="max-w-[13rem] truncate text-ash/70"
@@ -1696,10 +1772,17 @@ export default function Studio({ stream }) {
                       <td className="px-4 py-2 font-mono text-xs text-ash">
                         {b.score ?? "—"}
                       </td>
-                      <td className="px-4 py-2 font-mono text-xs text-ash">
-                        {b.cost_usd != null
-                          ? `$${Number(b.cost_usd).toFixed(4)}`
-                          : "—"}
+                      <td
+                        className="px-4 py-2 font-mono text-xs text-ash"
+                        title={ai.costTitle}
+                      >
+                        <div>{ai.costLabel}</div>
+                        <div className="max-w-[15rem] text-[9px] text-ash/70">
+                          {ai.costQualifier}
+                        </div>
+                        <div className="max-w-[15rem] text-[9px] text-ash/70">
+                          {ai.externalAssetLabel}
+                        </div>
                       </td>
                       <td className="px-4 py-2 text-right">
                         {active ? (

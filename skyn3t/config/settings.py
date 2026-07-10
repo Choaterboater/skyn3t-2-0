@@ -2,7 +2,8 @@
 
 Pydantic Settings anchored to the repo root. Loads ``.env`` if present.
 Default posture: free models on, autonomy gated, Docker sandbox preferred,
-budgets enforced. Missing secrets never crash — features degrade instead.
+usage observed without hard spend/token/build ceilings. Missing secrets never
+crash — features degrade instead.
 """
 
 from __future__ import annotations
@@ -112,13 +113,16 @@ class Settings(BaseSettings):
     # Per-provider tokens for a REAL, token-gated deploy. Empty => the keyless
     # plan / dry-run only (never blocks). Configure via the GUI Settings page —
     # never hardcoded/env-required (the GUI-first config rule). Each provider CLI
-    # reads its own env var (FLY_API_TOKEN / VERCEL_TOKEN / CLOUDFLARE_API_TOKEN),
-    # which is injected into a SCRUBBED subprocess so ONLY that one token crosses.
+    # reads its own canonical env var, which is injected into a SCRUBBED
+    # subprocess so ONLY that one provider token crosses.
     # ``allow_remote_deploy`` is the master gate: off (default) => plan only, a
     # real provider deploy is never fired.
     fly_api_token: str = ""
     vercel_token: str = ""
     cloudflare_api_token: str = ""
+    netlify_auth_token: str = ""
+    railway_token: str = ""
+    render_api_key: str = ""
     allow_remote_deploy: bool = False
 
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
@@ -251,12 +255,12 @@ class Settings(BaseSettings):
     # progress together; provider-side retry/backoff still absorbs rate pressure.
     openrouter_max_concurrency: int = Field(default=8, ge=1)
 
-    # ---- Cost caps (hard backstops) -------------------------------------
+    # ---- Optional cost/build ceilings ----------------------------------
     # Values <= 0 disable the corresponding guard.
     per_build_usd_cap: float = 0.0
     daily_usd_cap: float = 0.0
     daily_token_cap: int = 0
-    autonomous_daily_build_cap: int = 10
+    autonomous_daily_build_cap: int = 0
 
     # ---- Feature flags ---------------------------------------------------
     debate_enabled: bool = False  # opt-in: when on, `skyn3t debate` runs a full multi-model debate
@@ -407,9 +411,9 @@ class Settings(BaseSettings):
     cli_playtest_enabled: bool = True
     # Deterministic deploy_check gate (Ship pillar): after a REAL deploy, re-run
     # the liveness/contract probes against the LIVE url (not localhost). Opt-in
-    # (default OFF) — it only applies once something is actually deployed. ADVISORY
-    # like its siblings: recorded to manifest.extra["deploy_check"], never flips
-    # the verdict (a proven build already shipped).
+    # (default OFF) — it only applies once something is actually deployed. It does
+    # not rewrite build proof/verdict, but a non-positive check blocks that remote
+    # attempt from becoming the manifest's active live_url pointer.
     deploy_check_enabled: bool = False
     # Execute the GENERATED project's own test suite during the proof (pytest /
     # npm test), bounded + guarded. A real failure fails the proof and routes
@@ -521,6 +525,9 @@ class Settings(BaseSettings):
                 ("fly", self.fly_api_token),
                 ("vercel", self.vercel_token),
                 ("cloudflare", self.cloudflare_api_token),
+                ("netlify", self.netlify_auth_token),
+                ("railway", self.railway_token),
+                ("render", self.render_api_key),
             )
             if tok
         }

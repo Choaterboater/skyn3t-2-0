@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -9,6 +10,25 @@ GENERATED_ACCEPTANCE_HEADER = "Acceptance suite authored test-first from the bri
 GENERATED_ACCEPTANCE_PENDING_MARKER = (
     "behavioral assertion pending — criterion documented, not yet verified"
 )
+_CLONE_SCAN_EXCLUDED = frozenset({
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "out",
+})
+
+
+def _path_is_link_like(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
 
 
 def _is_exact_contract_path(relative: Path) -> bool:
@@ -118,3 +138,62 @@ def restore_acceptance_contracts(
         except OSError:
             continue
     return restored
+
+
+def acceptance_contract_clones(
+    project_dir: str | Path,
+    snapshot: dict[str, bytes],
+) -> list[str]:
+    """Find same-basename clones outside canonical signed ``tests/`` paths."""
+    root = Path(project_dir).resolve()
+    canonical_names = {
+        Path(relative).name
+        for relative, expected in snapshot.items()
+        if _is_exact_contract_path(Path(relative))
+        and is_system_acceptance_contract(Path(relative), content=expected)
+    }
+    if not canonical_names or _path_is_link_like(Path(project_dir)):
+        return []
+
+    clones: list[str] = []
+    for current, directories, files in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories[:] = [
+            name
+            for name in directories
+            if name not in _CLONE_SCAN_EXCLUDED
+            and not _path_is_link_like(current_path / name)
+        ]
+        for name in sorted(canonical_names & set(files)):
+            target = current_path / name
+            try:
+                relative = target.relative_to(root)
+            except ValueError:
+                continue
+            if _is_exact_contract_path(relative):
+                continue
+            try:
+                if not target.is_symlink():
+                    target.resolve(strict=True).relative_to(root)
+            except (OSError, ValueError):
+                continue
+            clones.append(relative.as_posix())
+    return sorted(set(clones))
+
+
+def reconcile_acceptance_contract_clones(
+    project_dir: str | Path,
+    snapshot: dict[str, bytes],
+) -> list[str]:
+    """Remove pytest-conflicting clones only when a signed canonical test exists."""
+    root = Path(project_dir).resolve()
+    removed: list[str] = []
+    for relative in acceptance_contract_clones(root, snapshot):
+        target = root / relative
+        try:
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+                removed.append(relative)
+        except OSError:
+            continue
+    return removed

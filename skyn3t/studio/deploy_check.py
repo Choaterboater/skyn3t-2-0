@@ -7,8 +7,9 @@ difference from the in-build liveness gate is that we skip all local boot
 (`AppRunner`) and feed it the remote base URL.
 
 Never raises. An UNREACHABLE url is `skipped` (could-not-verify, e.g. transient
-network / DNS not yet propagated) — a could-not-run gate must never false-flag a
-proven build. A reachable url that serves errors IS reported as issues.
+network / DNS not yet propagated). Callers can distinguish that from a positive
+health verdict and decline to activate an unverified deployment. A reachable URL
+that serves errors IS reported as issues.
 """
 
 from __future__ import annotations
@@ -39,12 +40,12 @@ async def check_deploy(base_url: str, stack: str = "") -> GateVerdict:
 
     checked: dict = {"url": base, "root_status": root_status}
     issues: list[str] = []
-    # Only UI web stacks MUST render at '/'. API stacks (fastapi/rag/workflow/
-    # express) legitimately serve nothing at '/', so a non-2xx root there is NOT a
-    # failure — mirrors the in-build liveness gate, which scopes the dead-root
-    # check to UI_WEB_STACKS. For an API stack, a reachable root (any status) plus
-    # its live routes is enough.
-    if (stack or "").strip().lower() in UI_WEB_STACKS and not _wired(root_status):
+    # Every deployed HTTP service must avoid a server error at '/'. API stacks
+    # may legitimately return a routed 4xx (commonly 404) there, while UI stacks
+    # still need a rendered/wired root. This explicit 5xx check matters when the
+    # broken root exposes no links and the route crawler therefore finds nothing.
+    is_ui_stack = (stack or "").strip().lower() in UI_WEB_STACKS
+    if root_status >= 500 or (is_ui_stack and not _wired(root_status)):
         issues.append(f"root {base}/ returned {root_status}")
 
     # Best-effort: probe the same-origin routes the live root links to.

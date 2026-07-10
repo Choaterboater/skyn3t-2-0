@@ -1749,6 +1749,11 @@ def _run_local_project_reverify(
             ),
             brief=brief,
         )
+        gates = _run_reverify_candidate_gates(
+            staged_project,
+            stack=stack,
+            settings=settings,
+        )
         after_proof = source_tree_snapshot(staged_project)
         return {
             "staging_root": staging_root,
@@ -1762,11 +1767,145 @@ def _run_local_project_reverify(
             },
             "candidate": candidate,
             "proof": proof,
+            "gates": gates,
             "after_proof": after_proof,
         }
     except BaseException:
         _cleanup_reverify_staging(staging_root)
         raise
+
+
+def _run_reverify_candidate_gates(
+    project: Path,
+    *,
+    stack: str,
+    settings: Any,
+) -> dict[str, Any]:
+    """Run promotion-critical checks against the isolated candidate only."""
+    from skyn3t.studio.security_check import check_security
+    from skyn3t.studio.web_polish_check import check_web_polish
+
+    security = check_security(project, stack)
+    web_polish = check_web_polish(project, stack)
+    return {
+        "security": security,
+        "web_polish": web_polish,
+        "runtime_liveness": _run_reverify_runtime_liveness(
+            project,
+            stack=stack,
+            settings=settings,
+        ),
+    }
+
+
+def _run_reverify_runtime_liveness(
+    project: Path,
+    *,
+    stack: str,
+    settings: Any,
+) -> dict[str, Any]:
+    """Boot and probe a staged web candidate without repair or host secrets."""
+    from skyn3t.core.stacks import UI_WEB_STACKS, gate_applies
+
+    normalized_stack = (stack or "").strip().lower()
+    if not gate_applies("liveness", normalized_stack):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "runtime liveness does not apply to this stack",
+            "routes": [],
+            "dead_routes": [],
+        }
+
+    async def _probe() -> dict[str, Any]:
+        from skyn3t.studio.app_runner import AppRunner, cleanup_serve
+        from skyn3t.studio.liveness import (
+            check_liveness,
+            crawl_routes,
+            enumerate_routes,
+            merge_routes,
+        )
+
+        runner = AppRunner()
+        app = None
+        try:
+            timeout = max(
+                1,
+                min(20, int(getattr(settings, "generated_build_timeout", 20) or 20)),
+            )
+            app = await runner.start(
+                project,
+                normalized_stack,
+                ready_timeout=timeout,
+                allow_secret_passthrough=False,
+            )
+            if app.status != "running" or not app.url:
+                reason = str(app.detail.get("reason") or "")
+                if not reason:
+                    reason = str(app.detail.get("error") or "preview did not start")
+                return {
+                    "ok": False,
+                    "skipped": False,
+                    "reason": reason[:500],
+                    "serve_status": app.status,
+                    "serve_kind": app.kind,
+                    "routes": [],
+                    "dead_routes": [],
+                }
+            routes = merge_routes(
+                enumerate_routes(project, normalized_stack),
+                await crawl_routes(app.url),
+            )
+            report = await check_liveness(app.url, routes)
+            blocking = [
+                result
+                for result in report.results
+                if not result.ok
+                and not (
+                    normalized_stack not in UI_WEB_STACKS
+                    and result.path == "/"
+                    and result.status == 404
+                )
+            ]
+            dead_routes = [result.path for result in blocking]
+            return {
+                "ok": not blocking,
+                "skipped": False,
+                "reason": (
+                    "all runtime routes responded"
+                    if not blocking
+                    else f"{len(blocking)} runtime route(s) did not respond"
+                ),
+                "serve_status": app.status,
+                "serve_kind": app.kind,
+                "routes": [
+                    {
+                        "path": result.path,
+                        "method": result.method,
+                        "status": result.status,
+                        "ok": result.ok,
+                    }
+                    for result in report.results
+                ],
+                "dead_routes": dead_routes,
+            }
+        except Exception as exc:  # noqa: BLE001 - fail closed for promotion
+            return {
+                "ok": False,
+                "skipped": False,
+                "reason": f"runtime liveness failed: {str(exc)[:400]}",
+                "routes": [],
+                "dead_routes": [],
+            }
+        finally:
+            if app is not None:
+                try:
+                    runner.stop(app)
+                except Exception:  # noqa: BLE001 - cleanup remains best-effort
+                    pass
+                cleanup_serve(app)
+
+    return asyncio.run(_probe())
 
 
 def _cleanup_reverify_staging(staging_root: Path | None) -> None:
@@ -2006,6 +2145,7 @@ def _reverify_promotion_checks(
     project: Path,
     stack: str,
     proof: Any,
+    gates: dict[str, Any],
     review_binding: dict[str, Any],
     candidate: dict[str, Any],
     after_proof: dict[str, Any],
@@ -2018,13 +2158,34 @@ def _reverify_promotion_checks(
     failures: list[str] = []
     if not bool(getattr(proof, "passed", False)):
         failures.append("fresh proof failed")
+    gate_validation: dict[str, bool] = {}
+    for gate_name, label in (
+        ("security", "security check"),
+        ("web_polish", "web polish check"),
+        ("runtime_liveness", "runtime liveness check"),
+    ):
+        raw_gate = gates.get(gate_name)
+        gate = raw_gate if isinstance(raw_gate, dict) else {}
+        warnings = [str(value) for value in gate.get("warnings", [])]
+        passed = gate.get("ok") is True and not (
+            gate.get("skipped") is True and warnings
+        )
+        gate_validation[gate_name] = passed
+        if passed:
+            continue
+        issues = [str(value) for value in gate.get("issues", [])]
+        dead_routes = [str(value) for value in gate.get("dead_routes", [])]
+        reason = str(gate.get("reason") or "").strip()
+        detail_values = issues or dead_routes or warnings or ([reason] if reason else [])
+        detail_text = ", ".join(detail_values[:3])
+        failures.append(f"{label} failed" + (f": {detail_text}" if detail_text else ""))
     if not bool(candidate.get("valid")) or not bool(after_proof.get("valid")):
         failures.append("source tree snapshot was ambiguous or unreadable")
     unchanged = bool(candidate.get("sha256")) and (
         candidate.get("sha256") == after_proof.get("sha256")
     )
     if not unchanged:
-        failures.append("source tree changed while proof commands ran")
+        failures.append("source tree changed while local verification ran")
     live_unchanged = (
         bool(live_source.get("valid"))
         and bool(live_after_worker.get("valid"))
@@ -2077,6 +2238,8 @@ def _reverify_promotion_checks(
         "failures": failures,
         "requirements": requirements,
         "validation": validation,
+        "candidate_gates": gate_validation,
+        "gates": gates,
         "source_unchanged_during_proof": unchanged,
         "live_source_unchanged": live_unchanged,
         "blocking_degradation": blocking_degradation,
@@ -2302,6 +2465,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
         dependency_stabilization = result["dependency_stabilization"]
         candidate = result["candidate"]
         proof = result["proof"]
+        gates = result["gates"]
         after_proof = result["after_proof"]
         live_after_worker = source_tree_snapshot(project)
         proof_dict = proof.to_dict()
@@ -2316,6 +2480,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             staged_project,
             str(manifest.get("stack") or ""),
             proof,
+            gates,
             binding,
             candidate,
             after_proof,
@@ -2356,11 +2521,14 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
                 "verdict": "go",
             }
             if binding.get("binding") == "exact_tree":
-                reason = "Fresh local proof passed against the exact reviewed source tree."
+                reason = (
+                    "Fresh local proof and candidate gates passed against the exact "
+                    "reviewed source tree."
+                )
             else:
                 reason = (
-                    "Fresh local proof passed and durable build history corroborated the "
-                    "legacy brief-aware review."
+                    "Fresh local proof and candidate gates passed, and durable build "
+                    "history corroborated the legacy brief-aware review."
                 )
         else:
             reason = "; ".join(promotion_checks["failures"]) or (
@@ -2396,6 +2564,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             "repairs": repairs,
             "repairs_committed": promoted,
             "dependency_stabilization": dependency_stabilization,
+            "gates": gates,
             "proof": proof_dict,
         }
         manifest["extra"] = extra
@@ -2426,6 +2595,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             "proof": proof_dict,
             "review": binding,
             "candidate": candidate_evidence,
+            "gates": gates,
             "promotion_checks": promotion_checks,
             "memory_persisted": memory_persisted,
         }

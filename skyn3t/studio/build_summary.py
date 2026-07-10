@@ -321,6 +321,20 @@ def _compact_cost_truth(
         and explicit_cli_routing
         and not usage_settlement_conclusive
     )
+    known_llm_cost = _nonnegative_number(extra.get("build_cost_usd"))
+    provider_routing_evidence = (
+        backend == "openrouter"
+        or agentic_backend == "openrouter"
+        or (
+            "/" in effective_codegen_model
+            and not effective_codegen_model.startswith(_CLI_TRACE_PREFIXES)
+        )
+    )
+    legacy_provider_cost_unknown = (
+        provider_routing_evidence
+        and not usage_settlement_conclusive
+        and known_llm_cost == 0.0
+    )
 
     estimate_count = sum(
         count for source, count in source_counts.items() if "estimate" in source
@@ -335,6 +349,9 @@ def _compact_cost_truth(
         classification = "unknown"
     elif unsettled_terminal_cli:
         label = "local CLI cost unknown; terminal usage was not settled"
+        classification = "unknown"
+    elif legacy_provider_cost_unknown:
+        label = "LLM cost unknown; legacy provider usage evidence unavailable"
         classification = "unknown"
     elif cli_unknown_count and (estimate_count or confirmed_count):
         label = "partial LLM cost; local CLI cost unknown"
@@ -356,11 +373,11 @@ def _compact_cost_truth(
         label = "estimated LLM (source unavailable)"
         classification = "estimate"
 
-    known_llm_cost = _nonnegative_number(extra.get("build_cost_usd"))
     llm_cost_known = (
         cli_unknown_count == 0
         and not provenance_incomplete
         and not unsettled_terminal_cli
+        and not legacy_provider_cost_unknown
     )
     exposure = _nonnegative_number(extra.get("max_unconfirmed_exposure_usd"))
     assets = _compact_external_asset_usage(extra)

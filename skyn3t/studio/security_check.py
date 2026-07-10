@@ -11,8 +11,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-_WEB_STACKS = {"react", "react_vite", "nextjs", "astro", "remix", "express", "fastapi", "rag", "workflow", "static", "phaser"}
-_SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".html"}
+from skyn3t.core.stacks import DESIGN_STACKS, UI_WEB_STACKS
+
+# Static source security checks also apply to UI aliases and React Native even
+# though those stacks are not all HTTP-served.
+_WEB_STACKS = DESIGN_STACKS | UI_WEB_STACKS
+_SOURCE_SUFFIXES = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".html",
+    ".astro", ".vue", ".svelte",
+}
 _SKIP_DIRS = {"node_modules", ".next", "dist", "build", "out", ".venv", "__pycache__"}
 _SECRET_RE = re.compile(
     r"(?:sk-[A-Za-z0-9_-]{12,}|[A-Z0-9]{20,}SECRET|api[_-]?key\s*[:=]\s*['\"][^'\"]{12,})",

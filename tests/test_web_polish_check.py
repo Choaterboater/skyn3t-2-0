@@ -28,6 +28,18 @@ def test_web_polish_accepts_structured_page(tmp_path):
     assert check_web_polish(tmp_path, "static")["ok"] is True
 
 
+def test_web_polish_covers_web_stack_alias_component_files(tmp_path):
+    (tmp_path / "App.svelte").write_text(
+        "<main class='grid hero'><h1>Planner</h1><a href='/start'>Start</a></main>",
+        encoding="utf-8",
+    )
+
+    verdict = check_web_polish(tmp_path, "svelte")
+
+    assert verdict["skipped"] is False
+    assert verdict["ok"] is True
+
+
 def test_web_polish_skips_phaser_canvas_games(tmp_path):
     (tmp_path / "index.html").write_text(
         "<div id='game-container'></div><script type='module' src='/src/main.js'></script>",

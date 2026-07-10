@@ -93,6 +93,13 @@ def test_runner_sets_are_the_registry_objects():
     assert runner._GAME_STACKS is stacks.GAME_STACKS
 
 
+def test_static_web_gate_sets_follow_the_registry():
+    from skyn3t.studio import security_check, web_polish_check
+
+    assert security_check._WEB_STACKS == stacks.DESIGN_STACKS | stacks.UI_WEB_STACKS
+    assert web_polish_check._UI_STACKS == stacks.UI_WEB_STACKS - {"phaser"}
+
+
 def test_cli_playtest_uses_the_registry_stack_set():
     from skyn3t.studio import cli_playtest
 

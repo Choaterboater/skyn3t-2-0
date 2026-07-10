@@ -7,6 +7,7 @@ import base64
 import csv
 import hashlib
 import io
+import tomllib
 import zipfile
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
@@ -14,6 +15,9 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 UI_DIST = ROOT / "skyn3t" / "web" / "ui" / "dist"
 UI_PREFIX = "skyn3t/web/ui/dist/"
+PROJECT_VERSION = str(
+    tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+)
 
 
 def _wheel_path(value: str) -> Path:
@@ -76,7 +80,7 @@ def check_wheel(wheel: Path) -> dict[str, int | str]:
 
         metadata = Parser().parsestr(archive.read(metadata_names[0]).decode("utf-8"))
         assert metadata["Name"] == "skyn3t"
-        assert metadata["Version"] == "2.0.0"
+        assert metadata["Version"] == PROJECT_VERSION
         assert metadata["License-Expression"] == "MIT"
         assert metadata["Requires-Python"] == ">=3.11"
 

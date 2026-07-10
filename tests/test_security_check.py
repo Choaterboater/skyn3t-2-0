@@ -31,6 +31,30 @@ def test_security_check_skips_artifact_stack(tmp_path):
     assert verdict["skipped"] is True
 
 
+def test_security_check_does_not_treat_query_selector_as_sql(tmp_path):
+    (tmp_path / "main.js").write_text(
+        'const option = root.querySelector(`option[value="${CSS.escape(value)}"]`);\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "static")
+
+    assert verdict["ok"] is True
+    assert verdict["issues"] == []
+
+
+def test_security_check_still_flags_real_sql_interpolation(tmp_path):
+    (tmp_path / "server.js").write_text(
+        "const sql = `SELECT * FROM users WHERE id = ${userId}`;\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "express")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
 def test_security_gate_downgrades_critical_findings(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "server.js").write_text("eval(req.query.code)\n", encoding="utf-8")

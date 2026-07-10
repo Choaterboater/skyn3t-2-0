@@ -298,6 +298,28 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
             e.update(extra)
         return e
 
+    def _static_spec() -> RunSpec:
+        run_port = _port()
+        return RunSpec(
+            [_python_bin(pdir), "-m", "http.server", str(run_port), "--bind", "127.0.0.1"],
+            str(pdir),
+            _serve_env(),
+            "static",
+            run_port,
+            injected=injected,
+            missing_secrets=missing_t,
+        )
+
+    # A pinned static build is already the deployable artifact. Generated static
+    # sites often include package.json only for lint/test/format helpers, and a
+    # convenience `start` script may wrap `serve` with its own argument grammar.
+    # Treating that helper as an app server and appending Vite/Next flags breaks
+    # an otherwise valid index.html preview.
+    if (stack or "").strip().lower() in {"static", "static_html"} and (
+        pdir / "index.html"
+    ).is_file():
+        return _static_spec()
+
     pkg = pdir / "package.json"
     if pkg.exists():
         try:
@@ -326,10 +348,7 @@ def build_run_spec(project_dir: str | Path, stack: str = "", *, port: int | None
                        injected=injected, missing_secrets=missing_t)
 
     if (pdir / "index.html").exists():
-        run_port = _port()
-        return RunSpec([_python_bin(pdir), "-m", "http.server", str(run_port), "--bind", "127.0.0.1"],
-                       str(pdir), _serve_env(), "static", run_port,
-                       injected=injected, missing_secrets=missing_t)
+        return _static_spec()
 
     return None
 

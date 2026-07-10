@@ -4,12 +4,14 @@ has zero side effects; nothing is served until a method runs."""
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skyn3t.atomic_io import atomic_write_text
 from skyn3t.studio.app_runner import cleanup_serve
 
 _PY_ROUTE = re.compile(r"""@\w+\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]""", re.I)
@@ -173,7 +175,11 @@ class LivenessReport:
     visual_total: int = 0
     visual_failed: int = 0
     visual_failed_routes: list[str] = field(default_factory=list)
-    visual_health: float = 1.0
+    visual_skipped: int = 0
+    visual_skipped_routes: list[str] = field(default_factory=list)
+    visual_health: float | None = None
+    visual_artifact_dir: str | None = None
+    visual_report_path: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -182,7 +188,13 @@ class LivenessReport:
             "visual_total": self.visual_total,
             "visual_failed": self.visual_failed,
             "visual_failed_routes": self.visual_failed_routes,
-            "visual_health": round(self.visual_health, 3),
+            "visual_skipped": self.visual_skipped,
+            "visual_skipped_routes": self.visual_skipped_routes,
+            "visual_health": (
+                round(self.visual_health, 3) if self.visual_health is not None else None
+            ),
+            "visual_artifact_dir": self.visual_artifact_dir,
+            "visual_report_path": self.visual_report_path,
             "results": [
                 {"path": r.path, "method": r.method, "status": r.status,
                  "ok": r.ok, "kind": r.kind, "visual": r.visual}
@@ -222,61 +234,173 @@ def _wired(status: int) -> bool:
 
 async def check_liveness(base_url: str, routes: list[Route], *,
                          vision_fn=None, screenshot_dir: str | None = None,
+                         artifact_dir_label: str | None = None,
+                         stack: str = "",
                          max_concurrency: int = 8) -> LivenessReport:
-    """Hit every route over HTTP (thread-offloaded). ok = 200<=status<400. When a
-    vision_fn + screenshot_dir are wired, each reachable PAGE is also screenshotted
-    and judged. health = ok/total (1.0 when there are no routes)."""
+    """Hit every route and optionally collect deterministic responsive proof.
+
+    HTTP probes are concurrent.  Reachable pages are then inspected in one shared
+    Chromium process at desktop and mobile widths, avoiding a browser launch per
+    route.  A vision provider, when present, supplements but never overrides the
+    deterministic result.  Missing browser support is explicit skipped evidence.
+    """
     base = str(base_url).rstrip("/")
     sem = asyncio.Semaphore(max(1, int(max_concurrency or 1)))
 
-    async def _check(route: Route) -> RouteResult:
+    async def _check_http(route: Route) -> RouteResult:
         async with sem:
             status = await asyncio.to_thread(_hit, base + route.path, route.method)
             ok = _wired(status)
-            visual = None
-            if ok and route.kind == "page" and vision_fn is not None and screenshot_dir:
-                visual = await _judge_page(base + route.path, route.path, vision_fn, screenshot_dir)
-            return RouteResult(route.path, route.method, status, ok, route.kind, visual)
+            return RouteResult(route.path, route.method, status, ok, route.kind)
 
     results: list[RouteResult] = []
     if routes:
-        results = list(await asyncio.gather(*(_check(route) for route in routes)))
+        results = list(await asyncio.gather(*(_check_http(route) for route in routes)))
+    if screenshot_dir:
+        page_results = [result for result in results if result.ok and result.kind == "page"]
+        if page_results:
+            from skyn3t.studio.visual_proof import (
+                DEFAULT_VIEWPORTS,
+                ResponsiveVisualProof,
+                ViewportProof,
+                audit_responsive_pages,
+            )
+
+            try:
+                proofs = await asyncio.to_thread(
+                    audit_responsive_pages,
+                    [(result.path, base + result.path) for result in page_results],
+                    screenshot_dir,
+                    stack=stack,
+                )
+            except Exception as exc:  # noqa: BLE001 - browser proof is dependency-soft
+                reason = f"responsive visual proof unavailable: {str(exc)[:300]}"
+                proofs = [
+                    ResponsiveVisualProof(
+                        url=base + result.path,
+                        route=result.path,
+                        stack=stack,
+                        passed=False,
+                        skipped=True,
+                        reason=reason,
+                        viewports=[
+                            ViewportProof(
+                                viewport.name,
+                                viewport.width,
+                                viewport.height,
+                                skipped=True,
+                                reason=reason,
+                            )
+                            for viewport in DEFAULT_VIEWPORTS
+                        ],
+                    )
+                    for result in page_results
+                ]
+            payloads = await asyncio.gather(*(
+                _visual_payload(proof, vision_fn, screenshot_dir) for proof in proofs
+            ))
+            for result, payload in zip(page_results, payloads, strict=True):
+                result.visual = payload
     total = len(results)
     ok_n = sum(1 for r in results if r.ok)
     dead = [r.path for r in results if not r.ok]
-    visual_results = [r for r in results if r.visual is not None]
+    visual_results = [
+        r for r in results
+        if r.visual is not None and not bool(r.visual.get("skipped"))
+    ]
+    visual_skipped = [
+        r.path for r in results
+        if r.visual is not None and bool(r.visual.get("skipped"))
+    ]
     visual_failed = [
         r.path for r in visual_results
         if r.visual and r.visual.get("matches") is False
     ]
     visual_total = len(visual_results)
-    visual_health = (
+    visual_health: float | None = (
         (visual_total - len(visual_failed)) / visual_total
-        if visual_total else 1.0
+        if visual_total else None
     )
-    return LivenessReport(results=results, total=total, ok=ok_n, dead=len(dead),
-                          dead_routes=dead, health=(ok_n / total) if total else 1.0,
-                          visual_total=visual_total,
-                          visual_failed=len(visual_failed),
-                          visual_failed_routes=visual_failed,
-                          visual_health=visual_health)
+    report = LivenessReport(
+        results=results,
+        total=total,
+        ok=ok_n,
+        dead=len(dead),
+        dead_routes=dead,
+        health=(ok_n / total) if total else 1.0,
+        visual_total=visual_total,
+        visual_failed=len(visual_failed),
+        visual_failed_routes=visual_failed,
+        visual_skipped=len(visual_skipped),
+        visual_skipped_routes=visual_skipped,
+        visual_health=visual_health,
+        visual_artifact_dir=(artifact_dir_label or str(screenshot_dir)) if screenshot_dir else None,
+        visual_report_path="visual-proof.json" if screenshot_dir and page_results else None,
+    )
+    if screenshot_dir:
+        report_path = Path(screenshot_dir) / "liveness-report.json"
+        try:
+            atomic_write_text(report_path, json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        except OSError:
+            pass
+    return report
 
 
-async def _judge_page(url: str, path: str, vision_fn, screenshot_dir: str) -> dict | None:
-    """Screenshot a reachable page and judge it. None when no screenshot/judgment
-    (a skipped judgment must NOT count as a visual failure)."""
+async def _visual_payload(proof, vision_fn, screenshot_dir: str) -> dict:
+    """Combine deterministic proof with an optional subjective vision verdict."""
     from skyn3t.studio import visual_check as _vc
-    safe = path.strip("/").replace("/", "_") or "root"
-    shot = str(Path(screenshot_dir) / f"{safe}.png")
-    got = await asyncio.to_thread(_vc.screenshot, url, shot)
-    if not got:
-        return None
-    verdict = _vc.inspect(shot, f"the page at {path} renders correctly and is not broken",
-                          vision_fn=vision_fn)
-    if getattr(verdict, "skipped", False):
-        return None
-    return {"matches": bool(getattr(verdict, "matches", False)),
-            "issues": list(getattr(verdict, "issues", []) or [])}
+
+    deterministic = proof.to_dict()
+    deterministic_issues = [
+        f"{viewport.name}: {issue.message}"
+        for viewport in proof.viewports
+        for issue in viewport.issues
+    ]
+    if proof.skipped:
+        return {
+            "matches": None,
+            "skipped": True,
+            "reason": proof.reason,
+            "issues": deterministic_issues,
+            "deterministic": deterministic,
+            "vision": {"skipped": True, "reason": "no screenshot evidence"},
+        }
+
+    vision: dict = {"skipped": True, "reason": "no vision provider wired"}
+    if vision_fn is not None:
+        evidence = next(
+            (viewport.screenshot for viewport in proof.viewports if viewport.screenshot),
+            None,
+        )
+        if evidence:
+            shot = str(Path(screenshot_dir) / evidence)
+            verdict = await asyncio.to_thread(
+                _vc.inspect,
+                shot,
+                f"the page at {proof.route} renders correctly and is not broken",
+                vision_fn=vision_fn,
+            )
+            if callable(getattr(verdict, "to_dict", None)):
+                vision = verdict.to_dict()
+            else:
+                vision = {
+                    "matches": bool(getattr(verdict, "matches", False)),
+                    "skipped": bool(getattr(verdict, "skipped", False)),
+                    "reason": str(getattr(verdict, "reason", "") or ""),
+                    "issues": list(getattr(verdict, "issues", []) or []),
+                }
+    vision_failed = not bool(vision.get("skipped")) and vision.get("matches") is False
+    issues = list(deterministic_issues)
+    if vision_failed:
+        issues.extend(str(issue) for issue in (vision.get("issues") or []))
+    return {
+        "matches": bool(proof.passed and not vision_failed),
+        "skipped": False,
+        "reason": proof.reason,
+        "issues": issues,
+        "deterministic": deterministic,
+        "vision": vision,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -299,49 +423,67 @@ def _repair_goal(report: LivenessReport) -> str:
             "Fix the app so each one returns a working response.") if dead else ""
     if vis:
         goal += f" These pages render incorrectly and need fixing: {', '.join(vis[:5])}."
+        findings: list[str] = []
+        for result in report.results:
+            if not result.visual or result.visual.get("matches") is not False:
+                continue
+            issues = [str(issue) for issue in (result.visual.get("issues") or []) if str(issue)]
+            if issues:
+                findings.append(f"{result.path}: {'; '.join(issues[:4])}")
+        if findings:
+            goal += f" Browser findings: {' | '.join(findings[:5])}."
     return goal or "Make every page and endpoint of the app respond correctly."
 
 
 async def liveness_self_improve(project_dir, *, app_runner, improve_engine,
                                 vision_fn=None, stack: str = "",
-                                max_rounds: int = 2) -> LivenessOutcome:
+                                max_rounds: int = 2,
+                                evidence_dir: str | Path | None = None) -> LivenessOutcome:
     """Serve the delivered app -> check every route -> if any are dead (or a page
     renders wrong) and rounds remain, improve toward fixing them -> re-serve ->
     re-check. Never raises (every collaborator call is guarded)."""
-    import tempfile
-
     project_dir = Path(project_dir)
     static_routes = enumerate_routes(project_dir, stack)
     last: LivenessReport | None = None
     n = max(1, int(max_rounds))
-    with tempfile.TemporaryDirectory(prefix="skyn3t-liveness-") as shotdir:
-        for i in range(n):
-            app = await app_runner.start(project_dir, stack)
+    shotdir = Path(evidence_dir) if evidence_dir else project_dir / ".skyn3t" / "visual-proof"
+    try:
+        artifact_label = shotdir.resolve().relative_to(project_dir.resolve()).as_posix()
+    except (OSError, ValueError):
+        artifact_label = str(shotdir)
+    for i in range(n):
+        app = await app_runner.start(project_dir, stack)
+        try:
+            if getattr(app, "status", "") != "running" or not getattr(app, "url", ""):
+                return LivenessOutcome(skipped=True, reason="no live preview", rounds=i)
+            # Augment the static route set with links crawled from the served
+            # root — catches client-rendered / dynamically-mounted pages.
+            routes = merge_routes(static_routes, await crawl_routes(app.url))
+            last = await check_liveness(
+                app.url,
+                routes,
+                vision_fn=vision_fn,
+                screenshot_dir=str(shotdir),
+                artifact_dir_label=artifact_label,
+                stack=stack,
+            )
+        finally:
             try:
-                if getattr(app, "status", "") != "running" or not getattr(app, "url", ""):
-                    return LivenessOutcome(skipped=True, reason="no live preview", rounds=i)
-                # Augment the static route set with links crawled from the served
-                # root — catches client-rendered / dynamically-mounted pages.
-                routes = merge_routes(static_routes, await crawl_routes(app.url))
-                last = await check_liveness(app.url, routes, vision_fn=vision_fn,
-                                            screenshot_dir=shotdir)
-            finally:
-                try:
-                    app_runner.stop(app)
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    cleanup_serve(app)
-                except Exception:  # noqa: BLE001
-                    pass
-            visual_fail = any(r.visual and r.visual.get("matches") is False
-                              for r in last.results)
-            if last.dead == 0 and not visual_fail:
-                return LivenessOutcome(passed=True, report=last, rounds=i + 1)
-            if i < n - 1 and improve_engine is not None:
-                try:
-                    await improve_engine.improve(str(project_dir), _repair_goal(last))
-                except Exception:  # noqa: BLE001 - repair is best-effort
-                    pass
+                app_runner.stop(app)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                cleanup_serve(app)
+            except Exception:  # noqa: BLE001
+                pass
+        visual_fail = any(r.visual and r.visual.get("matches") is False
+                          for r in last.results)
+        if last.dead == 0 and not visual_fail:
+            return LivenessOutcome(passed=True, report=last, rounds=i + 1)
+        if i < n - 1 and improve_engine is not None:
+            try:
+                await improve_engine.improve(str(project_dir), _repair_goal(last))
+            except Exception:  # noqa: BLE001 - repair is best-effort
+                pass
     return LivenessOutcome(passed=False, report=last, rounds=n,
                            reason=f"{last.dead if last else '?'} route(s) still failing")

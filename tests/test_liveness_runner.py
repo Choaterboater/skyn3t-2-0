@@ -90,6 +90,7 @@ def test_liveness_visual_failure_gates_ui_stack(tmp_path, monkeypatch):
     assert score == 40.0
     assert verdict == "no_go"
     assert man.extra["liveness_visual_health"] == 0.0
+    assert man.extra["responsive_visual_proof"]["status"] == "failed"
     assert "visual liveness" in man.extra["liveness_gate"]
 
 
@@ -119,6 +120,7 @@ def test_liveness_visual_success_clears_stale_visual_self_heal_gate(tmp_path, mo
     assert score == 80.0
     assert verdict == "go"
     assert man.extra["liveness_visual_health"] == 1.0
+    assert man.extra["responsive_visual_proof"]["status"] == "passed"
     assert "visual_self_heal_gate" not in man.extra
 
 
@@ -133,6 +135,57 @@ def test_liveness_skipped_leaves_score_and_verdict(tmp_path, monkeypatch):
                         SimpleNamespace(passed=True), 80.0, "go"))
     assert score == 80.0 and verdict == "go"
     assert man.extra["liveness"]["skipped"] is True
+
+
+def test_liveness_records_honest_responsive_proof_skip(tmp_path, monkeypatch):
+    evidence = tmp_path / ".skyn3t" / "visual-proof"
+
+    async def fake(*a, **k):
+        return LivenessOutcome(passed=True, report=LivenessReport(
+            results=[RouteResult("/", "GET", 200, True, "page", {
+                "matches": None,
+                "skipped": True,
+                "reason": "playwright chromium unavailable",
+            })],
+            total=1,
+            ok=1,
+            dead=0,
+            health=1.0,
+            visual_total=0,
+            visual_failed=0,
+            visual_skipped=1,
+            visual_skipped_routes=["/"],
+            visual_health=None,
+            visual_artifact_dir=str(evidence),
+            visual_report_path="visual-proof.json",
+        ))
+
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="b", stack="react")
+
+    score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="react"),
+                        SimpleNamespace(passed=True), 80.0, "go"))
+
+    assert score == 80.0 and verdict == "go"
+    assert "liveness_visual_health" not in man.extra
+    assert man.extra["liveness"]["visual_artifact_dir"] == ".skyn3t/visual-proof"
+    assert man.extra["responsive_visual_proof"] == {
+        "schema_version": 1,
+        "status": "skipped",
+        "routes_checked": 0,
+        "routes_failed": 0,
+        "routes_skipped": 1,
+        "failed_routes": [],
+        "skipped_routes": ["/"],
+        "viewports": [
+            {"name": "desktop", "width": 1440, "height": 900},
+            {"name": "mobile", "width": 390, "height": 844},
+        ],
+        "artifact_dir": ".skyn3t/visual-proof",
+        "report_path": "visual-proof.json",
+    }
 
 
 def test_liveness_never_crashes_the_build(tmp_path, monkeypatch):

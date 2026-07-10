@@ -45,6 +45,10 @@ from skyn3t.agents._scaffold import (
 from skyn3t.core.agent import AgentCapability, AgentStatus, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+from skyn3t.studio.acceptance_contract import (
+    restore_acceptance_contracts,
+    snapshot_acceptance_contracts,
+)
 from skyn3t.worktree import list_files
 
 log = structlog.get_logger(__name__)
@@ -641,6 +645,35 @@ class CodeAgent(BaseAgent):
                     self._worktree_locks.pop(key, None)
 
     async def execute(self, task: TaskRequest) -> TaskResult:
+        payload = task.payload if isinstance(task.payload, dict) else {}
+        worktree = self._resolve_worktree(payload)
+        contracts = snapshot_acceptance_contracts(worktree)
+        restored: set[str] = set()
+        try:
+            result = await self._execute_codegen(
+                task, worktree, contracts, restored
+            )
+        finally:
+            restored.update(restore_acceptance_contracts(worktree, contracts))
+
+        if contracts and isinstance(result.output, dict):
+            result.output["acceptance_contracts_protected"] = sorted(contracts)
+            result.output["acceptance_contracts_restored"] = sorted(restored)
+        if restored:
+            log.warning(
+                "code_agent.acceptance_contract_restored",
+                task_id=task.task_id,
+                files=sorted(restored),
+            )
+        return result
+
+    async def _execute_codegen(
+        self,
+        task: TaskRequest,
+        worktree: Path,
+        acceptance_contracts: dict[str, bytes],
+        restored_contracts: set[str],
+    ) -> TaskResult:
         p = task.payload
         # Per-run reset: this agent is a long-lived singleton, so a `degraded`
         # flag set by a PRIOR build must not leak into this one (it would emit a
@@ -670,8 +703,6 @@ class CodeAgent(BaseAgent):
         )
         app_name = slugify(p.get("slug") or brief, "app")
 
-        worktree = self._resolve_worktree(p)
-
         # Hermes orchestrator-worker: a parallel SLICE writes ONLY its own files
         # (no whole-app scaffold floor / under-delivery revert — a slice is small
         # by design, and the merged tree's wiring is repaired by the post-merge
@@ -679,7 +710,17 @@ class CodeAgent(BaseAgent):
         slice_scope = p.get("slice_scope") if isinstance(p.get("slice_scope"), dict) else None
         if slice_scope:
             return await self._execute_slice(
-                task, p, brief, stack, plan, app_name, worktree, slice_scope)
+                task,
+                p,
+                brief,
+                stack,
+                plan,
+                app_name,
+                worktree,
+                slice_scope,
+                acceptance_contracts,
+                restored_contracts,
+            )
 
         # Decide what files to write. Prefer the architect's plan; otherwise the
         # canonical scaffold. The scaffold guarantees a runnable baseline. For game
@@ -761,6 +802,9 @@ class CodeAgent(BaseAgent):
                     **_agentic_kwargs,
                 )
                 self._restore_preexisting_assets(worktree, preexisting_assets)
+                restored_contracts.update(
+                    restore_acceptance_contracts(worktree, acceptance_contracts)
+                )
                 agentic_ok = bool(res.get("ok", True))
                 agentic_confirmed = agentic_ok and bool(
                     res.get("completed", agentic_ok)
@@ -942,6 +986,7 @@ class CodeAgent(BaseAgent):
                     "turn_timeouts",
                     "completed",
                     "complete",
+                    "auto_converged",
                     "timed_out",
                     "files_written",
                     "planned_files",
@@ -1329,6 +1374,8 @@ class CodeAgent(BaseAgent):
         self, task: TaskRequest, p: dict[str, Any], brief: str, stack: str,
         plan: dict[str, Any], app_name: str, worktree: Path,
         slice_scope: dict[str, Any],
+        acceptance_contracts: dict[str, bytes],
+        restored_contracts: set[str],
     ) -> TaskResult:
         """Generate ONLY this slice's files. The full file manifest is supplied as
         read-only context so cross-slice imports line up. On under-delivery the
@@ -1391,6 +1438,9 @@ class CodeAgent(BaseAgent):
                     enforce_antistub=False,
                     verify_on_stop=False,
                     **agentic_kwargs,
+                )
+                restored_contracts.update(
+                    restore_acceptance_contracts(worktree, acceptance_contracts)
                 )
                 agentic_ok = bool(res.get("ok", True))
                 confirmed = agentic_ok and bool(res.get("completed", agentic_ok))
@@ -1494,7 +1544,8 @@ class CodeAgent(BaseAgent):
             out["agentic"] = {
                 key: agentic.get(key)
                 for key in (
-                    "ok", "backend", "model", "completed", "complete", "timed_out",
+                    "ok", "backend", "model", "completed", "complete",
+                    "auto_converged", "timed_out",
                     "files_written", "planned_files", "missing_files",
                     "out_of_scope_files", "error",
                 )

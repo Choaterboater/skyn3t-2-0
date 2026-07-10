@@ -23,6 +23,7 @@ Import has zero side effects.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import uuid
@@ -65,6 +66,10 @@ from skyn3t.intelligence.learning_loop import (
 from skyn3t.security.audit import AuditLog
 from skyn3t.security.permissions import PermissionManager, auto_approve_safe_fn
 from skyn3t.studio import best_of_n as bon
+from skyn3t.studio.acceptance_contract import (
+    restore_acceptance_contracts,
+    snapshot_acceptance_contracts,
+)
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
@@ -1378,6 +1383,10 @@ class StudioRunner:
             from skyn3t.studio.app_runner import AppRunner
             from skyn3t.studio.improve import ImproveEngine
             from skyn3t.studio.visual_check import make_vision_fn
+            from skyn3t.studio.visual_proof import (
+                DEFAULT_VIEWPORTS,
+                VISUAL_PROOF_SCHEMA_VERSION,
+            )
             outcome = await liveness_self_improve(
                 project_dir,
                 app_runner=AppRunner(),
@@ -1395,15 +1404,43 @@ class StudioRunner:
             manifest.extra["liveness"] = {"skipped": True, "reason": outcome.reason}
             return final_score, verdict
         report = outcome.report
+        artifact_dir = getattr(report, "visual_artifact_dir", None)
+        if artifact_dir:
+            try:
+                artifact_dir = Path(artifact_dir).relative_to(Path(project_dir)).as_posix()
+            except (OSError, ValueError):
+                artifact_dir = str(artifact_dir)
+            report.visual_artifact_dir = artifact_dir
         manifest.extra["liveness"] = report.to_dict()
         manifest.extra["liveness_health"] = round(report.health, 3)
         visual_total = int(getattr(report, "visual_total", 0) or 0)
+        visual_skipped = int(getattr(report, "visual_skipped", 0) or 0)
+        visual_failed = int(getattr(report, "visual_failed", 0) or 0)
         raw_visual_health = getattr(report, "visual_health", 1.0)
         visual_health = 1.0 if raw_visual_health is None else float(raw_visual_health)
         effective_health = min(report.health, visual_health) if visual_total else report.health
         manifest.extra["liveness_effective_health"] = round(effective_health, 3)
         if visual_total:
             manifest.extra["liveness_visual_health"] = round(visual_health, 3)
+        visual_status = "not_run"
+        if visual_failed:
+            visual_status = "failed"
+        elif visual_total:
+            visual_status = "passed"
+        elif visual_skipped:
+            visual_status = "skipped"
+        manifest.extra["responsive_visual_proof"] = {
+            "schema_version": VISUAL_PROOF_SCHEMA_VERSION,
+            "status": visual_status,
+            "routes_checked": visual_total,
+            "routes_failed": visual_failed,
+            "routes_skipped": visual_skipped,
+            "failed_routes": list(getattr(report, "visual_failed_routes", []) or []),
+            "skipped_routes": list(getattr(report, "visual_skipped_routes", []) or []),
+            "viewports": [viewport.to_dict() for viewport in DEFAULT_VIEWPORTS],
+            "artifact_dir": artifact_dir,
+            "report_path": getattr(report, "visual_report_path", None),
+        }
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
         if proof.passed and report.total:
@@ -2951,11 +2988,67 @@ class StudioRunner:
         the fix for the ~14% go-rate that no amount of per-class repair addressed.
         """
         import time as _t
+        root = Path(project_dir).resolve()
+
+        # A repair agent may fix production code, but it must never make a red
+        # build green by deleting or weakening TestAuthor's definition of success.
+        acceptance_contracts = snapshot_acceptance_contracts(root)
+        if acceptance_contracts:
+            manifest.extra["acceptance_contracts_protected"] = sorted(
+                acceptance_contracts
+            )
+
+        signature_ignores = {
+            ".git", ".venv", "__pycache__", "node_modules", ".pytest_cache",
+            ".mypy_cache", ".ruff_cache", ".next", ".astro", "dist", "build",
+            "out", ".output", ".build", ".swiftpm",
+        }
+
+        def tree_signature() -> str:
+            digest = hashlib.sha256()
+            try:
+                files = sorted(
+                    path for path in root.rglob("*")
+                    if path.is_file()
+                    and not path.is_symlink()
+                    and not (signature_ignores & set(path.relative_to(root).parts))
+                )
+            except OSError:
+                files = []
+            for path in files:
+                try:
+                    rel = path.relative_to(root).as_posix().encode("utf-8")
+                    digest.update(rel)
+                    digest.update(b"\0")
+                    digest.update(path.read_bytes())
+                    digest.update(b"\0")
+                except (OSError, ValueError):
+                    continue
+            return digest.hexdigest()
+
+        def proof_signature(result) -> str:
+            try:
+                payload = result.to_dict()
+            except Exception:  # noqa: BLE001 - diagnostic guard must never break repair
+                payload = {
+                    "passed": bool(getattr(result, "passed", False)),
+                    "missing": list(getattr(result, "missing", []) or []),
+                    "detail": getattr(result, "detail", {}),
+                }
+            raw = json.dumps(
+                payload, sort_keys=True, separators=(",", ":"), default=str
+            ).encode("utf-8", errors="replace")
+            return hashlib.sha256(raw).hexdigest()
+
         max_attempts = int((extra or {}).get(
             "max_fix_attempts", getattr(self.settings, "max_fix_attempts", 6)))
         budget_s = int(getattr(self.settings, "fix_loop_budget_s", 720))
         loop_start = _t.time()
         attempt = 0
+        previous_tree_signature = tree_signature()
+        previous_proof_signature = proof_signature(proof)
+        unchanged_rounds = 0
+        stalled = False
         runtime_self_heal = str(getattr(plan, "stack", "") or "") not in _GAME_STACKS
         if runtime_self_heal:
             manifest.extra["runtime_self_heal"] = {
@@ -3026,6 +3119,15 @@ class StudioRunner:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("fix.improve_failed", error=str(exc))
 
+            contracts_restored = restore_acceptance_contracts(
+                root, acceptance_contracts
+            )
+            if contracts_restored:
+                log.warning(
+                    "fix.acceptance_contract_restored",
+                    attempt=attempt,
+                    files=contracts_restored,
+                )
             manifest.files = list_files(project_dir)
             # Offload the synchronous proof_run (it shells out to pytest/npm) so
             # it never blocks the event loop — the dashboard serves + improves on
@@ -3041,10 +3143,26 @@ class StudioRunner:
                 brief=manifest.brief,
             )
             manifest.extra["proof"] = proof.to_dict()
+            current_tree_signature = tree_signature()
+            current_proof_signature = proof_signature(proof)
+            unchanged = (
+                current_tree_signature == previous_tree_signature
+                and current_proof_signature == previous_proof_signature
+            )
+            unchanged_rounds = unchanged_rounds + 1 if unchanged else 0
+            previous_tree_signature = current_tree_signature
+            previous_proof_signature = current_proof_signature
             manifest.extra[f"fix_attempt_{attempt}"] = {
                 "filled": filled,
                 "stubbed": len(repairs.get("imports_scaffolded", [])),
-                "passed": proof.passed, "repairs": repairs}
+                "passed": proof.passed,
+                "repairs": repairs,
+                "acceptance_contracts_restored": contracts_restored,
+                "tree_signature": current_tree_signature,
+                "proof_signature": current_proof_signature,
+                "unchanged": unchanged,
+                "unchanged_rounds": unchanged_rounds,
+            }
             if runtime_self_heal:
                 heal = manifest.extra.get("runtime_self_heal")
                 if isinstance(heal, dict):
@@ -3056,16 +3174,56 @@ class StudioRunner:
                         "stubbed": len(repairs.get("imports_scaffolded", [])),
                         "passed": bool(proof.passed),
                         "repairs": repairs,
+                        "acceptance_contracts_restored": contracts_restored,
+                        "unchanged": unchanged,
+                        "unchanged_rounds": unchanged_rounds,
                     })
             await self.event_bus.emit(
                 EventType.BUILD_STAGE_COMPLETED, "studio",
-                {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "passed": proof.passed},
+                {
+                    "build_id": manifest.build_id,
+                    "stage": f"fix#{attempt}",
+                    "passed": proof.passed,
+                    "acceptance_contracts_restored": contracts_restored,
+                    "unchanged": unchanged,
+                    "unchanged_rounds": unchanged_rounds,
+                },
                 correlation_id=correlation_id,
             )
-            log.info("fix.iteration", attempt=attempt, filled=filled, passed=proof.passed)
+            log.info(
+                "fix.iteration",
+                attempt=attempt,
+                filled=filled,
+                passed=proof.passed,
+                unchanged=unchanged,
+                unchanged_rounds=unchanged_rounds,
+                contracts_restored=len(contracts_restored),
+            )
+            if not proof.passed and unchanged_rounds >= 2:
+                stalled = True
+                stall_evidence = {
+                    "attempt": attempt,
+                    "unchanged_rounds": unchanged_rounds,
+                    "tree_signature": current_tree_signature,
+                    "proof_signature": current_proof_signature,
+                    "reason": "deliverable tree and proof were unchanged for two rounds",
+                }
+                manifest.extra["fix_stalled"] = stall_evidence
+                if runtime_self_heal:
+                    heal = manifest.extra.get("runtime_self_heal")
+                    if isinstance(heal, dict):
+                        heal["stalled"] = stall_evidence
+                await self.event_bus.emit(
+                    EventType.FIX_STALLED,
+                    "studio",
+                    {"build_id": manifest.build_id, **stall_evidence},
+                    correlation_id=correlation_id,
+                )
+                log.warning("fix.stalled", **stall_evidence)
+                break
         log.info("fix.converged" if proof.passed else "fix.unconverged",
                  attempts=attempt, passed=proof.passed,
-                 elapsed=int(_t.time() - loop_start))
+                 stalled=stalled, elapsed=int(_t.time() - loop_start))
         if runtime_self_heal:
             heal = manifest.extra.get("runtime_self_heal")
             if isinstance(heal, dict):

@@ -47,9 +47,9 @@ web = [
 integrations = [
     "prometheus-client>=0.20",
 ]
-# Visual self-inspection loop (Spec 3): screenshot a running app. Needs
-# `playwright install chromium` after install. The vision JUDGEMENT step also
-# needs a vision-capable LLM wired; without one the loop soft-skips. Pillow backs
+# Responsive browser evidence + visual self-inspection. Needs
+# `playwright install chromium` after install. Deterministic desktop/mobile proof
+# needs no LLM; the optional subjective vision judgement does. Pillow backs
 # a cheap, dependency-soft heuristic (flash-frame detection) that retakes a
 # mid-play game screenshot landing on a transient full-screen FX (e.g. a
 # damage-flash camera tint) — without it, that retake optimization just skips.

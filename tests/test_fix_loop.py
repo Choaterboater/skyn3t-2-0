@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json as _json
 import shutil
+from pathlib import Path
 
 import pytest
 
 from skyn3t.config.settings import Settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
-from skyn3t.core.events import EventBus
+from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.studio.acceptance_contract import (
+    GENERATED_ACCEPTANCE_HEADER,
+    GENERATED_ACCEPTANCE_PENDING_MARKER,
+)
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.planner import Planner
 from skyn3t.studio.proof_run import proof_run
@@ -134,16 +139,21 @@ async def test_fix_loop_converges_past_two_attempts(tmp_path, monkeypatch):
     (proj / "main.py").write_text("print('hi')\n")
 
     class _P:
-        def __init__(self, passed):
-            self.passed, self.missing, self.detail = passed, [], {}
+        def __init__(self, passed, marker):
+            self.passed, self.missing, self.detail = passed, [], {"marker": marker}
 
         def error_gaps(self):
             return []
 
         def to_dict(self):
-            return {"passed": self.passed}
+            return {"passed": self.passed, "detail": self.detail}
 
-    seq = [_P(False), _P(False), _P(False), _P(True)]  # green on the 4th re-proof
+    seq = [
+        _P(False, "second defect"),
+        _P(False, "third defect"),
+        _P(False, "fourth defect"),
+        _P(True, "green"),
+    ]  # green on the 4th re-proof
     calls = {"n": 0}
 
     def fake_proof(*a, **k):
@@ -156,9 +166,127 @@ async def test_fix_loop_converges_past_two_attempts(tmp_path, monkeypatch):
     class _M:
         build_id, slug, brief, files, extra = "b", "t", "a python tool", [], {}
 
-    out = await runner._fix_loop(_M(), plan, str(proj), _P(False), "cid", {})
+    out = await runner._fix_loop(
+        _M(), plan, str(proj), _P(False, "initial defect"), "cid", {}
+    )
     assert out.passed is True
     assert calls["n"] >= 3  # iterated past the old 2-attempt cap
+
+
+async def test_fix_loop_restores_immutable_test_author_contract(tmp_path, monkeypatch):
+    runner = _runner()
+    plan = Planner(Settings()).plan("a python tool", "t")
+    proj = tmp_path / "p"
+    contract = proj / "tests" / "test_acceptance_contract.py"
+    contract.parent.mkdir(parents=True)
+    expected = (
+        f'"""{GENERATED_ACCEPTANCE_HEADER}\n"""\n'
+        "import pytest\n"
+        f'@pytest.mark.skip(reason="{GENERATED_ACCEPTANCE_PENDING_MARKER}")\n'
+        "def test_required_behavior():\n    assert False, 'real contract'\n"
+    ).encode()
+    contract.write_bytes(expected)
+    (proj / "main.py").write_text("print('hi')\n", encoding="utf-8")
+
+    class _CheatingImprover(BaseAgent):
+        async def initialize(self) -> None:
+            return None
+
+        async def health_check(self) -> bool:
+            return True
+
+        async def execute(self, task: TaskRequest) -> TaskResult:
+            target = Path(task.payload["project_dir"]) / "tests/test_acceptance_contract.py"
+            target.write_text("def test_fake_green():\n    assert True\n", encoding="utf-8")
+            return TaskResult(
+                task_id=task.task_id,
+                success=True,
+                output={"files_improved": 1, "files": [str(target)]},
+            )
+
+    improver = _CheatingImprover(
+        "cheater", "code_improve", "stub", runner.event_bus
+    )
+    improver.add_capability(AgentCapability("code_improve"))
+    await runner.orchestrator.register(improver)
+
+    class _P:
+        passed = False
+        missing = []
+        detail = {"tests": "failed"}
+
+        def error_gaps(self):
+            return ["acceptance contract failed"]
+
+        def to_dict(self):
+            return {"passed": False, "detail": self.detail}
+
+    monkeypatch.setattr("skyn3t.studio.runner.proof_run", lambda *a, **k: _P())
+    manifest = BuildManifest(slug="t", brief="a python tool")
+
+    await runner._fix_loop(
+        manifest, plan, str(proj), _P(), "cid", {"max_fix_attempts": 1}
+    )
+
+    assert contract.read_bytes() == expected
+    assert manifest.extra["acceptance_contracts_protected"] == [
+        "tests/test_acceptance_contract.py"
+    ]
+    assert manifest.extra["fix_attempt_1"]["acceptance_contracts_restored"] == [
+        "tests/test_acceptance_contract.py"
+    ]
+    completed = [
+        event for event in runner.event_bus.history()
+        if event.type == EventType.BUILD_STAGE_COMPLETED
+    ]
+    assert completed[-1].payload["acceptance_contracts_restored"] == [
+        "tests/test_acceptance_contract.py"
+    ]
+
+
+async def test_fix_loop_stalls_after_two_identical_tree_and_proof_rounds(
+    tmp_path, monkeypatch
+):
+    runner = _runner()
+    plan = Planner(Settings()).plan("a python tool", "t")
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "main.py").write_text("print('hi')\n", encoding="utf-8")
+
+    class _P:
+        passed = False
+        missing = []
+        detail = {"tests": "same failure"}
+
+        def error_gaps(self):
+            return ["same failure"]
+
+        def to_dict(self):
+            return {"passed": False, "detail": self.detail}
+
+    calls = {"n": 0}
+
+    def unchanged_proof(*args, **kwargs):
+        calls["n"] += 1
+        return _P()
+
+    monkeypatch.setattr("skyn3t.studio.runner.proof_run", unchanged_proof)
+    manifest = BuildManifest(slug="t", brief="a python tool")
+
+    out = await runner._fix_loop(
+        manifest, plan, str(proj), _P(), "cid", {"max_fix_attempts": 6}
+    )
+
+    assert out.passed is False
+    assert calls["n"] == 2
+    assert manifest.extra["fix_stalled"]["attempt"] == 2
+    assert manifest.extra["fix_stalled"]["unchanged_rounds"] == 2
+    stalled = [
+        event for event in runner.event_bus.history()
+        if event.type == EventType.FIX_STALLED
+    ]
+    assert len(stalled) == 1
+    assert stalled[0].payload["attempt"] == 2
 
 
 # ---- substance gate + best-of-N richness ranking -------------------------

@@ -1658,7 +1658,12 @@ def studio_visual(
         raise typer.Exit(code=2)
 
 
-async def _run_liveness_cli(project: str, *, max_rounds: int):
+async def _run_liveness_cli(
+    project: str,
+    *,
+    max_rounds: int,
+    evidence_dir: str = "",
+):
     from pathlib import Path as _Path
 
     from skyn3t.studio.app_runner import AppRunner
@@ -1682,20 +1687,37 @@ async def _run_liveness_cli(project: str, *, max_rounds: int):
         stack = ""
     return await liveness_self_improve(
         pdir, app_runner=AppRunner(), improve_engine=engine,
-        vision_fn=make_vision_fn(settings), stack=stack, max_rounds=max_rounds)
+        vision_fn=make_vision_fn(settings), stack=stack, max_rounds=max_rounds,
+        evidence_dir=evidence_dir or None)
 
 
 @studio_app.command("liveness")
 def studio_liveness(
     project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
     rounds: int = typer.Option(2, "--rounds", "-r", help="Max check->repair rounds."),
+    evidence_dir: str = typer.Option(
+        "",
+        "--evidence-dir",
+        help="Output directory for responsive screenshots and JSON (default: project/.skyn3t/visual-proof).",
+    ),
+    require_visual: bool = typer.Option(
+        False,
+        "--require-visual",
+        help="Exit non-zero when Playwright/Chromium could not produce visual evidence.",
+    ),
 ) -> None:
-    """Liveness loop: serve -> hit every route/page -> repair dead ones -> re-check.
+    """Liveness + responsive proof: serve -> inspect routes/pages -> repair -> re-check.
 
-    HTTP liveness needs no LLM; the per-page visual judge + auto-repair activate
-    when a vision model / LLM backend (OpenRouter key or claude/kimi CLI) is wired."""
+    Desktop/mobile deterministic checks need Playwright + Chromium but no LLM.
+    A configured vision backend adds subjective review to the same evidence."""
+    from pathlib import Path as _Path
+
     console = _console()
-    res = asyncio.run(_run_liveness_cli(project, max_rounds=rounds))
+    res = asyncio.run(_run_liveness_cli(
+        project,
+        max_rounds=rounds,
+        evidence_dir=evidence_dir,
+    ))
     if res.skipped or res.report is None:
         console.print(f"[yellow]Liveness skipped[/yellow]: {res.reason}")
         raise typer.Exit(code=1)
@@ -1704,12 +1726,38 @@ def studio_liveness(
     console.print(f"[{tone}]Liveness {'passed' if res.passed else 'incomplete'}[/{tone}] "
                   f"after {res.rounds} round(s) — {rep.ok}/{rep.total} routes OK "
                   f"(health {rep.health:.0%})")
+    visual_total = int(getattr(rep, "visual_total", 0) or 0)
+    visual_failed = int(getattr(rep, "visual_failed", 0) or 0)
+    visual_skipped = int(getattr(rep, "visual_skipped", 0) or 0)
+    if visual_failed:
+        visual_status = f"[red]failed[/red] ({visual_failed}/{visual_total} route(s))"
+    elif visual_total:
+        visual_status = f"[green]passed[/green] ({visual_total} route(s), desktop + mobile)"
+    elif visual_skipped:
+        visual_status = f"[yellow]skipped[/yellow] ({visual_skipped} route(s))"
+    else:
+        visual_status = "[dim]not run[/dim]"
+    console.print(f"Responsive proof: {visual_status}")
+    artifact_dir = getattr(rep, "visual_artifact_dir", None)
+    report_path = getattr(rep, "visual_report_path", None)
+    if artifact_dir and report_path:
+        qualifier = "" if _Path(artifact_dir).is_absolute() else " (project-relative)"
+        console.print(
+            f"Evidence{qualifier}: [cyan]{_Path(artifact_dir) / report_path}[/cyan]"
+        )
     for r in rep.results:
         mark = "✔" if r.ok else "✕"
-        vis = "" if not r.visual else (" 👁" if r.visual.get("matches") else " 👁✕")
+        if not r.visual:
+            vis = ""
+        elif r.visual.get("skipped"):
+            vis = " · visual skipped"
+        else:
+            vis = " · visual ok" if r.visual.get("matches") else " · visual failed"
         console.print(f"  {mark} {r.method} {r.path} → {r.status}{vis}")
     if not res.passed:
         raise typer.Exit(code=2)
+    if require_visual and (visual_total == 0 or visual_skipped):
+        raise typer.Exit(code=3)
 
 
 async def assemble_app_state(event_bus: Any | None = None) -> Any:

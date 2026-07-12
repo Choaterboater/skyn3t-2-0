@@ -383,6 +383,16 @@ class StudioRunner:
             getattr(self.settings, "codegen_cli_provider", "") or "").strip().lower()
         codegen_cli_model = str(
             getattr(self.settings, "codegen_cli_model", "") or "").strip()
+        # A global CLI backend is itself an explicit codegen route. Without
+        # this inference the trace falls through to the OpenRouter model router
+        # and labels a Codex run as e.g. ``z-ai/glm-5.2``, despite no hosted call
+        # being made. ``auto`` is intentionally Codex-only as well.
+        if not provider:
+            backend = str(getattr(self.settings, "llm_backend", "") or "").strip().lower()
+            if backend.endswith("_cli"):
+                provider = backend.removesuffix("_cli")
+            elif backend == "auto":
+                provider = "codex"
         if provider:
             try:
                 from skyn3t.adapters.llm import LLMClient
@@ -1906,7 +1916,8 @@ class StudioRunner:
                         "imports_relinked", "imports_scaffolded", "use_client_added",
                         "source_fences_stripped", "ts_in_js_stripped",
                         "react_entrypoint_repaired", "phaser_entrypoint_repaired",
-                        "vitest_alias_config")
+                        "fastapi_entrypoint_unified", "vitest_alias_config",
+                        "python_imports_sorted", "python_formatted")
         if any(final_repairs.get(k) for k in changed_keys):
             manifest.files = list_files(project_dir)
             manifest.extra["final_consistency_repairs"] = {
@@ -4237,6 +4248,7 @@ class StudioRunner:
                                 "cached_tokens",
                                 "cache_write_tokens",
                                 "session_id",
+                                "cli_execution",
                                 "error",
                             )
                             if _agentic.get(k) not in (None, "")
@@ -4347,6 +4359,17 @@ class StudioRunner:
                 manifest.extra["phaser_entrypoint_repaired"] = repairs["phaser_entrypoint_repaired"]
                 log.info("runner.phaser_entrypoint_repaired",
                          files=repairs["phaser_entrypoint_repaired"])
+            if repairs.get("fastapi_entrypoint_unified"):
+                manifest.extra["fastapi_entrypoint_unified"] = repairs["fastapi_entrypoint_unified"]
+                log.info("runner.fastapi_entrypoint_unified",
+                         files=repairs["fastapi_entrypoint_unified"])
+            if repairs.get("python_imports_sorted"):
+                manifest.extra["python_imports_sorted"] = repairs["python_imports_sorted"]
+                log.info("runner.python_imports_sorted",
+                         files=repairs["python_imports_sorted"])
+            if repairs.get("python_formatted"):
+                manifest.extra["python_formatted"] = repairs["python_formatted"]
+                log.info("runner.python_formatted", files=repairs["python_formatted"])
             self._record_contrast_issues(manifest, repairs)
             if isinstance(manifest.extra.get("asset_foundry"), dict):
                 try:

@@ -1,7 +1,7 @@
 # tests/test_vision_fn.py
-"""The vision_fn factory that activates the visual loop's judgement step when an
-OpenRouter key is present (sends the screenshot as an image block). The HTTP call
-itself is integration; the pure request-building parts are tested here."""
+"""The vision_fn factory honors the explicitly selected backend before sending a
+screenshot as an image block. The HTTP call itself is integration; the pure
+request-building parts are tested here."""
 from __future__ import annotations
 
 import base64
@@ -28,7 +28,9 @@ def test_make_vision_fn_is_none_without_a_key(monkeypatch):
 
 
 def test_make_vision_fn_is_callable_with_a_key():
-    s = SimpleNamespace(openrouter_api_key="sk-or-test", vision_model="")
+    s = SimpleNamespace(
+        llm_backend="openrouter", openrouter_api_key="sk-or-test", vision_model=""
+    )
     assert callable(make_vision_fn(s))
 
 

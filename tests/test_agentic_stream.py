@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
+from skyn3t.adapters import llm as llm_mod
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.config.settings import Settings
 
@@ -103,3 +104,46 @@ async def test_oversized_line_does_not_crash_build():
     # process returncode (success here).
     proc = _FakeProc(_OverrunStream(), returncode=0)
     assert await _client()._consume_agentic_stream(proc, "claude", 0) is True
+
+
+async def test_codex_stream_retains_bounded_resume_evidence_only():
+    proc = _FakeProc(_FakeStream([
+        b'{"type":"thread.started","thread_id":"thread-01:abc"}\n',
+        b'{"type":"item.completed","item":{"text":"private source body"}}\n',
+        b'{"type":"turn.completed","usage":{"input_tokens":999}}\n',
+        b'{"type":"thread.started","thread_id":"bad id with whitespace"}\n',
+    ]))
+
+    assert await _client()._consume_agentic_stream(proc, "codex", 0) is True
+
+    evidence = llm_mod._AGENTIC_STREAM_EVIDENCE.get()
+    assert evidence["provider"] == "codex"
+    assert evidence["session_persistence"] == "ephemeral"
+    assert evidence["event_count"] == 4
+    assert evidence["parsed_event_count"] == 4
+    assert evidence["event_type_counts"] == {
+        "thread.started": 2,
+        "item.completed": 1,
+        "turn.completed": 1,
+    }
+    assert evidence["thread_id"] == "thread-01:abc"
+    assert evidence["terminal_event_type"] == "turn.completed"
+    assert evidence["exit_code"] == 0
+    assert evidence["exit_status"] == "exited"
+    assert "private source body" not in str(evidence)
+
+
+async def test_stream_evidence_marks_idle_timeout(monkeypatch):
+    async def _fake_terminate(proc):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(LLMClient, "_terminate", staticmethod(_fake_terminate))
+    proc = _FakeProc(_HangStream())
+
+    assert await _client()._consume_agentic_stream(proc, "codex", 0.05) is False
+
+    evidence = llm_mod._AGENTIC_STREAM_EVIDENCE.get()
+    assert evidence["timed_out"] is True
+    assert evidence["timeout_kind"] == "idle"
+    assert evidence["termination_reason"] == "idle_timeout"
+    assert evidence["exit_status"] == "terminated_after_idle_timeout"

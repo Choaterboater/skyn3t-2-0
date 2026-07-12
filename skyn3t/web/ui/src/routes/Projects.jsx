@@ -1028,6 +1028,14 @@ export default function Projects({ stream }) {
                           >
                             {outcome.detail}
                           </div>
+                          {p.local_reverify?.proof_passed ? (
+                            <div
+                              className="mt-1 max-w-[13rem] font-mono text-[10px] text-plasma/80"
+                              title={p.local_reverify.reason || "Local proof passed"}
+                            >
+                              local proof passed{p.local_reverify.review_refreshed ? " · re-reviewed" : ""}{p.local_reverify.promoted ? " · promoted" : " · fresh review needed"}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-4 py-2 font-mono text-xs text-ash">
                           {p.score ?? "—"}

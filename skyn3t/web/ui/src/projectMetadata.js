@@ -87,9 +87,17 @@ export function projectBuildMetadata(project = {}) {
   );
   const profile = firstText(project.build_profile, trace.profile) || "unknown profile";
   const backend = firstText(trace.backend, project.llm_backend, project.backend) || "unknown backend";
-  const model = codegenModel || modelOverride || "auto model";
-  const modelSource = codegenModel
-    ? modelOverride && codegenModel === modelOverride
+  const cliProvider = backend.endsWith("_cli") ? backend.slice(0, -4) : "";
+  // Older build manifests could label a local CLI run with a hosted router
+  // candidate. The persisted backend is the authoritative execution evidence:
+  // never present that candidate as the CLI model in Projects or Studio.
+  const displayedCodegenModel =
+    cliProvider && /^[^/\s]+\/[^/\s]+$/.test(codegenModel)
+      ? `${cliProvider}-cli:default`
+      : codegenModel;
+  const model = displayedCodegenModel || modelOverride || "auto model";
+  const modelSource = displayedCodegenModel
+    ? modelOverride && displayedCodegenModel === modelOverride
       ? "codegen override"
       : "codegen"
     : modelOverride
@@ -119,7 +127,7 @@ export function projectBuildMetadata(project = {}) {
     profile,
     backend,
     model,
-    codegenModel,
+    codegenModel: displayedCodegenModel,
     modelOverride,
     modelSource,
     skills,

@@ -435,6 +435,8 @@ def test_projects_wires_bounded_local_reverify() -> None:
     assert 'qc.invalidateQueries({ queryKey: ["builds"] })' in projects
     assert "describeLocalReverify(result)" in projects
     assert "Local reverify failed:" in projects
+    assert "local proof passed" in projects
+    assert "fresh review needed" in projects
     assert "setQueryData" not in projects
 
 

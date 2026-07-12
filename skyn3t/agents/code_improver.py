@@ -18,7 +18,12 @@ from typing import Any
 import structlog
 
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, extract_code, knowledge_block
+from skyn3t.agents._common import (
+    canonical_project_relpath,
+    detect_stack,
+    extract_code,
+    knowledge_block,
+)
 from skyn3t.agents.code_agent import _FULL_FILE_CONTRACT
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
@@ -309,6 +314,17 @@ class CodeImproverAgent(BaseAgent):
     _SNAPSHOT_PRUNE = {"node_modules", ".git", ".next", "dist", "__pycache__",
                        ".venv", "venv", "build", ".cache"}
     _SNAPSHOT_MAX_BYTES = 1_000_000  # diffing a >1MB file is a lockfile, not code
+    _AGENTIC_NEW_PATH_PREFIXES = (
+        "src/", "app/", "pages/", "components/", "lib/", "utils/", "server/",
+        "api/", "backend/", "frontend/", "public/", "assets/", "styles/",
+        "tests/", "test/",
+    )
+    _AGENTIC_NEW_ROOT_FILES = frozenset({
+        "index.html", "package.json", "package-lock.json", "pnpm-lock.yaml",
+        "yarn.lock", "vite.config.js", "vitest.config.js", "eslint.config.js",
+        "tsconfig.json", "next.config.js", "next.config.mjs", "README.md",
+        "requirements.txt", "pyproject.toml", "Dockerfile",
+    })
 
     def _snapshot(self, worktree: Path) -> dict[str, str]:
         """rel -> text content for every trackable file. The before/after pair
@@ -343,6 +359,54 @@ class CodeImproverAgent(BaseAgent):
                 target.write_text(content, encoding="utf-8")
             except OSError:
                 pass
+
+    @classmethod
+    def _agentic_new_path_allowed(cls, rel: str) -> bool:
+        """Allow agentic repairs to create normal project files, never junk roots.
+
+        CLI tool sessions write directly to disk.  A terminal escape fragment can
+        become a syntactically legal Windows name (for example ``nsrc`` or
+        ``package.js``), so portable path validation alone is not enough here.
+        New repair files must live under an ordinary project source root, unless
+        they are one of the small set of root build/config files.
+        """
+        canonical = canonical_project_relpath(rel)
+        if canonical != rel:
+            return False
+        return (
+            canonical in cls._AGENTIC_NEW_ROOT_FILES
+            or canonical.startswith(cls._AGENTIC_NEW_PATH_PREFIXES)
+        )
+
+    @classmethod
+    def _prune_untrusted_agentic_new_paths(
+        cls,
+        worktree: Path,
+        before: dict[str, str],
+    ) -> list[str]:
+        """Remove new direct-CLI writes outside the safe repair file roots."""
+        removed: list[str] = []
+        root = worktree.resolve()
+        for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+            try:
+                rel_path = path.relative_to(root)
+            except ValueError:
+                continue
+            if cls._SNAPSHOT_PRUNE & set(rel_path.parts):
+                continue
+            rel = rel_path.as_posix()
+            if path.is_file() and rel not in before and not cls._agentic_new_path_allowed(rel):
+                try:
+                    path.unlink()
+                    removed.append(rel)
+                except OSError:
+                    continue
+            elif path.is_dir() and rel not in {"", "."}:
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+        return sorted(removed)
 
     @staticmethod
     def _agentic_improve_prompt(
@@ -396,9 +460,12 @@ class CodeImproverAgent(BaseAgent):
             self._restore_snapshot(worktree, before)
             error = str((res or {}).get("error") or "agentic improve was not completed")
             return [], {}, False, error
+        untrusted_paths = self._prune_untrusted_agentic_new_paths(worktree, before)
         after = self._snapshot(worktree)
         improved: list[str] = []
-        skipped: dict[str, str] = {}
+        skipped: dict[str, str] = {
+            rel: "untrusted_new_path" for rel in untrusted_paths
+        }
         for rel, content in after.items():
             original = before.get(rel)
             if original is not None and content == original:

@@ -94,6 +94,10 @@ class Settings(BaseSettings):
 
     # ---- LLM backends ----------------------------------------------------
     openrouter_api_key: str = ""
+    # A dashboard disconnect must also suppress the supported native
+    # OPENROUTER_API_KEY fallback without destroying an externally managed
+    # credential. Saving a key through Settings turns this back on.
+    openrouter_enabled: bool = True
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     kimi_api_key: str = ""
@@ -354,8 +358,8 @@ class Settings(BaseSettings):
     app_type_override: str = "auto"
     engine_override: str = "auto"
     # Spec 3: vision model (OpenRouter id) for the visual loop's judgement step.
-    # Empty -> a built-in default; the loop activates only when openrouter_api_key
-    # is also set, else it soft-skips the screenshot judgement.
+    # Empty -> a built-in default. The paid vision path is used only when the
+    # OpenRouter backend itself was explicitly selected; auto soft-skips it.
     vision_model: str = ""
     # End-of-build liveness loop (web stacks): enumerate the delivered app's
     # routes/pages, hit each, repair failures, and dampen the score by how many

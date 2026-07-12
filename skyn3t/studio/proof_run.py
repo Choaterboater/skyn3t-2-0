@@ -1321,12 +1321,21 @@ def _attach_proof_environment(
     if run_build and detail.get("build") == "skipped":
         summary = str(detail.get("build_summary") or "").strip()
         reasons.append("build skipped" + (f": {summary}" if summary else ""))
-    if run_tests and detail.get("tests") == "skipped":
+    # Web and Swift projects can have a valid native test suite even when the
+    # generic Python test probe has nothing to run.  Do not downgrade objective
+    # Node/Swift test evidence simply because that unrelated probe soft-skipped.
+    native_tests_passed = any(
+        detail.get(name) == "passed" for name in ("node_tests", "swift_tests")
+    )
+    if run_tests and detail.get("tests") == "skipped" and not native_tests_passed:
         summary = str(detail.get("test_summary") or "").strip()
         reasons.append("tests skipped" + (f": {summary}" if summary else ""))
     if detail.get("python_deps") == "failed":
         summary = str(detail.get("python_deps_summary") or "").strip()
         reasons.append("python dependency install failed" + (f": {summary}" if summary else ""))
+    if run_build and detail.get("ruff") == "skipped":
+        summary = str(detail.get("ruff_summary") or "").strip()
+        reasons.append("Ruff quality check skipped" + (f": {summary}" if summary else ""))
     command_backend = cmd_ctx.used_backend or ("local" if cmd_ctx.runner is None else "not_run")
     detail["proof_environment"] = {
         "execution_backend": execution_backend,
@@ -1354,6 +1363,11 @@ def extract_error_gaps(
     # Real pytest failures (500-char tail from _run_generated_tests).
     if d.get("tests") == "failed" and d.get("test_summary"):
         gaps.append(f"TESTS FAILED — make the code satisfy these failing tests:\n{d['test_summary']}")
+    # Opted-in Python quality check. The formatter repairs common generated
+    # layout defects; anything that remains is a real source problem and should
+    # reach the code-improver with Ruff's file/line diagnostics intact.
+    if d.get("ruff") == "failed" and d.get("ruff_summary"):
+        gaps.append(f"RUFF FAILED — fix these Python quality diagnostics:\n{d['ruff_summary']}")
     # Real entrypoint import traceback (400-char tail from _entrypoint_check).
     if d.get("boot_error"):
         gaps.append(f"BOOT/IMPORT ERROR — fix the entrypoint so it imports cleanly:\n{d['boot_error']}")
@@ -1419,12 +1433,28 @@ _NON_SOURCE_DIRS = frozenset({
 
 
 def _iter_files(root: Path):
-    for p in root.rglob("*"):
-        if p.is_dir():
-            continue
-        if any(part in _NON_SOURCE_DIRS for part in p.relative_to(root).parts):
-            continue
-        yield p
+    """Yield authored files without ever descending into generated trees.
+
+    ``Path.rglob`` filters a path only *after* walking it.  Proof calls this
+    helper repeatedly, so a delivered React project's ``node_modules`` tree
+    used to be traversed over and over even though every result was discarded.
+    Pruning ``dirnames`` at the walk boundary keeps proof work proportional to
+    the app's authored files while preserving the same exclusion policy.
+    """
+    try:
+        for current, dirnames, filenames in os.walk(
+            root, topdown=True, followlinks=False
+        ):
+            dirnames[:] = [
+                name for name in dirnames if name not in _NON_SOURCE_DIRS
+            ]
+            current_path = Path(current)
+            for name in filenames:
+                candidate = current_path / name
+                if candidate.is_file():
+                    yield candidate
+    except OSError:
+        return
 
 
 _RECEIPT_SCAN_IGNORED_DIRS = _NON_SOURCE_DIRS - {"build", "dist", "out"}
@@ -1920,6 +1950,27 @@ def _npm_install_is_offline(output: str) -> bool:
     EINVALIDPACKAGENAME) return False — they are real failures that must fail the
     proof so the fix-loop gets the real error to repair."""
     return any(m in (output or "") for m in _OFFLINE_NPM_MARKERS)
+
+
+# PEP 517 build isolation may need to fetch the declared build backend. A
+# disconnected registry is a degraded proof environment, not evidence that the
+# generated package itself is malformed; an ordinary non-zero wheel build still
+# remains a real delivery failure.
+_OFFLINE_PIP_MARKERS = (
+    "temporary failure in name resolution",
+    "name or service not known",
+    "could not resolve host",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "proxyerror",
+    "connecttimeout",
+    "read timed out",
+)
+
+
+def _pip_build_is_offline(output: str) -> bool:
+    return any(marker in (output or "").lower() for marker in _OFFLINE_PIP_MARKERS)
 
 
 def _project_invalid_npm_package_names(root: Path) -> list[str]:
@@ -2462,6 +2513,12 @@ def _strip_inline_ts_syntax_in_js_line(line: str) -> tuple[str, bool]:
     original = line
 
     def _strip_params(params: str) -> str:
+        # ``{ source: localName }`` and ``[first]`` are valid JavaScript
+        # destructuring. A colon in that syntax is an alias, not a TypeScript
+        # annotation, so leave destructured parameter lists untouched rather
+        # than risking a source-corrupting "repair".
+        if any(marker in params for marker in ("{", "}", "[", "]")):
+            return params
         return _TS_PARAM_TYPE_RE.sub(r"\1", params)
 
     def _arrow_repl(match: re.Match[str]) -> str:
@@ -2817,6 +2874,301 @@ def repair_phaser_html_entrypoint(project_dir: str | Path, stack: str = "") -> l
     return ["index.html"]
 
 
+def _packaged_fastapi_main_module(root: Path) -> str | None:
+    """Return the sole declared ``src`` package exposing ``main.app``, if any."""
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - SkyN3t requires Python 3.11+
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return None
+    tool = data.get("tool") if isinstance(data, dict) else None
+    hatch = tool.get("hatch") if isinstance(tool, dict) else None
+    build = hatch.get("build") if isinstance(hatch, dict) else None
+    targets = build.get("targets") if isinstance(build, dict) else None
+    wheel = targets.get("wheel") if isinstance(targets, dict) else None
+    packages = wheel.get("packages", []) if isinstance(wheel, dict) else []
+    if not isinstance(packages, list):
+        return None
+    candidates: list[str] = []
+    for declared in packages:
+        if not isinstance(declared, str):
+            continue
+        declared_path = Path(declared)
+        if declared_path.is_absolute() or ".." in declared_path.parts:
+            continue
+        package_dir = root / declared_path
+        main = package_dir / "main.py"
+        if not (package_dir / "__init__.py").is_file() or not main.is_file():
+            continue
+        try:
+            body = main.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not re.search(r"(?m)^\s*app\s*=", body):
+            continue
+        parts = Path(declared).parts
+        if "src" not in parts:
+            continue
+        module_parts = parts[parts.index("src") + 1 :]
+        if module_parts:
+            candidates.append(".".join(module_parts))
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def reconcile_packaged_fastapi_entrypoint(
+    project_dir: str | Path, stack: str = ""
+) -> list[str]:
+    """Make a stale root FastAPI scaffold delegate to its packaged app.
+
+    Agentic code can generate a complete ``src/<package>`` service while an
+    earlier root ``main.py`` scaffold survives. If both expose a FastAPI app,
+    running ``python main.py`` serves a different API than the tested/package
+    application. Restrict this repair to an explicit single Hatch ``src``
+    package and a root ``app = FastAPI(...)`` implementation, then retain the
+    root command as a thin compatibility launcher for the canonical ASGI app.
+    """
+    if (stack or "").lower() != "fastapi":
+        return []
+    root = Path(project_dir)
+    root_main = root / "main.py"
+    module = _packaged_fastapi_main_module(root)
+    if module is None or not root_main.is_file():
+        return []
+    try:
+        body = root_main.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if f"from {module}.main import app" in body:
+        return []
+    if "FastAPI" not in body or not re.search(r"(?m)^\s*app\s*=\s*FastAPI\s*\(", body):
+        return []
+    launcher = f'''"""Compatibility launcher for the packaged ASGI application."""
+
+from {module}.main import app
+
+
+if __name__ == "__main__":
+    import os
+
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host=os.getenv("HOST", "127.0.0.1"),
+        port=int(os.getenv("PORT", "8000")),
+        reload=False,
+    )
+'''
+    try:
+        root_main.write_text(launcher, encoding="utf-8")
+    except OSError:
+        return []
+    return ["main.py"]
+
+
+def _ruff_import_sorting_is_configured(project_dir: str | Path) -> bool:
+    """Whether the project explicitly asks Ruff to enforce import ordering.
+
+    We only normalize imports when the delivered project's own Ruff settings opt
+    into the ``I`` rules. That keeps this repair narrowly scoped: it closes a
+    promised ``ruff check .`` gap without imposing a new lint policy on projects
+    that do not use Ruff import sorting.
+    """
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - SkyN3t requires Python 3.11+
+        return False
+
+    root = Path(project_dir)
+    for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
+        config = root / name
+        if not config.is_file():
+            continue
+        try:
+            data = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            continue
+        ruff = (
+            data.get("tool", {}).get("ruff", {})
+            if name == "pyproject.toml"
+            else data
+        )
+        if not isinstance(ruff, dict):
+            continue
+        lint = ruff.get("lint", {})
+        lint = lint if isinstance(lint, dict) else {}
+
+        def rule_selected(value: Any) -> bool:
+            values = [value] if isinstance(value, str) else value
+            if not isinstance(values, (list, tuple)):
+                return False
+            return any(
+                isinstance(rule, str)
+                and (rule.upper() == "ALL" or rule.upper().startswith("I"))
+                for rule in values
+            )
+
+        selections = (
+            lint.get("select"),
+            lint.get("extend-select"),
+            ruff.get("select"),
+            ruff.get("extend-select"),
+        )
+        ignores = (
+            lint.get("ignore"),
+            lint.get("extend-ignore"),
+            ruff.get("ignore"),
+            ruff.get("extend-ignore"),
+        )
+        if any(rule_selected(value) for value in selections) and not any(
+            rule_selected(value) for value in ignores
+        ):
+            return True
+    return False
+
+
+def _ruff_is_configured(project_dir: str | Path) -> bool:
+    """Whether a project explicitly carries a Ruff configuration file."""
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - SkyN3t requires Python 3.11+
+        return False
+    root = Path(project_dir)
+    for name in ("pyproject.toml", "ruff.toml", ".ruff.toml"):
+        config = root / name
+        if not config.is_file():
+            continue
+        try:
+            data = tomllib.loads(config.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            continue
+        ruff = (
+            data.get("tool", {}).get("ruff", {})
+            if name == "pyproject.toml"
+            else data
+        )
+        if isinstance(ruff, dict):
+            return True
+    return False
+
+
+def _ruff_repairable_python_sources(root: Path) -> dict[str, bytes]:
+    """Snapshot authored Python sources Ruff may safely mutate.
+
+    TestAuthor acceptance contracts are deliberately byte-signed: their exact
+    ``pytest.mark.skip(reason=...)`` marker is how the clone reconciler protects
+    them. Ruff formatting may split that decorator across lines, so never route
+    a signed contract through an auto-fixer.
+    """
+    from skyn3t.studio.acceptance_contract import is_system_acceptance_contract
+
+    sources: dict[str, bytes] = {}
+    for source in sorted(_iter_files(root), key=lambda path: path.as_posix()):
+        if source.suffix.lower() not in {".py", ".pyi"}:
+            continue
+        if is_system_acceptance_contract(source, root):
+            continue
+        try:
+            sources[source.relative_to(root).as_posix()] = source.read_bytes()
+        except OSError:
+            continue
+    return sources
+
+
+def sort_ruff_imports(project_dir: str | Path) -> list[str]:
+    """Apply Ruff's safe import-order fixes when a Python project opts into them.
+
+    Ruff is an optional SkyN3t development dependency, so an unavailable tool is
+    a deliberate no-op. ``--no-cache`` ensures that proving/repairing an artifact
+    never leaves a ``.ruff_cache`` directory in the delivered tree.
+    """
+    root = Path(project_dir)
+    if not _ruff_import_sorting_is_configured(root):
+        return []
+    sources = _ruff_repairable_python_sources(root)
+    if not sources:
+        return []
+    try:
+        import subprocess
+
+        from ruff import find_ruff_bin
+
+        subprocess.run(
+            [
+                str(find_ruff_bin()),
+                "check",
+                "--no-cache",
+                "--select",
+                "I",
+                "--fix",
+                *sources,
+            ],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (ImportError, OSError, subprocess.SubprocessError):
+        return []
+    changed: list[str] = []
+    for rel, before in sources.items():
+        try:
+            if (root / rel).read_bytes() != before:
+                changed.append(rel)
+        except OSError:
+            continue
+    return sorted(changed)
+
+
+def format_ruff_python_sources(project_dir: str | Path) -> list[str]:
+    """Apply Ruff formatting when a project explicitly configures Ruff.
+
+    The formatter handles safe layout defects that import sorting cannot, such
+    as an otherwise-valid generated line exceeding the project's configured
+    ``E501`` width. As above, this is opt-in and cache-free.
+    """
+    root = Path(project_dir)
+    if not _ruff_is_configured(root):
+        return []
+    sources = _ruff_repairable_python_sources(root)
+    if not sources:
+        return []
+    try:
+        import subprocess
+
+        from ruff import find_ruff_bin
+
+        subprocess.run(
+            [str(find_ruff_bin()), "format", "--no-cache", *sources],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (ImportError, OSError, subprocess.SubprocessError):
+        return []
+    changed: list[str] = []
+    for rel, before in sources.items():
+        try:
+            if (root / rel).read_bytes() != before:
+                changed.append(rel)
+        except OSError:
+            continue
+    return sorted(changed)
+
+
 def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
     """Run every deterministic, idempotent, code-MUTATING build repair in one
     pass and return what changed. This is the single source of truth for the
@@ -2856,6 +3208,9 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # Phaser game builds: make sure index.html loads the game boot, not a stale
     # React/Vite shell that happens to compile.
     phaser_entry = repair_phaser_html_entrypoint(project_dir, stack=stack)
+    # A generated FastAPI package may coexist with a stale root scaffold. Keep
+    # `python main.py` and the packaged/tested ASGI surface aligned.
+    fastapi_entry = reconcile_packaged_fastapi_entrypoint(project_dir, stack=stack)
     # Game stacks: synthesize a placeholder PNG for any referenced-but-missing
     # image asset (codegen loading an invented '/assets/sprites/gold.png' 404s at
     # runtime and CRASHES the scene — the tower-defence-retry-2 no_go). Creates
@@ -2869,6 +3224,11 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # (happens on frontier models too), instead of only advising the fix-loop.
     from skyn3t.studio.texture_reconcile import reconcile_texture_keys
     textures = reconcile_texture_keys(project_dir, stack=stack)
+    # A project that promises Ruff's import-order check should not ship trivially
+    # auto-fixable import or formatting failures. These run after other repairs so
+    # they see the final generated Python source.
+    python_imports = sort_ruff_imports(project_dir)
+    python_formatted = format_ruff_python_sources(project_dir)
     return {
         "npm_deps_added": added,
         "npm_deps_sanitized": sanitized,
@@ -2884,10 +3244,13 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "lucide_icons_fixed": lucide,
         "tauri_cargo_fixed": tauri_cargo,
         "phaser_entrypoint_repaired": phaser_entry,
+        "fastapi_entrypoint_unified": fastapi_entry,
         "assets_reconciled": assets.get("images_created", []),
         "assets_missing_audio": assets.get("missing_audio", []),
         "textures_loaded_added": textures.get("textures_loaded_added", []),
         "texture_placeholders_created": textures.get("placeholders_created", []),
+        "python_imports_sorted": python_imports,
+        "python_formatted": python_formatted,
     }
 
 
@@ -3154,11 +3517,14 @@ def proof_run(
     # resolves to no file is a guaranteed bundler boot failure (Vite 500). This
     # offline, deterministic gate catches the missing-stylesheet / unwired-module
     # class the npm build (which soft-skips offline) otherwise lets through.
-    if passed and total > 0:
+    if total > 0:
         # JS/TS relative imports AND local Python cross-module imports — both are
         # guaranteed runtime/boot failures the syntax pass + entrypoint smoke miss,
         # and both are exactly the cross-slice wiring breaks parallel slicing can
         # leave (a slice importing a sibling another slice failed to write).
+        # Preserve this static diagnosis even when the entrypoint smoke has
+        # already failed: repair needs the concrete missing module, not only a
+        # truncated traceback.
         broken_imports = _unresolved_local_imports(pdir) + _unresolved_python_imports(pdir)
         if broken_imports:
             passed = False
@@ -3224,9 +3590,10 @@ def proof_run(
                 if summary:
                     detail["test_summary"] = summary
 
-        # Behaviour, not vibes for node/web: actually COMPILE it (npm install + npm
-        # run build). A static "package.json exists" check greenlit a build that
-        # didn't type-check/compile; this catches that. Soft-skips offline. The
+        # Behaviour, not vibes: compile an emitted project through its native
+        # package workflow. Node/web uses npm and Python packages build an isolated
+        # wheel; a static manifest check alone can greenlight a tree that cannot be
+        # packaged. Soft-skips only when the tool/registry is unavailable. The
         # mock-LLM seam is NEVER passed to the build step — only test steps.
         if run_build and passed:
             # Swift takes its OWN branch (`swift build`); it is NOT a node stack, so it
@@ -3253,6 +3620,23 @@ def proof_run(
                     detail.setdefault("build", "skipped")
                     if summary:
                         detail["build_summary"] = summary
+            elif _is_python_package(pdir) and (
+                (stack or "").lower() in _PYTHON_PROOF_STACKS or not stack
+            ):
+                ran, build_ok, summary = _run_python_package_build(
+                    pdir, build_timeout, cmd_ctx
+                )
+                if ran:
+                    detail["build"] = "passed" if build_ok else "failed"
+                    detail["build_summary"] = summary
+                    if not build_ok:
+                        passed = False
+                        if "<build>" not in missing:
+                            missing = [*missing, "<build>"]
+                else:
+                    detail.setdefault("build", "skipped")
+                    if summary:
+                        detail["build_summary"] = summary
             else:
                 ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
                 if ran:
@@ -3266,6 +3650,29 @@ def proof_run(
                     detail.setdefault("build", "skipped")
                     if summary:
                         detail["build_summary"] = summary
+
+        # A delivered Python project that explicitly configures Ruff promises a
+        # quality contract beyond syntax and package assembly. The deterministic
+        # repair pass handles safe import/formatting fixes first; this gate catches
+        # remaining lint errors and routes their exact file/line diagnostics into
+        # the repair loop instead of certifying a failing `ruff check .` command.
+        if run_build and passed and _ruff_is_configured(pdir):
+            ran, ruff_ok, summary = _run_ruff_check(
+                pdir,
+                timeout=max(20, min(90, int(build_timeout) // 3)),
+                cmd_ctx=cmd_ctx,
+            )
+            if ran:
+                detail["ruff"] = "passed" if ruff_ok else "failed"
+                detail["ruff_summary"] = summary
+                if not ruff_ok:
+                    passed = False
+                    if "<ruff>" not in missing:
+                        missing = [*missing, "<ruff>"]
+            else:
+                detail["ruff"] = "skipped"
+                if summary:
+                    detail["ruff_summary"] = summary
 
         # Node tests are an independent declared validation surface. They must
         # still run when a project has no build script or build execution was
@@ -3654,10 +4061,11 @@ def _entrypoint_check(
     # what it proves).
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     py_cmd = "python" if use_container_names else str(py)
+    project_paths = _python_project_paths(pdir, use_container_names=use_container_names)
     proc = _run_proof_command(
         cmd_ctx,
         [py_cmd, "-B", "-c",
-         f"import sys; sys.path.insert(0, '.'); import importlib; importlib.import_module({module!r})"],
+         f"import sys; sys.path[:0] = {project_paths!r}; import importlib; importlib.import_module({module!r})"],
         cwd=pdir,
         timeout=20,
         env=env,
@@ -3669,15 +4077,25 @@ def _entrypoint_check(
         return (entrypoints, "")
     tail = (proc.stderr or proc.stdout or "")[-400:]
     # Missing third-party deps are not a code defect (offline env); the syntax
-    # pass already validated the source compiles.
+    # pass already validated the source compiles. An import failure from a
+    # package that is part of the delivered tree, however, is a real wiring
+    # failure and must not be hidden as an unavailable dependency.
     if "ModuleNotFoundError" in tail or "ImportError" in tail:
-        return (entrypoints, "")
+        if not _is_project_python_import_error(tail, pdir):
+            return (entrypoints, "")
     return (entrypoints, tail.strip())
 
 
 def _python_executable() -> str | None:
-    import shutil
+    """Use SkyN3t's interpreter before falling back to ambient ``PATH``.
 
+    The generated project's dependencies and proof tools are installed alongside
+    the running SkyN3t process. On Windows, ``python`` can otherwise resolve to
+    an unrelated global interpreter (or the Store shim), which makes a healthy
+    generated project look unavailable or test it against the wrong runtime.
+    """
+    if sys.executable:
+        return sys.executable
     return shutil.which("python") or shutil.which("python3")
 
 
@@ -3689,6 +4107,67 @@ def _has_python_tests(pdir: Path) -> bool:
         if name.startswith("test_") or name.endswith("_test.py") or "tests" in f.relative_to(pdir).parts:
             return True
     return False
+
+
+def _python_project_paths(pdir: Path, *, use_container_names: bool) -> list[str]:
+    """Return import roots for a generated Python project.
+
+    Generated apps commonly use a ``src/`` layout. Both the entrypoint smoke
+    check and pytest need that directory ahead of the project root; otherwise a
+    healthy package is reported as missing and a broken package can be soft-
+    skipped as an unavailable third-party dependency.
+    """
+    if use_container_names:
+        paths = ["src"] if (pdir / "src").is_dir() else []
+        return [*paths, "."]
+    paths = [str(pdir / "src")] if (pdir / "src").is_dir() else []
+    return [*paths, str(pdir)]
+
+
+def _project_python_import_roots(pdir: Path) -> set[str]:
+    """Top-level import names supplied by the delivered Python tree."""
+    roots: set[str] = set()
+    for base in (pdir, pdir / "src"):
+        try:
+            if not base.is_dir():
+                continue
+            for child in base.iterdir():
+                name = child.name
+                if not name or name.startswith(".") or name == "__pycache__":
+                    continue
+                if child.is_dir() and (child / "__init__.py").is_file():
+                    roots.add(name)
+                elif child.is_file() and child.suffix == ".py" and child.stem != "__init__":
+                    roots.add(child.stem)
+        except OSError:
+            continue
+    return roots
+
+
+_MISSING_PYTHON_MODULE_RE = re.compile(
+    r"(?:ModuleNotFoundError|ImportError): No module named ['\"]([^'\"]+)['\"]"
+)
+_PYTHON_IMPORT_FROM_RE = re.compile(
+    r"ImportError: cannot import name .*? from ['\"]([^'\"]+)['\"]"
+)
+
+
+def _is_project_python_import_error(output: str, pdir: Path) -> bool:
+    """Whether an import traceback names an import supplied by this project.
+
+    Collection errors from an absent external dependency remain an honest soft
+    skip in an offline proof environment. A missing local package or a bad
+    symbol import from one is code the project itself delivered, so it must be a
+    proof failure and reach the repair loop.
+    """
+    roots = _project_python_import_roots(pdir)
+    if not roots:
+        return False
+    modules = [
+        *(_MISSING_PYTHON_MODULE_RE.findall(output or "")),
+        *(_PYTHON_IMPORT_FROM_RE.findall(output or "")),
+    ]
+    return any(module.split(".", 1)[0] in roots for module in modules)
 
 
 def _run_generated_tests(
@@ -3719,11 +4198,18 @@ def _run_generated_tests(
     if not _has_python_tests(pdir):
         return (False, False, "")
 
+    extra = dict(extra_env or {})
+    inherited_pythonpath = str(extra.pop("PYTHONPATH", "") or "")
+    separator = ":" if use_container_names else os.pathsep
+    project_pythonpath = separator.join(
+        [*_python_project_paths(pdir, use_container_names=use_container_names),
+         *([inherited_pythonpath] if inherited_pythonpath else [])]
+    )
     env = {
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": "." if use_container_names else str(pdir),
-        **(extra_env or {}),
+        "PYTHONPATH": project_pythonpath,
+        **extra,
     }
     py_cmd = "python" if use_container_names else str(py)
     # pytest must be importable; otherwise soft-skip rather than fail a build for
@@ -3787,8 +4273,11 @@ def _run_generated_tests(
     if rc == 5:
         return (False, False, "no tests collected")  # soft skip
     # Collection/import errors from missing third-party deps aren't a code defect.
+    # Do not apply that soft-skip to a package delivered in this project: that is
+    # a source-layout or symbol-wiring defect and needs a real repair.
     if rc in (2, 3, 4) and ("ModuleNotFoundError" in out or "ImportError" in out):
-        return (False, False, "tests need uninstalled deps — skipped")
+        if not _is_project_python_import_error(out, pdir):
+            return (False, False, "tests need uninstalled deps — skipped")
     return (True, False, tail)
 
 
@@ -4260,6 +4749,140 @@ def _run_node_build(
         )
 
     return (True, True, "; ".join(part for part in summaries if part))
+
+
+def _is_python_package(pdir: Path) -> bool:
+    """Whether the delivered tree declares a buildable Python package."""
+    if (pdir / "setup.py").is_file() or (pdir / "setup.cfg").is_file():
+        return True
+    pyproject = pdir / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    try:
+        import tomllib
+    except ImportError:  # pragma: no cover - SkyN3t requires Python 3.11+
+        return False
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+        return False
+    return isinstance(data.get("build-system"), dict) or isinstance(data.get("project"), dict)
+
+
+def _run_python_package_build(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Build a Python package wheel without leaving artifacts in delivery.
+
+    A temporary staged copy lives under the project so it is visible to a Docker
+    proof mount, then is removed unconditionally. That prevents setuptools and
+    other PEP 517 backends from leaving ``*.egg-info`` or build metadata in the
+    delivered source. PEP 517 isolation remains enabled: it proves the package's
+    declared build backend rather than borrowing SkyN3t's development environment.
+    """
+    if not _is_python_package(pdir):
+        return (False, False, "no Python package metadata — build skipped")
+    py = _python_executable()
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if py is None and not use_container_names:
+        return (False, False, "python interpreter missing — build skipped")
+    try:
+        import tempfile
+
+        proof_root = Path(tempfile.mkdtemp(prefix=".skyn3t-wheel-proof-", dir=pdir))
+    except OSError:
+        return (False, False, "could not prepare Python wheel output — build skipped")
+    try:
+        staged_project = proof_root / "project"
+        wheel_dir = proof_root / "wheels"
+        try:
+            shutil.copytree(
+                pdir,
+                staged_project,
+                symlinks=True,
+                ignore=shutil.ignore_patterns(
+                    *_NON_SOURCE_DIRS,
+                    ".skyn3t-wheel-proof-*",
+                    "*.egg-info",
+                ),
+            )
+            wheel_dir.mkdir()
+        except OSError:
+            return (False, False, "could not stage Python package build — build skipped")
+        py_cmd = "python" if use_container_names else str(py)
+        result = _run_proof_command(
+            cmd_ctx,
+            [
+                py_cmd,
+                "-m",
+                "pip",
+                "wheel",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                "--no-deps",
+                "--wheel-dir",
+                "../wheels",
+                ".",
+            ],
+            cwd=staged_project,
+            timeout=max(30, int(timeout)),
+            env={
+                **os.environ,
+                "PIP_NO_INPUT": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            network=True,
+        )
+        if result.timed_out:
+            return (True, False, f"pip wheel timed out after {max(30, int(timeout))}s")
+        output = ((result.stdout or "") + (result.stderr or "")).strip()
+        if result.returncode == 127:
+            return (False, False, "pip could not be launched — build skipped")
+        if result.returncode != 0:
+            if _pip_build_is_offline(output):
+                return (False, False, "pip wheel failed (offline registry) — build skipped")
+            return (True, False, output[-700:] or "pip wheel failed")
+        if not any(wheel_dir.glob("*.whl")):
+            return (True, False, "pip wheel reported success but produced no wheel")
+        return (True, True, output[-300:] or "pip wheel ok")
+    finally:
+        shutil.rmtree(proof_root, ignore_errors=True)
+
+
+def _run_ruff_check(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Run an opted-in project's Ruff contract through the proof command path."""
+    if not _ruff_is_configured(pdir):
+        return (False, False, "no Ruff configuration")
+    use_container_names = _use_container_command_names(cmd_ctx)
+    if use_container_names:
+        command = ["ruff", "check", "--no-cache", "."]
+    else:
+        try:
+            from ruff import find_ruff_bin
+        except ImportError:
+            return (False, False, "Ruff is unavailable — quality check skipped")
+        command = [str(find_ruff_bin()), "check", "--no-cache", "."]
+    result = _run_proof_command(
+        cmd_ctx,
+        command,
+        cwd=pdir,
+        timeout=max(10, int(timeout)),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    if result.timed_out:
+        return (True, False, f"ruff check timed out after {max(10, int(timeout))}s")
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    if result.returncode == 127:
+        return (False, False, "Ruff could not be launched — quality check skipped")
+    if result.returncode != 0:
+        return (True, False, output[-700:] or "ruff check failed")
+    return (True, True, output[-300:] or "ruff check passed")
 
 
 # Swift is NOT a node stack: it has no package.json and builds via Swift Package

@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from skyn3t.core.events import EventType
+from skyn3t.security.secrets import filter_env
 
 VisionFn = Callable[[str, str], str]  # (image_path, prompt) -> raw model text
 
@@ -132,7 +133,9 @@ def _vision_messages(data_url: str, prompt: str) -> list[dict[str, Any]]:
 def _make_openrouter_vision_fn(settings: Any) -> VisionFn | None:
     """Build a vision_fn that judges a screenshot via OpenRouter, or None when no key
     is configured."""
-    key = str(getattr(settings, "openrouter_api_key", "") or "")
+    from skyn3t.adapters.llm import openrouter_key
+
+    key = openrouter_key(settings)
     if not key:
         return None
     model = str(getattr(settings, "vision_model", "") or "") or _DEFAULT_VISION_MODEL
@@ -155,56 +158,78 @@ def _make_openrouter_vision_fn(settings: Any) -> VisionFn | None:
     return _vision_fn
 
 
-def _make_cli_vision_fn(settings: Any) -> VisionFn | None:
+def _make_cli_vision_fn(settings: Any, provider: str) -> VisionFn | None:
     """Build a vision_fn that judges a screenshot via a vision-capable CLI on PATH
-    (claude/kimi), or None when none is found. The CLI reads the image FILE (not
-    base64 over HTTP), so it judges the screenshot natively — no OpenRouter dependency
-    anywhere."""
+    (claude/kimi), or None when the explicitly selected CLI is unavailable. The CLI
+    reads the image FILE (not base64 over HTTP), so it judges the screenshot natively
+    without an OpenRouter request."""
     from skyn3t.adapters.llm import _no_mcp_args  # local import avoids any cycle
 
-    provider = str(getattr(settings, "cli_llm_provider", "") or "claude").lower()
-    for prov in (provider, "claude", "kimi"):
-        if shutil.which(prov):
-            def _cli_vision_fn(image_path: str, prompt: str, _prov: str = prov) -> str:
-                full = (f"View the image file at {image_path}. {prompt} "
-                        "Respond with ONLY the JSON object, no prose.")
-                # cwd = the image's OWN directory. A `--setting-sources project` CLI
-                # session scopes its file-read permission to its cwd ("the project");
-                # screenshots live in a system temp dir, nowhere near wherever this
-                # Python process happens to be running from. Without this, the CLI
-                # refuses the read ("outside the project directory") and silently
-                # degrades to an unparseable refusal string instead of a verdict.
-                cwd = os.path.dirname(image_path) or None
-                try:
-                    out = subprocess.run([_prov, "-p", full, *_no_mcp_args(settings, _prov)],
-                                         capture_output=True, text=True, timeout=120,
-                                         cwd=cwd)
-                    return out.stdout or ""
-                except Exception:  # noqa: BLE001 - CLI missing/slow -> empty -> soft-skip
-                    return ""
-            return _cli_vision_fn
-    return None
+    provider = str(provider or "").strip().lower()
+    if provider not in {"claude", "kimi"} or not shutil.which(provider):
+        return None
+
+    def _cli_vision_fn(image_path: str, prompt: str) -> str:
+        full = (f"View the image file at {image_path}. {prompt} "
+                "Respond with ONLY the JSON object, no prose.")
+        # cwd = the image's OWN directory. A `--setting-sources project` CLI
+        # session scopes its file-read permission to its cwd ("the project");
+        # screenshots live in a system temp dir, nowhere near wherever this
+        # Python process happens to be running from. Without this, the CLI
+        # refuses the read ("outside the project directory") and silently
+        # degrades to an unparseable refusal string instead of a verdict.
+        cwd = os.path.dirname(image_path) or None
+        try:
+            out = subprocess.run([provider, "-p", full, *_no_mcp_args(settings, provider)],
+                                 capture_output=True, text=True, timeout=120,
+                                 cwd=cwd, env=filter_env())
+            return out.stdout or ""
+        except Exception:  # noqa: BLE001 - CLI missing/slow -> empty -> soft-skip
+            return ""
+
+    return _cli_vision_fn
+
+
+def _explicit_vision_backend(settings: Any) -> str:
+    """Return the only backend allowed to judge screenshots for this run.
+
+    Liveness, self-heal, game checks, and click grounding all call this module.
+    They must respect the same explicit provider selection as code generation:
+    ``auto`` is Codex-only and currently has no supported image-input adapter, so it
+    soft-skips rather than falling through to OpenRouter, Claude, or Kimi.
+    """
+    backend = str(getattr(settings, "llm_backend", "auto") or "auto").strip().lower()
+    if backend == "openrouter":
+        return backend
+    if backend in {"claude_cli", "kimi_cli"}:
+        return backend
+    return ""
 
 
 def make_vision_fn(settings: Any) -> VisionFn | None:
     """Build a vision_fn that judges a screenshot (true/false + free-text issues), or
-    None when no backend is configured (the loop then soft-skips). This auto-activates
-    the visual loop's judgement step wherever an OpenRouter key + vision model are
-    available — closing the 'text-only LLM' gap without changing the loop. OpenRouter is
-    preferred when a key is present (cheap, fast — plenty accurate for "does this look
-    right" judgments); falls back to a CLI (claude/kimi) only without a key."""
-    return _make_openrouter_vision_fn(settings) or _make_cli_vision_fn(settings)
+    None when the selected backend has no supported image adapter (the loop then soft-
+    skips). OpenRouter is allowed only when it is the explicitly selected backend;
+    automatic builds never activate it from a dormant credential."""
+    backend = _explicit_vision_backend(settings)
+    if backend == "openrouter":
+        return _make_openrouter_vision_fn(settings)
+    if backend:
+        return _make_cli_vision_fn(settings, backend.removesuffix("_cli"))
+    return None
 
 
 def make_click_vision_fn(settings: Any) -> VisionFn | None:
     """Build a vision_fn for PIXEL-GROUNDING tasks (locating a click target on a
-    screenshot) — same backends as ``make_vision_fn``, but CLI-preferred. Measured
-    live on the same menu screenshot: the local claude CLI located a card's click
-    target within 1px (179,276 vs the true ~180,275); the default cheap OpenRouter
-    vision model (gpt-4o-mini) was off by ~230px and landed on the wrong, locked card.
-    "Does this look right" (matches/populated/issues) doesn't need that precision, so
-    only the click-locator path pays for the stronger backend."""
-    return _make_cli_vision_fn(settings) or _make_openrouter_vision_fn(settings)
+    screenshot). It follows the same explicit routing policy as ``make_vision_fn``:
+    a selected Claude/Kimi CLI can inspect files, a selected OpenRouter backend can use
+    its vision model, and auto never activates either as an implicit fallback."""
+    backend = _explicit_vision_backend(settings)
+    if backend == "openrouter":
+        return _make_openrouter_vision_fn(settings)
+    if backend:
+        return _make_cli_vision_fn(settings, backend.removesuffix("_cli"))
+    return None
 
 
 def _dom_start_click(page: Any) -> bool:

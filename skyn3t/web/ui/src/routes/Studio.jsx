@@ -657,6 +657,13 @@ export default function Studio({ stream }) {
   const routingSecrets = secrets.data || {};
   const selectedFoundryBackend = foundryBackend || routingSecrets.backend_pref || "auto";
   const selectedFoundryOption = backendOption(selectedFoundryBackend);
+  // "auto" is a local Codex-only policy in SkyN3t, never an OpenRouter
+  // fallback. Treat it like an explicit CLI selection in the UI as well.
+  const usesCliBackend =
+    selectedFoundryOption?.kind === "cli" || selectedFoundryBackend === "auto";
+  const cliExecutionLabel = selectedFoundryBackend === "auto"
+    ? "Automatic Codex CLI"
+    : selectedFoundryOption?.label || "Codex CLI";
   const selectedFoundryStatus = cliBackendStatus(
     llmBackends.data,
     selectedFoundryBackend,
@@ -692,11 +699,12 @@ export default function Studio({ stream }) {
       : buildProfile;
   const normalizedModelOverride = normalizeModelId(modelOverride);
   const activeModelOverride =
-    selectedFoundryOption?.kind === "cli" ? "" : normalizedModelOverride;
+    usesCliBackend ? "" : normalizedModelOverride;
   const modelOptions = models.data?.models || [];
   const routingPreview = useQuery({
     queryKey: [
       "routing-preview",
+      selectedFoundryBackend,
       effectiveBuildProfile,
       String(routingSecrets.preferred_model || ""),
       String(routingSecrets.codegen_cli_model || ""),
@@ -713,6 +721,7 @@ export default function Studio({ stream }) {
       params.set("build_profile", effectiveBuildProfile);
       return apiFetch(`/models/routing-preview?${params.toString()}`);
     },
+    enabled: !usesCliBackend,
     retry: 0,
   });
   const modelCatalogRows = Array.isArray(catalog.data?.items)
@@ -726,7 +735,7 @@ export default function Studio({ stream }) {
     !!normalizedModelOverride &&
     modelOptions.length > 0 &&
     !modelOptions.includes(normalizedModelOverride);
-  const routingTiers = Array.isArray(routingPreview.data?.tiers)
+  const routingTiers = !usesCliBackend && Array.isArray(routingPreview.data?.tiers)
     ? routingPreview.data.tiers
     : [];
   const selectedManualModelValue =
@@ -736,6 +745,7 @@ export default function Studio({ stream }) {
   const exampleWorkload =
     catalog.data?.example_workload || routingPreview.data?.example_workload;
   const routingCatalogInfo = (() => {
+    if (usesCliBackend) return "";
     const count = routingPreview.data?.catalog_model_count;
     const age = routingPreview.data?.catalog_age_seconds;
     const ageLabel =
@@ -988,8 +998,8 @@ export default function Studio({ stream }) {
       fullApp ? " · full app" : ""
     }`,
     model: (() => {
-      if (selectedFoundryOption?.kind === "cli") {
-        return `${selectedFoundryOption.label} · provider CLI model selection`;
+      if (usesCliBackend) {
+        return `${cliExecutionLabel} · local CLI model selection`;
       }
       const tiers = routingPreview.data?.tiers;
       const planningRoute = Array.isArray(tiers) && tiers.length > 0
@@ -1010,7 +1020,9 @@ export default function Studio({ stream }) {
         ].join(", ")}${selectedStacks.size === 1 ? " · add one more" : ""}`
       : "auto stack",
   };
-  const routingPolicy = routingPolicyHint(routingPreview.data?.build_profile || effectiveBuildProfile);
+  const routingPolicy = usesCliBackend
+    ? "Codex CLI is the execution route; hosted model routing is inactive."
+    : routingPolicyHint(routingPreview.data?.build_profile || effectiveBuildProfile);
   const routingRows = routingTiers.map((tier) => {
     const costRows = ROUTING_PREVIEW_ESTIMATES.map(({ key, label, promptTokens, completionTokens }) => {
       const estimated = tier.cost_estimates_usd?.[key] ??
@@ -1251,6 +1263,11 @@ export default function Studio({ stream }) {
                         </p>
                       </>
                     ) : null}
+                    {selectedFoundryBackend === "auto" ? (
+                      <p className="mt-1 text-ash/80">
+                        Auto uses Codex CLI locally and never falls back to OpenRouter.
+                      </p>
+                    ) : null}
                     {selectedFoundryOpenRouterMissing ? (
                       <p className="mt-1 text-ember">
                         OpenRouter is selected but its API key is missing. Choose an
@@ -1301,16 +1318,16 @@ export default function Studio({ stream }) {
                     aria-label="Manual codegen model override"
                     value={modelOverride}
                     onChange={(e) => setModelOverride(e.target.value)}
-                    disabled={selectedFoundryOption?.kind === "cli"}
+                    disabled={usesCliBackend}
                     placeholder={
-                      selectedFoundryOption?.kind === "cli"
+                      usesCliBackend
                         ? "CLI controls its model"
                         : "OpenRouter model (optional)"
                     }
                     className="field"
                     title={
-                      selectedFoundryOption?.kind === "cli"
-                        ? "OpenRouter model overrides are not sent while an explicit CLI backend is selected"
+                      usesCliBackend
+                        ? "OpenRouter model overrides are not sent while the local Codex CLI route is selected"
                         : "Pin the CodeAgent model; other stages keep profile routing"
                     }
                   />
@@ -1326,13 +1343,13 @@ export default function Studio({ stream }) {
                   <div className="mt-1 flex items-center justify-between gap-2">
                     <span className={`font-mono text-[10px] ${unknownModelOverride ? "text-ember" : "text-ash/60"}`}>
                       {normalizedModelOverride
-                        ? selectedFoundryOption?.kind === "cli"
-                          ? `OpenRouter override retained but inactive while ${selectedFoundryOption.label} is selected`
+                        ? usesCliBackend
+                          ? `OpenRouter override retained but inactive while ${cliExecutionLabel} is selected`
                           : unknownModelOverride
                           ? `Codegen override: ${normalizedModelOverride} (not in cached OpenRouter list)`
                           : `Codegen override: ${normalizedModelOverride} (for this build)`
-                        : selectedFoundryOption?.kind === "cli"
-                          ? `${selectedFoundryOption.label} uses its CLI model selection`
+                        : usesCliBackend
+                          ? `${cliExecutionLabel} uses local CLI model selection; hosted model routing is inactive`
                           : models.data?.note || `${(models.data?.models || []).length} OpenRouter models`}
                     </span>
                     {normalizedModelOverride ? (
@@ -1350,7 +1367,7 @@ export default function Studio({ stream }) {
                       {describeModelValue(selectedManualModelValue, "selected model")}
                     </div>
                   ) : null}
-                  <details
+                  {!usesCliBackend ? (<details
                     open={modelCatalogOpen}
                     onToggle={(event) => setModelCatalogOpen(event.currentTarget.open)}
                     className="mt-2 rounded border border-hairline/60"
@@ -1462,22 +1479,24 @@ export default function Studio({ stream }) {
                       </div>
                       </div>
                     ) : null}
-                  </details>
+                  </details>) : null}
                 </div>
                 <div className="flex flex-wrap items-center gap-2 md:justify-end">
                   <label
                     className="flex items-center gap-2 rounded-md border border-hairline px-3 py-2 font-mono text-[11px] text-ash"
-                    title="Limit OpenRouter model routing to zero-price catalog entries; this does not change CLI account billing"
+                    title={usesCliBackend
+                      ? "OpenRouter routing is inactive while the local Codex CLI route is selected"
+                      : "Limit OpenRouter model routing to zero-price catalog entries; this does not change CLI account billing"}
                   >
                     <input
                       type="checkbox"
                       checked={routingFreeOnly}
-                      disabled={setFreeOnlyRouting.isPending || secrets.isLoading}
+                      disabled={usesCliBackend || setFreeOnlyRouting.isPending || secrets.isLoading}
                       onChange={(e) => setFreeOnlyRouting.mutate(e.target.checked)}
                       className="accent-plasma"
                     />
                     <span className={routingFreeOnly ? "text-plasma" : ""}>
-                      OpenRouter · Free only
+                      {usesCliBackend ? "OpenRouter routing inactive" : "OpenRouter · Free only"}
                     </span>
                   </label>
                   <label
@@ -1629,13 +1648,17 @@ export default function Studio({ stream }) {
                 ) : null}
               </div>
               <div className="mt-1 font-mono text-[11px] text-ash">
-                backend: {routingPreview.data?.backend || "auto"} · profile:
-                {" "}
-                {routingPreview.data?.build_profile || effectiveBuildProfile}
-                {" "}· {selectedFoundryOption?.kind === "cli"
-                  ? "CLI account billing"
-                  : `OpenRouter ${routingFreeOnly ? "free only" : "paid allowed"}`}
-                {routingPreview.isError || routingPreview.isLoading ? " · updating" : ""}
+                {usesCliBackend ? (
+                  <>backend: {cliExecutionLabel} · local CLI execution · CLI account billing</>
+                ) : (
+                  <>
+                    backend: {routingPreview.data?.backend || "auto"} · profile:
+                    {" "}
+                    {routingPreview.data?.build_profile || effectiveBuildProfile}
+                    {" "}· OpenRouter {routingFreeOnly ? "free only" : "paid allowed"}
+                    {routingPreview.isError || routingPreview.isLoading ? " · updating" : ""}
+                  </>
+                )}
               </div>
               {routingCatalogInfo ? (
                 <div className="mt-1 break-words text-[9px] text-ash/70">
@@ -1696,9 +1719,11 @@ export default function Studio({ stream }) {
                 </ErrorText>
               ) : null}
               <div className="mt-1 text-[9px] text-ash/80">{routingPolicy}</div>
-              <div className="mt-1 text-[9px] text-ash/70">
-                Automatic economy routes enforce the router's cheap price class. Explicit model pins remain unrestricted.
-              </div>
+              {!usesCliBackend ? (
+                <div className="mt-1 text-[9px] text-ash/70">
+                  Automatic economy routes enforce the router's cheap price class. Explicit model pins remain unrestricted.
+                </div>
+              ) : null}
             </div>
             {showRoutingDetails && routingRows.length ? (
               <>

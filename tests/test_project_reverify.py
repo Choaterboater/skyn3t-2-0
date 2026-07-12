@@ -99,6 +99,24 @@ def test_reverify_double_swap_failure_preserves_original_backup(tmp_path, monkey
     assert not project.exists()
 
 
+def test_reverify_explains_when_a_preview_locks_the_project(tmp_path, monkeypatch):
+    import skyn3t.web.routes as routes
+
+    project = tmp_path / "project"
+    staging_root = tmp_path / ".staging"
+    candidate = staging_root / "candidate"
+    project.mkdir()
+    candidate.mkdir(parents=True)
+
+    def locked(*_args, **_kwargs):
+        raise PermissionError(13, "project is in use")
+
+    monkeypatch.setattr(routes.os, "replace", locked)
+
+    with pytest.raises(ProjectReverifyError, match="preview or server process"):
+        routes._promote_reverify_candidate(project, candidate, staging_root)
+
+
 def _write_project(
     state: SimpleNamespace,
     slug: str,
@@ -401,6 +419,32 @@ async def test_project_rows_expose_reverify_eligibility(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_incomplete_project_row_exposes_compact_local_reverify_result(tmp_path):
+    state = _state(tmp_path)
+    project, manifest = _write_project(state, "proof-visible")
+    manifest["extra"]["reverify"] = {
+        "verified_at": "2026-07-11T15:00:00+00:00",
+        "promoted": False,
+        "reason": "fresh review needed for changed source",
+        "proof": {"passed": True, "score": 100.0, "detail": {"large": "omitted"}},
+        "execution": {"skyn3t_model_invocations": 0},
+    }
+    (project / "skyn3t_manifest.json").write_text(json.dumps(manifest))
+
+    row = (await list_projects(state))["projects"][0]
+
+    assert row["local_reverify"] == {
+        "verified_at": "2026-07-11T15:00:00+00:00",
+        "promoted": False,
+        "review_refreshed": False,
+        "proof_passed": True,
+        "score": None,
+        "reason": "fresh review needed for changed source",
+        "skyn3t_model_invocations": 0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_reverify_rejects_identity_mismatch_before_repairs(tmp_path, monkeypatch):
     state = _state(tmp_path)
     project, manifest = _write_project(state, "identity")
@@ -489,6 +533,39 @@ async def test_reverify_exact_tree_mismatch_never_downgrades_to_legacy(
 
     assert response["promoted"] is False
     assert response["review"]["binding"] == "exact_tree_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_reverify_refreshes_durable_stale_review_on_the_verified_tree(
+    tmp_path, monkeypatch
+):
+    memory = _Memory({"build_id": "build-fresh-review", "slug": "fresh-review"})
+    state = _state(tmp_path, memory=memory)
+    project, manifest = _write_project(state, "fresh-review")
+    source = project / "src"
+    source.mkdir()
+    for index in range(5):
+        (source / f"module-{index}.js").write_text(
+            f"export const value{index} = {index};\n", encoding="utf-8"
+        )
+    (project / "package.json").write_text('{"name":"fresh-review"}', encoding="utf-8")
+    summary = manifest["stages"][0]["output_summary"]
+    summary["source_tree_sha256"] = "0" * 64
+    summary["source_tree_digest_algorithm"] = SOURCE_TREE_DIGEST_ALGORITHM
+    (project / "skyn3t_manifest.json").write_text(json.dumps(manifest))
+    memory.row["manifest"] = json.loads(json.dumps(manifest))
+    _wire_passing_proof(monkeypatch)
+
+    response = await reverify_project(state, project.name)
+
+    assert response["promoted"] is True
+    assert response["review_refreshed"] is True
+    assert response["review"]["binding"] == "exact_tree"
+    persisted = json.loads((project / "skyn3t_manifest.json").read_text())
+    refreshed = persisted["stages"][-1]
+    assert refreshed["name"] == "reverify-review"
+    assert refreshed["output_summary"]["review_scope"] == "local_reverify_fresh_tree"
+    assert refreshed["output_summary"]["source_tree_sha256"]
 
 
 @pytest.mark.asyncio
@@ -675,6 +752,60 @@ async def test_reverify_declared_build_and_tests_must_not_be_skipped(
     failures = response["promotion_checks"]["failures"]
     assert any("node build did not pass" in value for value in failures)
     assert any("node tests did not pass" in value for value in failures)
+
+
+def test_reverify_accepts_separate_node_test_evidence_after_generic_skip(
+    tmp_path, monkeypatch
+):
+    import skyn3t.web.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "_project_validation_requirements",
+        lambda *_args, **_kwargs: {
+            "node_build": True,
+            "node_tests": True,
+            "python_tests": False,
+            "swift_build": False,
+            "swift_tests": False,
+        },
+    )
+    snapshot = {
+        "valid": True,
+        "algorithm": "source-tree-sha256-v1",
+        "sha256": "verified-current-tree",
+    }
+    proof = SimpleNamespace(
+        passed=True,
+        detail={
+            "build": "passed",
+            "node_tests": "passed",
+            "tests": "skipped",
+            "proof_environment": {
+                "degraded_reasons": ["tests skipped"],
+            },
+        },
+    )
+    gates = {
+        name: {"ok": True, "skipped": False, "warnings": []}
+        for name in ("security", "web_polish", "runtime_liveness")
+    }
+
+    result = routes._reverify_promotion_checks(
+        tmp_path,
+        "react",
+        proof,
+        gates,
+        {"valid": True},
+        snapshot,
+        snapshot,
+        snapshot,
+        snapshot,
+    )
+
+    assert result["passed"] is True
+    assert result["validation"]["node_tests"] == "passed"
+    assert result["blocking_degradation"] == []
 
 
 @pytest.mark.asyncio

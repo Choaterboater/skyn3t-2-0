@@ -921,6 +921,37 @@ async def test_studio_runner_codegen_model_trace_reports_cli_default(
     assert runner._codegen_trace_model("") == "claude-cli:default"
 
 
+async def test_studio_runner_codegen_model_trace_infers_global_codex_cli(
+    tmp_path,
+    monkeypatch,
+):
+    from skyn3t.adapters.llm import LLMClient
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    monkeypatch.setattr(
+        LLMClient,
+        "_cli_available",
+        lambda self, provider: provider == "codex",
+    )
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        llm_backend="codex_cli",
+        codegen_cli_provider="",
+        codegen_cli_model="",
+        critic_enabled=False,
+        approval_gates=False,
+        best_of_n=1,
+    )
+    runner = StudioRunner(EventBus(), Orchestrator(EventBus()), settings=settings, memory=None)
+
+    assert runner._codegen_trace_model("") == "codex-cli:default"
+
+
 async def test_studio_runner_codegen_model_trace_reports_router_fallback(
     tmp_path,
     monkeypatch,

@@ -121,3 +121,12 @@ def test_classify_build_infers_dashboard_dom():
     c = classify_build("a React admin dashboard for metrics", "react")
     assert c.app_type == "dashboard"
     assert c.engine == "dom"
+
+
+def test_classify_build_keeps_browser_only_react_dashboard_out_of_api_service():
+    c = classify_build(
+        "a browser-only React paper-trading dashboard with no API, backend, or server",
+        "react",
+    )
+    assert c.app_type == "dashboard"
+    assert c.engine == "dom"

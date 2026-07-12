@@ -73,6 +73,10 @@ _NATIVE_LLM_KEYS = frozenset({
 _log = None
 
 _URL_RE = re.compile(r"https?://(?:127\.0\.0\.1|localhost):(\d+)")
+_ASTRO_RUNNING_RE = re.compile(
+    r"Dev server (?:already )?running at (?P<url>https?://127\.0\.0\.1:(?P<port>\d+))"
+    r"(?: \(pid (?P<pid>\d+)\))?",
+)
 
 
 @dataclass(slots=True)
@@ -113,8 +117,20 @@ def free_port() -> int:
 
 
 def _python_bin(pdir: Path) -> str:
-    venv = pdir / ".venv" / "bin" / "python"
-    return str(venv) if venv.exists() else sys.executable
+    """Return the project interpreter when a local virtual environment exists.
+
+    Generated projects are routinely opened on Windows, where virtualenv puts
+    its interpreter under ``.venv\\Scripts\\python.exe`` rather than the POSIX
+    ``.venv/bin/python`` path.  Falling through to SkyN3t's own interpreter
+    made the Serve button ignore a project's installed dependencies and could
+    make an otherwise runnable app fail to load.
+    """
+    candidates = (
+        pdir / ".venv" / "Scripts" / "python.exe",  # Windows venv
+        pdir / ".venv" / "Scripts" / "python",      # Windows-compatible shim
+        pdir / ".venv" / "bin" / "python",          # POSIX venv
+    )
+    return next((str(path) for path in candidates if path.is_file()), sys.executable)
 
 
 def _is_python_web(pdir: Path) -> bool:
@@ -358,7 +374,16 @@ def build_run_spec(
     entry = next((f for f in _PY_ENTRYPOINTS if (pdir / f).exists()), None)
     if entry and _is_python_web(pdir):
         run_port = _port()
-        env = _serve_env({"PORT": str(run_port), "HOST": "127.0.0.1"})
+        # Python web scaffolds use both the conventional PORT/HOST names and
+        # the explicit APP_PORT/APP_HOST pair. Supplying both keeps a preview
+        # on its allocated free port instead of silently falling back to an
+        # occupied default such as 8000.
+        env = _serve_env({
+            "PORT": str(run_port),
+            "HOST": "127.0.0.1",
+            "APP_PORT": str(run_port),
+            "APP_HOST": "127.0.0.1",
+        })
         return RunSpec([_python_bin(pdir), entry], str(pdir), env, "python_web", run_port,
                        injected=injected, missing_secrets=missing_t)
 
@@ -535,10 +560,35 @@ class AppRunner:
                               detail={"error": str(exc)})
         logf.close()  # subprocess inherited the fd; close the parent's copy
 
-        url, real_port = await self._await_ready(proc, log_path, spec.port, ready_timeout)
+        url, real_port = await self._await_ready(
+            proc, log_path, spec.port, ready_timeout, spec.kind,
+        )
         if url is None:
-            self._terminate(proc)
             tail = scrub_text(_read_tail(log_path))
+            # Astro persists a project-local dev-server record. After a
+            # control-plane restart it can correctly report that its own site
+            # is already alive, but the old runner treated that as a launch
+            # failure. Reattach to the verified server instead.
+            existing = _astro_running_server(tail) if spec.kind == "node" else None
+            if existing is not None:
+                existing_url, existing_port, existing_pid = existing
+                if _url_status(existing_url.rstrip("/") + "/") is not None:
+                    return RunningApp(
+                        url=existing_url,
+                        port=existing_port,
+                        pid=existing_pid,
+                        kind=spec.kind,
+                        project_dir=str(pdir),
+                        log_path=log_path,
+                        status="running",
+                        detail={
+                            "cmd": spec.cmd,
+                            "reused_existing_server": True,
+                            "injected_secrets": list(spec.injected),
+                            "missing_secrets": list(spec.missing_secrets),
+                        },
+                    )
+            self._terminate(proc)
             detail: dict[str, Any] = {"log_tail": tail,
                                       "injected_secrets": list(spec.injected),
                                       "missing_secrets": list(spec.missing_secrets)}
@@ -553,24 +603,57 @@ class AppRunner:
             return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
                               project_dir=str(pdir), log_path=log_path, status="failed",
                               detail=detail)
-        return RunningApp(url=url, port=real_port, pid=proc.pid, kind=spec.kind,
+        running_pid = proc.pid
+        detail: dict[str, Any] = {
+            "cmd": spec.cmd,
+            "injected_secrets": list(spec.injected),
+            "missing_secrets": list(spec.missing_secrets),
+        }
+        # `astro dev` reports (and then detaches to) the actual server PID.
+        # Tracking the short-lived npm wrapper would make serve_status prune a
+        # perfectly healthy preview immediately after it starts.
+        if spec.kind == "node":
+            astro = _astro_running_server(_read_tail(log_path))
+            if astro is not None and astro[1] == real_port:
+                _astro_url, _astro_port, astro_pid = astro
+                if astro_pid is not None:
+                    running_pid = astro_pid
+                    detail["reused_existing_server"] = astro_pid != proc.pid
+        return RunningApp(url=url, port=real_port, pid=running_pid, kind=spec.kind,
                           project_dir=str(pdir), log_path=log_path, status="running",
-                          detail={"cmd": spec.cmd,
-                                  "injected_secrets": list(spec.injected),
-                                  "missing_secrets": list(spec.missing_secrets)})
+                          detail=detail)
 
-    async def _await_ready(self, proc, log_path, want_port, timeout) -> tuple[str | None, int]:
+    async def _await_ready(
+        self, proc, log_path, want_port, timeout, kind: str,
+    ) -> tuple[str | None, int]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if proc.poll() is not None:  # process exited early
-                return None, want_port
             # discover the real port from the server's stdout (Flask/uvicorn log it)
             port = want_port
-            m = _URL_RE.search(_read_tail(log_path))
+            tail = _read_tail(log_path)
+            m = _URL_RE.search(tail)
             if m:
                 port = int(m.group(1))
-            if _port_answers(port):
-                return f"http://127.0.0.1:{port}", port
+            root_url = f"http://127.0.0.1:{port}"
+            root_status = _url_status(root_url + "/")
+            if root_status is not None:
+                # API-only projects commonly expose no browser page at `/`.
+                # Serving that 404 in the Studio iframe looks like a failed
+                # launch even though the server is healthy. FastAPI's standard
+                # interactive docs make a useful, truthful API preview.
+                docs_url = root_url + "/docs"
+                if kind == "python_web" and root_status == 404:
+                    docs_status = _url_status(docs_url)
+                    if docs_status is not None and 200 <= docs_status < 400:
+                        return docs_url, port
+                return root_url, port
+            if proc.poll() is not None:
+                # Astro starts the dev server in a detached child, then exits
+                # its npm wrapper. Its own success message includes the child
+                # URL, so keep polling that URL instead of reporting a false
+                # failure before the child finishes binding.
+                if kind != "node" or _astro_running_server(tail) is None:
+                    return None, want_port
             await asyncio.sleep(0.3)
         return None, want_port
 
@@ -602,14 +685,32 @@ def cleanup_serve(app: RunningApp) -> None:
             pass
 
 
-def _port_answers(port: int) -> bool:
+def _url_status(url: str) -> int | None:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as r:
-            return r.status < 600  # any HTTP response means it's up
-    except urllib.error.HTTPError:
-        return True  # a 4xx/5xx is still a live server
+        with urllib.request.urlopen(url, timeout=1) as r:
+            return int(r.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)  # a 4xx/5xx is still a live server
     except Exception:  # noqa: BLE001 - connection refused / not ready yet
-        return False
+        return None
+
+
+def _port_answers(port: int) -> bool:
+    """Whether an HTTP server is answering at the requested localhost port."""
+    return _url_status(f"http://127.0.0.1:{port}/") is not None
+
+
+def _astro_running_server(log_text: str) -> tuple[str, int, int | None] | None:
+    """Return Astro's project-local detached/already-running dev server."""
+    match = _ASTRO_RUNNING_RE.search(log_text or "")
+    if match is None:
+        return None
+    pid_text = match.group("pid")
+    return (
+        match.group("url"),
+        int(match.group("port")),
+        int(pid_text) if pid_text else None,
+    )
 
 
 def _read_tail(path: str, n: int = 4000) -> str:

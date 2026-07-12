@@ -853,7 +853,10 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
         return {"fanout": summary, "winner": None}
 
     extra: dict[str, Any] = {}
-    if best_of and best_of > 1:
+    # ``--best-of 1`` is an explicit request to suppress the configured
+    # best-of-two default for a controlled, single-trajectory build. Preserve
+    # every positive CLI value instead of treating one as if it were omitted.
+    if best_of >= 1:
         extra["best_of_n"] = best_of
     if stack:
         extra["stack"] = stack

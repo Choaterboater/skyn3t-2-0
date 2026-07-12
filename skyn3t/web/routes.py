@@ -16,6 +16,7 @@ import json
 import math
 import mimetypes
 import os
+import re
 import shutil
 import threading
 import time
@@ -109,6 +110,10 @@ _BUILD_TASKS: set = set()
 _BUILD_TASKS_BY_ID: dict[str, Any] = {}
 _ENV_WRITE_LOCK = threading.RLock()
 _MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
+_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+_REPLICATE_MODEL_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+)
 
 
 def _reap_build_task(task: Any) -> None:
@@ -1987,6 +1992,22 @@ def _copy_reverify_candidate(project: Path) -> tuple[Path, Path, dict[str, Any]]
     return staging_root, staged_project, live_source
 
 
+def _reverify_replace_failure_message(exc: OSError) -> str:
+    """Explain the common Windows preview-server lock without hiding failures."""
+    lock_codes = {5, 13, 32}
+    if (
+        isinstance(exc, PermissionError)
+        or getattr(exc, "errno", None) in lock_codes
+        or getattr(exc, "winerror", None) in lock_codes
+    ):
+        return (
+            "verified candidate could not replace the live project because its "
+            "preview or server process may still be running; stop that project "
+            "preview/server and retry"
+        )
+    return "verified candidate could not replace the live project"
+
+
 def _promote_reverify_candidate(
     project: Path,
     staged_project: Path,
@@ -2001,7 +2022,7 @@ def _promote_reverify_candidate(
         os.replace(project, backup)
     except OSError as exc:
         raise ProjectReverifyError(
-            "verified candidate could not replace the live project",
+            _reverify_replace_failure_message(exc),
             status_code=500,
         ) from exc
     try:
@@ -2014,7 +2035,7 @@ def _promote_reverify_candidate(
             rollback_failed = True
             log.exception("project.reverify_rollback_failed", slug=project.name)
         raise ProjectReverifyError(
-            "verified candidate could not replace the live project",
+            _reverify_replace_failure_message(exc),
             status_code=500,
             preserve_staging=rollback_failed,
             recovery_path=str(backup) if rollback_failed else "",
@@ -2042,6 +2063,9 @@ def _review_binding(
         "source": "build_manifest",
         "valid": False,
     }
+    if base["verdict"] != "go":
+        base["binding"] = "reviewer_no_go"
+        return base
     reviewed_tree = str(review.get("source_tree_sha256") or "").strip()
     snapshot_valid = review.get("source_tree_snapshot_valid")
     if snapshot_valid is False or (snapshot_valid is True and not reviewed_tree):
@@ -2105,6 +2129,120 @@ def _review_binding(
         }
     )
     return base
+
+
+def _durable_review_evidence_matches(
+    project: Path,
+    manifest: dict[str, Any],
+    review: dict[str, Any],
+    identity: dict[str, Any],
+) -> bool:
+    """Verify the original reviewer evidence is durably tied to this build.
+
+    A re-review is allowed only for a project that already has a persisted,
+    identity-matched reviewer result.  This deliberately excludes a manifest
+    someone could have hand-authored beside arbitrary project files.
+    """
+    durable_row = identity.get("durable_row")
+    durable_manifest = (
+        durable_row.get("manifest")
+        if isinstance(durable_row, dict)
+        and isinstance(durable_row.get("manifest"), dict)
+        else None
+    )
+    if durable_manifest is None:
+        return False
+    identity_fields = ("build_id", "slug", "brief", "stack")
+    if any(
+        str(durable_manifest.get(field) or "").strip()
+        != str(manifest.get(field) or "").strip()
+        for field in identity_fields
+    ):
+        return False
+    durable_row_dict = durable_row if isinstance(durable_row, dict) else {}
+    durable_artifact = durable_manifest.get("artifact_dir") or durable_row_dict.get(
+        "artifact_dir"
+    )
+    if not _resolved_artifact_matches(project, durable_artifact):
+        return False
+    durable_review = _completed_brief_review(durable_manifest)
+    return (
+        durable_review.get("verdict") == "go"
+        and durable_review.get("evidence_sha256") == review.get("evidence_sha256")
+    )
+
+
+async def _fresh_reverify_review(
+    project: Path,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the canonical offline reviewer and bind it to the current tree.
+
+    This intentionally constructs no model client.  It reruns the existing
+    deterministic reviewer after proof has completed, preserving the original
+    durable reviewer evidence while adding a new, exact-tree approval record.
+    """
+    from skyn3t.agents.reviewer import ReviewerAgent
+    from skyn3t.core.agent import TaskRequest
+
+    task = TaskRequest(
+        type="review",
+        payload={
+            "project_dir": str(project),
+            "brief": str(manifest.get("brief") or ""),
+            "stack": str(manifest.get("stack") or ""),
+        },
+    )
+    result = await ReviewerAgent(
+        name="local-reverify-reviewer",
+        llm_client=None,
+    ).execute(task)
+    output = result.output if result.success and isinstance(result.output, dict) else {}
+    snapshot = source_tree_snapshot(project)
+    gaps = [str(value) for value in output.get("gaps", [])]
+    verdict = str(output.get("verdict") or "no_go").lower()
+    if not snapshot.get("valid"):
+        verdict = "no_go"
+        gaps.append("source tree snapshot was invalid")
+    try:
+        score = float(output.get("score"))
+    except (TypeError, ValueError):
+        score = 0.0
+    return {
+        "name": "reverify-review",
+        "agent_type": "reviewer",
+        "capability": "review",
+        "status": "completed",
+        "score": score,
+        "agent_name": "local-reverify-reviewer",
+        "output_summary": {
+            "score": score,
+            "verdict": verdict,
+            "gaps": gaps,
+            "review_scope": "local_reverify_fresh_tree",
+            "reviewer_mode": "deterministic_local",
+            "source_tree_snapshot_valid": bool(snapshot.get("valid")),
+            "source_tree_sha256": str(snapshot.get("sha256") or ""),
+            "source_tree_digest_algorithm": str(snapshot.get("algorithm") or ""),
+        },
+    }
+
+
+def _should_refresh_reverify_review(
+    project: Path,
+    manifest: dict[str, Any],
+    review: dict[str, Any],
+    identity: dict[str, Any],
+    binding: dict[str, Any],
+    promotion_checks: dict[str, Any],
+) -> bool:
+    """Allow a fresh review only when stale binding is the sole blocker."""
+    failures = [str(value) for value in promotion_checks.get("failures", [])]
+    return (
+        binding.get("binding") == "exact_tree_mismatch"
+        and failures == ["review evidence is not bound or durably corroborated"]
+        and _durable_review_evidence_matches(project, manifest, review, identity)
+    )
 
 
 def _project_validation_requirements(project: Path, stack: str) -> dict[str, bool]:
@@ -2225,15 +2363,36 @@ def _reverify_promotion_checks(
     degraded_reasons = [
         str(value) for value in environment.get("degraded_reasons", [])
     ]
+    required_test_steps = ("node_tests", "python_tests", "swift_tests")
+    required_build_steps = ("node_build", "swift_build")
+    completed_declared_tests = any(
+        requirements[name] for name in required_test_steps
+    ) and all(
+        not requirements[name] or validation.get(name) == expected[name][1]
+        for name in required_test_steps
+    )
+    completed_declared_builds = any(
+        requirements[name] for name in required_build_steps
+    ) and all(
+        not requirements[name] or validation.get(name) == expected[name][1]
+        for name in required_build_steps
+    )
     blocking_degradation = [
         reason
         for reason in degraded_reasons
         if not reason.startswith("docker sandbox unavailable")
         and not (
             reason.startswith("tests skipped")
-            and not any(
-                requirements[name]
-                for name in ("node_tests", "python_tests", "swift_tests")
+            and (
+                completed_declared_tests
+                or not any(requirements[name] for name in required_test_steps)
+            )
+        )
+        and not (
+            reason.startswith("build skipped")
+            and (
+                completed_declared_builds
+                or not any(requirements[name] for name in required_build_steps)
             )
         )
     ]
@@ -2493,6 +2652,40 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             live_source,
             live_after_worker,
         )
+        review_refreshed = False
+        if _should_refresh_reverify_review(
+            project,
+            manifest,
+            review,
+            identity,
+            binding,
+            promotion_checks,
+        ):
+            stages = manifest.get("stages")
+            if not isinstance(stages, list):
+                stages = []
+                manifest["stages"] = stages
+            stages.append(await _fresh_reverify_review(staged_project, manifest))
+            review = _completed_brief_review(manifest)
+            binding = _review_binding(
+                project,
+                manifest,
+                review,
+                identity,
+                candidate,
+            )
+            promotion_checks = _reverify_promotion_checks(
+                staged_project,
+                str(manifest.get("stack") or ""),
+                proof,
+                gates,
+                binding,
+                candidate,
+                after_proof,
+                live_source,
+                live_after_worker,
+            )
+            review_refreshed = True
         promoted = bool(promotion_checks["passed"])
         previous = {
             "status": str(manifest.get("status") or ""),
@@ -2565,6 +2758,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             },
             "candidate": candidate_evidence,
             "review": binding,
+            "review_refreshed": review_refreshed,
             "execution": execution,
             "promotion_checks": promotion_checks,
             "repairs": repairs,
@@ -2600,6 +2794,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             "repairs": repairs,
             "proof": proof_dict,
             "review": binding,
+            "review_refreshed": review_refreshed,
             "candidate": candidate_evidence,
             "gates": gates,
             "promotion_checks": promotion_checks,
@@ -2729,6 +2924,26 @@ def _compact_project_ai_fields(
     }
 
 
+def _compact_local_reverify(extra: dict[str, Any]) -> dict[str, Any]:
+    """Expose the durable outcome of a local reverify without its large proof log."""
+    raw = extra.get("reverify")
+    if not isinstance(raw, dict):
+        return {}
+    proof = raw.get("proof")
+    proof = proof if isinstance(proof, dict) else {}
+    execution = raw.get("execution")
+    execution = execution if isinstance(execution, dict) else {}
+    return {
+        "verified_at": str(raw.get("verified_at") or ""),
+        "promoted": raw.get("promoted") is True,
+        "review_refreshed": raw.get("review_refreshed") is True,
+        "proof_passed": proof.get("passed") is True,
+        "score": raw.get("score"),
+        "reason": str(raw.get("reason") or ""),
+        "skyn3t_model_invocations": execution.get("skyn3t_model_invocations"),
+    }
+
+
 def _incomplete_project_row(
     state: AppState,
     project: Path,
@@ -2752,6 +2967,7 @@ def _incomplete_project_row(
     raw_extra: dict[str, Any] = (
         dict(raw_extra_value) if isinstance(raw_extra_value, dict) else {}
     )
+    local_reverify = _compact_local_reverify(raw_extra)
     summary = build_summary(raw) if raw else {}
     record_scorecard = getattr(record, "quality_scorecard", {})
     record_cost_truth = (
@@ -2830,6 +3046,7 @@ def _incomplete_project_row(
         if isinstance(stage_skills_used, dict) else {},
         **ai_fields,
         "quality_scorecard": dict(summary.get("quality_scorecard") or {}),
+        "local_reverify": local_reverify,
         "scaffold_stub_gate": {},
         "deploy_plan": {},
         "deployments": [],
@@ -2912,6 +3129,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             elif status == "completed" and verdict == "no_go":
                 status = "completed_no_go"
             display_extra = dict(extra)
+            local_reverify = _compact_local_reverify(display_extra)
             if scaffold_stub_gate:
                 display_extra["scaffold_stub_gate"] = scaffold_stub_gate
             proof_dict = display_extra.get("proof") if isinstance(display_extra, dict) else None
@@ -3018,6 +3236,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 **ai_fields,
                 "quality_scorecard": dict(extra.get("quality_scorecard") or {})
                 if isinstance(extra.get("quality_scorecard"), dict) else {},
+                "local_reverify": local_reverify,
                 "scaffold_stub_gate": scaffold_stub_gate,
                 "deploy_plan": dict(extra.get("deploy_plan") or {})
                 if isinstance(extra.get("deploy_plan"), dict) else {},
@@ -4059,8 +4278,23 @@ _DEPLOY_PROVIDER_CLIS = {
 }
 
 
-def _persist_env_var(name: str, value: str) -> None:
-    """Upsert ``NAME=value`` in the repo .env (best-effort; never raises)."""
+def _persist_env_vars(values: dict[str, str]) -> None:
+    """Atomically upsert safe ``NAME=value`` pairs in the repo .env.
+
+    Settings values eventually become dotenv assignments. Reject line breaks and
+    invalid names before touching the file so an API value cannot smuggle a second
+    assignment into a future process. The helper remains best-effort: a failed local
+    persistence write must never crash the live control plane.
+    """
+    normalized: dict[str, str] = {}
+    for raw_name, raw_value in values.items():
+        name = str(raw_name or "").strip()
+        value = str(raw_value or "")
+        if not _ENV_NAME_RE.fullmatch(name) or any(ch in value for ch in ("\r", "\n", "\x00")):
+            return
+        normalized[name] = value
+    if not normalized:
+        return
     try:
         from skyn3t.config.settings import REPO_ROOT
 
@@ -4068,7 +4302,7 @@ def _persist_env_var(name: str, value: str) -> None:
         with _ENV_WRITE_LOCK:
             lines = env.read_text().splitlines() if env.exists() else []
             out: list[str] = []
-            found = False
+            found: set[str] = set()
             for ln in lines:
                 stripped = ln.strip()
                 # Only a real (non-comment) ``KEY=value`` assignment can match — a
@@ -4078,20 +4312,28 @@ def _persist_env_var(name: str, value: str) -> None:
                     out.append(ln)
                     continue
                 key = stripped.split("=", 1)[0].strip()
-                if key == name:
-                    out.append(f"{name}={value}")
-                    found = True
+                if key in normalized:
+                    out.append(f"{key}={normalized[key]}")
+                    found.add(key)
                 else:
                     out.append(ln)
-            if not found:
-                out.append(f"{name}={value}")
+            for name, value in normalized.items():
+                if name not in found:
+                    out.append(f"{name}={value}")
             atomic_write_text(env, "\n".join(out) + "\n")
     except Exception:  # noqa: BLE001
         pass
 
 
+def _persist_env_var(name: str, value: str) -> None:
+    """Upsert one safe dotenv assignment (best-effort; never raises)."""
+    _persist_env_vars({name: value})
+
+
 async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
     import os
+
+    from skyn3t.adapters.llm import openrouter_key
 
     s = state.settings
     backend = state.llm_client.backend if state.llm_client is not None else "n/a"
@@ -4106,14 +4348,18 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         or os.environ.get("SKYN3T_GITHUB_TOKEN")
         or os.environ.get("GITHUB_TOKEN")
     )
-    providers = {
-        p: bool(
-            getattr(s, f, "")
-            or os.environ.get(f"SKYN3T_{f.upper()}")
-            or os.environ.get(f.upper())
-        )
-        for p, f in _PROVIDER_FIELDS.items()
-    }
+    providers = {}
+    for provider, field in _PROVIDER_FIELDS.items():
+        if provider == "openrouter":
+            # Honor the persistent dashboard disconnect even if an external
+            # shell supplies OPENROUTER_API_KEY.
+            providers[provider] = bool(openrouter_key(s))
+        else:
+            providers[provider] = bool(
+                getattr(s, field, "")
+                or os.environ.get(f"SKYN3T_{field.upper()}")
+                or os.environ.get(field.upper())
+            )
     return {
         "providers": providers,
         "backend": backend,
@@ -4172,43 +4418,75 @@ async def set_github_token(state: AppState, key: str, persist: bool = True) -> d
 
 
 async def set_replicate_token(
-    state: AppState, token: str, model: str = "", persist: bool = True
+    state: AppState, token: str | None, model: str | None = None, persist: bool = True
 ) -> dict[str, Any]:
     """Set the Replicate token (+ optional model) used for image generation.
 
     Updates the live Settings object AND os.environ (so a running cortex picks it
-    up on its next build) and persists to .env. ``model`` is only updated when a
-    non-empty value is supplied — passing "" leaves the configured model intact.
-    Mirrors :func:`set_github_token`. Returns presence + the active model (never
-    the token itself).
+    up on its next build) and persists to .env. ``token=None`` preserves an
+    existing token so the dashboard can update the non-secret model preference
+    without asking the operator to re-enter a credential. An explicit empty
+    token still disconnects Replicate. ``model`` is only updated when a non-empty
+    value is supplied. Mirrors :func:`set_github_token`. Returns presence + the
+    active model (never the token itself).
     """
     import os
 
-    token = (token or "").strip()
-    try:
-        state.settings.replicate_api_token = token
-    except Exception:  # noqa: BLE001
-        pass
-    if token:
-        os.environ["SKYN3T_REPLICATE_API_TOKEN"] = token
-    else:
-        os.environ.pop("SKYN3T_REPLICATE_API_TOKEN", None)
-    if persist:
-        _persist_env_var("SKYN3T_REPLICATE_API_TOKEN", token)
+    def _single_line(value: str, label: str) -> str:
+        raw = str(value)
+        if any(ch in raw for ch in ("\r", "\n", "\x00")):
+            raise ValueError(f"{label} must be a single line")
+        return raw.strip()
 
-    model = (model or "").strip()
-    if model:
+    normalized_token = None if token is None else _single_line(token, "Replicate token")
+    normalized_model = ""
+    if model is not None:
+        normalized_model = _single_line(model, "Replicate model")
+        if normalized_model and (
+            len(normalized_model) > 256
+            or not _REPLICATE_MODEL_RE.fullmatch(normalized_model)
+        ):
+            raise ValueError("Replicate model must use a single-line owner/model id")
+
+    persist_values: dict[str, str] = {}
+    if token is not None:
+        assert normalized_token is not None
         try:
-            state.settings.replicate_model = model
+            state.settings.replicate_api_token = normalized_token
         except Exception:  # noqa: BLE001
             pass
-        os.environ["SKYN3T_REPLICATE_MODEL"] = model
-        if persist:
-            _persist_env_var("SKYN3T_REPLICATE_MODEL", model)
-    return {
-        "configured": bool(token),
+        if normalized_token:
+            os.environ["SKYN3T_REPLICATE_API_TOKEN"] = normalized_token
+        else:
+            os.environ.pop("SKYN3T_REPLICATE_API_TOKEN", None)
+            # A disconnect is a single operation: it cannot leave the opt-in
+            # asset flag armed for a later token reconnect.
+            try:
+                state.settings.asset_gen = False
+            except Exception:  # noqa: BLE001
+                pass
+            os.environ["SKYN3T_ASSET_GEN"] = "false"
+            persist_values["SKYN3T_ASSET_GEN"] = "false"
+        persist_values["SKYN3T_REPLICATE_API_TOKEN"] = normalized_token
+
+    if normalized_model:
+        try:
+            state.settings.replicate_model = normalized_model
+        except Exception:  # noqa: BLE001
+            pass
+        os.environ["SKYN3T_REPLICATE_MODEL"] = normalized_model
+        persist_values["SKYN3T_REPLICATE_MODEL"] = normalized_model
+    if persist and persist_values:
+        _persist_env_vars(persist_values)
+    result = {
+        "configured": bool(getattr(state.settings, "replicate_api_token", "")),
         "model": getattr(state.settings, "replicate_model", "") or "",
     }
+    if normalized_token == "":
+        # Backward-compatible response shape for normal connect/model updates;
+        # disconnect callers receive the coupled opt-in state they just changed.
+        result["asset_gen"] = bool(getattr(state.settings, "asset_gen", False))
+    return result
 
 
 async def deploy_settings_payload(state: AppState) -> dict[str, Any]:
@@ -4983,12 +5261,30 @@ async def scout_now(state: AppState, topic: str = "") -> dict[str, Any]:
 async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = True) -> dict[str, Any]:
     import os
 
+    from skyn3t.adapters.llm import openrouter_key
+
     field = _PROVIDER_FIELDS.get((provider or "").lower())
     if field is None:
         raise ValueError(f"unknown provider {provider!r}")
-    key = (key or "").strip()
+    raw_key = str(key or "")
+    if any(ch in raw_key for ch in ("\r", "\n", "\x00")):
+        raise ValueError("LLM API keys must be a single line")
+    key = raw_key.strip()
     setattr(state.settings, field, key)
     env_name = f"SKYN3T_{field.upper()}"
+    if field == "openrouter_api_key":
+        # Do not mutate a parent-managed OPENROUTER_API_KEY. Instead persist a
+        # local enable flag so Disconnect consistently prevents this app from
+        # resolving either credential alias, including after a restart.
+        enabled = bool(key)
+        try:
+            state.settings.openrouter_enabled = enabled
+        except Exception:  # noqa: BLE001 - support narrow test/state doubles
+            pass
+        if persist:
+            enabled_value = "true" if enabled else "false"
+            os.environ["SKYN3T_OPENROUTER_ENABLED"] = enabled_value
+            _persist_env_var("SKYN3T_OPENROUTER_ENABLED", enabled_value)
     if state.llm_client is not None:
         try:
             state.llm_client.settings = state.settings  # same singleton, kept explicit
@@ -5011,7 +5307,11 @@ async def set_llm_key(state: AppState, provider: str, key: str, persist: bool = 
     )
     return {
         "provider": provider.lower(),
-        "configured": bool(key),
+        "configured": (
+            bool(openrouter_key(state.settings))
+            if field == "openrouter_api_key"
+            else bool(key)
+        ),
         "backend": backend,
         "routing": routing,
     }
@@ -5740,11 +6040,16 @@ def build_router(state: AppState) -> Any:
 
     @router.post("/settings/replicate", dependencies=[auth])
     async def _set_replicate(body: dict[str, Any] = empty_body) -> dict[str, Any]:
-        return await set_replicate_token(
-            state,
-            str(body.get("token", body.get("key", ""))),
-            model=str(body.get("model", "")),
-        )
+        token = body.get("token", body.get("key"))
+        model = body.get("model")
+        try:
+            return await set_replicate_token(
+                state,
+                None if token is None else str(token),
+                model=None if model is None else str(model),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/settings/deploy", dependencies=[auth])
     async def _deploy_settings() -> dict[str, Any]:

@@ -189,7 +189,11 @@ def _infer_app_type(low: str, stack: str) -> str:
         return "game"
     if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):
         return "developer_tool"
-    if stack in ("fastapi", "express") or any(k in low for k in ("api", "rest", "backend", "server")):
+    # A mention of a backend is not enough to turn a browser app into an API.
+    # Visual-product intent is often phrased negatively ("no API/server") or
+    # alongside an optional backend.  Classify the visible product first and
+    # reserve ``api_service`` for a server stack or an otherwise API-only brief.
+    if stack in ("fastapi", "express"):
         return "api_service"
     if stack == "react_native":
         return "mobile_app"
@@ -205,6 +209,8 @@ def _infer_app_type(low: str, stack: str) -> str:
         return "data_viz"
     if any(k in low for k in ("saas", "billing", "settings", "onboarding")):
         return "saas_product"
+    if any(k in low for k in ("api", "rest", "backend", "server")):
+        return "api_service"
     return "product_app"
 
 

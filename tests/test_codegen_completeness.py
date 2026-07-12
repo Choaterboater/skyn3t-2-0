@@ -69,7 +69,17 @@ async def test_large_seven_of_sixteen_delivery_is_preserved_but_no_go(tmp_path):
             target = root / plan["files"][index]["path"]
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(_substantial_source(f"feature_{index}"), encoding="utf-8")
-        return {"ok": True, "completed": True, "backend": "claude_cli"}
+        return {
+            "ok": True,
+            "completed": True,
+            "backend": "claude_cli",
+            "cli_execution": {
+                "schema_version": 1,
+                "provider": "codex",
+                "thread_id": "thread-resume-123",
+                "exit_status": "exited",
+            },
+        }
 
     llm = _ScriptedAgenticLLM(write_only_seven)
     agent, result = await _run(tmp_path, llm, plan)
@@ -79,6 +89,7 @@ async def test_large_seven_of_sixteen_delivery_is_preserved_but_no_go(tmp_path):
     assert result.output["agentic"]["complete"] is False
     assert result.output["agentic"]["planned_files"] == 16
     assert len(result.output["agentic"]["missing_files"]) == 9
+    assert result.output["agentic"]["cli_execution"]["thread_id"] == "thread-resume-123"
     assert (tmp_path / plan["files"][0]["path"]).exists(), "substantial partial work is kept"
     assert "degraded" not in agent.metadata, "task state must not leak onto the singleton"
 

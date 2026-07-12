@@ -3,7 +3,7 @@
 One entry point — :meth:`LLMClient.complete` — resolves a tier to a model via
 the :class:`ModelRouter`, then dispatches to a backend:
 
-* ``openrouter`` — real HTTP (primary) when ``OPENROUTER_API_KEY`` is set.
+* ``openrouter`` — real HTTP only when explicitly selected and configured.
 * ``<provider>_cli`` — shells out to a locally-installed CLI (``claude``,
   ``codex``, ``kimi``, ``copilot``) in headless print mode. Real generation
   with **no SkyN3t API key** — handy when you already have a coding-agent CLI
@@ -66,6 +66,7 @@ from skyn3t.persisted_write import (
 from skyn3t.persisted_write import (
     is_persisted_write_receipt_body as _is_persisted_write_receipt_body,
 )
+from skyn3t.security.secrets import filter_env
 
 # Per-asyncio-task LLM route capture. The LLMClient is SHARED across agents, but
 # each agent's run() is its own task; task-local vars isolate "the completions
@@ -77,6 +78,12 @@ _LAST_ROUTE: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_ro
 _ROUTES: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_routes", default=None)
 _ROUTING_PROFILE: contextvars.ContextVar = contextvars.ContextVar(
     "skyn3t_llm_routing_profile", default="balanced"
+)
+# A streamed CLI execution runs in the same task as ``agentic_build``. Keep its
+# compact evidence task-local so concurrent build stages never overwrite each
+# other's Codex/Claude/Kimi trace before the caller persists it.
+_AGENTIC_STREAM_EVIDENCE: contextvars.ContextVar = contextvars.ContextVar(
+    "skyn3t_agentic_stream_evidence", default=None
 )
 _BUDGET_LEDGER_LOCK = threading.RLock()
 _LEDGER_LOCK_TIMEOUT_S = 15.0
@@ -135,8 +142,23 @@ _CLI_VERSION_ARGS = {provider: ("--version",) for provider in KNOWN_CLI_PROVIDER
 _CLI_STATUS_TTL_SECONDS = 5.0
 
 
+def _cli_subprocess_env() -> dict[str, str]:
+    """Return the non-secret environment for a local coding CLI child.
+
+    The CLI keeps PATH, HOME, CODEX_HOME, and local subscription-login files,
+    while generated-workspace instructions cannot read Foundry provider, deploy,
+    or control-plane credentials.
+    """
+    return filter_env()
+
+
 def openrouter_key(settings: Settings) -> str:
     """Resolve the OpenRouter key from live settings or supported env aliases."""
+    # A GUI disconnect must be durable even when a parent shell supplies the
+    # standard OPENROUTER_API_KEY alias. Keep that external credential intact;
+    # this per-app setting only controls whether SkyN3t is allowed to use it.
+    if not bool(getattr(settings, "openrouter_enabled", True)):
+        return ""
     return (
         str(getattr(settings, "openrouter_api_key", "") or "").strip()
         or os.environ.get("SKYN3T_OPENROUTER_API_KEY", "").strip()
@@ -576,12 +598,158 @@ _CLI_NO_MCP_ARGS: dict[str, list[str]] = {
 # be a big tool result or the full final output, far past asyncio's 64KB default.
 _AGENTIC_STREAM_LIMIT = 64 * 1024 * 1024  # 64 MB (grows on demand)
 
+# CLI stream payloads can contain complete prompts, tool output, and source
+# files. Persist only compact operational evidence: safe identifiers that can
+# help an operator resume a CLI session, plus bounded counters/status. Never
+# retain arbitrary event fields or event bodies in a build manifest.
+_CLI_EXECUTION_EVIDENCE_SCHEMA = 1
+_CLI_EXECUTION_MAX_EVENT_TYPES = 32
+_CLI_EXECUTION_MAX_EVENT_TYPE_LENGTH = 80
+_CLI_EXECUTION_MAX_IDENTIFIER_LENGTH = 256
+_CLI_EXECUTION_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+_CLI_EXECUTION_EVENT_TYPE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
+
+
+def _safe_cli_execution_identifier(value: Any) -> str:
+    """Return a bounded non-secret stream identifier, or an empty string.
+
+    JSONL is emitted by an external executable. IDs are useful resume evidence,
+    but copying free-form fields would accidentally persist prompts or tool
+    results. Codex thread IDs and the supported CLIs' session IDs fit this
+    conservative ASCII shape.
+    """
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return ""
+    identifier = str(value).strip()
+    if not identifier or len(identifier) > _CLI_EXECUTION_MAX_IDENTIFIER_LENGTH:
+        return ""
+    return identifier if _CLI_EXECUTION_IDENTIFIER_RE.fullmatch(identifier) else ""
+
+
+def _safe_cli_execution_event_type(value: Any) -> str:
+    """Return a bounded event type without retaining arbitrary CLI output."""
+    if not isinstance(value, str):
+        return ""
+    event_type = value.strip()
+    if not event_type or len(event_type) > _CLI_EXECUTION_MAX_EVENT_TYPE_LENGTH:
+        return ""
+    return event_type if _CLI_EXECUTION_EVENT_TYPE_RE.fullmatch(event_type) else ""
+
+
+def _new_cli_execution_evidence(
+    provider: str,
+    *,
+    streamed: bool,
+    cli_version: str = "",
+) -> dict[str, Any]:
+    """Create the fixed-shape, bounded record persisted for a CLI build."""
+    evidence: dict[str, Any] = {
+        "schema_version": _CLI_EXECUTION_EVIDENCE_SCHEMA,
+        "provider": str(provider or "")[:32],
+        "streamed": bool(streamed),
+        "event_count": 0,
+        "parsed_event_count": 0,
+        "invalid_line_count": 0,
+        "event_type_counts": {},
+        "event_type_overflow_count": 0,
+        "result_event_seen": False,
+        "timed_out": False,
+        "timeout_kind": "",
+        "termination_reason": "",
+        "terminal_event_type": "",
+        "exit_code": None,
+        "exit_status": "not_started",
+    }
+    version = str(cli_version or "").strip().replace("\x00", "")[:160]
+    if version:
+        evidence["cli_version"] = version
+    if provider == "codex":
+        # ``agentic_build`` uses ``codex exec --ephemeral``. A thread ID is
+        # still useful forensic/resume-relevant evidence, but this flag prevents
+        # callers from treating it as a durable resumable session claim.
+        evidence["session_persistence"] = "ephemeral"
+    return evidence
+
+
+def _record_cli_execution_event(evidence: dict[str, Any], event: dict[str, Any]) -> None:
+    """Accumulate one parsed JSONL event without retaining its payload."""
+    evidence["parsed_event_count"] = int(evidence.get("parsed_event_count", 0)) + 1
+    event_type = _safe_cli_execution_event_type(event.get("type"))
+    if event_type:
+        counts = evidence.get("event_type_counts")
+        if not isinstance(counts, dict):
+            counts = {}
+            evidence["event_type_counts"] = counts
+        if event_type in counts:
+            counts[event_type] = int(counts[event_type]) + 1
+        elif len(counts) < _CLI_EXECUTION_MAX_EVENT_TYPES:
+            counts[event_type] = 1
+        else:
+            evidence["event_type_overflow_count"] = (
+                int(evidence.get("event_type_overflow_count", 0)) + 1
+            )
+
+    # Codex currently emits ``thread.started`` with ``thread_id``. Support the
+    # common snake/camel alternatives without ever copying a generic ``id`` or
+    # nested arbitrary object that may contain agent content.
+    for source_key, target_key in (
+        ("thread_id", "thread_id"),
+        ("threadId", "thread_id"),
+        ("session_id", "session_id"),
+        ("sessionId", "session_id"),
+    ):
+        identifier = _safe_cli_execution_identifier(event.get(source_key))
+        if identifier and not evidence.get(target_key):
+            evidence[target_key] = identifier
+
+    if event_type.startswith("thread."):
+        thread = event.get("thread")
+        if isinstance(thread, dict):
+            identifier = _safe_cli_execution_identifier(thread.get("id"))
+            if identifier and not evidence.get("thread_id"):
+                evidence["thread_id"] = identifier
+    elif event_type.startswith("session."):
+        session = event.get("session")
+        if isinstance(session, dict):
+            identifier = _safe_cli_execution_identifier(session.get("id"))
+            if identifier and not evidence.get("session_id"):
+                evidence["session_id"] = identifier
+
+    if event_type == "result":
+        evidence["result_event_seen"] = True
+        evidence["result_is_error"] = bool(event.get("is_error"))
+        evidence["terminal_event_type"] = event_type
+    elif event_type in {
+        "turn.completed",
+        "turn.failed",
+        "turn.cancelled",
+        "turn.interrupted",
+    }:
+        # This is evidence only. Keep the established success contract: only a
+        # Claude/Kimi ``result`` error overrides a zero process exit.
+        evidence["terminal_event_type"] = event_type
+
 
 def _no_mcp_args(settings, provider: str) -> list[str]:
     """MCP-disabling argv for ``provider`` when ``cli_disable_mcp`` is on (default)."""
     if not getattr(settings, "cli_disable_mcp", True):
         return []
     return list(_CLI_NO_MCP_ARGS.get(provider, []))
+
+
+def _isolated_codex_windows_sandbox_args(no_mcp_args: list[str]) -> list[str]:
+    """Keep Codex workspace-write usable when its user config is isolated.
+
+    ``--ignore-user-config`` intentionally keeps ambient MCP servers and desktop
+    plugins out of a SkyN3t build. On Windows it also omits the user's native
+    sandbox selection, causing Codex to mount the worktree read-only despite an
+    explicit ``--sandbox workspace-write``. Carry only the sandbox mode needed
+    for the isolated process; this neither loads user MCP config nor disables
+    Codex's own restricted workspace boundary.
+    """
+    if os.name == "nt" and "--ignore-user-config" in no_mcp_args:
+        return ["-c", 'windows.sandbox="elevated"']
+    return []
 
 
 def _to_data_url(item: str) -> str:
@@ -1092,6 +1260,7 @@ class LLMClient:
         file_hint: str | None = None,
         task_type: str = "",
         profile: str | None = None,
+        allow_live_catalog: bool | None = None,
     ) -> str:
         effective_profile = str(profile or _ROUTING_PROFILE.get() or "balanced")
         requested: list[str] = []
@@ -1105,18 +1274,19 @@ class LLMClient:
             if bool(getattr(self.settings, "free_only", False)) and not _is_free_model_id(pinned):
                 log.warning("llm.free_only_ignored_paid_pin", model=pinned)
                 continue
-            try:
-                info = self.router.model_cost_info(pinned)
-                log.info(
-                    "llm.explicit_model_pin",
-                    model=pinned,
-                    profile=effective_profile,
-                    price_class=info.get("price_class"),
-                    input_per_million=info.get("prompt_usd_per_million"),
-                    output_per_million=info.get("completion_usd_per_million"),
-                )
-            except Exception as exc:  # noqa: BLE001 - classification is advisory for explicit pins
-                log.debug("llm.explicit_model_pin_unclassified", model=pinned, error=str(exc)[:120])
+            if allow_live_catalog is not False:
+                try:
+                    info = self.router.model_cost_info(pinned)
+                    log.info(
+                        "llm.explicit_model_pin",
+                        model=pinned,
+                        profile=effective_profile,
+                        price_class=info.get("price_class"),
+                        input_per_million=info.get("prompt_usd_per_million"),
+                        output_per_million=info.get("completion_usd_per_million"),
+                    )
+                except Exception as exc:  # noqa: BLE001 - classification is advisory for explicit pins
+                    log.debug("llm.explicit_model_pin_unclassified", model=pinned, error=str(exc)[:120])
             return pinned
         try:
             return self.router.resolve(
@@ -1124,6 +1294,7 @@ class LLMClient:
                 file_hint,
                 task_type=task_type,
                 profile=effective_profile,
+                allow_live_catalog=allow_live_catalog,
             )
         except TypeError:
             # Compatibility for externally supplied routers implementing the
@@ -1316,6 +1487,54 @@ class LLMClient:
     _cli_version_cache: dict[str, tuple[str, str]] = {}
 
     @classmethod
+    def _cli_executable(cls, provider: str) -> str:
+        """Resolve the executable used for a local CLI invocation.
+
+        On Windows the desktop-app launcher can be on ``PATH`` while the
+        matching standalone runtime (and its sandbox helper binaries) live
+        under ``CODEX_HOME``. Running the launcher directly can leave Codex
+        unable to start its Windows sandbox helper, so prefer the same
+        standalone executable its own ``doctor`` command reports when the
+        detected path is that desktop shim. Custom and package-manager Codex
+        installs remain untouched.
+        """
+        provider = str(provider or "").strip().lower()
+        resolved = str(shutil.which(provider) or "")
+        if provider != "codex" or os.name != "nt":
+            return resolved
+
+        normalized = resolved.replace("/", "\\").lower()
+        desktop_shim = "\\openai\\codex\\bin\\codex.exe"
+        if not resolved or desktop_shim not in normalized:
+            return resolved
+
+        try:
+            codex_home = Path(
+                os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+            ).expanduser()
+            releases = codex_home / "packages" / "standalone" / "releases"
+            candidates = [
+                release / "bin" / "codex.exe"
+                for release in releases.iterdir()
+                if (release / "bin" / "codex.exe").is_file()
+            ]
+        except OSError:
+            candidates = []
+        if not candidates:
+            return resolved
+
+        def release_key(candidate: Path) -> tuple[tuple[int, ...], float]:
+            match = re.match(r"(\d+(?:\.\d+)*)", candidate.parent.parent.name)
+            version = tuple(int(part) for part in match.group(1).split(".")) if match else ()
+            try:
+                modified = candidate.stat().st_mtime
+            except OSError:
+                modified = 0.0
+            return version, modified
+
+        return str(max(candidates, key=release_key))
+
+    @classmethod
     def _cli_available(cls, provider: str) -> bool:
         provider = str(provider or "").strip().lower()
         if provider not in _KNOWN_CLI_PROVIDERS:
@@ -1327,7 +1546,7 @@ class LLMClient:
         )
         if provider not in cls._cli_cache or expired:
             previous = cls._cli_cache.get(provider)
-            available = shutil.which(provider) is not None
+            available = bool(cls._cli_executable(provider))
             cls._cli_cache[provider] = available
             cls._cli_cache_checked_at[provider] = time.monotonic()
             if previous is not None and previous != available:
@@ -1340,7 +1559,7 @@ class LLMClient:
         provider = str(provider or "").strip().lower()
         if not cls._cli_available(provider):
             return ""
-        path = str(shutil.which(provider) or "")
+        path = cls._cli_executable(provider)
         cached = cls._cli_version_cache.get(provider)
         if cached is not None and cached[0] == path:
             return cached[1]
@@ -1352,6 +1571,7 @@ class LLMClient:
                 check=False,
                 text=True,
                 timeout=3,
+                env=_cli_subprocess_env(),
             )
             raw = result.stdout or result.stderr or ""
             version = next((line.strip() for line in raw.splitlines() if line.strip()), "")[:160]
@@ -1359,6 +1579,19 @@ class LLMClient:
             version = ""
         cls._cli_version_cache[provider] = (path, version)
         return version
+
+    @classmethod
+    def _cached_cli_version(cls, provider: str) -> str:
+        """Return an already-probed version without delaying a build startup.
+
+        Execution evidence benefits from a version when the status endpoint has
+        already queried one. Do not spawn a second ``--version`` process just to
+        enrich a build record; it is optional evidence, not a preflight.
+        """
+        cached = cls._cli_version_cache.get(str(provider or "").strip().lower())
+        if cached is None:
+            return ""
+        return str(cached[1] or "").strip().replace("\x00", "")[:160]
 
     @classmethod
     def clear_cli_status_cache(cls) -> None:
@@ -1371,7 +1604,7 @@ class LLMClient:
     def _cli_detail(cls, provider: str) -> dict[str, Any]:
         provider = str(provider or "").strip().lower()
         available = cls._cli_available(provider)
-        path = str(shutil.which(provider) or "") if available else ""
+        path = cls._cli_executable(provider) if available else ""
         version = cls._cli_version(provider) if available else ""
         return {
             "provider": provider,
@@ -1564,6 +1797,7 @@ class LLMClient:
                 tier,
                 primary=primary,
                 profile=str(_ROUTING_PROFILE.get() or "balanced"),
+                allow_live_catalog=self.backend == "openrouter",
             ):
                 if m and m != primary and m not in out:
                     out.append(m)
@@ -1822,32 +2056,52 @@ class LLMClient:
         # and normally bypasses the router; the (tier, task_type) bucket is
         # unchanged. ``free_only`` is the hard cost guard: a paid manual/preferred
         # pin is ignored unless it is itself an OpenRouter ":free" model.
-        requested_override = (model_override or "").strip()
-        model = self._resolve_pinned_model(
-            tier=tier,
-            model_override=requested_override,
-            setting_names=("preferred_model",),
-            file_hint=file_hint,
-            task_type=task_type,
-        )
-        vision_override = requested_override if requested_override and model == requested_override else None
         backend = self.backend
+        requested_override = (model_override or "").strip()
         # An attached image only matters to the openrouter backend (the only one
         # that speaks the multimodal message shape). stub/CLI ignore it and behave
         # exactly as today — degrade, don't crash (design rule #6).
-        if backend == "openrouter" and images:
-            model, send_images = self._resolve_vision(model, vision_override)
-            if send_images:
-                result = await self._openrouter(model, prompt, system, max_tokens, json_mode, images, tier=tier)
+        if backend == "openrouter":
+            model = self._resolve_pinned_model(
+                tier=tier,
+                model_override=requested_override,
+                setting_names=("preferred_model",),
+                file_hint=file_hint,
+                task_type=task_type,
+                allow_live_catalog=True,
+            )
+            vision_override = (
+                requested_override if requested_override and model == requested_override else None
+            )
+            if images:
+                model, send_images = self._resolve_vision(model, vision_override)
+                if send_images:
+                    result = await self._openrouter(
+                        model, prompt, system, max_tokens, json_mode, images, tier=tier
+                    )
+                else:
+                    # free_only with no usable free vision model: stay text-only rather
+                    # than silently billing a paid model (design rule #5 cheap-by-default).
+                    result = await self._openrouter(
+                        model, prompt, system, max_tokens, json_mode, tier=tier
+                    )
             else:
-                # free_only with no usable free vision model: stay text-only rather
-                # than silently billing a paid model (design rule #5 cheap-by-default).
                 result = await self._openrouter(model, prompt, system, max_tokens, json_mode, tier=tier)
-        elif backend == "openrouter":
-            result = await self._openrouter(model, prompt, system, max_tokens, json_mode, tier=tier)
         elif backend.endswith("_cli"):
+            # A local CLI owns its model selection through the signed-in CLI
+            # session. Consulting the hosted ModelRouter here neither affects
+            # execution nor produces useful evidence; it only led Codex runs to
+            # be labelled with a cached OpenRouter model such as GLM.
             result = await self._cli(backend[:-4], prompt, system, json_mode, images)
         else:
+            model = self._resolve_pinned_model(
+                tier=tier,
+                model_override=requested_override,
+                setting_names=("preferred_model",),
+                file_hint=file_hint,
+                task_type=task_type,
+                allow_live_catalog=False,
+            )
             result = self._stub(model, prompt, system, json_mode)
         tier_s = getattr(tier, "value", str(tier))
         self._record_completion(tier_s, task_type, result.model)
@@ -2017,8 +2271,16 @@ class LLMClient:
                         f"then:\n\n{full}")
         if json_mode:
             full += "\n\nRespond with ONLY valid JSON — no prose, no code fences."
+        # The Windows standalone substitution is a Codex-specific sandbox
+        # recovery. Other CLIs keep their documented command token so their
+        # invocation contracts remain stable.
+        command = self._cli_executable(provider) if provider == "codex" else provider
+        command = command or provider
+        command_template = list(_CLI_COMMANDS.get(provider, [provider, "-p"]))
+        if command_template:
+            command_template[0] = command
         argv = [
-            *_CLI_COMMANDS.get(provider, [provider, "-p"]),
+            *command_template,
             *_no_mcp_args(self.settings, provider),
         ]
         stdin_prompt = provider == "codex"
@@ -2039,6 +2301,7 @@ class LLMClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group -> killable as a tree
+                env=_cli_subprocess_env(),
             )
             communicate = (
                 proc.communicate(full.encode("utf-8"))
@@ -2950,6 +3213,7 @@ class LLMClient:
         # acceptEdits lets the headless agent write files without prompting.
         # _no_mcp_args keeps the agent from loading the host's ambient MCP fleet.
         nm = _no_mcp_args(self.settings, provider)
+        codex_windows_sandbox = _isolated_codex_windows_sandbox_args(nm)
         # Stream the agent's NDJSON event log (claude/kimi) so we can detect the
         # terminal `result` event (an accurate success signal — claude -p can
         # exit 0 on a reported error) and watch for a stalled session via an idle
@@ -2969,13 +3233,14 @@ class LLMClient:
         )
         # --setting-sources project isolates codegen from the host's Claude Code
         # config (output-style plugins, hooks) so they can't corrupt the build.
+        cli_command = self._cli_executable(provider) or provider
         argv = {
             "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
                        "--setting-sources", "project", *model_args, *stream_args, *nm],
             "codex": [
-                "codex", "exec", "--ephemeral", "--sandbox", "workspace-write",
+                cli_command, "exec", "--ephemeral", "--sandbox", "workspace-write",
                 "--color", "never", "--skip-git-repo-check", "--json",
-                "--cd", workdir, *model_args, *nm, "-",
+                *codex_windows_sandbox, "--cd", workdir, *model_args, *nm, "-",
             ],
             # Kimi requires --print for noninteractive and stream-json modes.
             # It has no documented disable-all ambient-MCP flag in 1.41.
@@ -2986,13 +3251,29 @@ class LLMClient:
             ],
         }.get(provider, [provider, "-p", prompt])
         stdin_prompt = provider == "codex"
+        # This is deliberately a compact execution receipt, not a raw CLI log.
+        # The latter can contain source files, user prompts, or tool output and
+        # does not belong in a durable build manifest.
+        cached_cli_version = self._cached_cli_version(provider)
+        cli_execution = _new_cli_execution_evidence(
+            provider,
+            streamed=stream,
+            cli_version=cached_cli_version,
+        )
+        stream_evidence_token = _AGENTIC_STREAM_EVIDENCE.set(None)
         proc = None
+        agentic_timeout = (
+            timeout
+            or int(getattr(self.settings, "agentic_build_timeout", 0))
+            or (self.settings.cli_llm_timeout * 3)
+        )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=workdir,
                 stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,  # own process group -> killable as a tree
+                env=_cli_subprocess_env(),
                 # A single stream-json event line (a big tool result, or the final
                 # `result` event carrying the whole output) routinely exceeds the
                 # 64KB asyncio StreamReader default, which makes readline() raise
@@ -3001,6 +3282,7 @@ class LLMClient:
                 # preallocated).
                 limit=_AGENTIC_STREAM_LIMIT,
             )
+            cli_execution["exit_status"] = "running"
             if stdin_prompt and proc.stdin is not None:
                 proc.stdin.write(prompt.encode("utf-8"))
                 await proc.stdin.drain()
@@ -3009,25 +3291,78 @@ class LLMClient:
             # duration ceiling. Every stream event proves the agent is alive and
             # resets _consume_agentic_stream's idle wait, so productive full-app
             # builds may continue until their terminal result event.
-            agentic_timeout = (
-                timeout
-                or int(getattr(self.settings, "agentic_build_timeout", 0))
-                or (self.settings.cli_llm_timeout * 3)
-            )
             if stream:
                 idle_timeout = (
                     int(getattr(self.settings, "agentic_idle_timeout", 0))
                     or agentic_timeout
                 )
                 ok = await self._consume_agentic_stream(proc, provider, idle_timeout)
+                observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
+                if isinstance(observed_execution, dict):
+                    cli_execution = observed_execution
+                    if cached_cli_version and not cli_execution.get("cli_version"):
+                        cli_execution["cli_version"] = cached_cli_version
+                # Keep older test/custom consumers that return only a bool
+                # compatible. The native consumer always supplies this detail.
+                if cli_execution.get("exit_status") == "running":
+                    returncode = getattr(proc, "returncode", None)
+                    cli_execution["exit_code"] = (
+                        returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
+                        else None
+                    )
+                    cli_execution["exit_status"] = (
+                        "exited" if returncode is not None else "not_reaped"
+                    )
             else:
                 out, err = await asyncio.wait_for(
                     proc.communicate(), timeout=agentic_timeout,
                 )
                 ok = proc.returncode == 0
+                returncode = getattr(proc, "returncode", None)
+                cli_execution["exit_code"] = (
+                    returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
+                    else None
+                )
+                cli_execution["exit_status"] = (
+                    "exited" if returncode is not None else "not_reaped"
+                )
                 if not ok:
                     log.warning("llm.agentic_nonzero", provider=provider,
                                 err=(err or b"").decode("utf-8", "replace")[:160])
+        except TimeoutError:
+            # Copilot uses the blocking path. Its watchdog is a total timeout;
+            # streamed CLI watchdogs are recorded by the stream consumer as an
+            # idle timeout instead.
+            cli_execution["timed_out"] = True
+            cli_execution["timeout_kind"] = "total"
+            cli_execution["termination_reason"] = "total_timeout"
+            await self._terminate(proc)
+            returncode = getattr(proc, "returncode", None)
+            cli_execution["exit_code"] = (
+                returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
+                else None
+            )
+            cli_execution["exit_status"] = (
+                "terminated_after_total_timeout"
+                if returncode is not None
+                else "termination_requested_after_total_timeout"
+            )
+            self._record_failed_cli_attempt(
+                provider, prompt, status="failed_cli_timeout"
+            )
+            log.warning("llm.agentic_timeout", provider=provider, timeout=agentic_timeout)
+            return {
+                "ok": False,
+                "completed": False,
+                "timed_out": True,
+                "backend": f"{provider}_cli",
+                "model": model or f"{provider}-cli",
+                "account_source": "local_cli_session",
+                "cost_source": "not_reported_by_cli",
+                "cost_usd": None,
+                "cli_execution": cli_execution,
+                "error": "agentic CLI timed out",
+            }
         except asyncio.CancelledError:
             # Outer stage timeout / build cancellation: kill the whole agent tree
             # before unwinding so it can't keep building orphaned for an hour.
@@ -3038,17 +3373,42 @@ class LLMClient:
             raise
         except Exception as exc:  # noqa: BLE001 - never raise into the build
             await self._terminate(proc)
+            observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
+            if isinstance(observed_execution, dict):
+                cli_execution = observed_execution
+                if cached_cli_version and not cli_execution.get("cli_version"):
+                    cli_execution["cli_version"] = cached_cli_version
             self._record_failed_cli_attempt(
                 provider, prompt, status="failed_cli_exception"
             )
             log.warning("llm.agentic_failed", provider=provider, error=str(exc)[:160])
+            returncode = getattr(proc, "returncode", None)
+            cli_execution["termination_reason"] = "spawn_failed" if proc is None else "exception"
+            cli_execution["exit_code"] = (
+                returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
+                else None
+            )
+            cli_execution["exit_status"] = (
+                "spawn_failed"
+                if proc is None
+                else "terminated_after_exception"
+                if returncode is not None
+                else "termination_requested_after_exception"
+            )
             return {
                 "ok": False,
+                "completed": False,
+                "timed_out": False,
                 "backend": f"{provider}_cli",
+                "model": model or f"{provider}-cli",
+                "account_source": "local_cli_session",
                 "cost_source": "not_reported_by_cli",
                 "cost_usd": None,
+                "cli_execution": cli_execution,
                 "error": str(exc)[:160],
             }
+        finally:
+            _AGENTIC_STREAM_EVIDENCE.reset(stream_evidence_token)
         effective_model = model or f"{provider}-cli"
         self.budget.record(LLMResult(
             text="",
@@ -3069,6 +3429,8 @@ class LLMClient:
             "account_source": "local_cli_session",
             "cost_source": "not_reported_by_cli",
             "cost_usd": None,
+            "timed_out": bool(cli_execution.get("timed_out")),
+            "cli_execution": cli_execution,
             "error": "" if ok else "agentic CLI ended without a successful result",
         }
 
@@ -3082,10 +3444,20 @@ class LLMClient:
         whole tree and report failure. Each event resets that wait, so there is no
         total-duration ceiling on productive work. stderr is drained concurrently
         so a chatty agent cannot deadlock on a full pipe. Returns ``ok``.
+
+        A fixed, task-local receipt is retained in ``_AGENTIC_STREAM_EVIDENCE``
+        for ``agentic_build``. The method intentionally keeps its boolean return
+        contract so existing integrations that mock or call it directly remain
+        compatible.
         """
         saw_result = False
         result_is_error = False
         events = 0
+        timed_out = False
+        terminated = False
+        stream_overrun = False
+        evidence = _new_cli_execution_evidence(provider, streamed=True)
+        evidence["exit_status"] = "streaming"
 
         # Drain stderr concurrently (a full stderr pipe would block the agent);
         # keep only a short tail for diagnostics.
@@ -3105,55 +3477,114 @@ class LLMClient:
 
         err_task = asyncio.create_task(_drain_err())
         try:
-            while True:
-                try:
-                    if idle_timeout > 0:
-                        line = await asyncio.wait_for(
-                            proc.stdout.readline(), timeout=idle_timeout
-                        )
-                    else:
-                        line = await proc.stdout.readline()
-                except TimeoutError:
-                    log.warning("llm.agentic_stalled", provider=provider, idle_s=idle_timeout)
-                    await self._terminate(proc)
-                    return False
-                except ValueError:
-                    # Defence in depth: a single line past even the 64MB buffer
-                    # makes readline() raise. Kill the tree (else the agent can
-                    # block on a full stdout pipe we've stopped draining) and fall
-                    # back to the returncode below.
-                    log.warning("llm.agentic_stream_overrun", provider=provider)
-                    await self._terminate(proc)
-                    break
-                if not line:
-                    break  # EOF — the agent exited
-                events += 1
-                try:
-                    evt = json.loads(line)
-                except (ValueError, TypeError):
-                    continue  # stray non-JSON log line — ignore
-                if isinstance(evt, dict) and evt.get("type") == "result":
-                    saw_result = True
-                    result_is_error = bool(evt.get("is_error"))
-        finally:
-            err_task.cancel()
             try:
-                await err_task
+                while True:
+                    try:
+                        if idle_timeout > 0:
+                            line = await asyncio.wait_for(
+                                proc.stdout.readline(), timeout=idle_timeout
+                            )
+                        else:
+                            line = await proc.stdout.readline()
+                    except TimeoutError:
+                        log.warning("llm.agentic_stalled", provider=provider, idle_s=idle_timeout)
+                        timed_out = True
+                        terminated = True
+                        evidence["timed_out"] = True
+                        evidence["timeout_kind"] = "idle"
+                        evidence["termination_reason"] = "idle_timeout"
+                        await self._terminate(proc)
+                        break
+                    except ValueError:
+                        # Defence in depth: a single line past even the 64MB buffer
+                        # makes readline() raise. Kill the tree (else the agent can
+                        # block on a full stdout pipe we've stopped draining) and fall
+                        # back to the returncode below.
+                        log.warning("llm.agentic_stream_overrun", provider=provider)
+                        stream_overrun = True
+                        terminated = True
+                        evidence["termination_reason"] = "stream_overrun"
+                        await self._terminate(proc)
+                        break
+                    if not line:
+                        break  # EOF — the agent exited
+                    events += 1
+                    evidence["event_count"] = events
+                    try:
+                        evt = json.loads(line)
+                    except (ValueError, TypeError):
+                        evidence["invalid_line_count"] = (
+                            int(evidence.get("invalid_line_count", 0)) + 1
+                        )
+                        continue  # stray non-JSON log line — ignore
+                    if not isinstance(evt, dict):
+                        evidence["invalid_line_count"] = (
+                            int(evidence.get("invalid_line_count", 0)) + 1
+                        )
+                        continue
+                    _record_cli_execution_event(evidence, evt)
+                    if evt.get("type") == "result":
+                        saw_result = True
+                        result_is_error = bool(evt.get("is_error"))
             except asyncio.CancelledError:
-                pass
+                evidence["termination_reason"] = "cancelled"
+                evidence["exit_status"] = "cancelled"
+                raise
+            finally:
+                err_task.cancel()
+                try:
+                    await err_task
+                except asyncio.CancelledError:
+                    pass
 
-        # stdout EOF means the agent is exiting; reap it (bounded) so returncode
-        # is set for the fallback success check.
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=10)
-        except Exception:  # noqa: BLE001 - never hang on reap
-            pass
+            # stdout EOF means the agent is exiting; reap it (bounded) so
+            # returncode is set for the fallback success check. _terminate()
+            # already reaps the process on an idle/overrun abort.
+            if not terminated:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=10)
+                except TimeoutError:
+                    evidence["termination_reason"] = "reap_timeout"
+                except Exception:  # noqa: BLE001 - never hang on reap
+                    pass
 
-        ok = (not result_is_error) if saw_result else (proc.returncode == 0)
-        if not ok:
-            log.warning("llm.agentic_nonzero", provider=provider,
-                        events=events, err="".join(err_tail)[-160:])
-        return ok
+            returncode = getattr(proc, "returncode", None)
+            evidence["exit_code"] = (
+                returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
+                else None
+            )
+            if timed_out:
+                evidence["exit_status"] = (
+                    "terminated_after_idle_timeout"
+                    if returncode is not None
+                    else "termination_requested_after_idle_timeout"
+                )
+            elif stream_overrun:
+                evidence["exit_status"] = (
+                    "terminated_after_stream_overrun"
+                    if returncode is not None
+                    else "termination_requested_after_stream_overrun"
+                )
+            elif returncode is None:
+                evidence["exit_status"] = "not_reaped"
+            else:
+                evidence["exit_status"] = "exited"
+
+            # Preserve the pre-existing success semantics: a terminal `result`
+            # error wins; Codex's `turn.completed` is useful evidence but process
+            # exit status remains its source of truth.
+            ok = False if timed_out else (
+                (not result_is_error) if saw_result else (returncode == 0)
+            )
+            evidence["ok"] = ok
+            if not ok:
+                log.warning("llm.agentic_nonzero", provider=provider,
+                            events=events, err="".join(err_tail)[-160:])
+            return ok
+        finally:
+            # Always leave the caller a bounded receipt, including cancellation
+            # and unexpected reader errors. No raw event line is retained.
+            _AGENTIC_STREAM_EVIDENCE.set(evidence)
 
     @staticmethod
     async def _terminate(proc) -> None:

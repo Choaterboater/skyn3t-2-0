@@ -452,7 +452,7 @@ def _provenance_from_frontmatter(meta: dict[str, object]) -> SkillProvenance | N
             or _meta_text(meta, "content-sha256")
         ),
         source_path=metadata.get(_PROVENANCE_SOURCE_PATH),
-        tools=_meta_text(meta, "allowed-tools"),
+        tools=_tool_list(meta.get("allowed-tools")),
         metadata=metadata,
         compatibility=_meta_text(meta, "compatibility"),
     )

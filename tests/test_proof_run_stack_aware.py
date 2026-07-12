@@ -342,6 +342,76 @@ def test_proof_run_records_degraded_environment_when_build_skips(tmp_path):
     assert any("build skipped" in reason for reason in env["degraded_reasons"])
 
 
+def test_node_test_evidence_prevents_generic_test_skip_degradation():
+    """A passing declared browser test suite is real proof evidence."""
+    import skyn3t.studio.proof_run as proof_mod
+
+    detail = {
+        "tests": "skipped",
+        "test_summary": "no Python tests discovered",
+        "node_tests": "passed",
+        "node_tests_summary": "12 tests passed",
+    }
+    proof_mod._attach_proof_environment(
+        detail,
+        execution_backend="inline",
+        cmd_ctx=proof_mod._ProofCommandContext(runner=None, stack="react"),
+        sandbox_available=False,
+        run_tests=True,
+        run_build=False,
+    )
+
+    environment = detail["proof_environment"]
+    assert environment["degraded"] is False
+    assert environment["degraded_reasons"] == []
+
+
+def test_generic_test_skip_still_degrades_without_native_test_evidence():
+    import skyn3t.studio.proof_run as proof_mod
+
+    detail = {"tests": "skipped", "test_summary": "no test runner"}
+    proof_mod._attach_proof_environment(
+        detail,
+        execution_backend="inline",
+        cmd_ctx=proof_mod._ProofCommandContext(runner=None, stack="react"),
+        sandbox_available=False,
+        run_tests=True,
+        run_build=False,
+    )
+
+    reasons = detail["proof_environment"]["degraded_reasons"]
+    assert any("tests skipped" in reason for reason in reasons)
+
+
+def test_source_iteration_prunes_dependency_trees_before_descending(tmp_path, monkeypatch):
+    """Installed packages must not make each proof scan traverse their whole tree."""
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.jsx").write_text("export default null\n")
+    nested_package = tmp_path / "node_modules" / "example-package" / "lib"
+    nested_package.mkdir(parents=True)
+    (nested_package / "index.js").write_text("export const ignored = true\n")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "bundle.js").write_text("compiled output\n")
+
+    visited: list[Path] = []
+    real_walk = proof_mod.os.walk
+
+    def tracking_walk(path, **kwargs):
+        for current, dirnames, filenames in real_walk(path, **kwargs):
+            yield current, dirnames, filenames
+            visited.append(Path(current).relative_to(tmp_path))
+
+    monkeypatch.setattr(proof_mod.os, "walk", tracking_walk)
+
+    files = list(proof_mod._iter_files(tmp_path))
+
+    assert [path.relative_to(tmp_path).as_posix() for path in files] == ["src/main.jsx"]
+    assert all("node_modules" not in path.parts for path in visited)
+    assert all("dist" not in path.parts for path in visited)
+
+
 def test_python_deps_install_is_bounded_and_sandboxed(tmp_path, monkeypatch):
     import skyn3t.studio.proof_run as proof_mod
 
@@ -373,6 +443,109 @@ def test_python_deps_install_is_bounded_and_sandboxed(tmp_path, monkeypatch):
     assert calls[0]["timeout"] == 30
     assert calls[0]["network"] is True
     assert calls[0]["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_python_package_build_runs_pip_wheel_and_cleans_output(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "pyproject.toml").write_text(
+        "[build-system]\nrequires = [\"setuptools\"]\nbuild-backend = \"setuptools.build_meta\"\n"
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_run(ctx, command, *, cwd, timeout, env=None, network=False):
+        calls.append({"command": command, "cwd": cwd, "timeout": timeout, "env": env, "network": network})
+        wheel_dir = cwd / command[command.index("--wheel-dir") + 1]
+        wheel_dir.mkdir(exist_ok=True)
+        (wheel_dir / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+        return proof_mod._ProofCommandResult(0, "built wheel", "")
+
+    monkeypatch.setattr(proof_mod, "_run_proof_command", fake_run)
+
+    ran, passed, summary = proof_mod._run_python_package_build(tmp_path, 17)
+
+    assert (ran, passed) == (True, True)
+    assert "built wheel" in summary
+    assert calls[0]["command"][1:4] == ["-m", "pip", "wheel"]
+    assert "--no-deps" in calls[0]["command"]
+    assert calls[0]["network"] is True
+    assert calls[0]["env"]["PIP_NO_INPUT"] == "1"
+    assert not list(tmp_path.glob(".skyn3t-wheel-proof-*"))
+
+
+def test_proof_runs_python_package_build_when_enabled(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    _make_python_project(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_build(*_args, **_kwargs):
+        calls.append(True)
+        return (True, True, "wheel built")
+
+    monkeypatch.setattr(proof_mod, "_run_python_package_build", fake_build)
+
+    result = proof_mod.proof_run(
+        tmp_path,
+        stack="python",
+        run_build=True,
+        execution_backend="inline",
+        install_python_deps=False,
+    )
+
+    assert calls == [True]
+    assert result.passed is True
+    assert result.detail["build"] == "passed"
+    assert result.detail["build_summary"] == "wheel built"
+
+
+def test_proof_fails_an_opted_in_ruff_quality_check(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    _make_python_project(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n"
+        "[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\"]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        proof_mod, "_run_python_package_build", lambda *_args, **_kwargs: (True, True, "wheel built")
+    )
+    monkeypatch.setattr(
+        proof_mod, "_run_ruff_check", lambda *_args, **_kwargs: (
+            True,
+            False,
+            "src/main.py:1:101: E501 Line too long",
+        )
+    )
+
+    result = proof_mod.proof_run(
+        tmp_path,
+        stack="python",
+        run_build=True,
+        execution_backend="inline",
+        install_python_deps=False,
+    )
+
+    assert result.passed is False
+    assert result.detail["ruff"] == "failed"
+    assert "<ruff>" in result.missing
+    assert any(gap.startswith("RUFF FAILED") for gap in result.error_gaps())
+
+
+def test_python_proof_uses_the_running_interpreter(monkeypatch):
+    import skyn3t.studio.proof_run as proof_mod
+
+    monkeypatch.setattr(proof_mod.sys, "executable", "C:/sky/venv/python.exe")
+    monkeypatch.setattr(proof_mod.shutil, "which", lambda _name: "C:/global/python.exe")
+
+    assert proof_mod._python_executable() == "C:/sky/venv/python.exe"
 
 
 def test_proof_run_installs_python_deps_before_generated_tests(tmp_path, monkeypatch):

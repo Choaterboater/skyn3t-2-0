@@ -14,7 +14,9 @@ from skyn3t.core.model_router import ModelRouter, Tier
 
 
 def _router():
-    return ModelRouter(Settings(free_only=True, openrouter_api_key="sk-or-test"))
+    return ModelRouter(Settings(
+        llm_backend="openrouter", free_only=True, openrouter_api_key="sk-or-test"
+    ))
 
 
 def test_retired_free_model_is_substituted(monkeypatch):
@@ -58,4 +60,18 @@ def test_no_key_skips_live_fetch(monkeypatch):
 
     monkeypatch.setattr(mr, "live_free_model_ids", _spy)
     ModelRouter(Settings(free_only=True, openrouter_api_key="")).resolve(Tier.UI, "App.jsx")
+    assert called["n"] == 0
+
+
+def test_auto_with_a_dormant_key_skips_live_catalog(monkeypatch):
+    called = {"n": 0}
+
+    def _spy(timeout=8.0):
+        called["n"] += 1
+        return ["qwen/qwen3-coder:free"]
+
+    monkeypatch.setattr(mr, "live_free_model_ids", _spy)
+    ModelRouter(Settings(
+        llm_backend="auto", free_only=True, openrouter_api_key="sk-or-dormant"
+    )).resolve(Tier.UI, "App.jsx")
     assert called["n"] == 0

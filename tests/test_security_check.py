@@ -68,6 +68,18 @@ def test_security_check_does_not_treat_query_selector_as_sql(tmp_path):
     assert verdict["issues"] == []
 
 
+def test_security_check_does_not_treat_react_delete_label_as_sql(tmp_path):
+    (tmp_path / "HabitCard.jsx").write_text(
+        "const label = `Delete ${habit.title}`;\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "react")
+
+    assert verdict["ok"] is True
+    assert verdict["issues"] == []
+
+
 def test_security_check_still_flags_real_sql_interpolation(tmp_path):
     (tmp_path / "server.js").write_text(
         "const sql = `SELECT * FROM users WHERE id = ${userId}`;\n",

@@ -130,8 +130,13 @@ skyn3t deploy <slug>
 From a source checkout, the build lands in `../Projects/<slug>/` (sibling of
 the repo). A wheel install keeps its writable data, logs, configuration, and
 projects under `~/.skyn3t/` instead of writing into `site-packages`. Add API
-keys to `.env` (see `.env.example`) to unlock real LLM backends; without them
-SkyN3t uses a deterministic stub so the whole pipeline still runs.
+keys to `.env` (see `.env.example`) only when you intentionally want a hosted
+provider. By default, `auto` uses a signed-in Codex CLI when it is available;
+it never switches to OpenRouter merely because a key exists. Select the
+OpenRouter backend explicitly in Foundry Settings (or set
+`SKYN3T_LLM_BACKEND=openrouter`) to use hosted API billing. Without Codex CLI
+or an explicitly selected, configured provider, SkyN3t uses its deterministic
+stub so the whole pipeline still runs.
 
 ### The Foundry — web control plane
 
@@ -198,7 +203,7 @@ flowchart TD
     VERDICT --> DELIVER["Projects/&lt;slug&gt;/"]
     VERDICT --> SHIP["plan_deploy → keyless deploy plan<br/>(static · node_ssr · container · artifact · mobile)"]
 
-    AGENTS --> LLM["LLMClient<br/>(openrouter | stub) + BudgetTracker"]
+    AGENTS --> LLM["LLMClient<br/>(Codex CLI | explicit OpenRouter | stub) + BudgetTracker"]
     LLM --> ROUTER
     SPINE --> MEM["Memory · lessons · bench"]
     MEM --> LEARN["Learning loop<br/>inject + grade lessons"]

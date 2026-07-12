@@ -77,6 +77,39 @@ async def test_clear_key():
     assert r["configured"] is False
 
 
+async def test_set_llm_key_rejects_multiline_input_before_mutating_state():
+    st = _state(llm_backend="stub", openrouter_api_key="sk-or-existing")
+
+    with pytest.raises(ValueError, match="single line"):
+        await set_llm_key(
+            st,
+            "openrouter",
+            "sk-or-new\nSKYN3T_LLM_BACKEND=openrouter",
+            persist=False,
+        )
+
+    assert st.settings.openrouter_api_key == "sk-or-existing"
+    assert st.settings.openrouter_enabled is True
+
+
+async def test_disconnect_openrouter_suppresses_native_env_fallback(monkeypatch):
+    from skyn3t.adapters.llm import openrouter_key
+
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-native")
+    st = _state(llm_backend="openrouter")
+    assert openrouter_key(st.settings) == "sk-or-native"
+
+    result = await set_llm_key(st, "openrouter", "", persist=False)
+
+    assert result["configured"] is False
+    assert st.settings.openrouter_enabled is False
+    assert openrouter_key(st.settings) == ""
+    payload = await llm_secrets_payload(st)
+    assert payload["providers"]["openrouter"] is False
+    assert payload["routing"]["openrouter_configured"] is False
+
+
 async def test_switch_backend():
     r = await set_llm_backend(_state(llm_backend="stub"), "stub", persist=False)
     assert r["active"] == "stub"
@@ -270,10 +303,12 @@ async def test_set_replicate_token_persist_false(monkeypatch):
 
 async def test_clear_replicate_token(monkeypatch):
     monkeypatch.setenv("SKYN3T_REPLICATE_API_TOKEN", "r8_x")
-    st = _state(llm_backend="stub", replicate_api_token="r8_x")
+    st = _state(llm_backend="stub", replicate_api_token="r8_x", asset_gen=True)
     r = await set_replicate_token(st, "", persist=False)
     assert r["configured"] is False
+    assert r["asset_gen"] is False
     assert st.settings.replicate_api_token == ""
+    assert st.settings.asset_gen is False
     import os
     assert "SKYN3T_REPLICATE_API_TOKEN" not in os.environ
 
@@ -283,6 +318,50 @@ async def test_set_replicate_empty_model_keeps_existing(monkeypatch):
     st = _state(llm_backend="stub", replicate_model="owner/keep")
     await set_replicate_token(st, "r8_x", model="", persist=False)
     assert st.settings.replicate_model == "owner/keep"
+
+
+async def test_update_replicate_model_preserves_existing_token(monkeypatch):
+    monkeypatch.delenv("SKYN3T_REPLICATE_API_TOKEN", raising=False)
+    st = _state(
+        llm_backend="stub",
+        replicate_api_token="r8_existing",
+        replicate_model="owner/old",
+    )
+
+    response = await set_replicate_token(
+        st,
+        None,
+        model="black-forest-labs/flux-schnell",
+        persist=False,
+    )
+
+    assert response == {
+        "configured": True,
+        "model": "black-forest-labs/flux-schnell",
+    }
+    assert st.settings.replicate_api_token == "r8_existing"
+    assert st.settings.replicate_model == "black-forest-labs/flux-schnell"
+
+
+async def test_replicate_model_rejects_dotenv_injection_before_mutating_state():
+    st = _state(
+        llm_backend="stub",
+        replicate_api_token="r8_existing",
+        replicate_model="owner/old",
+        asset_gen=True,
+    )
+
+    with pytest.raises(ValueError, match="single line"):
+        await set_replicate_token(
+            st,
+            None,
+            model="owner/model\nSKYN3T_AUTH_TOKEN=attacker",
+            persist=False,
+        )
+
+    assert st.settings.replicate_api_token == "r8_existing"
+    assert st.settings.replicate_model == "owner/old"
+    assert st.settings.asset_gen is True
 
 
 async def test_integration_credential_config(monkeypatch):

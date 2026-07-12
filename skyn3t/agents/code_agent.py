@@ -30,7 +30,13 @@ from typing import Any
 import structlog
 
 from skyn3t.adapters.llm import LLMClient
-from skyn3t.agents._common import detect_stack, extract_code, knowledge_block, slugify
+from skyn3t.agents._common import (
+    canonical_project_relpath,
+    detect_stack,
+    extract_code,
+    knowledge_block,
+    slugify,
+)
 from skyn3t.agents._scaffold import (
     _implies_cli_agent,
     _implies_finance,
@@ -561,7 +567,7 @@ class CodeAgent(BaseAgent):
     _run_metadata_keys = (
         "degraded", "degraded_reason", "codegen_override_unavailable",
         "prompts", "agentic", "prose_rejected", "index_html_repaired",
-        "scene_registry_repaired",
+        "scene_registry_repaired", "agentic_untrusted_paths",
     )
 
     def __init__(self, name: str = "code", *, event_bus: EventBus,
@@ -766,6 +772,8 @@ class CodeAgent(BaseAgent):
 
             preexisting_assets = self._snapshot_preexisting_assets(worktree)
             preserved_asset_paths = set(preexisting_assets)
+            before_agentic = self._snapshot_regular_files(worktree)
+            untrusted_agentic_paths: set[str] = set()
 
             # "Did the agent add a real app beyond the scaffold?" A delivery barely
             # above the scaffold's own code size is the placeholder leaking through,
@@ -813,6 +821,13 @@ class CodeAgent(BaseAgent):
                 restored_contracts.update(
                     restore_acceptance_contracts(worktree, acceptance_contracts)
                 )
+                untrusted_agentic_paths.update(
+                    self._prune_untrusted_agentic_new_paths(
+                        worktree,
+                        before_agentic,
+                        expected_planned,
+                    )
+                )
                 agentic_ok = bool(res.get("ok", True))
                 agentic_confirmed = agentic_ok and bool(
                     res.get("completed", agentic_ok)
@@ -857,6 +872,10 @@ class CodeAgent(BaseAgent):
                 # (proof/build/liveness already verify the app actually runs).
                 log.warning("code_agent.agentic_prose_rejected", files=prose_files)
                 run_metadata["prose_rejected"] = list(prose_files)
+            if untrusted_agentic_paths:
+                cleaned = sorted(untrusted_agentic_paths)
+                log.warning("code_agent.agentic_untrusted_paths_pruned", files=cleaned)
+                run_metadata["agentic_untrusted_paths"] = cleaned
             contract_gap = self._agentic_contract_gap(stack, disk)
             present_planned = self._present_planned_files(worktree, expected_planned)
             missing_planned = sorted(expected_planned - present_planned)
@@ -1011,6 +1030,7 @@ class CodeAgent(BaseAgent):
                     "cached_tokens",
                     "cache_write_tokens",
                     "session_id",
+                    "cli_execution",
                     "error",
                 )
                 if agentic.get(k) not in (None, "")
@@ -1592,6 +1612,7 @@ class CodeAgent(BaseAgent):
                     "single_write_calls", "batch_write_calls",
                     "write_argument_bytes_compacted", "cached_tokens",
                     "cache_write_tokens", "session_id",
+                    "cli_execution",
                     "out_of_scope_files", "error",
                 )
                 if agentic.get(key) not in (None, "")
@@ -1850,6 +1871,20 @@ class CodeAgent(BaseAgent):
     _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next", "assets"})
     _BINARY_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
                               ".bmp", ".svg", ".pdf", ".woff", ".woff2", ".ttf"})
+    _AGENTIC_NEW_ROOT_FILES = frozenset({
+        ".env.example", "CREDITS.md", "Dockerfile", "LICENSE", "README.md",
+        "eslint.config.js", "index.css", "index.html", "main.js", "main.jsx",
+        "main.ts", "main.tsx", "next.config.js", "next.config.mjs",
+        "package-lock.json", "package.json", "pnpm-lock.yaml", "pyproject.toml",
+        "requirements.txt", "script.js", "style.css", "styles.css", "tsconfig.json",
+        "vite.config.js", "vitest.config.js", "yarn.lock",
+    })
+    _AGENTIC_SOURCE_ROOTS = frozenset({
+        "api", "app", "assets", "backend", "components", "data", "frontend", "lib",
+        "pages", "public", "server", "src", "state", "styles", "test", "tests",
+        "utils",
+    })
+    _AGENTIC_ALWAYS_ALLOWED_ROOTS = frozenset({"assets", "data", "public", "test", "tests"})
 
     @staticmethod
     def _present_planned_files(worktree: Path, expected: set[str]) -> set[str]:
@@ -1940,6 +1975,88 @@ class CodeAgent(BaseAgent):
             except (OSError, ValueError):
                 continue
         return snapshot
+
+    @classmethod
+    def _agentic_new_path_allowed(
+        cls,
+        rel: str,
+        expected: set[str],
+    ) -> bool:
+        """Allow normal direct-agent additions without admitting terminal junk.
+
+        A whole-app CLI session is not constrained by the architect's file list,
+        so it may legitimately add a component or test.  When the plan already
+        establishes a source root (for example ``src/``), though, a new parallel
+        root such as ``components/`` or ``state/`` is almost always a malformed
+        terminal fragment.  Keep those writes out while preserving ordinary
+        extensions beneath the established source layout.
+        """
+        canonical = canonical_project_relpath(rel)
+        if canonical != rel:
+            return False
+        if canonical in expected or canonical in cls._AGENTIC_NEW_ROOT_FILES:
+            return True
+        path = PurePosixPath(canonical)
+        # A plan-free agentic build has no architecture from which we can infer
+        # whether a root-level entrypoint (``App.jsx``, ``main.py``) is junk.
+        # Preserve ordinary extension-bearing files in that mode; structured
+        # plans still receive the stricter source-root policy below.
+        if not expected:
+            return bool(path.suffix)
+        if len(path.parts) < 2 or not path.suffix:
+            return False
+        root = path.parts[0]
+        if root not in cls._AGENTIC_SOURCE_ROOTS:
+            return False
+        planned_roots = {
+            PurePosixPath(item).parts[0]
+            for item in expected
+            if len(PurePosixPath(item).parts) > 1
+        }
+        planned_source_roots = planned_roots & cls._AGENTIC_SOURCE_ROOTS
+        return (
+            root in cls._AGENTIC_ALWAYS_ALLOWED_ROOTS
+            or not planned_source_roots
+            or root in planned_source_roots
+        )
+
+    @classmethod
+    def _prune_untrusted_agentic_new_paths(
+        cls,
+        worktree: Path,
+        baseline: dict[str, bytes],
+        expected: set[str],
+    ) -> list[str]:
+        """Drop malformed direct-CLI additions while preserving known source."""
+        root = worktree.resolve()
+        normalized_expected = {
+            canonical
+            for item in expected
+            if (canonical := canonical_project_relpath(item)) is not None
+        }
+        removed: list[str] = []
+        for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if cls._SKIP_PARTS & set(relative.parts):
+                continue
+            rel = relative.as_posix()
+            try:
+                if path.is_symlink():
+                    if rel not in baseline:
+                        path.unlink()
+                        removed.append(rel)
+                elif path.is_file() and rel not in baseline:
+                    if not cls._agentic_new_path_allowed(rel, normalized_expected):
+                        path.unlink()
+                        removed.append(rel)
+                elif path.is_dir():
+                    path.rmdir()
+            except OSError:
+                continue
+        return sorted(removed)
 
     @staticmethod
     def _prune_slice_out_of_scope(
@@ -2526,7 +2643,14 @@ class CodeAgent(BaseAgent):
     def _write_files(self, worktree: Path, files: dict[str, str]) -> list[str]:
         written: list[str] = []
         root = worktree.resolve()
-        for rel, content in files.items():
+        for raw_rel, content in files.items():
+            # Generated file maps can contain terminal escape fragments when a
+            # model accidentally treats colored build output as a path.  Reuse
+            # the agentic writer's portable path guard so those fragments never
+            # become junk files such as ``35massets/index.js`` on Windows.
+            rel = canonical_project_relpath(raw_rel)
+            if rel is None:
+                continue
             target = (worktree / rel).resolve()
             # Confinement: never escape the worktree.
             if os.path.commonpath([str(root), str(target)]) != str(root):

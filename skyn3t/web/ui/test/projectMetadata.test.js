@@ -59,6 +59,20 @@ test("nested build trace remains a compatible fallback without fake zeroes", () 
   assert.equal(meta.stageCostLabel, "$0.2500 / 1");
 });
 
+test("local Codex CLI builds do not display a stale hosted-router candidate", () => {
+  const meta = projectBuildMetadata({
+    model_trace: {
+      backend: "codex_cli",
+      codegen_model: "z-ai/glm-5.2",
+    },
+  });
+
+  assert.equal(meta.backend, "codex_cli");
+  assert.equal(meta.model, "codex-cli:default");
+  assert.equal(meta.codegenModel, "codex-cli:default");
+  assert.equal(meta.modelSource, "codegen");
+});
+
 test("compact evidence is not masked by stale zero counts in a sparse trace", () => {
   const meta = projectBuildMetadata({
     build_profile: "cheap_learned",

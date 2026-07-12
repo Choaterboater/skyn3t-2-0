@@ -120,6 +120,34 @@ def test_agentic_improve_reverts_broken_rewrites(tmp_path):
     assert not (tmp_path / "app" / "tools" / "broken.jsx").exists()  # deleted
 
 
+def test_agentic_improve_discards_untrusted_new_root_paths(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={
+        "app/tools/audit/page.jsx": _NEW_TOOL,
+        "src/components/TripTile.jsx": _NEW_TOOL,
+        "App.jsx": _NEW_TOOL,
+        "package.js": "export const accidental = true;\n",
+        "nsrc/hooks/useTripBoard.js": "export const accidental = true;\n",
+    })
+
+    result = _run(tmp_path, llm)
+
+    assert result.success
+    assert result.output["files"] == [
+        "app/tools/audit/page.jsx",
+        "src/components/TripTile.jsx",
+    ]
+    assert result.output["skipped"] == {
+        "App.jsx": "untrusted_new_path",
+        "nsrc/hooks/useTripBoard.js": "untrusted_new_path",
+        "package.js": "untrusted_new_path",
+    }
+    assert not (tmp_path / "App.jsx").exists()
+    assert not (tmp_path / "package.js").exists()
+    assert not (tmp_path / "nsrc").exists()
+    assert (tmp_path / "src" / "components" / "TripTile.jsx").is_file()
+
+
 def test_agentic_unavailable_falls_back_to_classic_path(tmp_path):
     _seed(tmp_path)
     llm = _AgenticLLM(ok=False, error="agentic unsupported",

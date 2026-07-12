@@ -19,6 +19,18 @@ def test_free_port_returns_bindable_int():
     s.close()  # actually free
 
 
+def test_astro_running_log_is_reusable():
+    for message in (
+        "Dev server running at http://127.0.0.1:7002 (pid 112356)\n",
+        "Dev server already running at http://127.0.0.1:41841 (pid 115424)\n",
+    ):
+        found = _app_runner._astro_running_server(message)
+        assert found is not None
+        assert found[0].startswith("http://127.0.0.1:")
+        assert found[1] > 1024
+        assert found[2] is not None
+
+
 def test_static_site_uses_http_server(tmp_path):
     (tmp_path / "index.html").write_text("<h1>hi</h1>")
     spec = build_run_spec(tmp_path, "static", port=9001)
@@ -49,6 +61,21 @@ def test_python_web_uses_python_entrypoint(tmp_path):
     assert spec.kind == "python_web"
     assert spec.cmd[-1] == "main.py"
     assert spec.env.get("PORT") == "9002" and spec.env.get("HOST") == "127.0.0.1"
+    assert spec.env.get("APP_PORT") == "9002" and spec.env.get("APP_HOST") == "127.0.0.1"
+
+
+def test_python_web_prefers_a_windows_project_venv(tmp_path):
+    """Serve must use a project's Windows venv, not SkyN3t's interpreter."""
+    project_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+    project_python.parent.mkdir(parents=True)
+    project_python.write_text("", encoding="utf-8")
+    (tmp_path / "main.py").write_text("import uvicorn\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
+
+    spec = build_run_spec(tmp_path, "fastapi", port=9002)
+
+    assert spec is not None
+    assert spec.cmd[0] == str(project_python)
 
 
 def test_node_uses_npm_dev(tmp_path):
@@ -116,6 +143,39 @@ def test_start_no_preview_for_bare_dir(tmp_path):
     runner = AppRunner()
     app = asyncio.run(runner.start(tmp_path, "python"))
     assert app.status == "no_preview" and app.pid is None
+
+
+def test_start_python_api_with_missing_root_uses_docs_preview(tmp_path):
+    """A FastAPI-style API should not render a bare 404 in the Studio iframe."""
+    (tmp_path / "requirements.txt").write_text("fastapi\nuvicorn\n", encoding="utf-8")
+    (tmp_path / "main.py").write_text(
+        """\
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import os
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/docs':
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'API docs')
+            return
+        self.send_error(404)
+
+
+HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()
+""",
+        encoding="utf-8",
+    )
+    runner = AppRunner()
+    app = asyncio.run(runner.start(tmp_path, "fastapi", ready_timeout=15))
+    try:
+        assert app.status == "running"
+        assert app.url.endswith("/docs")
+        assert urllib.request.urlopen(app.url, timeout=5).read() == b"API docs"
+    finally:
+        runner.stop(app)
 
 
 def test_ensure_node_deps_skips_when_node_modules_present(tmp_path):

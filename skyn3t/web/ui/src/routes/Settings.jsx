@@ -41,6 +41,7 @@ function Row({ label, value }) {
 }
 
 const PROVIDERS = ["openrouter", "anthropic", "openai", "kimi"];
+const DEFAULT_REPLICATE_MODEL = "black-forest-labs/flux-schnell";
 const MODEL_TIERS = ["cheap", "ui", "backend", "strong", "docs"];
 const CHANNELS = ["telegram", "discord", "slack"];
 const APP_TYPES = ["auto", "product_app", "dashboard", "landing_page", "crud_app", "saas_product", "game", "api_service", "developer_tool", "data_viz", "mobile_app", "desktop_app"];
@@ -257,6 +258,13 @@ export default function Settings() {
     });
   }, [secrets.data]);
 
+  // Keep a usable, inexpensive image model visible in the form even before a
+  // token is connected. A configured custom model always wins.
+  useEffect(() => {
+    const configuredModel = secrets.data?.replicate_model || DEFAULT_REPLICATE_MODEL;
+    setRepModel((current) => current || configuredModel);
+  }, [secrets.data?.replicate_model]);
+
   function saveToken() {
     const next = token.trim();
     setToken(next);
@@ -265,20 +273,44 @@ export default function Settings() {
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
-  async function saveKey() {
+  function updateKeyStatus(providerName, response) {
+    queryClient.setQueryData(["llm-secrets"], (old) => ({
+      ...(old || {}),
+      providers: {
+        ...((old && old.providers) || {}),
+        [providerName]: !!response.configured,
+      },
+      backend: response.backend || (old && old.backend),
+      routing: response.routing || (old && old.routing),
+    }));
+  }
+
+  function updateBackendStatus(response, fallback) {
+    queryClient.setQueryData(["llm-secrets"], (old) => ({
+      ...(old || {}),
+      backend_pref: response.requested || fallback,
+      backend: response.active,
+      routing: response.routing || old?.routing,
+    }));
+  }
+
+  async function saveKey({ activateOpenRouter = false } = {}) {
+    const nextKey = key.trim();
+    if (!nextKey) {
+      setKeyMsg(`Enter a ${provider} API key before saving.`);
+      return;
+    }
     try {
-      const r = await apiPost("/llm/key", { provider, key });
+      const r = await apiPost("/llm/key", { provider, key: nextKey });
       setKey("");
-      setKeyMsg(`${provider}: ${r.configured ? "saved" : "cleared"} → backend ${r.backend}`);
-      queryClient.setQueryData(["llm-secrets"], (old) => ({
-        ...(old || {}),
-        providers: {
-          ...((old && old.providers) || {}),
-          [provider]: !!r.configured,
-        },
-        backend: r.backend || (old && old.backend),
-        routing: r.routing || (old && old.routing),
-      }));
+      updateKeyStatus(provider, r);
+      if (activateOpenRouter && provider === "openrouter" && r.configured) {
+        const backend = await apiPost("/llm/backend", { backend: "openrouter" });
+        updateBackendStatus(backend, "openrouter");
+        setKeyMsg("OpenRouter key saved and selected manually for future Foundry runs.");
+      } else {
+        setKeyMsg(`${provider}: saved`);
+      }
       secrets.refetch();
       if (provider === "openrouter") {
         models.refetch();
@@ -298,6 +330,46 @@ export default function Settings() {
     } catch (e) {
       setGhMsg(String(e.message));
     }
+  }
+
+  async function clearKey(providerToClear = provider, returnToAuto = false) {
+    try {
+      const r = await apiPost("/llm/key", { provider: providerToClear, key: "" });
+      updateKeyStatus(providerToClear, r);
+      if (providerToClear === "openrouter" && returnToAuto) {
+        const backend = await apiPost("/llm/backend", { backend: "auto" });
+        updateBackendStatus(backend, "auto");
+        setBackendMsg("OpenRouter disconnected. Auto remains Codex CLI-only for future builds.");
+      }
+      setKey("");
+      setKeyMsg(
+        providerToClear === "openrouter" && returnToAuto
+          ? "OpenRouter key cleared."
+          : `${providerToClear}: key cleared.`
+      );
+      secrets.refetch();
+      if (providerToClear === "openrouter") {
+        models.refetch();
+        if (modelCatalogActive) pricedModels.refetch();
+      }
+    } catch (e) {
+      setKeyMsg(String(e.message));
+    }
+  }
+
+  function prepareOpenRouterKey() {
+    setProvider("openrouter");
+    setKey("");
+    setKeyMsg("Add an OpenRouter key, then explicitly select its paid route.");
+    document.getElementById("keys")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function enableOpenRouter() {
+    if (!openrouterConfigured) {
+      prepareOpenRouterKey();
+      return;
+    }
+    await pickBackend("openrouter");
   }
 
   async function saveDeployCredential(clear = false) {
@@ -332,23 +404,66 @@ export default function Settings() {
     }
   }
 
-  async function saveReplicate() {
+  function updateReplicateStatus(response, fallbackModel = "") {
+    queryClient.setQueryData(["llm-secrets"], (old) => ({
+      ...(old || {}),
+      replicate: !!response.configured,
+      replicate_model:
+        response.model || fallbackModel || ((old && old.replicate_model) || ""),
+    }));
+  }
+
+  async function saveReplicateToken() {
+    const token = repToken.trim();
+    if (!token) {
+      setRepMsg("Enter a Replicate token before connecting image generation.");
+      return;
+    }
+    const model = repModel.trim() || DEFAULT_REPLICATE_MODEL;
     try {
       const r = await apiPost("/settings/replicate", {
-        token: repToken,
-        model: repModel,
+        token,
+        model,
       });
       setRepToken("");
+      setRepModel(r.model || model);
       setRepMsg(
         r.configured
-          ? `saved → image generation available (model ${r.model || "default"})`
-          : "cleared"
+          ? `Replicate connected. Image generation is available with ${r.model || model}.`
+          : "Replicate was not connected."
       );
+      updateReplicateStatus(r, model);
+      secrets.refetch();
+    } catch (e) {
+      setRepMsg(String(e.message));
+    }
+  }
+
+  async function saveReplicateModel(modelOverride = "") {
+    const model = modelOverride || repModel.trim() || DEFAULT_REPLICATE_MODEL;
+    try {
+      // Omitting token is intentional: this changes the model without exposing
+      // or clearing an already configured credential.
+      const r = await apiPost("/settings/replicate", { model });
+      setRepModel(r.model || model);
+      updateReplicateStatus(r, model);
+      setRepMsg(`Replicate model saved: ${r.model || model}.`);
+      secrets.refetch();
+    } catch (e) {
+      setRepMsg(String(e.message));
+    }
+  }
+
+  async function disconnectReplicate() {
+    try {
+      const r = await apiPost("/settings/replicate", { token: "" });
+      updateReplicateStatus(r, repModel.trim() || DEFAULT_REPLICATE_MODEL);
       queryClient.setQueryData(["llm-secrets"], (old) => ({
         ...(old || {}),
-        replicate: !!r.configured,
-        replicate_model: r.model || repModel.trim() || ((old && old.replicate_model) || ""),
+        asset_gen: !!r.asset_gen,
       }));
+      setRepToken("");
+      setRepMsg("Replicate disconnected. Asset generation is now off.");
       secrets.refetch();
     } catch (e) {
       setRepMsg(String(e.message));
@@ -357,11 +472,15 @@ export default function Settings() {
 
   async function saveAssetGen(enabled) {
     try {
-      await apiPost("/settings/asset_gen", { enabled });
+      const r = await apiPost("/settings/asset_gen", { enabled });
+      queryClient.setQueryData(["llm-secrets"], (old) => ({
+        ...(old || {}),
+        asset_gen: !!r.asset_gen,
+      }));
       setRepMsg(
         enabled
-          ? "asset generation ON → new builds generate real images (Replicate billing applies)"
-          : "asset generation off"
+          ? "Image generation enabled for future builds. Replicate is used only when a build generates assets."
+          : "Image generation disabled for future builds."
       );
       secrets.refetch();
     } catch (e) {
@@ -425,12 +544,7 @@ export default function Settings() {
       const r = await apiPost("/llm/backend", { backend: b });
       const state = r.routing?.state ? ` (${r.routing.state})` : "";
       setBackendMsg(`saved globally -> requested ${r.requested || b}; active ${r.active}${state}`);
-      queryClient.setQueryData(["llm-secrets"], (old) => ({
-        ...(old || {}),
-        backend_pref: r.requested || b,
-        backend: r.active,
-        routing: r.routing || old?.routing,
-      }));
+      updateBackendStatus(r, b);
       void secrets.refetch();
       void llmBackends.refetch();
     } catch (e) {
@@ -519,6 +633,9 @@ export default function Settings() {
     : openrouterRequired
       ? "required by selected backend - missing"
       : "optional - no API key";
+  const replicateConfigured = !!secrets.data?.replicate;
+  const activeReplicateModel =
+    secrets.data?.replicate_model || DEFAULT_REPLICATE_MODEL;
   const selectedDeployConfigured = deployProviderConfigured(
     deploySettings.data,
     deployProvider
@@ -578,9 +695,10 @@ export default function Settings() {
           />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
-              This choice is persisted for every future Foundry run. CLI backends use
-              the installed command and its signed-in provider account. OpenRouter is
-              optional and only works when its API key is configured.
+              This choice is persisted for every future Foundry run. <span className="font-mono text-bone">auto</span>{" "}
+              is Codex CLI-only: it never sends a request to OpenRouter or another paid
+              API, even when a provider key is stored. CLI backends use the installed
+              command and its signed-in provider account.
             </p>
             <p className="mb-4 text-[11px] text-ash/80">
               An explicitly selected CLI never falls back to OpenRouter. If its command
@@ -591,7 +709,9 @@ export default function Settings() {
               {BACKEND_OPTIONS.map((option) => {
                 const sel = requestedBackend === option.id;
                 const status = cliBackendStatus(llmBackends.data, option.id);
-                const unavailable = option.kind === "cli" && status.available !== true;
+                const unavailable =
+                  (option.kind === "cli" && status.available !== true) ||
+                  (option.id === "openrouter" && !openrouterConfigured);
                 return (
                   <button
                     key={option.id}
@@ -602,6 +722,8 @@ export default function Settings() {
                     title={
                       option.kind === "cli"
                         ? `${backendOptionLabel(option, llmBackends.data)}. ${cliAccountBillingText(option.id)}`
+                        : option.id === "openrouter" && !openrouterConfigured
+                          ? "Add an OpenRouter key below before selecting this manual paid route"
                         : `Persist ${option.label} as the global Foundry backend`
                     }
                     className={`min-h-10 rounded border px-3 py-2 text-left font-mono text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -614,6 +736,49 @@ export default function Settings() {
                   </button>
                 );
               })}
+            </div>
+            <div className="mt-4 border-y border-hairline/60 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-mono text-[11px] uppercase tracking-eyebrow text-bone">
+                  Manual OpenRouter route
+                </p>
+                <Pill tone={openrouterConfigured ? "plasma" : "ash"}>
+                  {openrouterConfigured ? "key configured" : "not connected"}
+                </Pill>
+              </div>
+              <p className="mt-2 max-w-3xl text-[11px] leading-5 text-ash">
+                OpenRouter is never selected from <span className="font-mono text-bone">auto</span>.
+                Connect a key and choose this route intentionally when you want hosted
+                provider billing. Disconnecting disables this app&apos;s route and returns
+                future builds to Codex CLI-only auto mode.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {openrouterConfigured ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={enableOpenRouter}
+                      className="btn-ember"
+                      disabled={requestedBackend === "openrouter"}
+                    >
+                      {requestedBackend === "openrouter"
+                        ? "OpenRouter selected"
+                        : "Use OpenRouter manually"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => clearKey("openrouter", true)}
+                      className="btn-ghost"
+                    >
+                      Disconnect OpenRouter
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" onClick={prepareOpenRouterKey} className="btn-ghost">
+                    Connect OpenRouter key
+                  </button>
+                )}
+              </div>
             </div>
             {selectedBackendOption?.kind === "cli" ? (
               <div className="mt-3 border-l-2 border-hairline pl-3 text-[11px] text-ash">
@@ -934,7 +1099,7 @@ export default function Settings() {
 
         <Panel id="keys">
           <PanelHead
-            label="API key"
+            label="Provider credentials"
             right={
               <Pill tone={providerConfigured ? "plasma" : "ash"}>
                 {providerConfigured
@@ -950,15 +1115,20 @@ export default function Settings() {
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
               Stored in the server&apos;s <code className="font-mono text-bone">.env</code>.
-              OpenRouter is optional when a CLI backend is selected. Add its key only
-              when you intend to use the OpenRouter route;{" "}
-              <span className="font-mono text-bone">auto</span> may resolve to that route
-              after a key is configured.
+              A stored key does not activate a provider. <span className="font-mono text-bone">auto</span>{" "}
+              always remains Codex CLI-only. OpenRouter runs only after you explicitly
+              choose its manual route in the Backend panel.
             </p>
             <div className="mb-3">
               <Row
                 label="OpenRouter"
-                value={openrouterConfigured ? "API key configured ✓" : openrouterStateText}
+                value={
+                  openrouterConfigured
+                    ? requestedBackend === "openrouter"
+                      ? "configured - manually selected"
+                      : "configured - dormant until selected"
+                    : openrouterStateText
+                }
               />
             </div>
             <div className="flex flex-wrap gap-2">
@@ -984,9 +1154,26 @@ export default function Settings() {
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
               />
-              <button onClick={saveKey} className="btn-ember">
+              <button onClick={() => saveKey()} className="btn-ember" disabled={!key.trim()}>
                 Save key
               </button>
+              {provider === "openrouter" ? (
+                <button
+                  onClick={() => saveKey({ activateOpenRouter: true })}
+                  className="btn-ghost"
+                  disabled={!key.trim()}
+                >
+                  Save and use OpenRouter
+                </button>
+              ) : null}
+              {providerConfigured ? (
+                <button
+                  onClick={() => clearKey(provider, provider === "openrouter")}
+                  className="btn-ghost"
+                >
+                  {provider === "openrouter" ? "Disconnect OpenRouter" : "Clear key"}
+                </button>
+              ) : null}
             </div>
             {keyMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{keyMsg}</p>
@@ -1121,29 +1308,34 @@ export default function Settings() {
 
         <Panel id="images">
           <PanelHead
-            label="Replicate (image generation)"
+            label="Replicate image generation"
             right={
-              <Pill tone={secrets.data?.replicate ? "plasma" : "ash"}>
-                {secrets.data?.replicate ? "configured ✓" : "not set"}
+              <Pill tone={replicateConfigured ? "plasma" : "ash"}>
+                {replicateConfigured
+                  ? secrets.data?.asset_gen
+                    ? "connected - enabled"
+                    : "connected - opt-in off"
+                  : "not connected"}
               </Pill>
             }
           />
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
-              Stored in the server&apos;s <code className="font-mono text-bone">.env</code> as{" "}
-              <span className="font-mono text-bone">SKYN3T_REPLICATE_API_TOKEN</span>. Lets a
-              build generate <em>real</em> images (e.g. a kids coloring app&apos;s animal
-              line-art) instead of crappy placeholder art. Asset generation also requires{" "}
-              <span className="font-mono text-bone">asset_gen</span> on
-              {secrets.data?.replicate && !secrets.data?.asset_gen ? (
-                <span className="text-ember"> — currently OFF, so assets won&apos;t generate yet</span>
-              ) : null}
-              . Default model{" "}
-              <span className="font-mono text-bone">
-                {secrets.data?.replicate_model || "black-forest-labs/flux-schnell"}
-              </span>{" "}
-              (overridable below). No token → image-gen is skipped; it never blocks a build.
+              Replicate is available whenever you connect a token. The inexpensive default is{" "}
+              <span className="font-mono text-bone">{DEFAULT_REPLICATE_MODEL}</span>, and you
+              can use any manual <span className="font-mono text-bone">owner/model</span> id below.
+              Connecting a token does not generate or bill for images by itself; the separate{" "}
+              <span className="font-mono text-bone">asset_gen</span> setting controls whether
+              future builds may create assets.
             </p>
+            <div className="mb-3 overflow-hidden rounded border border-hairline/60">
+              <Row label="connection" value={replicateConfigured ? "token configured" : "no token"} />
+              <Row label="active model" value={activeReplicateModel} />
+              <Row
+                label="asset generation"
+                value={secrets.data?.asset_gen ? "enabled for future builds" : "opt-in off"}
+              />
+            </div>
             <div className="flex flex-wrap gap-2">
               <input
                 type="password"
@@ -1162,10 +1354,32 @@ export default function Settings() {
                 value={repModel}
                 onChange={(e) => setRepModel(e.target.value)}
               />
-              <button onClick={saveReplicate} className="btn-ember">
-                Save token
+              <button
+                onClick={saveReplicateToken}
+                className="btn-ember"
+                disabled={!repToken.trim()}
+              >
+                {replicateConfigured ? "Update token" : "Connect Replicate"}
               </button>
+              <button onClick={saveReplicateModel} className="btn-ghost">
+                Save model
+              </button>
+              <button
+                onClick={() => saveReplicateModel(DEFAULT_REPLICATE_MODEL)}
+                className="btn-ghost"
+              >
+                Use Flux Schnell
+              </button>
+              {replicateConfigured ? (
+                <button onClick={disconnectReplicate} className="btn-ghost">
+                  Disconnect Replicate
+                </button>
+              ) : null}
             </div>
+            <p className="mt-2 font-mono text-[10px] text-ash/70">
+              Save model updates the preference without clearing an existing token.
+              Disconnect removes the token and turns asset generation off; the model choice is retained.
+            </p>
             <label className="mt-4 flex items-center gap-2 text-sm text-bone">
               <input
                 type="checkbox"
@@ -1174,14 +1388,15 @@ export default function Settings() {
                 onChange={(e) => saveAssetGen(e.target.checked)}
               />
               <span>
-                Generate real images <span className="font-mono text-ash">(asset_gen)</span>
+                Enable image generation for future builds{" "}
+                <span className="font-mono text-ash">(asset_gen)</span>
                 {secrets.data?.asset_gen ? (
-                  <span className="text-plasma"> — ON</span>
+                  <span className="text-plasma"> - ON</span>
                 ) : (
-                  <span className="text-ash"> — off</span>
+                  <span className="text-ash"> - off</span>
                 )}
-                {!secrets.data?.replicate ? (
-                  <span className="text-ember"> · needs a token above to take effect</span>
+                {!replicateConfigured ? (
+                  <span className="text-ember">; takes effect after a token is connected</span>
                 ) : null}
               </span>
             </label>

@@ -100,11 +100,17 @@ class LearnedModelRouter(ModelRouter):
         file_hint: str | None = None,
         task_type: str = "",
         profile: str = "balanced",
+        allow_live_catalog: bool | None = None,
     ) -> str:  # type: ignore[override]
         # Respect manual locks / free-only via the base policy first as the
         # canonical fallback, then *prefer* a confident learned pick.
         effective_tier = self._tier_for_file(tier, file_hint)
-        base = super().resolve(tier, file_hint=file_hint, profile=profile)
+        base = super().resolve(
+            tier,
+            file_hint=file_hint,
+            profile=profile,
+            allow_live_catalog=allow_live_catalog,
+        )
         if self._has_explicit_tier_pin(effective_tier):
             return base
         try:
@@ -116,13 +122,25 @@ class LearnedModelRouter(ModelRouter):
         if not learned:
             return base
         # Safety: don't override into a Claude model if the policy forbade it.
-        if self._forbidden(learned, effective_tier, profile):
+        if self._forbidden(
+            learned,
+            effective_tier,
+            profile,
+            allow_live_catalog=allow_live_catalog,
+        ):
             return base
         if _log:
             _log.info("routing.learned", tier=effective_tier.value, model=learned)
         return learned
 
-    def _forbidden(self, model: str, tier: Tier, profile: str) -> bool:
+    def _forbidden(
+        self,
+        model: str,
+        tier: Tier,
+        profile: str,
+        *,
+        allow_live_catalog: bool | None = None,
+    ) -> bool:
         m = model.lower()
         no_claude = bool(getattr(self.settings, "no_claude", False))
         free_only = bool(getattr(self.settings, "free_only", False))
@@ -130,9 +148,17 @@ class LearnedModelRouter(ModelRouter):
             return True
         if free_only and not (m.endswith(":free") or "free" in m):
             return True
-        if not self.auto_model_allowed(model, tier, profile):
+        if not self.auto_model_allowed(
+            model,
+            tier,
+            profile,
+            allow_live_catalog=allow_live_catalog,
+        ):
             if _log:
-                info = self.model_cost_info(model)
+                info = self.model_cost_info(
+                    model,
+                    allow_live_catalog=allow_live_catalog,
+                )
                 _log.info(
                     "routing.learned_price_rejected",
                     model=model,

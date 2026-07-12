@@ -18,7 +18,7 @@ from skyn3t.studio.acceptance_contract import (
 )
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.planner import Planner
-from skyn3t.studio.proof_run import proof_run
+from skyn3t.studio.proof_run import apply_deterministic_repairs, proof_run
 from skyn3t.studio.runner import StudioRunner
 
 
@@ -83,6 +83,108 @@ def test_deterministic_repairs_declares_deps_peers_and_stubs(tmp_path):
     again = runner._deterministic_repairs(str(proj), plan)
     assert again["npm_deps_added"] == [] and again["next_config_peers"] == [] \
         and again["imports_scaffolded"] == []
+
+
+def test_deterministic_repairs_sort_opted_in_ruff_imports(tmp_path):
+    """Generated Python projects that enable Ruff I rules ship lint-clean."""
+    pytest.importorskip("ruff")
+    project = tmp_path / "api"
+    source = project / "src" / "api" / "main.py"
+    source.parent.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        "[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\"]\n",
+        encoding="utf-8",
+    )
+    source.write_text("import zlib\nimport ast\n\n\ndef run():\n    return ast\n", encoding="utf-8")
+
+    repairs = apply_deterministic_repairs(project, stack="fastapi")
+
+    assert repairs["python_imports_sorted"] == ["src/api/main.py"]
+    text = source.read_text(encoding="utf-8")
+    assert text.index("import ast") < text.index("import zlib")
+    assert apply_deterministic_repairs(project, stack="fastapi")["python_imports_sorted"] == []
+    assert not (project / ".ruff_cache").exists()
+
+
+def test_deterministic_repairs_format_opted_in_ruff_python_sources(tmp_path):
+    """Ruff formatting repairs E501 even when import sorting is not enabled."""
+    pytest.importorskip("ruff")
+    project = tmp_path / "api"
+    source = project / "src" / "api" / "main.py"
+    source.parent.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 60\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\"]\n",
+        encoding="utf-8",
+    )
+    source.write_text(
+        "def values(service):\n"
+        "    return [response.model_validate(item, from_attributes=True) for item in service.list_items()]\n",
+        encoding="utf-8",
+    )
+
+    repairs = apply_deterministic_repairs(project, stack="fastapi")
+
+    assert repairs["python_imports_sorted"] == []
+    assert repairs["python_formatted"] == ["src/api/main.py"]
+    assert "\n        response.model_validate" in source.read_text(encoding="utf-8")
+    assert apply_deterministic_repairs(project, stack="fastapi")["python_formatted"] == []
+    assert not (project / ".ruff_cache").exists()
+
+
+def test_deterministic_repairs_unifies_conflicting_fastapi_entrypoints(tmp_path):
+    """A stale root scaffold must not shadow the packaged tested API."""
+    project = tmp_path / "api"
+    package = project / "src" / "reading_list"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "main.py").write_text(
+        "from fastapi import FastAPI\n\napp = FastAPI()\n",
+        encoding="utf-8",
+    )
+    (project / "pyproject.toml").write_text(
+        "[tool.hatch.build.targets.wheel]\npackages = [\"src/reading_list\"]\n",
+        encoding="utf-8",
+    )
+    (project / "main.py").write_text(
+        "from fastapi import FastAPI\n\napp = FastAPI(title=\"stale scaffold\")\n",
+        encoding="utf-8",
+    )
+
+    repairs = apply_deterministic_repairs(project, stack="fastapi")
+
+    launcher = (project / "main.py").read_text(encoding="utf-8")
+    assert repairs["fastapi_entrypoint_unified"] == ["main.py"]
+    assert "from reading_list.main import app" in launcher
+    assert "stale scaffold" not in launcher
+    assert apply_deterministic_repairs(project, stack="fastapi")["fastapi_entrypoint_unified"] == []
+
+
+def test_deterministic_repairs_preserve_signed_acceptance_contracts(tmp_path):
+    """Ruff automation must not alter the marker clone cleanup depends on."""
+    pytest.importorskip("ruff")
+    project = tmp_path / "project"
+    tests = project / "tests"
+    tests.mkdir(parents=True)
+    contract = (
+        f'"""{GENERATED_ACCEPTANCE_HEADER}"""\n\n'
+        "import pytest\n\n\n"
+        f'@pytest.mark.skip(reason="{GENERATED_ACCEPTANCE_PENDING_MARKER}")\n'
+        "def test_pending_contract():\n"
+        "    assert True\n"
+    )
+    target = tests / "test_acceptance_contract.py"
+    target.write_text(contract, encoding="utf-8")
+    before = target.read_bytes()
+    (project / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 60\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\"]\n",
+        encoding="utf-8",
+    )
+
+    repairs = apply_deterministic_repairs(project, stack="python")
+
+    assert target.read_bytes() == before
+    assert "tests/test_acceptance_contract.py" not in repairs["python_formatted"]
+    assert "tests/test_acceptance_contract.py" not in repairs["python_imports_sorted"]
 
 
 def test_contrast_issues_are_recorded_and_cleared_from_manifest():
@@ -428,6 +530,81 @@ def test_proof_runs_generated_tests_fail(tmp_path, _no_docker_probe):
     assert "<tests>" in res.missing
     assert res.detail["proof_environment"]["execution_backend"] == "inline"
     assert res.detail["proof_environment"]["sandbox_available"] is False
+
+
+def _src_layout_project(tmp_path):
+    proj = tmp_path / "src-layout"
+    package = proj / "src" / "reading_list"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "service.py").write_text(
+        "def answer():\n    return 42\n", encoding="utf-8"
+    )
+    (proj / "main.py").write_text(
+        "from reading_list.service import answer\n\n"
+        "def main():\n    return answer()\n",
+        encoding="utf-8",
+    )
+    tests = proj / "tests"
+    tests.mkdir()
+    return proj, package, tests
+
+
+def test_proof_runs_entrypoint_and_tests_from_src_layout(tmp_path, _no_docker_probe):
+    proj, _package, tests = _src_layout_project(tmp_path)
+    (tests / "test_service.py").write_text(
+        "from reading_list.service import answer\n\n\n"
+        "def test_answer():\n    assert answer() == 42\n",
+        encoding="utf-8",
+    )
+
+    res = proof_run(
+        str(proj), stack="python", run_tests=True, execution_backend="inline"
+    )
+
+    assert res.passed is True
+    assert res.detail["tests"] == "passed"
+    assert res.detail.get("boot_error", "") == ""
+
+
+def test_proof_fails_for_project_local_test_import_error(tmp_path, _no_docker_probe):
+    proj, package, tests = _src_layout_project(tmp_path)
+    (package / "broken.py").write_text(
+        "from reading_list.service import missing_symbol\n",
+        encoding="utf-8",
+    )
+    (tests / "test_broken.py").write_text(
+        "import reading_list.broken\n",
+        encoding="utf-8",
+    )
+
+    res = proof_run(
+        str(proj), stack="python", run_tests=True, execution_backend="inline"
+    )
+
+    assert res.passed is False
+    assert res.detail["tests"] == "failed"
+    assert "<tests>" in res.missing
+    assert "cannot import name" in res.detail["test_summary"]
+
+
+def test_proof_fails_for_project_local_entrypoint_import_error(tmp_path, _no_docker_probe):
+    proj, package, _tests = _src_layout_project(tmp_path)
+    (package / "broken.py").write_text(
+        "from reading_list.service import missing_symbol\n",
+        encoding="utf-8",
+    )
+    (proj / "main.py").write_text(
+        "import reading_list.broken\n",
+        encoding="utf-8",
+    )
+
+    res = proof_run(
+        str(proj), stack="python", execution_backend="inline"
+    )
+
+    assert res.passed is False
+    assert "cannot import name" in res.detail["boot_error"]
 
 
 def test_proof_soft_skips_when_no_tests(tmp_path):

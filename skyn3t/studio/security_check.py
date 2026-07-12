@@ -27,10 +27,14 @@ _SECRET_RE = re.compile(
 )
 _EVAL_RE = re.compile(r"\b(?:eval|Function)\s*\(")
 _SQL_INTERP_RE = re.compile(
+    r"(?:`|['\"])\s*"
     r"(?:"
-    r"\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^;\n]*(?:\+|\$\{|%s|\.format\()"
-    r"|f['\"][^'\"\n]*\b(?:SELECT|INSERT|UPDATE|DELETE)\b"
-    r")",
+    r"SELECT\b[^;\n]*\bFROM\b"
+    r"|INSERT\s+INTO\b"
+    r"|UPDATE\s+\S+\s+SET\b"
+    r"|DELETE\s+FROM\b"
+    r")"
+    r"[^;\n]*(?:\+|\$\{|%s|\.format\()",
     re.I,
 )
 _HEADER_MARKERS = (

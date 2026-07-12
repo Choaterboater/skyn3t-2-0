@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from copy import deepcopy
 from enum import StrEnum
 from pathlib import Path
@@ -788,12 +789,31 @@ class ModelRouter:
         self._paid_fallback_cache[tier.value] = norm
         self._save_paid_fallback_cache()
 
-    def _resolve_newest_model(self, tier: Tier, model: str) -> str:
+    def _openrouter_catalog_allowed(self) -> bool:
+        """Whether this settings object explicitly permits live OpenRouter lookups."""
+        return (
+            str(getattr(self.settings, "llm_backend", "auto") or "auto").strip().lower()
+            == "openrouter"
+            and bool(getattr(self.settings, "openrouter_enabled", True))
+            and bool(
+                str(getattr(self.settings, "openrouter_api_key", "") or "").strip()
+                or os.environ.get("SKYN3T_OPENROUTER_API_KEY", "").strip()
+                or os.environ.get("OPENROUTER_API_KEY", "").strip()
+            )
+        )
+
+    def _resolve_newest_model(
+        self,
+        tier: Tier,
+        model: str,
+        *,
+        allow_live_catalog: bool,
+    ) -> str:
         if not model.startswith("newest:"):
             return model
 
         family = model.split(":", 1)[1]
-        live = newest_paid_model(family)
+        live = newest_paid_model(family) if allow_live_catalog else None
         if live:
             log.info("router.newest_resolved", family=family, model=live, tier=tier.value)
             self._cache_paid_model(tier, live)
@@ -812,14 +832,24 @@ class ModelRouter:
         log.info("router.newest_offline_fallback", family=family, model=fallback, tier=tier.value)
         return fallback
 
-    def _default_model(self, tier: Tier, profile: str = "balanced") -> str:
+    def _default_model(
+        self,
+        tier: Tier,
+        profile: str = "balanced",
+        *,
+        allow_live_catalog: bool = True,
+    ) -> str:
         if self.settings.free_only:
             return _FREE_DEFAULTS[tier]
-        catalog_available = bool(live_catalog())
-        live = best_paid_model(
-            tier,
-            profile=profile,
-            no_claude=bool(getattr(self.settings, "no_claude", False)),
+        catalog_available = bool(live_catalog()) if allow_live_catalog else False
+        live = (
+            best_paid_model(
+                tier,
+                profile=profile,
+                no_claude=bool(getattr(self.settings, "no_claude", False)),
+            )
+            if allow_live_catalog
+            else None
         )
         if live:
             log.info(
@@ -851,7 +881,11 @@ class ModelRouter:
                 tier=tier.value,
             )
             return fallback
-        return self._resolve_newest_model(tier, _PAID_DEFAULTS[tier])
+        return self._resolve_newest_model(
+            tier,
+            _PAID_DEFAULTS[tier],
+            allow_live_catalog=allow_live_catalog,
+        )
 
     @staticmethod
     def _tier_for_file(tier: Tier, file_hint: str | None = None) -> Tier:
@@ -867,24 +901,57 @@ class ModelRouter:
         runtime_pin = str(getattr(self.settings, f"model_{tier.value}", "") or "").strip()
         return bool(runtime_pin or self._overrides.get(tier.value))
 
-    def model_cost_info(self, model_id: str) -> dict[str, float | str | bool | None]:
-        """Live normalized pricing/classification for one model id."""
+    def model_cost_info(
+        self,
+        model_id: str,
+        *,
+        allow_live_catalog: bool | None = None,
+    ) -> dict[str, float | str | bool | None]:
+        """Normalized pricing/classification for one model id.
+
+        Dispatch callers explicitly disable provider catalog I/O unless they
+        are using OpenRouter. Direct router inspection retains live pricing so
+        callers can explain and compare current routes.
+        """
         model_id = str(model_id or "").strip()
         if is_free_model_id(model_id):
             return model_price_info({"id": model_id, "pricing": {"prompt": 0, "completion": 0}})
+        if allow_live_catalog is None:
+            # Direct router use is an inspection/planning operation and keeps
+            # its historical live-catalog behavior. Dispatch callers pass an
+            # explicit False unless they are actually using OpenRouter.
+            allow_live_catalog = True
+        if not allow_live_catalog:
+            return model_price_info({}, model_id=model_id)
         record = next(
             (m for m in live_catalog() if str(m.get("id") or "").strip() == model_id),
             None,
         )
         return model_price_info(record or {}, model_id=model_id)
 
-    def auto_model_allowed(self, model_id: str, tier: Tier, profile: str = "balanced") -> bool:
+    def auto_model_allowed(
+        self,
+        model_id: str,
+        tier: Tier,
+        profile: str = "balanced",
+        *,
+        allow_live_catalog: bool | None = None,
+    ) -> bool:
         """Whether an automatically learned/cached model may serve this route."""
         if not _requires_cheap_price(tier, profile):
             return True
         if not _cheap_family_allowed(model_id):
             return False
-        info = self.model_cost_info(model_id)
+        if allow_live_catalog is None:
+            # Paid routing is also used directly by planning/UI inspection and
+            # has historically selected from the live catalog. Free-only
+            # routing, in contrast, must not probe OpenRouter unless that
+            # backend is actively configured: its static defaults are enough
+            # for local/CLI/stub execution.
+            allow_live_catalog = (
+                not self.settings.free_only or self._openrouter_catalog_allowed()
+            )
+        info = self.model_cost_info(model_id, allow_live_catalog=allow_live_catalog)
         if bool(info.get("cheap_eligible")):
             return True
         # The live catalog is unavailable, not evidence that these last-known
@@ -893,7 +960,7 @@ class ModelRouter:
         return (
             info.get("price_class") == "unknown"
             and model_id in set(_CHEAP_PAID_OFFLINE_DEFAULTS.values())
-            and not live_catalog()
+            and (not allow_live_catalog or not live_catalog())
         )
 
     def _load_overrides(self) -> dict[str, str]:
@@ -911,6 +978,7 @@ class ModelRouter:
         file_hint: str | None = None,
         task_type: str = "",
         profile: str = "balanced",
+        allow_live_catalog: bool | None = None,
     ) -> str:
         """Return the concrete model id for a tier (+ optional file hint).
 
@@ -918,6 +986,15 @@ class ModelRouter:
         uniformly; only the LearnedModelRouter subclass uses it."""
         # Per-file specialization: route UI vs backend by extension.
         tier = self._tier_for_file(tier, file_hint)
+        if allow_live_catalog is None:
+            # Paid routing is also used directly by planning/UI inspection and
+            # has historically selected from the live catalog. Free-only
+            # routing must not probe OpenRouter unless that backend is actively
+            # configured: its static defaults are enough for local/CLI/stub
+            # execution.
+            allow_live_catalog = (
+                not self.settings.free_only or self._openrouter_catalog_allowed()
+            )
 
         # Runtime/env lock wins over persisted tuning, except free_only remains
         # the hard cost guard and rewrites paid pins below.
@@ -931,17 +1008,35 @@ class ModelRouter:
             model = self._overrides[tier.value]
             explicit_source = "persisted"
         else:
-            model = self._default_model(tier, profile=profile)
+            # Preserve the original extension seam for subclasses and tests
+            # that override _default_model(tier, profile) while still allowing
+            # dispatch paths to explicitly suppress catalog I/O.
+            model = (
+                self._default_model(tier, profile=profile)
+                if allow_live_catalog
+                else self._default_model(
+                    tier,
+                    profile=profile,
+                    allow_live_catalog=False,
+                )
+            )
 
         # ``newest:<family>`` auto-resolves to the freshest matching model from the
         # LIVE catalog (so a pin never ages into a stale model). Falls back to a
         # dynamic free-family substitute when live paid resolution is unavailable.
         if model.startswith("newest:"):
-            model = self._resolve_newest_model(tier, model)
+            model = self._resolve_newest_model(
+                tier,
+                model,
+                allow_live_catalog=allow_live_catalog,
+            )
 
         if explicit_source:
             try:
-                info = self.model_cost_info(model)
+                info = self.model_cost_info(
+                    model,
+                    allow_live_catalog=allow_live_catalog,
+                )
                 log.info(
                     "router.explicit_model_pin",
                     source=explicit_source,
@@ -962,12 +1057,16 @@ class ModelRouter:
         if runtime_locked and not self.settings.free_only:
             return model
 
-        model = self._apply_policy(model, tier, profile=profile)
+        model = self._apply_policy(
+            model,
+            tier,
+            profile=profile,
+            allow_live_catalog=allow_live_catalog,
+        )
         # Self-heal a retired :free id against OpenRouter's LIVE catalog (only
         # worth a fetch when an OpenRouter key is configured — otherwise the
         # backend is claude/stub and the model id is unused).
-        if (self.settings.free_only and is_free_model_id(model)
-                and str(getattr(self.settings, "openrouter_api_key", "") or "").strip()):
+        if self.settings.free_only and is_free_model_id(model) and allow_live_catalog:
             model = self._valid_free_model(model, tier)
         return model
 
@@ -985,7 +1084,16 @@ class ModelRouter:
                     return m
         return live[0]
 
-    def _apply_policy(self, model: str, tier: Tier, profile: str = "balanced") -> str:
+    def _apply_policy(
+        self,
+        model: str,
+        tier: Tier,
+        profile: str = "balanced",
+        *,
+        allow_live_catalog: bool | None = None,
+    ) -> str:
+        if allow_live_catalog is None:
+            allow_live_catalog = True
         low = model.lower()
         # no-claude: rewrite Claude picks to a non-Claude tier default — staying
         # in the user's PAID catalog when they're paid (free_only=False). Forcing
@@ -995,7 +1103,11 @@ class ModelRouter:
             model = (
                 _FREE_DEFAULTS[tier]
                 if self.settings.free_only
-                else self._default_model(tier, profile=profile)
+                else self._default_model(
+                    tier,
+                    profile=profile,
+                    allow_live_catalog=allow_live_catalog,
+                )
             )
             log.info("router.rewrote_claude", tier=tier.value, to=model)
         # free-only: force a :free model.
@@ -1008,6 +1120,8 @@ class ModelRouter:
         tier: Tier,
         primary: str | None = None,
         profile: str = "balanced",
+        *,
+        allow_live_catalog: bool = True,
     ) -> list[str]:
         """Ordered alternative model ids to try when ``primary`` fails with a
         model-level error (retired :free id, invalid model, no endpoints) or
@@ -1021,7 +1135,19 @@ class ModelRouter:
         Best-effort: never raises."""
         cands: list[str] = []
         try:
-            if self.settings.free_only:
+            if not allow_live_catalog:
+                if self.settings.free_only:
+                    cands = list(_FREE_DEFAULTS.values())
+                else:
+                    cands = [
+                        self._default_model(
+                            candidate_tier,
+                            profile=profile,
+                            allow_live_catalog=False,
+                        )
+                        for candidate_tier in Tier
+                    ]
+            elif self.settings.free_only:
                 live = ranked_live_free_model_ids(tier)
                 for m in live:
                     if m not in cands:
@@ -1063,7 +1189,11 @@ class ModelRouter:
                     if live_model and live_model not in cands:
                         cands.append(live_model)
                 for t in Tier:
-                    d = self._default_model(t, profile=profile)
+                    d = self._default_model(
+                        t,
+                        profile=profile,
+                        allow_live_catalog=True,
+                    )
                     if d not in cands:
                         cands.append(d)
         except Exception as exc:  # noqa: BLE001 - fallback resolution must never raise
@@ -1071,15 +1201,32 @@ class ModelRouter:
             if self.settings.free_only:
                 cands = list(_FREE_DEFAULTS.values())
             else:
-                cands = [self._default_model(t, profile=profile) for t in Tier]
+                cands = [
+                    self._default_model(
+                        t,
+                        profile=profile,
+                        allow_live_catalog=allow_live_catalog,
+                    )
+                    for t in Tier
+                ]
         out: list[str] = []
         for m in cands:
-            m2 = self._apply_policy(m, tier, profile=profile)  # honor policy + profile
+            m2 = self._apply_policy(
+                m,
+                tier,
+                profile=profile,
+                allow_live_catalog=allow_live_catalog,
+            )  # honor policy + profile
             if (
                 m2
                 and m2 != primary
                 and m2 not in out
-                and self.auto_model_allowed(m2, tier, profile)
+                and self.auto_model_allowed(
+                    m2,
+                    tier,
+                    profile,
+                    allow_live_catalog=allow_live_catalog,
+                )
             ):
                 out.append(m2)
         return out

@@ -48,6 +48,24 @@ def test_run_build_runs_one_gated_tick(monkeypatch):
     assert len(ticks) == 1  # exactly one tick, no loop
 
 
+def test_run_build_honors_explicit_single_trajectory_override(monkeypatch):
+    ticks: list = []
+    _patch_common(monkeypatch, learning=False, ticks=ticks)
+    starts: list[dict] = []
+
+    from skyn3t.studio.runner import StudioRunner
+
+    async def fake_start(self, brief, slug=None, extra=None):
+        starts.append(dict(extra or {}))
+        return _Outcome()
+
+    monkeypatch.setattr(StudioRunner, "start", fake_start)
+
+    asyncio.run(climain._run_build("a python tool", best_of=1, no_critic=False, slug="s"))
+
+    assert starts == [{"best_of_n": 1}]
+
+
 def test_run_build_skips_tick_when_learning_off(monkeypatch):
     ticks: list = []
     _patch_common(monkeypatch, learning=False, ticks=ticks)

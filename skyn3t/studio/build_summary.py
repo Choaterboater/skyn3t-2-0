@@ -7,6 +7,7 @@ stable summary that is safe to include in /builds responses and live events.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 _UNSUCCESSFUL_TERMINAL_STATUSES = frozenset({
@@ -19,6 +20,9 @@ _UNSUCCESSFUL_TERMINAL_STATUSES = frozenset({
 _CLI_TRACE_PREFIXES = tuple(
     f"{provider}-cli:" for provider in ("codex", "claude", "copilot", "kimi")
 )
+_CLI_EXECUTION_MAX_EVENT_TYPES = 32
+_CLI_EXECUTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+_CLI_EXECUTION_EVENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -48,6 +52,87 @@ def _ok(value: Any) -> bool | None:
     return None
 
 
+def _bounded_int(value: Any, *, lower: int = 0, upper: int = 1_000_000_000) -> int | None:
+    """Parse one compact numeric field without accepting arbitrary magnitudes."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if lower <= parsed <= upper else None
+
+
+def _safe_cli_execution_text(value: Any, pattern: re.Pattern[str], limit: int) -> str:
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return ""
+    text = str(value).strip()
+    if not text or len(text) > limit:
+        return ""
+    return text if pattern.fullmatch(text) else ""
+
+
+def _compact_cli_execution(value: Any) -> dict[str, Any]:
+    """Expose bounded CLI execution evidence without copying raw stream data."""
+    data = _as_dict(value)
+    if not data:
+        return {}
+    compact: dict[str, Any] = {}
+    schema_version = _bounded_int(data.get("schema_version"), upper=100)
+    if schema_version is not None:
+        compact["schema_version"] = schema_version
+    provider = _safe_cli_execution_text(data.get("provider"), _CLI_EXECUTION_EVENT_RE, 32)
+    if provider in {"codex", "claude", "copilot", "kimi"}:
+        compact["provider"] = provider
+    for key in ("streamed", "result_event_seen", "result_is_error", "timed_out", "ok"):
+        if key in data and isinstance(data.get(key), bool):
+            compact[key] = data[key]
+    for key in (
+        "event_count",
+        "parsed_event_count",
+        "invalid_line_count",
+        "event_type_overflow_count",
+    ):
+        parsed = _bounded_int(data.get(key))
+        if parsed is not None:
+            compact[key] = parsed
+    event_type_counts: dict[str, int] = {}
+    for raw_type, raw_count in _as_dict(data.get("event_type_counts")).items():
+        event_type = _safe_cli_execution_text(
+            raw_type, _CLI_EXECUTION_EVENT_RE, 80
+        )
+        count = _bounded_int(raw_count)
+        if event_type and count is not None and len(event_type_counts) < _CLI_EXECUTION_MAX_EVENT_TYPES:
+            event_type_counts[event_type] = count
+    if event_type_counts:
+        compact["event_type_counts"] = event_type_counts
+    for key in ("thread_id", "session_id"):
+        identifier = _safe_cli_execution_text(
+            data.get(key), _CLI_EXECUTION_ID_RE, 256
+        )
+        if identifier:
+            compact[key] = identifier
+    for key in (
+        "terminal_event_type",
+        "timeout_kind",
+        "termination_reason",
+        "exit_status",
+        "session_persistence",
+    ):
+        safe = _safe_cli_execution_text(data.get(key), _CLI_EXECUTION_EVENT_RE, 80)
+        if safe:
+            compact[key] = safe
+    exit_code = _bounded_int(data.get("exit_code"), lower=-(2 ** 31), upper=(2 ** 31) - 1)
+    if exit_code is not None:
+        compact["exit_code"] = exit_code
+    raw_version = data.get("cli_version")
+    version = raw_version.replace("\x00", "") if isinstance(raw_version, str) else ""
+    version = " ".join(version.split())[:160]
+    if version:
+        compact["cli_version"] = version
+    return compact
+
+
 def _compact_agentic(value: Any) -> dict[str, Any]:
     data = _as_dict(value)
     keys = (
@@ -73,11 +158,15 @@ def _compact_agentic(value: Any) -> dict[str, Any]:
         "session_id",
         "error",
     )
-    return {
+    compact = {
         k: data.get(k)
         for k in keys
         if data.get(k) not in (None, "")
     }
+    cli_execution = _compact_cli_execution(data.get("cli_execution"))
+    if cli_execution:
+        compact["cli_execution"] = cli_execution
+    return compact
 
 
 def _compact_best_of_n(value: Any) -> dict[str, Any]:

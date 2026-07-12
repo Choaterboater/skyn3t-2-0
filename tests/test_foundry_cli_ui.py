@@ -44,3 +44,20 @@ def test_foundry_cli_options_expose_availability_and_account_billing() -> None:
     assert "codegen-only {codegenCliProvider} CLI override is unavailable" in studio
     assert "OpenRouter is selected but its API key is missing" in studio
     assert "does not silently switch to OpenRouter" in studio
+
+
+def test_settings_keeps_paid_providers_manual_and_disconnectable() -> None:
+    settings = (UI_SRC / "routes" / "Settings.jsx").read_text(encoding="utf-8")
+    routes = (ROOT / "skyn3t" / "web" / "routes.py").read_text(encoding="utf-8")
+
+    assert "is Codex CLI-only" in settings
+    assert "Manual OpenRouter route" in settings
+    assert "Use OpenRouter manually" in settings
+    assert "Disconnect OpenRouter" in settings
+    assert 'apiPost("/llm/backend", { backend: "auto" })' in settings
+    assert "DEFAULT_REPLICATE_MODEL" in settings
+    assert "Use Flux Schnell" in settings
+    assert "Disconnect Replicate" in settings
+    assert "Save model updates the preference without clearing an existing token" in settings
+    assert "token: str | None" in routes
+    assert 'token = body.get("token", body.get("key"))' in routes

@@ -47,3 +47,43 @@ def test_build_summary_surfaces_responsive_visual_proof_without_route_payloads()
     assert responsive["routes_skipped"] == 2
     assert responsive["artifact_dir"] == ".skyn3t/visual-proof"
     assert "failed_routes" not in responsive
+
+
+def test_build_summary_compacts_cli_execution_evidence():
+    summary = build_summary({
+        "extra": {
+            "agentic": {
+                "backend": "codex_cli",
+                "cli_execution": {
+                    "schema_version": 1,
+                    "provider": "codex",
+                    "streamed": True,
+                    "event_count": 3,
+                    "parsed_event_count": 3,
+                    "event_type_counts": {
+                        "thread.started": 1,
+                        "turn.completed": 1,
+                        "bad type with whitespace": 99,
+                    },
+                    "thread_id": "thread-123",
+                    "session_persistence": "ephemeral",
+                    "terminal_event_type": "turn.completed",
+                    "exit_code": 0,
+                    "exit_status": "exited",
+                    "cli_version": "codex-cli 9.9.9\nignored extra line",
+                    "raw_event": {"prompt": "must not survive"},
+                },
+            },
+        },
+    })
+
+    execution = summary["model_trace"]["agentic"]["cli_execution"]
+    assert execution["provider"] == "codex"
+    assert execution["thread_id"] == "thread-123"
+    assert execution["session_persistence"] == "ephemeral"
+    assert execution["event_type_counts"] == {
+        "thread.started": 1,
+        "turn.completed": 1,
+    }
+    assert execution["cli_version"] == "codex-cli 9.9.9 ignored extra line"
+    assert "raw_event" not in execution

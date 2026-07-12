@@ -68,6 +68,21 @@ def test_strip_inline_ts_syntax_from_jsx_entry(tmp_path):
     assert "createRoot(document.getElementById('root')).render" in body
 
 
+def test_strip_ts_type_preserves_plain_js_destructuring_aliases(tmp_path):
+    """Object aliases in JS parameters are not TypeScript annotations."""
+    f = tmp_path / "Component.jsx"
+    source = (
+        "export default function Component({ metrics: suppliedMetrics } = {}) {\n"
+        "  const metrics = suppliedMetrics ?? {};\n"
+        "  return <output>{metrics.total}</output>;\n"
+        "}\n"
+    )
+    f.write_text(source, encoding="utf-8")
+
+    assert strip_ts_type_in_js(tmp_path) == []
+    assert f.read_text(encoding="utf-8") == source
+
+
 def test_strip_markdown_fenced_source_file(tmp_path):
     f = tmp_path / "src" / "App.jsx"
     f.parent.mkdir()

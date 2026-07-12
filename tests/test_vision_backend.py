@@ -6,10 +6,25 @@ import pytest
 from skyn3t.studio import visual_check as vc
 
 
-def test_openrouter_preferred_when_key():
+def test_openrouter_vision_requires_explicit_openrouter_backend():
     fn = vc.make_vision_fn(SimpleNamespace(
-        openrouter_api_key="sk-or", vision_model="", cli_llm_provider="claude"))
+        llm_backend="openrouter", openrouter_api_key="sk-or", vision_model="",
+        cli_llm_provider="claude"))
     assert fn is not None  # an OpenRouter fn
+
+
+def test_auto_never_constructs_openrouter_vision_from_a_dormant_key(monkeypatch):
+    def _unexpected_paid_provider(_settings):
+        raise AssertionError("automatic route must not construct an OpenRouter vision client")
+
+    monkeypatch.setattr(vc, "_make_openrouter_vision_fn", _unexpected_paid_provider)
+    settings = SimpleNamespace(
+        llm_backend="auto", openrouter_api_key="sk-or", vision_model="",
+        cli_llm_provider="claude",
+    )
+
+    assert vc.make_vision_fn(settings) is None
+    assert vc.make_click_vision_fn(settings) is None
 
 
 @pytest.mark.real_cli_vision
@@ -17,7 +32,8 @@ def test_cli_fn_when_no_key_but_cli_present(monkeypatch):
     monkeypatch.setattr(vc.shutil, "which",
                         lambda p: "/usr/bin/claude" if p == "claude" else None)
     fn = vc.make_vision_fn(SimpleNamespace(
-        openrouter_api_key="", vision_model="", cli_llm_provider="claude"))
+        llm_backend="claude_cli", openrouter_api_key="", vision_model="",
+        cli_llm_provider="claude"))
     assert fn is not None
 
 
@@ -25,7 +41,8 @@ def test_cli_fn_when_no_key_but_cli_present(monkeypatch):
 def test_none_when_no_key_and_no_cli(monkeypatch):
     monkeypatch.setattr(vc.shutil, "which", lambda p: None)
     fn = vc.make_vision_fn(SimpleNamespace(
-        openrouter_api_key="", vision_model="", cli_llm_provider="claude"))
+        llm_backend="claude_cli", openrouter_api_key="", vision_model="",
+        cli_llm_provider="claude"))
     assert fn is None
 
 
@@ -49,7 +66,8 @@ def test_click_vision_prefers_cli_even_with_a_key(monkeypatch):
 
     monkeypatch.setattr(vc.subprocess, "run", fake_run)
     fn = vc.make_click_vision_fn(SimpleNamespace(
-        openrouter_api_key="sk-or", vision_model="", cli_llm_provider="claude"))
+        llm_backend="claude_cli", openrouter_api_key="sk-or", vision_model="",
+        cli_llm_provider="claude"))
     fn("/tmp/shot.png", "where do I click?")
     assert "claude" in captured["argv"][0]
 
@@ -57,7 +75,8 @@ def test_click_vision_prefers_cli_even_with_a_key(monkeypatch):
 def test_click_vision_falls_back_to_openrouter_when_no_cli(monkeypatch):
     monkeypatch.setattr(vc.shutil, "which", lambda p: None)
     fn = vc.make_click_vision_fn(SimpleNamespace(
-        openrouter_api_key="sk-or", vision_model="", cli_llm_provider="claude"))
+        llm_backend="openrouter", openrouter_api_key="sk-or", vision_model="",
+        cli_llm_provider="claude"))
     assert fn is not None  # the OpenRouter fn (no CLI on PATH)
 
 
@@ -65,7 +84,8 @@ def test_click_vision_falls_back_to_openrouter_when_no_cli(monkeypatch):
 def test_click_vision_none_when_no_key_and_no_cli(monkeypatch):
     monkeypatch.setattr(vc.shutil, "which", lambda p: None)
     fn = vc.make_click_vision_fn(SimpleNamespace(
-        openrouter_api_key="", vision_model="", cli_llm_provider="claude"))
+        llm_backend="claude_cli", openrouter_api_key="", vision_model="",
+        cli_llm_provider="claude"))
     assert fn is None
 
 
@@ -81,7 +101,8 @@ def test_cli_fn_passes_image_path_and_returns_stdout(monkeypatch):
 
     monkeypatch.setattr(vc.subprocess, "run", fake_run)
     fn = vc.make_vision_fn(SimpleNamespace(
-        openrouter_api_key="", vision_model="", cli_llm_provider="kimi"))
+        llm_backend="kimi_cli", openrouter_api_key="", vision_model="",
+        cli_llm_provider="kimi"))
     out = fn("/tmp/shot.png", "judge it")
     assert "/tmp/shot.png" in " ".join(captured["argv"])
     assert out == '{"matches": true}'
@@ -108,7 +129,8 @@ def test_cli_fn_runs_with_cwd_set_to_the_images_own_directory(monkeypatch):
 
     monkeypatch.setattr(vc.subprocess, "run", fake_run)
     fn = vc.make_vision_fn(SimpleNamespace(
-        openrouter_api_key="", vision_model="", cli_llm_provider="claude"))
+        llm_backend="claude_cli", openrouter_api_key="", vision_model="",
+        cli_llm_provider="claude"))
     fn("/var/folders/xx/T/skyn3t-qa-shot-abc123.png", "judge it")
     assert captured["kw"].get("cwd") == "/var/folders/xx/T"
 
@@ -125,6 +147,8 @@ def test_suite_default_never_builds_a_cli_vision_backend(monkeypatch):
     # Simulate the leak condition: claude IS on PATH, no OpenRouter key.
     monkeypatch.setattr(vc.shutil, "which",
                         lambda p: "/usr/bin/claude" if p == "claude" else None)
-    s = SimpleNamespace(openrouter_api_key="", vision_model="", cli_llm_provider="claude")
+    s = SimpleNamespace(
+        llm_backend="auto", openrouter_api_key="", vision_model="", cli_llm_provider="claude"
+    )
     assert vc.make_vision_fn(s) is None
     assert vc.make_click_vision_fn(s) is None

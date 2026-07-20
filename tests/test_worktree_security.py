@@ -44,6 +44,76 @@ def test_merge_back_rejects_symlink_to_outside_file(tmp_path):
     assert not (dst / "public" / "leak.txt").exists()
 
 
+def test_merge_back_clean_unlinks_preseeded_symlink_instead_of_writing_through(
+    tmp_path,
+):
+    # Regression: a poisoned symlink left in the delivered project dir survived
+    # the clean pass (rmtree refuses symlinks) and the copy loop then wrote
+    # THROUGH it — outside the project boundary.
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    outside = tmp_path / "outside"
+    src.mkdir()
+    dst.mkdir()
+    outside.mkdir()
+    (src / "sub").mkdir()
+    (src / "sub" / "payload.txt").write_text("build output\n", encoding="utf-8")
+    (dst / "sub").symlink_to(outside)
+
+    copied = merge_back(src, dst, clean=True)
+
+    # The alias is gone, nothing escaped, and the payload landed INSIDE dst.
+    assert not (dst / "sub").is_symlink()
+    assert not (outside / "payload.txt").exists()
+    assert (dst / "sub" / "payload.txt").read_text(encoding="utf-8") == "build output\n"
+    assert "sub/payload.txt" in copied
+
+
+def test_merge_back_never_writes_through_symlinked_ancestor(tmp_path):
+    # Even without clean=True, a symlinked ancestor already present in the
+    # destination must not be traversed by the copy loop.
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    outside = tmp_path / "outside"
+    src.mkdir()
+    dst.mkdir()
+    outside.mkdir()
+    (outside / "keep.txt").write_text("untouched\n", encoding="utf-8")
+    (src / "linked").mkdir()
+    (src / "linked" / "evil.txt").write_text("escape attempt\n", encoding="utf-8")
+    (src / "safe.txt").write_text("fine\n", encoding="utf-8")
+    (dst / "linked").symlink_to(outside)
+
+    copied = merge_back(src, dst)
+
+    assert "linked/evil.txt" not in copied
+    assert "safe.txt" in copied
+    assert (outside / "keep.txt").read_text(encoding="utf-8") == "untouched\n"
+    assert not (outside / "evil.txt").exists()
+
+
+def test_merge_back_excludes_case_variants_of_ignored_dirs(tmp_path):
+    # On case-insensitive filesystems "Node_Modules" IS "node_modules"; the
+    # ignore list must match case-folded like SOURCE_TREE_EXCLUDED_DIR_NAMES.
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    node_modules = src / "Node_Modules" / "pkg"
+    node_modules.mkdir(parents=True)
+    (node_modules / "index.js").write_text("module.exports = 1;\n", encoding="utf-8")
+    pycache = src / "pkg" / "__PYCACHE__"
+    pycache.mkdir(parents=True)
+    (pycache / "mod.cpython-312.pyc").write_bytes(b"\x00pyc")
+    (src / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+
+    copied = merge_back(src, dst)
+
+    assert "pkg/mod.py" in copied
+    assert "Node_Modules/pkg/index.js" not in copied
+    assert "pkg/__PYCACHE__/mod.cpython-312.pyc" not in copied
+    assert not (dst / "Node_Modules").exists()
+    assert not (dst / "pkg" / "__PYCACHE__").exists()
+
+
 def test_merge_back_excludes_swift_module_cache(tmp_path):
     src = tmp_path / "wt"
     dst = tmp_path / "project"

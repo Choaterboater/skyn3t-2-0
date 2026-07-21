@@ -70,3 +70,35 @@ delivered project.
    pre-seeded symlink in the destination under `clean=True`.
 3. `STATUS.md` "Last reviewed" stamp is 2026-07-09 — refresh after the next
    full-suite run (not edited here to avoid unverified test-count claims).
+
+---
+
+## Fleet addendum (same run, later sweep)
+
+A full 19-repo sweep ran against the 2026-07-06 baseline (last prior report:
+`2026-07-06-skyn3t-assessment.md`).
+
+**Activity since baseline:** skyn3t-2-0 (~100 commits, through 2026-07-12),
+GreenText (13), choatelabs-site (10), GreenCli (8). The other 15 repos had no
+new commits. Nothing committed fleet-wide since 2026-07-12.
+
+**Findings outside this repo:**
+
+- **choatelabs-site** — two verified consistency bugs: duplicate project
+  numbering on the homepage (`01,02,03,03,04,…` after GreenText was inserted
+  as 02 — MAC Vendor Lookup collided with LUMINA at 03) and `/greentext/`
+  missing from `sitemap.xml`. Fixed in
+  [choatelabs-site#20](https://github.com/Choaterboater/choatelabs-site/pull/20).
+- **GreenCli** — README "Project Structure" tree predates the feature passes
+  (8 of 30 components listed; Junos grammar, `PopOutTerminal.tsx`, `src/data`,
+  `e2e/`, and most Rust backend modules missing); Playwright run artifacts
+  (`playwright-report/index.html`, `test-results/.last-run.json`) were
+  committed and unignored. Fixed in
+  [GreenCli#4](https://github.com/Choaterboater/GreenCli/pull/4).
+- **GreenText** — deep-dived the head commit (template buffer race +
+  literal-value substitution fixes); both verified correct by code review.
+  README commands checked against `package.json` scripts — consistent.
+  No fixes needed.
+- Head commit of this repo (`a44c49d`, Codex-only build hardening) was
+  reviewed in full across all changed source files; no new findings beyond
+  the two `worktree.py` bugs above.

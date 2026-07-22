@@ -142,6 +142,9 @@ def create_worktree(
     return Worktree(path=wt_path, slug=slug, is_git=False, base_repo=base)
 
 
+_IGNORE_NAMES_CASEFOLD = frozenset(name.casefold() for name in _IGNORE_NAMES)
+
+
 def _iter_files(root: Path):
     for p in root.rglob("*"):
         if p.is_symlink():
@@ -149,7 +152,10 @@ def _iter_files(root: Path):
         if p.is_dir():
             continue
         rel_parts = p.relative_to(root).parts
-        if any(part in _IGNORE_NAMES for part in rel_parts):
+        # Case-folded match: generated dirs like "Node_Modules"/"__PYCACHE__"
+        # are the same entries as their lowercase names on case-insensitive
+        # filesystems, so exclude them on the same terms here.
+        if any(part.casefold() in _IGNORE_NAMES_CASEFOLD for part in rel_parts):
             continue
         yield p
 
@@ -187,7 +193,17 @@ def merge_back(
             if child.name == ".git":
                 continue
             try:
-                shutil.rmtree(child) if child.is_dir() else child.unlink()
+                # Unlink symlinks/junctions FIRST: rmtree refuses them (raising
+                # OSError), which would leave the alias in place for the copy
+                # loop below to write THROUGH — outside the project directory.
+                if child.is_symlink() or bool(
+                    getattr(os.path, "isjunction", lambda _p: False)(child)
+                ):
+                    child.unlink()
+                elif child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
             except OSError:
                 pass
     dst.mkdir(parents=True, exist_ok=True)
@@ -196,6 +212,18 @@ def merge_back(
         rel = f.relative_to(src)
         target = dst / rel
         if target.exists() and not overwrite:
+            continue
+        # Never copy through a symlinked ancestor (or onto a symlinked target)
+        # inside the destination — that would write outside the delivered
+        # project tree.
+        ancestor = dst
+        escape = False
+        for part in rel.parts[:-1]:
+            ancestor = ancestor / part
+            if ancestor.is_symlink():
+                escape = True
+                break
+        if escape or target.is_symlink():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         try:

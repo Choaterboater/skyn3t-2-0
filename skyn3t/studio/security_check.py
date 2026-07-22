@@ -34,7 +34,11 @@ _SQL_INTERP_RE = re.compile(
     r"|UPDATE\s+\S+\s+SET\b"
     r"|DELETE\s+FROM\b"
     r")"
-    r"[^;\n]*(?:\+|\$\{|%s|\.format\()",
+    r"[^;\n]*(?:\+|\$\{|%s|\.format\()"
+    # Python f-strings: f"SELECT ... FROM ... {var}" carries no +/${/%s/.format
+    # marker, so it needs its own alternative with the same statement shape.
+    r"|f['\"]\s*(?:SELECT\b[^;\n]*\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)"
+    r"[^;\n]*\{[A-Za-z_]",
     re.I,
 )
 _HEADER_MARKERS = (

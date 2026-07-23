@@ -116,6 +116,53 @@ def test_security_check_ignores_fstring_without_sql(tmp_path):
     assert verdict["issues"] == []
 
 
+def test_security_check_flags_triple_quoted_fstring_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = f"""SELECT * FROM users WHERE id = {uid}"""\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_raw_fstring_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = fr"DELETE FROM sessions WHERE token = {tok}"\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_triple_quoted_percent_format_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = """SELECT * FROM users WHERE id = %s""" % uid\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_ignores_triple_quoted_fstring_prose(tmp_path):
+    (tmp_path / "ui.py").write_text(
+        'label = f"""Select your {item} from the menu"""\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["issues"] == []
+
+
 def test_security_gate_downgrades_critical_findings(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "server.js").write_text("eval(req.query.code)\n", encoding="utf-8")

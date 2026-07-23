@@ -27,7 +27,7 @@ _SECRET_RE = re.compile(
 )
 _EVAL_RE = re.compile(r"\b(?:eval|Function)\s*\(")
 _SQL_INTERP_RE = re.compile(
-    r"(?:`|['\"])\s*"
+    r"(?:`|['\"]{1,3})\s*"
     r"(?:"
     r"SELECT\b[^;\n]*\bFROM\b"
     r"|INSERT\s+INTO\b"
@@ -36,8 +36,11 @@ _SQL_INTERP_RE = re.compile(
     r")"
     r"[^;\n]*(?:\+|\$\{|%s|\.format\()"
     # Python f-strings: f"SELECT ... FROM ... {var}" carries no +/${/%s/.format
-    # marker, so it needs its own alternative with the same statement shape.
-    r"|f['\"]\s*(?:SELECT\b[^;\n]*\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)"
+    # marker, so they need their own alternative with the same statement shape.
+    # Covers fr/rf prefixes and single-line triple-quoted strings; interpolation
+    # is still required after the statement shape, so prose such as
+    # f"Select your {item} from the menu" stays clean.
+    r"|(?:fr?|rf)['\"]{1,3}\s*(?:SELECT\b[^;\n]*\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)"
     r"[^;\n]*\{[A-Za-z_]",
     re.I,
 )

@@ -163,6 +163,75 @@ def test_security_check_ignores_triple_quoted_fstring_prose(tmp_path):
     assert verdict["issues"] == []
 
 
+def test_security_check_flags_multiline_js_template_sql(tmp_path):
+    (tmp_path / "db.js").write_text(
+        "const q = `\n  SELECT *\n  FROM users\n  WHERE id = ${uid}\n`;\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "express")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_multiline_python_fstring_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = f"""\n    SELECT *\n    FROM users\n    WHERE id = {uid}\n"""\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_multiline_percent_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        "query = '''\nSELECT *\nFROM users\nWHERE id = %s\n''' % uid\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_ignores_multiline_prose_template(tmp_path):
+    (tmp_path / "Help.jsx").write_text(
+        "const help = `Select your plan\nfrom the options below ${plan}`;\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "react")
+
+    assert verdict["issues"] == []
+
+
+def test_security_check_does_not_chain_adjacent_literals(tmp_path):
+    (tmp_path / "help.js").write_text(
+        "const a = `Use SELECT * FROM users to list`;\nconst b = `${y}`;\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "static")
+
+    assert verdict["issues"] == []
+
+
+def test_security_check_ignores_lowercase_multiline_docstring(tmp_path):
+    (tmp_path / "notes.py").write_text(
+        '"""\nRun select * from users to see everyone.\nThen call {helper}\n"""\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["issues"] == []
+
+
 def test_security_gate_downgrades_critical_findings(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "server.js").write_text("eval(req.query.code)\n", encoding="utf-8")

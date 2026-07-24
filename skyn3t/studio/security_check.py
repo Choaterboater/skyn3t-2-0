@@ -41,7 +41,18 @@ _SQL_INTERP_RE = re.compile(
     # is still required after the statement shape, so prose such as
     # f"Select your {item} from the menu" stays clean.
     r"|(?:fr?|rf)['\"]{1,3}\s*(?:SELECT\b[^;\n]*\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)"
-    r"[^;\n]*\{[A-Za-z_]",
+    r"[^;\n]*\{[A-Za-z_]"
+    # Multiline single literals: JS template literals and Python triple-quoted
+    # strings can carry the statement shape across lines, which the single-line
+    # alternatives above cannot see. These alternatives allow newlines INSIDE
+    # one literal: the interpolation window stops at that literal's own closing
+    # delimiter (so two adjacent literals can never chain into a false
+    # positive), and the statement keywords must be UPPERCASE (re.I is switched
+    # off inside the shape) so sentence-case prose spanning lines stays clean.
+    # Accepted miss: lowercase or implicit-concatenated multiline SQL.
+    r"|`\s*(?-i:SELECT\b[^;`]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;`]{0,400}?\$\{"
+    r"|(?:fr?|rf)?\"\"\"\s*(?-i:SELECT\b[^;\"]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;\"]{0,400}?(?:\$\{|\{[A-Za-z_]|%s)"
+    r"|(?:fr?|rf)?'''\s*(?-i:SELECT\b[^;']{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;']{0,400}?(?:\$\{|\{[A-Za-z_]|%s)",
     re.I,
 )
 _HEADER_MARKERS = (

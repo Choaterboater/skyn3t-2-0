@@ -34,9 +34,10 @@ _SQL_INTERP_RE = re.compile(
     r"|UPDATE\s+\S+\s+SET\b"
     r"|DELETE\s+FROM\b"
     r")"
-    r"[^;\n]*(?:\+|\$\{|%s|\.format\()"
-    # Python f-strings: f"SELECT ... FROM ... {var}" carries no +/${/%s/.format
-    # marker, so they need their own alternative with the same statement shape.
+    r"[^;\n]*(?:\+|\$\{|\.concat\(|%\([^)]{1,40}\)[sdif]|%[sdif]|\.format(?:_map)?\()"
+    # Python f-strings: f"SELECT ... FROM ... {var}" carries no +/${/.concat/
+    # %-format/.format marker, so they need their own alternative with the same
+    # statement shape.
     # Covers fr/rf prefixes and single-line triple-quoted strings; interpolation
     # is still required after the statement shape, so prose such as
     # f"Select your {item} from the menu" stays clean.
@@ -48,11 +49,12 @@ _SQL_INTERP_RE = re.compile(
     # one literal: the interpolation window stops at that literal's own closing
     # delimiter (so two adjacent literals can never chain into a false
     # positive), and the statement keywords must be UPPERCASE (re.I is switched
-    # off inside the shape) so sentence-case prose spanning lines stays clean.
+    # off inside the shape via (?-i:...)) so sentence-case prose spanning lines
+    # stays clean.
     # Accepted miss: lowercase or implicit-concatenated multiline SQL.
     r"|`\s*(?-i:SELECT\b[^;`]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;`]{0,400}?\$\{"
-    r"|(?:fr?|rf)?\"\"\"\s*(?-i:SELECT\b[^;\"]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;\"]{0,400}?(?:\$\{|\{[A-Za-z_]|%s)"
-    r"|(?:fr?|rf)?'''\s*(?-i:SELECT\b[^;']{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;']{0,400}?(?:\$\{|\{[A-Za-z_]|%s)",
+    r"|(?:fr?|rf)?\"\"\"\s*(?-i:SELECT\b[^;\"]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;\"]{0,400}?(?:\$\{|\{[A-Za-z_]|%\([^)]{1,40}\)[sdif]|%[sdif])"
+    r"|(?:fr?|rf)?'''\s*(?-i:SELECT\b[^;']{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;']{0,400}?(?:\$\{|\{[A-Za-z_]|%\([^)]{1,40}\)[sdif]|%[sdif])",
     re.I,
 )
 _HEADER_MARKERS = (

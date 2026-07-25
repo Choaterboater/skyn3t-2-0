@@ -250,3 +250,75 @@ def test_security_gate_downgrades_critical_findings(tmp_path):
     assert verdict == "no_go"
     assert score == 49.0
     assert man.extra["security_check"]["ok"] is False
+
+
+def test_security_check_flags_percent_d_format_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = "SELECT * FROM users WHERE id = %d" % uid\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_named_percent_format_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = "SELECT * FROM users WHERE id = %(uid)s"\n'
+        'cursor.execute(query, {"uid": uid})\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_format_map_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = "SELECT * FROM users WHERE id = {uid}".format_map(locals())\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_js_concat_sql(tmp_path):
+    (tmp_path / "db.js").write_text(
+        'const q = "SELECT * FROM users WHERE id = ".concat(uid);\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "express")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_multiline_percent_d_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = """\nSELECT *\nFROM users\nWHERE id = %d\n""" % uid\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_ignores_percent_sign_prose(tmp_path):
+    (tmp_path / "ui.py").write_text(
+        'label = f"Select your {item} from the menu — 50% off today"\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["issues"] == []

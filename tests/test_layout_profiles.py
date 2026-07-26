@@ -305,6 +305,31 @@ def test_tampered_source_app_type_cannot_change_profile_provenance(
     assert "workspace layout contract" not in layout_contract_block(payload).lower()
 
 
+@pytest.mark.parametrize(
+    "tampered_source_app_type",
+    [
+        "api_service",
+        "developer_tool",
+        "mobile_app",
+        "desktop_app",
+        "mcp_server",
+        "native_app",
+    ],
+)
+def test_known_compact_source_cannot_restore_an_immersive_contract(
+    tampered_source_app_type: str,
+):
+    payload = resolve_layout_profile(
+        "game", stack="phaser", engine="canvas",
+    ).to_dict()
+    payload["source_app_type"] = tampered_source_app_type
+
+    restored = profile_from_payload(payload)
+
+    assert restored.name == "compact"
+    assert restored.source_app_type == ""
+
+
 def test_canvas_derived_immersive_profile_round_trips_its_unknown_source_type():
     payload = resolve_layout_profile(
         "something else", stack="phaser", engine="canvas",

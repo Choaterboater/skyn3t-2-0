@@ -589,20 +589,22 @@ class AppRunner:
                         },
                     )
             self._terminate(proc)
-            detail: dict[str, Any] = {"log_tail": tail,
-                                      "injected_secrets": list(spec.injected),
-                                      "missing_secrets": list(spec.missing_secrets)}
+            failure_detail: dict[str, Any] = {
+                "log_tail": tail,
+                "injected_secrets": list(spec.injected),
+                "missing_secrets": list(spec.missing_secrets),
+            }
             # An app that exited while missing a required key almost certainly
             # died on that key — turn the opaque SDK error into an actionable hint.
             if spec.missing_secrets:
-                detail["hint"] = (
+                failure_detail["hint"] = (
                     "app needs config it doesn't have: "
                     + ", ".join(spec.missing_secrets)
                     + " — set them in your environment or SkyN3t settings "
                     "(e.g. SKYN3T_OPENROUTER_API_KEY) and re-serve")
             return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
                               project_dir=str(pdir), log_path=log_path, status="failed",
-                              detail=detail)
+                              detail=failure_detail)
         running_pid = proc.pid
         detail: dict[str, Any] = {
             "cmd": spec.cmd,

@@ -66,6 +66,39 @@ def test_healthy_first_round_no_improve(tmp_path, monkeypatch):
     assert seen["screenshot_dir"] == str(tmp_path / ".skyn3t" / "visual-proof")
 
 
+def test_async_preview_stop_is_awaited(tmp_path, monkeypatch):
+    stopped = {"done": False}
+
+    async def fake_check(base, routes, **kwargs):
+        return LivenessReport(
+            results=[RouteResult("/", "GET", 200, True, "page")],
+            total=1,
+            ok=1,
+            dead=0,
+            dead_routes=[],
+            health=1.0,
+        )
+
+    class _AsyncStopApp(_App):
+        async def stop(self, app):
+            await asyncio.sleep(0)
+            stopped["done"] = True
+
+    monkeypatch.setattr(lv, "check_liveness", fake_check)
+
+    out = asyncio.run(
+        liveness_self_improve(
+            tmp_path,
+            app_runner=_AsyncStopApp("http://127.0.0.1:1"),
+            improve_engine=None,
+            max_rounds=1,
+        )
+    )
+
+    assert out.passed is True
+    assert stopped["done"] is True
+
+
 def test_repairs_dead_routes_then_reports(tmp_path, monkeypatch):
     (tmp_path / "main.py").write_text('@app.get("/")\ndef h(): ...\n')
     calls = {"n": 0}

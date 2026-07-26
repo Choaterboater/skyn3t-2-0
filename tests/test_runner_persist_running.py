@@ -145,6 +145,57 @@ def test_running_build_is_persisted_immediately(tmp_path):
     asyncio.run(run())
 
 
+def test_preflight_run_id_is_persisted_before_preflight_is_awaited(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+        )
+        memory = _FakeMemory()
+        bus = EventBus()
+        runner = StudioRunner(
+            bus,
+            Orchestrator(bus),
+            settings=settings,
+            memory=memory,
+        )
+        observed: list[dict] = []
+
+        async def stop_at_preflight(**kwargs):
+            saves = memory.saves_for(kwargs["build_id"])
+            observed.append(saves[-1]["manifest"])
+            raise RuntimeError("stop after checking durable preflight identity")
+
+        monkeypatch.setattr(
+            "skyn3t.studio.runner.prepare_build_intelligence",
+            stop_at_preflight,
+        )
+
+        outcome = await runner.start(
+            "Build a durable Python tool",
+            slug="durable-preflight",
+            extra={
+                "build_id": "build-durable-preflight",
+                "build_profile": "cheap_learned",
+            },
+        )
+
+        assert outcome.status == "failed"
+        assert observed
+        assert observed[0]["extra"]["preflight_run_id"] == (
+            "build-durable-preflight-preflight"
+        )
+
+    asyncio.run(run())
+
+
 def test_running_record_retrievable_via_get_build(tmp_path):
     """After start(), the build must be retrievable via get_build (store path)."""
 

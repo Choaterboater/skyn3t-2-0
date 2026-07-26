@@ -21,6 +21,7 @@ import shutil
 import threading
 import time
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -33,7 +34,7 @@ import structlog
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.events import EventType
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
-from skyn3t.core.model_router import live_catalog, prime_live_catalog
+from skyn3t.core.model_router import prime_live_catalog
 from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME, BuildManifest
@@ -218,6 +219,10 @@ class ProjectReverifyError(RuntimeError):
         self.status_code = status_code
         self.preserve_staging = preserve_staging
         self.recovery_path = recovery_path
+
+
+class ProductSpecUnavailableError(RuntimeError):
+    """A delivered project predates, or has lost, its durable product contract."""
 
 
 class DeployPreflightError(RuntimeError):
@@ -495,14 +500,7 @@ _BUILD_TERMINAL_STATUSES = {
     "approved",
     "interrupted",
 }
-_BUILD_FAILOVER_STATUSES = {"failed", "completed_no_go"}
-_BUILD_FAILOVER_THRESHOLD = 2
-_DEEPSEEK_FAILOVER_FALLBACK = "deepseek/deepseek-v4-flash"
-_DEEPSEEK_FAILOVER_EXACT_EXCLUDE = {
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-v3.2-exp",
-}
-_DEEPSEEK_FAILOVER_MARKER_EXCLUDE = ("r1", "distill", "reasoner", "-base", "-exp")
+_BUILD_FAILURE_STATUSES = {"failed", "completed_no_go"}
 
 
 def _normalize_status(value: str) -> str:
@@ -780,53 +778,14 @@ async def _matching_failure_count(state: AppState, *, brief: str, stack: str, sl
                 rows.append(row)
                 if bid:
                     seen.add(bid)
-        except Exception:  # noqa: BLE001 - failover should never break submit
+        except Exception:  # noqa: BLE001 - failure diagnostics never block submit
             pass
     return sum(
         1
         for row in rows
-        if _normalize_status(str(row.get("status") or "")) in _BUILD_FAILOVER_STATUSES
+        if _normalize_status(str(row.get("status") or "")) in _BUILD_FAILURE_STATUSES
         and _row_matches_build_target(row, brief=brief, stack=stack, slug=slug)
     )
-
-
-def _pricing_value(raw: object) -> float | None:
-    try:
-        value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return value if value >= 0 else None
-
-
-def _catalog_token_cost(model: dict[str, Any]) -> float | None:
-    pricing = model.get("pricing")
-    if not isinstance(pricing, dict):
-        return None
-    prompt = _pricing_value(pricing.get("prompt") or pricing.get("input"))
-    completion = _pricing_value(pricing.get("completion") or pricing.get("output"))
-    if prompt is None and completion is None:
-        return _pricing_value(pricing.get("request"))
-    return float(prompt or 0.0) * 0.55 + float(completion or 0.0) * 0.45
-
-
-def _deepseek_failover_model() -> str:
-    scored: list[tuple[int, float, int, str]] = []
-    for model in live_catalog():
-        model_id = str(model.get("id") or "").strip()
-        low = model_id.lower()
-        if not model_id or "deepseek" not in low or model_id.endswith(":free"):
-            continue
-        if low in _DEEPSEEK_FAILOVER_EXACT_EXCLUDE:
-            continue
-        if any(marker in low for marker in _DEEPSEEK_FAILOVER_MARKER_EXCLUDE):
-            continue
-        cost = _catalog_token_cost(model)
-        if cost is None:
-            continue
-        v4_rank = 0 if "deepseek-v4" in low else 1
-        scored.append((v4_rank, cost, -int(model.get("created", 0) or 0), model_id))
-    scored.sort()
-    return scored[0][3] if scored else _DEEPSEEK_FAILOVER_FALLBACK
 
 
 def _normalize_build_profile(profile: str) -> str:
@@ -954,10 +913,134 @@ def _enforce_build_routing(state: AppState) -> None:
     )
 
 
+def _submission_routing_snapshot(
+    state: AppState,
+    model_override: str,
+) -> dict[str, Any]:
+    """Return immutable requested/effective routing truth for one build."""
+    client = getattr(state, "llm_client", None)
+    snapshot = getattr(client, "build_routing_snapshot", None)
+    if callable(snapshot):
+        return dict(snapshot(model_override))
+
+    requested = str(
+        getattr(state.settings, "llm_backend", "auto") or "auto"
+    ).strip().lower()
+    effective = str(getattr(client, "backend", "") or requested).strip().lower()
+    requested_override = str(model_override or "").strip()
+    preferred_model = str(
+        getattr(state.settings, "preferred_model", "") or ""
+    ).strip()
+    requested_model = preferred_model if effective == "openrouter" else ""
+    if effective == "openrouter":
+        effective_model = preferred_model or "router:auto"
+    elif effective.endswith("_cli"):
+        effective_model = f"{effective[:-4]}-cli:default"
+    else:
+        effective_model = "offline-stub"
+    codegen = {
+        "source": "global_backend",
+        "requested_backend": requested,
+        "effective_backend": effective,
+        "requested_model": requested_override or preferred_model,
+        "effective_model": requested_override or effective_model,
+    }
+    return {
+        "requested_backend": requested,
+        "effective_backend": effective,
+        "requested_model": requested_model,
+        "effective_model": effective_model,
+        "submission": {
+            "requested_backend": requested,
+            "effective_backend": effective,
+            "requested_model": requested_model,
+            "model_override": requested_override,
+            "codegen": dict(codegen),
+        },
+        "codegen": codegen,
+    }
+
+
+def _restore_submission_routing_trace(
+    state: AppState,
+    build_id: str,
+    routing: dict[str, Any],
+    _task: Any,
+) -> None:
+    """Restore request provenance without replacing terminal execution evidence."""
+    rec = state.builds.get(build_id)
+    if rec is None:
+        return
+    trace = dict(rec.model_trace or {})
+    existing_codegen = (
+        dict(trace["codegen"]) if isinstance(trace.get("codegen"), dict) else {}
+    )
+    has_terminal_codegen_evidence = bool(
+        trace.get("effective_codegen_backend")
+        or trace.get("effective_codegen_model")
+        or existing_codegen.get("effective_backend")
+        or existing_codegen.get("effective_model")
+    )
+    routing_codegen = (
+        dict(routing["codegen"]) if isinstance(routing.get("codegen"), dict) else {}
+    )
+    submission = (
+        dict(routing["submission"])
+        if isinstance(routing.get("submission"), dict)
+        else {}
+    )
+    submission.setdefault("requested_backend", routing.get("requested_backend", ""))
+    submission.setdefault("effective_backend", routing.get("effective_backend", ""))
+    submission.setdefault("requested_model", routing.get("requested_model", ""))
+    submission["codegen"] = dict(
+        submission.get("codegen")
+        if isinstance(submission.get("codegen"), dict)
+        else routing_codegen
+    )
+    trace["submission"] = submission
+
+    for key in ("requested_backend", "requested_model"):
+        if key in routing:
+            trace[key] = routing[key]
+    for key in ("effective_backend", "effective_model"):
+        if not trace.get(key) and routing.get(key):
+            trace[key] = routing[key]
+
+    terminal_codegen = existing_codegen
+    for key in ("source", "requested_backend", "requested_model"):
+        if key in routing_codegen:
+            terminal_codegen[key] = routing_codegen[key]
+    for key in ("effective_backend", "effective_model"):
+        if not terminal_codegen.get(key) and routing_codegen.get(key):
+            terminal_codegen[key] = routing_codegen[key]
+    trace["codegen"] = terminal_codegen
+
+    if routing_codegen.get("requested_backend") is not None:
+        trace["requested_codegen_backend"] = routing_codegen.get(
+            "requested_backend", ""
+        )
+    if routing_codegen.get("requested_model") is not None:
+        trace["requested_codegen_model"] = routing_codegen.get("requested_model", "")
+    if not trace.get("effective_codegen_backend"):
+        trace["effective_codegen_backend"] = terminal_codegen.get(
+            "effective_backend", ""
+        )
+    if not trace.get("effective_codegen_model"):
+        trace["effective_codegen_model"] = terminal_codegen.get("effective_model", "")
+    if not has_terminal_codegen_evidence and routing.get("effective_backend"):
+        trace["backend"] = routing["effective_backend"]
+    elif not trace.get("backend") and trace.get("effective_codegen_backend"):
+        trace["backend"] = trace["effective_codegen_backend"]
+    elif not trace.get("backend") and routing.get("effective_backend"):
+        trace["backend"] = routing["effective_backend"]
+    rec.model_trace = trace
+
+
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
                        reference_image: str = "", reference_images: list[str] | None = None,
                        build_profile: str = "cheap_learned",
-                       model_override: str = "", full_app: bool = False) -> dict[str, Any]:
+                       model_override: str = "", full_app: bool = False,
+                       source_product_spec: dict[str, Any] | None = None) -> dict[str, Any]:
     """Queue a build. Uses the studio if wired, else records + emits an event.
 
     ``reference_image`` is an optional base64 ``data:`` URL; ``reference_images``
@@ -975,22 +1058,30 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
             raise ValueError("invalid slug")
         if str(candidate) in _REVERIFYING_PROJECTS:
             raise ValueError("project local re-verification is still running")
-    build_id = state.new_build_id()
     profile = _normalize_build_profile(build_profile)
     requested_model = _normalize_model_override(model_override)
+    routing = _submission_routing_snapshot(state, requested_model)
+    build_id = state.new_build_id()
     failure_count = await _matching_failure_count(
         state,
         brief=brief,
         stack=stack,
         slug=slug,
     )
-    auto_failover = ""
     model = requested_model
-    if not model and failure_count >= _BUILD_FAILOVER_THRESHOLD:
-        model = _normalize_model_override(_deepseek_failover_model())
-        if model:
-            auto_failover = "deepseek_after_repeated_failures"
     full_app_requested = bool(full_app) or profile == "full_app"
+    routing_trace = {
+        key: deepcopy(routing[key])
+        for key in (
+            "requested_backend",
+            "effective_backend",
+            "requested_model",
+            "effective_model",
+            "submission",
+            "codegen",
+        )
+        if key in routing
+    }
     rec = BuildRecord(
         build_id=build_id,
         brief=brief.strip(),
@@ -1002,10 +1093,9 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
             "profile": profile,
             "model_override": model,
             "requested_model_override": requested_model,
-            "auto_failover": auto_failover,
             "failure_count": failure_count,
-            "failure_threshold": _BUILD_FAILOVER_THRESHOLD,
-            "backend": getattr(state.settings, "llm_backend", ""),
+            "backend": routing.get("effective_backend", ""),
+            **routing_trace,
             "full_app": full_app_requested,
         },
         correlation_id=build_id,
@@ -1030,7 +1120,10 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         "stack": stack,
         "build_id": build_id,
         "build_profile": profile,
+        "routing_snapshot": routing_trace,
     }
+    if source_product_spec is not None:
+        build_extra["source_product_spec"] = deepcopy(source_product_spec)
     build_extra.update(
         _orchestration_extra(
             profile,
@@ -1062,9 +1155,19 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
                     return studio.submit(brief=brief, slug=slug, stack=stack, build_id=build_id)
     if runner is not None:
         try:
-            res = runner()
+            client = getattr(state, "llm_client", None)
+            routing_scope = getattr(client, "build_routing_scope", None)
+            if callable(routing_scope):
+                with routing_scope(routing):
+                    res = runner()
+                    # A Task captures the current context at creation. Create it
+                    # inside the scope so every child agent keeps this build's
+                    # backend even after the dashboard setting changes.
+                    if hasattr(res, "__await__"):
+                        res = asyncio.ensure_future(res)
+            else:
+                res = runner()
             if hasattr(res, "__await__"):
-                import asyncio
                 # Keep a strong reference so the build task isn't garbage-
                 # collected mid-run, and retrieve any exception on completion.
                 task = asyncio.ensure_future(res)
@@ -1072,6 +1175,14 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
                 _BUILD_TASKS.add(task)
                 _BUILD_TASKS_BY_ID[build_id] = task
                 task.add_done_callback(_reap_build_task)
+                task.add_done_callback(
+                    partial(
+                        _restore_submission_routing_trace,
+                        state,
+                        build_id,
+                        routing,
+                    )
+                )
             dispatched = True
         except Exception:  # noqa: BLE001 - never let a build crash the API
             dispatched = False
@@ -1237,6 +1348,34 @@ def _build_replay_fields(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rebuild_source_product_spec(
+    state: AppState,
+    replay: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Load the current durable source contract, with manifest history as fallback."""
+
+    from skyn3t.studio.product_spec import ProductSpecV1
+
+    source: ProductSpecV1 | None = None
+    source_slug = str(replay.get("slug") or "").strip()
+    if source_slug:
+        projects_root = Path(state.settings.projects_dir).resolve()
+        project = (projects_root / source_slug).resolve()
+        if project.is_relative_to(projects_root) and project.is_dir():
+            source = ProductSpecV1.load(project)
+
+    if source is None:
+        raw_manifest = row.get("manifest")
+        manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
+        raw_extra = manifest.get("extra")
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
+        snapshot = extra.get("product_spec")
+        if isinstance(snapshot, dict):
+            source = ProductSpecV1.from_dict(snapshot)
+    return source.to_dict() if source is not None else None
+
+
 async def rebuild_build(
     state: AppState,
     build_id: str,
@@ -1261,6 +1400,7 @@ async def rebuild_build(
     replay = _build_replay_fields(row)
     if not replay["brief"].strip():
         raise ValueError("source build has no brief")
+    source_product_spec = _rebuild_source_product_spec(state, replay, row)
     res = await submit_build(
         state,
         brief=replay["brief"],
@@ -1269,6 +1409,7 @@ async def rebuild_build(
         build_profile=replay["build_profile"],
         model_override=replay["model_override"],
         full_app=replay["full_app"],
+        source_product_spec=source_product_spec,
     )
     return {
         **res,
@@ -1703,6 +1844,7 @@ def _run_local_project_reverify(
     stack: str,
     brief: str,
     settings: Any,
+    cancel_requested: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Repair and prove an isolated candidate without touching the live tree."""
     from skyn3t.studio.planner import file_checklist
@@ -1714,7 +1856,11 @@ def _run_local_project_reverify(
 
     staging_root, staged_project, live_source = _copy_reverify_candidate(project)
     try:
+        if cancel_requested is not None and cancel_requested.is_set():
+            raise asyncio.CancelledError
         repairs = apply_deterministic_repairs(staged_project, stack=stack)
+        if cancel_requested is not None and cancel_requested.is_set():
+            raise asyncio.CancelledError
         before_dependencies = source_tree_snapshot(staged_project)
         if not bool(before_dependencies.get("valid")):
             raise ProjectReverifyError(
@@ -1737,6 +1883,8 @@ def _run_local_project_reverify(
                 run_build=run_build,
             )
         )
+        if cancel_requested is not None and cancel_requested.is_set():
+            raise asyncio.CancelledError
         candidate = source_tree_snapshot(staged_project)
         if not bool(candidate.get("valid")):
             raise ProjectReverifyError(
@@ -1760,6 +1908,8 @@ def _run_local_project_reverify(
             ),
             brief=brief,
         )
+        if cancel_requested is not None and cancel_requested.is_set():
+            raise asyncio.CancelledError
         gates = _run_reverify_candidate_gates(
             staged_project,
             stack=stack,
@@ -1829,15 +1979,15 @@ def _run_reverify_runtime_liveness(
         }
 
     async def _probe() -> dict[str, Any]:
-        from skyn3t.studio.app_runner import AppRunner, cleanup_serve
         from skyn3t.studio.liveness import (
             check_liveness,
             crawl_routes,
             enumerate_routes,
             merge_routes,
         )
+        from skyn3t.studio.preview_supervisor import PreviewSupervisor
 
-        runner = AppRunner()
+        runner = PreviewSupervisor()
         app = None
         try:
             timeout = max(
@@ -1848,7 +1998,6 @@ def _run_reverify_runtime_liveness(
                 project,
                 normalized_stack,
                 ready_timeout=timeout,
-                allow_secret_passthrough=False,
             )
             if app.status != "running" or not app.url:
                 reason = str(app.detail.get("reason") or "")
@@ -1911,10 +2060,9 @@ def _run_reverify_runtime_liveness(
         finally:
             if app is not None:
                 try:
-                    runner.stop(app)
+                    await runner.stop(app)
                 except Exception:  # noqa: BLE001 - cleanup remains best-effort
                     pass
-                cleanup_serve(app)
 
     return asyncio.run(_probe())
 
@@ -2598,6 +2746,7 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
             raise ProjectReverifyError(
                 "a completed brief-aware review with verdict go is required"
             )
+        cancel_requested = threading.Event()
         worker = asyncio.create_task(
             asyncio.to_thread(
                 _run_local_project_reverify,
@@ -2605,12 +2754,14 @@ async def reverify_project(state: AppState, slug: str) -> dict[str, Any]:
                 stack=str(manifest.get("stack") or ""),
                 brief=str(manifest.get("brief") or ""),
                 settings=state.settings,
+                cancel_requested=cancel_requested,
             )
         )
         _REVERIFY_WORKERS[claim] = worker
         try:
             result = await asyncio.shield(worker)
         except asyncio.CancelledError:
+            cancel_requested.set()
             release_claim = False
             worker.add_done_callback(partial(_release_reverify_worker, claim))
             raise
@@ -3262,6 +3413,135 @@ async def get_project_prompts(state: AppState, slug: str) -> dict[str, Any]:
     return {"slug": slug, "prompts": prompts}
 
 
+async def get_project_product(state: AppState, slug: str) -> dict[str, Any]:
+    """Return a delivered project's durable, versioned product contract."""
+    from skyn3t.studio.product_spec import ProductSpecStore
+
+    project, _manifest = _require_delivered_project(state, slug)
+    spec = await asyncio.to_thread(ProductSpecStore(project).load)
+    return {
+        "slug": slug,
+        "available": spec is not None,
+        "product": spec.to_dict() if spec is not None else None,
+    }
+
+
+async def patch_project_product(
+    state: AppState,
+    slug: str,
+    *,
+    base_version: int,
+    patch: dict[str, Any],
+    reason: str = "",
+) -> dict[str, Any]:
+    """Optimistically revise a product contract without mutating build history."""
+    from skyn3t.studio.product_spec import ProductSpecStore
+
+    if (
+        isinstance(base_version, bool)
+        or not isinstance(base_version, int)
+        or base_version < 1
+    ):
+        raise ValueError("base_version must be a positive integer")
+    if not isinstance(patch, dict):
+        raise ValueError("patch must be an object")
+    project, _manifest = _require_delivered_project(state, slug)
+    store = ProductSpecStore(project)
+    if await asyncio.to_thread(store.load) is None:
+        raise ProductSpecUnavailableError(slug)
+    updated = await asyncio.to_thread(
+        partial(
+            store.update,
+            base_version=base_version,
+            patch=patch,
+            actor="studio-gui",
+            reason=str(reason or "").strip(),
+            provenance={
+                "interface": "studio-gui",
+                "requirements_modified": "requirements" in patch,
+            },
+        )
+    )
+    return {
+        "slug": slug,
+        "available": True,
+        "product": updated.to_dict(),
+    }
+
+
+async def research_project_product(
+    state: AppState,
+    slug: str,
+    *,
+    base_version: int,
+    force_refresh: bool = True,
+    github_client: Any | None = None,
+) -> dict[str, Any]:
+    """Run explicit clean-room GitHub research and append only optional ideas."""
+    from skyn3t.studio.github_research import GitHubResearchClient
+    from skyn3t.studio.product_spec import (
+        ProductSpecConflictError,
+        ProductSpecStore,
+    )
+    from skyn3t.studio.similarity_scout import SimilarityScout
+
+    if (
+        isinstance(base_version, bool)
+        or not isinstance(base_version, int)
+        or base_version < 1
+    ):
+        raise ValueError("base_version must be a positive integer")
+    project, manifest = _require_delivered_project(state, slug)
+    store = ProductSpecStore(project)
+    current = await asyncio.to_thread(store.load)
+    if current is None:
+        raise ProductSpecUnavailableError(slug)
+    if current.version != base_version:
+        raise ProductSpecConflictError(base_version, current.version)
+
+    client = github_client or GitHubResearchClient(
+        token=str(getattr(state.settings, "github_token", "") or ""),
+        max_results=max(
+            8,
+            int(getattr(state.settings, "github_similarity_max_repos", 8)),
+        ),
+    )
+    scout = SimilarityScout(
+        client,
+        project_dir=project,
+        max_results=int(
+            getattr(state.settings, "github_similarity_max_repos", 8)
+        ),
+    )
+    report = await scout.research(
+        brief=current.goal or manifest.brief,
+        stack=manifest.stack,
+        requirements=current.requirements,
+        force_refresh=bool(force_refresh),
+    )
+    updated = await asyncio.to_thread(
+        partial(
+            store.record_research,
+            base_version=base_version,
+            sources=report.research_sources,
+            backlog=report.backlog,
+            provenance={
+                "interface": "studio-gui",
+                "queries": list(report.queries),
+                "requirements_modified": False,
+                "force_refresh": bool(force_refresh),
+            },
+        )
+    )
+    return {
+        "slug": slug,
+        "available": True,
+        "research": report.to_dict(),
+        "product": updated.to_dict(),
+        "requirements_modified": False,
+    }
+
+
 async def delete_project(state: AppState, slug: str) -> dict[str, Any]:
     projects_root = Path(state.settings.projects_dir).resolve()
     target = (projects_root / slug).resolve()
@@ -3337,13 +3617,20 @@ def _serve_registry(state: AppState) -> dict[str, Any]:
 def _app_runner(state: AppState) -> Any:
     runner = getattr(state, "app_runner", None)
     if runner is None:
-        from skyn3t.studio.app_runner import AppRunner
-        runner = AppRunner()
+        from skyn3t.studio.preview_supervisor import PreviewSupervisor
+
+        runner = PreviewSupervisor()
         try:
             state.app_runner = runner
         except Exception:  # noqa: BLE001
             pass
     return runner
+
+
+async def _stop_running_app(runner: Any, app: Any) -> None:
+    stopped = runner.stop(app)
+    if hasattr(stopped, "__await__"):
+        await stopped
 
 
 def _pid_alive(pid: int) -> bool:
@@ -3368,7 +3655,7 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     # predecessor. A bare object() is our claim identity.
     prev = registry.get(slug)
     if isinstance(prev, RunningApp):
-        runner.stop(prev)
+        await _stop_running_app(runner, prev)
         cleanup_serve(prev)
     claim = object()
     registry[slug] = claim
@@ -3380,7 +3667,7 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
         # A concurrent serve superseded us, or a stop cancelled us, mid-start:
         # we no longer own the slot, so tear down our own app rather than leak it.
         if app.status == "running":
-            runner.stop(app)
+            await _stop_running_app(runner, app)
         cleanup_serve(app)
         return {**app.to_dict(), "slug": slug, "superseded": True}
 
@@ -3409,7 +3696,7 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
         # Popped an in-flight claim: the in-progress serve will self-cancel.
         return {"slug": slug, "stopped": True}
     runner = _app_runner(state)
-    runner.stop(app)
+    await _stop_running_app(runner, app)
     cleanup_serve(app)
     await state.event_bus.emit(
         EventType.SERVE_STOPPED, source="web.api",
@@ -3433,6 +3720,277 @@ async def serve_status(state: AppState) -> dict[str, Any]:
             continue
         running.append({**app.to_dict(), "slug": slug})
     return {"running": running}
+
+
+async def visual_editor_inspect(
+    state: AppState,
+    slug: str,
+    signature: dict[str, Any],
+    *,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Resolve one browser-selected element to ranked editable source hits."""
+    project, _manifest = _require_delivered_project(state, slug)
+    from skyn3t.studio.visual_editor import VisualEditor
+
+    editor = VisualEditor(project)
+    occurrences = await asyncio.to_thread(editor.inspect, signature, limit=limit)
+    return {
+        "slug": slug,
+        "signature": dict(signature),
+        "occurrences": [occurrence.to_dict() for occurrence in occurrences],
+    }
+
+
+async def visual_editor_style(state: AppState, slug: str) -> dict[str, Any]:
+    """Return the managed visual CSS document and optimistic SHA."""
+    project, _manifest = _require_delivered_project(state, slug)
+    from skyn3t.studio.visual_editor import VisualEditor
+
+    style = await asyncio.to_thread(VisualEditor(project).stylesheet_state)
+    return {"slug": slug, "style": style.to_dict()}
+
+
+def _visual_editor_lock(state: AppState, project: Path) -> asyncio.Lock:
+    """Return the process-local transaction lock for one delivered project."""
+
+    locks = getattr(state, "_visual_editor_locks", None)
+    if not isinstance(locks, dict):
+        locks = {}
+        try:
+            state._visual_editor_locks = locks
+        except Exception as exc:  # noqa: BLE001 - fail closed without lock storage
+            raise RuntimeError("visual-editor project locking is unavailable") from exc
+    key = str(project.resolve())
+    lock = locks.get(key)
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        locks[key] = lock
+    return lock
+
+
+async def _run_visual_editor_worker(function: Any, *args: Any, **kwargs: Any) -> Any:
+    """Keep the project lock held until a cancelled thread worker has stopped."""
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(worker)
+        except Exception:  # noqa: BLE001 - pending/no-go state remains authoritative
+            pass
+        raise
+
+
+async def visual_editor_apply(
+    state: AppState,
+    slug: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply one typed visual edit and immediately re-run applicable proof."""
+    project, _manifest = _require_delivered_project(state, slug)
+    async with _visual_editor_lock(state, project):
+        project, manifest = _require_delivered_project(state, slug)
+        return await _visual_editor_apply_locked(
+            state,
+            slug,
+            body,
+            project=project,
+            manifest=manifest,
+        )
+
+
+async def _visual_editor_apply_locked(
+    state: AppState,
+    slug: str,
+    body: dict[str, Any],
+    *,
+    project: Path,
+    manifest: BuildManifest,
+) -> dict[str, Any]:
+    from skyn3t.studio.proof_run import proof_run
+    from skyn3t.studio.visual_editor import (
+        EditKind,
+        EditRequest,
+        ElementSignature,
+        VisualEditor,
+    )
+    from skyn3t.studio.visual_editor_integration import (
+        VisualEditorIntegration,
+        sync_visual_editor_assets,
+    )
+
+    signature_value = body.get("signature")
+    signature = (
+        ElementSignature.from_mapping(signature_value)
+        if isinstance(signature_value, dict)
+        else None
+    )
+    line_value = body.get("line")
+    try:
+        line = int(line_value) if line_value is not None else None
+    except (TypeError, ValueError) as exc:
+        raise ValueError("line must be an integer") from exc
+    request = EditRequest(
+        kind=str(body.get("kind") or ""),
+        base_sha=str(body.get("base_sha") or ""),
+        value=body.get("value") if body.get("value") is None else str(body.get("value")),
+        relative_path=str(body.get("relative_path") or ""),
+        signature=signature,
+        occurrence_id=str(body.get("occurrence_id") or ""),
+        line=line,
+        selector=str(body.get("selector") or ""),
+        css_property=str(body.get("css_property") or body.get("property") or ""),
+        breakpoint=str(body.get("breakpoint") or "base"),
+    )
+    editor = VisualEditor(project)
+    kind = request.kind if isinstance(request.kind, EditKind) else EditKind(request.kind)
+
+    original_status = manifest.status
+    original_verdict = manifest.verdict
+    original_score = manifest.score
+    cap = float(getattr(state.settings, "degraded_proof_score_cap", 74.0))
+    pre_edit_tree = await _run_visual_editor_worker(source_tree_snapshot, project)
+    visual_state_value = manifest.extra.get("visual_editor")
+    visual_state = (
+        dict(visual_state_value) if isinstance(visual_state_value, dict) else {}
+    )
+    visual_state["verification_pending"] = True
+    visual_state["verified"] = False
+    visual_state["proof_binding"] = {
+        "status": "pending",
+        "algorithm": str(pre_edit_tree.get("algorithm") or ""),
+        "pre_edit_source_tree_sha256": str(pre_edit_tree.get("sha256") or ""),
+        "pre_edit_snapshot_valid": bool(pre_edit_tree.get("valid")),
+        "matched": False,
+    }
+    manifest.extra["visual_editor"] = visual_state
+    manifest.status = "completed_no_go"
+    manifest.verdict = "no_go"
+    manifest.score = min(float(manifest.score or cap), cap)
+    manifest.save(project)
+
+    edit = await _run_visual_editor_worker(editor.apply_edit, request)
+    integration = VisualEditorIntegration(True, reason="not required for source edit")
+    if kind in {EditKind.DESIGN_TOKEN, EditKind.LAYOUT}:
+        integration = await _run_visual_editor_worker(
+            sync_visual_editor_assets,
+            project,
+        )
+
+    proof_tree = await _run_visual_editor_worker(source_tree_snapshot, project)
+    proof = await _run_visual_editor_worker(
+        proof_run,
+        project,
+        checklist=[],
+        execution_backend=str(
+            getattr(state.settings, "execution_backend", "docker")
+        ),
+        stack=manifest.stack,
+        run_tests=bool(getattr(state.settings, "run_generated_tests", True)),
+        test_timeout=int(getattr(state.settings, "generated_test_timeout", 90)),
+        run_build=bool(getattr(state.settings, "run_generated_build", True)),
+        build_timeout=int(getattr(state.settings, "generated_build_timeout", 300)),
+    )
+    after_proof_tree = await _run_visual_editor_worker(source_tree_snapshot, project)
+    tree_binding = {
+        "status": "bound",
+        "scope": "proof_run",
+        "algorithm": str(proof_tree.get("algorithm") or ""),
+        "source_tree_sha256": str(proof_tree.get("sha256") or ""),
+        "snapshot_valid": bool(proof_tree.get("valid")),
+        "after_proof_source_tree_sha256": str(
+            after_proof_tree.get("sha256") or ""
+        ),
+        "after_proof_snapshot_valid": bool(after_proof_tree.get("valid")),
+        "matched": bool(
+            proof_tree.get("valid")
+            and after_proof_tree.get("valid")
+            and proof_tree.get("algorithm") == after_proof_tree.get("algorithm")
+            and proof_tree.get("sha256") == after_proof_tree.get("sha256")
+        ),
+    }
+    ladder_payload: dict[str, Any] | None = None
+    ladder_passed = True
+    if (
+        bool(getattr(state.settings, "proof_ladder_required", True))
+        and manifest.stack
+        in {
+            "react",
+            "react_vite",
+            "vite",
+            "nextjs",
+            "next",
+            "astro",
+            "remix",
+            "vue",
+            "vuejs",
+            "sveltekit",
+            "svelte",
+            "react_ts",
+            "typescript",
+            "static",
+            "static_html",
+            "tauri",
+            "desktop",
+            "phaser",
+            "react_native",
+        }
+    ):
+        from skyn3t.studio.preview_supervisor import ProofLadderCoordinator
+
+        ladder = await ProofLadderCoordinator().run(project, manifest.stack)
+        ladder_payload = ladder.to_dict()
+        ladder_passed = ladder.passed
+
+    verified = bool(proof.passed and ladder_passed and tree_binding["matched"])
+    proof_payload = proof.to_dict()
+    proof_payload["source_tree"] = tree_binding
+    edit_entry = {
+        **edit.to_dict(),
+        "integration": integration.to_dict(),
+        "proof_passed": proof.passed,
+        "proof_ladder_passed": ladder_passed,
+        "source_tree": tree_binding,
+    }
+    history_value = visual_state.get("history")
+    history = list(history_value) if isinstance(history_value, list) else []
+    visual_state["last_edit"] = edit_entry
+    visual_state["history"] = [*history, edit_entry][-50:]
+    visual_state["verification_pending"] = False
+    visual_state["verified"] = verified
+    visual_state["proof_binding"] = tree_binding
+    manifest.extra["visual_editor"] = visual_state
+    manifest.extra["proof_after_visual_edit"] = proof_payload
+    if ladder_payload is not None:
+        manifest.extra["proof_ladder_after_visual_edit"] = ladder_payload
+    manifest.files = list_files(project)
+    if verified:
+        manifest.status = original_status
+        manifest.verdict = original_verdict
+        manifest.score = original_score
+    else:
+        manifest.status = "completed_no_go"
+        manifest.verdict = "no_go"
+        manifest.score = min(float(manifest.score or cap), cap)
+    manifest.save(project)
+    return {
+        "slug": slug,
+        "edit": edit.to_dict(),
+        "integration": integration.to_dict(),
+        "verification": {
+            "passed": verified,
+            "proof": proof_payload,
+            "proof_ladder": ladder_payload,
+            "source_tree": tree_binding,
+        },
+        "manifest": {
+            "status": manifest.status,
+            "verdict": manifest.verdict,
+            "score": manifest.score,
+        },
+    }
 
 
 async def deploy_plan_project(
@@ -3999,6 +4557,49 @@ async def cortex_effects_payload(state: AppState) -> dict[str, Any]:
         "prompts": prompts,
         "skills": skills_effect,
     }
+
+
+async def cortex_candidates_payload(
+    state: AppState,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Return durable, bounded Cortex candidate reports and current policy."""
+    from skyn3t.cortex.candidate_service import list_candidate_reports
+
+    reports = await asyncio.to_thread(
+        list_candidate_reports,
+        state.settings,
+        limit=max(1, min(int(limit), 100)),
+    )
+    return {
+        "enabled": bool(
+            getattr(state.settings, "cortex_candidates_enabled", True)
+        ),
+        "auto_merge": bool(
+            getattr(state.settings, "cortex_candidate_auto_merge", False)
+        ),
+        "merge_strategy": str(
+            getattr(
+                state.settings,
+                "cortex_candidate_merge_strategy",
+                "ff-only",
+            )
+        ),
+        "remote_push": False,
+        "reports": reports,
+    }
+
+
+async def run_cortex_candidate_payload(
+    state: AppState,
+    *,
+    goal: str,
+) -> dict[str, Any]:
+    """Run one isolated, selected-model candidate without blocking the event loop."""
+    from skyn3t.cortex.candidate_service import run_cortex_candidate
+
+    return await asyncio.to_thread(run_cortex_candidate, state.settings, goal)
 
 
 async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:
@@ -4647,6 +5248,112 @@ async def set_improve_agentic(
             getattr(state.settings, "improve_agentic_timeout", 900)
         ),
     }
+
+
+async def set_lab_autonomy(
+    state: AppState, enabled: bool, persist: bool = True
+) -> dict[str, Any]:
+    """Toggle local build autonomy without weakening verification gates."""
+    enabled = _coerce_bool(enabled)
+    try:
+        state.settings.lab_autonomy = enabled
+    except Exception:  # noqa: BLE001 - frozen settings should not break the API
+        pass
+    os.environ["SKYN3T_LAB_AUTONOMY"] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var("SKYN3T_LAB_AUTONOMY", "true" if enabled else "false")
+    return {
+        "lab_autonomy": enabled,
+        "approval_gates_effective": bool(
+            getattr(state.settings, "approval_gates", True)
+        )
+        and not enabled,
+        "verification_gates_effective": True,
+    }
+
+
+async def set_cortex_candidate_policy(
+    state: AppState,
+    *,
+    enabled: bool,
+    auto_merge: bool,
+    merge_strategy: str = "ff-only",
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Persist explicit consent for scoped Cortex candidates and local merging."""
+    enabled = _coerce_bool(enabled)
+    auto_merge = _coerce_bool(auto_merge)
+    strategy = str(merge_strategy or "").strip().lower()
+    if strategy not in {"ff-only", "squash"}:
+        raise ValueError("merge_strategy must be ff-only or squash")
+    values = {
+        "cortex_candidates_enabled": bool(enabled),
+        "cortex_candidate_auto_merge": bool(auto_merge),
+        "cortex_candidate_merge_strategy": strategy,
+    }
+    for name, value in values.items():
+        try:
+            setattr(state.settings, name, value)
+        except Exception:  # noqa: BLE001 - narrow immutable test doubles degrade
+            pass
+    env_values = {
+        "SKYN3T_CORTEX_CANDIDATES_ENABLED": (
+            "true" if values["cortex_candidates_enabled"] else "false"
+        ),
+        "SKYN3T_CORTEX_CANDIDATE_AUTO_MERGE": (
+            "true" if values["cortex_candidate_auto_merge"] else "false"
+        ),
+        "SKYN3T_CORTEX_CANDIDATE_MERGE_STRATEGY": strategy,
+    }
+    os.environ.update(env_values)
+    if persist:
+        _persist_env_vars(env_values)
+    return {
+        **values,
+        "verification_required": True,
+        "remote_push": False,
+        "protected_scope": True,
+    }
+
+
+async def set_similarity_research(
+    state: AppState,
+    enabled: bool,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Toggle clean-room similar-project research for future builds."""
+    enabled = _coerce_bool(enabled)
+    try:
+        state.settings.github_similarity_research = enabled
+    except Exception:  # noqa: BLE001 - narrow test doubles may be immutable
+        pass
+    os.environ["SKYN3T_GITHUB_SIMILARITY_RESEARCH"] = (
+        "true" if enabled else "false"
+    )
+    if persist:
+        _persist_env_var(
+            "SKYN3T_GITHUB_SIMILARITY_RESEARCH",
+            "true" if enabled else "false",
+        )
+    return {
+        "github_similarity_research": enabled,
+        "max_repositories": int(
+            getattr(state.settings, "github_similarity_max_repos", 8)
+        ),
+        "usage_policy": "metadata_readme_docs_manifests_only",
+        "requirements_modified": False,
+    }
+
+
+async def lab_toolchain_payload(
+    state: AppState,
+    stack: str = "",
+) -> dict[str, Any]:
+    """Return live Docker/Playwright/Maestro readiness without mutating."""
+    from skyn3t.studio.lab_tools import inspect_lab_toolchain
+
+    report = await asyncio.to_thread(inspect_lab_toolchain, stack=stack)
+    return report.to_dict()
 
 
 async def set_build_metadata_overrides(
@@ -5596,7 +6303,12 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "auto_route", "model_evolution", "app_type_override", "engine_override",
             "visual_self_heal", "visual_self_heal_max_rounds",
             "improve_agentic", "improve_agentic_timeout",
-            "parallel_code_slices", "parallel_code_slices_min_files")
+            "parallel_code_slices", "parallel_code_slices_min_files",
+            "lab_autonomy", "github_similarity_research",
+            "github_similarity_max_repos", "proof_ladder_required",
+            "build_graph_max_concurrency", "cortex_candidates_enabled",
+            "cortex_candidate_auto_merge",
+            "cortex_candidate_merge_strategy", "cortex_candidate_timeout")
     payload = {k: getattr(s, k, None) for k in keys}
     deploy = await deploy_settings_payload(state)
     payload["allow_remote_deploy"] = deploy["allow_remote_deploy"]
@@ -5936,6 +6648,107 @@ def build_router(state: AppState) -> Any:
         except ValueError:
             raise HTTPException(status_code=400, detail="invalid project") from None
 
+    @router.get("/projects/{slug}/product", dependencies=[auth])
+    async def _project_product(slug: str) -> dict[str, Any]:
+        from skyn3t.studio.product_spec import ProductSpecPersistenceError
+
+        try:
+            return await get_project_product(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
+        except ProductSpecPersistenceError:
+            raise HTTPException(
+                status_code=500,
+                detail="product contract could not be read",
+            ) from None
+
+    @router.patch("/projects/{slug}/product", dependencies=[auth])
+    async def _patch_project_product(
+        slug: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        from skyn3t.studio.product_spec import (
+            ProductSpecConflictError,
+            ProductSpecPersistenceError,
+            ProductSpecValidationError,
+        )
+
+        try:
+            return await patch_project_product(
+                state,
+                slug,
+                base_version=body.get("base_version"),
+                patch=body.get("patch"),
+                reason=str(body.get("reason") or ""),
+            )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except ProductSpecUnavailableError:
+            raise HTTPException(status_code=404, detail="product contract not found") from None
+        except ProductSpecConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "stale_product_version",
+                    "requested_version": exc.expected_version,
+                    "current_version": exc.actual_version,
+                },
+            ) from None
+        except (ValueError, ProductSpecValidationError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ProductSpecPersistenceError:
+            raise HTTPException(
+                status_code=500,
+                detail="product contract could not be saved",
+            ) from None
+
+    @router.post("/projects/{slug}/product/research", dependencies=[auth])
+    async def _research_project_product(
+        slug: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        from skyn3t.studio.product_spec import (
+            ProductSpecConflictError,
+            ProductSpecPersistenceError,
+            ProductSpecValidationError,
+        )
+
+        try:
+            return await research_project_product(
+                state,
+                slug,
+                base_version=body.get("base_version"),
+                force_refresh=bool(body.get("force_refresh", True)),
+            )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except ProductSpecUnavailableError:
+            raise HTTPException(status_code=404, detail="product contract not found") from None
+        except ProductSpecConflictError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "stale_product_version",
+                    "requested_version": exc.expected_version,
+                    "current_version": exc.actual_version,
+                },
+            ) from None
+        except (ValueError, ProductSpecValidationError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ProductSpecPersistenceError:
+            raise HTTPException(
+                status_code=500,
+                detail="product research could not be saved",
+            ) from None
+
     @router.post("/projects/{slug}/reverify", dependencies=[auth])
     async def _project_reverify(slug: str) -> dict[str, Any]:
         try:
@@ -5951,6 +6764,68 @@ def build_router(state: AppState) -> Any:
                 status_code=500,
                 detail="failed to persist local re-verification",
             ) from exc
+
+    @router.post("/projects/{slug}/visual-editor/inspect", dependencies=[auth])
+    async def _visual_editor_inspect(
+        slug: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        from skyn3t.studio.visual_editor import VisualEditorError
+
+        signature = body.get("signature")
+        if not isinstance(signature, dict):
+            raise HTTPException(status_code=422, detail="signature is required")
+        try:
+            limit = max(1, min(int(body.get("limit", 20)), 100))
+            return await visual_editor_inspect(
+                state,
+                slug,
+                signature,
+                limit=limit,
+            )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except (ValueError, VisualEditorError) as exc:
+            detail = exc.to_dict() if isinstance(exc, VisualEditorError) else str(exc)
+            raise HTTPException(status_code=422, detail=detail) from None
+
+    @router.get("/projects/{slug}/visual-editor/style", dependencies=[auth])
+    async def _visual_editor_style(slug: str) -> dict[str, Any]:
+        from skyn3t.studio.visual_editor import VisualEditorError
+
+        try:
+            return await visual_editor_style(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except VisualEditorError as exc:
+            raise HTTPException(status_code=422, detail=exc.to_dict()) from None
+
+    @router.post("/projects/{slug}/visual-editor/edit", dependencies=[auth])
+    async def _visual_editor_edit(
+        slug: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        from skyn3t.studio.visual_editor import (
+            AmbiguousSourceError,
+            StaleSourceError,
+            VisualEditorError,
+        )
+
+        try:
+            return await visual_editor_apply(state, slug, body)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except (StaleSourceError, AmbiguousSourceError) as exc:
+            raise HTTPException(status_code=409, detail=exc.to_dict()) from None
+        except (ValueError, VisualEditorError) as exc:
+            detail = exc.to_dict() if isinstance(exc, VisualEditorError) else str(exc)
+            raise HTTPException(status_code=422, detail=detail) from None
 
     @router.get("/projects/{slug}/{path:path}", dependencies=[project_auth])
     async def _project_file(slug: str, path: str) -> Any:
@@ -5985,6 +6860,26 @@ def build_router(state: AppState) -> Any:
     @router.get("/cortex/effects", dependencies=[auth])
     async def _cortex_effects() -> dict[str, Any]:
         return await cortex_effects_payload(state)
+
+    @router.get("/cortex/candidates", dependencies=[auth])
+    async def _cortex_candidates(
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> dict[str, Any]:
+        return await cortex_candidates_payload(state, limit=limit)
+
+    @router.post("/cortex/candidates", dependencies=[auth])
+    async def _run_cortex_candidate(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await run_cortex_candidate_payload(
+                state,
+                goal=str(body.get("goal") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
 
     @router.get("/stacks", dependencies=[auth])
     async def _stacks() -> dict[str, Any]:
@@ -6091,6 +6986,69 @@ def build_router(state: AppState) -> Any:
     async def _set_improve_agentic(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await set_improve_agentic(
             state, bool(body.get("enabled", body.get("on", False))))
+
+    @router.post("/settings/lab_autonomy", dependencies=[auth])
+    async def _set_lab_autonomy(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            enabled = _coerce_bool(body.get("enabled", body.get("on", False)))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await set_lab_autonomy(state, enabled)
+
+    @router.post("/settings/cortex_candidates", dependencies=[auth])
+    async def _set_cortex_candidates(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await set_cortex_candidate_policy(
+                state,
+                enabled=_coerce_bool(
+                    body.get(
+                        "enabled",
+                        getattr(
+                            state.settings,
+                            "cortex_candidates_enabled",
+                            True,
+                        ),
+                    )
+                ),
+                auto_merge=_coerce_bool(
+                    body.get(
+                        "auto_merge",
+                        getattr(
+                            state.settings,
+                            "cortex_candidate_auto_merge",
+                            False,
+                        ),
+                    )
+                ),
+                merge_strategy=str(
+                    body.get(
+                        "merge_strategy",
+                        getattr(
+                            state.settings,
+                            "cortex_candidate_merge_strategy",
+                            "ff-only",
+                        ),
+                    )
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @router.post("/settings/similarity_research", dependencies=[auth])
+    async def _set_similarity_research(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            enabled = _coerce_bool(body.get("enabled", body.get("on", False)))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await set_similarity_research(state, enabled)
+
+    @router.get("/lab/toolchain", dependencies=[auth])
+    async def _lab_toolchain(stack: str = "") -> dict[str, Any]:
+        return await lab_toolchain_payload(state, stack=stack)
 
     @router.get("/gates", dependencies=[auth])
     async def _gates() -> dict[str, Any]:

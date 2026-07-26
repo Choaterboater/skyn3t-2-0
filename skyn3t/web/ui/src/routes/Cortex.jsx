@@ -6,6 +6,7 @@ import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/u
 export default function Cortex() {
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [candidateGoal, setCandidateGoal] = useState("");
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["proposals"],
@@ -28,6 +29,26 @@ export default function Cortex() {
   const scout = useMutation({
     mutationFn: () => apiPost("/cortex/scout", {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
+  });
+
+  const { data: candidateData, error: candidateError } = useQuery({
+    queryKey: ["cortex-candidates"],
+    queryFn: queryFn("/cortex/candidates"),
+  });
+  const candidateReports = candidateData?.reports || [];
+  const runCandidate = useMutation({
+    mutationFn: (goal) => apiPost("/cortex/candidates", { goal }),
+    onSuccess: () => {
+      setCandidateGoal("");
+      qc.invalidateQueries({ queryKey: ["cortex-candidates"] });
+    },
+  });
+  const candidatePolicy = useMutation({
+    mutationFn: (body) => apiPost("/settings/cortex_candidates", body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cortex-candidates"] });
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
   });
 
   // What cortex has actually changed — proof the self-improvement loops take
@@ -162,6 +183,141 @@ export default function Cortex() {
         <Stat label="Source" value="Cortex" hint="autonomy engine" />
         <Stat label="Channel" value="/cortex" hint="proposals" />
       </div>
+
+      <Panel className="mb-6">
+        <PanelHead
+          label="Verified code candidates"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              isolated worktree · local only
+            </span>
+          }
+        />
+        <div className="grid gap-5 p-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <div>
+            <textarea
+              aria-label="Cortex code candidate goal"
+              className="field min-h-24 w-full"
+              value={candidateGoal}
+              onChange={(event) => setCandidateGoal(event.target.value)}
+              placeholder="Describe a focused improvement to Studio, Cortex, orchestration, generated-app templates, or product UI…"
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                className="btn-ember"
+                disabled={
+                  runCandidate.isPending ||
+                  !candidateGoal.trim() ||
+                  candidateData?.enabled === false
+                }
+                onClick={() => runCandidate.mutate(candidateGoal.trim())}
+              >
+                {runCandidate.isPending ? "Building + proving…" : "Run candidate"}
+              </button>
+              <span className="font-mono text-[10px] text-ash">
+                exact GUI route · Codex CLI or OpenRouter · full Python + dashboard gates
+              </span>
+            </div>
+            {runCandidate.error ? (
+              <p className="mt-2 font-mono text-[11px] text-ember">
+                {runCandidate.error.message}
+              </p>
+            ) : null}
+            {runCandidate.data ? (
+              <p className="mt-2 font-mono text-[11px] text-plasma">
+                {runCandidate.data.candidate?.status} ·{" "}
+                {runCandidate.data.routing?.effective_backend || "selected route"} ·{" "}
+                no remote push
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-3 rounded border border-hairline bg-void/40 p-3">
+            <label className="flex items-start justify-between gap-4">
+              <span>
+                <span className="block text-sm text-bone">Code candidates</span>
+                <span className="block text-xs text-ash">
+                  Uses the selected Codex CLI or OpenRouter route; other local CLIs are rejected before a worktree is created. Strict product-only paths; APIs, dependencies, CI, secrets, and deploy stay blocked.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                aria-label="Enable Cortex code candidates"
+                checked={candidateData?.enabled !== false}
+                disabled={candidatePolicy.isPending}
+                onChange={(event) =>
+                  candidatePolicy.mutate({
+                    enabled: event.target.checked,
+                    auto_merge: Boolean(candidateData?.auto_merge),
+                    merge_strategy: candidateData?.merge_strategy || "ff-only",
+                  })
+                }
+              />
+            </label>
+            <label className="flex items-start justify-between gap-4 border-t border-hairline pt-3">
+              <span>
+                <span className="block text-sm text-bone">Auto-merge local main</span>
+                <span className="block text-xs text-ash">
+                  Only after every gate passes. Never pushes, deploys, or publishes.
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                aria-label="Auto-merge verified Cortex candidates"
+                checked={Boolean(candidateData?.auto_merge)}
+                disabled={candidatePolicy.isPending || candidateData?.enabled === false}
+                onChange={(event) =>
+                  candidatePolicy.mutate({
+                    enabled: candidateData?.enabled !== false,
+                    auto_merge: event.target.checked,
+                    merge_strategy: candidateData?.merge_strategy || "ff-only",
+                  })
+                }
+              />
+            </label>
+          </div>
+        </div>
+        {candidateError ? (
+          <p className="px-4 pb-3 font-mono text-[11px] text-ember">
+            Candidate history unavailable: {candidateError.message}
+          </p>
+        ) : candidateReports.length ? (
+          <div className="divide-y divide-hairline/60 border-t border-hairline">
+            {candidateReports.slice(0, 8).map((report) => (
+              <div
+                key={report.candidate_id}
+                className="grid gap-2 px-4 py-3 md:grid-cols-[10rem_minmax(0,1fr)_auto]"
+              >
+                <div>
+                  <Pill tone={report.status === "merged" ? "plasma" : "ash"}>
+                    {report.status}
+                  </Pill>
+                  <div className="mt-1 font-mono text-[10px] text-ash">
+                    {report.candidate_id.slice(0, 10)}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate font-mono text-[11px] text-bone">
+                    {(report.changed_paths || []).join(", ") || "no changed paths"}
+                  </div>
+                  {(report.errors || []).length ? (
+                    <div className="mt-1 text-xs text-ember">
+                      {report.errors[0]}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="font-mono text-[10px] text-ash">
+                  {(report.commands || []).filter((row) => row.phase === "verification" && row.passed).length}
+                  {" "}gates passed
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="border-t border-hairline">
+            <Empty icon="◇">No code candidates have run yet.</Empty>
+          </div>
+        )}
+      </Panel>
 
       <Panel>
         <PanelHead

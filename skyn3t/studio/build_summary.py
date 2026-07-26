@@ -23,6 +23,19 @@ _CLI_TRACE_PREFIXES = tuple(
 _CLI_EXECUTION_MAX_EVENT_TYPES = 32
 _CLI_EXECUTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 _CLI_EXECUTION_EVENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
+_REQUIREMENT_TRACE_MAX_COUNT = 10_000
+_REQUIREMENT_TRACE_MODES = frozenset({
+    "enforced",
+    "invalid",
+    "legacy_advisory",
+    "partial",
+})
+_REQUIREMENT_TRACE_STATUSES = frozenset({
+    "failed",
+    "passed",
+    "stale",
+    "unbound",
+})
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -224,6 +237,60 @@ def _compact_best_of_n(value: Any) -> dict[str, Any]:
         "reason": str(data.get("reason") or "")[:240],
         "candidates": candidates,
     }
+
+
+def _compact_requirement_trace(value: Any) -> dict[str, Any]:
+    """Expose only bounded Requirement Trace status/count fields to list APIs."""
+    data = _as_dict(value)
+    if not data:
+        return {}
+
+    compact: dict[str, Any] = {}
+    schema_version = _bounded_int(data.get("schema_version"), upper=100)
+    if schema_version is not None:
+        compact["schema_version"] = schema_version
+
+    mode = data.get("mode")
+    if isinstance(mode, str) and mode in _REQUIREMENT_TRACE_MODES:
+        compact["mode"] = mode
+    status = data.get("status")
+    if isinstance(status, str) and status in _REQUIREMENT_TRACE_STATUSES:
+        compact["status"] = status
+    for key in ("fresh", "blocks_delivery"):
+        if isinstance(data.get(key), bool):
+            compact[key] = data[key]
+
+    raw_summary = _as_dict(data.get("summary"))
+    summary: dict[str, int] = {}
+    for key in (
+        "must_total",
+        "must_proven",
+        "must_failed",
+        "must_unbound",
+        "must_stale",
+    ):
+        count = _bounded_int(
+            raw_summary.get(key),
+            upper=_REQUIREMENT_TRACE_MAX_COUNT,
+        )
+        if count is not None:
+            summary[key] = count
+
+    # Trace v1 defines total/proven as active must-have counts. Retain the
+    # explicit aliases when present and support early v1 manifests that only
+    # emitted their must_* source fields.
+    for alias, fallback in (("total", "must_total"), ("proven", "must_proven")):
+        count = _bounded_int(
+            raw_summary.get(alias),
+            upper=_REQUIREMENT_TRACE_MAX_COUNT,
+        )
+        if count is None:
+            count = summary.get(fallback)
+        if count is not None:
+            summary[alias] = count
+    if summary:
+        compact["summary"] = summary
+    return compact
 
 
 def _compact_external_asset_usage(extra: dict[str, Any]) -> dict[str, Any]:
@@ -507,27 +574,95 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     proof_detail = _as_dict(proof.get("detail"))
     responsive_visual = _as_dict(extra.get("responsive_visual_proof"))
     best_of_n = _compact_best_of_n(extra.get("best_of_n"))
+    requirement_trace = _compact_requirement_trace(extra.get("requirement_trace"))
     cost_truth = _compact_cost_truth(
         extra,
         status=manifest.get("status"),
         verdict=manifest.get("verdict"),
     )
+    routing = _as_dict(extra.get("routing_snapshot"))
+    codegen_routing = _as_dict(routing.get("codegen"))
+    submission = dict(_as_dict(routing.get("submission")))
+    submission.setdefault(
+        "requested_backend",
+        routing.get(
+            "requested_backend",
+            extra.get("requested_llm_backend", extra.get("llm_backend", "")),
+        ),
+    )
+    submission.setdefault(
+        "effective_backend",
+        routing.get(
+            "effective_backend",
+            extra.get("effective_llm_backend", extra.get("llm_backend", "")),
+        ),
+    )
+    submission.setdefault(
+        "requested_model",
+        routing.get("requested_model", extra.get("requested_model_override", "")),
+    )
+    submission.setdefault(
+        "model_override",
+        extra.get("requested_model_override", extra.get("model_override", "")),
+    )
+    submission["codegen"] = dict(
+        _as_dict(submission.get("codegen")) or codegen_routing
+    )
+    requested_codegen_model = codegen_routing.get(
+        "requested_model",
+        extra.get("requested_codegen_model", extra.get("model_override", "")),
+    )
+    requested_backend = routing.get(
+        "requested_backend",
+        extra.get("requested_llm_backend", extra.get("llm_backend", "")),
+    )
+    effective_backend = routing.get(
+        "effective_backend",
+        extra.get("effective_llm_backend", extra.get("llm_backend", "")),
+    )
+    agentic = _as_dict(extra.get("agentic"))
+    effective_codegen_backend = (
+        agentic.get("backend")
+        or extra.get("effective_codegen_backend")
+        or codegen_routing.get("effective_backend")
+        or effective_backend
+    )
+    effective_codegen_model = (
+        agentic.get("model")
+        or extra.get("effective_codegen_model")
+        or extra.get("codegen_model")
+        or codegen_routing.get("effective_model")
+        or ""
+    )
+    codegen_trace = dict(codegen_routing)
+    if effective_codegen_backend:
+        codegen_trace["effective_backend"] = effective_codegen_backend
+    if effective_codegen_model:
+        codegen_trace["effective_model"] = effective_codegen_model
     model_trace = {
         "profile": extra.get("build_profile", ""),
         "model_override": extra.get("model_override", ""),
         "requested_model_override": extra.get(
             "requested_model_override", extra.get("model_override", "")
         ),
-        "requested_codegen_model": extra.get(
-            "requested_codegen_model", extra.get("model_override", "")
+        "requested_backend": requested_backend,
+        "effective_backend": effective_backend,
+        "requested_model": routing.get(
+            "requested_model", extra.get("requested_model_override", "")
         ),
-        "effective_codegen_model": extra.get(
-            "effective_codegen_model", extra.get("codegen_model", "")
+        "effective_model": routing.get(
+            "effective_model", extra.get("effective_model", "")
         ),
-        "codegen_model": extra.get(
-            "effective_codegen_model", extra.get("codegen_model", "")
+        "submission": submission,
+        "codegen": codegen_trace,
+        "requested_codegen_backend": codegen_routing.get(
+            "requested_backend", requested_backend
         ),
-        "backend": extra.get("llm_backend", ""),
+        "effective_codegen_backend": effective_codegen_backend,
+        "requested_codegen_model": requested_codegen_model,
+        "effective_codegen_model": effective_codegen_model,
+        "codegen_model": effective_codegen_model,
+        "backend": effective_codegen_backend or effective_backend,
         "full_app": bool(extra.get("full_app_contract") or extra.get("full_app")),
         "prompt_count": len(prompts),
         "stages": [
@@ -579,6 +714,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "recall_count": len(_as_list(extra.get("recall_used"))),
         "cost_usd": extra.get("build_cost_usd"),
         "cost_truth": cost_truth,
+        "requirement_trace": requirement_trace,
     }
     return {
         "build_profile": str(extra.get("build_profile") or ""),

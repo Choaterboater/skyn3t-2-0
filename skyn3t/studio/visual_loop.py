@@ -11,6 +11,7 @@ than failing.
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -72,7 +73,9 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                                           correlation_id=correlation_id)
         finally:
             try:
-                app_runner.stop(app)
+                stopped = app_runner.stop(app)
+                if inspect.isawaitable(stopped):
+                    await stopped
             except Exception:  # noqa: BLE001 - teardown must not break the loop
                 pass
             try:

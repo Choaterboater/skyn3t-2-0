@@ -610,6 +610,43 @@ def test_playtest_stops_the_app(tmp_path: Path):
     assert runner.stopped is True
 
 
+def test_playtest_defaults_to_docker_supervisor_and_awaits_stop(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import skyn3t.studio.app_runner as app_runner
+    import skyn3t.studio.preview_supervisor as preview_supervisor
+
+    _src(tmp_path, "// game\n")
+    calls: dict[str, object] = {}
+    app = _App()
+
+    class FakeSupervisor:
+        async def start(self, project_dir, stack="", **kwargs):
+            calls["start"] = (Path(project_dir), stack, kwargs)
+            return app
+
+        async def stop(self, stopped_app):
+            await asyncio.sleep(0)
+            calls["stopped"] = stopped_app
+
+    class HostRunnerMustNotBeConstructed:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("QA preview must not execute on the host")
+
+    monkeypatch.setattr(app_runner, "AppRunner", HostRunnerMustNotBeConstructed)
+    monkeypatch.setattr(
+        preview_supervisor,
+        "PreviewSupervisor",
+        FakeSupervisor,
+    )
+
+    _run(tmp_path, drive_fn=lambda _url: [])
+
+    assert calls["start"] == (tmp_path, "phaser", {})
+    assert calls["stopped"] is app
+
+
 def test_playtest_soft_skips_when_play_state_not_confirmed(tmp_path: Path):
     # findings 4/7: driver couldn't confirm the game left the menu (no pixel motion) and
     # collected no errors -> soft-skip, NOT a false clean pass.

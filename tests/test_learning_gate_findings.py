@@ -13,6 +13,7 @@ from __future__ import annotations
 from skyn3t.intelligence.learning_loop import (
     _summarize_outcome,
     extract_gate_findings,
+    proof_ladder_infrastructure_unavailable,
 )
 
 # A manifest.extra as the runner records it: two gate verdicts with issues, one
@@ -182,3 +183,54 @@ def test_no_gate_findings_changes_nothing():
     build = {"stack": "react", "verdict": "go", "score": 95, "gaps": []}
     lessons = _summarize_outcome(build)
     assert not any("gate flagged" in ls for ls in lessons)
+
+
+def test_missing_proof_tool_is_not_learned_as_a_product_defect():
+    extra = {
+        "proof_ladder": {
+            "status": "skipped",
+            "steps": [
+                {
+                    "name": "docker",
+                    "status": "skipped",
+                    "required": True,
+                    "reason": "daemon unavailable",
+                }
+            ],
+        }
+    }
+    assert extract_gate_findings(extra) == []
+    assert proof_ladder_infrastructure_unavailable(extra) is True
+    lessons = _summarize_outcome(
+        {
+            "stack": "react",
+            "verdict": "no_go",
+            "score": 74,
+            "gaps": [],
+            "proof_errors": [],
+            "gate_findings": [],
+            "infrastructure_failure": True,
+        }
+    )
+    assert not any("re-check the plan" in lesson for lesson in lessons)
+
+
+def test_failed_playwright_proof_becomes_a_verification_finding():
+    extra = {
+        "proof_ladder": {
+            "status": "failed",
+            "steps": [
+                {
+                    "name": "playwright",
+                    "status": "failed",
+                    "required": True,
+                    "reason": "responsive proof found a clipped checkout button",
+                }
+            ],
+        }
+    }
+    findings = extract_gate_findings(extra)
+    assert findings == [
+        "proof_ladder.playwright: responsive proof found a clipped checkout button"
+    ]
+    assert proof_ladder_infrastructure_unavailable(extra) is False

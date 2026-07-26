@@ -173,6 +173,43 @@ def test_source_tree_snapshot_excludes_generated_dirs_at_any_depth(tmp_path):
     assert after["file_count"] == 1
 
 
+def test_source_tree_snapshot_excludes_only_runner_proof_output_under_dot_skyn3t(
+    tmp_path,
+):
+    product = tmp_path / ".skyn3t" / "product.json"
+    product.parent.mkdir()
+    product.write_text('{"schema_version": 1}\n', encoding="utf-8")
+    authored = tmp_path / "docs" / "proof-ladder" / "design.md"
+    authored.parent.mkdir(parents=True)
+    authored.write_text("Authored proof design\n", encoding="utf-8")
+    nested_manifest = tmp_path / "public" / "skyn3t_manifest.json"
+    nested_manifest.parent.mkdir()
+    nested_manifest.write_text('{"authored": true}\n', encoding="utf-8")
+    nested_observability = tmp_path / "fixtures" / "skyn3t-observability.json"
+    nested_observability.parent.mkdir()
+    nested_observability.write_text('{"authored": true}\n', encoding="utf-8")
+    (tmp_path / "skyn3t_manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "skyn3t-observability.json").write_text("{}", encoding="utf-8")
+
+    before = source_tree_snapshot(tmp_path)
+    for generated in (
+        tmp_path / ".skyn3t" / "proof-ladder" / "proof-ladder.json",
+        tmp_path / ".skyn3t" / "visual-proof" / "visual-proof.json",
+    ):
+        generated.parent.mkdir(parents=True)
+        generated.write_text('{"passed": true}\n', encoding="utf-8")
+    after = source_tree_snapshot(tmp_path)
+
+    assert before["valid"] is True
+    assert after["files"] == [
+        ".skyn3t/product.json",
+        "docs/proof-ladder/design.md",
+        "fixtures/skyn3t-observability.json",
+        "public/skyn3t_manifest.json",
+    ]
+    assert before["sha256"] == after["sha256"]
+
+
 def test_source_tree_snapshot_fails_closed_on_unreadable_directory(
     tmp_path, monkeypatch
 ):

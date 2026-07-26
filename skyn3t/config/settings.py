@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -254,6 +255,12 @@ class Settings(BaseSettings):
     # Authenticated search lifts the rate limit so scouting returns real, varied
     # repos instead of degrading to the built-in seed list.
     github_token: str = ""
+    # Clean-room similar-project research. It inspects repository metadata plus
+    # README/docs/manifests only and records ideas as optional backlog entries.
+    github_similarity_research: bool = False
+    github_similarity_max_repos: int = Field(default=8, ge=1, le=8)
+    # Durable preflight/build DAG worker bound.
+    build_graph_max_concurrency: int = Field(default=4, ge=1, le=16)
 
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
@@ -456,6 +463,11 @@ class Settings(BaseSettings):
     # A go earned under degraded proof evidence (for example build skipped due to
     # missing/offline tooling) remains go, but its success-looking score is capped.
     degraded_proof_score_cap: float = Field(default=74.0, ge=0, le=100)
+    # High-confidence UI proof is blocking in real runs: web apps must launch
+    # in the Docker-only preview and pass Playwright; React Native apps must
+    # provide and pass Maestro flows. Tests disable this globally and exercise
+    # it through explicit seam tests.
+    proof_ladder_required: bool = True
     # Convergence loop: keep re-running build -> feed the exact error to the improver
     # -> retry until the proof passes or these bounds hit. The cheap model emits a
     # different defect each build; a multi-error cascade (e.g. styled-jsx + a bad
@@ -485,6 +497,16 @@ class Settings(BaseSettings):
     autonomous_learning: bool = True
     approval_gates: bool = True
     cortex_auto_approve_safe: bool = True
+    # Personal-lab profile: remove repetitive approval and budget friction for
+    # local generation/research while retaining every proof and quality gate.
+    lab_autonomy: bool = False
+    # Cortex can author narrowly scoped self-improvement candidates in an
+    # isolated git worktree. The engine never pushes. Local main auto-merge is
+    # a separate explicit consent and only occurs after all blocking gates pass.
+    cortex_candidates_enabled: bool = True
+    cortex_candidate_auto_merge: bool = False
+    cortex_candidate_merge_strategy: Literal["ff-only", "squash"] = "ff-only"
+    cortex_candidate_timeout: int = Field(default=1800, ge=60, le=3600)
     # CuriosityLoop emits a generic, target-less "scout for new build patterns"
     # INGEST proposal every hour — always gated, regenerated after each decision,
     # and redundant with RepoScout (which scouts real, named repos). Off by

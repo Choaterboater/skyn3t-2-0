@@ -1,9 +1,11 @@
 """End-of-build liveness: enumerate a delivered web app's routes/pages, hit each,
-repair failures, report. Reuses AppRunner / ImproveEngine / visual_check. Import
+repair failures, report. Reuses the injected preview runner / ImproveEngine /
+visual_check. Import
 has zero side effects; nothing is served until a method runs."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import urllib.error
@@ -504,7 +506,9 @@ async def liveness_self_improve(project_dir, *, app_runner, improve_engine,
             )
         finally:
             try:
-                app_runner.stop(app)
+                stopped = app_runner.stop(app)
+                if inspect.isawaitable(stopped):
+                    await stopped
             except Exception:  # noqa: BLE001
                 pass
             try:

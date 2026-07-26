@@ -331,7 +331,10 @@ def test_agentic_improve_prompt_includes_stage_role_guidance(tmp_path):
 def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_path):
     _seed(tmp_path)
     llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
-    _run(tmp_path, llm, extra={"layout_profile": _WORKSPACE_PROFILE})
+    _run(tmp_path, llm, extra={
+        "layout_profile": _WORKSPACE_PROFILE,
+        "layout_profile_is_stored": True,
+    })
     agentic_prompt = llm.agentic_calls[0]["prompt"]
     assert "LAYOUT PROFILE: workspace" in agentic_prompt
     assert "preserve existing working functionality" in agentic_prompt.lower()
@@ -348,6 +351,7 @@ def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_
             "agentic": False,
             "files": ["app/page.jsx", "worker.py"],
             "layout_profile": _WORKSPACE_PROFILE,
+            "layout_profile_is_stored": True,
         },
     )
     assert result.success
@@ -366,10 +370,52 @@ def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_
             "agentic": False,
             "files": ["app/MissingPanel.jsx"],
             "layout_profile": _WORKSPACE_PROFILE,
+            "layout_profile_is_stored": True,
         },
     )
     assert result.success
     assert "LAYOUT PROFILE: workspace" in llm.complete_calls[0]["prompt"]
+
+
+def test_unstored_compact_profile_stays_out_of_improver_prompts(tmp_path):
+    compact = {"name": "compact", "version": 1, "audit_enabled": False}
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(tmp_path, llm, extra={
+        "layout_profile": compact,
+        "layout_profile_is_stored": False,
+    })
+    assert "LAYOUT PROFILE:" not in llm.agentic_calls[0]["prompt"]
+
+    llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/page.jsx"],
+            "layout_profile": compact,
+            "layout_profile_is_stored": False,
+        },
+    )
+    assert result.success
+    assert "LAYOUT PROFILE:" not in llm.complete_calls[0]["prompt"]
+
+    llm = _AgenticLLM(completions=[
+        "export default function MissingPanel() { return <aside>panel</aside>; }\n",
+    ])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/MissingPanel.jsx"],
+            "layout_profile": compact,
+            "layout_profile_is_stored": False,
+        },
+    )
+    assert result.success
+    assert "LAYOUT PROFILE:" not in llm.complete_calls[0]["prompt"]
 
 
 def test_classic_improve_prompt_includes_stage_role_guidance(tmp_path):

@@ -84,6 +84,7 @@ from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.lab_policy import LabAutonomyPolicy
+from skyn3t.studio.layout_profiles import resolve_layout_profile
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
@@ -4664,12 +4665,6 @@ class StudioRunner:
             brief, pin=pin, llm=sel_llm,
             attended=bool(extra.get("attended", False)),
         )
-        classification = classify_build(
-            brief,
-            choice.stack,
-            app_type_override=str(extra.get("app_type") or self.settings.app_type_override),
-            engine_override=str(extra.get("engine") or self.settings.engine_override),
-        )
         plan = self.planner.plan(
             brief,
             slug,
@@ -4679,7 +4674,20 @@ class StudioRunner:
             gated_stages=tuple(extra.get("gated_stages", ())),
             full_app_contract=bool(extra.get("full_app_contract")),
         )
-
+        classification = classify_build(
+            brief,
+            choice.stack,
+            app_type_override=str(extra.get("app_type") or self.settings.app_type_override),
+            engine_override=str(extra.get("engine") or self.settings.engine_override),
+        )
+        profile = resolve_layout_profile(
+            classification.app_type, stack=plan.stack, engine=classification.engine,
+        )
+        frozen_profile = profile.to_dict()
+        # The layout selection is a build-time classification decision. Persist and
+        # reuse this serialized mapping for every later stage, even if settings
+        # change while the build is queued or executing.
+        extra = {**extra, "layout_profile": frozen_profile}
         manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
         # Honor a caller-supplied build_id (e.g. the web API) so its build
         # record reconciles via BUILD_* events instead of orphaning.
@@ -4787,6 +4795,7 @@ class StudioRunner:
             "confidence": choice.confidence, "rationale": choice.rationale,
         }
         manifest.extra["classification"] = classification.to_dict()
+        manifest.extra["layout_profile"] = frozen_profile
         build_id = manifest.build_id
         manifest.extra["preflight_run_id"] = f"{build_id}-preflight"
 
@@ -4804,7 +4813,8 @@ class StudioRunner:
             {"build_id": build_id, "slug": slug, "brief": brief, "stack": plan.stack,
              "app_type": classification.app_type, "engine": classification.engine,
              "stack_selection": manifest.extra["stack_selection"],
-             "classification": manifest.extra["classification"], "stages": plan.stage_names},
+             "classification": manifest.extra["classification"],
+             "layout_profile": frozen_profile, "stages": plan.stage_names},
             correlation_id=correlation_id,
         )
 

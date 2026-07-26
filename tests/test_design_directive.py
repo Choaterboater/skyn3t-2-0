@@ -7,7 +7,12 @@ backend/config/test slices and non-web monolithic builds stay lean.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 from skyn3t.agents.code_agent import CodeAgent
+from skyn3t.agents.designer import DesignerAgent
+from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
 
 _DESIGN = {
@@ -18,6 +23,9 @@ _DESIGN = {
     "components": ["filter bar", "metric cards"],
     "states": ["empty", "loading", "error"],
 }
+
+_WORKSPACE_PROFILE = {"name": "workspace", "version": 1, "audit_enabled": True}
+_EDITORIAL_PROFILE = {"name": "editorial", "version": 1, "audit_enabled": False}
 
 
 def _agent():
@@ -31,6 +39,52 @@ def test_frontend_slice_prompt_has_design_bar_and_tokens():
     assert "DESIGN BAR" in p
     assert "emoji" in p.lower()           # the no-emoji-as-icon rule
     assert "#6750f2" in p and "Inter" in p  # design tokens surfaced
+
+
+def test_layout_profile_reaches_all_frontend_prompt_variants():
+    agent = _agent()
+    design = {**_DESIGN, "layout_profile": _WORKSPACE_PROFILE}
+    monolithic = agent._agentic_prompt("expense tracker", "react", {"files": []}, "", design=design)
+    frontend_slice = agent._agentic_slice_prompt(
+        "expense tracker", "react", "frontend", ["src/App.jsx"], "", "", design=design)
+    retry = agent._agentic_slice_resume_prompt(
+        "expense tracker", "react", "frontend", ["src/App.jsx"], {}, ["src/App.jsx"], "timeout",
+        design=design,
+    )
+
+    assert "LAYOUT PROFILE: workspace" in monolithic
+    assert "asymmetric grid or split pane" in frontend_slice
+    assert "uniform cards" in retry
+
+
+def test_editorial_profile_allows_reading_column_without_frontend_leakage():
+    agent = _agent()
+    design = {**_DESIGN, "layout_profile": _EDITORIAL_PROFILE}
+    frontend = agent._agentic_slice_prompt(
+        "product launch", "react", "frontend", ["src/App.jsx"], "", "", design=design)
+    backend = agent._agentic_slice_prompt(
+        "product launch", "react", "backend", ["api.py"], "", "", design=design)
+
+    assert "constrained reading column" in frontend
+    assert "LAYOUT PROFILE" not in backend
+
+
+def test_designer_fallback_preserves_frozen_workspace_profile():
+    class _LLM:
+        backend = "openrouter"
+
+        async def complete(self, *args, **kwargs):
+            return SimpleNamespace(text="not json", model="m", backend="openrouter")
+
+    task = TaskRequest(
+        type="design",
+        payload={"brief": "operations dashboard", "extra": {"layout_profile": _WORKSPACE_PROFILE}},
+        capabilities_required=("design",),
+    )
+    output = asyncio.run(DesignerAgent(event_bus=EventBus(), llm=_LLM()).execute(task)).output
+
+    assert output["design"]["layout_profile"] == _WORKSPACE_PROFILE
+    assert any("asymmetric wide layout" in item for item in output["design"]["layout"])
 
 
 def test_semantic_frontend_specialists_keep_design_contract():

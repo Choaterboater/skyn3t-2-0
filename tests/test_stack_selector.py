@@ -103,6 +103,7 @@ def test_classify_build_infers_game_engine_metadata():
     assert c.app_type == "game"
     assert c.engine == "phaser"
     assert c.method == "inferred"
+    assert c.layout_profile == "immersive"
 
 
 def test_classify_build_respects_overrides_without_changing_stack():
@@ -115,12 +116,14 @@ def test_classify_build_respects_overrides_without_changing_stack():
     assert c.app_type == "data_viz"
     assert c.engine == "browser_native"
     assert c.method == "override"
+    assert c.layout_profile == "workspace"
 
 
 def test_classify_build_infers_dashboard_dom():
     c = classify_build("a React admin dashboard for metrics", "react")
     assert c.app_type == "dashboard"
     assert c.engine == "dom"
+    assert c.to_dict()["layout_profile"] == "workspace"
 
 
 def test_classify_build_keeps_browser_only_react_dashboard_out_of_api_service():

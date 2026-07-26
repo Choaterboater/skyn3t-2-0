@@ -129,6 +129,26 @@ considered. No third-party source code was copied into SkyN3t.
   environments survives promotion, and stale preimages or proof side effects
   abort the run.
 
+## Cycle 4 organic layout profiles
+
+- This clean-room implementation uses a small deterministic profile contract:
+  `workspace` for dashboard/data/product workflows, `editorial` for
+  landing/portfolio/marketing experiences, `immersive` for game or canvas-first
+  work, and `compact` for every remaining type. The full versioned profile is
+  selected once at build classification, serialized at manifest creation, and
+  restored for Improve without a second classification pass. An explicit
+  app-type override selects that frozen profile.
+- Profile provenance follows the existing no-overwrite delivery model. A
+  delivered manifest remains the source of truth for Improve; malformed or
+  legacy profile data safely falls back to `compact` rather than mutating the
+  persisted build record or guessing a new profile.
+- Browser layout evidence is a local, advisory measurement only. At desktop
+  workspace viewports it records aggregate viewport, fill, repeated-card,
+  card-area, and data-bearing-surface measures, with a conservative
+  under-fill/card-monoculture hint when appropriate. Editorial, immersive, and
+  compact profiles are recorded as exemptions. The evidence contains no DOM
+  text or source and does not create a blocking gate or a template library.
+
 ## Ranked continuation backlog
 
 1. Add a versioned visual-design contract consumed by code generation and the

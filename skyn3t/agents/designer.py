@@ -14,6 +14,7 @@ from skyn3t.agents._common import detect_stack, knowledge_block, parse_json
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+from skyn3t.studio.layout_profiles import layout_contract_block, profile_from_payload
 
 _SYSTEM = (
     "You are a senior product designer. Given a brief and stack, propose a concrete, "
@@ -61,6 +62,9 @@ class DesignerAgent(BaseAgent):
         if ref and not refs:
             refs = [str(ref)]
         knowledge = knowledge_block(p)
+        raw_extra = p.get("extra")
+        extra = raw_extra if isinstance(raw_extra, dict) else {}
+        profile = profile_from_payload(extra.get("layout_profile"))
         prompt = "\n\n".join(
             part for part in (
                 f"Brief: {brief}\nStack: {stack}",
@@ -69,6 +73,7 @@ class DesignerAgent(BaseAgent):
                     "Propose the design system as JSON. Include concrete layout zones, "
                     "components, and interaction states that match this domain."
                 ),
+                layout_contract_block(profile),
             )
             if part
         )
@@ -94,6 +99,15 @@ class DesignerAgent(BaseAgent):
             # rather than silently passing _DEFAULT_DESIGN off as a real design.
             out["degraded"] = True
             out["degraded_reason"] = "design JSON was unparseable; using defaults"
+        # The model can enrich the aesthetic direction but cannot replace the
+        # classified, versioned composition contract.
+        layout = design.get("layout")
+        layout_items = list(layout) if isinstance(layout, list) else [str(layout)] if layout else []
+        design["layout_profile"] = profile.to_dict()
+        design["layout"] = [
+            *layout_items,
+            layout_contract_block(profile),
+        ]
         return TaskResult(task_id=task.task_id, success=True, output=out)
 
     async def health_check(self) -> bool:

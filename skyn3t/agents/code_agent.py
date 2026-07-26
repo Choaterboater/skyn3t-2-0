@@ -351,6 +351,14 @@ _WEB_STACKS = frozenset({
     "phaser",  # a Phaser game has real HUD/menu visual-design concerns
 })
 
+# Generated app composition contracts apply to conventional web frontends, not
+# canvas-game prompts. Phaser retains its dedicated game/art directives.
+_DESIGN_WEB_STACKS = _WEB_STACKS - {"phaser"}
+_FRONTEND_EXTENSIONS = frozenset({
+    ".jsx", ".tsx", ".css", ".html", ".htm", ".vue", ".svelte",
+    ".astro", ".scss", ".sass", ".less",
+})
+
 # Stacks that carry product/multi-user DATA (so the real-data/no-fake-auth
 # contract applies): every web product stack EXCEPT games, plus the common
 # Python backends. A Phaser game has no auth/persistence surface.
@@ -1144,10 +1152,10 @@ class CodeAgent(BaseAgent):
             "the REAL dependencies you actually import — requirements.txt (with a line per dep) "
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
-            + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _WEB_STACKS else "")
+            + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
             + (
                 f"Follow this design direction: {self._design_summary(design)}\n"
-                if self._design_summary(design) and (stack or "").lower() in _WEB_STACKS
+                if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
                 else ""
             )
             + (
@@ -1647,7 +1655,10 @@ class CodeAgent(BaseAgent):
         # design tokens so it doesn't ship the generic emoji-template UI. Other
         # slices (config/tests/backend) stay lean.
         design_block = ""
-        if slice_name == "frontend" or slice_name.startswith("frontend_"):
+        if (
+            (slice_name == "frontend" or slice_name.startswith("frontend_"))
+            and (stack or "").lower() in _DESIGN_WEB_STACKS
+        ):
             design_block = f"\n\n{_DESIGN_DIRECTIVE}"
             summary = self._design_summary(design)
             if summary:
@@ -1686,7 +1697,10 @@ class CodeAgent(BaseAgent):
         owned = "\n".join(f"- {path}" for path in slice_files) or "- (none)"
         error = previous_error or "the prior session ended without confirmed completion"
         design_block = ""
-        if slice_name == "frontend" or slice_name.startswith("frontend_"):
+        if (
+            (slice_name == "frontend" or slice_name.startswith("frontend_"))
+            and (stack or "").lower() in _DESIGN_WEB_STACKS
+        ):
             summary = self._design_summary(design)
             if summary:
                 design_block = f"\n\n{_DESIGN_DIRECTIVE}\nFollow this design direction: {summary}"
@@ -1909,7 +1923,7 @@ class CodeAgent(BaseAgent):
             + (f"Variant contract: {variant}\n\n" if variant else "")
             + (
                 f"{_DESIGN_DIRECTIVE}\nFollow this design direction: {self._design_summary(design)}\n\n"
-                if self._design_summary(design) and (stack or "").lower() in _WEB_STACKS
+                if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
                 else ""
             )
             + "Implement every missing file in full, repair imports and entrypoint wiring, "
@@ -2574,7 +2588,7 @@ class CodeAgent(BaseAgent):
         is_manifest = base in _MANIFEST_NAMES
         if is_readme:
             tier = Tier.DOCS
-        elif ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}:
+        elif ext in _FRONTEND_EXTENSIONS:
             tier = Tier.UI
         else:
             tier = Tier.BACKEND
@@ -2595,8 +2609,8 @@ class CodeAgent(BaseAgent):
         design_summary = self._design_summary(design)
         design_block = ""
         if (
-            ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}
-            and (stack or "").lower() in _WEB_STACKS
+            ext in _FRONTEND_EXTENSIONS
+            and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
             design_block = f"\n{_DESIGN_DIRECTIVE}"
             if design_summary:

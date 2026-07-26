@@ -121,6 +121,47 @@ def test_monolithic_web_gets_bar_python_does_not():
     assert "DESIGN BAR" not in a._agentic_prompt("x", "python", {"files": []}, "K ")
 
 
+def test_phaser_prompts_exclude_layout_profile_and_design_bar():
+    agent = _agent()
+    design = {**_DESIGN, "layout_profile": _WORKSPACE_PROFILE}
+    prompts = (
+        agent._agentic_prompt("arcade game", "phaser", {"files": []}, "", design=design),
+        agent._agentic_resume_prompt("arcade game", "phaser", {"files": []}, {}, [], "", "", design=design),
+        agent._agentic_slice_prompt(
+            "arcade game", "phaser", "frontend", ["src/main.js"], "", "", design=design),
+        agent._agentic_slice_resume_prompt(
+            "arcade game", "phaser", "frontend", ["src/main.js"], {}, ["src/main.js"], "", design=design),
+    )
+
+    assert all("LAYOUT PROFILE" not in prompt for prompt in prompts)
+    assert all("DESIGN BAR" not in prompt for prompt in prompts)
+
+
+def test_per_file_frontend_extensions_receive_layout_profile():
+    class _LLM:
+        backend = "openrouter"
+        supports_agentic = False
+
+        def __init__(self):
+            self.prompts = []
+            self.tiers = []
+
+        async def complete(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            self.tiers.append(kwargs["tier"])
+            text = "<!doctype html><html><body>app</body></html>" if kwargs["file_hint"].endswith((".htm", ".html")) else "body {}"
+            return SimpleNamespace(text=text, model="m", backend="openrouter")
+
+    llm = _LLM()
+    agent = CodeAgent(event_bus=EventBus(), llm=llm)
+    design = {**_DESIGN, "layout_profile": _WORKSPACE_PROFILE}
+    for ext in (".jsx", ".tsx", ".css", ".html", ".vue", ".svelte", ".astro", ".scss", ".sass", ".less", ".htm"):
+        asyncio.run(agent._generate_file(f"src/App{ext}", "workspace", "react", {"files": []}, design=design))
+
+    assert len(llm.prompts) == 11
+    assert all("LAYOUT PROFILE: workspace" in prompt for prompt in llm.prompts)
+
+
 def test_design_summary_handles_missing_gracefully():
     a = _agent()
     assert a._design_summary(None) == ""

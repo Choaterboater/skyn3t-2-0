@@ -55,6 +55,7 @@ from skyn3t.studio.acceptance_contract import (
     restore_acceptance_contracts,
     snapshot_acceptance_contracts,
 )
+from skyn3t.studio.layout_profiles import LayoutProfile, layout_contract_block, profile_from_payload
 from skyn3t.worktree import list_files
 
 log = structlog.get_logger(__name__)
@@ -702,7 +703,10 @@ class CodeAgent(BaseAgent):
         raw_prior = p.get("prior")
         prior = raw_prior if isinstance(raw_prior, dict) else {}
         raw_design = prior.get("design")
-        design = raw_design if isinstance(raw_design, dict) else None
+        profile = profile_from_payload(_extra.get("layout_profile") if isinstance(_extra, dict) else None)
+        design = self._design_with_layout_profile(
+            raw_design if isinstance(raw_design, dict) else None, profile,
+        )
         stack = detect_stack(
             brief=brief, plan=plan,
             explicit=p.get("stack", "") or (plan.get("stack", "") if plan else ""),
@@ -801,7 +805,7 @@ class CodeAgent(BaseAgent):
                     if attempt == 0
                     else self._agentic_resume_prompt(
                         brief, stack, plan, disk, missing_planned,
-                        agentic_error, contract_gap)
+                        agentic_error, contract_gap, design=design)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
@@ -1450,6 +1454,15 @@ class CodeAgent(BaseAgent):
                 "is unavailable; kept the offline slice without an OpenRouter fallback."
             )
         knowledge = knowledge_block(p)
+        raw_prior = p.get("prior")
+        prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
+        raw_extra = p.get("extra")
+        extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+        profile = profile_from_payload(extra.get("layout_profile"))
+        raw_design = prior.get("design")
+        design = self._design_with_layout_profile(
+            raw_design if isinstance(raw_design, dict) else None, profile,
+        )
         files: dict[str, str] = {}
         degraded_reason = ""
 
@@ -1462,10 +1475,6 @@ class CodeAgent(BaseAgent):
         elif getattr(self.llm, "supports_agentic", False) or codegen_cli_ok:
             from skyn3t.config.settings import get_settings
 
-            raw_prior = p.get("prior")
-            prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
-            raw_design = prior.get("design")
-            design = raw_design if isinstance(raw_design, dict) else None
             expected = owned_paths
             max_retries = max(0, int(getattr(get_settings(), "agentic_retries", 1)))
             disk: dict[str, str] = {}
@@ -1482,7 +1491,8 @@ class CodeAgent(BaseAgent):
                         brief, stack, name, slice_files, manifest, knowledge, design=design)
                     if attempt == 0
                     else self._agentic_slice_resume_prompt(
-                        brief, stack, name, slice_files, disk, missing, agentic_error)
+                        brief, stack, name, slice_files, disk, missing, agentic_error,
+                        design=design)
                 )
                 self._task_metadata.setdefault("prompts", []).append({
                     "stage": f"codegen_slice_{name}"
@@ -1571,7 +1581,7 @@ class CodeAgent(BaseAgent):
                     try:
                         return rel, await self._generate_file(
                             rel, brief, stack, plan, knowledge,
-                            model_override=model_override, manifest=manifest)
+                            model_override=model_override, manifest=manifest, design=design)
                     except Exception:  # noqa: BLE001 - isolate per file
                         return rel, None
 
@@ -1666,6 +1676,7 @@ class CodeAgent(BaseAgent):
         files: dict[str, str],
         missing: list[str],
         previous_error: str,
+        design: dict[str, Any] | None = None,
     ) -> str:
         """Compact continuation for an incomplete specialist slice."""
         remaining = "\n".join(f"- {path}" for path in missing) or (
@@ -1674,6 +1685,11 @@ class CodeAgent(BaseAgent):
         existing = "\n".join(f"- {path}" for path in sorted(files)[:120]) or "- (none)"
         owned = "\n".join(f"- {path}" for path in slice_files) or "- (none)"
         error = previous_error or "the prior session ended without confirmed completion"
+        design_block = ""
+        if slice_name == "frontend" or slice_name.startswith("frontend_"):
+            summary = self._design_summary(design)
+            if summary:
+                design_block = f"\n\n{_DESIGN_DIRECTIVE}\nFollow this design direction: {summary}"
         return self.system_prompt(
             "RESUME THIS SLICE IN PLACE. Preserve every working file and do not restart "
             "or reduce the implementation.\n\n"
@@ -1684,7 +1700,28 @@ class CodeAgent(BaseAgent):
             f"Already present (inspect before editing):\n{existing}\n\n"
             "Implement every missing owned file in full, repair wiring among the owned "
             "files, and finish successfully only when the entire slice is complete."
+            + design_block
         )
+
+    @staticmethod
+    def _design_with_layout_profile(
+        design: dict[str, Any] | None, profile: LayoutProfile,
+    ) -> dict[str, Any]:
+        """Preserve the runner-frozen profile when design is absent or degraded."""
+        merged = dict(design or {})
+        contract = CodeAgent._profile_layout_contract(profile)
+        merged["layout_profile"] = profile.to_dict()
+        merged["layout_contract"] = [contract]
+        return merged
+
+    @staticmethod
+    def _profile_layout_contract(profile: LayoutProfile) -> str:
+        contract = layout_contract_block(profile)
+        if profile.name == "workspace":
+            return contract + " Use an asymmetric grid or split pane; do not use uniform cards."
+        if profile.name == "editorial":
+            return contract + " A constrained reading column is permitted where it suits the content."
+        return contract
 
     @staticmethod
     def _design_summary(design: dict[str, Any] | None) -> str:
@@ -1695,6 +1732,15 @@ class CodeAgent(BaseAgent):
         bits: list[str] = []
         if design.get("theme"):
             bits.append(f"theme={design['theme']}")
+        raw_profile = design.get("layout_profile")
+        if isinstance(raw_profile, dict):
+            profile = profile_from_payload(raw_profile)
+            if profile.to_dict() == raw_profile:
+                bits.append(f"LAYOUT PROFILE: {profile.name}")
+                contract = design.get("layout_contract") or [
+                    CodeAgent._profile_layout_contract(profile)
+                ]
+                bits.append(f"layout_contract={contract}")
         pal = design.get("palette")
         if isinstance(pal, dict) and pal:
             bits.append("palette(" + ", ".join(f"{k}:{v}" for k, v in pal.items()) + ")")
@@ -1829,6 +1875,7 @@ class CodeAgent(BaseAgent):
         missing: list[str],
         previous_error: str,
         contract_gap: str,
+        design: dict[str, Any] | None = None,
     ) -> str:
         """Compact in-place continuation after an incomplete agentic session.
 
@@ -1860,6 +1907,11 @@ class CodeAgent(BaseAgent):
             f"Files still required by the approved architecture:\n{remaining}\n\n"
             f"Files already present (inspect before editing):\n{existing}\n\n"
             + (f"Variant contract: {variant}\n\n" if variant else "")
+            + (
+                f"{_DESIGN_DIRECTIVE}\nFollow this design direction: {self._design_summary(design)}\n\n"
+                if self._design_summary(design) and (stack or "").lower() in _WEB_STACKS
+                else ""
+            )
             + "Implement every missing file in full, repair imports and entrypoint wiring, "
             "and validate the complete existing app. Do not omit features, TODO, or elide "
             "code. Finish successfully only after the whole planned application is present."
@@ -2542,7 +2594,10 @@ class CodeAgent(BaseAgent):
         file_list = manifest.strip() or "\n".join(manifest_lines) or "(see scaffold)"
         design_summary = self._design_summary(design)
         design_block = ""
-        if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}:
+        if (
+            ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"}
+            and (stack or "").lower() in _WEB_STACKS
+        ):
             design_block = f"\n{_DESIGN_DIRECTIVE}"
             if design_summary:
                 design_block += f"\nFollow this design direction: {design_summary}"

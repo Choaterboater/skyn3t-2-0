@@ -366,6 +366,45 @@ class _StubReviewer(BaseAgent):
         return TaskResult(task_id=task.task_id, success=True, output={"score": 88.0, "verdict": "go", "gaps": []})
 
 
+def test_dashboard_layout_profile_is_frozen_in_event_manifest_and_stage_payloads(tmp_path):
+    """Changing settings mid-run must not replace the classified workspace contract."""
+    async def run():
+        class _CapturingCodeAgent(_StubCodeAgent):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.payloads = []
+
+            async def execute(self, task: TaskRequest) -> TaskResult:
+                self.payloads.append(task.payload)
+                settings.app_type_override = "marketing"
+                return await super().execute(task)
+
+        settings = Settings(
+            projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs", critic_enabled=False, approval_gates=False,
+            best_of_n=1, app_type_override="dashboard",
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _CapturingCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        reviewer = _StubReviewer("reviewer", "reviewer", "stub", bus)
+        reviewer.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(reviewer)
+
+        outcome = await StudioRunner(bus, orch, settings=settings, memory=None).start(
+            "Build an operations dashboard", slug="profile-lock")
+        expected = {"name": "workspace", "version": 1, "audit_enabled": True}
+        started = bus.history(event_type=EventType.BUILD_STARTED)[-1]
+
+        assert outcome.manifest["extra"]["layout_profile"] == expected
+        assert started.payload["layout_profile"] == expected
+        assert code.payloads and all(p["extra"]["layout_profile"] == expected for p in code.payloads)
+
+    asyncio.run(run())
+
+
 class _BriefBlindReviewer(BaseAgent):
     """A reviewer that read the BRIEF and judged the delivery a no_go (the
     delivered tree is structurally complete but does not satisfy what was

@@ -11,11 +11,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-from skyn3t.core.stacks import DESIGN_STACKS, UI_WEB_STACKS
+from skyn3t.core.stacks import DESIGN_STACKS, UI_WEB_STACKS, WEB_STACKS
 
 # Static source security checks also apply to UI aliases and React Native even
 # though those stacks are not all HTTP-served.
 _WEB_STACKS = DESIGN_STACKS | UI_WEB_STACKS
+# Stacks where missing security-header wiring is worth an advisory warning:
+# every HTTP server/API web stack (the web group minus the pure-UI group) plus
+# Next.js, which has a server runtime. Derived from the registry so the
+# dual-vocab spellings (node_express, next) can never silently drop out, and a
+# future API stack is covered automatically.
+_HEADER_WARN_STACKS = (WEB_STACKS - UI_WEB_STACKS) | frozenset({"nextjs", "next"})
 _SOURCE_SUFFIXES = {
     ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".html",
     ".astro", ".vue", ".svelte",
@@ -31,17 +37,19 @@ _SQL_INTERP_RE = re.compile(
     r"(?:"
     r"SELECT\b[^;\n]*\bFROM\b"
     r"|INSERT\s+INTO\b"
+    r"|REPLACE\s+INTO\b"
     r"|UPDATE\s+\S+\s+SET\b"
     r"|DELETE\s+FROM\b"
     r")"
-    r"[^;\n]*(?:\+|\$\{|\.concat\(|%\([^)]{1,40}\)[sdif]|%[sdif]|\.format(?:_map)?\()"
+    r"[^;\n]*(?:\+|\$\{|\.concat\(|%\([^)]{1,40}\)[sdifr]|%[sdifr]|\.format(?:_map)?\()"
     # Python f-strings: f"SELECT ... FROM ... {var}" carries no +/${/.concat/
     # %-format/.format marker, so they need their own alternative with the same
-    # statement shape.
+    # statement shape. REPLACE INTO joins the shape family (MySQL/SQLite upsert);
+    # %r (repr interpolation) joins the percent marker class.
     # Covers fr/rf prefixes and single-line triple-quoted strings; interpolation
     # is still required after the statement shape, so prose such as
     # f"Select your {item} from the menu" stays clean.
-    r"|(?:fr?|rf)['\"]{1,3}\s*(?:SELECT\b[^;\n]*\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)"
+    r"|(?:fr?|rf)['\"]{1,3}\s*(?:SELECT\b[^;\n]*\bFROM\b|INSERT\s+INTO\b|REPLACE\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)"
     r"[^;\n]*\{[A-Za-z_]"
     # Multiline single literals: JS template literals and Python triple-quoted
     # strings can carry the statement shape across lines, which the single-line
@@ -52,9 +60,21 @@ _SQL_INTERP_RE = re.compile(
     # off inside the shape via (?-i:...)) so sentence-case prose spanning lines
     # stays clean.
     # Accepted miss: lowercase or implicit-concatenated multiline SQL.
-    r"|`\s*(?-i:SELECT\b[^;`]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;`]{0,400}?\$\{"
-    r"|(?:fr?|rf)?\"\"\"\s*(?-i:SELECT\b[^;\"]{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;\"]{0,400}?(?:\$\{|\{[A-Za-z_]|%\([^)]{1,40}\)[sdif]|%[sdif])"
-    r"|(?:fr?|rf)?'''\s*(?-i:SELECT\b[^;']{0,400}?\bFROM\b|INSERT\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;']{0,400}?(?:\$\{|\{[A-Za-z_]|%\([^)]{1,40}\)[sdif]|%[sdif])",
+    r"|`\s*(?-i:SELECT\b[^;`]{0,400}?\bFROM\b|INSERT\s+INTO\b|REPLACE\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;`]{0,400}?\$\{"
+    r"|(?:fr?|rf)?\"\"\"\s*(?-i:SELECT\b[^;\"]{0,400}?\bFROM\b|INSERT\s+INTO\b|REPLACE\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;\"]{0,400}?(?:\$\{|\{[A-Za-z_]|%\([^)]{1,40}\)[sdifr]|%[sdifr])"
+    r"|(?:fr?|rf)?'''\s*(?-i:SELECT\b[^;']{0,400}?\bFROM\b|INSERT\s+INTO\b|REPLACE\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^;']{0,400}?(?:\$\{|\{[A-Za-z_]|%\([^)]{1,40}\)[sdifr]|%[sdifr])"
+    # str.join / Array.join with SQL fragments: the concatenation marker sits
+    # OUTSIDE the literal carrying the statement shape — " ".join(["SELECT ...",
+    # var]) in Python, ["SELECT ...", var].join(" ") in JS — so the
+    # marker-after-shape alternatives above can never see it. These
+    # alternatives anchor on the join itself: the statement shape must appear
+    # inside the bracketed list (UPPERCASE-only via (?-i:...) so sentence-case
+    # prose lists stay clean), and a later element must be a bare variable so
+    # lists of pure string literals stay clean. The [^\]] window cannot escape
+    # the list. Accepted miss: lowercase join fragments, tuple-style join, and
+    # indexed element interpolations like a[0] in the postfix form.
+    r"|\.join\(\s*\[\s*(?:`|['\"]{1,3})\s*(?-i:SELECT\b[^\]]{0,400}?\bFROM\b|INSERT\s+INTO\b|REPLACE\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^\]]{0,400}?,\s*[A-Za-z_]"
+    r"|\[\s*(?:`|['\"]{1,3})\s*(?-i:SELECT\b[^\]]{0,400}?\bFROM\b|INSERT\s+INTO\b|REPLACE\s+INTO\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b)[^\]]{0,400}?,\s*[A-Za-z_][A-Za-z0-9_]*\s*\]\s*\.join\(",
     re.I,
 )
 _HEADER_MARKERS = (
@@ -100,7 +120,7 @@ def check_security(project_dir: str | Path, stack: str = "") -> dict[str, Any]:
                 issues.append(f"{rel}: dynamic eval/function execution")
             if _SQL_INTERP_RE.search(text):
                 issues.append(f"{rel}: SQL built with string interpolation")
-        if checked and low in {"nextjs", "express", "fastapi", "rag", "workflow"} and not header_seen:
+        if checked and low in _HEADER_WARN_STACKS and not header_seen:
             warnings.append("no basic security-header wiring detected")
         return {
             "ok": not issues,

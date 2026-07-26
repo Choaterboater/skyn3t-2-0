@@ -40,11 +40,12 @@ this from prompt-to-code tools:
 - **`delivered != empty`** — an objective *proof-run* checks that real, substantive
   files landed in `Projects/<slug>/` and (for the stack) that it actually builds,
   boots, and its own tests pass. Not vibes; the artifact.
-- **Stack-specific gates** fire only where they apply — `liveness` + `seo_check`
-  (web), `rag_check` (retrieval), `mcp_check` (MCP servers), `workflow_check`
-  (agent pipelines), `cli_check` (CLIs), and `headless_gate` / `game_visual` /
-  `qa_playtest` (games). The registry is drift-locked so a new stack can never be
-  silently un-gated (`skyn3t/core/stacks.py`, `tests/test_stack_registry_drift.py`).
+- **Stack-specific gates** fire only where they apply — `liveness`,
+  `security_check`, `web_polish` + `seo_check` (web), `rag_check` (retrieval),
+  `mcp_check` (MCP servers), `workflow_check` (agent pipelines), `cli_check`
+  (CLIs), and `headless_gate` / `game_visual` / `qa_playtest` (games). The
+  registry is drift-locked so a new stack can never be silently un-gated
+  (`skyn3t/core/stacks.py`, `tests/test_stack_registry_drift.py`).
 - The reviewer score is **blended with the proof result** into a single
   `go` / `no_go` verdict — a failing proof can't be talked past.
 
@@ -196,7 +197,7 @@ flowchart TD
 
     subgraph LADDER["The Verify Ladder (deterministic, stack-selected)"]
         P["proof-run<br/>delivered != empty · builds · boots · tests"]
-        G["gates: liveness · seo · rag · mcp · workflow · cli · game*"]
+        G["gates: liveness · security · web polish · seo · rag · mcp · workflow · cli · game*"]
     end
 
     LADDER --> VERDICT{"blend score + proof<br/>→ go / no_go"}

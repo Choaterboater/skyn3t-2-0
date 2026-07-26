@@ -225,7 +225,17 @@ class CodeImproverAgent(BaseAgent):
         worktree = Path(root)
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
         knowledge = knowledge_block(p)
-        profile = profile_from_payload(p.get("layout_profile"))
+        payload_profile = p.get("layout_profile")
+        profile = profile_from_payload(payload_profile)
+        layout_profile = (
+            profile
+            if (
+                p.get("layout_profile_is_stored") is True
+                and isinstance(payload_profile, dict)
+                and payload_profile == profile.to_dict()
+            )
+            else None
+        )
 
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
@@ -273,7 +283,7 @@ class CodeImproverAgent(BaseAgent):
                 p,
                 knowledge,
                 agentic_repo_map,
-                profile,
+                layout_profile,
             )
             if ran and agentic_improved:
                 return TaskResult(task_id=task.task_id, success=True,
@@ -333,7 +343,7 @@ class CodeImproverAgent(BaseAgent):
             if target.is_file():
                 original = target.read_text(encoding="utf-8")
                 new_content, skip_reason = await self._improve_one(
-                    rel, original, brief, gaps, stack, knowledge, profile=profile)
+                    rel, original, brief, gaps, stack, knowledge, profile=layout_profile)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -343,7 +353,7 @@ class CodeImproverAgent(BaseAgent):
                 # boot. Editing can't fix a file that doesn't exist; CREATE it.
                 original = ""
                 new_content = await self._create_one(
-                    rel, brief, gaps, stack, worktree, knowledge, profile=profile,
+                    rel, brief, gaps, stack, worktree, knowledge, profile=layout_profile,
                 )
             if new_content and new_content.strip() and new_content != original:
                 from skyn3t.agents.validate import validate_source

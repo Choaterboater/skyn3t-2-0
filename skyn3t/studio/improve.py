@@ -715,6 +715,12 @@ class ImproveEngine:
         slug = manifest.slug if manifest else project_dir.name
         stack = (manifest.stack if manifest and manifest.stack
                  else StackDetector.detect(project_dir))
+        layout_profile = profile_from_payload(None).to_dict()
+
+        async def _emit_failed_outcome(outcome: ImproveOutcome) -> None:
+            outcome.detail.setdefault("layout_profile", dict(layout_profile))
+            await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+
         from skyn3t.adapters.llm import RoutingLockError, enforce_explicit_routing_lock
 
         try:
@@ -740,7 +746,7 @@ class ImproveEngine:
                     "routing_snapshot": routing_summary,
                 },
             )
-            await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+            await _emit_failed_outcome(outcome)
             return outcome
 
         project_lock = _project_lock(project_dir)
@@ -754,7 +760,6 @@ class ImproveEngine:
         rollback_confirmed = False
         preserve_recovery_artifacts = False
         context_pack_summary: dict[str, object] = {}
-        layout_profile = profile_from_payload(None).to_dict()
         try:
             process_lock = await _acquire_interprocess_lock(
                 project_dir,
@@ -802,7 +807,7 @@ class ImproveEngine:
                         "project_preserved": True,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
             control_preimages = _control_identities(project_dir)
             contract_preimage = control_preimages[PRODUCT_SPEC_RELATIVE_PATH]
@@ -866,6 +871,7 @@ class ImproveEngine:
                 routing_summary,
                 cid,
                 layout_profile,
+                has_stored_layout_profile,
             )
             if routing_provider and not improver_ok:
                 # An explicit codegen CLI is a provider lock. Do not run
@@ -892,7 +898,7 @@ class ImproveEngine:
                         **({"skipped": skipped} if skipped else {}),
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             # Same deterministic, build-readying repairs the main build pipeline
@@ -943,7 +949,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             await self._emit(EventType.IMPROVE_STAGE,
@@ -969,7 +975,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
             proof = await _proof_run_without_blocking(
                 wt.dir, stack=stack,
@@ -1035,7 +1041,7 @@ class ImproveEngine:
                     status="failed",
                     detail=failure_detail,
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             if _file_identity(
@@ -1060,7 +1066,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             candidate_after_proof = await asyncio.to_thread(
@@ -1090,7 +1096,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             deliverable_after_proof = await asyncio.to_thread(
@@ -1117,7 +1123,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             # Emit before the final compare so an event subscriber cannot write
@@ -1161,7 +1167,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
             if _file_identity(
                 Path(wt.dir) / PRODUCT_SPEC_RELATIVE_PATH
@@ -1185,7 +1191,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             current_project = await asyncio.to_thread(
@@ -1227,7 +1233,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             # Materialize an immutable sibling candidate first. If a lingering
@@ -1307,7 +1313,7 @@ class ImproveEngine:
                         "repo_context_pack": context_pack_summary,
                     },
                 )
-                await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
+                await _emit_failed_outcome(outcome)
                 return outcome
 
             backup_root = Path(
@@ -1645,6 +1651,7 @@ class ImproveEngine:
         routing_summary: dict[str, Any],
         cid: str,
         layout_profile: dict[str, str | int | bool],
+        layout_profile_is_stored: bool,
     ) -> tuple[list[str], bool, str, dict[str, str]]:
         task = TaskRequest(
             type="code_improver",
@@ -1653,6 +1660,7 @@ class ImproveEngine:
                      "repo_context_pack": dict(context_pack_summary),
                      "routing_snapshot": deepcopy(routing_summary),
                      "layout_profile": dict(layout_profile),
+                     "layout_profile_is_stored": layout_profile_is_stored,
                      # Free-text goals get the whole-project agentic session
                      # (multi-file, can create pages); the per-file path stays
                      # the automatic fallback inside the improver.

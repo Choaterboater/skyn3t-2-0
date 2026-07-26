@@ -205,6 +205,7 @@ def test_improve_retains_stored_layout_profile_in_prompt_and_provenance(
     assert outcome.status == "completed"
     task = orchestrator.submitted[0]
     assert task.payload["layout_profile"] == stored_profile
+    assert task.payload["layout_profile_is_stored"] is True
     assert "Workspace layout contract" in task.payload["brief"]
     started = bus.history(event_type=EventType.IMPROVE_STARTED)[0]
     assert started.payload["layout_profile"] == stored_profile
@@ -232,6 +233,7 @@ def test_improve_legacy_manifest_uses_compact_provenance_without_layout_prompt(
     compact = {"name": "compact", "version": 1, "audit_enabled": False}
     assert outcome.status == "completed"
     assert orchestrator.submitted[0].payload["layout_profile"] == compact
+    assert orchestrator.submitted[0].payload["layout_profile_is_stored"] is False
     assert "layout contract" not in orchestrator.submitted[0].payload["brief"].lower()
     assert outcome.detail["layout_profile"] == compact
 
@@ -560,6 +562,8 @@ def test_improve_rejects_product_contract_changes_and_preserves_project(
     tmp_path,
     contract_edit,
 ):
+    import json
+
     from skyn3t.studio.product_spec import ProductSpecV1, RequirementRecord
 
     settings = _settings(tmp_path)
@@ -569,6 +573,11 @@ def test_improve_rejects_product_contract_changes_and_preserves_project(
         goal="Keep the delivered contract authoritative",
         requirements=[RequirementRecord(text="Preserve the current behavior")],
     ).save(project)
+    stored_profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    manifest_path = project / "skyn3t_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["extra"] = {"layout_profile": stored_profile}
+    manifest_path.write_text(json.dumps(manifest))
     before = _project_bytes(project)
     bus = EventBus()
 
@@ -602,7 +611,10 @@ def test_improve_rejects_product_contract_changes_and_preserves_project(
 
     assert outcome.status == "failed"
     assert outcome.detail["delivery_blocked"] == "product_contract_mutated"
+    assert outcome.detail["layout_profile"] == stored_profile
     assert outcome.detail["project_preserved"] is True
+    failed_event = bus.history(event_type=EventType.IMPROVE_FAILED)[-1]
+    assert failed_event.payload["detail"]["layout_profile"] == stored_profile
     assert _project_bytes(project) == before
     assert (project / "main.py").read_text() == "print('original')\n"
     events = [event.type for event in bus.history()]

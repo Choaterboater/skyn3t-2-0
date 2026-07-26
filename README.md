@@ -85,6 +85,11 @@ passes. A failed verification keeps the previous healthy URL active.
 
 - **Best-of-N trajectories.** The code stage samples N independent attempts in
   isolated worktrees and merges the winner (`--best-of N`).
+- **Purposeful layouts, frozen at build start.** Operational web products use a
+  responsive workspace composition rather than a generic card wall, while
+  editorial, game, native, and utility builds retain their appropriate layout
+  profile. The stored contract is restored for Improve instead of being guessed
+  again; see [app types and layout profiles](docs/APP_TYPES.md).
 - **Adversarial critic gate.** A critic tries to break the result before delivery.
 - **Closed learning loop.** Lessons are injected into stage prompts and graded by
   build outcome, so the factory gets measurably better over time.

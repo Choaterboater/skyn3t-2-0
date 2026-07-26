@@ -86,6 +86,12 @@ class _Runner:
         self.stops += 1
 
 
+class _AsyncRunner(_Runner):
+    async def stop(self, app):
+        await asyncio.sleep(0)
+        self.stops += 1
+
+
 class _Checker:
     def __init__(self, verdicts):
         self._v = list(verdicts)
@@ -161,3 +167,13 @@ def test_runner_always_stopped_even_on_pass():
     runner = _Runner(_App())
     _run(app_runner=runner, checker=_Checker([VisualVerdict(matches=True)]), improve_engine=_Improver())
     assert runner.stops == 1  # the served app is torn down
+
+
+def test_async_runner_stop_is_awaited():
+    runner = _AsyncRunner(_App())
+    _run(
+        app_runner=runner,
+        checker=_Checker([VisualVerdict(matches=True)]),
+        improve_engine=_Improver(),
+    )
+    assert runner.stops == 1

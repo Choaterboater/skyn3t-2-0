@@ -7,13 +7,16 @@ network), and the never-raise / degrade-open contract.
 
 from __future__ import annotations
 
+import asyncio
 import io
+from pathlib import Path
 
 import pytest
 
 from skyn3t.studio.game_visual_check import (
     GAME_PROMPT,
     _looks_like_a_flash_frame,
+    check_game_visual,
     judge_game_frame,
 )
 
@@ -77,6 +80,68 @@ def test_prompt_treats_between_wave_lull_as_populated():
     # "mid-play" with no notion that a brief pause between waves still counts.
     low = GAME_PROMPT.lower()
     assert "between wave" in low or "wave clear" in low or "tower defense" in low
+
+
+def test_game_visual_defaults_to_docker_supervisor_and_awaits_stop(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import skyn3t.studio.app_runner as app_runner
+    import skyn3t.studio.game_visual_check as game_visual_check
+    import skyn3t.studio.preview_supervisor as preview_supervisor
+    import skyn3t.studio.visual_check as visual_check
+
+    calls: dict[str, object] = {}
+    app = type(
+        "RunningPreview",
+        (),
+        {
+            "status": "running",
+            "url": "http://127.0.0.1:9876",
+            "pid": None,
+            "log_path": None,
+        },
+    )()
+
+    class FakeSupervisor:
+        async def start(self, project_dir, stack="", **kwargs):
+            calls["start"] = (Path(project_dir), stack, kwargs)
+            return app
+
+        async def stop(self, stopped_app):
+            await asyncio.sleep(0)
+            calls["stopped"] = stopped_app
+
+    class HostRunnerMustNotBeConstructed:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("game preview must not execute on the host")
+
+    monkeypatch.setattr(app_runner, "AppRunner", HostRunnerMustNotBeConstructed)
+    monkeypatch.setattr(
+        preview_supervisor,
+        "PreviewSupervisor",
+        FakeSupervisor,
+    )
+    monkeypatch.setattr(visual_check, "playwright_available", lambda: True)
+    monkeypatch.setattr(
+        visual_check,
+        "make_vision_fn",
+        lambda _settings: _vf(
+            '{"populated": true, "entities_readable_size": true, "issues": []}'
+        ),
+    )
+    monkeypatch.setattr(visual_check, "make_click_vision_fn", lambda _settings: None)
+    monkeypatch.setattr(
+        game_visual_check,
+        "_screenshot_midplay",
+        lambda *_args, **_kwargs: True,
+    )
+
+    verdict = asyncio.run(check_game_visual(tmp_path, settings=object()))
+
+    assert verdict.ok is True
+    assert calls["start"] == (tmp_path, "phaser", {})
+    assert calls["stopped"] is app
 
 
 # ── _looks_like_a_flash_frame (hardening pass, same session) ───────────────────

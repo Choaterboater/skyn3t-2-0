@@ -144,7 +144,12 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         for e in (build.get("proof_errors") or [])[:3]:
             flat = " ".join(str(e).split())[:160]
             lessons.append(f"{stack}: avoid — {flat}")
-        if not gaps and not build.get("proof_errors") and not build.get("gate_findings"):
+        if (
+            not gaps
+            and not build.get("proof_errors")
+            and not build.get("gate_findings")
+            and not build.get("infrastructure_failure")
+        ):
             lessons.append(f"{stack}: build failed verification — re-check the plan.")
     elif "go" in verdict or "complete" in verdict or "success" in str(verdict):
         notes = build.get("notes") or build.get("brief")
@@ -257,6 +262,30 @@ def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
         if dead:
             out.append(f"liveness: route(s) dead after repair — {', '.join(dead)}")
 
+    # External proof-tool absence is an environment problem, not a defect in
+    # the generated product, so skipped Docker/Playwright/Maestro steps teach
+    # nothing. A proof that actually ran and failed does become a concrete
+    # verification lesson.
+    ladder = extra.get("proof_ladder")
+    if isinstance(ladder, dict) and ladder.get("status") == "failed":
+        steps = ladder.get("steps")
+        if isinstance(steps, list):
+            for step in steps[:8]:
+                if (
+                    not isinstance(step, dict)
+                    or step.get("status") != "failed"
+                    or step.get("name") in {
+                        "artifact_store",
+                        "toolchain",
+                        "preview_cleanup",
+                    }
+                ):
+                    continue
+                add(
+                    f"proof_ladder.{step.get('name') or 'proof'}",
+                    step.get("reason") or "required external proof failed",
+                )
+
     seen: set[str] = set()
     deduped: list[str] = []
     for finding in out:
@@ -264,6 +293,32 @@ def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
             seen.add(finding)
             deduped.append(finding)
     return deduped
+
+
+def proof_ladder_infrastructure_unavailable(
+    extra: dict[str, Any] | None,
+) -> bool:
+    """Whether a no-go came only from proof infrastructure not being runnable."""
+
+    if not isinstance(extra, dict):
+        return False
+    ladder = extra.get("proof_ladder")
+    if not isinstance(ladder, dict) or ladder.get("status") != "skipped":
+        return False
+    steps = ladder.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return False
+    return all(
+        isinstance(step, dict)
+        and step.get("status") == "skipped"
+        and str(step.get("name") or "") in {
+            "docker",
+            "maestro",
+            "playwright",
+            "proof_selection",
+        }
+        for step in steps
+    )
 
 
 class LearningLoop:

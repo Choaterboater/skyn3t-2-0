@@ -2993,8 +2993,8 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "private func runCLI() -> Int32 {\n"
             "    let arguments = Array(CommandLine.arguments.dropFirst())\n"
             '    if arguments == ["--help"] {\n'
-            '        print("Usage: AppCLI [--help]")\n'
-            '        print("Interactive commands: add <title>, list, toggle <number>, quit")\n'
+            '        write("Usage: AppCLI [--help]\\n")\n'
+            '        write("Interactive commands: add <title>, list, toggle <number>, quit\\n")\n'
             "        return 0\n"
             "    }\n"
             "    if !arguments.isEmpty {\n"
@@ -3005,18 +3005,18 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "    while true {\n"
             '        write("app> ")\n'
             "        guard let raw = readLine() else {\n"
-            '            print("goodbye")\n'
+            '            write("goodbye\\n")\n'
             "            return 0\n"
             "        }\n"
             "        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)\n"
             '        if line == "quit" || line == "exit" {\n'
-            '            print("goodbye")\n'
+            '            write("goodbye\\n")\n'
             "            return 0\n"
             "        }\n"
             '        if line.hasPrefix("add ") {\n'
             '            let title = String(line.dropFirst(4))\n'
             "            if model.add(title) {\n"
-            '                print("added: \\(title.trimmingCharacters(in: .whitespaces))")\n'
+            '                write("added: \\(title.trimmingCharacters(in: .whitespaces))\\n")\n'
             "            } else {\n"
             '                write("error: title cannot be blank\\n", to: .standardError)\n'
             "            }\n"
@@ -3024,11 +3024,11 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "        }\n"
             '        if line == "list" {\n'
             "            if model.items.isEmpty {\n"
-            '                print("no items")\n'
+            '                write("no items\\n")\n'
             "            } else {\n"
             "                for (index, item) in model.items.enumerated() {\n"
             '                    let mark = item.done ? "x" : " "\n'
-            '                    print("\\(index + 1). [\\(mark)] \\(item.title)")\n'
+            '                    write("\\(index + 1). [\\(mark)] \\(item.title)\\n")\n'
             "                }\n"
             "            }\n"
             "            continue\n"
@@ -3038,7 +3038,7 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
             "           number > 0,\n"
             "           model.items.indices.contains(number - 1) {\n"
             "            model.toggle(model.items[number - 1].id)\n"
-            '            print("toggled: \\(number)")\n'
+            '            write("toggled: \\(number)\\n")\n'
             "            continue\n"
             "        }\n"
             '        write("error: unknown command; use add, list, toggle, or quit\\n",\n'

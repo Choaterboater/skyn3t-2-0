@@ -120,6 +120,17 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     # the offline backend for every test so that mutation cannot leak into the
     # next test and make unrelated API tests depend on an installed CLI.
     monkeypatch.setenv("SKYN3T_LLM_BACKEND", "stub")
+    # Runtime settings endpoints intentionally update os.environ so future
+    # builds see the new policy immediately. Re-pin mutable lab switches per
+    # test; otherwise a settings-route test can leak autonomy/research/merge
+    # consent into every later test in the same pytest process.
+    monkeypatch.setenv("SKYN3T_LAB_AUTONOMY", "false")
+    monkeypatch.setenv("SKYN3T_GITHUB_SIMILARITY_RESEARCH", "false")
+    monkeypatch.setenv("SKYN3T_CORTEX_CANDIDATES_ENABLED", "true")
+    monkeypatch.setenv("SKYN3T_CORTEX_CANDIDATE_AUTO_MERGE", "false")
+    # External Docker/Playwright/Maestro proof has focused seam tests. Keep the
+    # rest of the suite hermetic even though production builds require it.
+    monkeypatch.setenv("SKYN3T_PROOF_LADDER_REQUIRED", "false")
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
     # Don't read the developer's real repo .env during tests. Settings hard-codes
     # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github

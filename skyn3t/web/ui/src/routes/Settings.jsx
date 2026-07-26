@@ -57,6 +57,7 @@ const SETTINGS_SECTIONS = [
   ["visual", "Visual"],
   ["improve", "Improve"],
   ["gates", "Gates"],
+  ["lab", "Lab"],
   ["messaging", "Messaging"],
   ["auth", "Auth"],
   ["runtime", "Runtime"],
@@ -104,6 +105,12 @@ export default function Settings() {
     queryFn: queryFn("/gates"),
     retry: 0,
   });
+  const labToolchain = useQuery({
+    queryKey: ["lab-toolchain"],
+    queryFn: queryFn("/lab/toolchain"),
+    retry: 0,
+    refetchInterval: 10000,
+  });
 
   const [token, setToken] = useState(
     typeof localStorage !== "undefined"
@@ -141,6 +148,7 @@ export default function Settings() {
   const [visualMsg, setVisualMsg] = useState("");
   const [agenticMsg, setAgenticMsg] = useState("");
   const [gateMsg, setGateMsg] = useState("");
+  const [labMsg, setLabMsg] = useState("");
 
   // Model dropdown: the LIVE OpenRouter list (auto-updates with the newest
   // models) + the currently-pinned model (empty = auto / smart routing).
@@ -527,6 +535,34 @@ export default function Settings() {
     }
   }
 
+  async function saveLabAutonomy(enabled) {
+    try {
+      const result = await apiPost("/settings/lab_autonomy", { enabled });
+      setLabMsg(
+        result.lab_autonomy
+          ? "Lab autonomy ON: local build/research approvals and budget friction are removed; proof gates stay on."
+          : "Lab autonomy off: standard approval and budget policy applies.",
+      );
+      settings.refetch();
+    } catch (e) {
+      setLabMsg(String(e.message));
+    }
+  }
+
+  async function saveSimilarityResearch(enabled) {
+    try {
+      const result = await apiPost("/settings/similarity_research", { enabled });
+      setGhMsg(
+        result.github_similarity_research
+          ? `similar-project research ON · up to ${result.max_repositories} active repositories`
+          : "similar-project research off",
+      );
+      settings.refetch();
+    } catch (e) {
+      setGhMsg(String(e.message));
+    }
+  }
+
   async function saveBuildMetadata() {
     try {
       const r = await apiPost("/settings/build_metadata", {
@@ -614,6 +650,10 @@ export default function Settings() {
         daily_usd_cap: data.daily_usd_cap,
         daily_token_cap: data.daily_token_cap,
         autonomous_daily_build_cap: data.autonomous_daily_build_cap,
+        lab_autonomy: data.lab_autonomy,
+        github_similarity_research: data.github_similarity_research,
+        proof_ladder_required: data.proof_ladder_required,
+        build_graph_max_concurrency: data.build_graph_max_concurrency,
       }
     : null;
 
@@ -1212,6 +1252,21 @@ export default function Settings() {
                 Save token
               </button>
             </div>
+            <label className="mt-4 flex items-start gap-2 text-sm text-bone">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-ember"
+                checked={!!data?.github_similarity_research}
+                onChange={(e) => saveSimilarityResearch(e.target.checked)}
+              />
+              <span>
+                Research active similar GitHub projects before builds{" "}
+                <span className="font-mono text-ash">(clean-room ideas only)</span>.
+                README, docs, manifests, license, and repository metadata may become
+                optional backlog ideas; source code is never copied and requirements
+                are never silently changed.
+              </span>
+            </label>
             {ghMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{ghMsg}</p>
             ) : null}
@@ -1639,6 +1694,62 @@ export default function Settings() {
                 {saved ? "Saved" : "Save"}
               </button>
             </div>
+          </div>
+        </Panel>
+
+        <Panel id="lab">
+          <PanelHead
+            label="Personal lab"
+            right={
+              <Pill tone={data?.lab_autonomy ? "plasma" : "ash"}>
+                {data?.lab_autonomy ? "autonomous" : "standard"}
+              </Pill>
+            }
+          />
+          <div className="p-4">
+            <p className="mb-4 text-sm text-ash">
+              Removes repetitive local approval and budget friction while keeping
+              build, test, security, Docker preview, Playwright, and Maestro evidence
+              intact. Remote deploys, secrets, destructive host actions, releases, and
+              protected-branch merges remain gated.
+            </p>
+            <label className="flex items-start gap-2 text-sm text-bone">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-ember"
+                checked={!!data?.lab_autonomy}
+                onChange={(e) => saveLabAutonomy(e.target.checked)}
+              />
+              <span>
+                Enable bounded lab autonomy{" "}
+                <span className="font-mono text-ash">(verification stays blocking)</span>
+              </span>
+            </label>
+            <div className="mt-5 grid gap-2 sm:grid-cols-3">
+              {["docker", "playwright", "maestro"].map((name) => {
+                const check = labToolchain.data?.checks?.[name];
+                return (
+                  <div key={name} className="rounded border border-hairline bg-void/40 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-xs text-bone">{name}</span>
+                      <Pill tone={check?.ready ? "plasma" : check?.required ? "ember" : "ash"}>
+                        {check?.ready ? "ready" : check?.required ? "required" : "not needed"}
+                      </Pill>
+                    </div>
+                    <p className="mt-2 break-words font-mono text-[10px] text-ash">
+                      {check?.detail || "checking…"}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="mt-3 font-mono text-[11px] text-ash">
+              UI proof ladder: {data?.proof_ladder_required ? "required" : "not required"}.
+              Docker is the preview boundary; there is no silent host fallback.
+            </p>
+            {labMsg ? (
+              <p className="mt-3 font-mono text-[11px] text-plasma">{labMsg}</p>
+            ) : null}
           </div>
         </Panel>
 

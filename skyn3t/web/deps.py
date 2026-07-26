@@ -17,6 +17,8 @@ seekable view over that history.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import ipaddress
 import secrets
 import time
@@ -191,9 +193,11 @@ class AppState:
         self.proposals: dict[str, ProposalRecord] = {}
 
         # Live preview servers (Spec 3 two-pane workspace): slug -> RunningApp,
-        # plus a shared AppRunner. Populated lazily by the serve endpoints.
+        # plus a shared Docker preview supervisor. Populated lazily by the
+        # serve endpoints.
         self.running_apps: dict[str, Any] = {}
         self.app_runner: Any | None = None
+        self._serve_cleanup_tasks: set[asyncio.Task[None]] = set()
 
         # Per-process signing key for read-only generated-preview capability
         # URLs. The bearer token itself never enters a URL, browser history, or
@@ -203,11 +207,8 @@ class AppState:
         # Mirror cortex proposals into the cache as they are created.
         self._wire_proposal_capture()
 
-    def stop_all_serves(self) -> None:
-        """Stop every live preview server and release its child + logfile.
-
-        Best-effort, never raises — call on dashboard shutdown so detached
-        preview processes don't outlive the host."""
+    async def _stop_all_serves_async(self) -> None:
+        """Stop the current preview registry, awaiting either runner shape."""
         runner = self.app_runner
         if runner is None:
             return
@@ -217,16 +218,62 @@ class AppState:
             cleanup_serve = None  # type: ignore[assignment]
         for slug, app in list(self.running_apps.items()):
             try:
-                runner.stop(app)
-                if cleanup_serve is not None:
-                    cleanup_serve(app)
+                stopped = runner.stop(app)
+                if inspect.isawaitable(stopped):
+                    await stopped
             except Exception:  # noqa: BLE001 - shutdown must not crash
                 pass
-            self.running_apps.pop(slug, None)
+            finally:
+                if cleanup_serve is not None:
+                    try:
+                        cleanup_serve(app)
+                    except Exception:  # noqa: BLE001 - shutdown must not crash
+                        pass
+                if self.running_apps.get(slug) is app:
+                    self.running_apps.pop(slug, None)
+
+    async def stop_all_serves_async(self) -> None:
+        """Await every preview cleanup, including work queued by the sync adapter."""
+        loop = asyncio.get_running_loop()
+        pending = [
+            task
+            for task in tuple(self._serve_cleanup_tasks)
+            if not task.done() and task.get_loop() is loop
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await self._stop_all_serves_async()
+
+    def stop_all_serves(self) -> None:
+        """Best-effort synchronous adapter for tests and ``atexit``.
+
+        With no active event loop (the normal ``atexit`` case), cleanup runs to
+        completion. If called from async code, queue and track the work on that
+        loop. The graceful app shutdown path uses :meth:`stop_all_serves_async`
+        and awaits any tracked task.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            cleanup = self.stop_all_serves_async()
+            try:
+                asyncio.run(cleanup)
+            except Exception:  # noqa: BLE001 - atexit cleanup is best-effort
+                cleanup.close()
+            return None
+
+        cleanup = self._stop_all_serves_async()
+        try:
+            task = loop.create_task(cleanup)
+        except Exception:  # noqa: BLE001 - avoid leaking the coroutine at exit
+            cleanup.close()
+            return None
+        self._serve_cleanup_tasks.add(task)
+        task.add_done_callback(self._serve_cleanup_tasks.discard)
 
     async def close(self) -> None:
         """Release long-lived resources owned by the web AppState."""
-        self.stop_all_serves()
+        await self.stop_all_serves_async()
         cortex_stop = getattr(self.cortex, "stop", None)
         if cortex_stop is not None:
             try:

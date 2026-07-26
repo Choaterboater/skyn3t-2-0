@@ -1,6 +1,114 @@
 from skyn3t.studio.build_summary import build_summary
 
 
+def test_build_summary_preserves_submission_routing_snapshot():
+    summary = build_summary(
+        {
+            "extra": {
+                "llm_backend": "codex_cli",
+                "routing_snapshot": {
+                    "requested_backend": "codex_cli",
+                    "effective_backend": "codex_cli",
+                    "requested_model": "",
+                    "effective_model": "codex-cli:default",
+                    "codegen": {
+                        "source": "codegen_cli_pin",
+                        "requested_backend": "codex_cli",
+                        "effective_backend": "codex_cli",
+                        "requested_model": "gpt-5.6-codex",
+                        "effective_model": "gpt-5.6-codex",
+                    },
+                },
+            }
+        }
+    )
+
+    trace = summary["model_trace"]
+    assert trace["requested_backend"] == "codex_cli"
+    assert trace["effective_backend"] == "codex_cli"
+    assert trace["backend"] == "codex_cli"
+    assert trace["requested_model"] == ""
+    assert trace["effective_model"] == "codex-cli:default"
+    assert trace["codegen"]["requested_model"] == "gpt-5.6-codex"
+    assert trace["requested_codegen_model"] == "gpt-5.6-codex"
+    assert trace["effective_codegen_model"] == "gpt-5.6-codex"
+
+
+def test_build_summary_prefers_actual_openrouter_codegen_fallback_evidence():
+    summary = build_summary(
+        {
+            "extra": {
+                "routing_snapshot": {
+                    "requested_backend": "openrouter",
+                    "effective_backend": "openrouter",
+                    "requested_model": "",
+                    "effective_model": "router:auto",
+                    "submission": {
+                        "requested_backend": "openrouter",
+                        "model_override": "",
+                    },
+                    "codegen": {
+                        "source": "global_backend",
+                        "requested_backend": "openrouter",
+                        "effective_backend": "openrouter",
+                        "requested_model": "",
+                        "effective_model": "router:auto",
+                    },
+                },
+                "effective_codegen_model": "openai/fallback-that-ran",
+                "agentic": {
+                    "backend": "openrouter",
+                    "model": "openai/fallback-that-ran",
+                    "attempted_model": "openai/primary-that-failed",
+                    "fallback_model": "openai/fallback-that-ran",
+                },
+            }
+        }
+    )
+
+    trace = summary["model_trace"]
+    assert trace["submission"]["codegen"]["effective_model"] == "router:auto"
+    assert trace["codegen"]["requested_model"] == ""
+    assert trace["codegen"]["effective_backend"] == "openrouter"
+    assert trace["codegen"]["effective_model"] == "openai/fallback-that-ran"
+    assert trace["effective_codegen_backend"] == "openrouter"
+    assert trace["effective_codegen_model"] == "openai/fallback-that-ran"
+    assert trace["codegen_model"] == "openai/fallback-that-ran"
+
+
+def test_build_summary_keeps_submission_backend_separate_from_actual_codegen_backend():
+    summary = build_summary(
+        {
+            "extra": {
+                "routing_snapshot": {
+                    "requested_backend": "openrouter",
+                    "effective_backend": "openrouter",
+                    "requested_model": "",
+                    "effective_model": "router:auto",
+                    "codegen": {
+                        "source": "codegen_cli_pin",
+                        "requested_backend": "claude_cli",
+                        "effective_backend": "claude_cli",
+                        "requested_model": "sonnet",
+                        "effective_model": "sonnet",
+                    },
+                },
+                "agentic": {
+                    "backend": "codex_cli",
+                    "model": "gpt-5.6-codex",
+                },
+            }
+        }
+    )
+
+    trace = summary["model_trace"]
+    assert trace["effective_backend"] == "openrouter"
+    assert trace["submission"]["codegen"]["effective_backend"] == "claude_cli"
+    assert trace["effective_codegen_backend"] == "codex_cli"
+    assert trace["codegen"]["effective_backend"] == "codex_cli"
+    assert trace["backend"] == "codex_cli"
+
+
 def test_build_summary_ignores_malformed_collection_fields():
     summary = build_summary({
         "stages": None,

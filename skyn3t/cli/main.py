@@ -5,7 +5,7 @@ A Typer app that drives the autonomous app factory from the terminal:
   * ``skyn3t start``           boot the spine, register every available agent,
                               optionally launch the web control plane
   * ``skyn3t doctor``         readiness report (python, deps, db, llm, sandbox,
-                              projects dir) rendered as a rich table
+                              proof toolchain, projects dir) as a rich table
   * ``skyn3t studio build``   run a brief -> app build end to end
   * ``skyn3t studio approve`` / ``reject``  decide a gated build (best effort)
   * ``skyn3t project list``   show recent builds from memory
@@ -33,7 +33,7 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 from typing import cast as type_cast
 
 import typer
@@ -343,15 +343,33 @@ def start(
 
 
 @app.command()
-def doctor() -> None:
-    """Print a readiness report: python, deps, db, llm, sandbox, projects dir."""
+def doctor(
+    stack: Annotated[
+        str,
+        typer.Option(
+            "--stack",
+            help=(
+                "Generated-app stack whose proof tools should be evaluated "
+                "(for example react or react_native)."
+            ),
+        ),
+    ] = "",
+) -> None:
+    """Print readiness for the runtime and stack-appropriate proof toolchain."""
     console = _console()
     import platform
     import sys
 
     from skyn3t.config.settings import get_settings
+    from skyn3t.observability.health import (
+        Status,
+        lab_tool_check_result,
+        lab_tool_unknown_result,
+    )
+    from skyn3t.studio.lab_tools import inspect_lab_toolchain
 
     settings = get_settings()
+    normalized_stack = str(stack or "").strip().lower()
     table = _table("SkyN3t 2.0 doctor", ["check", "status", "detail"])
 
     # Python version (need 3.11+).
@@ -388,6 +406,79 @@ def doctor() -> None:
     sandbox_detail = _check_sandbox(settings)
     table.add_row("sandbox", "[green]OK[/green]", sandbox_detail)
 
+    # Blocking external proof tools. Readiness means the command actually runs;
+    # Docker in particular checks the daemon rather than only the CLI binary.
+    proof_ladder_required = bool(
+        getattr(settings, "proof_ladder_required", True)
+    )
+
+    def status_marker(result: Any, ready: bool | None) -> str:
+        if ready is True:
+            return _ok(True)
+        if ready is None:
+            if result.status is Status.FAIL:
+                return "[red]ERROR[/red]"
+            if result.status is Status.DEGRADED:
+                return "[yellow]UNKNOWN[/yellow]"
+            return "[dim]N/A[/dim]"
+        if result.status is Status.FAIL:
+            return "[red]MISSING[/red]"
+        if result.status is Status.DEGRADED:
+            return "[yellow]optional[/yellow]"
+        return "[dim]N/A[/dim]"
+
+    lab_rows: list[tuple[str, str, str]] = []
+    try:
+        lab_report = inspect_lab_toolchain(stack=normalized_stack)
+        checks = getattr(lab_report, "checks", None)
+        if not isinstance(checks, dict):
+            raise TypeError("toolchain report checks must be a mapping")
+        for tool_name in ("docker", "playwright", "maestro"):
+            check = checks.get(tool_name)
+            if check is None:
+                result = lab_tool_unknown_result(
+                    tool_name,
+                    proof_ladder_required=proof_ladder_required,
+                    stack=normalized_stack,
+                    reason=f"lab toolchain report omitted {tool_name}",
+                )
+                lab_rows.append(
+                    (tool_name, status_marker(result, None), result.detail)
+                )
+                continue
+            try:
+                result = lab_tool_check_result(
+                    check,
+                    proof_ladder_required=proof_ladder_required,
+                    stack=normalized_stack,
+                )
+                ready: bool | None = bool(check.ready)
+            except Exception as exc:  # noqa: BLE001 - malformed check is unknown
+                result = lab_tool_unknown_result(
+                    tool_name,
+                    proof_ladder_required=proof_ladder_required,
+                    stack=normalized_stack,
+                    reason=f"malformed tool check: {exc}",
+                )
+                ready = None
+            lab_rows.append(
+                (tool_name, status_marker(result, ready), result.detail)
+            )
+    except Exception as exc:  # noqa: BLE001 - doctor reports and remains exit-zero
+        reason = f"toolchain inspection failed: {exc}"[:500]
+        for tool_name in ("docker", "playwright", "maestro"):
+            result = lab_tool_unknown_result(
+                tool_name,
+                proof_ladder_required=proof_ladder_required,
+                stack=normalized_stack,
+                reason=reason,
+            )
+            lab_rows.append(
+                (tool_name, status_marker(result, None), result.detail)
+            )
+    for tool_name, status, detail in lab_rows:
+        table.add_row(f"lab:{tool_name}", status, detail)
+
     # Projects dir writable.
     proj_ok, proj_detail = _check_writable(settings.projects_dir)
     table.add_row("projects dir", _ok(proj_ok), proj_detail)
@@ -395,7 +486,8 @@ def doctor() -> None:
     console.print(table)
     console.print(
         f"policy: free_only={settings.free_only} no_claude={settings.no_claude} "
-        f"approval_gates={settings.approval_gates} has_any_llm={settings.has_any_llm}"
+        f"approval_gates={settings.approval_gates} "
+        f"provider_key_configured={settings.has_any_llm}"
     )
 
 
@@ -1522,7 +1614,8 @@ def studio_serve(
     from pathlib import Path as _Path
 
     from skyn3t.config.settings import get_settings
-    from skyn3t.studio.app_runner import AppRunner, cleanup_serve
+    from skyn3t.studio.app_runner import cleanup_serve
+    from skyn3t.studio.preview_supervisor import PreviewSupervisor
 
     console = _console()
     s = get_settings()
@@ -1535,7 +1628,7 @@ def studio_serve(
     except Exception:  # noqa: BLE001
         man = None
     stack = man.stack if man else ""
-    runner = AppRunner()
+    runner = PreviewSupervisor()
     app = asyncio.run(runner.start(pdir, stack, port=port or None))
     try:
         if app.status == "no_preview":
@@ -1544,15 +1637,22 @@ def studio_serve(
         if app.status != "running":
             console.print(f"[red]Failed to start[/red]: {app.detail.get('log_tail', '')[-400:]}")
             raise typer.Exit(code=2)
-        console.print(f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] (pid {app.pid}). "
-                      "Press Ctrl+C to stop.")
+        console.print(
+            f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] "
+            "(Docker isolated). Press Ctrl+C to stop."
+        )
         try:
             while True:
                 _time.sleep(1)
         except KeyboardInterrupt:
-            runner.stop(app)
             console.print("\n[dim]stopped.[/dim]")
     finally:
+        try:
+            stopped = runner.stop(app)
+            if inspect.isawaitable(stopped):
+                asyncio.run(stopped)
+        except Exception:  # noqa: BLE001 - shutdown must not mask CLI result
+            pass
         cleanup_serve(app)
 
 
@@ -1620,8 +1720,8 @@ def studio_improve(
 async def _run_visual(project: str, *, goal: str, max_rounds: int):
     from pathlib import Path as _Path
 
-    from skyn3t.studio.app_runner import AppRunner
     from skyn3t.studio.improve import ImproveEngine
+    from skyn3t.studio.preview_supervisor import PreviewSupervisor
     from skyn3t.studio.visual_check import VisualChecker, make_vision_fn
     from skyn3t.studio.visual_loop import visual_self_improve
 
@@ -1643,7 +1743,10 @@ async def _run_visual(project: str, *, goal: str, max_rounds: int):
     # make_vision_fn returns None and the loop soft-skips the judgement step.
     vision_fn = make_vision_fn(settings)
     return await visual_self_improve(
-        pdir, goal, app_runner=AppRunner(), checker=VisualChecker(event_bus=spine["event_bus"]),
+        pdir,
+        goal,
+        app_runner=PreviewSupervisor(),
+        checker=VisualChecker(event_bus=spine["event_bus"]),
         improve_engine=engine, vision_fn=vision_fn, stack=stack, max_rounds=max_rounds)
 
 
@@ -1681,9 +1784,9 @@ async def _run_liveness_cli(
 ):
     from pathlib import Path as _Path
 
-    from skyn3t.studio.app_runner import AppRunner
     from skyn3t.studio.improve import ImproveEngine
     from skyn3t.studio.liveness import liveness_self_improve
+    from skyn3t.studio.preview_supervisor import PreviewSupervisor
     from skyn3t.studio.visual_check import make_vision_fn
 
     spine = await _assemble_spine()
@@ -1701,7 +1804,7 @@ async def _run_liveness_cli(
     except Exception:  # noqa: BLE001
         stack = ""
     return await liveness_self_improve(
-        pdir, app_runner=AppRunner(), improve_engine=engine,
+        pdir, app_runner=PreviewSupervisor(), improve_engine=engine,
         vision_fn=make_vision_fn(settings), stack=stack, max_rounds=max_rounds,
         evidence_dir=evidence_dir or None)
 

@@ -885,12 +885,13 @@ async def test_reverify_dead_runtime_route_blocks_promotion(tmp_path, monkeypatc
     assert not list(state.settings.projects_dir.glob(".skyn3t-reverify-*"))
 
 
-def test_reverify_runtime_probe_disables_secrets_and_stops_candidate(
+def test_reverify_runtime_probe_uses_docker_supervisor_and_stops_candidate(
     tmp_path,
     monkeypatch,
 ):
     import skyn3t.studio.app_runner as app_runner
     import skyn3t.studio.liveness as liveness
+    import skyn3t.studio.preview_supervisor as preview_supervisor
     import skyn3t.web.routes as routes
 
     project = tmp_path / "candidate"
@@ -906,13 +907,17 @@ def test_reverify_runtime_probe_disables_secrets_and_stops_candidate(
         log_path=None,
     )
 
-    class FakeRunner:
+    class FakeSupervisor:
         async def start(self, root, stack, **kwargs):
             calls["start"] = (Path(root), stack, kwargs)
             return running
 
-        def stop(self, app):
+        async def stop(self, app):
             calls["stopped"] = app
+
+    class HostRunnerMustNotBeConstructed:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("reverify must not execute generated code on host")
 
     async def no_crawled_routes(_url):
         return []
@@ -929,7 +934,12 @@ def test_reverify_runtime_probe_disables_secrets_and_stops_candidate(
             health=0.0,
         )
 
-    monkeypatch.setattr(app_runner, "AppRunner", FakeRunner)
+    monkeypatch.setattr(app_runner, "AppRunner", HostRunnerMustNotBeConstructed)
+    monkeypatch.setattr(
+        preview_supervisor,
+        "PreviewSupervisor",
+        FakeSupervisor,
+    )
     monkeypatch.setattr(liveness, "enumerate_routes", lambda *_args: [liveness.Route("/broken")])
     monkeypatch.setattr(liveness, "crawl_routes", no_crawled_routes)
     monkeypatch.setattr(liveness, "check_liveness", dead_report)
@@ -943,8 +953,61 @@ def test_reverify_runtime_probe_disables_secrets_and_stops_candidate(
     assert result["ok"] is False
     assert result["dead_routes"] == ["/broken"]
     assert calls["start"][0] == project
-    assert calls["start"][2]["allow_secret_passthrough"] is False
+    assert calls["start"][2] == {"ready_timeout": 3}
     assert calls["stopped"] is running
+
+
+def test_reverify_runtime_probe_fails_closed_when_docker_preview_fails(
+    tmp_path,
+    monkeypatch,
+):
+    import skyn3t.studio.app_runner as app_runner
+    import skyn3t.studio.preview_supervisor as preview_supervisor
+    import skyn3t.web.routes as routes
+
+    project = tmp_path / "candidate"
+    project.mkdir()
+    (project / "index.html").write_text("<h1>Candidate</h1>", encoding="utf-8")
+    calls: dict = {}
+    failed = SimpleNamespace(
+        status="failed",
+        url="",
+        detail={"reason": "Docker unavailable: daemon down"},
+        kind="static",
+        pid=None,
+        log_path=None,
+    )
+
+    class FakeSupervisor:
+        async def start(self, root, stack, **kwargs):
+            calls["start"] = (Path(root), stack, kwargs)
+            return failed
+
+        async def stop(self, app):
+            calls["stopped"] = app
+
+    class HostRunnerMustNotBeConstructed:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("reverify must not execute generated code on host")
+
+    monkeypatch.setattr(app_runner, "AppRunner", HostRunnerMustNotBeConstructed)
+    monkeypatch.setattr(
+        preview_supervisor,
+        "PreviewSupervisor",
+        FakeSupervisor,
+    )
+
+    result = routes._run_reverify_runtime_liveness(
+        project,
+        stack="static",
+        settings=SimpleNamespace(generated_build_timeout=3),
+    )
+
+    assert result["ok"] is False
+    assert result["skipped"] is False
+    assert result["reason"] == "Docker unavailable: daemon down"
+    assert calls["start"] == (project, "static", {"ready_timeout": 3})
+    assert calls["stopped"] is failed
 
 
 def test_app_run_spec_secret_override_wins_over_global_opt_in(tmp_path, monkeypatch):

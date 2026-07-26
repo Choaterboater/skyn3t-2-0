@@ -512,22 +512,89 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         status=manifest.get("status"),
         verdict=manifest.get("verdict"),
     )
+    routing = _as_dict(extra.get("routing_snapshot"))
+    codegen_routing = _as_dict(routing.get("codegen"))
+    submission = dict(_as_dict(routing.get("submission")))
+    submission.setdefault(
+        "requested_backend",
+        routing.get(
+            "requested_backend",
+            extra.get("requested_llm_backend", extra.get("llm_backend", "")),
+        ),
+    )
+    submission.setdefault(
+        "effective_backend",
+        routing.get(
+            "effective_backend",
+            extra.get("effective_llm_backend", extra.get("llm_backend", "")),
+        ),
+    )
+    submission.setdefault(
+        "requested_model",
+        routing.get("requested_model", extra.get("requested_model_override", "")),
+    )
+    submission.setdefault(
+        "model_override",
+        extra.get("requested_model_override", extra.get("model_override", "")),
+    )
+    submission["codegen"] = dict(
+        _as_dict(submission.get("codegen")) or codegen_routing
+    )
+    requested_codegen_model = codegen_routing.get(
+        "requested_model",
+        extra.get("requested_codegen_model", extra.get("model_override", "")),
+    )
+    requested_backend = routing.get(
+        "requested_backend",
+        extra.get("requested_llm_backend", extra.get("llm_backend", "")),
+    )
+    effective_backend = routing.get(
+        "effective_backend",
+        extra.get("effective_llm_backend", extra.get("llm_backend", "")),
+    )
+    agentic = _as_dict(extra.get("agentic"))
+    effective_codegen_backend = (
+        agentic.get("backend")
+        or extra.get("effective_codegen_backend")
+        or codegen_routing.get("effective_backend")
+        or effective_backend
+    )
+    effective_codegen_model = (
+        agentic.get("model")
+        or extra.get("effective_codegen_model")
+        or extra.get("codegen_model")
+        or codegen_routing.get("effective_model")
+        or ""
+    )
+    codegen_trace = dict(codegen_routing)
+    if effective_codegen_backend:
+        codegen_trace["effective_backend"] = effective_codegen_backend
+    if effective_codegen_model:
+        codegen_trace["effective_model"] = effective_codegen_model
     model_trace = {
         "profile": extra.get("build_profile", ""),
         "model_override": extra.get("model_override", ""),
         "requested_model_override": extra.get(
             "requested_model_override", extra.get("model_override", "")
         ),
-        "requested_codegen_model": extra.get(
-            "requested_codegen_model", extra.get("model_override", "")
+        "requested_backend": requested_backend,
+        "effective_backend": effective_backend,
+        "requested_model": routing.get(
+            "requested_model", extra.get("requested_model_override", "")
         ),
-        "effective_codegen_model": extra.get(
-            "effective_codegen_model", extra.get("codegen_model", "")
+        "effective_model": routing.get(
+            "effective_model", extra.get("effective_model", "")
         ),
-        "codegen_model": extra.get(
-            "effective_codegen_model", extra.get("codegen_model", "")
+        "submission": submission,
+        "codegen": codegen_trace,
+        "requested_codegen_backend": codegen_routing.get(
+            "requested_backend", requested_backend
         ),
-        "backend": extra.get("llm_backend", ""),
+        "effective_codegen_backend": effective_codegen_backend,
+        "requested_codegen_model": requested_codegen_model,
+        "effective_codegen_model": effective_codegen_model,
+        "codegen_model": effective_codegen_model,
+        "backend": effective_codegen_backend or effective_backend,
         "full_app": bool(extra.get("full_app_contract") or extra.get("full_app")),
         "prompt_count": len(prompts),
         "stages": [

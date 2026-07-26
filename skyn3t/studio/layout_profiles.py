@@ -167,6 +167,23 @@ def resolve_layout_profile(app_type: str, *, stack: str = "", engine: str = "") 
     )
 
 
+def _source_app_type_matches_profile(name: str, source_app_type: str) -> bool:
+    """Reject known app-type/profile pairings that cannot be produced by resolution.
+
+    Stack and engine are intentionally not serialized in the frozen profile.
+    Consequently an unknown source app type can be either compact or immersive:
+    the latter is valid for canvas-first builds.  Every known family remains
+    unambiguous and must match the profile that resolution assigns to it.
+    """
+    if source_app_type in _WORKSPACE_TYPES:
+        return name == "workspace"
+    if source_app_type in _EDITORIAL_TYPES:
+        return name == "editorial"
+    if source_app_type == "game":
+        return name == "immersive"
+    return name in {"compact", "immersive"}
+
+
 def _validated_profile(value: object) -> LayoutProfile | None:
     if isinstance(value, LayoutProfile):
         data: Mapping[str, object] = value.to_dict()
@@ -193,8 +210,8 @@ def _validated_profile(value: object) -> LayoutProfile | None:
         return None
     if (
         name not in _PROFILE_NAMES
-        or version != _VERSION
         or normalize_app_type(source_app_type) != source_app_type
+        or not _source_app_type_matches_profile(name, source_app_type)
         or not desktop_contract
         or len(desktop_contract) > 2_000
         or any(ord(char) < 32 for char in desktop_contract)

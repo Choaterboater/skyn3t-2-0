@@ -188,7 +188,11 @@ def test_issues_remain_after_max_rounds():
 
 
 def test_layout_profile_is_forwarded_unchanged_to_every_check():
-    profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    from skyn3t.studio.layout_profiles import resolve_layout_profile
+
+    profile = resolve_layout_profile(
+        "dashboard", stack="react", engine="dom",
+    ).to_dict()
     checker = _Checker([
         VisualVerdict(matches=False, issues=["under-filled"], fix_hint="use a split pane"),
         VisualVerdict(matches=True),

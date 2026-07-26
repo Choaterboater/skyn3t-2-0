@@ -258,7 +258,11 @@ def test_visual_self_heal_repair_does_not_record_improve_history(tmp_path, monke
 
 
 def test_visual_self_heal_forwards_frozen_manifest_layout_profile(tmp_path, monkeypatch):
-    profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    from skyn3t.studio.layout_profiles import resolve_layout_profile
+
+    profile = resolve_layout_profile(
+        "dashboard", stack="react", engine="dom",
+    ).to_dict()
     captured = []
 
     async def fake_loop(project_dir, goal, **kw):

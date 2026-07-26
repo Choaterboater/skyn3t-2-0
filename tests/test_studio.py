@@ -395,12 +395,141 @@ def test_dashboard_layout_profile_is_frozen_in_event_manifest_and_stage_payloads
 
         outcome = await StudioRunner(bus, orch, settings=settings, memory=None).start(
             "Build an operations dashboard", slug="profile-lock")
-        expected = {"name": "workspace", "version": 1, "audit_enabled": True}
+        expected = outcome.manifest["extra"]["layout_profile"]
         started = bus.history(event_type=EventType.BUILD_STARTED)[-1]
 
-        assert outcome.manifest["extra"]["layout_profile"] == expected
+        assert set(expected) == {
+            "name",
+            "version",
+            "source_app_type",
+            "desktop_contract",
+            "audit_enabled",
+            "audit_exemption",
+        }
+        assert expected["name"] == "workspace"
+        assert expected["version"] == 1
+        assert expected["source_app_type"] == "dashboard"
+        assert expected["desktop_contract"].startswith(
+            "Workspace layout contract:",
+        )
+        assert expected["audit_enabled"] is True
+        assert expected["audit_exemption"] == ""
         assert started.payload["layout_profile"] == expected
         assert code.payloads and all(p["extra"]["layout_profile"] == expected for p in code.payloads)
+
+    asyncio.run(run())
+
+
+def test_submission_freezes_settings_overrides_before_selector_await(
+    tmp_path,
+    monkeypatch,
+):
+    """A queued build must not observe Settings edits made while selecting."""
+    async def run():
+        from skyn3t.studio import stack_selector
+
+        selector_entered = asyncio.Event()
+        release_selector = asyncio.Event()
+
+        async def _paused_select_stack(*_args, **_kwargs):
+            selector_entered.set()
+            await release_selector.wait()
+            return stack_selector.StackChoice("react", "keyword", 0.5, "paused")
+
+        monkeypatch.setattr(stack_selector, "select_stack", _paused_select_stack)
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+            app_type_override="dashboard",
+            engine_override="dom",
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        reviewer = _StubReviewer("reviewer", "reviewer", "stub", bus)
+        reviewer.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(reviewer)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+
+        pending = asyncio.create_task(
+            runner.start("Build an operations dashboard", slug="queued-profile"),
+        )
+        await selector_entered.wait()
+        settings.app_type_override = "marketing"
+        settings.engine_override = "canvas"
+        release_selector.set()
+        outcome = await pending
+
+        classification = outcome.manifest["extra"]["classification"]
+        profile = outcome.manifest["extra"]["layout_profile"]
+        assert classification["app_type"] == "dashboard"
+        assert classification["engine"] == "dom"
+        assert profile["name"] == "workspace"
+        assert profile["source_app_type"] == "dashboard"
+        started = bus.history(event_type=EventType.BUILD_STARTED)[-1]
+        assert started.payload["app_type"] == "dashboard"
+        assert started.payload["engine"] == "dom"
+
+    asyncio.run(run())
+
+
+def test_explicit_submission_overrides_remain_authoritative_during_selector_await(
+    tmp_path,
+    monkeypatch,
+):
+    async def run():
+        from skyn3t.studio import stack_selector
+
+        selector_entered = asyncio.Event()
+        release_selector = asyncio.Event()
+
+        async def _paused_select_stack(*_args, **_kwargs):
+            selector_entered.set()
+            await release_selector.wait()
+            return stack_selector.StackChoice("react", "keyword", 0.5, "paused")
+
+        monkeypatch.setattr(stack_selector, "select_stack", _paused_select_stack)
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+            app_type_override="marketing",
+            engine_override="canvas",
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        reviewer = _StubReviewer("reviewer", "reviewer", "stub", bus)
+        reviewer.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(reviewer)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+
+        pending = asyncio.create_task(runner.start(
+            "Build a data workspace",
+            slug="explicit-profile",
+            extra={"app_type": "data viz", "engine": "browser native"},
+        ))
+        await selector_entered.wait()
+        settings.app_type_override = "landing_page"
+        settings.engine_override = "dom"
+        release_selector.set()
+        outcome = await pending
+
+        classification = outcome.manifest["extra"]["classification"]
+        assert classification["app_type"] == "data_viz"
+        assert classification["engine"] == "browser_native"
+        assert outcome.manifest["extra"]["layout_profile"]["source_app_type"] == "data_viz"
 
     asyncio.run(run())
 

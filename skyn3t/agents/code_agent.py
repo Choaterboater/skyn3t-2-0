@@ -1762,7 +1762,11 @@ class CodeAgent(BaseAgent):
             val = design.get(key)
             if val:
                 bits.append(f"{key}={val}")
-        return "; ".join(bits)[:700]
+        # The frozen desktop contract is intentionally complete provenance, not
+        # a profile name that can be reformatted from current defaults. Keep the
+        # bounded summary large enough to carry that contract plus its
+        # profile-specific implementation direction and design tokens.
+        return "; ".join(bits)[:2_000]
 
     # Stub content per extension for the offline slice path (non-empty + valid).
     @staticmethod

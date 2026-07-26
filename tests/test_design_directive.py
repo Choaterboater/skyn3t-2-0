@@ -24,8 +24,40 @@ _DESIGN = {
     "states": ["empty", "loading", "error"],
 }
 
-_WORKSPACE_PROFILE = {"name": "workspace", "version": 1, "audit_enabled": True}
-_EDITORIAL_PROFILE = {"name": "editorial", "version": 1, "audit_enabled": False}
+_WORKSPACE_PROFILE = {
+    "name": "workspace",
+    "version": 1,
+    "source_app_type": "dashboard",
+    "desktop_contract": (
+        "Workspace layout contract: use a normal desktop content range of "
+        "1200–1600px as a fluid range and guidance, not a hard CSS pixel rule, "
+        "and preserve a meaningful work area. At wide screens make a wide-screen "
+        "compositional change with an explicit split pane or asymmetric wide "
+        "layout rather than merely stretching one column. Apply this composition "
+        "across at least two surface types, such as overview and detail/editor "
+        "surfaces. Dense domain workflow and data surfaces must expose their real "
+        "tables/lists, filters, charts, timelines, inspectors, forms, and state "
+        "transitions instead of reducing the product to summary cards. Valid "
+        "alternatives include toolbar/filters with table/list plus detail, chart "
+        "plus summary strip, timeline plus inspector, or a multi-step form "
+        "workflow. Require responsive collapse for narrower screens. Do not use "
+        "narrow uniform-card operational pages."
+    ),
+    "audit_enabled": True,
+    "audit_exemption": "",
+}
+_EDITORIAL_PROFILE = {
+    "name": "editorial",
+    "version": 1,
+    "source_app_type": "landing_page",
+    "desktop_contract": (
+        "Editorial layout contract: this content-led landing or marketing "
+        "experience is exempt from workspace split-pane and wide-screen "
+        "composition requirements."
+    ),
+    "audit_enabled": False,
+    "audit_exemption": "editorial profile",
+}
 
 
 def _agent():

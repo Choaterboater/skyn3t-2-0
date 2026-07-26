@@ -1,8 +1,11 @@
 # skyn3t/studio/visual_check.py
-"""Visual self-inspection (Spec 3, Slice 3): screenshot a running app and ask a
-vision model whether it matches the goal. EVERY dependency is optional — with no
-Playwright or no vision_fn, check() returns a `skipped` verdict and never blocks.
-Never raises."""
+"""Advisory visual and workspace-layout inspection (Spec 3, Slice 3).
+
+A clean layout audit without a vision model soft-skips. An audit issue remains a
+repairable advisory verdict even when vision is unavailable. Missing Playwright
+still soft-skips, and this module never turns visual evidence into a build gate
+or raises to its caller.
+"""
 from __future__ import annotations
 
 import asyncio

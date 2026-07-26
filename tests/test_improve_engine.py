@@ -16,6 +16,41 @@ from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import hash_text
 from skyn3t.studio.improve import ImproveEngine, ImproveOutcome
 
+_WORKSPACE_PROFILE = {
+    "name": "workspace",
+    "version": 1,
+    "source_app_type": "dashboard",
+    "desktop_contract": (
+        "Workspace layout contract: use a normal desktop content range of "
+        "1200–1600px as a fluid range and guidance, not a hard CSS pixel rule, "
+        "and preserve a meaningful work area. At wide screens make a wide-screen "
+        "compositional change with an explicit split pane or asymmetric wide "
+        "layout rather than merely stretching one column. Apply this composition "
+        "across at least two surface types, such as overview and detail/editor "
+        "surfaces. Dense domain workflow and data surfaces must expose their real "
+        "tables/lists, filters, charts, timelines, inspectors, forms, and state "
+        "transitions instead of reducing the product to summary cards. Valid "
+        "alternatives include toolbar/filters with table/list plus detail, chart "
+        "plus summary strip, timeline plus inspector, or a multi-step form "
+        "workflow. Require responsive collapse for narrower screens. Do not use "
+        "narrow uniform-card operational pages."
+    ),
+    "audit_enabled": True,
+    "audit_exemption": "",
+}
+_COMPACT_PROFILE = {
+    "name": "compact",
+    "version": 1,
+    "source_app_type": "",
+    "desktop_contract": (
+        "Compact layout contract: this developer, native, mobile, or unknown "
+        "experience is exempt from workspace split-pane and wide-screen "
+        "composition requirements."
+    ),
+    "audit_enabled": False,
+    "audit_exemption": "compact profile",
+}
+
 
 class _FakeOrchestrator:
     """Records the submitted task and returns a successful improver result."""
@@ -187,7 +222,7 @@ def test_improve_retains_stored_layout_profile_in_prompt_and_provenance(
     project = _seed_project(settings.projects_dir, "demo")
     manifest_path = project / "skyn3t_manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    stored_profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    stored_profile = dict(_WORKSPACE_PROFILE)
     manifest["extra"] = {"layout_profile": stored_profile}
     manifest_path.write_text(json.dumps(manifest))
 
@@ -230,7 +265,7 @@ def test_improve_legacy_manifest_uses_compact_provenance_without_layout_prompt(
         EventBus(), orchestrator, settings=settings,
     ).improve("demo", "make this a sparse marketing landing page"))
 
-    compact = {"name": "compact", "version": 1, "audit_enabled": False}
+    compact = _COMPACT_PROFILE
     assert outcome.status == "completed"
     assert orchestrator.submitted[0].payload["layout_profile"] == compact
     assert orchestrator.submitted[0].payload["layout_profile_is_stored"] is False
@@ -262,7 +297,7 @@ def test_improve_coercible_profile_version_stays_compact_provenance_only(
         EventBus(), orchestrator, settings=settings,
     ).improve("demo", "make this a sparse marketing landing page"))
 
-    compact = {"name": "compact", "version": 1, "audit_enabled": False}
+    compact = _COMPACT_PROFILE
     task = orchestrator.submitted[0]
     assert outcome.status == "completed"
     assert task.payload["layout_profile"] == compact
@@ -322,6 +357,29 @@ def test_improve_rejects_missing_explicit_global_backend_before_work(tmp_path):
     assert "OpenRouter was explicitly selected" in outcome.detail["error"]
     assert orchestrator.submitted == []
     assert (project / "main.py").read_text() == "print('original')\n"
+
+
+def test_early_routing_lock_failure_retains_stored_layout_profile(tmp_path):
+    import json
+
+    settings = _settings(tmp_path)
+    settings.llm_backend = "openrouter"
+    settings.openrouter_api_key = ""
+    project = _seed_project(settings.projects_dir, "demo")
+    manifest_path = project / "skyn3t_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["extra"] = {"layout_profile": dict(_WORKSPACE_PROFILE)}
+    manifest_path.write_text(json.dumps(manifest))
+    bus = EventBus()
+    engine = ImproveEngine(bus, _FakeOrchestrator(), settings=settings)
+
+    outcome = asyncio.run(engine.improve("demo", "make it say improved"))
+
+    assert outcome.status == "failed"
+    assert outcome.detail["delivery_blocked"] == "routing_lock"
+    assert outcome.detail["layout_profile"] == _WORKSPACE_PROFILE
+    failed = bus.history(event_type=EventType.IMPROVE_FAILED)[-1]
+    assert failed.payload["detail"]["layout_profile"] == _WORKSPACE_PROFILE
 
 
 def test_improve_emits_lifecycle_events(tmp_path):
@@ -606,7 +664,7 @@ def test_improve_rejects_product_contract_changes_and_preserves_project(
         goal="Keep the delivered contract authoritative",
         requirements=[RequirementRecord(text="Preserve the current behavior")],
     ).save(project)
-    stored_profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    stored_profile = dict(_WORKSPACE_PROFILE)
     manifest_path = project / "skyn3t_manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["extra"] = {"layout_profile": stored_profile}

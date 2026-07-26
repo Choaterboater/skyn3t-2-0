@@ -5,9 +5,9 @@ Ties the existing pieces into the "Kimi magic" auto-iterate loop: serve the
 delivered app, screenshot + judge it against the goal (VisualChecker), and if it
 looks visually wrong, feed the issues to the ImproveEngine and re-check — up to
 ``max_rounds`` times. Every collaborator is injected, so the control flow is
-testable without a real browser, vision model, or build. It degrades cleanly:
-no live preview, or no vision model wired, yields a ``skipped`` result rather
-than failing.
+testable without a real browser, vision model, or build. A clean audit with no
+vision model soft-skips, while an audit-detected workspace issue can drive an
+advisory repair round without vision. Missing live preview still soft-skips.
 """
 from __future__ import annotations
 
@@ -60,9 +60,10 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                               layout_profile: object | None = None) -> VisualLoopResult:
     """Serve -> inspect -> improve -> re-check, up to max_rounds inspections.
 
-    Returns passed when an inspection matches the goal; skipped when there's no
-    live preview or no vision model; otherwise not-passed with the rounds taken.
-    Never raises (each collaborator call is guarded)."""
+    Returns passed when an inspection matches the goal; skipped when there is no
+    live preview or the available evidence is a clean audit without vision;
+    otherwise not-passed with the advisory repair rounds taken. Never raises
+    (each collaborator call is guarded)."""
     rounds: list[VisualRound] = []
     n = max(1, int(max_rounds))
     for i in range(n):

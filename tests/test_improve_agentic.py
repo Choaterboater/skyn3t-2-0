@@ -41,7 +41,28 @@ _VALID_REWRITE_FOR_FALLBACK = (
     "export default function Page() {\n"
     "  return <main>home<aside>fallback change</aside></main>;\n}\n"
 )
-_WORKSPACE_PROFILE = {"name": "workspace", "version": 1, "audit_enabled": True}
+_WORKSPACE_PROFILE = {
+    "name": "workspace",
+    "version": 1,
+    "source_app_type": "dashboard",
+    "desktop_contract": (
+        "Workspace layout contract: use a normal desktop content range of "
+        "1200–1600px as a fluid range and guidance, not a hard CSS pixel rule, "
+        "and preserve a meaningful work area. At wide screens make a wide-screen "
+        "compositional change with an explicit split pane or asymmetric wide "
+        "layout rather than merely stretching one column. Apply this composition "
+        "across at least two surface types, such as overview and detail/editor "
+        "surfaces. Dense domain workflow and data surfaces must expose their real "
+        "tables/lists, filters, charts, timelines, inspectors, forms, and state "
+        "transitions instead of reducing the product to summary cards. Valid "
+        "alternatives include toolbar/filters with table/list plus detail, chart "
+        "plus summary strip, timeline plus inspector, or a multi-step form "
+        "workflow. Require responsive collapse for narrower screens. Do not use "
+        "narrow uniform-card operational pages."
+    ),
+    "audit_enabled": True,
+    "audit_exemption": "",
+}
 
 
 class _AgenticLLM:
@@ -378,7 +399,9 @@ def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_
 
 
 def test_unstored_compact_profile_stays_out_of_improver_prompts(tmp_path):
-    compact = {"name": "compact", "version": 1, "audit_enabled": False}
+    from skyn3t.studio.layout_profiles import profile_from_payload
+
+    compact = profile_from_payload(None).to_dict()
     _seed(tmp_path)
     llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
     _run(tmp_path, llm, extra={

@@ -173,6 +173,69 @@ def test_improve_prompt_includes_edited_product_contract_without_promoting_backl
     assert persisted.non_goals == edited.non_goals
 
 
+def test_improve_retains_stored_layout_profile_in_prompt_and_provenance(
+    tmp_path, monkeypatch,
+):
+    import json
+
+    from skyn3t.studio import stack_selector
+
+    settings = _settings(tmp_path)
+    # This setting is deliberately incompatible with the delivered workspace
+    # profile. Improve must use the saved build decision, not reclassify it.
+    settings.app_type_override = "landing_page"
+    project = _seed_project(settings.projects_dir, "demo")
+    manifest_path = project / "skyn3t_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    stored_profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    manifest["extra"] = {"layout_profile": stored_profile}
+    manifest_path.write_text(json.dumps(manifest))
+
+    def _unexpected_classification(*_args, **_kwargs):
+        raise AssertionError("Improve must not classify a delivered project")
+
+    monkeypatch.setattr(stack_selector, "classify_build", _unexpected_classification)
+    bus = EventBus()
+    orchestrator = _FakeOrchestrator()
+    engine = ImproveEngine(bus, orchestrator, settings=settings)
+    outcome = asyncio.run(
+        engine.improve("demo", "make this a sparse marketing landing page")
+    )
+
+    assert outcome.status == "completed"
+    task = orchestrator.submitted[0]
+    assert task.payload["layout_profile"] == stored_profile
+    assert "Workspace layout contract" in task.payload["brief"]
+    started = bus.history(event_type=EventType.IMPROVE_STARTED)[0]
+    assert started.payload["layout_profile"] == stored_profile
+    assert outcome.detail["layout_profile"] == stored_profile
+
+
+def test_improve_legacy_manifest_uses_compact_provenance_without_layout_prompt(
+    tmp_path, monkeypatch,
+):
+    from skyn3t.studio import stack_selector
+
+    settings = _settings(tmp_path)
+    settings.app_type_override = "dashboard"
+    _seed_project(settings.projects_dir, "demo")
+
+    def _unexpected_classification(*_args, **_kwargs):
+        raise AssertionError("Improve must not classify a legacy project")
+
+    monkeypatch.setattr(stack_selector, "classify_build", _unexpected_classification)
+    orchestrator = _FakeOrchestrator()
+    outcome = asyncio.run(ImproveEngine(
+        EventBus(), orchestrator, settings=settings,
+    ).improve("demo", "make this a sparse marketing landing page"))
+
+    compact = {"name": "compact", "version": 1, "audit_enabled": False}
+    assert outcome.status == "completed"
+    assert orchestrator.submitted[0].payload["layout_profile"] == compact
+    assert "layout contract" not in orchestrator.submitted[0].payload["brief"].lower()
+    assert outcome.detail["layout_profile"] == compact
+
+
 def test_improve_can_skip_history_during_in_build_repair(tmp_path):
     settings = _settings(tmp_path)
     project = settings.projects_dir / "active-build"

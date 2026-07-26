@@ -32,6 +32,7 @@ from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import build_repo_context_pack
+from skyn3t.studio.layout_profiles import layout_contract_block, profile_from_payload
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.product_spec import (
     PRODUCT_SPEC_RELATIVE_PATH,
@@ -753,6 +754,7 @@ class ImproveEngine:
         rollback_confirmed = False
         preserve_recovery_artifacts = False
         context_pack_summary: dict[str, object] = {}
+        layout_profile = profile_from_payload(None).to_dict()
         try:
             process_lock = await _acquire_interprocess_lock(
                 project_dir,
@@ -766,6 +768,15 @@ class ImproveEngine:
                 manifest.stack
                 if manifest and manifest.stack
                 else StackDetector.detect(project_dir)
+            )
+            stored_layout_profile = (
+                manifest.extra.get("layout_profile") if manifest is not None else None
+            )
+            profile = profile_from_payload(stored_layout_profile)
+            layout_profile = profile.to_dict()
+            has_stored_layout_profile = (
+                isinstance(stored_layout_profile, dict)
+                and stored_layout_profile == layout_profile
             )
             project_preimage = await asyncio.to_thread(
                 _source_snapshot,
@@ -803,6 +814,7 @@ class ImproveEngine:
                     "goal": goal,
                     "project_dir": str(project_dir),
                     "routing_snapshot": routing_summary,
+                    "layout_profile": layout_profile,
                 },
                 cid,
             )
@@ -814,6 +826,11 @@ class ImproveEngine:
                     f"{goal}\n\n"
                     f"{product_contract_prompt_block(product_spec)}"
                 )
+            if has_stored_layout_profile:
+                improvement_prompt = "\n\n".join((
+                    improvement_prompt,
+                    layout_contract_block(profile),
+                ))
             wt = create_worktree(str(self.settings.projects_dir), f"improve-{slug}")
             # Seed the worktree with the existing project files.
             merge_back(str(project_dir), wt.dir, overwrite=True, clean=False)
@@ -848,6 +865,7 @@ class ImproveEngine:
                 improve_agentic_timeout,
                 routing_summary,
                 cid,
+                layout_profile,
             )
             if routing_provider and not improver_ok:
                 # An explicit codegen CLI is a provider lock. Do not run
@@ -870,6 +888,7 @@ class ImproveEngine:
                         "project_preserved": True,
                         "repo_context_pack": context_pack_summary,
                         "routing_snapshot": routing_summary,
+                        "layout_profile": layout_profile,
                         **({"skipped": skipped} if skipped else {}),
                     },
                 )
@@ -1001,6 +1020,7 @@ class ImproveEngine:
                     "delivery_blocked": "proof_failed",
                     "project_preserved": True,
                     "repo_context_pack": context_pack_summary,
+                    "layout_profile": layout_profile,
                 }
                 if skipped:
                     failure_detail["skipped"] = skipped
@@ -1511,6 +1531,7 @@ class ImproveEngine:
                 "improver_success": improver_ok, "improver_error": improver_err,
                 "repo_context_pack": context_pack_summary,
                 "routing_snapshot": routing_summary,
+                "layout_profile": layout_profile,
             }
             if skipped:
                 detail["skipped"] = skipped
@@ -1543,6 +1564,7 @@ class ImproveEngine:
             if context_pack_summary:
                 failure_payload["repo_context_pack"] = context_pack_summary
             failure_payload["routing_snapshot"] = routing_summary
+            failure_payload["layout_profile"] = layout_profile
             if preserve_recovery_artifacts and backup_root is not None:
                 failure_payload["recovery_root"] = str(backup_root)
                 failure_payload["project_preserved"] = rollback_confirmed
@@ -1560,6 +1582,7 @@ class ImproveEngine:
                                           else {"project_preserved": True}
                                       ),
                                       "routing_snapshot": routing_summary,
+                                      "layout_profile": layout_profile,
                                       **(
                                           {"recovery_root": str(backup_root)}
                                           if preserve_recovery_artifacts
@@ -1621,6 +1644,7 @@ class ImproveEngine:
         improve_agentic_timeout: int,
         routing_summary: dict[str, Any],
         cid: str,
+        layout_profile: dict[str, str | int | bool],
     ) -> tuple[list[str], bool, str, dict[str, str]]:
         task = TaskRequest(
             type="code_improver",
@@ -1628,6 +1652,7 @@ class ImproveEngine:
                      "stack": stack, "gaps": [goal], "repo_map": repo_ctx,
                      "repo_context_pack": dict(context_pack_summary),
                      "routing_snapshot": deepcopy(routing_summary),
+                     "layout_profile": dict(layout_profile),
                      # Free-text goals get the whole-project agentic session
                      # (multi-file, can create pages); the per-file path stays
                      # the automatic fallback inside the improver.

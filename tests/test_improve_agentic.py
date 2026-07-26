@@ -41,6 +41,7 @@ _VALID_REWRITE_FOR_FALLBACK = (
     "export default function Page() {\n"
     "  return <main>home<aside>fallback change</aside></main>;\n}\n"
 )
+_WORKSPACE_PROFILE = {"name": "workspace", "version": 1, "audit_enabled": True}
 
 
 class _AgenticLLM:
@@ -325,6 +326,50 @@ def test_agentic_improve_prompt_includes_stage_role_guidance(tmp_path):
     )
     assert "STAGE ROLE GUIDANCE" in llm.agentic_calls[0]["prompt"]
     assert "imported React builder role" in llm.agentic_calls[0]["prompt"]
+
+
+def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(tmp_path, llm, extra={"layout_profile": _WORKSPACE_PROFILE})
+    agentic_prompt = llm.agentic_calls[0]["prompt"]
+    assert "LAYOUT PROFILE: workspace" in agentic_prompt
+    assert "preserve existing working functionality" in agentic_prompt.lower()
+
+    (tmp_path / "worker.py").write_text("def worker():\n    return 1\n")
+    llm = _AgenticLLM(completions=[
+        _VALID_REWRITE_FOR_FALLBACK,
+        "def worker():\n    return 2\n",
+    ])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/page.jsx", "worker.py"],
+            "layout_profile": _WORKSPACE_PROFILE,
+        },
+    )
+    assert result.success
+    ui_call = next(call for call in llm.complete_calls if call["file_hint"] == "app/page.jsx")
+    python_call = next(call for call in llm.complete_calls if call["file_hint"] == "worker.py")
+    assert "LAYOUT PROFILE: workspace" in ui_call["prompt"]
+    assert "LAYOUT PROFILE:" not in python_call["prompt"]
+
+    llm = _AgenticLLM(completions=[
+        "export default function MissingPanel() { return <aside>panel</aside>; }\n",
+    ])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/MissingPanel.jsx"],
+            "layout_profile": _WORKSPACE_PROFILE,
+        },
+    )
+    assert result.success
+    assert "LAYOUT PROFILE: workspace" in llm.complete_calls[0]["prompt"]
 
 
 def test_classic_improve_prompt_includes_stage_role_guidance(tmp_path):

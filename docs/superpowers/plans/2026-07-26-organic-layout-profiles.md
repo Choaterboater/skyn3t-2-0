@@ -231,9 +231,9 @@ def layout_contract_block(profile: LayoutProfile | Mapping[str, object] | None) 
   )
   ```
 
-- [ ] **Step 7: Pass the profile into visual self-heal evidence.**
+- [ ] **Step 7: Preserve visual self-heal provenance without changing its API early.**
 
-  In `_run_visual_self_heal`, forward `manifest.extra["layout_profile"]` into `visual_self_improve`. Preserve the current behavior for non-UI stacks and keep the resulting evidence under `manifest.extra["visual_self_heal"]`.
+  Keep `_run_visual_self_heal`'s current `visual_self_improve` invocation signature unchanged: the profile-aware checker/loop parameters are introduced together in Task 4, so this task must not add an ignored keyword argument that makes older loop implementations soft-skip at runtime. Confirm the frozen mapping remains available at `manifest.extra["layout_profile"]`; Task 4 will pass that stored value into the new optional loop API while retaining the existing non-UI and `manifest.extra["visual_self_heal"]` behavior.
 
 - [ ] **Step 8: Re-run focused verification.**
 

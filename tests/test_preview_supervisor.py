@@ -7,12 +7,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from skyn3t.studio import preview_supervisor as preview_supervisor_mod
+from skyn3t.studio import proof_reuse as proof_reuse_mod
 from skyn3t.studio.app_runner import RunningApp
 from skyn3t.studio.preview_supervisor import (
     CommandResult,
     PreviewSupervisor,
     ProofLadderCoordinator,
 )
+from skyn3t.studio.visual_proof import DEFAULT_VIEWPORTS
 
 
 def _tool_report(
@@ -143,6 +146,9 @@ async def test_preview_runs_in_hardened_docker_on_localhost(tmp_path: Path) -> N
     ]
     source_mount = prepare[prepare.index("--mount") + 1]
     assert "target=/workspace" in source_mount and source_mount.endswith(",readonly")
+    assert "rm -rf /app/.git" in prepare[-1]
+    assert "/app/.skyn3t/visual-proof" in prepare[-1]
+    assert "/app/.skyn3t/proof-ladder" in prepare[-1]
     assert "chmod -R a+rwX /app" in prepare[-1]
     assert "chown" not in prepare[-1]
     runtime_mount = command[command.index("--mount") + 1]
@@ -236,6 +242,9 @@ async def test_python_preview_installs_into_ephemeral_venv(tmp_path: Path) -> No
     assert "pip install ." not in dependency_prepare[-1]
     assert source_copy[source_copy.index("--network") + 1] == "none"
     assert "target=/workspace" in source_copy[source_copy.index("--mount") + 1]
+    assert "/app/.venv" in source_copy[-1]
+    assert "/app/venv" in source_copy[-1]
+    assert "/app/.skyn3t/visual-proof" in source_copy[-1]
     assert "exec /deps/venv/bin/python app.py" in runtime[-1]
     assert runtime[runtime.index("--network") + 1].endswith("-internal")
     await supervisor.stop(app)
@@ -388,6 +397,8 @@ async def test_node_prepare_is_lockfile_only_and_runtime_has_no_external_egress(
         if call[0][:3] == ["docker", "network", "create"]
     )
     assert "npm ci --ignore-scripts --no-audit --no-fund" in prepare_script
+    assert "/app/node_modules" in prepare_script
+    assert "/app/.skyn3t/visual-proof" in prepare_script
     assert "npm install" not in prepare_script
     assert "||" not in prepare_script
     assert prepare[prepare.index("--network") + 1] == "bridge"
@@ -483,6 +494,431 @@ class _FakePreviewSupervisor:
         return CommandResult(0, "", "")
 
 
+def _reusable_liveness_proof(
+    project: Path,
+    routes: tuple[str, ...] = ("/", "/settings"),
+) -> tuple[dict[str, object], Path]:
+    (project / "index.html").write_text("<h1>Ready</h1>", encoding="utf-8")
+    (project / "dist").mkdir()
+    (project / "dist" / "app.js").write_text("ready", encoding="utf-8")
+    proof_root = project / ".skyn3t" / "visual-proof"
+    proof_root.mkdir(parents=True)
+    proofs = []
+    first_screenshot = proof_root / "route-0" / "desktop.png"
+    for index, route in enumerate(routes):
+        route_dir = proof_root / f"route-{index}"
+        route_dir.mkdir()
+        viewport_proofs = []
+        for viewport in DEFAULT_VIEWPORTS:
+            screenshot = route_dir / f"{viewport.name}.png"
+            screenshot.write_bytes(b"\x89PNG\r\n\x1a\nproof")
+            viewport_proofs.append({
+                **viewport.to_dict(),
+                "passed": True,
+                "skipped": False,
+                "reason": "",
+                "screenshot": screenshot.relative_to(proof_root).as_posix(),
+                "metrics": {},
+                "issues": [],
+                "console_errors": [],
+                "page_errors": [],
+            })
+        proof = {
+            "schema_version": 1,
+            "url": f"http://127.0.0.1:44000{route}",
+            "route": route,
+            "stack": "react",
+            "passed": True,
+            "skipped": False,
+            "reason": "",
+            "report_path": f"route-{index}/report.json",
+            "viewports": viewport_proofs,
+        }
+        (route_dir / "report.json").write_text(
+            json.dumps(proof, sort_keys=True),
+            encoding="utf-8",
+        )
+        proofs.append(proof)
+    (proof_root / "visual-proof.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "stack": "react",
+            "passed": True,
+            "skipped": False,
+            "viewports": [viewport.to_dict() for viewport in DEFAULT_VIEWPORTS],
+            "routes": proofs,
+        }, sort_keys=True),
+        encoding="utf-8",
+    )
+    runtime_fingerprint = proof_reuse_mod.preview_input_fingerprint(project, "react")
+    return (
+        preview_supervisor_mod.build_reusable_web_proof(
+            project,
+            "react",
+            artifact_dir=".skyn3t/visual-proof",
+            runtime_input_fingerprint=runtime_fingerprint,
+        ),
+        first_screenshot,
+    )
+
+
+@pytest.mark.asyncio
+async def test_web_proof_reuses_digest_bound_liveness_evidence(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    candidate, _ = _reusable_liveness_proof(project)
+    preview = _FakePreviewSupervisor(
+        RunningApp("", 0, None, "none", str(project), status="failed")
+    )
+
+    def unexpected_toolchain(**_kwargs):
+        raise AssertionError("cache hit must not repeat toolchain inspection")
+
+    coordinator = ProofLadderCoordinator(
+        preview_supervisor=preview,
+        toolchain_inspector=unexpected_toolchain,
+    )
+    result = await coordinator.run(
+        project,
+        "react",
+        routes=("/", "/settings"),
+        artifact_dir=tmp_path / "proof",
+        reusable_web_proof=candidate,
+    )
+
+    assert result.passed is True
+    assert result.cache_hit is True
+    assert result.reused_from == "liveness"
+    assert preview.started == 0 and preview.stopped == 0
+    assert [step.name for step in result.steps] == ["preview", "playwright"]
+    assert (tmp_path / "proof/playwright/visual-proof.json").is_file()
+    persisted = json.loads(
+        (tmp_path / "proof/proof-ladder.json").read_text(encoding="utf-8")
+    )
+    assert persisted["cache_hit"] is True
+    assert persisted["reused_from"] == "liveness"
+
+    repeated = await coordinator.run(
+        project,
+        "react",
+        routes=("/", "/settings"),
+        artifact_dir=tmp_path / "proof",
+        reusable_web_proof=candidate,
+    )
+    assert repeated.passed is True
+    assert repeated.cache_hit is True
+    assert preview.started == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "runtime_input",
+        "report",
+        "screenshot",
+        "routes",
+        "viewports",
+        "source_dir",
+        "symlink",
+    ),
+)
+async def test_web_proof_falls_back_when_reuse_is_uncertain_or_tampered(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    candidate, screenshot = _reusable_liveness_proof(project)
+    proof_root = project / ".skyn3t" / "visual-proof"
+    if tamper == "runtime_input":
+        (project / "dist" / "app.js").write_text("changed", encoding="utf-8")
+    elif tamper == "report":
+        (proof_root / "visual-proof.json").write_text("{}", encoding="utf-8")
+    elif tamper == "screenshot":
+        screenshot.write_bytes(b"changed")
+    elif tamper == "routes":
+        candidate["routes"] = ["/"]
+    elif tamper == "viewports":
+        candidate["viewports"] = [{"name": "desktop", "width": 1024, "height": 768}]
+    elif tamper == "source_dir":
+        candidate["artifact_dir"] = "dist"
+    else:
+        outside = tmp_path / "outside.png"
+        outside.write_bytes(b"outside")
+        screenshot.unlink()
+        screenshot.symlink_to(outside)
+
+    preview = _FakePreviewSupervisor(RunningApp(
+        "http://127.0.0.1:44001",
+        44001,
+        None,
+        "static",
+        str(project),
+        status="running",
+    ))
+
+    def visual_auditor(pages, artifact_dir, **_kwargs):
+        Path(artifact_dir).mkdir(parents=True, exist_ok=True)
+        (Path(artifact_dir) / "visual-proof.json").write_text(
+            '{"passed": true}', encoding="utf-8"
+        )
+        return [
+            SimpleNamespace(
+                passed=True,
+                skipped=False,
+                reason="",
+                to_dict=lambda route=route: {"route": route, "passed": True},
+            )
+            for route, _url in pages
+        ]
+
+    result = await ProofLadderCoordinator(
+        preview_supervisor=preview,
+        toolchain_inspector=lambda **_: _tool_report(),
+        visual_auditor=visual_auditor,
+    ).run(
+        project,
+        "react",
+        routes=("/", "/settings"),
+        artifact_dir=tmp_path / "proof",
+        reusable_web_proof=candidate,
+    )
+
+    assert result.passed is True
+    assert result.cache_hit is False
+    assert result.reused_from is None
+    assert result.reuse_miss_reason
+    assert preview.started == 1 and preview.stopped == 1
+
+
+@pytest.mark.asyncio
+async def test_web_proof_reuse_never_follows_destination_symlink(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    candidate, _ = _reusable_liveness_proof(project)
+    artifact_root = tmp_path / "proof"
+    artifact_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    (artifact_root / "playwright").symlink_to(outside, target_is_directory=True)
+    preview = _FakePreviewSupervisor(
+        RunningApp(
+            "http://127.0.0.1:44002",
+            44002,
+            None,
+            "static",
+            str(project),
+            status="running",
+        )
+    )
+    audited = False
+
+    def unsafe_auditor(*_args, **_kwargs):
+        nonlocal audited
+        audited = True
+        sentinel.write_text("overwritten", encoding="utf-8")
+        return []
+
+    result = await ProofLadderCoordinator(
+        preview_supervisor=preview,
+        toolchain_inspector=lambda **_: _tool_report(),
+        visual_auditor=unsafe_auditor,
+    ).run(
+        project,
+        "react",
+        routes=("/", "/settings"),
+        artifact_dir=artifact_root,
+        reusable_web_proof=candidate,
+    )
+
+    assert result.cache_hit is False
+    assert result.status == "failed"
+    assert result.steps[0].name == "artifact_store"
+    assert preview.started == 0
+    assert audited is False
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert (artifact_root / "playwright").is_symlink()
+
+
+@pytest.mark.asyncio
+async def test_web_proof_reuse_never_deletes_unowned_destination(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    candidate, _ = _reusable_liveness_proof(project)
+    artifact_root = tmp_path / "proof"
+    destination = artifact_root / "playwright"
+    destination.mkdir(parents=True)
+    sentinel = destination / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    preview = _FakePreviewSupervisor(
+        RunningApp(
+            "http://127.0.0.1:44003",
+            44003,
+            None,
+            "static",
+            str(project),
+            status="running",
+        )
+    )
+
+    result = await ProofLadderCoordinator(
+        preview_supervisor=preview,
+        toolchain_inspector=lambda **_: _tool_report(),
+    ).run(
+        project,
+        "react",
+        routes=("/", "/settings"),
+        artifact_dir=artifact_root,
+        reusable_web_proof=candidate,
+    )
+
+    assert result.status == "failed"
+    assert result.steps[0].name == "artifact_store"
+    assert preview.started == 0
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_web_proof_never_writes_through_aliased_artifact_root(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    artifact_root = tmp_path / "proof"
+    artifact_root.symlink_to(outside, target_is_directory=True)
+    preview = _FakePreviewSupervisor(
+        RunningApp(
+            "http://127.0.0.1:44004",
+            44004,
+            None,
+            "static",
+            str(project),
+            status="running",
+        )
+    )
+
+    result = await ProofLadderCoordinator(
+        preview_supervisor=preview,
+        toolchain_inspector=lambda **_: _tool_report(),
+    ).run(project, "react", artifact_dir=artifact_root)
+
+    assert result.status == "failed"
+    assert result.steps[0].name == "artifact_store"
+    assert preview.started == 0
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert list(outside.iterdir()) == [sentinel]
+
+
+def test_reusable_proof_requires_matching_pre_and_post_runtime_fingerprint(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    candidate, _ = _reusable_liveness_proof(project)
+    before = candidate["runtime_input_fingerprint"]
+    (project / "dist" / "app.js").write_text("changed after audit", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed"):
+        preview_supervisor_mod.build_reusable_web_proof(
+            project,
+            "react",
+            artifact_dir=".skyn3t/visual-proof",
+            runtime_input_fingerprint=before,
+        )
+
+
+@pytest.mark.parametrize("runtime_dir", ("dist", "build", "out"))
+def test_reusable_proof_artifacts_cannot_hide_runtime_output(
+    tmp_path: Path,
+    runtime_dir: str,
+) -> None:
+    project = tmp_path / "app"
+    project.mkdir()
+    (project / "index.html").write_text("ready", encoding="utf-8")
+    (project / runtime_dir).mkdir()
+
+    with pytest.raises(ValueError, match="visual-proof"):
+        preview_supervisor_mod.build_reusable_web_proof(
+            project,
+            "react",
+            artifact_dir=runtime_dir,
+            runtime_input_fingerprint=proof_reuse_mod.preview_input_fingerprint(
+                project,
+                "react",
+            ),
+        )
+
+
+def test_runtime_fingerprint_fails_closed_on_walk_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "index.html").write_text("ready", encoding="utf-8")
+
+    def broken_walk(*_args, onerror=None, **_kwargs):
+        assert onerror is not None
+        onerror(OSError("walk failed"))
+        return iter(())
+
+    monkeypatch.setattr(proof_reuse_mod.os, "walk", broken_walk)
+
+    with pytest.raises(ValueError, match="walk failed"):
+        proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")
+
+
+def test_runtime_fingerprint_rejects_file_swapped_between_lstat_and_open(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "index.html").write_text("ready", encoding="utf-8")
+    real_fstat = proof_reuse_mod.os.fstat
+
+    def mismatched_fstat(descriptor):
+        metadata = real_fstat(descriptor)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode,
+            st_dev=metadata.st_dev,
+            st_ino=metadata.st_ino + 1,
+            st_size=metadata.st_size,
+            st_mtime_ns=metadata.st_mtime_ns,
+        )
+
+    monkeypatch.setattr(proof_reuse_mod.os, "fstat", mismatched_fstat)
+
+    with pytest.raises(ValueError, match="changed"):
+        proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")
+
+
+def test_runtime_fingerprint_ignores_only_internal_proof_parent_churn(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "index.html").write_text("ready", encoding="utf-8")
+    before = proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")
+    proof_root = tmp_path / ".skyn3t" / "visual-proof"
+    proof_root.mkdir(parents=True)
+    (proof_root / "visual-proof.json").write_text("{}", encoding="utf-8")
+
+    after_proof = proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")
+    assert after_proof == before
+
+    (tmp_path / ".skyn3t" / "product.json").write_text("{}", encoding="utf-8")
+    after_product = proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")
+    assert after_product != before
+
+
 @pytest.mark.asyncio
 async def test_web_proof_persists_playwright_evidence_and_stops_preview(
     tmp_path: Path,
@@ -490,6 +926,7 @@ async def test_web_proof_persists_playwright_evidence_and_stops_preview(
     project = tmp_path / "app"
     project.mkdir()
     artifact_root = tmp_path / "proof"
+    (artifact_root / "playwright").mkdir(parents=True)
     preview = _FakePreviewSupervisor(
         RunningApp(
             url="http://127.0.0.1:44000",
@@ -623,10 +1060,16 @@ async def test_react_native_runs_each_maestro_flow_and_persists_reports(
         maestro_binary="maestro",
     )
 
-    result = await coordinator.run(tmp_path, "react_native")
+    result = await coordinator.run(
+        tmp_path,
+        "react_native",
+        reusable_web_proof={"source": "liveness", "passed": True},
+    )
 
     assert result.passed is True
     assert result.status == "passed"
+    assert result.cache_hit is False
+    assert result.reused_from is None
     maestro_calls = [call[0] for call in runner.calls if call[0][0] == "maestro"]
     assert len(maestro_calls) == 2
     assert all("--format" in call and "junit" in call for call in maestro_calls)

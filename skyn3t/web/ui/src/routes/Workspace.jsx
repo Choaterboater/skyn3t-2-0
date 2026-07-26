@@ -631,8 +631,9 @@ function VisualEditorPane({ slug, signature, onEdited }) {
   );
 }
 
-function ProductPane({ slug }) {
+function ProductPane({ slug, buildId }) {
   const qc = useQueryClient();
+  const actionInFlightRef = useRef(false);
   const [goal, setGoal] = useState("");
   const [personas, setPersonas] = useState("");
   const [nonGoals, setNonGoals] = useState("");
@@ -652,9 +653,12 @@ function ProductPane({ slug }) {
     setGoal(product?.goal || "");
     setPersonas((product?.personas || []).join(", "));
     setNonGoals((product?.non_goals || []).join("\n"));
+  }, [slug, product?.version]);
+
+  useEffect(() => {
     setErr("");
     setNote("");
-  }, [slug, product?.version]);
+  }, [slug]);
 
   function splitList(value, separator) {
     return value
@@ -663,52 +667,70 @@ function ProductPane({ slug }) {
       .filter(Boolean);
   }
 
-  async function save() {
-    if (!product) return;
+  function productPatch() {
     const next = {
       goal: goal.trim(),
       personas: splitList(personas, ","),
       non_goals: splitList(nonGoals, /\r?\n/),
     };
-    const patch = Object.fromEntries(
+    return Object.fromEntries(
       Object.entries(next).filter(
         ([key, value]) => JSON.stringify(value) !== JSON.stringify(product[key]),
       ),
     );
+  }
+
+  async function persistProductPatch(patch) {
+    const result = await apiFetch(
+      `/projects/${encodeURIComponent(slug)}/product`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          base_version: product.version,
+          patch,
+          reason: "Product contract refined in Workspace",
+        }),
+      },
+    );
+    qc.setQueryData(["project-product", slug], result);
+    return result.product;
+  }
+
+  function beginAction(action) {
+    if (actionInFlightRef.current) return false;
+    actionInFlightRef.current = true;
+    setBusy(action);
+    setErr("");
+    setNote("");
+    return true;
+  }
+
+  function endAction() {
+    actionInFlightRef.current = false;
+    setBusy("");
+  }
+
+  async function save() {
+    if (!product) return;
+    const patch = productPatch();
     if (!Object.keys(patch).length) {
       setNote("No product-contract changes to save.");
       return;
     }
-    setBusy("save");
-    setErr("");
-    setNote("");
+    if (!beginAction("save")) return;
     try {
-      const result = await apiFetch(
-        `/projects/${encodeURIComponent(slug)}/product`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            base_version: product.version,
-            patch,
-            reason: "Product contract refined in Workspace",
-          }),
-        },
-      );
-      qc.setQueryData(["project-product", slug], result);
-      setNote(`Saved product contract v${result.product.version}.`);
+      const savedProduct = await persistProductPatch(patch);
+      setNote(`Saved product contract v${savedProduct.version}.`);
     } catch (error) {
       setErr(error.message);
       await qc.invalidateQueries({ queryKey: ["project-product", slug] });
     } finally {
-      setBusy("");
+      endAction();
     }
   }
 
   async function research() {
-    if (!product) return;
-    setBusy("research");
-    setErr("");
-    setNote("");
+    if (!product || !beginAction("research")) return;
     try {
       const result = await apiPost(
         `/projects/${encodeURIComponent(slug)}/product/research`,
@@ -733,9 +755,45 @@ function ProductPane({ slug }) {
       setErr(error.message);
       await qc.invalidateQueries({ queryKey: ["project-product", slug] });
     } finally {
-      setBusy("");
+      endAction();
     }
   }
+
+  async function buildFromContract() {
+    if (!product || !buildId || !beginAction("rebuild")) return;
+    let contract = product;
+    try {
+      const patch = productPatch();
+      if (Object.keys(patch).length) {
+        try {
+          contract = await persistProductPatch(patch);
+        } catch (error) {
+          setErr(error.message);
+          await qc.invalidateQueries({ queryKey: ["project-product", slug] });
+          return;
+        }
+      }
+      const result = await apiPost("/builds/rebuild", {
+        build_id: buildId,
+        reuse_slug: false,
+      });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["builds"] }),
+        qc.invalidateQueries({ queryKey: ["projects"] }),
+      ]);
+      setNote(
+        `Queued build ${result.build_id} from product contract v${contract.version}.`,
+      );
+    } catch (error) {
+      setErr(error.message);
+    } finally {
+      endAction();
+    }
+  }
+
+  const contractDirty = Boolean(
+    product && Object.keys(productPatch()).length,
+  );
 
   return (
     <Panel className="flex h-full flex-col overflow-hidden">
@@ -796,6 +854,22 @@ function ProductPane({ slug }) {
             <div className="flex flex-wrap gap-2">
               <button
                 className="btn-ember"
+                disabled={Boolean(busy) || !buildId}
+                onClick={buildFromContract}
+                title={
+                  buildId
+                    ? "Queue a new project from this contract; the current app stays untouched."
+                    : "No source build is available for this project."
+                }
+              >
+                {busy === "rebuild"
+                  ? "Queueing new version…"
+                  : contractDirty
+                    ? "Save & build new version"
+                    : "Build new version from contract"}
+              </button>
+              <button
+                className="btn-ghost"
                 disabled={Boolean(busy)}
                 onClick={save}
               >
@@ -991,7 +1065,10 @@ export default function Workspace({ stream }) {
           </div>
           <div className="min-h-0 flex-1">
             {rightMode === "product" ? (
-              <ProductPane slug={slug} />
+              <ProductPane
+                slug={slug}
+                buildId={current?.build_id || ""}
+              />
             ) : rightMode === "visual" ? (
               <VisualEditorPane
                 slug={slug}

@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import os
 import re
 import shlex
 import shutil
@@ -26,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,13 @@ from skyn3t.core.stacks import WEB_STACKS
 from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.app_runner import RunningApp, RunSpec, build_run_spec, free_port
 from skyn3t.studio.lab_tools import LabToolchainReport, inspect_lab_toolchain
+from skyn3t.studio.proof_reuse import (
+    build_reusable_web_proof,
+    prepare_owned_proof_destination,
+    prepare_proof_artifact_root,
+    preview_input_fingerprint,
+    promote_reusable_web_proof,
+)
 from skyn3t.studio.visual_proof import audit_responsive_pages
 
 PREVIEW_PROOF_SCHEMA_VERSION = 1
@@ -393,6 +401,7 @@ def _prepare_command(spec: RunSpec, project_dir: Path) -> tuple[str, str]:
         f"mkdir -p {_CONTAINER_APP} && "
         f"cp -R {_CONTAINER_WORKSPACE}/. {_CONTAINER_APP}/"
     )
+    scrub = _runtime_input_scrub_command(spec)
     enter = f"cd {_CONTAINER_APP}"
     if spec.kind == "node":
         return "bridge", " && ".join(
@@ -400,8 +409,8 @@ def _prepare_command(spec: RunSpec, project_dir: Path) -> tuple[str, str]:
                 "set -eu",
                 "umask 022",
                 copy,
+                scrub,
                 enter,
-                "rm -rf node_modules",
                 "npm ci --ignore-scripts --no-audit --no-fund",
                 f"chmod -R a+rwX {_CONTAINER_APP}",
             )
@@ -434,8 +443,27 @@ def _prepare_command(spec: RunSpec, project_dir: Path) -> tuple[str, str]:
             "set -eu",
             "umask 022",
             copy,
+            scrub,
             f"chmod -R a+rwX {_CONTAINER_APP}",
         )
+    )
+
+
+def _runtime_input_scrub_command(spec: RunSpec) -> str:
+    """Remove files deliberately excluded from the preview-input fingerprint."""
+    paths = [
+        f"{_CONTAINER_APP}/.git",
+        f"{_CONTAINER_APP}/.skyn3t/visual-proof",
+        f"{_CONTAINER_APP}/.skyn3t/proof-ladder",
+    ]
+    if spec.kind == "node":
+        paths.append(f"{_CONTAINER_APP}/node_modules")
+    elif spec.kind == "python_web":
+        paths.extend((f"{_CONTAINER_APP}/.venv", f"{_CONTAINER_APP}/venv"))
+    return (
+        f"rm -rf {shlex.join(paths)} && "
+        f"(if rmdir {_CONTAINER_APP}/.skyn3t 2>/dev/null; "
+        "then :; else :; fi)"
     )
 
 
@@ -573,6 +601,7 @@ def _docker_source_copy_argv(
             "umask 022",
             f"mkdir -p {_CONTAINER_APP}",
             f"cp -R {_CONTAINER_WORKSPACE}/. {_CONTAINER_APP}/",
+            _runtime_input_scrub_command(spec),
             f"chmod -R a+rwX {_CONTAINER_APP}",
         )
     )
@@ -1411,6 +1440,9 @@ class ProofLadderResult:
     persistence_error: str = ""
     preview: dict[str, Any] | None = None
     steps: list[ProofStep] = field(default_factory=list)
+    cache_hit: bool = False
+    reused_from: str | None = None
+    reuse_miss_reason: str = ""
 
     def finalize(self) -> None:
         required = [step for step in self.steps if step.required]
@@ -1435,6 +1467,9 @@ class ProofLadderResult:
             "report_path": self.report_path,
             "persistence_error": self.persistence_error,
             "preview": self.preview,
+            "cache_hit": self.cache_hit,
+            "reused_from": self.reused_from,
+            "reuse_miss_reason": self.reuse_miss_reason,
             "steps": [step.to_dict() for step in self.steps],
         }
 
@@ -1469,22 +1504,24 @@ class ProofLadderCoordinator:
         *,
         routes: Sequence[str] = ("/",),
         artifact_dir: str | Path | None = None,
+        reusable_web_proof: Mapping[str, Any] | None = None,
     ) -> ProofLadderResult:
         pdir = Path(project_dir).expanduser().resolve()
         normalized_stack = str(stack or "").strip().lower()
-        root = (
-            Path(artifact_dir).expanduser().resolve()
+        requested_root = (
+            Path(artifact_dir).expanduser()
             if artifact_dir is not None
             else pdir / ".skyn3t" / "proof-ladder"
         )
+        root = Path(os.path.abspath(requested_root))
         result = ProofLadderResult(
             project_dir=str(pdir),
             stack=normalized_stack,
             artifact_dir=str(root),
         )
         try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
+            root = prepare_proof_artifact_root(root)
+        except Exception as exc:  # noqa: BLE001 - unsafe artifact roots fail proof
             result.steps.append(
                 ProofStep(
                     "artifact_store",
@@ -1496,6 +1533,74 @@ class ProofLadderCoordinator:
             result.finalize()
             result.persistence_error = str(exc)
             return result
+
+        is_web = (
+            normalized_stack not in _MOBILE_STACKS
+            and (not normalized_stack or normalized_stack in WEB_STACKS)
+        )
+        if is_web:
+            try:
+                prepare_owned_proof_destination(root / "playwright")
+            except Exception as exc:  # noqa: BLE001 - never write through aliases
+                result.steps.append(
+                    ProofStep(
+                        "artifact_store",
+                        "failed",
+                        True,
+                        f"proof artifact destination unsafe: {exc}",
+                    )
+                )
+                return self._persist(root, result)
+
+        if (
+            reusable_web_proof is not None
+            and is_web
+        ):
+            promotion = promote_reusable_web_proof(
+                pdir,
+                normalized_stack,
+                routes,
+                reusable_web_proof,
+                root / "playwright",
+            )
+            if promotion.hit:
+                result.cache_hit = True
+                result.reused_from = "liveness"
+                result.preview = {
+                    "status": "reused",
+                    "project_dir": str(pdir),
+                    "detail": {
+                        "source": "liveness",
+                        "runtime_input_fingerprint": promotion.runtime_input_fingerprint,
+                    },
+                }
+                result.steps.extend([
+                    ProofStep(
+                        "preview",
+                        "passed",
+                        True,
+                        detail={"reused": True, "source": "liveness"},
+                    ),
+                    ProofStep(
+                        "playwright",
+                        "passed",
+                        True,
+                        artifacts=[
+                            f"playwright/{artifact}"
+                            for artifact in promotion.artifacts
+                        ],
+                        detail={
+                            "routes": list(promotion.routes),
+                            "proofs": list(promotion.proofs),
+                            "reused": True,
+                            "source": "liveness",
+                            "report_sha256": promotion.report_sha256,
+                            "artifact_sha256": promotion.artifact_sha256,
+                        },
+                    ),
+                ])
+                return self._persist(root, result)
+            result.reuse_miss_reason = promotion.reason
 
         try:
             report = await _inspect_toolchain(
@@ -1587,6 +1692,18 @@ class ProofLadderCoordinator:
         route_list = _normalized_routes(routes)
         pages = [(route, _route_url(app.url, route)) for route in route_list]
         try:
+            try:
+                prepare_owned_proof_destination(visual_root)
+            except Exception as exc:  # noqa: BLE001 - block aliased writes
+                result.steps.append(
+                    ProofStep(
+                        "artifact_store",
+                        "failed",
+                        True,
+                        f"proof artifact destination unsafe: {exc}",
+                    )
+                )
+                return
             proofs = await asyncio.to_thread(
                 self._visual_auditor,
                 pages,
@@ -1851,5 +1968,7 @@ __all__ = [
     "ProofLadderCoordinator",
     "ProofLadderResult",
     "ProofStep",
+    "build_reusable_web_proof",
+    "preview_input_fingerprint",
     "run_command",
 ]

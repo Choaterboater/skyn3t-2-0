@@ -1500,12 +1500,27 @@ class StudioRunner:
         the possibly-adjusted (final_score, verdict). Never raises."""
         try:
             from skyn3t.studio.improve import ImproveEngine
-            from skyn3t.studio.preview_supervisor import PreviewSupervisor
+            from skyn3t.studio.preview_supervisor import (
+                PreviewSupervisor,
+                build_reusable_web_proof,
+                preview_input_fingerprint,
+            )
             from skyn3t.studio.visual_check import make_vision_fn
             from skyn3t.studio.visual_proof import (
                 DEFAULT_VIEWPORTS,
                 VISUAL_PROOF_SCHEMA_VERSION,
             )
+            liveness_input_fingerprint = None
+            try:
+                liveness_input_fingerprint = preview_input_fingerprint(
+                    project_dir,
+                    plan.stack,
+                )
+            except Exception as exc:  # noqa: BLE001 - liveness still runs without reuse
+                log.warning(
+                    "liveness.proof_reuse_prefingerprint_unavailable",
+                    error=str(exc)[:500],
+                )
             outcome = await liveness_self_improve(
                 project_dir,
                 # Generated code is untrusted lab output. The preview boundary is
@@ -1550,7 +1565,10 @@ class StudioRunner:
             visual_status = "passed"
         elif visual_skipped:
             visual_status = "skipped"
-        manifest.extra["responsive_visual_proof"] = {
+        visual_report_path = getattr(report, "visual_report_path", None)
+        if not isinstance(visual_report_path, str):
+            visual_report_path = None
+        responsive_visual_proof = {
             "schema_version": VISUAL_PROOF_SCHEMA_VERSION,
             "status": visual_status,
             "routes_checked": visual_total,
@@ -1560,8 +1578,28 @@ class StudioRunner:
             "skipped_routes": list(getattr(report, "visual_skipped_routes", []) or []),
             "viewports": [viewport.to_dict() for viewport in DEFAULT_VIEWPORTS],
             "artifact_dir": artifact_dir,
-            "report_path": getattr(report, "visual_report_path", None),
+            "report_path": visual_report_path,
         }
+        if (
+            visual_status == "passed"
+            and str(plan.stack or "").strip().lower() in _WEB_STACKS
+            and artifact_dir
+            and visual_report_path
+            and liveness_input_fingerprint is not None
+        ):
+            try:
+                responsive_visual_proof["reusable_web_proof"] = (
+                    build_reusable_web_proof(
+                        project_dir,
+                        plan.stack,
+                        artifact_dir=artifact_dir,
+                        report_path=visual_report_path,
+                        runtime_input_fingerprint=liveness_input_fingerprint,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - uncertainty disables reuse
+                log.warning("liveness.proof_reuse_unavailable", error=str(exc)[:500])
+        manifest.extra["responsive_visual_proof"] = responsive_visual_proof
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
         if proof.passed and report.total:
@@ -1609,10 +1647,24 @@ class StudioRunner:
         ]
         routes = list(dict.fromkeys(routes)) or ["/"]
         try:
+            run_options: dict[str, Any] = {"routes": routes}
+            responsive_proof = manifest.extra.get("responsive_visual_proof")
+            if (
+                isinstance(responsive_proof, dict)
+                and responsive_proof.get("status") == "passed"
+                and str(plan.stack or "").strip().lower() != "react_native"
+                and isinstance(
+                    responsive_proof.get("reusable_web_proof"),
+                    dict,
+                )
+            ):
+                run_options["reusable_web_proof"] = responsive_proof[
+                    "reusable_web_proof"
+                ]
             result = await ProofLadderCoordinator().run(
                 project_dir,
                 plan.stack,
-                routes=routes,
+                **run_options,
             )
             payload = result.to_dict()
         except Exception as exc:  # noqa: BLE001 - a proof crash is failed evidence

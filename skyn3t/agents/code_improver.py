@@ -30,6 +30,7 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
 from skyn3t.studio.layout_profiles import (
     LayoutProfile,
+    is_valid_profile_payload,
     layout_contract_block,
     profile_from_payload,
 )
@@ -231,8 +232,7 @@ class CodeImproverAgent(BaseAgent):
             profile
             if (
                 p.get("layout_profile_is_stored") is True
-                and isinstance(payload_profile, dict)
-                and payload_profile == profile.to_dict()
+                and is_valid_profile_payload(payload_profile)
             )
             else None
         )

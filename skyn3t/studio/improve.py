@@ -32,7 +32,11 @@ from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import build_repo_context_pack
-from skyn3t.studio.layout_profiles import layout_contract_block, profile_from_payload
+from skyn3t.studio.layout_profiles import (
+    is_valid_profile_payload,
+    layout_contract_block,
+    profile_from_payload,
+)
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.product_spec import (
     PRODUCT_SPEC_RELATIVE_PATH,
@@ -779,9 +783,8 @@ class ImproveEngine:
             )
             profile = profile_from_payload(stored_layout_profile)
             layout_profile = profile.to_dict()
-            has_stored_layout_profile = (
-                isinstance(stored_layout_profile, dict)
-                and stored_layout_profile == layout_profile
+            has_stored_layout_profile = is_valid_profile_payload(
+                stored_layout_profile
             )
             project_preimage = await asyncio.to_thread(
                 _source_snapshot,

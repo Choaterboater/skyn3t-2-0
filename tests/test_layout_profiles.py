@@ -188,6 +188,34 @@ def test_full_payload_round_trips_its_frozen_contract_when_defaults_change(
     assert restored.desktop_contract == _WORKSPACE_CONTRACT
 
 
+def test_registered_historic_profile_contract_restores_without_reclassification(
+    monkeypatch,
+):
+    import skyn3t.studio.layout_profiles as layout_profiles
+
+    historic_contract = "Compact layout contract: retained historical contract."
+    monkeypatch.setattr(
+        layout_profiles,
+        "_VERSIONED_CONTRACTS",
+        {
+            **layout_profiles._VERSIONED_CONTRACTS,
+            ("compact", 0): (historic_contract, False, "compact profile"),
+        },
+    )
+
+    restored = profile_from_payload({
+        "name": "compact",
+        "version": 0,
+        "source_app_type": "developer_tool",
+        "desktop_contract": historic_contract,
+        "audit_enabled": False,
+        "audit_exemption": "compact profile",
+    })
+
+    assert restored.version == 0
+    assert restored.desktop_contract == historic_contract
+
+
 def test_profile_helpers_accept_none_mapping_and_layout_profile_objects():
     profile = resolve_layout_profile("dashboard", stack="react", engine="dom")
 
@@ -248,3 +276,41 @@ def test_tampered_well_typed_desktop_contract_cannot_steer_a_prompt():
 
     assert "PROMPT STEERING SENTINEL" not in block
     assert block.startswith("Compact layout contract:")
+
+
+@pytest.mark.parametrize(
+    ("app_type", "stack", "engine", "tampered_source_app_type"),
+    [
+        ("dashboard", "react", "dom", "marketing"),
+        ("landing page", "static", "dom", "dashboard"),
+        ("game", "phaser", "canvas", "dashboard"),
+        ("developer tool", "python", "python", "dashboard"),
+    ],
+)
+def test_tampered_source_app_type_cannot_change_profile_provenance(
+    app_type: str,
+    stack: str,
+    engine: str,
+    tampered_source_app_type: str,
+):
+    payload = resolve_layout_profile(
+        app_type, stack=stack, engine=engine,
+    ).to_dict()
+    payload["source_app_type"] = tampered_source_app_type
+
+    restored = profile_from_payload(payload)
+
+    assert restored.name == "compact"
+    assert restored.source_app_type == ""
+    assert "workspace layout contract" not in layout_contract_block(payload).lower()
+
+
+def test_canvas_derived_immersive_profile_round_trips_its_unknown_source_type():
+    payload = resolve_layout_profile(
+        "something else", stack="phaser", engine="canvas",
+    ).to_dict()
+
+    restored = profile_from_payload(payload)
+
+    assert restored.name == "immersive"
+    assert restored.source_app_type == "something_else"

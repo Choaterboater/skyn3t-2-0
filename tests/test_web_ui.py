@@ -451,6 +451,64 @@ def test_workspace_surfaces_selected_project_signals() -> None:
     assert 'label: "activity"' in workspace
 
 
+def test_workspace_product_contract_rebuild_saves_before_dispatch() -> None:
+    workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
+    start = workspace.index("async function buildFromContract()")
+    end = workspace.index("\n  return (", start)
+    rebuild = workspace[start:end]
+
+    assert "function ProductPane({ slug, buildId })" in workspace
+    assert 'buildId={current?.build_id || ""}' in workspace
+    assert "const actionInFlightRef = useRef(false);" in workspace
+    assert 'if (!product || !buildId || !beginAction("rebuild")) return;' in rebuild
+    assert "const patch = productPatch();" in rebuild
+    assert "if (Object.keys(patch).length)" in rebuild
+    assert rebuild.count("contract = await persistProductPatch(patch);") == 1
+    assert 'const result = await apiPost("/builds/rebuild", {' in rebuild
+    assert rebuild.index("persistProductPatch(patch)") < rebuild.index(
+        'apiPost("/builds/rebuild"'
+    )
+    assert "build_id: buildId" in rebuild
+    assert "reuse_slug: false" in rebuild
+    assert (
+        'await qc.invalidateQueries({ queryKey: ["project-product", slug] });\n'
+        "          return;"
+    ) in rebuild
+    assert 'queryKey: ["builds"]' in rebuild
+    assert 'queryKey: ["projects"]' in rebuild
+    assert (
+        "Queued build ${result.build_id} from product contract "
+        "v${contract.version}."
+    ) in rebuild
+    assert "Save & build new version" in workspace
+    assert "Build new version from contract" in workspace
+
+
+def test_workspace_product_contract_rebuild_only_patches_editable_fields() -> None:
+    workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
+    start = workspace.index("function productPatch()")
+    end = workspace.index("\n  async function persistProductPatch", start)
+    patch_builder = workspace[start:end]
+
+    assert "goal: goal.trim()" in patch_builder
+    assert 'personas: splitList(personas, ",")' in patch_builder
+    assert "non_goals: splitList(nonGoals, /\\r?\\n/)" in patch_builder
+    assert "backlog" not in patch_builder
+    assert "requirements" not in patch_builder
+
+
+def test_workspace_product_actions_reject_duplicate_dispatch() -> None:
+    workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
+    start = workspace.index("function beginAction(action)")
+    end = workspace.index("\n  async function save()", start)
+    action_guard = workspace[start:end]
+
+    assert "if (actionInFlightRef.current) return false;" in action_guard
+    assert "actionInFlightRef.current = true;" in action_guard
+    assert "actionInFlightRef.current = false;" in action_guard
+    assert "disabled={Boolean(busy) || !buildId}" in workspace
+
+
 def test_workspace_activity_helper_counts_correlation_matched_events() -> None:
     helper = SRC / "workspaceSignals.js"
     script = f"""

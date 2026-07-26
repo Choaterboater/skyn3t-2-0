@@ -322,3 +322,154 @@ def test_security_check_ignores_percent_sign_prose(tmp_path):
     verdict = check_security(tmp_path, "fastapi")
 
     assert verdict["issues"] == []
+
+
+def test_security_check_header_warning_covers_agent_stack_spellings(tmp_path):
+    (tmp_path / "server.js").write_text(
+        "const express = require('express');\nconst app = express();\n",
+        encoding="utf-8",
+    )
+
+    for stack in ("express", "node_express", "nextjs", "next", "fastapi", "rag", "workflow"):
+        verdict = check_security(tmp_path, stack)
+        assert verdict["skipped"] is False
+        assert any("security-header" in w for w in verdict["warnings"]), stack
+
+
+def test_security_check_header_warning_set_covers_every_api_spelling():
+    from skyn3t.studio import security_check
+
+    assert {
+        "express", "node_express", "nextjs", "next", "fastapi", "rag", "workflow",
+    } <= security_check._HEADER_WARN_STACKS
+
+
+def test_security_check_header_warning_quiet_for_ui_stacks(tmp_path):
+    (tmp_path / "App.jsx").write_text(
+        "export default function App() { return <div/>; }\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "react")
+
+    assert verdict["warnings"] == []
+
+
+def test_security_check_header_warning_quiet_when_headers_present(tmp_path):
+    (tmp_path / "server.js").write_text(
+        "app.use((req, res, next) => {\n"
+        "  res.set('Content-Security-Policy', \"default-src 'self'\");\n"
+        "  next();\n"
+        "});\n",
+        encoding="utf-8",
+    )
+
+    for stack in ("node_express", "next"):
+        verdict = check_security(tmp_path, stack)
+        assert verdict["warnings"] == [], stack
+
+
+def test_security_check_flags_percent_r_format_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = "SELECT * FROM users WHERE name = %r" % name\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_multiline_percent_r_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = """\nSELECT *\nFROM users\nWHERE name = %r\n""" % name\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_replace_into_percent_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = "REPLACE INTO users (id, name) VALUES (%s, \'%s\')" % (uid, name)\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_replace_into_template_sql(tmp_path):
+    (tmp_path / "db.js").write_text(
+        "const q = `REPLACE INTO sessions (token, uid) VALUES ('${tok}', ${uid})`;\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "express")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_python_join_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = " ".join(["SELECT * FROM users WHERE id =", str(uid)])\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_multiline_join_sql(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'query = "\n".join([\n    "SELECT *",\n    "FROM users",\n    "WHERE id =",\n    str(uid),\n])\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_flags_js_join_sql(tmp_path):
+    (tmp_path / "db.js").write_text(
+        'const q = ["SELECT * FROM users WHERE id =", uid].join(" ");\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "express")
+
+    assert verdict["ok"] is False
+    assert any("SQL built" in issue for issue in verdict["issues"])
+
+
+def test_security_check_ignores_join_prose(tmp_path):
+    (tmp_path / "ui.py").write_text(
+        'label = " ".join(["Select your plan", "from the menu", name])\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["issues"] == []
+
+
+def test_security_check_ignores_join_of_pure_literals(tmp_path):
+    (tmp_path / "db.py").write_text(
+        'lines = " ".join(["SELECT * FROM users", "ORDER BY name", "LIMIT 10"])\n',
+        encoding="utf-8",
+    )
+
+    verdict = check_security(tmp_path, "fastapi")
+
+    assert verdict["issues"] == []

@@ -1863,6 +1863,21 @@ class LLMClient:
             "model_policy": model_policy,
         }
 
+    def active_build_routing_snapshot(
+        self,
+        model_override: str = "",
+    ) -> dict[str, Any]:
+        """Inherit an outer build route, otherwise capture current settings.
+
+        Nested Improve/liveness/visual work belongs to the build that spawned
+        it. A live GUI settings change must affect the next submission, not
+        silently switch an already-running build's repair provider.
+        """
+        locked = _BUILD_ROUTING.get()
+        if isinstance(locked, dict):
+            return deepcopy(locked)
+        return self.build_routing_snapshot(model_override)
+
     @contextmanager
     def build_routing_scope(
         self,

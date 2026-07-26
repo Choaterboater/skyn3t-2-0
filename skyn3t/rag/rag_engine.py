@@ -214,8 +214,14 @@ class RagEngine:
         )
 
     # -- repo map convenience ---------------------------------------------
-    def repo_map(self, directory: str, max_tokens: int = 2000) -> str:
-        return get_repo_map(directory, max_tokens=max_tokens)
+    def repo_map(
+        self,
+        directory: str,
+        max_tokens: int = 2000,
+        *,
+        query: str = "",
+    ) -> str:
+        return get_repo_map(directory, max_tokens=max_tokens, query=query)
 
     def build_repo_index(self, directory: str) -> RepoMapIndex:
         idx = RepoMapIndex(directory)

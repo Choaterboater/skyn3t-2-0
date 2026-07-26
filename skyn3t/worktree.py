@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ SOURCE_TREE_EXCLUDED_DIR_NAMES = frozenset(
     }
 )
 SOURCE_TREE_DIGEST_ALGORITHM = "source-tree-sha256-v1"
+DELIVERABLE_TREE_DIGEST_ALGORITHM = "deliverable-tree-sha256-v1"
 _SOURCE_TREE_EXCLUDED_RELATIVE_FILES = frozenset(
     {
         ("skyn3t_manifest.json",),
@@ -87,6 +89,47 @@ def _source_tree_internal_output(relative: Path) -> bool:
         folded[: len(prefix)] == prefix
         for prefix in _SOURCE_TREE_EXCLUDED_RELATIVE_DIRS
     )
+
+
+def _open_source_descriptor(root: Path, path: Path) -> int:
+    """Open a source leaf without following any project-relative alias."""
+    file_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        file_flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        file_flags |= os.O_NONBLOCK
+    if hasattr(os, "O_CLOEXEC"):
+        file_flags |= os.O_CLOEXEC
+    if (
+        hasattr(os, "O_DIRECTORY")
+        and os.open in getattr(os, "supports_dir_fd", set())
+    ):
+        relative = path.relative_to(root)
+        if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            raise OSError("unsafe source-relative path")
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            directory_flags |= os.O_CLOEXEC
+        opened_directories: list[int] = []
+        try:
+            current = os.open(root, directory_flags)
+            opened_directories.append(current)
+            for part in relative.parts[:-1]:
+                current = os.open(part, directory_flags, dir_fd=current)
+                opened_directories.append(current)
+            return os.open(relative.parts[-1], file_flags, dir_fd=current)
+        finally:
+            for descriptor in reversed(opened_directories):
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(root):
+        raise OSError("source path escaped project root")
+    return os.open(path, file_flags)
 
 
 @dataclass(slots=True)
@@ -171,6 +214,50 @@ def create_worktree(
 _IGNORE_NAMES_CASEFOLD = frozenset(name.casefold() for name in _IGNORE_NAMES)
 
 
+def _clean_deliverable_contents(root: Path) -> None:
+    """Remove stale deliverables while preserving machine-local runtime state.
+
+    ``_iter_files`` never copies virtual environments, dependency stores, git
+    metadata, or compiler caches. A clean mirror must therefore never delete
+    those same entries: they are not represented in the source tree and cannot
+    be reconstructed by a rollback. Recurse through authored directories so a
+    nested ``node_modules``/``__pycache__`` survives too. Aliases are always
+    unlinked before the name check so an ignored-name symlink cannot pin an
+    unsafe path into the destination.
+    """
+
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return
+    for child in children:
+        try:
+            is_alias = child.is_symlink() or bool(
+                getattr(os.path, "isjunction", lambda _path: False)(child)
+            )
+            if is_alias:
+                child.unlink()
+                continue
+            if child.name.casefold() in _IGNORE_NAMES_CASEFOLD:
+                continue
+            if child.is_dir():
+                _clean_deliverable_contents(child)
+                try:
+                    child.rmdir()
+                except OSError:
+                    # A preserved ignored child, a concurrent writer, or a
+                    # permission error keeps the directory alive. Exact
+                    # delivery snapshots let transactional callers fail closed
+                    # when a stale deliverable file remains.
+                    pass
+            else:
+                child.unlink()
+        except OSError:
+            # Preserve merge_back's best-effort API. Callers that require an
+            # exact transaction compare deliverable snapshots after the copy.
+            continue
+
+
 def _iter_files(root: Path):
     for p in root.rglob("*"):
         if p.is_symlink():
@@ -198,9 +285,9 @@ def merge_back(
     Returns the list of relative paths copied. This is the function that makes
     a build's output real on disk. Creating ``project_dir`` if absent.
 
-    ``clean=True`` first removes the project dir's existing contents (except
-    ``.git``) so a re-build of the same slug delivers a CLEAN tree instead of
-    accumulating stale files from previous builds.
+    ``clean=True`` first removes stale deliverable files while preserving
+    machine-local state that this module intentionally never copies (``.git``,
+    dependency stores, virtual environments, and compiler caches).
     """
     src = Path(worktree_dir)
     dst = Path(project_dir)
@@ -215,23 +302,7 @@ def merge_back(
     except OSError:
         return []
     if clean and dst.exists():
-        for child in dst.iterdir():
-            if child.name == ".git":
-                continue
-            try:
-                # Unlink symlinks/junctions FIRST: rmtree refuses them (raising
-                # OSError), which would leave the alias in place for the copy
-                # loop below to write THROUGH — outside the project directory.
-                if child.is_symlink() or bool(
-                    getattr(os.path, "isjunction", lambda _p: False)(child)
-                ):
-                    child.unlink()
-                elif child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-            except OSError:
-                pass
+        _clean_deliverable_contents(dst)
     dst.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for f in sources:
@@ -269,7 +340,14 @@ def list_files(worktree_dir: str | Path) -> list[str]:
     return [f.relative_to(src).as_posix() for f in _iter_files(src)]
 
 
-def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
+def _tree_snapshot(
+    worktree_dir: str | Path,
+    *,
+    max_files: int | None = None,
+    max_bytes: int | None = None,
+    max_entries: int | None = None,
+    deliverable: bool = False,
+) -> dict[str, Any]:
     """Return a deterministic, generated-output-free source tree snapshot.
 
     Directory names are filtered at every depth and traversal never follows
@@ -277,6 +355,21 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
     file is recorded so callers can refuse to bind a delivery verdict to an
     ambiguous tree.
     """
+    for name, value in (
+        ("max_files", max_files),
+        ("max_bytes", max_bytes),
+        ("max_entries", max_entries),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            raise ValueError(f"{name} must be a positive integer or None")
+
+    algorithm = (
+        DELIVERABLE_TREE_DIGEST_ALGORITHM
+        if deliverable
+        else SOURCE_TREE_DIGEST_ALGORITHM
+    )
     root = Path(worktree_dir).resolve()
     files: list[tuple[str, Path]] = []
     excluded_entries = 0
@@ -284,9 +377,11 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
     unsafe_aliases: list[str] = []
     collisions: list[list[str]] = []
     seen_casefolded: dict[str, str] = {}
+    entry_count = 0
+    budget_exceeded = False
     if not root.is_dir():
         return {
-            "algorithm": SOURCE_TREE_DIGEST_ALGORITHM,
+            "algorithm": algorithm,
             "sha256": "",
             "files": [],
             "file_count": 0,
@@ -295,50 +390,72 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
             "path_collisions": [],
             "unreadable_files": [],
             "unsafe_aliases": [],
+            "budget_exceeded": False,
             "valid": False,
         }
 
-    def record_walk_error(error: OSError) -> None:
-        unreadable.append(f"<directory:{getattr(error, 'filename', '') or 'unknown'}>")
+    pending_directories = [root]
+    while pending_directories and not budget_exceeded:
+        current_path = pending_directories.pop()
+        entries: list[os.DirEntry[str]] = []
+        try:
+            with os.scandir(current_path) as scanner:
+                for entry in scanner:
+                    entry_count += 1
+                    if max_entries is not None and entry_count > max_entries:
+                        budget_exceeded = True
+                        break
+                    entries.append(entry)
+        except OSError:
+            unreadable.append(f"<directory:{current_path}>")
+            continue
+        if budget_exceeded:
+            break
 
-    for current, dirnames, filenames in os.walk(
-        root,
-        topdown=True,
-        onerror=record_walk_error,
-        followlinks=False,
-    ):
-        current_path = Path(current)
-        kept_dirs: list[str] = []
-        for dirname in dirnames:
-            candidate = current_path / dirname
-            relative_dir = candidate.relative_to(root)
-            is_alias = candidate.is_symlink() or bool(
-                getattr(os.path, "isjunction", lambda _path: False)(candidate)
-            )
+        child_directories: list[Path] = []
+        for entry in sorted(
+            entries,
+            key=lambda value: (value.name.casefold(), value.name),
+        ):
+            path = current_path / entry.name
+            relative_path = path.relative_to(root)
+            relative = relative_path.as_posix()
+            try:
+                is_alias = entry.is_symlink() or bool(
+                    getattr(os.path, "isjunction", lambda _path: False)(path)
+                )
+                is_directory = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                unreadable.append(relative)
+                continue
+            if is_directory:
+                if (
+                    entry.name.casefold()
+                    in (
+                        _IGNORE_NAMES_CASEFOLD
+                        if deliverable
+                        else SOURCE_TREE_EXCLUDED_DIR_NAMES
+                    )
+                    or (
+                        not deliverable
+                        and _source_tree_internal_output(relative_path)
+                    )
+                    or is_alias
+                ):
+                    excluded_entries += 1
+                    if is_alias:
+                        unsafe_aliases.append(relative)
+                else:
+                    child_directories.append(path)
+                continue
             if (
-                dirname.casefold() in SOURCE_TREE_EXCLUDED_DIR_NAMES
-                or _source_tree_internal_output(relative_dir)
+                entry.name.casefold() in _IGNORE_NAMES_CASEFOLD
+                or (
+                    not deliverable
+                    and _source_tree_internal_output(relative_path)
+                )
                 or is_alias
             ):
-                excluded_entries += 1
-                if is_alias:
-                    unsafe_aliases.append(
-                        relative_dir.as_posix()
-                    )
-            else:
-                kept_dirs.append(dirname)
-        dirnames[:] = kept_dirs
-
-        for filename in filenames:
-            path = current_path / filename
-            try:
-                relative_path = path.relative_to(root)
-                relative = relative_path.as_posix()
-            except ValueError:
-                excluded_entries += 1
-                continue
-            is_alias = path.is_symlink()
-            if _source_tree_internal_output(relative_path) or is_alias:
                 excluded_entries += 1
                 if is_alias:
                     unsafe_aliases.append(relative)
@@ -349,30 +466,98 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
                 collisions.append([previous, relative])
                 continue
             seen_casefolded[folded] = relative
+            if max_files is not None and len(files) >= max_files:
+                budget_exceeded = True
+                break
             files.append((relative, path))
+        pending_directories.extend(reversed(child_directories))
 
     files.sort(key=lambda item: (item[0].casefold(), item[0]))
     digest = hashlib.sha256()
-    digest.update(f"{SOURCE_TREE_DIGEST_ALGORITHM}\0".encode())
+    digest.update(f"{algorithm}\0".encode())
     total_bytes = 0
     included: list[str] = []
     for relative, path in files:
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         try:
-            with path.open("rb") as handle:
-                while chunk := handle.read(1024 * 1024):
+            descriptor = _open_source_descriptor(root, path)
+            with os.fdopen(descriptor, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    unreadable.append(f"<non-regular:{relative}>")
+                    continue
+                # Executable/readability bits are part of a runnable artifact.
+                # Binding only path+bytes would accept a delivery that silently
+                # turned ``run.sh`` from 0755 into 0644.
+                digest.update(f"{stat.S_IMODE(before.st_mode):04o}".encode())
+                digest.update(b"\0")
+                while True:
+                    remaining = (
+                        None
+                        if max_bytes is None
+                        else max(0, max_bytes - total_bytes)
+                    )
+                    read_size = (
+                        1024 * 1024
+                        if remaining is None
+                        else min(1024 * 1024, remaining + 1)
+                    )
+                    chunk = handle.read(read_size)
+                    if not chunk:
+                        break
+                    if remaining is not None and len(chunk) > remaining:
+                        budget_exceeded = True
+                        break
                     total_bytes += len(chunk)
                     digest.update(chunk)
+                after = os.fstat(handle.fileno())
         except OSError:
             unreadable.append(relative)
             continue
+        try:
+            current_path_stat = path.stat(follow_symlinks=False)
+        except OSError:
+            unreadable.append(f"<replaced:{relative}>")
+            continue
+        stable = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            stat.S_IFMT(before.st_mode),
+            stat.S_IMODE(before.st_mode),
+        ) == (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            stat.S_IFMT(after.st_mode),
+            stat.S_IMODE(after.st_mode),
+        ) == (
+            current_path_stat.st_dev,
+            current_path_stat.st_ino,
+            current_path_stat.st_size,
+            current_path_stat.st_mtime_ns,
+            stat.S_IFMT(current_path_stat.st_mode),
+            stat.S_IMODE(current_path_stat.st_mode),
+        )
+        if not stable:
+            unreadable.append(f"<unstable:{relative}>")
+            continue
+        if budget_exceeded:
+            break
         digest.update(b"\0")
         included.append(relative)
 
-    valid = not collisions and not unreadable and not unsafe_aliases
+    valid = (
+        not collisions
+        and not unreadable
+        and not unsafe_aliases
+        and not budget_exceeded
+    )
     return {
-        "algorithm": SOURCE_TREE_DIGEST_ALGORITHM,
+        "algorithm": algorithm,
         "sha256": digest.hexdigest() if valid else "",
         "files": included,
         "file_count": len(included),
@@ -381,8 +566,43 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
         "path_collisions": collisions,
         "unreadable_files": unreadable,
         "unsafe_aliases": unsafe_aliases,
+        "budget_exceeded": budget_exceeded,
         "valid": valid,
     }
+
+
+def source_tree_snapshot(
+    worktree_dir: str | Path,
+    *,
+    max_files: int | None = None,
+    max_bytes: int | None = None,
+    max_entries: int | None = None,
+) -> dict[str, Any]:
+    """Return the canonical authored-source view used by proof bindings."""
+    return _tree_snapshot(
+        worktree_dir,
+        max_files=max_files,
+        max_bytes=max_bytes,
+        max_entries=max_entries,
+        deliverable=False,
+    )
+
+
+def deliverable_tree_snapshot(
+    worktree_dir: str | Path,
+    *,
+    max_files: int | None = None,
+    max_bytes: int | None = None,
+    max_entries: int | None = None,
+) -> dict[str, Any]:
+    """Return the exact bounded file view that :func:`merge_back` can copy."""
+    return _tree_snapshot(
+        worktree_dir,
+        max_files=max_files,
+        max_bytes=max_bytes,
+        max_entries=max_entries,
+        deliverable=True,
+    )
 
 
 # Subdirectory under a delivered project that holds the live, read-only preview

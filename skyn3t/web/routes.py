@@ -4313,6 +4313,10 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
     _require_delivered_project(state, slug)
     if getattr(state, "orchestrator", None) is None:
         return {"accepted": False, "slug": slug, "reason": "orchestrator unavailable"}
+    # Snapshot routing synchronously with the GUI submission. The background
+    # task may wait behind another Improve while Settings continues to change.
+    _enforce_build_routing(state)
+    routing = _submission_routing_snapshot(state, "")
     from skyn3t.studio.improve import ImproveEngine
     engine = ImproveEngine(
         state.event_bus, state.orchestrator,
@@ -4320,6 +4324,8 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
         memory=getattr(state, "memory", None),
         skills=getattr(state, "skills", None),
         rag=getattr(state, "rag", None),
+        llm_client=getattr(state, "llm_client", None),
+        routing_snapshot=routing,
     )
     cid = uuid.uuid4().hex
     import asyncio

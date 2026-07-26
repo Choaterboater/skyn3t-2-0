@@ -90,7 +90,9 @@ def test_improve_empty_mergeback_aborts_without_touching_original(tmp_path, monk
 
     outcome = asyncio.run(engine.improve("demo", "g"))
     assert outcome.status == "failed"
-    assert "backup was incomplete" in outcome.detail["error"]
+    # The journaled delivery path may detect the failed copy while seeding or
+    # staging, before it ever needs to create the live-project backup.
+    assert "incomplete" in outcome.detail["error"]
     assert (project / "main.py").read_text() == "print('original')\n"
 
 

@@ -2,10 +2,18 @@
 """A worktree slug must never escape the worktrees root (path traversal)."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 import skyn3t.worktree as worktree_mod
-from skyn3t.worktree import create_worktree, merge_back, source_tree_snapshot
+from skyn3t.worktree import (
+    create_worktree,
+    deliverable_tree_snapshot,
+    merge_back,
+    source_tree_snapshot,
+)
 
 
 def test_create_worktree_rejects_path_traversal_slug(tmp_path):
@@ -67,6 +75,38 @@ def test_merge_back_clean_unlinks_preseeded_symlink_instead_of_writing_through(
     assert not (outside / "payload.txt").exists()
     assert (dst / "sub" / "payload.txt").read_text(encoding="utf-8") == "build output\n"
     assert "sub/payload.txt" in copied
+
+
+def test_merge_back_clean_preserves_ignored_runtime_state_at_any_depth(tmp_path):
+    src = tmp_path / "wt"
+    dst = tmp_path / "project"
+    src.mkdir()
+    dst.mkdir()
+    (src / "src").mkdir()
+    (src / "src" / "app.js").write_text("export const next = true;\n")
+    (dst / "stale.txt").write_text("remove me\n")
+    for marker in (
+        dst / ".venv" / "private-marker",
+        dst / "node_modules" / "root-marker",
+        dst / "src" / "node_modules" / "nested-marker",
+        dst / "src" / "__pycache__" / "module.pyc",
+        dst / ".git" / "config",
+    ):
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("machine local\n")
+
+    merge_back(src, dst, clean=True)
+
+    assert not (dst / "stale.txt").exists()
+    assert (dst / "src" / "app.js").read_text() == "export const next = true;\n"
+    for marker in (
+        dst / ".venv" / "private-marker",
+        dst / "node_modules" / "root-marker",
+        dst / "src" / "node_modules" / "nested-marker",
+        dst / "src" / "__pycache__" / "module.pyc",
+        dst / ".git" / "config",
+    ):
+        assert marker.read_text() == "machine local\n"
 
 
 def test_merge_back_never_writes_through_symlinked_ancestor(tmp_path):
@@ -214,21 +254,70 @@ def test_source_tree_snapshot_fails_closed_on_unreadable_directory(
     tmp_path, monkeypatch
 ):
     (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
-    real_walk = worktree_mod.os.walk
+    private = tmp_path / "private"
+    private.mkdir()
+    real_scandir = worktree_mod.os.scandir
 
-    def walk_with_error(root, *, topdown, onerror, followlinks):
-        onerror(PermissionError(13, "denied", str(tmp_path / "private")))
-        yield from real_walk(
-            root,
-            topdown=topdown,
-            onerror=onerror,
-            followlinks=followlinks,
-        )
+    def scandir_with_error(path):
+        if Path(path) == private:
+            raise PermissionError(13, "denied", str(private))
+        return real_scandir(path)
 
-    monkeypatch.setattr(worktree_mod.os, "walk", walk_with_error)
+    monkeypatch.setattr(worktree_mod.os, "scandir", scandir_with_error)
 
     snapshot = source_tree_snapshot(tmp_path)
 
     assert snapshot["valid"] is False
     assert snapshot["sha256"] == ""
     assert snapshot["unreadable_files"]
+
+
+def test_tree_snapshots_bind_executable_mode(tmp_path):
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    executable_source = source_tree_snapshot(tmp_path)
+    executable_delivery = deliverable_tree_snapshot(tmp_path)
+
+    script.chmod(0o644)
+    plain_source = source_tree_snapshot(tmp_path)
+    plain_delivery = deliverable_tree_snapshot(tmp_path)
+
+    assert executable_source["sha256"] != plain_source["sha256"]
+    assert executable_delivery["sha256"] != plain_delivery["sha256"]
+
+
+def test_source_snapshot_rejects_fifo_without_blocking(tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO is not supported on this platform")
+    fifo = tmp_path / "pipe.py"
+    os.mkfifo(fifo)
+
+    snapshot = source_tree_snapshot(tmp_path)
+
+    assert snapshot["valid"] is False
+    assert snapshot["unreadable_files"] == ["<non-regular:pipe.py>"]
+
+
+def test_deliverable_snapshot_includes_outputs_source_snapshot_excludes(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.js").write_text("export default 1;\n")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "bundle.js").write_text("compiled\n")
+
+    source = source_tree_snapshot(tmp_path)
+    deliverable = deliverable_tree_snapshot(tmp_path)
+
+    assert source["files"] == ["src/app.js"]
+    assert deliverable["files"] == ["dist/bundle.js", "src/app.js"]
+
+
+def test_snapshot_budget_exhaustion_fails_closed(tmp_path):
+    for index in range(3):
+        (tmp_path / f"{index}.txt").write_text("payload\n")
+
+    snapshot = deliverable_tree_snapshot(tmp_path, max_files=2)
+
+    assert snapshot["valid"] is False
+    assert snapshot["budget_exceeded"] is True
+    assert snapshot["sha256"] == ""

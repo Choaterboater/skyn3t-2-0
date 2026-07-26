@@ -27,7 +27,9 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +95,15 @@ from skyn3t.studio.proof_run import (
     apply_deterministic_repairs,
     extract_error_gaps,
     proof_run,
+    stabilize_node_dependencies,
+)
+from skyn3t.studio.requirement_trace import (
+    ACCEPTANCE_REGISTRY_V1,
+    INACTIVE_REQUIREMENT_STATUSES,
+    REQUIREMENT_TRACE_COMPILER,
+    REQUIREMENT_TRACE_SCHEMA_VERSION,
+    compile_requirement_trace,
+    requirement_evidence_binding,
 )
 from skyn3t.studio.security_check import check_security
 from skyn3t.studio.slicer import slice_plan, slice_tier
@@ -102,6 +113,7 @@ from skyn3t.studio.visual_loop import visual_self_improve
 from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.workflow_depth import check_workflow_depth
 from skyn3t.worktree import (
+    SOURCE_TREE_DIGEST_ALGORITHM,
     Worktree,
     cleanup_worktree,
     create_worktree,
@@ -114,6 +126,25 @@ from skyn3t.worktree import (
 log = structlog.get_logger(__name__)
 
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+
+_REQUIREMENT_TRACE_SAFE_PROOF_IDS = frozenset(
+    {
+        "proof:build",
+        "proof:python-tests",
+        "proof:node-tests",
+        "proof:swift-tests",
+        "proof:ruff",
+        "proof:stack-artifact",
+    }
+)
+_REQUIREMENT_TRACE_PROOF_DETAIL_KEYS = {
+    "proof:build": "build",
+    "proof:python-tests": "tests",
+    "proof:node-tests": "node_tests",
+    "proof:swift-tests": "swift_tests",
+    "proof:ruff": "ruff",
+}
+_REQUIREMENT_TRACE_MAX_ROUTES = 512
 
 # Dir names that hold build output / vendored / preview snapshots — never a SEO
 # repair TARGET (rewriting a built `.next` page or a `.preview` mirror is nonsense
@@ -195,6 +226,16 @@ class BuildOutcome:
             "files": list(self.files),
             "cost_usd": self.cost_usd,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _RequirementTraceSelection:
+    """Pure caller-side selection for the bounded final evidence phase."""
+
+    opted_in: bool = False
+    fully_bound: bool = False
+    safe_proof_ids: tuple[str, ...] = ()
+    web_routes: tuple[str, ...] = ()
 
 
 def _slugify(text: str) -> str:
@@ -1635,19 +1676,31 @@ class StudioRunner:
         plan: BuildPlan,
         final_score: float,
         verdict: str,
+        *,
+        blocking: bool = True,
+        routes: list[str] | tuple[str, ...] | None = None,
+        include_discovered_routes: bool = True,
     ) -> tuple[float, str]:
-        """Run blocking Docker+Playwright or Maestro evidence for UI builds."""
+        """Run Docker+Playwright or Maestro evidence for UI builds.
+
+        ``blocking=False`` is the collection-only seam used by registry-v1
+        route requirements when the global proof-ladder policy is disabled.
+        The requirement trace applies must/should priority after evidence is
+        bound; this helper must not pre-empt that decision.
+        """
         from skyn3t.studio.liveness import enumerate_routes
         from skyn3t.studio.preview_supervisor import ProofLadderCoordinator
 
-        routes = [
-            route.path
-            for route in enumerate_routes(Path(project_dir), plan.stack)
-            if route.kind == "page"
-        ]
-        routes = list(dict.fromkeys(routes)) or ["/"]
+        requested_routes = list(routes or ())
+        if include_discovered_routes:
+            requested_routes.extend(
+                route.path
+                for route in enumerate_routes(Path(project_dir), plan.stack)
+                if route.kind == "page"
+            )
+        requested_routes = list(dict.fromkeys(requested_routes)) or ["/"]
         try:
-            run_options: dict[str, Any] = {"routes": routes}
+            run_options: dict[str, Any] = {"routes": requested_routes}
             responsive_proof = manifest.extra.get("responsive_visual_proof")
             if (
                 isinstance(responsive_proof, dict)
@@ -1680,6 +1733,9 @@ class StudioRunner:
         if result is not None and result.passed:
             manifest.extra.pop("proof_ladder_gate", None)
             return final_score, verdict
+        if not blocking:
+            manifest.extra.pop("proof_ladder_gate", None)
+            return final_score, verdict
 
         failed_steps = [
             str(step.get("name") or "proof")
@@ -1698,6 +1754,518 @@ class StudioRunner:
         final_score = min(final_score, cap)
         manifest.score = final_score
         return final_score, verdict
+
+    @staticmethod
+    def _canonical_requirement_route(acceptance_id: str) -> str | None:
+        if not acceptance_id.startswith("ui:route:"):
+            return None
+        raw = acceptance_id.removeprefix("ui:route:").strip()
+        route = "/" + raw.lstrip("/")
+        if len(route) > 256 or any(token in route for token in ("\\", "?", "#", "://")):
+            return None
+        if route != "/" and any(part in {"", ".", ".."} for part in route.split("/")[1:]):
+            return None
+        return route
+
+    @classmethod
+    def _requirement_trace_selection(
+        cls,
+        product_spec: ProductSpecV1 | None,
+        stack: str,
+    ) -> _RequirementTraceSelection:
+        if product_spec is None:
+            return _RequirementTraceSelection()
+        version = getattr(product_spec, "acceptance_registry_version", None)
+        if type(version) is not int or version != 1:
+            return _RequirementTraceSelection()
+        active_musts = [
+            item for item in (getattr(product_spec, "requirements", ()) or ())
+            if str(getattr(item, "priority", "")).casefold() == "must"
+            and str(getattr(item, "status", "")).casefold() not in INACTIVE_REQUIREMENT_STATUSES
+        ]
+        fully_bound = bool(active_musts) and all(
+            getattr(item, "acceptance_ids", ()) for item in active_musts
+        )
+        if not fully_bound:
+            return _RequirementTraceSelection(opted_in=True)
+        ids = tuple(dict.fromkeys(
+            str(acceptance_id)
+            for item in active_musts
+            for acceptance_id in getattr(item, "acceptance_ids", ())
+        ))
+        proof_ids = tuple(
+            acceptance_id for acceptance_id in ids
+            if acceptance_id in _REQUIREMENT_TRACE_SAFE_PROOF_IDS
+        )
+        routes: list[str] = []
+        if str(stack or "").strip().lower() in _WEB_STACKS:
+            for acceptance_id in ids:
+                route = cls._canonical_requirement_route(acceptance_id)
+                if route is not None and route not in routes:
+                    routes.append(route)
+        return _RequirementTraceSelection(
+            True, True, proof_ids, tuple(routes[:_REQUIREMENT_TRACE_MAX_ROUTES])
+        )
+
+    @staticmethod
+    def _valid_evidence_snapshot(snapshot: dict[str, Any]) -> bool:
+        sha256 = snapshot.get("sha256")
+        return (
+            snapshot.get("valid") is True
+            and snapshot.get("algorithm") == SOURCE_TREE_DIGEST_ALGORITHM
+            and isinstance(sha256, str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", sha256))
+            and type(snapshot.get("file_count")) is int
+            and 0 <= snapshot["file_count"] <= 10_000_000
+            and type(snapshot.get("byte_count")) is int
+            and 0 <= snapshot["byte_count"] <= (1 << 50)
+        )
+
+    @classmethod
+    def _same_evidence_snapshot(cls, before: dict, after: dict) -> bool:
+        return (
+            cls._valid_evidence_snapshot(before)
+            and cls._valid_evidence_snapshot(after)
+            and all(
+                before.get(field) == after.get(field)
+                for field in ("algorithm", "sha256", "file_count", "byte_count")
+            )
+        )
+
+    @staticmethod
+    def _proof_flags(selected_ids: tuple[str, ...]) -> tuple[bool, bool]:
+        run_tests = bool(
+            set(selected_ids)
+            & {"proof:python-tests", "proof:node-tests", "proof:swift-tests"}
+        )
+        run_build = bool(set(selected_ids) & {"proof:build", "proof:ruff"})
+        return run_tests, run_build
+
+    @staticmethod
+    def _sanitized_requirement_proof(payload: dict, selected_ids: tuple[str, ...]) -> dict:
+        raw_detail = payload.get("detail")
+        raw_detail = raw_detail if isinstance(raw_detail, dict) else {}
+        detail: dict[str, Any] = {}
+        if "proof:stack-artifact" in selected_ids and "stack_check" in raw_detail:
+            detail["stack_check"] = raw_detail["stack_check"]
+        environment = raw_detail.get("proof_environment")
+        if isinstance(environment, dict) and environment.get("command_backend") == "docker":
+            for acceptance_id in selected_ids:
+                key = _REQUIREMENT_TRACE_PROOF_DETAIL_KEYS.get(acceptance_id)
+                if key is not None and key in raw_detail:
+                    detail[key] = raw_detail[key]
+        # Fail closed for proof:overall / proof:entrypoint.
+        return {"passed": False, "detail": detail}
+
+    @classmethod
+    def _sanitized_requirement_ladder(
+        cls,
+        payload: dict[str, Any],
+        selected_routes: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Expose only exact allowlisted Playwright route records."""
+        wanted = set(selected_routes)
+        steps: list[dict[str, Any]] = []
+        raw_steps = payload.get("steps")
+        if isinstance(raw_steps, list):
+            for raw_step in raw_steps[:2]:
+                if not isinstance(raw_step, dict) or raw_step.get("name") != "playwright":
+                    continue
+                raw_detail = raw_step.get("detail")
+                raw_detail = raw_detail if isinstance(raw_detail, dict) else {}
+                raw_routes = raw_detail.get("routes")
+                raw_routes = raw_routes if isinstance(raw_routes, list) else []
+                declared = {
+                    route
+                    for value in raw_routes[:_REQUIREMENT_TRACE_MAX_ROUTES + 1]
+                    if isinstance(value, str)
+                    and (route := cls._canonical_requirement_route(f"ui:route:{value}"))
+                }
+                proofs = []
+                raw_proofs = raw_detail.get("proofs")
+                raw_proofs = raw_proofs if isinstance(raw_proofs, list) else []
+                for record in raw_proofs[:_REQUIREMENT_TRACE_MAX_ROUTES + 1]:
+                    if not isinstance(record, dict):
+                        continue
+                    raw_route = record.get("route")
+                    route = (
+                        cls._canonical_requirement_route(f"ui:route:{raw_route}")
+                        if isinstance(raw_route, str)
+                        else None
+                    )
+                    if route in wanted:
+                        raw_viewports = record.get("viewports")
+                        viewports: list[dict[str, Any]] | None = None
+                        if isinstance(raw_viewports, list):
+                            viewports = []
+                            for raw_viewport in raw_viewports[:3]:
+                                if not isinstance(raw_viewport, dict):
+                                    viewports.append({"invalid": True})
+                                    continue
+                                metrics = raw_viewport.get("metrics")
+                                viewports.append({
+                                    "name": raw_viewport.get("name"),
+                                    "width": raw_viewport.get("width"),
+                                    "height": raw_viewport.get("height"),
+                                    "passed": raw_viewport.get("passed"),
+                                    "skipped": raw_viewport.get("skipped"),
+                                    "reason": raw_viewport.get("reason"),
+                                    "screenshot": raw_viewport.get("screenshot"),
+                                    "metrics": {} if isinstance(metrics, Mapping) else None,
+                                    "issues": [] if raw_viewport.get("issues") == [] else [{"redacted": True}],
+                                    "console_errors": [] if raw_viewport.get("console_errors") == [] else ["redacted"],
+                                    "page_errors": [] if raw_viewport.get("page_errors") == [] else ["redacted"],
+                                })
+                        proofs.append({
+                            key: record.get(key)
+                            for key in (
+                                "schema_version", "route", "passed", "skipped",
+                                "reason", "report_path",
+                            )
+                        } | {"viewports": viewports})
+                steps.append({
+                    key: raw_step.get(key)
+                    for key in ("name", "status", "required", "reason")
+                } | {
+                    "detail": {
+                        "routes": [route for route in selected_routes if route in declared],
+                        "proofs": proofs,
+                    }
+                })
+        return {
+            key: payload.get(key)
+            for key in (
+                "schema_version", "run_id", "status", "passed",
+                "persistence_error", "report_path",
+            )
+        } | {"steps": steps}
+
+    async def _run_terminal_evidence(
+        self,
+        manifest: BuildManifest,
+        product_spec: ProductSpecV1 | None,
+        project_dir: str | Path,
+        plan: BuildPlan,
+        proof: Any,
+        final_score: float,
+        verdict: str,
+    ) -> tuple[float, str, Any]:
+        selection = self._requirement_trace_selection(product_spec, plan.stack)
+        if selection.fully_bound and selection.safe_proof_ids:
+            run_tests, run_build = self._proof_flags(selection.safe_proof_ids)
+            if self._valid_evidence_snapshot(source_tree_snapshot(project_dir)):
+                try:
+                    ran, passed, summary = await asyncio.to_thread(
+                        stabilize_node_dependencies,
+                        project_dir,
+                        execution_backend=self.settings.execution_backend,
+                        stack=plan.stack,
+                        timeout=max(
+                            int(getattr(self.settings, "generated_build_timeout", 300)),
+                            int(getattr(self.settings, "generated_test_timeout", 90)),
+                        ),
+                        run_tests=run_tests,
+                        run_build=run_build,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    ran, passed, summary = True, False, str(exc)[:500]
+            else:
+                ran, passed, summary = False, False, "invalid source tree"
+            manifest.extra["requirement_trace_dependency_stabilization"] = {
+                "ran": bool(ran), "passed": bool(passed),
+                "summary": str(summary)[:500],
+                "acceptance_ids": list(selection.safe_proof_ids),
+            }
+            if (ran and not passed) or summary == "invalid source tree":
+                verdict = "no_go"
+        verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+        return await self._run_final_requirement_evidence(
+            manifest, product_spec, project_dir, plan, proof, final_score, verdict, selection
+        )
+
+    async def _run_final_requirement_evidence(
+        self,
+        manifest: BuildManifest,
+        product_spec: ProductSpecV1 | None,
+        project_dir: str | Path,
+        plan: BuildPlan,
+        proof: Any,
+        final_score: float,
+        verdict: str,
+        selection: _RequirementTraceSelection,
+    ) -> tuple[float, str, Any]:
+        source_before = source_tree_snapshot(project_dir)
+        source_current = source_before
+        errors = [] if self._valid_evidence_snapshot(source_before) else [
+            "final source tree snapshot was invalid before evidence"
+        ]
+        proof_payload: dict[str, Any] | None = None
+        if selection.fully_bound and selection.safe_proof_ids and not errors:
+            run_tests, run_build = self._proof_flags(selection.safe_proof_ids)
+            try:
+                final_proof = await asyncio.to_thread(
+                    proof_run,
+                    project_dir,
+                    checklist=plan.checklist,
+                    execution_backend=self.settings.execution_backend,
+                    stack=plan.stack,
+                    run_tests=run_tests,
+                    test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                    run_build=run_build,
+                    build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                    brief=manifest.brief,
+                )
+                proof_payload = final_proof.to_dict()
+                manifest.extra["proof"] = proof_payload
+                proof = final_proof
+                if not final_proof.passed:
+                    verdict = "no_go"
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"final proof failed to execute: {exc}"[:500])
+                verdict = "no_go"
+            source_current = source_tree_snapshot(project_dir)
+            if not self._same_evidence_snapshot(source_before, source_current):
+                errors.append("authored source changed during final proof")
+                verdict = "no_go"
+        global_ladder = bool(getattr(self.settings, "proof_ladder_required", True)) and (
+            plan.stack in _UI_WEB_STACKS or plan.stack == "react_native"
+        )
+        ladder_needed = global_ladder or bool(
+            selection.fully_bound and selection.web_routes
+        )
+        runtime_before = runtime_current = None
+        if ladder_needed:
+            ladder_ok = not errors and self._same_evidence_snapshot(
+                source_before, source_current
+            )
+            if ladder_ok and plan.stack in _WEB_STACKS:
+                try:
+                    from skyn3t.studio.preview_supervisor import preview_input_fingerprint
+                    runtime_before = preview_input_fingerprint(project_dir, plan.stack)
+                except Exception as exc:  # noqa: BLE001
+                    ladder_ok = False
+                    errors.append(f"runtime fingerprint unavailable before UI proof: {exc}"[:500])
+            if ladder_ok:
+                final_score, verdict = await self._run_required_proof_ladder(
+                    manifest, project_dir, plan, final_score, verdict,
+                    blocking=global_ladder,
+                    routes=selection.web_routes,
+                    include_discovered_routes=global_ladder,
+                )
+                after_ladder = source_tree_snapshot(project_dir)
+                if not self._same_evidence_snapshot(source_current, after_ladder):
+                    errors.append("authored source changed during final UI proof")
+                    verdict = "no_go"
+                source_current = after_ladder
+                if plan.stack in _WEB_STACKS:
+                    try:
+                        runtime_current = preview_input_fingerprint(project_dir, plan.stack)
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"runtime fingerprint unavailable after UI proof: {exc}"[:500])
+                    if runtime_before is None or runtime_current != runtime_before:
+                        errors.append("runtime inputs changed during final UI proof")
+            else:
+                reason = errors[-1] if errors else "unsafe final source tree"
+                manifest.extra["proof_ladder"] = {
+                    "schema_version": 1, "run_id": uuid.uuid4().hex,
+                    "status": "failed", "passed": False, "persistence_error": "",
+                    "steps": [{"name": "evidence_integrity", "status": "failed",
+                               "required": True, "reason": reason}],
+                }
+                if global_ladder:
+                    manifest.extra["proof_ladder_gate"] = f"required UI proof did not run: {reason}"
+                verdict = "no_go"
+        if errors:
+            if selection.fully_bound or global_ladder:
+                verdict = "no_go"
+            manifest.extra["requirement_trace_evidence_errors"] = list(dict.fromkeys(errors))
+        else:
+            manifest.extra.pop("requirement_trace_evidence_errors", None)
+        if product_spec is None:
+            return final_score, verdict, proof
+        evidence_extra: dict[str, Any] = {}
+        if proof_payload is not None:
+            evidence_extra["proof"] = self._sanitized_requirement_proof(
+                proof_payload, selection.safe_proof_ids
+            )
+        ladder_payload = (
+            manifest.extra.get("proof_ladder") if ladder_needed else None
+        )
+        if selection.web_routes and isinstance(ladder_payload, dict):
+            evidence_extra["proof_ladder"] = self._sanitized_requirement_ladder(
+                ladder_payload, selection.web_routes
+            )
+        run_id = ladder_payload.get("run_id") if isinstance(ladder_payload, dict) else None
+        evidence_run_id = run_id if isinstance(run_id, str) and run_id else uuid.uuid4().hex
+        registry = ACCEPTANCE_REGISTRY_V1 if selection.opted_in else None
+        compiled_at = datetime.now(UTC).isoformat(timespec="seconds")
+        binding: dict[str, Any] | None = None
+        runtime_binding = (
+            runtime_current or runtime_before
+            if selection.web_routes
+            else None
+        )
+        if (
+            selection.fully_bound
+            and not errors
+            and self._valid_evidence_snapshot(source_current)
+        ):
+            try:
+                binding = requirement_evidence_binding(
+                    product_spec, evidence_extra, source_current,
+                    acceptance_registry=ACCEPTANCE_REGISTRY_V1,
+                    build_id=manifest.build_id,
+                    evidence_run_id=evidence_run_id,
+                    runtime_input_fingerprint=runtime_binding,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"requirement evidence binding failed: {exc}"[:500])
+        if errors:
+            manifest.extra["requirement_trace_evidence_errors"] = list(dict.fromkeys(errors))
+        try:
+            trace = compile_requirement_trace(
+                product_spec, evidence_extra, source_current,
+                acceptance_registry=registry,
+                evidence_binding=binding,
+                build_id=(manifest.build_id if selection.opted_in else None),
+                evidence_run_id=(evidence_run_id if selection.opted_in else None),
+                current_runtime_input_fingerprint=runtime_binding,
+                compiled_at=compiled_at,
+            )
+        except Exception as exc:  # noqa: BLE001
+            reason = f"requirement trace compilation failed: {exc}"[:500]
+            manifest.extra["requirement_trace_error"] = reason
+            trace = {
+                "schema_version": REQUIREMENT_TRACE_SCHEMA_VERSION,
+                "compiler": REQUIREMENT_TRACE_COMPILER, "compiled_at": compiled_at,
+                "acceptance_registry": registry, "mode": "invalid", "status": "failed",
+                "go_eligible": False, "blocks_delivery": selection.fully_bound,
+                "fresh": False, "freshness_reason": reason,
+                "requirements": [], "evidence": {},
+            }
+        else:
+            manifest.extra.pop("requirement_trace_error", None)
+        if binding is not None:
+            manifest.extra["requirement_evidence_binding"] = binding
+        else:
+            manifest.extra.pop("requirement_evidence_binding", None)
+        manifest.extra["requirement_trace"] = trace
+        blocked = (
+            trace.get("mode") == "enforced" and trace.get("go_eligible") is not True
+        ) or (trace.get("mode") == "invalid" and selection.fully_bound)
+        if blocked:
+            verdict = "no_go"
+            final_score = min(
+                final_score,
+                float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
+            )
+            manifest.score = final_score
+            manifest.extra["requirement_trace_gate"] = (
+                f"registry-v1 must evidence is {trace.get('status') or 'invalid'}"
+            )
+        else:
+            manifest.extra.pop("requirement_trace_gate", None)
+        manifest.files = list_files(project_dir)
+        return final_score, verdict, proof
+
+    @classmethod
+    def _settle_requirement_trace_delivery(
+        cls,
+        manifest: BuildManifest,
+        project_dir: str | Path,
+        stack: str,
+        delivered_tree: dict[str, Any],
+        final_score: float,
+        verdict: str,
+        score_cap: float,
+    ) -> tuple[float, str]:
+        """Invalidate a passing trace if the final delivered tree drifted."""
+        trace = manifest.extra.get("requirement_trace")
+        binding = manifest.extra.get("requirement_evidence_binding")
+        if (
+            not isinstance(trace, dict)
+            or trace.get("go_eligible") is not True
+            or not isinstance(binding, dict)
+        ):
+            return final_score, verdict
+        bound_source = binding.get("source_tree")
+        reason = ""
+        runtime_only = False
+        if not isinstance(bound_source, dict) or not cls._same_evidence_snapshot(
+            bound_source, delivered_tree
+        ):
+            reason = "delivered source changed after requirement evidence"
+        bound_runtime = binding.get("runtime_input_fingerprint")
+        if not reason and isinstance(bound_runtime, dict):
+            try:
+                from skyn3t.studio.preview_supervisor import preview_input_fingerprint
+
+                current_runtime = preview_input_fingerprint(project_dir, stack)
+            except Exception as exc:  # noqa: BLE001
+                reason = f"final runtime fingerprint unavailable: {exc}"[:500]
+                runtime_only = True
+            else:
+                if any(
+                    bound_runtime.get(field) != current_runtime.get(field)
+                    for field in ("algorithm", "sha256", "file_count", "byte_count")
+                ):
+                    reason = "delivered runtime changed after requirement evidence"
+                    runtime_only = True
+        if not reason:
+            return final_score, verdict
+
+        trace.update({
+            "status": "stale", "fresh": False, "go_eligible": False,
+            "blocks_delivery": True, "freshness_reason": reason,
+        })
+        affected: set[str] = set()
+        for acceptance_id, observation in trace.get("evidence", {}).items():
+            if (
+                isinstance(observation, dict)
+                and observation.get("status") == "passed"
+                and (not runtime_only or observation.get("runtime_bound") is True)
+            ):
+                observation.update({
+                    "status": "stale", "observed_status": "passed", "reason": reason,
+                })
+                affected.add(str(acceptance_id))
+        for row in trace.get("requirements", []):
+            if isinstance(row, dict):
+                row_stale = False
+                for item in row.get("bindings", []):
+                    if (
+                        isinstance(item, dict)
+                        and item.get("status") == "passed"
+                        and item.get("acceptance_id") in affected
+                    ):
+                        item["status"] = "stale"
+                        row_stale = True
+                if row_stale:
+                    row["status"] = "stale"
+        summary = trace.get("summary")
+        if isinstance(summary, dict):
+            musts = [
+                row for row in trace.get("requirements", [])
+                if isinstance(row, dict) and row.get("active") is True
+                and str(row.get("priority")).casefold() == "must"
+            ]
+            summary.update({
+                "total": len(musts),
+                "proven": sum(row.get("status") == "proven" for row in musts),
+                "must_total": len(musts),
+                "must_proven": sum(row.get("status") == "proven" for row in musts),
+                "must_failed": sum(row.get("status") == "failed" for row in musts),
+                "must_unbound": sum(row.get("status") == "unbound" for row in musts),
+                "must_stale": sum(row.get("status") == "stale" for row in musts),
+                "blocking_failed": sum(
+                    row.get("blocking") is True and row.get("status") != "proven"
+                    for row in trace.get("requirements", [])
+                    if isinstance(row, dict)
+                ),
+            })
+        manifest.extra["requirement_trace_gate"] = reason
+        manifest.extra.setdefault("requirement_trace_evidence_errors", []).append(reason)
+        return min(final_score, score_cap), "no_go"
 
     @staticmethod
     def _visual_self_heal_requested(settings, extra: dict[str, Any]) -> bool:
@@ -4168,10 +4736,14 @@ class StudioRunner:
                 }
             manifest.extra["routing_snapshot"] = routing_snapshot
         manifest.extra["requested_model_override"] = model_override
-        codegen_routing = (
+        raw_codegen_routing = (
             routing_snapshot.get("codegen")
             if isinstance(routing_snapshot, dict)
-            and isinstance(routing_snapshot.get("codegen"), dict)
+            else None
+        )
+        codegen_routing: dict[str, Any] = (
+            raw_codegen_routing
+            if isinstance(raw_codegen_routing, dict)
             else {}
         )
         manifest.extra["requested_codegen_model"] = str(
@@ -5097,21 +5669,6 @@ class StudioRunner:
                 final_score, verdict = await self._run_liveness(
                     manifest, project_dir, plan, proof, final_score, verdict)
 
-            # Final external UI proof is blocking. Web UI stacks must pass from
-            # the Docker-only preview through Playwright; React Native projects
-            # must carry and pass Maestro flows. No tool/daemon is never a pass.
-            if (
-                bool(getattr(self.settings, "proof_ladder_required", True))
-                and (plan.stack in _UI_WEB_STACKS or plan.stack == "react_native")
-            ):
-                final_score, verdict = await self._run_required_proof_ladder(
-                    manifest,
-                    project_dir,
-                    plan,
-                    final_score,
-                    verdict,
-                )
-
             final_score, verdict = self._run_product_quality_gates(
                 manifest, project_dir, plan, final_score, verdict
             )
@@ -5190,11 +5747,19 @@ class StudioRunner:
 
             verdict = self._apply_ai_native_gates(manifest, verdict)
 
-            # Unconditional final consistency pass — see _final_consistency_check's
-            # docstring: every stage above this point can mutate files with no
-            # re-verification of import resolution against what IT leaves behind.
-            # This is what "runs last" actually means.
-            verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+            # Final consistency owns the last repair opportunity. Only after it
+            # settles do we run registry-v1's bounded proof replay and the one
+            # globally required UI proof ladder, binding both to stable authored
+            # source/runtime fingerprints. No agent, LLM, or repair runs below.
+            final_score, verdict, proof = await self._run_terminal_evidence(
+                manifest,
+                product_spec,
+                project_dir,
+                plan,
+                proof,
+                final_score,
+                verdict,
+            )
             final_score, verdict = self._apply_scaffold_stub_proof_gate(
                 manifest, proof, final_score, verdict
             )
@@ -5205,11 +5770,20 @@ class StudioRunner:
 
             # Verdict is now fully settled (post-liveness): a no_go must not read
             # like a success. Clamp before the score feeds lessons + _finalize.
+            delivered_tree = source_tree_snapshot(project_dir)
+            final_score, verdict = self._settle_requirement_trace_delivery(
+                manifest,
+                project_dir,
+                plan.stack,
+                delivered_tree,
+                final_score,
+                verdict,
+                float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
+            )
             final_score = self._clamp_score_to_verdict(final_score, verdict)
             manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
-            delivered_tree = source_tree_snapshot(project_dir)
             manifest.extra["delivery_source_tree"] = {
                 "algorithm": delivered_tree.get("algorithm"),
                 "sha256": delivered_tree.get("sha256"),

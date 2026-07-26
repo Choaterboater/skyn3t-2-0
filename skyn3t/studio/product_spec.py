@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover
 
 
 PRODUCT_SPEC_SCHEMA_VERSION = 1
+ACCEPTANCE_REGISTRY_VERSION_V1 = 1
 PRODUCT_SPEC_RELATIVE_PATH = Path(".skyn3t") / "product.json"
 _LOCK_FILENAME = "product.lock"
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -129,6 +130,20 @@ def _text(
 def _positive_int(value: Any, *, path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ProductSpecValidationError(f"{path} must be a positive integer")
+    return value
+
+
+def _acceptance_registry_version(value: Any, *, path: str) -> int | None:
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value != ACCEPTANCE_REGISTRY_VERSION_V1
+    ):
+        raise ProductSpecValidationError(
+            f"{path} must be null or {ACCEPTANCE_REGISTRY_VERSION_V1}"
+        )
     return value
 
 
@@ -619,6 +634,7 @@ _PRODUCT_FIELDS = {
     "schema_version",
     "project_id",
     "version",
+    "acceptance_registry_version",
     "goal",
     "personas",
     "requirements",
@@ -634,6 +650,7 @@ _PRODUCT_FIELDS = {
 }
 _PATCHABLE_FIELDS = {
     "goal",
+    "acceptance_registry_version",
     "personas",
     "requirements",
     "non_goals",
@@ -652,6 +669,7 @@ class ProductSpecV1:
     project_id: str
     goal: str = ""
     version: int = 1
+    acceptance_registry_version: int | None = None
     personas: list[str] = field(default_factory=list)
     requirements: list[RequirementRecord] = field(default_factory=list)
     non_goals: list[str] = field(default_factory=list)
@@ -673,6 +691,10 @@ class ProductSpecV1:
         self.project_id = _text(self.project_id, path="product.project_id")
         self.goal = _text(self.goal, path="product.goal", allow_empty=True)
         self.version = _positive_int(self.version, path="product.version")
+        self.acceptance_registry_version = _acceptance_registry_version(
+            self.acceptance_registry_version,
+            path="product.acceptance_registry_version",
+        )
         self.personas = _str_list(self.personas, path="product.personas")
         self.requirements = _record_list(
             self.requirements, RequirementRecord, path="product.requirements"
@@ -726,6 +748,7 @@ class ProductSpecV1:
             "schema_version": self.schema_version,
             "project_id": self.project_id,
             "version": self.version,
+            "acceptance_registry_version": self.acceptance_registry_version,
             "goal": self.goal,
             "personas": list(self.personas),
             "requirements": [record.to_dict() for record in self.requirements],
@@ -757,6 +780,10 @@ class ProductSpecV1:
             schema_version=schema_version,
             project_id=_text(data.get("project_id"), path="product.project_id"),
             version=_positive_int(data.get("version", 1), path="product.version"),
+            acceptance_registry_version=_acceptance_registry_version(
+                data.get("acceptance_registry_version"),
+                path="product.acceptance_registry_version",
+            ),
             goal=_text(
                 data.get("goal", ""),
                 path="product.goal",
@@ -967,13 +994,21 @@ def product_contract_prompt_block(
         lines.append("- (none recorded)")
 
     lines.append("Current requirements:")
-    lines.extend(
-        (
+    for record in product.requirements[:16]:
+        line = (
             f"- [{_prompt_excerpt(record.priority, limit=40)}] "
             f"{_prompt_excerpt(record.text)}"
         )
-        for record in product.requirements[:16]
-    )
+        if (
+            product.acceptance_registry_version == ACCEPTANCE_REGISTRY_VERSION_V1
+            and record.acceptance_ids
+        ):
+            evidence = ", ".join(
+                _prompt_excerpt(acceptance_id, limit=80)
+                for acceptance_id in record.acceptance_ids[:8]
+            )
+            line = f"{line} | Required evidence: {evidence}"
+        lines.append(line)
     if not product.requirements:
         lines.append("- (none recorded)")
 

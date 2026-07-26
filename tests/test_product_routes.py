@@ -106,6 +106,34 @@ async def test_project_product_get_and_patch_use_optimistic_versions(tmp_path) -
         )
 
 
+async def test_project_product_patch_can_explicitly_enable_acceptance_registry_v1(
+    tmp_path,
+) -> None:
+    state, project = _state(tmp_path)
+    before = await get_project_product(state, "demo")
+    requirement = dict(before["product"]["requirements"][0])
+    requirement["acceptance_ids"] = ["proof:build"]
+
+    updated = await patch_project_product(
+        state,
+        "demo",
+        base_version=before["product"]["version"],
+        patch={
+            "acceptance_registry_version": 1,
+            "requirements": [requirement],
+        },
+        reason="Opt this contract into deterministic final evidence",
+    )
+
+    assert updated["product"]["acceptance_registry_version"] == 1
+    assert updated["product"]["requirements"][0]["acceptance_ids"] == [
+        "proof:build"
+    ]
+    persisted = ProductSpecV1.load(project)
+    assert persisted is not None
+    assert persisted.acceptance_registry_version == 1
+
+
 async def test_explicit_research_adds_backlog_without_changing_requirements(tmp_path) -> None:
     state, project = _state(tmp_path)
     original = ProductSpecV1.load(project)

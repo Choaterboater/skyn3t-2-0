@@ -455,6 +455,8 @@ def _runtime_input_scrub_command(spec: RunSpec) -> str:
         f"{_CONTAINER_APP}/.git",
         f"{_CONTAINER_APP}/.skyn3t/visual-proof",
         f"{_CONTAINER_APP}/.skyn3t/proof-ladder",
+        f"{_CONTAINER_APP}/skyn3t_manifest.json",
+        f"{_CONTAINER_APP}/skyn3t-observability.json",
     ]
     if spec.kind == "node":
         paths.append(f"{_CONTAINER_APP}/node_modules")

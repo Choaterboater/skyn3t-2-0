@@ -103,6 +103,31 @@ def test_product_contract_prompt_block_is_bounded_and_labels_backlog_optional() 
     assert "never treat as current requirements" in block
 
 
+def test_product_contract_prompt_includes_only_opted_in_evidence_ids() -> None:
+    from skyn3t.studio.product_spec import product_contract_prompt_block
+
+    legacy = ProductSpecV1(
+        project_id="legacy-contract",
+        requirements=[
+            RequirementRecord(
+                text="Render the dashboard",
+                acceptance_ids=["ui:route:/dashboard"],
+            )
+        ],
+    )
+    strict = ProductSpecV1.from_dict(
+        {
+            **legacy.to_dict(),
+            "project_id": "strict-contract",
+            "acceptance_registry_version": 1,
+        }
+    )
+
+    assert "ui:route:/dashboard" not in product_contract_prompt_block(legacy)
+    strict_prompt = product_contract_prompt_block(strict)
+    assert "Required evidence: ui:route:/dashboard" in strict_prompt
+
+
 def test_from_dict_applies_backward_safe_defaults_but_rejects_invalid_types() -> None:
     loaded = ProductSpecV1.from_dict(
         {
@@ -114,6 +139,7 @@ def test_from_dict_applies_backward_safe_defaults_but_rejects_invalid_types() ->
 
     assert loaded.schema_version == 1
     assert loaded.version == 1
+    assert loaded.acceptance_registry_version is None
     assert loaded.personas == []
     assert loaded.backlog == []
     assert loaded.requirements[0].id == deterministic_requirement_id("Retain saved data")
@@ -134,6 +160,46 @@ def test_from_dict_applies_backward_safe_defaults_but_rejects_invalid_types() ->
                     {"id": duplicate_id, "text": "One"},
                     {"id": duplicate_id, "text": "Two"},
                 ],
+            }
+        )
+
+
+def test_acceptance_registry_v1_is_an_explicit_versioned_opt_in() -> None:
+    opted_in = ProductSpecV1.from_dict(
+        {
+            "project_id": "strict-project",
+            "goal": "Bind requirements to final evidence",
+            "acceptance_registry_version": 1,
+            "requirements": [
+                {
+                    "text": "The final build passes",
+                    "acceptance_ids": ["proof:build"],
+                }
+            ],
+        }
+    )
+
+    assert opted_in.acceptance_registry_version == 1
+    assert opted_in.to_dict()["acceptance_registry_version"] == 1
+
+    with pytest.raises(
+        ProductSpecValidationError,
+        match="acceptance_registry_version",
+    ):
+        ProductSpecV1.from_dict(
+            {
+                "project_id": "future-project",
+                "acceptance_registry_version": 2,
+            }
+        )
+    with pytest.raises(
+        ProductSpecValidationError,
+        match="acceptance_registry_version",
+    ):
+        ProductSpecV1.from_dict(
+            {
+                "project_id": "ambiguous-project",
+                "acceptance_registry_version": True,
             }
         )
 

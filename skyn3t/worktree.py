@@ -60,7 +60,33 @@ SOURCE_TREE_EXCLUDED_DIR_NAMES = frozenset(
     }
 )
 SOURCE_TREE_DIGEST_ALGORITHM = "source-tree-sha256-v1"
-_SOURCE_TREE_EXCLUDED_FILES = frozenset({"skyn3t_manifest.json"})
+_SOURCE_TREE_EXCLUDED_RELATIVE_FILES = frozenset(
+    {
+        ("skyn3t_manifest.json",),
+        ("skyn3t-observability.json",),
+    }
+)
+_SOURCE_TREE_EXCLUDED_RELATIVE_DIRS = frozenset(
+    {
+        (".skyn3t", "proof-ladder"),
+        (".skyn3t", "visual-proof"),
+    }
+)
+
+
+def _source_tree_internal_output(relative: Path) -> bool:
+    """Return whether ``relative`` is runner-owned proof output.
+
+    Metadata files are excluded only at the project root, and proof directories
+    only beneath the root ``.skyn3t`` folder. Authored lookalikes elsewhere
+    remain part of the source digest.
+    """
+
+    folded = tuple(part.casefold() for part in relative.parts)
+    return folded in _SOURCE_TREE_EXCLUDED_RELATIVE_FILES or any(
+        folded[: len(prefix)] == prefix
+        for prefix in _SOURCE_TREE_EXCLUDED_RELATIVE_DIRS
+    )
 
 
 @dataclass(slots=True)
@@ -285,14 +311,19 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
         kept_dirs: list[str] = []
         for dirname in dirnames:
             candidate = current_path / dirname
+            relative_dir = candidate.relative_to(root)
             is_alias = candidate.is_symlink() or bool(
                 getattr(os.path, "isjunction", lambda _path: False)(candidate)
             )
-            if dirname.casefold() in SOURCE_TREE_EXCLUDED_DIR_NAMES or is_alias:
+            if (
+                dirname.casefold() in SOURCE_TREE_EXCLUDED_DIR_NAMES
+                or _source_tree_internal_output(relative_dir)
+                or is_alias
+            ):
                 excluded_entries += 1
                 if is_alias:
                     unsafe_aliases.append(
-                        candidate.relative_to(root).as_posix()
+                        relative_dir.as_posix()
                     )
             else:
                 kept_dirs.append(dirname)
@@ -301,12 +332,13 @@ def source_tree_snapshot(worktree_dir: str | Path) -> dict[str, Any]:
         for filename in filenames:
             path = current_path / filename
             try:
-                relative = path.relative_to(root).as_posix()
+                relative_path = path.relative_to(root)
+                relative = relative_path.as_posix()
             except ValueError:
                 excluded_entries += 1
                 continue
             is_alias = path.is_symlink()
-            if filename.casefold() in _SOURCE_TREE_EXCLUDED_FILES or is_alias:
+            if _source_tree_internal_output(relative_path) or is_alias:
                 excluded_entries += 1
                 if is_alias:
                     unsafe_aliases.append(relative)

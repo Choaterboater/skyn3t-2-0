@@ -39,6 +39,10 @@ def test_workspace_profile_has_a_versioned_desktop_contract():
     assert "1200" in contract and "1600" in contract
     assert "guidance" in contract
     assert "wide-screen compositional change" in contract
+    assert "meaningful work area" in contract
+    assert "fluid range" in contract and "asymmetric" in contract
+    assert "responsive collapse" in contract
+    assert "do not use narrow uniform-card" in contract
 
 
 @pytest.mark.parametrize("app_type, stack, engine", [

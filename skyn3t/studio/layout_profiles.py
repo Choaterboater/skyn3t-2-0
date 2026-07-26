@@ -93,10 +93,13 @@ def _format_layout_contract(profile: LayoutProfile) -> str:
     if profile.name == "workspace":
         return (
             "Workspace layout contract: use a normal desktop content range of "
-            "1200–1600px as guidance, not a hard CSS pixel rule. At wide screens "
-            "make a wide-screen compositional change rather than merely stretching "
-            "one column. Use a split pane or another valid alternative: toolbar/filters, table/list plus "
-            "detail, chart plus summary strip, timeline, inspector, or form workflow."
+            "1200–1600px as a fluid range and guidance, not a hard CSS pixel rule, and preserve "
+            "a meaningful work area. At wide screens make a wide-screen compositional "
+            "change with an explicit split pane or asymmetric wide layout rather than "
+            "merely stretching one column. Valid alternatives include toolbar/filters, "
+            "table/list plus detail, chart plus summary strip, timeline, inspector, or "
+            "form workflow. Require responsive collapse for narrower screens. Do not use "
+            "narrow uniform-card operational pages."
         )
     if profile.name == "editorial":
         return (

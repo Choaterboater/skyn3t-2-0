@@ -21,6 +21,7 @@ considered. No third-party source code was copied into SkyN3t.
 | Cucumber Messages | https://github.com/cucumber/messages | MIT | Stable machine-readable scenario identities and bounded event envelopes |
 | in-toto Attestation Framework | https://github.com/in-toto/attestation | Apache-2.0 | Digest-identified subjects, versioned predicates, and explicit run provenance |
 | Aider | https://github.com/Aider-AI/aider | Apache-2.0 | Dependency-ranked repository maps packed under a context budget |
+| Zoekt | https://github.com/sourcegraph/zoekt | Apache-2.0 | Fast local code search with code-aware, deterministic result ranking |
 | Google DESIGN.md | https://github.com/google-labs-code/design.md | Apache-2.0; project describes itself as alpha | Versioned design tokens, lint findings, diffs, accessibility checks, and exports |
 | Roo Code docs | https://github.com/RooCodeInc/Roo-Code-Docs | Apache-2.0; Roo Code was archived in May 2026 | Checkpoints for comparing and restoring task implementations |
 | Goose | https://github.com/aaif-goose/goose | Apache-2.0 | Session-isolated recipes, bounded background subagents, and checkpointed success commands |
@@ -65,6 +66,10 @@ considered. No third-party source code was copied into SkyN3t.
   checks, and exact Docker/Playwright web routes. Unsupported proof, gate, CLI,
   and mobile-flow adapters stay visibly missing instead of invoking host tools,
   repair agents, or hidden model calls.
+- Improve now builds a query-ranked local repository context pack. The pack is
+  bound to its source Merkle root, Product Contract version, exact requested
+  change digest, ranking schema, parser backend, and token budget, while the
+  legacy repository-map string remains compatible with existing agents.
 
 ## Cycle 2 requirement-trace design
 
@@ -86,18 +91,51 @@ considered. No third-party source code was copied into SkyN3t.
   existing artifacts. This follows the useful envelope/event separation from
   Cucumber Messages without adopting its wire protocol.
 
+## Cycle 3 query-ranked context design
+
+- Aider's documented repository-map budget and query relevance, plus Zoekt's
+  code-aware local search model, informed the high-level design. The
+  implementation is clean-room and copies no third-party source.
+- Ranking is deterministic and local: requested-change terms score paths,
+  symbol names/signatures, imports, and a bounded non-rendered term bag for
+  markup, selectors, and config keys, then fall back to symbol richness and a
+  stable POSIX-path order. Matching symbols move to the front of each bounded
+  file block so a late target is not lost behind unrelated definitions.
+- One dense module cannot consume the whole pack. The total context, query
+  terms, structural index, parser traversal, file count, per-file bytes, and
+  total hashed bytes are bounded, as is total directory traversal even when a
+  tree contains mostly non-code files; fair per-file quotas retain late
+  relevant files and sorted traversal makes the result reproducible. Symlinked
+  files and directories are excluded so an external file cannot be copied into
+  a hosted-provider prompt.
+- Bounded process-local LRU caches reuse parsed file structure by content
+  digest and rendered packs by their complete context identity. Every call
+  still scans and hashes current source, so a stale cache cannot hide a changed
+  file; incomplete scans are explicitly non-cacheable.
+- The source scan covers the app stacks SkyN3t produces, including
+  Svelte/Vue/Astro components, Swift, web styles and common structured config.
+  A truncated scan is explicit in both metadata and context identity.
+- Improve computes the pack off the async event loop, still sends `repo_map` as
+  a string, and adds only compact provenance metadata to task payloads,
+  lifecycle events, proof failures, and completed outcomes. Existing
+  provider/model routing semantics are preserved, while each submitted run
+  freezes the selected route so queued and nested work cannot drift when GUI
+  settings change. Same-project Improve calls serialize and proof runs execute
+  off the async event loop with cancellation-safe cleanup.
+- Proof binds the exact deliverable tree, file modes, source tree, Product
+  Contract, and other protected controls. Delivery is journaled and
+  no-overwrite: a raced external edit is preserved in recovery evidence rather
+  than silently replaced, local runtime state such as `.git` and ignored
+  environments survives promotion, and stale preimages or proof side effects
+  abort the run.
+
 ## Ranked continuation backlog
 
-1. Upgrade repository context into query-ranked packs keyed by source Merkle
-   root, Product Contract version, and requested change. Aider documents the
-   dependency-ranking pattern. Dyad publishes directional benchmark evidence
-   for lower-spend code exploration, but its relevant implementation is in the
-   separately licensed `src/pro` tree and must not be copied.
-2. Add a versioned visual-design contract consumed by code generation and the
+1. Add a versioned visual-design contract consumed by code generation and the
    visual editor, then lint it across responsive proof viewports.
-3. Allow Cortex to fork one completed graph at a selected node, rerun only its
+2. Allow Cortex to fork one completed graph at a selected node, rerun only its
    descendants, and compare immutable proof evidence before promotion.
-4. Consider bounded dynamic specialist subgraphs only after child count,
+3. Consider bounded dynamic specialist subgraphs only after child count,
    depth, concurrency, write sets, and routing inheritance are durable.
 
 ## Deliberately deferred

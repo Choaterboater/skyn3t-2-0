@@ -1005,35 +1005,7 @@ async def test_submit_build_normalizes_model_override():
     assert studio.extra["model_override"] == "openrouter/gpt-4o-mini"
 
 
-def test_deepseek_failover_prefers_v4_flash_and_skips_32(monkeypatch):
-    monkeypatch.setattr(routes, "live_catalog", lambda: [
-        {
-            "id": "deepseek/deepseek-v3.2",
-            "created": 200,
-            "pricing": {"prompt": "0.00000001", "completion": "0.00000001"},
-        },
-        {
-            "id": "deepseek/deepseek-v4-pro",
-            "created": 300,
-            "pricing": {"prompt": "0.000000435", "completion": "0.00000087"},
-        },
-        {
-            "id": "deepseek/deepseek-v4-flash",
-            "created": 250,
-            "pricing": {"prompt": "0.00000009", "completion": "0.00000018"},
-        },
-    ])
-
-    assert routes._deepseek_failover_model() == "deepseek/deepseek-v4-flash"
-
-
-def test_deepseek_failover_static_fallback_is_not_32(monkeypatch):
-    monkeypatch.setattr(routes, "live_catalog", lambda: [])
-
-    assert routes._deepseek_failover_model() == "deepseek/deepseek-v4-flash"
-
-
-async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeypatch):
+async def test_submit_build_failure_history_is_diagnostic_only():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -1041,7 +1013,6 @@ async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeyp
         def start(self, brief, slug=None, extra=None):
             self.extra = dict(extra or {})
 
-    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v4-flash")
     studio = _Studio()
     st = _state(studio=studio)
     for idx, status in enumerate(("failed", "completed_no_go"), start=1):
@@ -1061,14 +1032,14 @@ async def test_submit_build_failover_to_deepseek_after_repeated_failures(monkeyp
     )
 
     row = st.builds[res["build_id"]]
-    assert res["model_override"] == "deepseek/deepseek-v4-flash"
-    assert studio.extra["model_override"] == "deepseek/deepseek-v4-flash"
-    assert row.model_trace["model_override"] == "deepseek/deepseek-v4-flash"
-    assert row.model_trace["auto_failover"] == "deepseek_after_repeated_failures"
+    assert res["model_override"] == ""
+    assert "model_override" not in studio.extra
+    assert row.model_trace["model_override"] == ""
+    assert "auto_failover" not in row.model_trace
     assert row.model_trace["failure_count"] == 2
 
 
-async def test_submit_build_does_not_failover_after_one_failure(monkeypatch):
+async def test_submit_build_does_not_failover_after_one_failure():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -1076,7 +1047,6 @@ async def test_submit_build_does_not_failover_after_one_failure(monkeypatch):
         def start(self, brief, slug=None, extra=None):
             self.extra = dict(extra or {})
 
-    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v4-flash")
     studio = _Studio()
     st = _state(studio=studio)
     st.builds["old-1"] = BuildRecord(
@@ -1098,11 +1068,11 @@ async def test_submit_build_does_not_failover_after_one_failure(monkeypatch):
     assert res["model_override"] == ""
     assert "model_override" not in studio.extra
     assert row.model_trace["model_override"] == ""
-    assert row.model_trace["auto_failover"] == ""
+    assert "auto_failover" not in row.model_trace
     assert row.model_trace["failure_count"] == 1
 
 
-async def test_submit_build_manual_model_override_skips_failover(monkeypatch):
+async def test_submit_build_manual_model_override_skips_failure_history():
     class _Studio:
         def __init__(self):
             self.extra = None
@@ -1110,7 +1080,6 @@ async def test_submit_build_manual_model_override_skips_failover(monkeypatch):
         def start(self, brief, slug=None, extra=None):
             self.extra = dict(extra or {})
 
-    monkeypatch.setattr(routes, "_deepseek_failover_model", lambda: "deepseek/deepseek-v4-flash")
     studio = _Studio()
     st = _state(studio=studio)
     for idx in range(2):
@@ -1135,7 +1104,7 @@ async def test_submit_build_manual_model_override_skips_failover(monkeypatch):
     assert res["model_override"] == "openrouter/manual-model"
     assert studio.extra["model_override"] == "openrouter/manual-model"
     assert row.model_trace["model_override"] == "openrouter/manual-model"
-    assert row.model_trace["auto_failover"] == ""
+    assert "auto_failover" not in row.model_trace
     assert row.model_trace["failure_count"] == 2
 
 
@@ -1211,6 +1180,75 @@ async def test_rebuild_build_replays_live_build_settings():
     assert replay["extra"]["model_override"] == "openrouter/custom-model"
     assert replay["extra"]["full_app_contract"] is True
     assert st.builds[out["build_id"]].model_trace["full_app"] is True
+
+
+async def test_rebuild_build_carries_the_edited_durable_product_spec(tmp_path):
+    from skyn3t.studio.product_spec import ProductSpecV1, RequirementRecord
+
+    class _Studio:
+        def __init__(self):
+            self.calls = []
+
+        def start(self, brief, slug=None, extra=None):
+            self.calls.append(
+                {
+                    "brief": brief,
+                    "slug": slug,
+                    "extra": dict(extra or {}),
+                }
+            )
+
+    settings = Settings(
+        projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        llm_backend="stub",
+    )
+    project = settings.projects_dir / "contract-app"
+    project.mkdir(parents=True)
+    original = ProductSpecV1(
+        project_id="contract-app",
+        goal="Coordinate field work",
+        requirements=[RequirementRecord(text="Show assigned jobs")],
+        non_goals=["Do not dispatch jobs automatically"],
+    )
+    edited = original.improve(
+        {
+            "requirements": [
+                RequirementRecord(
+                    text="Show assigned jobs with offline status",
+                    source="user",
+                ).to_dict()
+            ],
+            "non_goals": ["Never dispatch a job without operator confirmation"],
+        },
+        base_version=original.version,
+        actor="studio-gui",
+        reason="Clarify offline and dispatch behavior",
+    )
+    edited.save(project)
+    studio = _Studio()
+    st = _state(settings=settings, studio=studio)
+    st.builds["source-contract-build"] = BuildRecord(
+        build_id="source-contract-build",
+        brief="Build a field-work coordinator",
+        slug="contract-app",
+        stack="react",
+        status="completed",
+        build_profile="manual",
+    )
+
+    out = await routes.rebuild_build(st, "source-contract-build")
+
+    assert out["source_build_id"] == "source-contract-build"
+    source_spec = studio.calls[0]["extra"]["source_product_spec"]
+    assert source_spec["version"] == edited.version
+    assert source_spec["requirements"][0]["text"] == (
+        "Show assigned jobs with offline status"
+    )
+    assert source_spec["non_goals"] == [
+        "Never dispatch a job without operator confirmation"
+    ]
 
 
 def test_build_summary_preserves_full_app_contract_in_model_trace():

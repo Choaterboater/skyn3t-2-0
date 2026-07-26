@@ -73,6 +73,7 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.studio.build_intelligence import prepare_build_intelligence
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
@@ -80,9 +81,11 @@ from skyn3t.studio.finance_sanity import check_finance_sanity
 from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
+from skyn3t.studio.lab_policy import LabAutonomyPolicy
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
+from skyn3t.studio.product_spec import ProductSpecV1, product_contract_prompt_block
 from skyn3t.studio.proof_run import (
     _esm_named_export_mismatches,
     _unresolved_local_imports,
@@ -240,6 +243,7 @@ class StudioRunner:
         self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
         self.rag = rag                    # rag.RagEngine | None — recall into prompts
         self.audit_log = AuditLog(path=self.settings.logs_dir / "audit.jsonl")
+        initial_lab_policy = LabAutonomyPolicy.from_settings(self.settings)
         if bool(self.settings.cortex_auto_approve_safe):
             self.permission_manager = PermissionManager(
                 settings=self.settings,
@@ -251,9 +255,12 @@ class StudioRunner:
                 settings=self.settings,
                 audit_log=self.audit_log,
             )
+        self._approval_gate_uses_live_settings = approval_gate is None
         self.approval_gate = approval_gate or ApprovalGate(
-            enabled=bool(self.settings.approval_gates),
-            auto_approve=bool(self.settings.cortex_auto_approve_safe),
+            enabled=bool(self.settings.approval_gates)
+            and initial_lab_policy.approval_gates_enabled,
+            auto_approve=bool(self.settings.cortex_auto_approve_safe)
+            or initial_lab_policy.enabled,
             audit_log=self.audit_log,
         )
         if self.orchestrator is not None and getattr(self.orchestrator, "_self_healing", None) is None:
@@ -582,7 +589,19 @@ class StudioRunner:
             log.warning("obs.call_failed", method=method, error=str(exc))
             return None
 
-    def _guard_check(self, stage: str) -> None:
+    def _guard_check(
+        self,
+        stage: str,
+        *,
+        policy: LabAutonomyPolicy | None = None,
+    ) -> None:
+        effective_policy = (
+            policy
+            if policy is not None
+            else LabAutonomyPolicy.from_settings(self.settings)
+        )
+        if not effective_policy.budget_guards_enabled:
+            return
         guard = self.budget_guard
         if guard is None:
             return
@@ -1480,8 +1499,8 @@ class StudioRunner:
         and dampen the score by route health (opt-in: gate the verdict). Returns
         the possibly-adjusted (final_score, verdict). Never raises."""
         try:
-            from skyn3t.studio.app_runner import AppRunner
             from skyn3t.studio.improve import ImproveEngine
+            from skyn3t.studio.preview_supervisor import PreviewSupervisor
             from skyn3t.studio.visual_check import make_vision_fn
             from skyn3t.studio.visual_proof import (
                 DEFAULT_VIEWPORTS,
@@ -1489,7 +1508,9 @@ class StudioRunner:
             )
             outcome = await liveness_self_improve(
                 project_dir,
-                app_runner=AppRunner(),
+                # Generated code is untrusted lab output. The preview boundary is
+                # Docker-only and never falls back to host execution.
+                app_runner=PreviewSupervisor(),
                 improve_engine=ImproveEngine(self.event_bus, self.orchestrator,
                                              settings=self.settings,
                                              record_history=False),
@@ -1569,6 +1590,63 @@ class StudioRunner:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
 
+    async def _run_required_proof_ladder(
+        self,
+        manifest: BuildManifest,
+        project_dir: str | Path,
+        plan: BuildPlan,
+        final_score: float,
+        verdict: str,
+    ) -> tuple[float, str]:
+        """Run blocking Docker+Playwright or Maestro evidence for UI builds."""
+        from skyn3t.studio.liveness import enumerate_routes
+        from skyn3t.studio.preview_supervisor import ProofLadderCoordinator
+
+        routes = [
+            route.path
+            for route in enumerate_routes(Path(project_dir), plan.stack)
+            if route.kind == "page"
+        ]
+        routes = list(dict.fromkeys(routes)) or ["/"]
+        try:
+            result = await ProofLadderCoordinator().run(
+                project_dir,
+                plan.stack,
+                routes=routes,
+            )
+            payload = result.to_dict()
+        except Exception as exc:  # noqa: BLE001 - a proof crash is failed evidence
+            payload = {
+                "status": "failed",
+                "passed": False,
+                "steps": [],
+                "error": str(exc)[:500],
+            }
+            result = None
+        manifest.extra["proof_ladder"] = payload
+        manifest.files = list_files(project_dir)
+        if result is not None and result.passed:
+            manifest.extra.pop("proof_ladder_gate", None)
+            return final_score, verdict
+
+        failed_steps = [
+            str(step.get("name") or "proof")
+            for step in payload.get("steps", [])
+            if isinstance(step, dict)
+            and step.get("required")
+            and step.get("status") != "passed"
+        ]
+        status = str(payload.get("status") or "failed")
+        suffix = f" ({', '.join(failed_steps[:4])})" if failed_steps else ""
+        manifest.extra["proof_ladder_gate"] = (
+            f"required UI proof did not pass: {status}{suffix}"
+        )
+        verdict = "no_go"
+        cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        final_score = min(final_score, cap)
+        manifest.score = final_score
+        return final_score, verdict
+
     @staticmethod
     def _visual_self_heal_requested(settings, extra: dict[str, Any]) -> bool:
         return bool(
@@ -1602,14 +1680,14 @@ class StudioRunner:
             return False
 
         try:
-            from skyn3t.studio.app_runner import AppRunner
             from skyn3t.studio.improve import ImproveEngine
+            from skyn3t.studio.preview_supervisor import PreviewSupervisor
             from skyn3t.studio.visual_check import VisualChecker, make_vision_fn
 
             outcome = await visual_self_improve(
                 project_dir,
                 manifest.brief,
-                app_runner=AppRunner(),
+                app_runner=PreviewSupervisor(),
                 checker=VisualChecker(event_bus=self.event_bus),
                 improve_engine=ImproveEngine(
                     self.event_bus,
@@ -3476,6 +3554,19 @@ class StudioRunner:
         project_dir: str | None = None,
     ) -> None:
         """Close every learning edge (design rule #2). Best-effort; never raises."""
+        from skyn3t.intelligence.learning_loop import (
+            proof_ladder_infrastructure_unavailable,
+        )
+
+        manifest_extra = getattr(manifest, "extra", None) or {}
+        proof_errors = extract_error_gaps(
+            (manifest_extra.get("proof") or {}).get("detail"),
+            (manifest_extra.get("proof") or {}).get("syntax_errors"),
+        )
+        gate_findings = _extract_gate_findings(manifest_extra)
+        infrastructure_failure = proof_ladder_infrastructure_unavailable(
+            manifest_extra
+        )
         build = {
             "build_id": manifest.build_id,
             "slug": manifest.slug,
@@ -3485,6 +3576,11 @@ class StudioRunner:
             "verdict": manifest.verdict,
             "files": manifest.files_count,
             "stages": [s.name for s in plan.stages],
+            "stage": (
+                "verification"
+                if proof_errors or gate_findings
+                else ""
+            ),
             # The specific gaps make a lesson actionable ("avoid: no entrypoint")
             # instead of the generic "build failed — re-check the plan".
             "gaps": list(gaps or []),
@@ -3492,15 +3588,13 @@ class StudioRunner:
             # Real compiler/test/boot/import failures (Phase 1A) become durable
             # avoid-rules — the system LEARNS from why builds broke, not just that
             # they did. Derived from the persisted proof so capture stays decoupled.
-            "proof_errors": extract_error_gaps(
-                ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("detail"),
-                ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("syntax_errors"),
-            ),
+            "proof_errors": proof_errors,
             # Advisory-gate findings (seo/mcp_check/rag_check/liveness) become
             # lessons even on a 'go' — these gates never flip the verdict, so
             # this is the only path from a caught-but-advisory defect to a
             # durable avoid-rule for the NEXT build.
-            "gate_findings": _extract_gate_findings(getattr(manifest, "extra", None)),
+            "gate_findings": gate_findings,
+            "infrastructure_failure": infrastructure_failure,
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:
@@ -3884,6 +3978,26 @@ class StudioRunner:
         extra: dict[str, Any] | None = None,
     ) -> BuildOutcome:
         extra = extra or {}
+        # Settings can change while the long-lived runner stays alive. Capture
+        # one immutable policy for this request so later builds see live
+        # settings without concurrent builds changing each other's decisions.
+        lab_policy = LabAutonomyPolicy.from_settings(self.settings)
+        configured_approval_gates = (
+            bool(self.settings.approval_gates)
+            if self._approval_gate_uses_live_settings
+            else bool(self.approval_gate.enabled)
+        )
+        configured_auto_approve = (
+            bool(self.settings.cortex_auto_approve_safe)
+            if self._approval_gate_uses_live_settings
+            else bool(self.approval_gate.auto_approve)
+        )
+        approval_gates_enabled = (
+            configured_approval_gates and lab_policy.approval_gates_enabled
+        )
+        approval_auto_approve = (
+            configured_auto_approve or lab_policy.enabled
+        )
         # Always slugify: a caller-supplied slug (e.g. the web API) must not pass
         # through verbatim, or a value like "../../evil" would traverse out of
         # projects_dir into create_worktree's mkdir. _slugify is idempotent for
@@ -3958,6 +4072,7 @@ class StudioRunner:
         import socket as _socket
         manifest.extra["owner_pid"] = _os.getpid()
         manifest.extra["owner_host"] = _socket.gethostname()
+        manifest.extra["lab_autonomy"] = lab_policy.enabled
         build_profile = str(extra["build_profile"])
         model_override = str(extra.get("model_override") or "").strip()
         manifest.extra["build_profile"] = build_profile
@@ -3974,18 +4089,69 @@ class StudioRunner:
                 pass
         if model_override:
             manifest.extra["model_override"] = model_override
+        routing_snapshot = extra.get("routing_snapshot")
+        if isinstance(routing_snapshot, dict):
+            routing_snapshot = {
+                key: routing_snapshot[key]
+                for key in (
+                    "requested_backend",
+                    "effective_backend",
+                    "requested_model",
+                    "effective_model",
+                    "codegen",
+                )
+                if key in routing_snapshot
+            }
+            if isinstance(routing_snapshot.get("codegen"), dict):
+                routing_snapshot["codegen"] = {
+                    key: routing_snapshot["codegen"][key]
+                    for key in (
+                        "source",
+                        "requested_backend",
+                        "effective_backend",
+                        "requested_model",
+                        "effective_model",
+                    )
+                    if key in routing_snapshot["codegen"]
+                }
+            manifest.extra["routing_snapshot"] = routing_snapshot
         manifest.extra["requested_model_override"] = model_override
-        manifest.extra["requested_codegen_model"] = (
-            model_override
-            or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
-            or str(getattr(self.settings, "preferred_model", "") or "").strip()
+        codegen_routing = (
+            routing_snapshot.get("codegen")
+            if isinstance(routing_snapshot, dict)
+            and isinstance(routing_snapshot.get("codegen"), dict)
+            else {}
         )
-        predicted_codegen_model = self._codegen_trace_model(
-            model_override, profile=build_profile
-        )
+        manifest.extra["requested_codegen_model"] = str(
+            codegen_routing.get("requested_model")
+            or model_override
+            or getattr(self.settings, "openrouter_codegen_model", "")
+            or getattr(self.settings, "preferred_model", "")
+            or ""
+        ).strip()
+        predicted_codegen_model = str(
+            codegen_routing.get("effective_model")
+            or self._codegen_trace_model(model_override, profile=build_profile)
+        ).strip()
         manifest.extra["effective_codegen_model"] = predicted_codegen_model
         manifest.extra["codegen_model"] = predicted_codegen_model
-        manifest.extra["llm_backend"] = str(getattr(self.settings, "llm_backend", ""))
+        manifest.extra["requested_llm_backend"] = str(
+            (
+                routing_snapshot.get("requested_backend")
+                if isinstance(routing_snapshot, dict)
+                else ""
+            )
+            or getattr(self.settings, "llm_backend", "")
+        )
+        manifest.extra["effective_llm_backend"] = str(
+            (
+                routing_snapshot.get("effective_backend")
+                if isinstance(routing_snapshot, dict)
+                else ""
+            )
+            or getattr(self.settings, "llm_backend", "")
+        )
+        manifest.extra["llm_backend"] = manifest.extra["effective_llm_backend"]
         codegen_cli_provider = str(
             getattr(self.settings, "codegen_cli_provider", "") or ""
         ).strip().lower()
@@ -3998,6 +4164,7 @@ class StudioRunner:
         }
         manifest.extra["classification"] = classification.to_dict()
         build_id = manifest.build_id
+        manifest.extra["preflight_run_id"] = f"{build_id}-preflight"
 
         # Persist the 'running' record immediately so a crash or restart can
         # rehydrate it. This is best-effort — a persistence failure must never
@@ -4060,7 +4227,52 @@ class StudioRunner:
         # exception can still close it (else its base leaks). end_stage is
         # idempotent, so closing an already-finished stage is a harmless no-op.
         open_stage: str | None = None
+        product_spec: ProductSpecV1 | None = None
         try:
+            # Run the durable preflight DAG before source generation. Product
+            # contract + toolchain inspection can execute concurrently; scoped
+            # GitHub research follows the contract and can only add optional
+            # backlog ideas (never silently alter current requirements).
+            intelligence = await prepare_build_intelligence(
+                settings=self.settings,
+                build_id=build_id,
+                slug=slug,
+                brief=brief,
+                stack=plan.stack,
+                personas=(
+                    [clar.answers["audience"]]
+                    if str(clar.answers.get("audience") or "").strip()
+                    else []
+                ),
+                source_product_spec=extra.get("source_product_spec"),
+            )
+            product_spec = intelligence.product
+            product_payload = product_spec.to_dict()
+            product_context = product_contract_prompt_block(product_spec)
+            research_payload = intelligence.research.to_dict()
+            toolchain_payload = intelligence.toolchain.to_dict()
+            manifest.extra["build_graph"] = intelligence.graph
+            manifest.extra["product_spec"] = product_payload
+            manifest.extra["similarity_research"] = research_payload
+            manifest.extra["lab_toolchain"] = toolchain_payload
+            extra = {
+                **extra,
+                "product_spec": product_payload,
+                "skills_advice": "\n\n".join(
+                    part
+                    for part in (
+                        product_context,
+                        str(extra.get("skills_advice") or "").strip(),
+                    )
+                    if part
+                ),
+                "research_ideas": research_payload.get("backlog", []),
+                "research_sources": research_payload.get("sources", []),
+                "lab_toolchain": toolchain_payload,
+                "build_graph": intelligence.graph,
+            }
+            await self._save_build(manifest)
+
             # Real image assets (Replicate): generate them into the runner-owned
             # worktree before codegen. Keep this inside the lifecycle try so an
             # explicit cancellation while the provider is working still records
@@ -4073,11 +4285,11 @@ class StudioRunner:
             # already began in start(), before selector/planner/asset delegation.
             self._obs_call(self.budget_guard, "reset")
             self._obs_call(self.budget_guard, "attach", self.event_bus)
-            self._guard_check("build")
+            self._guard_check("build", policy=lab_policy)
 
             for spec in plan.stages:
                 self._obs_call(self.budget_guard, "heartbeat")
-                self._guard_check(spec.name)
+                self._guard_check(spec.name, policy=lab_policy)
                 # Mark the stage boundary so cost is attributed per stage (Spec 2).
                 self._obs_call(self.cost_tracker, "start_stage", build_id, spec.name)
                 open_stage = spec.name
@@ -4120,7 +4332,11 @@ class StudioRunner:
                     await self._save_build(manifest)
                     if spec.gated:
                         approval = self.approval_gate.request(
-                            build_id, spec.name, {"reason": "no_agent", "score": 0}
+                            build_id,
+                            spec.name,
+                            {"reason": "no_agent", "score": 0},
+                            enabled=approval_gates_enabled,
+                            auto_approve=approval_auto_approve,
                         )
                         decision = await self.approval_gate.wait(
                             approval.approval_id, timeout=self.stage_timeout)
@@ -4305,7 +4521,11 @@ class StudioRunner:
                 # Approval gate (after stage completes).
                 if spec.gated:
                     approval = self.approval_gate.request(
-                        build_id, spec.name, {"score": record.score}
+                        build_id,
+                        spec.name,
+                        {"score": record.score},
+                        enabled=approval_gates_enabled,
+                        auto_approve=approval_auto_approve,
                     )
                     decision = await self.approval_gate.wait(approval.approval_id, timeout=self.stage_timeout)
                     if decision is GateDecision.REJECTED:
@@ -4320,6 +4540,12 @@ class StudioRunner:
             manifest.files = copied or list_files(project_dir)
             self._set_main_worktree_status(manifest, main_wt, status="delivered")
             manifest.artifact_dir = project_dir
+            if product_spec is not None:
+                product_path = product_spec.save(project_dir)
+                manifest.extra["product_spec_path"] = str(
+                    product_path.relative_to(project_dir).as_posix()
+                )
+                manifest.files = list_files(project_dir)
 
             # Deterministic, idempotent build repairs BEFORE the first proof:
             # declare imported-but-undeclared npm deps (codegen often imports
@@ -4818,6 +5044,21 @@ class StudioRunner:
                     self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
                     manifest, project_dir, plan, proof, final_score, verdict)
+
+            # Final external UI proof is blocking. Web UI stacks must pass from
+            # the Docker-only preview through Playwright; React Native projects
+            # must carry and pass Maestro flows. No tool/daemon is never a pass.
+            if (
+                bool(getattr(self.settings, "proof_ladder_required", True))
+                and (plan.stack in _UI_WEB_STACKS or plan.stack == "react_native")
+            ):
+                final_score, verdict = await self._run_required_proof_ladder(
+                    manifest,
+                    project_dir,
+                    plan,
+                    final_score,
+                    verdict,
+                )
 
             final_score, verdict = self._run_product_quality_gates(
                 manifest, project_dir, plan, final_score, verdict

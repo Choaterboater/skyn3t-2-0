@@ -698,6 +698,7 @@ class MemoryStore:
         replaces a blanket ``UPDATE … running→interrupted`` that clobbered live
         concurrent builds. Different-host rows are left (can't check liveness).
         Returns the number reconciled."""
+        import os
         import socket
 
         cur_host = socket.gethostname()
@@ -719,7 +720,24 @@ class MemoryStore:
                     stale = False  # another host; cannot verify -> leave it
                 else:
                     try:
-                        stale = not is_process_alive(int(owner_pid))
+                        pid = int(owner_pid)
+                        if isinstance(owner_pid, bool) or pid <= 0:
+                            stale = True
+                        elif os.name == "nt":
+                            stale = not is_process_alive(pid)
+                        else:
+                            # For build ownership, mere PID existence is not
+                            # enough. EPERM can be a reused PID owned by another
+                            # account or sandbox, which cannot prove that the
+                            # original SkyN3t worker is still alive.
+                            try:
+                                os.kill(pid, 0)
+                            except (PermissionError, ProcessLookupError):
+                                stale = True
+                            except (OSError, OverflowError):
+                                stale = True
+                            else:
+                                stale = False
                     except (TypeError, ValueError):
                         stale = True
                 if stale:

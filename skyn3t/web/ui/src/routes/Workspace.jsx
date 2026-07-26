@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
 import {
   PageHeader,
@@ -60,12 +60,19 @@ function eventLine(e) {
   }
 }
 
-function ServePane({ slug, stream }) {
+function ServePane({
+  slug,
+  stream,
+  editorMode = false,
+  onElementSelected,
+  refreshRevision = 0,
+}) {
   const [served, setServed] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [reserved, setReserved] = useState(false);
   const lastImproveRef = useRef(null);
+  const iframeRef = useRef(null);
 
   // Reflect any already-running preview for this slug on mount / slug change.
   useEffect(() => {
@@ -152,6 +159,34 @@ function ServePane({ slug, stream }) {
     start(); // restart so the preview reflects the improved code
   }, [stream?.events, slug, running]);
 
+  useEffect(() => {
+    function receiveSelection(event) {
+      if (
+        !editorMode ||
+        event.source !== iframeRef.current?.contentWindow ||
+        event.data?.type !== "skyn3t-element-selected" ||
+        !event.data?.signature
+      ) {
+        return;
+      }
+      onElementSelected?.(event.data.signature);
+    }
+    window.addEventListener("message", receiveSelection);
+    return () => window.removeEventListener("message", receiveSelection);
+  }, [editorMode, onElementSelected]);
+
+  const iframeUrl = useMemo(() => {
+    if (!running) return "";
+    try {
+      const url = new URL(served.url);
+      if (editorMode) url.searchParams.set("skyn3t_editor", "1");
+      url.searchParams.set("skyn3t_refresh", String(refreshRevision));
+      return url.toString();
+    } catch (_) {
+      return served.url;
+    }
+  }, [running, served?.url, editorMode, refreshRevision]);
+
   return (
     <Panel className="flex h-full flex-col overflow-hidden">
       <PanelHead
@@ -189,8 +224,10 @@ function ServePane({ slug, stream }) {
       <div className="flex-1 bg-ink/40">
         {running ? (
           <iframe
+            ref={iframeRef}
+            key={`${iframeUrl}-${editorMode ? "edit" : "run"}`}
             title={`preview-${slug}`}
-            src={served.url}
+            src={iframeUrl}
             // Fill the viewport height so a full-page app isn't clipped to a
             // small fixed box; the iframe scrolls internally for taller content.
             className="h-full min-h-[78vh] w-full border-0 bg-white"
@@ -292,10 +329,558 @@ function ImprovePane({ slug, stream, cids = new Set(), onDispatched }) {
   );
 }
 
+function VisualEditorPane({ slug, signature, onEdited }) {
+  const qc = useQueryClient();
+  const [occurrences, setOccurrences] = useState([]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [textValue, setTextValue] = useState("");
+  const [imageValue, setImageValue] = useState("");
+  const [tokenName, setTokenName] = useState("--accent");
+  const [tokenValue, setTokenValue] = useState("#ff6b35");
+  const [selector, setSelector] = useState("");
+  const [propertyName, setPropertyName] = useState("gap");
+  const [layoutValue, setLayoutValue] = useState("1rem");
+  const [breakpoint, setBreakpoint] = useState("base");
+
+  const style = useQuery({
+    queryKey: ["visual-editor-style", slug],
+    queryFn: queryFn(`/projects/${encodeURIComponent(slug)}/visual-editor/style`),
+    enabled: Boolean(slug),
+    retry: 0,
+  });
+
+  useEffect(() => {
+    setOccurrences([]);
+    setSelectedIndex(0);
+    setErr("");
+    setNote("");
+    if (!slug || !signature) return;
+    setTextValue(signature.text || "");
+    setImageValue(signature.image_src || "");
+    setSelector(
+      signature.element_id
+        ? `#${signature.element_id}`
+        : signature.classes?.[0]
+          ? `.${signature.classes[0]}`
+          : "",
+    );
+    let active = true;
+    setBusy(true);
+    apiPost(`/projects/${encodeURIComponent(slug)}/visual-editor/inspect`, {
+      signature,
+      limit: 20,
+    })
+      .then((result) => {
+        if (!active) return;
+        setOccurrences(result.occurrences || []);
+        setSelectedIndex(0);
+        if (!(result.occurrences || []).length) {
+          setNote("No safe static source match. Try a more specific element.");
+        }
+      })
+      .catch((error) => {
+        if (active) setErr(error.message);
+      })
+      .finally(() => {
+        if (active) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [slug, signature]);
+
+  const selected = occurrences[selectedIndex] || null;
+  const editable = new Set(selected?.editable || []);
+  const styleSha = style.data?.style?.current_sha || "";
+
+  async function apply(body) {
+    if (!slug) return;
+    setBusy(true);
+    setErr("");
+    setNote("");
+    try {
+      const result = await apiPost(
+        `/projects/${encodeURIComponent(slug)}/visual-editor/edit`,
+        body,
+      );
+      const verification = result.verification || {};
+      setNote(
+        verification.passed
+          ? "Saved and verified."
+          : `Saved, but proof is ${verification.proof_ladder?.status || "not passing"}.`,
+      );
+      await qc.invalidateQueries({ queryKey: ["visual-editor-style", slug] });
+      await qc.invalidateQueries({ queryKey: ["projects"] });
+      onEdited?.(result);
+    } catch (error) {
+      setErr(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function applySource(kind, value) {
+    if (!selected || !signature) return;
+    void apply({
+      kind,
+      value,
+      signature,
+      relative_path: selected.relative_path,
+      base_sha: selected.current_sha,
+      occurrence_id: selected.occurrence_id,
+      line: selected.line,
+    });
+  }
+
+  return (
+    <Panel className="flex h-full flex-col overflow-hidden">
+      <PanelHead
+        label="Visual editor"
+        right={
+          <span className="font-mono text-[10px] text-plasma">
+            {busy ? "working…" : "click an element"}
+          </span>
+        }
+      />
+      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        {!signature ? (
+          <Empty icon="⌖">
+            Click an element in the live app. Selection mode intercepts clicks without
+            executing edits.
+          </Empty>
+        ) : (
+          <>
+            <div className="rounded border border-hairline bg-void/40 p-3">
+              <div className="eyebrow">Selected element</div>
+              <div className="mt-2 font-mono text-xs text-bone">
+                &lt;{signature.tag || "element"}&gt;
+                {signature.element_id ? ` #${signature.element_id}` : ""}
+                {(signature.classes || []).map((name) => ` .${name}`).join("")}
+              </div>
+              <p className="mt-1 line-clamp-3 text-xs text-ash">
+                {signature.text || signature.image_src || "No static text"}
+              </p>
+            </div>
+
+            {occurrences.length ? (
+              <label className="block">
+                <span className="eyebrow">Source match</span>
+                <select
+                  className="field mt-2 w-full"
+                  value={selectedIndex}
+                  onChange={(event) => setSelectedIndex(Number(event.target.value))}
+                >
+                  {occurrences.map((item, index) => (
+                    <option key={item.occurrence_id} value={index}>
+                      {item.relative_path}:{item.line} · {Math.round(item.score * 100)}%
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {editable.has("text") ? (
+              <div>
+                <div className="eyebrow">Text</div>
+                <textarea
+                  aria-label="Selected element text"
+                  className="field mt-2 min-h-20 w-full"
+                  value={textValue}
+                  onChange={(event) => setTextValue(event.target.value)}
+                />
+                <button
+                  className="btn-ember mt-2"
+                  disabled={busy}
+                  onClick={() => applySource("text", textValue)}
+                >
+                  Save text
+                </button>
+              </div>
+            ) : null}
+
+            {editable.has("image_src") ? (
+              <div>
+                <div className="eyebrow">Image source</div>
+                <input
+                  aria-label="Selected image source"
+                  className="field mt-2 w-full"
+                  value={imageValue}
+                  onChange={(event) => setImageValue(event.target.value)}
+                />
+                <button
+                  className="btn-ember mt-2"
+                  disabled={busy}
+                  onClick={() => applySource("image_src", imageValue)}
+                >
+                  Save image
+                </button>
+              </div>
+            ) : null}
+
+            <div className="border-t border-hairline pt-4">
+              <div className="eyebrow">Design token</div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <input
+                  aria-label="CSS design token"
+                  className="field"
+                  value={tokenName}
+                  onChange={(event) => setTokenName(event.target.value)}
+                />
+                <input
+                  aria-label="CSS design token value"
+                  className="field"
+                  value={tokenValue}
+                  onChange={(event) => setTokenValue(event.target.value)}
+                />
+              </div>
+              <button
+                className="btn-ghost mt-2"
+                disabled={busy || !styleSha}
+                onClick={() =>
+                  apply({
+                    kind: "design_token",
+                    base_sha: styleSha,
+                    css_property: tokenName,
+                    value: tokenValue,
+                  })
+                }
+              >
+                Set token
+              </button>
+            </div>
+
+            <div className="border-t border-hairline pt-4">
+              <div className="eyebrow">Responsive layout</div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <input
+                  aria-label="CSS selector"
+                  className="field"
+                  placeholder=".card or #hero"
+                  value={selector}
+                  onChange={(event) => setSelector(event.target.value)}
+                />
+                <select
+                  aria-label="Responsive breakpoint"
+                  className="field"
+                  value={breakpoint}
+                  onChange={(event) => setBreakpoint(event.target.value)}
+                >
+                  {["base", "sm", "md", "lg", "xl"].map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Layout property"
+                  className="field"
+                  value={propertyName}
+                  onChange={(event) => setPropertyName(event.target.value)}
+                >
+                  {[
+                    "display",
+                    "gap",
+                    "padding",
+                    "margin",
+                    "width",
+                    "max-width",
+                    "height",
+                    "align-items",
+                    "justify-content",
+                    "flex-direction",
+                    "flex-wrap",
+                    "grid-template-columns",
+                  ].map((value) => (
+                    <option key={value} value={value}>{value}</option>
+                  ))}
+                </select>
+                <input
+                  aria-label="Layout value"
+                  className="field"
+                  value={layoutValue}
+                  onChange={(event) => setLayoutValue(event.target.value)}
+                />
+              </div>
+              <button
+                className="btn-ghost mt-2"
+                disabled={busy || !styleSha || !selector}
+                onClick={() =>
+                  apply({
+                    kind: "layout",
+                    base_sha: styleSha,
+                    selector,
+                    css_property: propertyName,
+                    value: layoutValue,
+                    breakpoint,
+                  })
+                }
+              >
+                Apply layout
+              </button>
+            </div>
+          </>
+        )}
+        {style.error ? (
+          <p className="font-mono text-[11px] text-ember">{style.error.message}</p>
+        ) : null}
+        {err ? <p className="font-mono text-[11px] text-ember">{err}</p> : null}
+        {note ? <p className="font-mono text-[11px] text-plasma">{note}</p> : null}
+      </div>
+    </Panel>
+  );
+}
+
+function ProductPane({ slug }) {
+  const qc = useQueryClient();
+  const [goal, setGoal] = useState("");
+  const [personas, setPersonas] = useState("");
+  const [nonGoals, setNonGoals] = useState("");
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+
+  const productQuery = useQuery({
+    queryKey: ["project-product", slug],
+    queryFn: queryFn(`/projects/${encodeURIComponent(slug)}/product`),
+    enabled: Boolean(slug),
+    retry: 0,
+  });
+  const product = productQuery.data?.product || null;
+
+  useEffect(() => {
+    setGoal(product?.goal || "");
+    setPersonas((product?.personas || []).join(", "));
+    setNonGoals((product?.non_goals || []).join("\n"));
+    setErr("");
+    setNote("");
+  }, [slug, product?.version]);
+
+  function splitList(value, separator) {
+    return value
+      .split(separator)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  async function save() {
+    if (!product) return;
+    const next = {
+      goal: goal.trim(),
+      personas: splitList(personas, ","),
+      non_goals: splitList(nonGoals, /\r?\n/),
+    };
+    const patch = Object.fromEntries(
+      Object.entries(next).filter(
+        ([key, value]) => JSON.stringify(value) !== JSON.stringify(product[key]),
+      ),
+    );
+    if (!Object.keys(patch).length) {
+      setNote("No product-contract changes to save.");
+      return;
+    }
+    setBusy("save");
+    setErr("");
+    setNote("");
+    try {
+      const result = await apiFetch(
+        `/projects/${encodeURIComponent(slug)}/product`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            base_version: product.version,
+            patch,
+            reason: "Product contract refined in Workspace",
+          }),
+        },
+      );
+      qc.setQueryData(["project-product", slug], result);
+      setNote(`Saved product contract v${result.product.version}.`);
+    } catch (error) {
+      setErr(error.message);
+      await qc.invalidateQueries({ queryKey: ["project-product", slug] });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function research() {
+    if (!product) return;
+    setBusy("research");
+    setErr("");
+    setNote("");
+    try {
+      const result = await apiPost(
+        `/projects/${encodeURIComponent(slug)}/product/research`,
+        {
+          base_version: product.version,
+          force_refresh: true,
+        },
+      );
+      qc.setQueryData(["project-product", slug], {
+        slug,
+        available: true,
+        product: result.product,
+      });
+      const sources = result.research?.sources?.length || 0;
+      const ideas = result.research?.backlog?.length || 0;
+      setNote(
+        result.research?.status === "unavailable"
+          ? `Research unavailable: ${result.research?.error || "GitHub did not respond"}.`
+          : `Research recorded ${sources} source${sources === 1 ? "" : "s"} and ${ideas} optional idea${ideas === 1 ? "" : "s"}.`,
+      );
+    } catch (error) {
+      setErr(error.message);
+      await qc.invalidateQueries({ queryKey: ["project-product", slug] });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <Panel className="flex h-full flex-col overflow-hidden">
+      <PanelHead
+        label="Product intelligence"
+        right={
+          product ? (
+            <span className="font-mono text-[10px] text-plasma">
+              contract v{product.version}
+            </span>
+          ) : null
+        }
+      />
+      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        {!slug ? (
+          <Empty icon="◎">Pick a project to inspect its product contract.</Empty>
+        ) : productQuery.isLoading ? (
+          <Empty icon="◌">Loading product contract…</Empty>
+        ) : productQuery.error ? (
+          <p className="font-mono text-[11px] text-ember">
+            {productQuery.error.message}
+          </p>
+        ) : !productQuery.data?.available ? (
+          <Empty icon="△">
+            This project predates product intelligence. Rebuild it to create a
+            versioned contract.
+          </Empty>
+        ) : (
+          <>
+            <label className="block">
+              <span className="eyebrow">Product goal</span>
+              <textarea
+                aria-label="Product goal"
+                className="field mt-2 min-h-20 w-full"
+                value={goal}
+                onChange={(event) => setGoal(event.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="eyebrow">Personas</span>
+              <input
+                aria-label="Product personas"
+                className="field mt-2 w-full"
+                value={personas}
+                placeholder="developer, designer"
+                onChange={(event) => setPersonas(event.target.value)}
+              />
+            </label>
+            <label className="block">
+              <span className="eyebrow">Non-goals · one per line</span>
+              <textarea
+                aria-label="Product non-goals"
+                className="field mt-2 min-h-16 w-full"
+                value={nonGoals}
+                onChange={(event) => setNonGoals(event.target.value)}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="btn-ember"
+                disabled={Boolean(busy)}
+                onClick={save}
+              >
+                {busy === "save" ? "Saving…" : "Save contract"}
+              </button>
+              <button
+                className="btn-ghost"
+                disabled={Boolean(busy)}
+                onClick={research}
+              >
+                {busy === "research" ? "Researching…" : "Research similar apps"}
+              </button>
+            </div>
+            <div className="border-t border-hairline pt-4">
+              <div className="eyebrow">
+                Current requirements · {product.requirements?.length || 0}
+              </div>
+              <ul className="mt-2 space-y-2">
+                {(product.requirements || []).map((item) => (
+                  <li
+                    key={item.id}
+                    className="rounded border border-hairline bg-void/40 p-2 text-xs text-bone"
+                  >
+                    {item.text}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="border-t border-hairline pt-4">
+              <div className="eyebrow">
+                Optional backlog · {product.backlog?.length || 0}
+              </div>
+              {(product.backlog || []).length ? (
+                <ul className="mt-2 space-y-2">
+                  {product.backlog.slice(0, 12).map((item) => (
+                    <li key={item.id} className="text-xs text-ash">
+                      <span className="text-bone">{item.title}</span>
+                      {item.source ? ` · ${item.source}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs text-ash">No optional ideas recorded.</p>
+              )}
+            </div>
+            {(product.research_sources || []).length ? (
+              <div className="border-t border-hairline pt-4">
+                <div className="eyebrow">
+                  Research sources · {product.research_sources.length}
+                </div>
+                <ul className="mt-2 space-y-2">
+                  {product.research_sources.slice(0, 8).map((source) => (
+                    <li key={source.id}>
+                      <a
+                        className="font-mono text-[11px] text-plasma underline"
+                        href={source.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {source.repository || source.url} ↗
+                      </a>
+                      <div className="font-mono text-[10px] text-ash">
+                        {source.license} · {source.usage_policy} · source copy disabled
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        )}
+        {err ? <p className="font-mono text-[11px] text-ember">{err}</p> : null}
+        {note ? <p className="font-mono text-[11px] text-plasma">{note}</p> : null}
+      </div>
+    </Panel>
+  );
+}
+
 export default function Workspace({ stream }) {
   const [params, setParams] = useSearchParams();
   const slug = params.get("slug") || "";
   const [improveCidsBySlug, setImproveCidsBySlug] = useState({});
+  const [rightMode, setRightMode] = useState("improve");
+  const [selectedSignature, setSelectedSignature] = useState(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
 
   const { data } = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
   const projects = Array.isArray(data) ? data : data?.projects || [];
@@ -305,6 +890,7 @@ export default function Workspace({ stream }) {
     if (next) p.set("slug", next);
     else p.delete("slug");
     setParams(p, { replace: true });
+    setSelectedSignature(null);
   }
 
   const current = projects.find((p) => p.slug === slug);
@@ -375,13 +961,53 @@ export default function Workspace({ stream }) {
       </Panel>
 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-2">
-        <ServePane slug={slug} stream={stream} />
-        <ImprovePane
+        <ServePane
           slug={slug}
           stream={stream}
-          cids={improveCids}
-          onDispatched={rememberImproveCid}
+          editorMode={rightMode === "visual"}
+          onElementSelected={setSelectedSignature}
+          refreshRevision={previewRevision}
         />
+        <div className="flex min-h-0 flex-col gap-2">
+          <div className="flex gap-2">
+            <button
+              className={rightMode === "improve" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("improve")}
+            >
+              AI improve
+            </button>
+            <button
+              className={rightMode === "visual" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("visual")}
+            >
+              Visual edit
+            </button>
+            <button
+              className={rightMode === "product" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("product")}
+            >
+              Product
+            </button>
+          </div>
+          <div className="min-h-0 flex-1">
+            {rightMode === "product" ? (
+              <ProductPane slug={slug} />
+            ) : rightMode === "visual" ? (
+              <VisualEditorPane
+                slug={slug}
+                signature={selectedSignature}
+                onEdited={() => setPreviewRevision((value) => value + 1)}
+              />
+            ) : (
+              <ImprovePane
+                slug={slug}
+                stream={stream}
+                cids={improveCids}
+                onDispatched={rememberImproveCid}
+              />
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

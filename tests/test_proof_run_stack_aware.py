@@ -470,6 +470,9 @@ def test_python_package_build_runs_pip_wheel_and_cleans_output(tmp_path, monkeyp
     assert "built wheel" in summary
     assert calls[0]["command"][1:4] == ["-m", "pip", "wheel"]
     assert "--no-deps" in calls[0]["command"]
+    wheel_arg = calls[0]["command"][calls[0]["command"].index("--wheel-dir") + 1]
+    assert wheel_arg == ".skyn3t-wheels"
+    assert not wheel_arg.startswith("..")
     assert calls[0]["network"] is True
     assert calls[0]["env"]["PIP_NO_INPUT"] == "1"
     assert not list(tmp_path.glob(".skyn3t-wheel-proof-*"))

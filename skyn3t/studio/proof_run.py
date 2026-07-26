@@ -4796,7 +4796,12 @@ def _run_python_package_build(
         return (False, False, "could not prepare Python wheel output — build skipped")
     try:
         staged_project = proof_root / "project"
-        wheel_dir = proof_root / "wheels"
+        # The command backend mounts ``staged_project`` as the container
+        # workspace. A sibling ``../wheels`` therefore resolves to the
+        # container's read-only root, not to ``proof_root`` on the host.
+        # Keep wheel output inside the staged copy; the entire proof root is
+        # removed below, so delivery remains artifact-free.
+        wheel_dir = staged_project / ".skyn3t-wheels"
         try:
             shutil.copytree(
                 pdir,
@@ -4823,7 +4828,7 @@ def _run_python_package_build(
                 "--no-cache-dir",
                 "--no-deps",
                 "--wheel-dir",
-                "../wheels",
+                ".skyn3t-wheels",
                 ".",
             ],
             cwd=staged_project,

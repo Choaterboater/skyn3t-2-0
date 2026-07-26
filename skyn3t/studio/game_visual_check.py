@@ -17,6 +17,7 @@ soft-skips so offline builds are not false-failed.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -288,9 +289,9 @@ async def check_game_visual(project_dir: str | Path, *, settings: Any,
         if not playwright_available():
             return GameVisualVerdict(skipped=True, reason="playwright not available")
 
-        from skyn3t.studio.app_runner import AppRunner
+        from skyn3t.studio.preview_supervisor import PreviewSupervisor
 
-        runner = app_runner or AppRunner()
+        runner = app_runner or PreviewSupervisor()
         app = await runner.start(project_dir, "phaser")
         url = getattr(app, "url", "") or ""
         if not url:
@@ -312,7 +313,9 @@ async def check_game_visual(project_dir: str | Path, *, settings: Any,
                     pass
         finally:
             try:
-                runner.stop(app)
+                stopped = runner.stop(app)
+                if inspect.isawaitable(stopped):
+                    await stopped
             except Exception:  # noqa: BLE001
                 pass
             # Reap the stopped child + unlink its temp log; in the long-lived dashboard

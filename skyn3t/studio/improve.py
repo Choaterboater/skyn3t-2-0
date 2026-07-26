@@ -22,6 +22,7 @@ from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import get_repo_map
 from skyn3t.studio.manifest import BuildManifest
+from skyn3t.studio.product_spec import ProductSpecV1, product_contract_prompt_block
 from skyn3t.studio.proof_run import apply_deterministic_repairs, proof_run
 from skyn3t.worktree import cleanup_worktree, create_worktree, list_files, merge_back
 
@@ -119,6 +120,14 @@ class ImproveEngine:
 
         wt = None
         try:
+            product_spec = ProductSpecV1.load(project_dir)
+            improvement_prompt = goal
+            if product_spec is not None:
+                improvement_prompt = (
+                    "IMPROVEMENT REQUEST (apply within the current product contract):\n"
+                    f"{goal}\n\n"
+                    f"{product_contract_prompt_block(product_spec)}"
+                )
             wt = create_worktree(str(self.settings.projects_dir), f"improve-{slug}")
             # Seed the worktree with the existing project files.
             merge_back(str(project_dir), wt.dir, overwrite=True, clean=False)
@@ -130,7 +139,7 @@ class ImproveEngine:
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "generating"}, cid)
             files_changed, improver_ok, improver_err, skipped = await self._run_improver(
-                wt.dir, slug, stack, goal, repo_ctx, cid)
+                wt.dir, slug, stack, improvement_prompt, repo_ctx, cid)
             routing_provider = str(
                 getattr(self.settings, "codegen_cli_provider", "") or ""
             ).strip().lower()

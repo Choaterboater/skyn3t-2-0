@@ -172,7 +172,9 @@ def create_app(
 
     # Backstop: the ASGI "shutdown" hook only fires on a graceful lifespan stop.
     # atexit also covers a normal interpreter exit / unhandled-exception exit so
-    # detached previews don't outlive the host. (SIGKILL/OOM remain uncatchable.)
+    # detached previews don't outlive the host. stop_all_serves is the synchronous
+    # adapter; graceful shutdown above awaits the async cleanup through state.close().
+    # (SIGKILL/OOM remain uncatchable.)
     atexit.register(state.stop_all_serves)
 
     # ---- SPA / minimal status page --------------------------------------

@@ -464,6 +464,85 @@ async def test_codex_agentic_build_uses_workspace_write_jsonl_and_stdin(
     assert client.budget.calls[-1].cost_source == "not_reported_by_cli"
 
 
+async def test_cortex_safe_codex_agentic_build_disables_network_and_user_config(
+    monkeypatch,
+    tmp_path,
+):
+    captured = {}
+    client = _client("codex_cli", cli_disable_mcp=False)
+    monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "codex")
+    monkeypatch.setattr(client, "_cli_executable", lambda _provider: "codex")
+
+    class _Stdin:
+        def write(self, _value):
+            return None
+
+        async def drain(self):
+            return None
+
+        def close(self):
+            return None
+
+    class _Proc:
+        returncode = 0
+        stdin = _Stdin()
+
+    async def _fake_exec(*argv, **_kwargs):
+        captured["argv"] = argv
+        return _Proc()
+
+    async def _fake_consume(_proc, _provider, _idle_timeout):
+        return True
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(client, "_consume_agentic_stream", _fake_consume)
+
+    result = await client.agentic_build(
+        "author one contained candidate",
+        str(tmp_path),
+        cortex_safe=True,
+    )
+
+    argv = captured["argv"]
+    assert result["ok"] is True
+    assert ("--sandbox", "workspace-write") == (
+        argv[argv.index("--sandbox")],
+        argv[argv.index("--sandbox") + 1],
+    )
+    assert "--ignore-user-config" in argv
+    assert ("-c", "sandbox_workspace_write.network_access=false") in tuple(
+        zip(argv, argv[1:], strict=False)
+    )
+    assert "--search" not in argv
+    assert "--add-dir" not in argv
+
+
+@pytest.mark.parametrize("provider", ["claude", "kimi", "copilot"])
+async def test_cortex_safe_agentic_build_rejects_non_codex_cli(
+    provider,
+    monkeypatch,
+    tmp_path,
+):
+    client = _client(f"{provider}_cli")
+    monkeypatch.setattr(client, "_cli_available", lambda candidate: candidate == provider)
+
+    async def _unexpected_exec(*_args, **_kwargs):
+        raise AssertionError("unsafe provider must be rejected before subprocess dispatch")
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _unexpected_exec)
+
+    result = await client.agentic_build(
+        "author one contained candidate",
+        str(tmp_path),
+        provider=provider,
+        cortex_safe=True,
+    )
+
+    assert result["ok"] is False
+    assert result["backend"] == f"{provider}_cli"
+    assert "Codex" in result["error"]
+
+
 async def test_codex_agentic_build_uses_resolved_executable(monkeypatch, tmp_path):
     captured = {}
     client = _client("codex_cli")

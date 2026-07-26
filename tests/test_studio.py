@@ -165,6 +165,24 @@ def test_approval_gate_timeout_rejects_by_default():
     asyncio.run(run())
 
 
+def test_approval_gate_request_can_override_stale_construction_policy():
+    async def run():
+        gate = ApprovalGate(enabled=False, auto_approve=True)
+
+        approval = gate.request(
+            "build-live-policy",
+            "code",
+            enabled=True,
+            auto_approve=False,
+        )
+
+        assert gate.pending("build-live-policy")
+        decision = await gate.wait(approval.approval_id, timeout=0.01)
+        assert decision is GateDecision.REJECTED
+
+    asyncio.run(run())
+
+
 # ---- worktree merge_back (delivered != empty) ----------------------------
 def test_merge_back_delivers_files(tmp_path):
     base = tmp_path / "base"
@@ -425,12 +443,215 @@ def test_studio_runner_end_to_end_offline(tmp_path):
         delivered = Path(outcome.project_dir)
         assert (delivered / "src" / "main.py").exists()
         assert (delivered / "skyn3t_manifest.json").exists()
+        assert (delivered / ".skyn3t" / "product.json").exists()
+        assert outcome.manifest["extra"]["build_graph"]["status"] == "succeeded"
+        assert outcome.manifest["extra"]["product_spec"]["goal"] == (
+            "Build a python tool"
+        )
+        assert outcome.manifest["extra"]["similarity_research"]["status"] == (
+            "unavailable"
+        )
+        assert outcome.manifest["extra"]["similarity_research"]["error"] == (
+            "GitHub similarity research is disabled"
+        )
+        assert "docker" in outcome.manifest["extra"]["lab_toolchain"]["checks"]
         # missing agents (brainstorm/research/etc) recorded as skipped, no crash.
         statuses = {s["name"]: s["status"] for s in outcome.manifest["stages"]}
         assert statuses["brainstorm"] == "skipped"
         assert statuses["code"] == "completed"
         # BUILD_COMPLETED emitted.
         assert any(e.type is EventType.BUILD_COMPLETED for e in bus.history())
+
+    asyncio.run(run())
+
+
+def test_source_product_contract_reaches_the_generation_prompt(tmp_path):
+    async def run():
+        from skyn3t.agents._common import knowledge_block
+        from skyn3t.studio.product_spec import (
+            BacklogRecord,
+            ProductSpecV1,
+            RequirementRecord,
+        )
+
+        class _CapturingCodeAgent(_StubCodeAgent):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.payload = None
+
+            async def execute(self, task: TaskRequest) -> TaskResult:
+                self.payload = task.payload
+                return await super().execute(task)
+
+        source = ProductSpecV1(
+            project_id="source-contract",
+            goal="Give dispatchers a dependable field-work view",
+            personas=["dispatcher", "field technician"],
+            requirements=[RequirementRecord(text="Show assigned work")],
+            non_goals=["Do not auto-dispatch work"],
+            architecture_decisions=["Keep offline state in a local adapter"],
+            backlog=[
+                BacklogRecord(
+                    title="Explore route clustering",
+                    source="github_research",
+                )
+            ],
+        )
+        edited = source.improve(
+            {
+                "requirements": [
+                    RequirementRecord(
+                        text="Show assigned work with explicit offline status",
+                        source="user",
+                    ).to_dict()
+                ],
+                "non_goals": ["Never dispatch work without confirmation"],
+            },
+            base_version=source.version,
+            actor="studio-gui",
+            reason="Clarify the field workflow",
+        )
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=1,
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _CapturingCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        reviewer = _StubReviewer("rev", "reviewer", "stub", bus)
+        reviewer.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(reviewer)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+
+        outcome = await runner.start(
+            "Rebuild the field-work coordinator",
+            slug="contract-derivative",
+            extra={
+                "build_profile": "cheap_learned",
+                "source_product_spec": edited.to_dict(),
+            },
+        )
+
+        assert outcome.status in {"completed", "completed_no_go"}
+        assert code.payload is not None
+        prompt_context = knowledge_block(code.payload)
+        assert "Show assigned work with explicit offline status" in prompt_context
+        assert "Never dispatch work without confirmation" in prompt_context
+        assert "OPTIONAL RESEARCH BACKLOG" in prompt_context
+        assert outcome.manifest["extra"]["product_spec"]["version"] == edited.version
+        assert outcome.manifest["extra"]["product_spec"]["requirements"] == [
+            record.to_dict() for record in edited.requirements
+        ]
+
+    asyncio.run(run())
+
+
+def test_lab_autonomy_toggle_after_runner_construction_applies_to_next_build(
+    tmp_path,
+):
+    async def run():
+        class _CountingGuard:
+            def __init__(self):
+                self.checks = 0
+
+            def check(self):
+                self.checks += 1
+
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=True,
+            lab_autonomy=False,
+            best_of_n=1,
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        reviewer = _StubReviewer("rev", "reviewer", "stub", bus)
+        reviewer.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(reviewer)
+        guard = _CountingGuard()
+        runner = StudioRunner(
+            bus,
+            orch,
+            settings=settings,
+            memory=None,
+            budget_guard=guard,
+        )
+        runner.stage_timeout = 0.01
+
+        settings.lab_autonomy = True
+        outcome = await runner.start(
+            "Build a Python tool",
+            slug="live-lab-policy",
+            extra={
+                "build_profile": "cheap_learned",
+                "gated_stages": ("code",),
+            },
+        )
+
+        assert guard.checks == 0
+        assert outcome.status == "completed"
+        assert outcome.manifest["extra"]["lab_autonomy"] is True
+        assert runner.approval_gate.pending(outcome.build_id) == []
+
+    asyncio.run(run())
+
+
+def test_disabling_lab_autonomy_restores_live_guards_and_approval_gate(tmp_path):
+    async def run():
+        class _CountingGuard:
+            def __init__(self):
+                self.checks = 0
+
+            def check(self):
+                self.checks += 1
+
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=True,
+            cortex_auto_approve_safe=False,
+            lab_autonomy=True,
+            best_of_n=1,
+        )
+        bus = EventBus()
+        guard = _CountingGuard()
+        runner = StudioRunner(
+            bus,
+            Orchestrator(bus),
+            settings=settings,
+            memory=None,
+            budget_guard=guard,
+        )
+        runner.stage_timeout = 0.01
+
+        settings.lab_autonomy = False
+        outcome = await runner.start(
+            "Build a Python tool",
+            slug="restored-standard-policy",
+            extra={
+                "build_profile": "cheap_learned",
+                "gated_stages": ("code",),
+            },
+        )
+
+        assert guard.checks > 0
+        assert outcome.status == "failed"
+        assert outcome.verdict == "no_go"
+        assert outcome.manifest["extra"]["lab_autonomy"] is False
 
     asyncio.run(run())
 

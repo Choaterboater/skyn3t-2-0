@@ -40,6 +40,7 @@ class PendingApproval:
     )
     # Internal event used to wake the waiter. Not serialised.
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False, compare=False)
+    _auto_approve_on_timeout: bool = field(default=False, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,18 +75,29 @@ class ApprovalGate:
 
     # ---- registration ----------------------------------------------------
     def request(
-        self, build_id: str, stage: str, context: dict[str, Any] | None = None
+        self,
+        build_id: str,
+        stage: str,
+        context: dict[str, Any] | None = None,
+        *,
+        enabled: bool | None = None,
+        auto_approve: bool | None = None,
     ) -> PendingApproval:
         """Register a pending approval and return it."""
+        effective_enabled = self.enabled if enabled is None else bool(enabled)
+        effective_auto_approve = (
+            self.auto_approve if auto_approve is None else bool(auto_approve)
+        )
         approval = PendingApproval(
             approval_id=uuid.uuid4().hex,
             build_id=build_id,
             stage=stage,
             context=dict(context or {}),
+            _auto_approve_on_timeout=effective_auto_approve,
         )
         self._pending[approval.approval_id] = approval
         # Auto-resolve when gating is off or running unattended.
-        if not self.enabled or self.auto_approve:
+        if not effective_enabled or effective_auto_approve:
             self._resolve(approval, GateDecision.APPROVED, "auto")
         return approval
 
@@ -150,7 +162,11 @@ class ApprovalGate:
             else:
                 await approval._event.wait()
         except TimeoutError:
-            fallback = GateDecision.APPROVED if self.auto_approve else GateDecision.REJECTED
+            fallback = (
+                GateDecision.APPROVED
+                if approval._auto_approve_on_timeout
+                else GateDecision.REJECTED
+            )
             self._resolve(approval, fallback, "timeout")
         return approval.decision
 

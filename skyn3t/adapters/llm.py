@@ -41,6 +41,8 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from copy import copy as shallow_copy
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -78,6 +80,48 @@ _LAST_ROUTE: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_last_ro
 _ROUTES: contextvars.ContextVar = contextvars.ContextVar("skyn3t_llm_routes", default=None)
 _ROUTING_PROFILE: contextvars.ContextVar = contextvars.ContextVar(
     "skyn3t_llm_routing_profile", default="balanced"
+)
+# A build is submitted against one resolved route. Keep that route task-local
+# so changing the dashboard setting while a background build is running affects
+# the next build, not the in-flight one. The mapping also carries the immutable
+# requested/effective labels used by build diagnostics.
+_BUILD_ROUTING: contextvars.ContextVar = contextvars.ContextVar(
+    "skyn3t_llm_build_routing", default=None
+)
+_BUILD_SETTINGS: contextvars.ContextVar = contextvars.ContextVar(
+    "skyn3t_llm_build_settings", default=None
+)
+_BUILD_ROUTER: contextvars.ContextVar = contextvars.ContextVar(
+    "skyn3t_llm_build_router", default=None
+)
+# These settings can change from the dashboard while a background build is
+# running. Snapshot every input that can alter provider-model selection so an
+# in-flight task remains one coherent routing decision.
+_BUILD_MODEL_POLICY_FIELDS = (
+    "preferred_model",
+    "free_only",
+    "no_claude",
+    "model_evolution",
+    "auto_route",
+    "openrouter_codegen_model",
+    "codegen_cli_provider",
+    "codegen_cli_model",
+    "model_cheap",
+    "model_ui",
+    "model_backend",
+    "model_strong",
+    "model_docs",
+    "llm_fallback_enabled",
+    "llm_fallback_models",
+    "llm_retry_enabled",
+    "llm_max_retries",
+    "llm_retry_base_delay",
+    "llm_retry_max_delay",
+    "vision_model",
+    "openrouter_agentic",
+    "slice_tier_models",
+    "tournament_model_pool",
+    "best_of_n_across_models",
 )
 # A streamed CLI execution runs in the same task as ``agentic_build``. Keep its
 # compact evidence task-local so concurrent build stages never overwrite each
@@ -424,7 +468,12 @@ def explicit_routing_lock_error(
     # build-routing policy, so keep their historical offline behavior instead
     # of treating a missing field as an intentional ``auto`` selection.
     has_explicit_backend = hasattr(settings, "llm_backend")
-    requested = str(getattr(settings, "llm_backend", "auto") or "auto").strip().lower()
+    build_routing = _BUILD_ROUTING.get()
+    requested = str(
+        build_routing.get("requested_backend")
+        if isinstance(build_routing, dict) and build_routing.get("requested_backend")
+        else (getattr(settings, "llm_backend", "auto") or "auto")
+    ).strip().lower()
     if requested not in SUPPORTED_LLM_BACKENDS:
         return f"Unsupported LLM backend {requested!r}."
     if requested == "openrouter" and not openrouter_key(settings):
@@ -457,9 +506,26 @@ def explicit_routing_lock_error(
         if not provider_available(provider):
             return f"{provider} CLI was explicitly selected but is not available on PATH."
 
-    codegen_provider = str(
-        getattr(settings, "codegen_cli_provider", "") or ""
-    ).strip().lower()
+    locked_codegen = (
+        build_routing.get("codegen")
+        if isinstance(build_routing, dict)
+        and isinstance(build_routing.get("codegen"), dict)
+        else None
+    )
+    if isinstance(locked_codegen, dict):
+        requested_codegen_backend = str(
+            locked_codegen.get("requested_backend") or ""
+        ).strip().lower()
+        codegen_provider = (
+            requested_codegen_backend[:-4]
+            if locked_codegen.get("source") == "codegen_cli_pin"
+            and requested_codegen_backend.endswith("_cli")
+            else ""
+        )
+    else:
+        codegen_provider = str(
+            getattr(settings, "codegen_cli_provider", "") or ""
+        ).strip().lower()
     if codegen_provider:
         if codegen_provider not in KNOWN_CLI_PROVIDERS:
             return f"Unsupported codegen CLI provider {codegen_provider!r}."
@@ -1251,6 +1317,16 @@ class LLMClient:
         _ROUTES.set([])
         _ROUTING_PROFILE.set(str(routing_profile or "balanced"))
 
+    def _routing_settings(self) -> Settings:
+        """Settings view frozen for the current build task, when one is active."""
+        locked = _BUILD_SETTINGS.get()
+        return locked if locked is not None else self.settings
+
+    def _routing_router(self) -> ModelRouter:
+        """Router clone bound to the current build's immutable settings view."""
+        locked = _BUILD_ROUTER.get()
+        return locked if locked is not None else self.router
+
     def _resolve_pinned_model(
         self,
         *,
@@ -1263,20 +1339,22 @@ class LLMClient:
         allow_live_catalog: bool | None = None,
     ) -> str:
         effective_profile = str(profile or _ROUTING_PROFILE.get() or "balanced")
+        settings = self._routing_settings()
+        router = self._routing_router()
         requested: list[str] = []
         if model_override:
             requested.append(str(model_override).strip())
         for name in setting_names:
-            val = str(getattr(self.settings, name, "") or "").strip()
+            val = str(getattr(settings, name, "") or "").strip()
             if val:
                 requested.append(val)
         for pinned in requested:
-            if bool(getattr(self.settings, "free_only", False)) and not _is_free_model_id(pinned):
+            if bool(getattr(settings, "free_only", False)) and not _is_free_model_id(pinned):
                 log.warning("llm.free_only_ignored_paid_pin", model=pinned)
                 continue
             if allow_live_catalog is not False:
                 try:
-                    info = self.router.model_cost_info(pinned)
+                    info = router.model_cost_info(pinned)
                     log.info(
                         "llm.explicit_model_pin",
                         model=pinned,
@@ -1289,7 +1367,7 @@ class LLMClient:
                     log.debug("llm.explicit_model_pin_unclassified", model=pinned, error=str(exc)[:120])
             return pinned
         try:
-            return self.router.resolve(
+            return router.resolve(
                 tier,
                 file_hint,
                 task_type=task_type,
@@ -1299,7 +1377,7 @@ class LLMClient:
         except TypeError:
             # Compatibility for externally supplied routers implementing the
             # pre-profile resolve contract.
-            return self.router.resolve(tier, file_hint, task_type=task_type)
+            return router.resolve(tier, file_hint, task_type=task_type)
 
     def _openrouter_cost_details(
         self, model: str, usage: dict[str, Any], pt: int, ct: int
@@ -1627,6 +1705,14 @@ class LLMClient:
     @property
     def backend(self) -> str:
         """Resolve the active backend from policy + availability."""
+        locked = _BUILD_ROUTING.get()
+        if isinstance(locked, dict):
+            effective = str(locked.get("effective_backend") or "").strip().lower()
+            if effective in {"stub", "openrouter"} or (
+                effective.endswith("_cli")
+                and effective[:-4] in _KNOWN_CLI_PROVIDERS
+            ):
+                return effective
         pref = str(self.settings.llm_backend or "auto").strip().lower()
         if pref not in SUPPORTED_LLM_BACKENDS:
             return "stub"
@@ -1645,6 +1731,183 @@ class LLMClient:
             return f"{_AUTO_EXECUTION_CLI_PROVIDER}_cli"
         return "stub"
 
+    @staticmethod
+    def _execution_model_label(backend: str, requested_model: str = "") -> str:
+        """Return an honest submission-time model label for one backend.
+
+        Local CLIs choose their own model unless codegen has a dedicated pin,
+        while the offline stub makes no provider call. OpenRouter can honor a
+        per-build model pin directly; without one the actual model varies by
+        tier and is therefore represented as router-selected rather than guessed.
+        """
+        backend = str(backend or "").strip().lower()
+        requested_model = str(requested_model or "").strip()
+        if backend == "openrouter":
+            return requested_model or "router:auto"
+        if backend.endswith("_cli"):
+            return f"{backend[:-4]}-cli:default"
+        return "offline-stub"
+
+    def _usable_openrouter_pin(self, *models: str) -> str:
+        """Return the first configured model permitted by the current cost lock."""
+        free_only = bool(getattr(self._routing_settings(), "free_only", False))
+        for raw in models:
+            model = str(raw or "").strip()
+            if model and (not free_only or _is_free_model_id(model)):
+                return model
+        return ""
+
+    def build_routing_snapshot(self, model_override: str = "") -> dict[str, Any]:
+        """Snapshot requested/effective build routing without exposing secrets."""
+        requested_backend = str(
+            getattr(self.settings, "llm_backend", "auto") or "auto"
+        ).strip().lower()
+        effective_backend = self.backend
+        submission_model_override = str(model_override or "").strip()
+
+        preferred_model = str(
+            getattr(self.settings, "preferred_model", "") or ""
+        ).strip()
+        requested_model = preferred_model if effective_backend == "openrouter" else ""
+        global_model = (
+            self._usable_openrouter_pin(preferred_model)
+            if effective_backend == "openrouter"
+            else ""
+        )
+        effective_model = self._execution_model_label(
+            effective_backend,
+            global_model,
+        )
+
+        codegen_provider = str(
+            getattr(self.settings, "codegen_cli_provider", "") or ""
+        ).strip().lower()
+        codegen_cli_model = str(
+            getattr(self.settings, "codegen_cli_model", "") or ""
+        ).strip()
+        openrouter_codegen_model = str(
+            getattr(self.settings, "openrouter_codegen_model", "") or ""
+        ).strip()
+
+        if codegen_provider:
+            requested_codegen_backend = f"{codegen_provider}_cli"
+            effective_codegen_backend = (
+                requested_codegen_backend
+                if self._cli_available(codegen_provider)
+                else "stub"
+            )
+            requested_codegen_model = codegen_cli_model
+            effective_codegen_model = (
+                codegen_cli_model or f"{codegen_provider}-cli:default"
+                if effective_codegen_backend != "stub"
+                else "offline-stub"
+            )
+            codegen_source = "codegen_cli_pin"
+        else:
+            requested_codegen_backend = requested_backend
+            effective_codegen_backend = effective_backend
+            codegen_source = "global_backend"
+            if effective_codegen_backend.endswith("_cli"):
+                requested_codegen_model = (
+                    codegen_cli_model or submission_model_override
+                )
+                effective_codegen_model = (
+                    requested_codegen_model
+                    or f"{effective_codegen_backend[:-4]}-cli:default"
+                )
+            elif effective_codegen_backend == "openrouter":
+                requested_codegen_model = (
+                    submission_model_override
+                    or openrouter_codegen_model
+                    or preferred_model
+                )
+                usable_codegen_model = self._usable_openrouter_pin(
+                    submission_model_override,
+                    openrouter_codegen_model,
+                    preferred_model,
+                )
+                effective_codegen_model = self._execution_model_label(
+                    effective_codegen_backend,
+                    usable_codegen_model,
+                )
+            else:
+                requested_codegen_model = (
+                    codegen_cli_model or submission_model_override
+                )
+                effective_codegen_model = "offline-stub"
+
+        codegen = {
+            "source": codegen_source,
+            "requested_backend": requested_codegen_backend,
+            "effective_backend": effective_codegen_backend,
+            "requested_model": requested_codegen_model,
+            "effective_model": effective_codegen_model,
+        }
+        model_policy = {
+            name: deepcopy(getattr(self.settings, name, None))
+            for name in _BUILD_MODEL_POLICY_FIELDS
+        }
+        return {
+            "requested_backend": requested_backend,
+            "effective_backend": effective_backend,
+            "requested_model": requested_model,
+            "effective_model": effective_model,
+            "submission": {
+                "requested_backend": requested_backend,
+                "effective_backend": effective_backend,
+                "requested_model": requested_model,
+                "model_override": submission_model_override,
+                "codegen": deepcopy(codegen),
+            },
+            "codegen": codegen,
+            "model_policy": model_policy,
+        }
+
+    @contextmanager
+    def build_routing_scope(
+        self,
+        snapshot: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Lock one background build to its submission-time provider route."""
+        route = deepcopy(snapshot or self.build_routing_snapshot())
+        effective = str(route.get("effective_backend") or "").strip().lower()
+        if effective not in {"stub", "openrouter"} and not (
+            effective.endswith("_cli")
+            and effective[:-4] in _KNOWN_CLI_PROVIDERS
+        ):
+            raise RoutingLockError(
+                f"Unsupported effective build backend {effective!r}."
+            )
+        policy = route.get("model_policy")
+        settings_view = self.settings
+        router_view = self.router
+        if isinstance(policy, dict):
+            frozen_policy = deepcopy(policy)
+            if hasattr(self.settings, "model_copy"):
+                settings_view = self.settings.model_copy(
+                    update=frozen_policy,
+                    deep=True,
+                )
+            else:  # pragma: no cover - compatibility for settings-like integrations
+                settings_view = shallow_copy(self.settings)
+                for name, value in frozen_policy.items():
+                    setattr(settings_view, name, value)
+            router_view = shallow_copy(self.router)
+            router_view.settings = settings_view
+            for name in ("_overrides", "_paid_fallback_cache"):
+                if hasattr(router_view, name):
+                    setattr(router_view, name, deepcopy(getattr(router_view, name)))
+
+        route_token = _BUILD_ROUTING.set(route)
+        settings_token = _BUILD_SETTINGS.set(settings_view)
+        router_token = _BUILD_ROUTER.set(router_view)
+        try:
+            yield route
+        finally:
+            _BUILD_ROUTER.reset(router_token)
+            _BUILD_SETTINGS.reset(settings_token)
+            _BUILD_ROUTING.reset(route_token)
+
     def backend_status(self) -> dict:
         """Explain backend resolution without exposing secret values.
 
@@ -1653,7 +1916,12 @@ class LLMClient:
         object is the operator-facing truth: it records the requested backend,
         active backend, and why a fallback happened.
         """
-        pref = str(self.settings.llm_backend or "auto").strip().lower()
+        locked = _BUILD_ROUTING.get()
+        pref = str(
+            locked.get("requested_backend")
+            if isinstance(locked, dict) and locked.get("requested_backend")
+            else (self.settings.llm_backend or "auto")
+        ).strip().lower()
         active = self.backend
         openrouter_configured = bool(openrouter_key(self.settings))
         preferred_cli = (
@@ -1762,16 +2030,18 @@ class LLMClient:
 
     # ---- call resilience: transient retry + ordered model failover ----------
     def _retry_budget(self) -> int:
-        if not getattr(self.settings, "llm_retry_enabled", True):
+        settings = self._routing_settings()
+        if not getattr(settings, "llm_retry_enabled", True):
             return 0
-        return max(0, int(getattr(self.settings, "llm_max_retries", 3)))
+        return max(0, int(getattr(settings, "llm_max_retries", 3)))
 
     def _retry_delay(self, attempt: int) -> float:
         """Exponential backoff with jitter (jitter staggers concurrent retries off
         a shared failing endpoint — the same shape as orchestrator._backoff_delay,
         but tuned for a single LLM call)."""
-        base = float(getattr(self.settings, "llm_retry_base_delay", 0.5))
-        cap = float(getattr(self.settings, "llm_retry_max_delay", 8.0))
+        settings = self._routing_settings()
+        base = float(getattr(settings, "llm_retry_base_delay", 0.5))
+        cap = float(getattr(settings, "llm_retry_max_delay", 8.0))
         d = min((2 ** attempt) * base, cap)
         return d + random.uniform(0.0, d * 0.5)
 
@@ -1779,11 +2049,13 @@ class LLMClient:
         """Ordered fallback model ids AFTER ``primary``: the operator override
         (``llm_fallback_models`` comma-list) first, then the router's per-tier
         candidates. De-duped, ``primary`` removed. ``[]`` when failover is off."""
-        if not getattr(self.settings, "llm_fallback_enabled", True):
+        settings = self._routing_settings()
+        router = self._routing_router()
+        if not getattr(settings, "llm_fallback_enabled", True):
             return []
         out: list[str] = []
-        free_only = bool(getattr(self.settings, "free_only", False))
-        for m in str(getattr(self.settings, "llm_fallback_models", "") or "").split(","):
+        free_only = bool(getattr(settings, "free_only", False))
+        for m in str(getattr(settings, "llm_fallback_models", "") or "").split(","):
             m = m.strip()
             if not m:
                 continue
@@ -1793,7 +2065,7 @@ class LLMClient:
             if m and m != primary and m not in out:
                 out.append(m)
         try:
-            for m in self.router.fallback_candidates(
+            for m in router.fallback_candidates(
                 tier,
                 primary=primary,
                 profile=str(_ROUTING_PROFILE.get() or "balanced"),
@@ -2130,9 +2402,10 @@ class LLMClient:
         def _is_free(m: str) -> bool:
             return _is_free_model_id(m)
 
-        configured = str(getattr(self.settings, "vision_model", "") or "").strip()
-        no_claude = bool(getattr(self.settings, "no_claude", False))
-        free_only = bool(getattr(self.settings, "free_only", False))
+        settings = self._routing_settings()
+        configured = str(getattr(settings, "vision_model", "") or "").strip()
+        no_claude = bool(getattr(settings, "no_claude", False))
+        free_only = bool(getattr(settings, "free_only", False))
 
         if configured:  # operator opted into a specific vision model — honor it
             if no_claude and _is_claude(configured):
@@ -3152,7 +3425,9 @@ class LLMClient:
         agentic tool-loop when ``openrouter_agentic`` is on (cheap models, full app)."""
         b = self.backend
         return b.endswith("_cli") or (
-            b == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)))
+            b == "openrouter"
+            and bool(getattr(self._routing_settings(), "openrouter_agentic", True))
+        )
 
     async def agentic_build(
         self,
@@ -3166,6 +3441,7 @@ class LLMClient:
         planned_paths: list[str] | tuple[str, ...] | set[str] | None = None,
         enforce_antistub: bool = True,
         verify_on_stop: bool | None = None,
+        cortex_safe: bool = False,
     ) -> dict:
         """Run a local coding-agent CLI that writes files directly into workdir.
 
@@ -3176,20 +3452,68 @@ class LLMClient:
         code-slicing to route cheap/strong tiers per slice). ``provider`` forces a
         specific CLI (e.g. "claude") regardless of the global backend — this is how
         codegen-only CLI routing works: the global backend stays cheap (OpenRouter)
-        while ONLY codegen runs on the claude CLI. Returns {ok, backend, error}.
+        while ONLY codegen runs on the claude CLI. ``cortex_safe`` restricts local
+        candidate authoring to an isolated, no-network Codex workspace; OpenRouter's
+        internal confined tool loop remains available. Returns {ok, backend, error}.
         """
         backend = self.backend
         try:
             self.budget.check()
         except BudgetExceeded as exc:
             return {"ok": False, "backend": backend, "error": str(exc)}
-        provider = (provider or (backend[:-4] if backend.endswith("_cli") else "")).lower()
-        if provider and not model:
+
+        locked = _BUILD_ROUTING.get()
+        locked_codegen = (
+            locked.get("codegen")
+            if isinstance(locked, dict) and isinstance(locked.get("codegen"), dict)
+            else None
+        )
+        locked_codegen_backend = ""
+        if isinstance(locked_codegen, dict):
+            locked_codegen_backend = str(
+                locked_codegen.get("effective_backend") or ""
+            ).strip().lower()
+            if locked_codegen_backend.endswith("_cli"):
+                provider = locked_codegen_backend[:-4]
+            else:
+                provider = ""
+            effective_label = str(
+                locked_codegen.get("effective_model") or ""
+            ).strip()
+            requested_label = str(
+                locked_codegen.get("requested_model") or ""
+            ).strip()
+            codegen_source = str(locked_codegen.get("source") or "").strip()
+            # Preserve internal per-slice model choices when the operator left
+            # codegen on automatic routing. A GUI/settings pin, or an explicit
+            # codegen CLI provider (whose empty model means that CLI's default),
+            # remains authoritative for the whole build.
+            if requested_label or codegen_source == "codegen_cli_pin":
+                if (
+                    effective_label in {"", "router:auto", "offline-stub"}
+                    or effective_label.endswith("-cli:default")
+                ):
+                    model = None
+                else:
+                    model = effective_label
+
+        provider = str(
+            provider or (backend[:-4] if backend.endswith("_cli") else "")
+        ).lower()
+        if provider and not model and locked_codegen is None:
             model = str(getattr(self.settings, "codegen_cli_model", "") or "").strip() or None
         if not provider:
+            if locked_codegen_backend == "stub":
+                return {
+                    "ok": False,
+                    "backend": "stub",
+                    "error": "agentic unsupported",
+                }
             # No CLI agent: OpenRouter models get the agentic tool-loop (cheap,
             # whole-project codegen) instead of the weak per-file path.
-            if backend == "openrouter" and bool(getattr(self.settings, "openrouter_agentic", True)):
+            if backend == "openrouter" and bool(
+                getattr(self._routing_settings(), "openrouter_agentic", True)
+            ):
                 m = self._resolve_pinned_model(
                     tier=Tier.BACKEND,
                     model_override=model,
@@ -3208,12 +3532,28 @@ class LLMClient:
                     verify_on_stop=verify_on_stop,
                 )
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
+        if cortex_safe and provider != "codex":
+            return {
+                "ok": False,
+                "backend": f"{provider}_cli",
+                "error": (
+                    "Cortex-safe local candidate authoring requires Codex CLI; "
+                    f"{provider or 'unknown'} CLI is not permitted."
+                ),
+            }
         if not self._cli_available(provider):
             return {"ok": False, "backend": backend, "error": "agentic unsupported"}
         # acceptEdits lets the headless agent write files without prompting.
         # _no_mcp_args keeps the agent from loading the host's ambient MCP fleet.
-        nm = _no_mcp_args(self.settings, provider)
+        nm = _no_mcp_args(self._routing_settings(), provider)
+        if cortex_safe and provider == "codex" and "--ignore-user-config" not in nm:
+            nm.append("--ignore-user-config")
         codex_windows_sandbox = _isolated_codex_windows_sandbox_args(nm)
+        cortex_codex_sandbox = (
+            ["-c", "sandbox_workspace_write.network_access=false"]
+            if cortex_safe and provider == "codex"
+            else []
+        )
         # Stream the agent's NDJSON event log (claude/kimi) so we can detect the
         # terminal `result` event (an accurate success signal — claude -p can
         # exit 0 on a reported error) and watch for a stalled session via an idle
@@ -3240,7 +3580,8 @@ class LLMClient:
             "codex": [
                 cli_command, "exec", "--ephemeral", "--sandbox", "workspace-write",
                 "--color", "never", "--skip-git-repo-check", "--json",
-                *codex_windows_sandbox, "--cd", workdir, *model_args, *nm, "-",
+                *codex_windows_sandbox, *cortex_codex_sandbox,
+                "--cd", workdir, *model_args, *nm, "-",
             ],
             # Kimi requires --print for noninteractive and stream-json modes.
             # It has no documented disable-all ambient-MCP flag in 1.41.

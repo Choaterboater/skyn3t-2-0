@@ -27,7 +27,9 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,7 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.studio.build_intelligence import prepare_build_intelligence
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
@@ -80,9 +83,11 @@ from skyn3t.studio.finance_sanity import check_finance_sanity
 from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
+from skyn3t.studio.lab_policy import LabAutonomyPolicy
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
+from skyn3t.studio.product_spec import ProductSpecV1, product_contract_prompt_block
 from skyn3t.studio.proof_run import (
     _esm_named_export_mismatches,
     _unresolved_local_imports,
@@ -90,6 +95,15 @@ from skyn3t.studio.proof_run import (
     apply_deterministic_repairs,
     extract_error_gaps,
     proof_run,
+    stabilize_node_dependencies,
+)
+from skyn3t.studio.requirement_trace import (
+    ACCEPTANCE_REGISTRY_V1,
+    INACTIVE_REQUIREMENT_STATUSES,
+    REQUIREMENT_TRACE_COMPILER,
+    REQUIREMENT_TRACE_SCHEMA_VERSION,
+    compile_requirement_trace,
+    requirement_evidence_binding,
 )
 from skyn3t.studio.security_check import check_security
 from skyn3t.studio.slicer import slice_plan, slice_tier
@@ -99,6 +113,7 @@ from skyn3t.studio.visual_loop import visual_self_improve
 from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.workflow_depth import check_workflow_depth
 from skyn3t.worktree import (
+    SOURCE_TREE_DIGEST_ALGORITHM,
     Worktree,
     cleanup_worktree,
     create_worktree,
@@ -111,6 +126,25 @@ from skyn3t.worktree import (
 log = structlog.get_logger(__name__)
 
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+
+_REQUIREMENT_TRACE_SAFE_PROOF_IDS = frozenset(
+    {
+        "proof:build",
+        "proof:python-tests",
+        "proof:node-tests",
+        "proof:swift-tests",
+        "proof:ruff",
+        "proof:stack-artifact",
+    }
+)
+_REQUIREMENT_TRACE_PROOF_DETAIL_KEYS = {
+    "proof:build": "build",
+    "proof:python-tests": "tests",
+    "proof:node-tests": "node_tests",
+    "proof:swift-tests": "swift_tests",
+    "proof:ruff": "ruff",
+}
+_REQUIREMENT_TRACE_MAX_ROUTES = 512
 
 # Dir names that hold build output / vendored / preview snapshots — never a SEO
 # repair TARGET (rewriting a built `.next` page or a `.preview` mirror is nonsense
@@ -194,6 +228,16 @@ class BuildOutcome:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _RequirementTraceSelection:
+    """Pure caller-side selection for the bounded final evidence phase."""
+
+    opted_in: bool = False
+    fully_bound: bool = False
+    safe_proof_ids: tuple[str, ...] = ()
+    web_routes: tuple[str, ...] = ()
+
+
 def _slugify(text: str) -> str:
     # ASCII alnum only — `c.isalnum()` alone is True for unicode letters, which
     # leaks non-ASCII into the slug/dir/URL and diverges from the sibling
@@ -240,6 +284,7 @@ class StudioRunner:
         self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
         self.rag = rag                    # rag.RagEngine | None — recall into prompts
         self.audit_log = AuditLog(path=self.settings.logs_dir / "audit.jsonl")
+        initial_lab_policy = LabAutonomyPolicy.from_settings(self.settings)
         if bool(self.settings.cortex_auto_approve_safe):
             self.permission_manager = PermissionManager(
                 settings=self.settings,
@@ -251,9 +296,12 @@ class StudioRunner:
                 settings=self.settings,
                 audit_log=self.audit_log,
             )
+        self._approval_gate_uses_live_settings = approval_gate is None
         self.approval_gate = approval_gate or ApprovalGate(
-            enabled=bool(self.settings.approval_gates),
-            auto_approve=bool(self.settings.cortex_auto_approve_safe),
+            enabled=bool(self.settings.approval_gates)
+            and initial_lab_policy.approval_gates_enabled,
+            auto_approve=bool(self.settings.cortex_auto_approve_safe)
+            or initial_lab_policy.enabled,
             audit_log=self.audit_log,
         )
         if self.orchestrator is not None and getattr(self.orchestrator, "_self_healing", None) is None:
@@ -582,7 +630,19 @@ class StudioRunner:
             log.warning("obs.call_failed", method=method, error=str(exc))
             return None
 
-    def _guard_check(self, stage: str) -> None:
+    def _guard_check(
+        self,
+        stage: str,
+        *,
+        policy: LabAutonomyPolicy | None = None,
+    ) -> None:
+        effective_policy = (
+            policy
+            if policy is not None
+            else LabAutonomyPolicy.from_settings(self.settings)
+        )
+        if not effective_policy.budget_guards_enabled:
+            return
         guard = self.budget_guard
         if guard is None:
             return
@@ -1480,16 +1540,33 @@ class StudioRunner:
         and dampen the score by route health (opt-in: gate the verdict). Returns
         the possibly-adjusted (final_score, verdict). Never raises."""
         try:
-            from skyn3t.studio.app_runner import AppRunner
             from skyn3t.studio.improve import ImproveEngine
+            from skyn3t.studio.preview_supervisor import (
+                PreviewSupervisor,
+                build_reusable_web_proof,
+                preview_input_fingerprint,
+            )
             from skyn3t.studio.visual_check import make_vision_fn
             from skyn3t.studio.visual_proof import (
                 DEFAULT_VIEWPORTS,
                 VISUAL_PROOF_SCHEMA_VERSION,
             )
+            liveness_input_fingerprint = None
+            try:
+                liveness_input_fingerprint = preview_input_fingerprint(
+                    project_dir,
+                    plan.stack,
+                )
+            except Exception as exc:  # noqa: BLE001 - liveness still runs without reuse
+                log.warning(
+                    "liveness.proof_reuse_prefingerprint_unavailable",
+                    error=str(exc)[:500],
+                )
             outcome = await liveness_self_improve(
                 project_dir,
-                app_runner=AppRunner(),
+                # Generated code is untrusted lab output. The preview boundary is
+                # Docker-only and never falls back to host execution.
+                app_runner=PreviewSupervisor(),
                 improve_engine=ImproveEngine(self.event_bus, self.orchestrator,
                                              settings=self.settings,
                                              record_history=False),
@@ -1529,7 +1606,10 @@ class StudioRunner:
             visual_status = "passed"
         elif visual_skipped:
             visual_status = "skipped"
-        manifest.extra["responsive_visual_proof"] = {
+        visual_report_path = getattr(report, "visual_report_path", None)
+        if not isinstance(visual_report_path, str):
+            visual_report_path = None
+        responsive_visual_proof = {
             "schema_version": VISUAL_PROOF_SCHEMA_VERSION,
             "status": visual_status,
             "routes_checked": visual_total,
@@ -1539,8 +1619,28 @@ class StudioRunner:
             "skipped_routes": list(getattr(report, "visual_skipped_routes", []) or []),
             "viewports": [viewport.to_dict() for viewport in DEFAULT_VIEWPORTS],
             "artifact_dir": artifact_dir,
-            "report_path": getattr(report, "visual_report_path", None),
+            "report_path": visual_report_path,
         }
+        if (
+            visual_status == "passed"
+            and str(plan.stack or "").strip().lower() in _WEB_STACKS
+            and artifact_dir
+            and visual_report_path
+            and liveness_input_fingerprint is not None
+        ):
+            try:
+                responsive_visual_proof["reusable_web_proof"] = (
+                    build_reusable_web_proof(
+                        project_dir,
+                        plan.stack,
+                        artifact_dir=artifact_dir,
+                        report_path=visual_report_path,
+                        runtime_input_fingerprint=liveness_input_fingerprint,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - uncertainty disables reuse
+                log.warning("liveness.proof_reuse_unavailable", error=str(exc)[:500])
+        manifest.extra["responsive_visual_proof"] = responsive_visual_proof
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
         if proof.passed and report.total:
@@ -1568,6 +1668,604 @@ class StudioRunner:
         if gate_reason:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
+
+    async def _run_required_proof_ladder(
+        self,
+        manifest: BuildManifest,
+        project_dir: str | Path,
+        plan: BuildPlan,
+        final_score: float,
+        verdict: str,
+        *,
+        blocking: bool = True,
+        routes: list[str] | tuple[str, ...] | None = None,
+        include_discovered_routes: bool = True,
+    ) -> tuple[float, str]:
+        """Run Docker+Playwright or Maestro evidence for UI builds.
+
+        ``blocking=False`` is the collection-only seam used by registry-v1
+        route requirements when the global proof-ladder policy is disabled.
+        The requirement trace applies must/should priority after evidence is
+        bound; this helper must not pre-empt that decision.
+        """
+        from skyn3t.studio.liveness import enumerate_routes
+        from skyn3t.studio.preview_supervisor import ProofLadderCoordinator
+
+        requested_routes = list(routes or ())
+        if include_discovered_routes:
+            requested_routes.extend(
+                route.path
+                for route in enumerate_routes(Path(project_dir), plan.stack)
+                if route.kind == "page"
+            )
+        requested_routes = list(dict.fromkeys(requested_routes)) or ["/"]
+        try:
+            run_options: dict[str, Any] = {"routes": requested_routes}
+            responsive_proof = manifest.extra.get("responsive_visual_proof")
+            if (
+                isinstance(responsive_proof, dict)
+                and responsive_proof.get("status") == "passed"
+                and str(plan.stack or "").strip().lower() != "react_native"
+                and isinstance(
+                    responsive_proof.get("reusable_web_proof"),
+                    dict,
+                )
+            ):
+                run_options["reusable_web_proof"] = responsive_proof[
+                    "reusable_web_proof"
+                ]
+            result = await ProofLadderCoordinator().run(
+                project_dir,
+                plan.stack,
+                **run_options,
+            )
+            payload = result.to_dict()
+        except Exception as exc:  # noqa: BLE001 - a proof crash is failed evidence
+            payload = {
+                "status": "failed",
+                "passed": False,
+                "steps": [],
+                "error": str(exc)[:500],
+            }
+            result = None
+        manifest.extra["proof_ladder"] = payload
+        manifest.files = list_files(project_dir)
+        if result is not None and result.passed:
+            manifest.extra.pop("proof_ladder_gate", None)
+            return final_score, verdict
+        if not blocking:
+            manifest.extra.pop("proof_ladder_gate", None)
+            return final_score, verdict
+
+        failed_steps = [
+            str(step.get("name") or "proof")
+            for step in payload.get("steps", [])
+            if isinstance(step, dict)
+            and step.get("required")
+            and step.get("status") != "passed"
+        ]
+        status = str(payload.get("status") or "failed")
+        suffix = f" ({', '.join(failed_steps[:4])})" if failed_steps else ""
+        manifest.extra["proof_ladder_gate"] = (
+            f"required UI proof did not pass: {status}{suffix}"
+        )
+        verdict = "no_go"
+        cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        final_score = min(final_score, cap)
+        manifest.score = final_score
+        return final_score, verdict
+
+    @staticmethod
+    def _canonical_requirement_route(acceptance_id: str) -> str | None:
+        if not acceptance_id.startswith("ui:route:"):
+            return None
+        raw = acceptance_id.removeprefix("ui:route:").strip()
+        route = "/" + raw.lstrip("/")
+        if len(route) > 256 or any(token in route for token in ("\\", "?", "#", "://")):
+            return None
+        if route != "/" and any(part in {"", ".", ".."} for part in route.split("/")[1:]):
+            return None
+        return route
+
+    @classmethod
+    def _requirement_trace_selection(
+        cls,
+        product_spec: ProductSpecV1 | None,
+        stack: str,
+    ) -> _RequirementTraceSelection:
+        if product_spec is None:
+            return _RequirementTraceSelection()
+        version = getattr(product_spec, "acceptance_registry_version", None)
+        if type(version) is not int or version != 1:
+            return _RequirementTraceSelection()
+        active_musts = [
+            item for item in (getattr(product_spec, "requirements", ()) or ())
+            if str(getattr(item, "priority", "")).casefold() == "must"
+            and str(getattr(item, "status", "")).casefold() not in INACTIVE_REQUIREMENT_STATUSES
+        ]
+        fully_bound = bool(active_musts) and all(
+            getattr(item, "acceptance_ids", ()) for item in active_musts
+        )
+        if not fully_bound:
+            return _RequirementTraceSelection(opted_in=True)
+        ids = tuple(dict.fromkeys(
+            str(acceptance_id)
+            for item in active_musts
+            for acceptance_id in getattr(item, "acceptance_ids", ())
+        ))
+        proof_ids = tuple(
+            acceptance_id for acceptance_id in ids
+            if acceptance_id in _REQUIREMENT_TRACE_SAFE_PROOF_IDS
+        )
+        routes: list[str] = []
+        if str(stack or "").strip().lower() in _WEB_STACKS:
+            for acceptance_id in ids:
+                route = cls._canonical_requirement_route(acceptance_id)
+                if route is not None and route not in routes:
+                    routes.append(route)
+        return _RequirementTraceSelection(
+            True, True, proof_ids, tuple(routes[:_REQUIREMENT_TRACE_MAX_ROUTES])
+        )
+
+    @staticmethod
+    def _valid_evidence_snapshot(snapshot: dict[str, Any]) -> bool:
+        sha256 = snapshot.get("sha256")
+        return (
+            snapshot.get("valid") is True
+            and snapshot.get("algorithm") == SOURCE_TREE_DIGEST_ALGORITHM
+            and isinstance(sha256, str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", sha256))
+            and type(snapshot.get("file_count")) is int
+            and 0 <= snapshot["file_count"] <= 10_000_000
+            and type(snapshot.get("byte_count")) is int
+            and 0 <= snapshot["byte_count"] <= (1 << 50)
+        )
+
+    @classmethod
+    def _same_evidence_snapshot(cls, before: dict, after: dict) -> bool:
+        return (
+            cls._valid_evidence_snapshot(before)
+            and cls._valid_evidence_snapshot(after)
+            and all(
+                before.get(field) == after.get(field)
+                for field in ("algorithm", "sha256", "file_count", "byte_count")
+            )
+        )
+
+    @staticmethod
+    def _proof_flags(selected_ids: tuple[str, ...]) -> tuple[bool, bool]:
+        run_tests = bool(
+            set(selected_ids)
+            & {"proof:python-tests", "proof:node-tests", "proof:swift-tests"}
+        )
+        run_build = bool(set(selected_ids) & {"proof:build", "proof:ruff"})
+        return run_tests, run_build
+
+    @staticmethod
+    def _sanitized_requirement_proof(payload: dict, selected_ids: tuple[str, ...]) -> dict:
+        raw_detail = payload.get("detail")
+        raw_detail = raw_detail if isinstance(raw_detail, dict) else {}
+        detail: dict[str, Any] = {}
+        if "proof:stack-artifact" in selected_ids and "stack_check" in raw_detail:
+            detail["stack_check"] = raw_detail["stack_check"]
+        environment = raw_detail.get("proof_environment")
+        if isinstance(environment, dict) and environment.get("command_backend") == "docker":
+            for acceptance_id in selected_ids:
+                key = _REQUIREMENT_TRACE_PROOF_DETAIL_KEYS.get(acceptance_id)
+                if key is not None and key in raw_detail:
+                    detail[key] = raw_detail[key]
+        # Fail closed for proof:overall / proof:entrypoint.
+        return {"passed": False, "detail": detail}
+
+    @classmethod
+    def _sanitized_requirement_ladder(
+        cls,
+        payload: dict[str, Any],
+        selected_routes: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Expose only exact allowlisted Playwright route records."""
+        wanted = set(selected_routes)
+        steps: list[dict[str, Any]] = []
+        raw_steps = payload.get("steps")
+        if isinstance(raw_steps, list):
+            for raw_step in raw_steps[:2]:
+                if not isinstance(raw_step, dict) or raw_step.get("name") != "playwright":
+                    continue
+                raw_detail = raw_step.get("detail")
+                raw_detail = raw_detail if isinstance(raw_detail, dict) else {}
+                raw_routes = raw_detail.get("routes")
+                raw_routes = raw_routes if isinstance(raw_routes, list) else []
+                declared = {
+                    route
+                    for value in raw_routes[:_REQUIREMENT_TRACE_MAX_ROUTES + 1]
+                    if isinstance(value, str)
+                    and (route := cls._canonical_requirement_route(f"ui:route:{value}"))
+                }
+                proofs = []
+                raw_proofs = raw_detail.get("proofs")
+                raw_proofs = raw_proofs if isinstance(raw_proofs, list) else []
+                for record in raw_proofs[:_REQUIREMENT_TRACE_MAX_ROUTES + 1]:
+                    if not isinstance(record, dict):
+                        continue
+                    raw_route = record.get("route")
+                    route = (
+                        cls._canonical_requirement_route(f"ui:route:{raw_route}")
+                        if isinstance(raw_route, str)
+                        else None
+                    )
+                    if route in wanted:
+                        raw_viewports = record.get("viewports")
+                        viewports: list[dict[str, Any]] | None = None
+                        if isinstance(raw_viewports, list):
+                            viewports = []
+                            for raw_viewport in raw_viewports[:3]:
+                                if not isinstance(raw_viewport, dict):
+                                    viewports.append({"invalid": True})
+                                    continue
+                                metrics = raw_viewport.get("metrics")
+                                viewports.append({
+                                    "name": raw_viewport.get("name"),
+                                    "width": raw_viewport.get("width"),
+                                    "height": raw_viewport.get("height"),
+                                    "passed": raw_viewport.get("passed"),
+                                    "skipped": raw_viewport.get("skipped"),
+                                    "reason": raw_viewport.get("reason"),
+                                    "screenshot": raw_viewport.get("screenshot"),
+                                    "metrics": {} if isinstance(metrics, Mapping) else None,
+                                    "issues": [] if raw_viewport.get("issues") == [] else [{"redacted": True}],
+                                    "console_errors": [] if raw_viewport.get("console_errors") == [] else ["redacted"],
+                                    "page_errors": [] if raw_viewport.get("page_errors") == [] else ["redacted"],
+                                })
+                        proofs.append({
+                            key: record.get(key)
+                            for key in (
+                                "schema_version", "route", "passed", "skipped",
+                                "reason", "report_path",
+                            )
+                        } | {"viewports": viewports})
+                steps.append({
+                    key: raw_step.get(key)
+                    for key in ("name", "status", "required", "reason")
+                } | {
+                    "detail": {
+                        "routes": [route for route in selected_routes if route in declared],
+                        "proofs": proofs,
+                    }
+                })
+        return {
+            key: payload.get(key)
+            for key in (
+                "schema_version", "run_id", "status", "passed",
+                "persistence_error", "report_path",
+            )
+        } | {"steps": steps}
+
+    async def _run_terminal_evidence(
+        self,
+        manifest: BuildManifest,
+        product_spec: ProductSpecV1 | None,
+        project_dir: str | Path,
+        plan: BuildPlan,
+        proof: Any,
+        final_score: float,
+        verdict: str,
+    ) -> tuple[float, str, Any]:
+        selection = self._requirement_trace_selection(product_spec, plan.stack)
+        if selection.fully_bound and selection.safe_proof_ids:
+            run_tests, run_build = self._proof_flags(selection.safe_proof_ids)
+            if self._valid_evidence_snapshot(source_tree_snapshot(project_dir)):
+                try:
+                    ran, passed, summary = await asyncio.to_thread(
+                        stabilize_node_dependencies,
+                        project_dir,
+                        execution_backend=self.settings.execution_backend,
+                        stack=plan.stack,
+                        timeout=max(
+                            int(getattr(self.settings, "generated_build_timeout", 300)),
+                            int(getattr(self.settings, "generated_test_timeout", 90)),
+                        ),
+                        run_tests=run_tests,
+                        run_build=run_build,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    ran, passed, summary = True, False, str(exc)[:500]
+            else:
+                ran, passed, summary = False, False, "invalid source tree"
+            manifest.extra["requirement_trace_dependency_stabilization"] = {
+                "ran": bool(ran), "passed": bool(passed),
+                "summary": str(summary)[:500],
+                "acceptance_ids": list(selection.safe_proof_ids),
+            }
+            if (ran and not passed) or summary == "invalid source tree":
+                verdict = "no_go"
+        verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+        return await self._run_final_requirement_evidence(
+            manifest, product_spec, project_dir, plan, proof, final_score, verdict, selection
+        )
+
+    async def _run_final_requirement_evidence(
+        self,
+        manifest: BuildManifest,
+        product_spec: ProductSpecV1 | None,
+        project_dir: str | Path,
+        plan: BuildPlan,
+        proof: Any,
+        final_score: float,
+        verdict: str,
+        selection: _RequirementTraceSelection,
+    ) -> tuple[float, str, Any]:
+        source_before = source_tree_snapshot(project_dir)
+        source_current = source_before
+        errors = [] if self._valid_evidence_snapshot(source_before) else [
+            "final source tree snapshot was invalid before evidence"
+        ]
+        proof_payload: dict[str, Any] | None = None
+        if selection.fully_bound and selection.safe_proof_ids and not errors:
+            run_tests, run_build = self._proof_flags(selection.safe_proof_ids)
+            try:
+                final_proof = await asyncio.to_thread(
+                    proof_run,
+                    project_dir,
+                    checklist=plan.checklist,
+                    execution_backend=self.settings.execution_backend,
+                    stack=plan.stack,
+                    run_tests=run_tests,
+                    test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+                    run_build=run_build,
+                    build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                    brief=manifest.brief,
+                )
+                proof_payload = final_proof.to_dict()
+                manifest.extra["proof"] = proof_payload
+                proof = final_proof
+                if not final_proof.passed:
+                    verdict = "no_go"
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"final proof failed to execute: {exc}"[:500])
+                verdict = "no_go"
+            source_current = source_tree_snapshot(project_dir)
+            if not self._same_evidence_snapshot(source_before, source_current):
+                errors.append("authored source changed during final proof")
+                verdict = "no_go"
+        global_ladder = bool(getattr(self.settings, "proof_ladder_required", True)) and (
+            plan.stack in _UI_WEB_STACKS or plan.stack == "react_native"
+        )
+        ladder_needed = global_ladder or bool(
+            selection.fully_bound and selection.web_routes
+        )
+        runtime_before = runtime_current = None
+        if ladder_needed:
+            ladder_ok = not errors and self._same_evidence_snapshot(
+                source_before, source_current
+            )
+            if ladder_ok and plan.stack in _WEB_STACKS:
+                try:
+                    from skyn3t.studio.preview_supervisor import preview_input_fingerprint
+                    runtime_before = preview_input_fingerprint(project_dir, plan.stack)
+                except Exception as exc:  # noqa: BLE001
+                    ladder_ok = False
+                    errors.append(f"runtime fingerprint unavailable before UI proof: {exc}"[:500])
+            if ladder_ok:
+                final_score, verdict = await self._run_required_proof_ladder(
+                    manifest, project_dir, plan, final_score, verdict,
+                    blocking=global_ladder,
+                    routes=selection.web_routes,
+                    include_discovered_routes=global_ladder,
+                )
+                after_ladder = source_tree_snapshot(project_dir)
+                if not self._same_evidence_snapshot(source_current, after_ladder):
+                    errors.append("authored source changed during final UI proof")
+                    verdict = "no_go"
+                source_current = after_ladder
+                if plan.stack in _WEB_STACKS:
+                    try:
+                        runtime_current = preview_input_fingerprint(project_dir, plan.stack)
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"runtime fingerprint unavailable after UI proof: {exc}"[:500])
+                    if runtime_before is None or runtime_current != runtime_before:
+                        errors.append("runtime inputs changed during final UI proof")
+            else:
+                reason = errors[-1] if errors else "unsafe final source tree"
+                manifest.extra["proof_ladder"] = {
+                    "schema_version": 1, "run_id": uuid.uuid4().hex,
+                    "status": "failed", "passed": False, "persistence_error": "",
+                    "steps": [{"name": "evidence_integrity", "status": "failed",
+                               "required": True, "reason": reason}],
+                }
+                if global_ladder:
+                    manifest.extra["proof_ladder_gate"] = f"required UI proof did not run: {reason}"
+                verdict = "no_go"
+        if errors:
+            if selection.fully_bound or global_ladder:
+                verdict = "no_go"
+            manifest.extra["requirement_trace_evidence_errors"] = list(dict.fromkeys(errors))
+        else:
+            manifest.extra.pop("requirement_trace_evidence_errors", None)
+        if product_spec is None:
+            return final_score, verdict, proof
+        evidence_extra: dict[str, Any] = {}
+        if proof_payload is not None:
+            evidence_extra["proof"] = self._sanitized_requirement_proof(
+                proof_payload, selection.safe_proof_ids
+            )
+        ladder_payload = (
+            manifest.extra.get("proof_ladder") if ladder_needed else None
+        )
+        if selection.web_routes and isinstance(ladder_payload, dict):
+            evidence_extra["proof_ladder"] = self._sanitized_requirement_ladder(
+                ladder_payload, selection.web_routes
+            )
+        run_id = ladder_payload.get("run_id") if isinstance(ladder_payload, dict) else None
+        evidence_run_id = run_id if isinstance(run_id, str) and run_id else uuid.uuid4().hex
+        registry = ACCEPTANCE_REGISTRY_V1 if selection.opted_in else None
+        compiled_at = datetime.now(UTC).isoformat(timespec="seconds")
+        binding: dict[str, Any] | None = None
+        runtime_binding = (
+            runtime_current or runtime_before
+            if selection.web_routes
+            else None
+        )
+        if (
+            selection.fully_bound
+            and not errors
+            and self._valid_evidence_snapshot(source_current)
+        ):
+            try:
+                binding = requirement_evidence_binding(
+                    product_spec, evidence_extra, source_current,
+                    acceptance_registry=ACCEPTANCE_REGISTRY_V1,
+                    build_id=manifest.build_id,
+                    evidence_run_id=evidence_run_id,
+                    runtime_input_fingerprint=runtime_binding,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"requirement evidence binding failed: {exc}"[:500])
+        if errors:
+            manifest.extra["requirement_trace_evidence_errors"] = list(dict.fromkeys(errors))
+        try:
+            trace = compile_requirement_trace(
+                product_spec, evidence_extra, source_current,
+                acceptance_registry=registry,
+                evidence_binding=binding,
+                build_id=(manifest.build_id if selection.opted_in else None),
+                evidence_run_id=(evidence_run_id if selection.opted_in else None),
+                current_runtime_input_fingerprint=runtime_binding,
+                compiled_at=compiled_at,
+            )
+        except Exception as exc:  # noqa: BLE001
+            reason = f"requirement trace compilation failed: {exc}"[:500]
+            manifest.extra["requirement_trace_error"] = reason
+            trace = {
+                "schema_version": REQUIREMENT_TRACE_SCHEMA_VERSION,
+                "compiler": REQUIREMENT_TRACE_COMPILER, "compiled_at": compiled_at,
+                "acceptance_registry": registry, "mode": "invalid", "status": "failed",
+                "go_eligible": False, "blocks_delivery": selection.fully_bound,
+                "fresh": False, "freshness_reason": reason,
+                "requirements": [], "evidence": {},
+            }
+        else:
+            manifest.extra.pop("requirement_trace_error", None)
+        if binding is not None:
+            manifest.extra["requirement_evidence_binding"] = binding
+        else:
+            manifest.extra.pop("requirement_evidence_binding", None)
+        manifest.extra["requirement_trace"] = trace
+        blocked = (
+            trace.get("mode") == "enforced" and trace.get("go_eligible") is not True
+        ) or (trace.get("mode") == "invalid" and selection.fully_bound)
+        if blocked:
+            verdict = "no_go"
+            final_score = min(
+                final_score,
+                float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
+            )
+            manifest.score = final_score
+            manifest.extra["requirement_trace_gate"] = (
+                f"registry-v1 must evidence is {trace.get('status') or 'invalid'}"
+            )
+        else:
+            manifest.extra.pop("requirement_trace_gate", None)
+        manifest.files = list_files(project_dir)
+        return final_score, verdict, proof
+
+    @classmethod
+    def _settle_requirement_trace_delivery(
+        cls,
+        manifest: BuildManifest,
+        project_dir: str | Path,
+        stack: str,
+        delivered_tree: dict[str, Any],
+        final_score: float,
+        verdict: str,
+        score_cap: float,
+    ) -> tuple[float, str]:
+        """Invalidate a passing trace if the final delivered tree drifted."""
+        trace = manifest.extra.get("requirement_trace")
+        binding = manifest.extra.get("requirement_evidence_binding")
+        if (
+            not isinstance(trace, dict)
+            or trace.get("go_eligible") is not True
+            or not isinstance(binding, dict)
+        ):
+            return final_score, verdict
+        bound_source = binding.get("source_tree")
+        reason = ""
+        runtime_only = False
+        if not isinstance(bound_source, dict) or not cls._same_evidence_snapshot(
+            bound_source, delivered_tree
+        ):
+            reason = "delivered source changed after requirement evidence"
+        bound_runtime = binding.get("runtime_input_fingerprint")
+        if not reason and isinstance(bound_runtime, dict):
+            try:
+                from skyn3t.studio.preview_supervisor import preview_input_fingerprint
+
+                current_runtime = preview_input_fingerprint(project_dir, stack)
+            except Exception as exc:  # noqa: BLE001
+                reason = f"final runtime fingerprint unavailable: {exc}"[:500]
+                runtime_only = True
+            else:
+                if any(
+                    bound_runtime.get(field) != current_runtime.get(field)
+                    for field in ("algorithm", "sha256", "file_count", "byte_count")
+                ):
+                    reason = "delivered runtime changed after requirement evidence"
+                    runtime_only = True
+        if not reason:
+            return final_score, verdict
+
+        trace.update({
+            "status": "stale", "fresh": False, "go_eligible": False,
+            "blocks_delivery": True, "freshness_reason": reason,
+        })
+        affected: set[str] = set()
+        for acceptance_id, observation in trace.get("evidence", {}).items():
+            if (
+                isinstance(observation, dict)
+                and observation.get("status") == "passed"
+                and (not runtime_only or observation.get("runtime_bound") is True)
+            ):
+                observation.update({
+                    "status": "stale", "observed_status": "passed", "reason": reason,
+                })
+                affected.add(str(acceptance_id))
+        for row in trace.get("requirements", []):
+            if isinstance(row, dict):
+                row_stale = False
+                for item in row.get("bindings", []):
+                    if (
+                        isinstance(item, dict)
+                        and item.get("status") == "passed"
+                        and item.get("acceptance_id") in affected
+                    ):
+                        item["status"] = "stale"
+                        row_stale = True
+                if row_stale:
+                    row["status"] = "stale"
+        summary = trace.get("summary")
+        if isinstance(summary, dict):
+            musts = [
+                row for row in trace.get("requirements", [])
+                if isinstance(row, dict) and row.get("active") is True
+                and str(row.get("priority")).casefold() == "must"
+            ]
+            summary.update({
+                "total": len(musts),
+                "proven": sum(row.get("status") == "proven" for row in musts),
+                "must_total": len(musts),
+                "must_proven": sum(row.get("status") == "proven" for row in musts),
+                "must_failed": sum(row.get("status") == "failed" for row in musts),
+                "must_unbound": sum(row.get("status") == "unbound" for row in musts),
+                "must_stale": sum(row.get("status") == "stale" for row in musts),
+                "blocking_failed": sum(
+                    row.get("blocking") is True and row.get("status") != "proven"
+                    for row in trace.get("requirements", [])
+                    if isinstance(row, dict)
+                ),
+            })
+        manifest.extra["requirement_trace_gate"] = reason
+        manifest.extra.setdefault("requirement_trace_evidence_errors", []).append(reason)
+        return min(final_score, score_cap), "no_go"
 
     @staticmethod
     def _visual_self_heal_requested(settings, extra: dict[str, Any]) -> bool:
@@ -1602,14 +2300,14 @@ class StudioRunner:
             return False
 
         try:
-            from skyn3t.studio.app_runner import AppRunner
             from skyn3t.studio.improve import ImproveEngine
+            from skyn3t.studio.preview_supervisor import PreviewSupervisor
             from skyn3t.studio.visual_check import VisualChecker, make_vision_fn
 
             outcome = await visual_self_improve(
                 project_dir,
                 manifest.brief,
-                app_runner=AppRunner(),
+                app_runner=PreviewSupervisor(),
                 checker=VisualChecker(event_bus=self.event_bus),
                 improve_engine=ImproveEngine(
                     self.event_bus,
@@ -3476,6 +4174,19 @@ class StudioRunner:
         project_dir: str | None = None,
     ) -> None:
         """Close every learning edge (design rule #2). Best-effort; never raises."""
+        from skyn3t.intelligence.learning_loop import (
+            proof_ladder_infrastructure_unavailable,
+        )
+
+        manifest_extra = getattr(manifest, "extra", None) or {}
+        proof_errors = extract_error_gaps(
+            (manifest_extra.get("proof") or {}).get("detail"),
+            (manifest_extra.get("proof") or {}).get("syntax_errors"),
+        )
+        gate_findings = _extract_gate_findings(manifest_extra)
+        infrastructure_failure = proof_ladder_infrastructure_unavailable(
+            manifest_extra
+        )
         build = {
             "build_id": manifest.build_id,
             "slug": manifest.slug,
@@ -3485,6 +4196,11 @@ class StudioRunner:
             "verdict": manifest.verdict,
             "files": manifest.files_count,
             "stages": [s.name for s in plan.stages],
+            "stage": (
+                "verification"
+                if proof_errors or gate_findings
+                else ""
+            ),
             # The specific gaps make a lesson actionable ("avoid: no entrypoint")
             # instead of the generic "build failed — re-check the plan".
             "gaps": list(gaps or []),
@@ -3492,15 +4208,13 @@ class StudioRunner:
             # Real compiler/test/boot/import failures (Phase 1A) become durable
             # avoid-rules — the system LEARNS from why builds broke, not just that
             # they did. Derived from the persisted proof so capture stays decoupled.
-            "proof_errors": extract_error_gaps(
-                ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("detail"),
-                ((getattr(manifest, "extra", None) or {}).get("proof") or {}).get("syntax_errors"),
-            ),
+            "proof_errors": proof_errors,
             # Advisory-gate findings (seo/mcp_check/rag_check/liveness) become
             # lessons even on a 'go' — these gates never flip the verdict, so
             # this is the only path from a caught-but-advisory defect to a
             # durable avoid-rule for the NEXT build.
-            "gate_findings": _extract_gate_findings(getattr(manifest, "extra", None)),
+            "gate_findings": gate_findings,
+            "infrastructure_failure": infrastructure_failure,
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:
@@ -3884,6 +4598,26 @@ class StudioRunner:
         extra: dict[str, Any] | None = None,
     ) -> BuildOutcome:
         extra = extra or {}
+        # Settings can change while the long-lived runner stays alive. Capture
+        # one immutable policy for this request so later builds see live
+        # settings without concurrent builds changing each other's decisions.
+        lab_policy = LabAutonomyPolicy.from_settings(self.settings)
+        configured_approval_gates = (
+            bool(self.settings.approval_gates)
+            if self._approval_gate_uses_live_settings
+            else bool(self.approval_gate.enabled)
+        )
+        configured_auto_approve = (
+            bool(self.settings.cortex_auto_approve_safe)
+            if self._approval_gate_uses_live_settings
+            else bool(self.approval_gate.auto_approve)
+        )
+        approval_gates_enabled = (
+            configured_approval_gates and lab_policy.approval_gates_enabled
+        )
+        approval_auto_approve = (
+            configured_auto_approve or lab_policy.enabled
+        )
         # Always slugify: a caller-supplied slug (e.g. the web API) must not pass
         # through verbatim, or a value like "../../evil" would traverse out of
         # projects_dir into create_worktree's mkdir. _slugify is idempotent for
@@ -3958,6 +4692,7 @@ class StudioRunner:
         import socket as _socket
         manifest.extra["owner_pid"] = _os.getpid()
         manifest.extra["owner_host"] = _socket.gethostname()
+        manifest.extra["lab_autonomy"] = lab_policy.enabled
         build_profile = str(extra["build_profile"])
         model_override = str(extra.get("model_override") or "").strip()
         manifest.extra["build_profile"] = build_profile
@@ -3974,18 +4709,73 @@ class StudioRunner:
                 pass
         if model_override:
             manifest.extra["model_override"] = model_override
+        routing_snapshot = extra.get("routing_snapshot")
+        if isinstance(routing_snapshot, dict):
+            routing_snapshot = {
+                key: routing_snapshot[key]
+                for key in (
+                    "requested_backend",
+                    "effective_backend",
+                    "requested_model",
+                    "effective_model",
+                    "codegen",
+                )
+                if key in routing_snapshot
+            }
+            if isinstance(routing_snapshot.get("codegen"), dict):
+                routing_snapshot["codegen"] = {
+                    key: routing_snapshot["codegen"][key]
+                    for key in (
+                        "source",
+                        "requested_backend",
+                        "effective_backend",
+                        "requested_model",
+                        "effective_model",
+                    )
+                    if key in routing_snapshot["codegen"]
+                }
+            manifest.extra["routing_snapshot"] = routing_snapshot
         manifest.extra["requested_model_override"] = model_override
-        manifest.extra["requested_codegen_model"] = (
-            model_override
-            or str(getattr(self.settings, "openrouter_codegen_model", "") or "").strip()
-            or str(getattr(self.settings, "preferred_model", "") or "").strip()
+        raw_codegen_routing = (
+            routing_snapshot.get("codegen")
+            if isinstance(routing_snapshot, dict)
+            else None
         )
-        predicted_codegen_model = self._codegen_trace_model(
-            model_override, profile=build_profile
+        codegen_routing: dict[str, Any] = (
+            raw_codegen_routing
+            if isinstance(raw_codegen_routing, dict)
+            else {}
         )
+        manifest.extra["requested_codegen_model"] = str(
+            codegen_routing.get("requested_model")
+            or model_override
+            or getattr(self.settings, "openrouter_codegen_model", "")
+            or getattr(self.settings, "preferred_model", "")
+            or ""
+        ).strip()
+        predicted_codegen_model = str(
+            codegen_routing.get("effective_model")
+            or self._codegen_trace_model(model_override, profile=build_profile)
+        ).strip()
         manifest.extra["effective_codegen_model"] = predicted_codegen_model
         manifest.extra["codegen_model"] = predicted_codegen_model
-        manifest.extra["llm_backend"] = str(getattr(self.settings, "llm_backend", ""))
+        manifest.extra["requested_llm_backend"] = str(
+            (
+                routing_snapshot.get("requested_backend")
+                if isinstance(routing_snapshot, dict)
+                else ""
+            )
+            or getattr(self.settings, "llm_backend", "")
+        )
+        manifest.extra["effective_llm_backend"] = str(
+            (
+                routing_snapshot.get("effective_backend")
+                if isinstance(routing_snapshot, dict)
+                else ""
+            )
+            or getattr(self.settings, "llm_backend", "")
+        )
+        manifest.extra["llm_backend"] = manifest.extra["effective_llm_backend"]
         codegen_cli_provider = str(
             getattr(self.settings, "codegen_cli_provider", "") or ""
         ).strip().lower()
@@ -3998,6 +4788,7 @@ class StudioRunner:
         }
         manifest.extra["classification"] = classification.to_dict()
         build_id = manifest.build_id
+        manifest.extra["preflight_run_id"] = f"{build_id}-preflight"
 
         # Persist the 'running' record immediately so a crash or restart can
         # rehydrate it. This is best-effort — a persistence failure must never
@@ -4060,7 +4851,52 @@ class StudioRunner:
         # exception can still close it (else its base leaks). end_stage is
         # idempotent, so closing an already-finished stage is a harmless no-op.
         open_stage: str | None = None
+        product_spec: ProductSpecV1 | None = None
         try:
+            # Run the durable preflight DAG before source generation. Product
+            # contract + toolchain inspection can execute concurrently; scoped
+            # GitHub research follows the contract and can only add optional
+            # backlog ideas (never silently alter current requirements).
+            intelligence = await prepare_build_intelligence(
+                settings=self.settings,
+                build_id=build_id,
+                slug=slug,
+                brief=brief,
+                stack=plan.stack,
+                personas=(
+                    [clar.answers["audience"]]
+                    if str(clar.answers.get("audience") or "").strip()
+                    else []
+                ),
+                source_product_spec=extra.get("source_product_spec"),
+            )
+            product_spec = intelligence.product
+            product_payload = product_spec.to_dict()
+            product_context = product_contract_prompt_block(product_spec)
+            research_payload = intelligence.research.to_dict()
+            toolchain_payload = intelligence.toolchain.to_dict()
+            manifest.extra["build_graph"] = intelligence.graph
+            manifest.extra["product_spec"] = product_payload
+            manifest.extra["similarity_research"] = research_payload
+            manifest.extra["lab_toolchain"] = toolchain_payload
+            extra = {
+                **extra,
+                "product_spec": product_payload,
+                "skills_advice": "\n\n".join(
+                    part
+                    for part in (
+                        product_context,
+                        str(extra.get("skills_advice") or "").strip(),
+                    )
+                    if part
+                ),
+                "research_ideas": research_payload.get("backlog", []),
+                "research_sources": research_payload.get("sources", []),
+                "lab_toolchain": toolchain_payload,
+                "build_graph": intelligence.graph,
+            }
+            await self._save_build(manifest)
+
             # Real image assets (Replicate): generate them into the runner-owned
             # worktree before codegen. Keep this inside the lifecycle try so an
             # explicit cancellation while the provider is working still records
@@ -4073,11 +4909,11 @@ class StudioRunner:
             # already began in start(), before selector/planner/asset delegation.
             self._obs_call(self.budget_guard, "reset")
             self._obs_call(self.budget_guard, "attach", self.event_bus)
-            self._guard_check("build")
+            self._guard_check("build", policy=lab_policy)
 
             for spec in plan.stages:
                 self._obs_call(self.budget_guard, "heartbeat")
-                self._guard_check(spec.name)
+                self._guard_check(spec.name, policy=lab_policy)
                 # Mark the stage boundary so cost is attributed per stage (Spec 2).
                 self._obs_call(self.cost_tracker, "start_stage", build_id, spec.name)
                 open_stage = spec.name
@@ -4120,7 +4956,11 @@ class StudioRunner:
                     await self._save_build(manifest)
                     if spec.gated:
                         approval = self.approval_gate.request(
-                            build_id, spec.name, {"reason": "no_agent", "score": 0}
+                            build_id,
+                            spec.name,
+                            {"reason": "no_agent", "score": 0},
+                            enabled=approval_gates_enabled,
+                            auto_approve=approval_auto_approve,
                         )
                         decision = await self.approval_gate.wait(
                             approval.approval_id, timeout=self.stage_timeout)
@@ -4305,7 +5145,11 @@ class StudioRunner:
                 # Approval gate (after stage completes).
                 if spec.gated:
                     approval = self.approval_gate.request(
-                        build_id, spec.name, {"score": record.score}
+                        build_id,
+                        spec.name,
+                        {"score": record.score},
+                        enabled=approval_gates_enabled,
+                        auto_approve=approval_auto_approve,
                     )
                     decision = await self.approval_gate.wait(approval.approval_id, timeout=self.stage_timeout)
                     if decision is GateDecision.REJECTED:
@@ -4320,6 +5164,12 @@ class StudioRunner:
             manifest.files = copied or list_files(project_dir)
             self._set_main_worktree_status(manifest, main_wt, status="delivered")
             manifest.artifact_dir = project_dir
+            if product_spec is not None:
+                product_path = product_spec.save(project_dir)
+                manifest.extra["product_spec_path"] = str(
+                    product_path.relative_to(project_dir).as_posix()
+                )
+                manifest.files = list_files(project_dir)
 
             # Deterministic, idempotent build repairs BEFORE the first proof:
             # declare imported-but-undeclared npm deps (codegen often imports
@@ -4897,11 +5747,19 @@ class StudioRunner:
 
             verdict = self._apply_ai_native_gates(manifest, verdict)
 
-            # Unconditional final consistency pass — see _final_consistency_check's
-            # docstring: every stage above this point can mutate files with no
-            # re-verification of import resolution against what IT leaves behind.
-            # This is what "runs last" actually means.
-            verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+            # Final consistency owns the last repair opportunity. Only after it
+            # settles do we run registry-v1's bounded proof replay and the one
+            # globally required UI proof ladder, binding both to stable authored
+            # source/runtime fingerprints. No agent, LLM, or repair runs below.
+            final_score, verdict, proof = await self._run_terminal_evidence(
+                manifest,
+                product_spec,
+                project_dir,
+                plan,
+                proof,
+                final_score,
+                verdict,
+            )
             final_score, verdict = self._apply_scaffold_stub_proof_gate(
                 manifest, proof, final_score, verdict
             )
@@ -4912,11 +5770,20 @@ class StudioRunner:
 
             # Verdict is now fully settled (post-liveness): a no_go must not read
             # like a success. Clamp before the score feeds lessons + _finalize.
+            delivered_tree = source_tree_snapshot(project_dir)
+            final_score, verdict = self._settle_requirement_trace_delivery(
+                manifest,
+                project_dir,
+                plan.stack,
+                delivered_tree,
+                final_score,
+                verdict,
+                float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
+            )
             final_score = self._clamp_score_to_verdict(final_score, verdict)
             manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
-            delivered_tree = source_tree_snapshot(project_dir)
             manifest.extra["delivery_source_tree"] = {
                 "algorithm": delivered_tree.get("algorithm"),
                 "sha256": delivered_tree.get("sha256"),

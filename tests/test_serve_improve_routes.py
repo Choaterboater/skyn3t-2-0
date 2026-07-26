@@ -73,6 +73,17 @@ class _FailRunner:
         self.stopped.append(app)
 
 
+class _AsyncStopRunner:
+    """PreviewSupervisor-shaped runner whose stop must be awaited."""
+
+    def __init__(self):
+        self.stopped = []
+
+    async def stop(self, app):
+        await asyncio.sleep(0)
+        self.stopped.append(app)
+
+
 # --------------------------------------------------------------------------
 # serve
 # --------------------------------------------------------------------------
@@ -89,8 +100,8 @@ def test_serve_static_then_stop_registers_and_cleans_up(tmp_path):
         assert started["slug"] == "alpha"
         # the running handle is held in a registry on state so a later stop finds it
         assert "alpha" in state.running_apps
-        log_path = state.running_apps["alpha"].log_path
-        assert log_path and Path(log_path).exists()
+        assert state.running_apps["alpha"].detail["engine"] == "docker"
+        assert state.running_apps["alpha"].detail["isolation"]["runtime_egress"] == "blocked"
         port = started["port"]
     finally:
         stopped = asyncio.run(stop_serve(state, "alpha"))
@@ -98,8 +109,6 @@ def test_serve_static_then_stop_registers_and_cleans_up(tmp_path):
     assert stopped["stopped"] is True
     assert "alpha" not in state.running_apps
     assert _port_refused(port)
-    # temp logfile is unlinked on stop (the deferred Slice-2 teardown)
-    assert not Path(log_path).exists()
     # a SERVE_STARTED and SERVE_STOPPED event were emitted for the cockpit
     kinds = [e.type for e in state.event_bus.history()]
     assert EventType.SERVE_STARTED in kinds and EventType.SERVE_STOPPED in kinds
@@ -116,6 +125,19 @@ def test_serve_no_preview_not_registered(tmp_path):
     out = asyncio.run(serve_project(state, "cli"))
     assert out["status"] == "no_preview"
     assert "cli" not in getattr(state, "running_apps", {})
+
+
+def test_default_serve_runner_is_docker_supervisor_when_proof_ladder_is_disabled(
+    tmp_path,
+):
+    from skyn3t.studio.preview_supervisor import PreviewSupervisor
+
+    state = _state(tmp_path)
+    state.settings.proof_ladder_required = False
+
+    runner = routes._app_runner(state)
+
+    assert isinstance(runner, PreviewSupervisor)
 
 
 def test_serve_rejects_manifestless_incomplete_project_before_runner_start(tmp_path):
@@ -258,6 +280,60 @@ def test_stop_all_serves_tears_down_registered(tmp_path):
     state.running_apps["x"] = app
 
     state.stop_all_serves()
+    assert state.running_apps == {}
+    assert runner.stopped == [app]
+
+
+def test_close_awaits_async_preview_cleanup(tmp_path):
+    from skyn3t.web.deps import AppState
+
+    state = AppState(settings=SimpleNamespace(
+        projects_dir=tmp_path / "Projects", data_dir=tmp_path, app_name="x",
+        version="0", free_only=True, no_claude=True, autonomous_builds=False,
+        approval_gates=True, has_any_llm=False, claude_available=False))
+    runner = _AsyncStopRunner()
+    apps = [
+        RunningApp(
+            url=f"http://127.0.0.1:{port}",
+            port=port,
+            pid=None,
+            kind="static",
+            project_dir=str(tmp_path),
+            status="running",
+        )
+        for port in (1, 2)
+    ]
+    state.app_runner = runner
+    state.running_apps.update({"one": apps[0], "two": apps[1]})
+
+    asyncio.run(state.close())
+
+    assert state.running_apps == {}
+    assert runner.stopped == apps
+
+
+async def test_stop_all_serves_schedules_async_cleanup_on_running_loop(tmp_path):
+    from skyn3t.web.deps import AppState
+
+    state = AppState(settings=SimpleNamespace(
+        projects_dir=tmp_path / "Projects", data_dir=tmp_path, app_name="x",
+        version="0", free_only=True, no_claude=True, autonomous_builds=False,
+        approval_gates=True, has_any_llm=False, claude_available=False))
+    runner = _AsyncStopRunner()
+    app = RunningApp(
+        url="http://127.0.0.1:1",
+        port=1,
+        pid=None,
+        kind="static",
+        project_dir=str(tmp_path),
+        status="running",
+    )
+    state.app_runner = runner
+    state.running_apps["x"] = app
+
+    state.stop_all_serves()
+    await state.stop_all_serves_async()
+
     assert state.running_apps == {}
     assert runner.stopped == [app]
 
@@ -427,7 +503,7 @@ def test_create_app_registers_atexit_teardown(tmp_path, monkeypatch):
                         lambda fn, *a, **k: (registered.append(fn), fn)[1])
 
     state = _appstate(tmp_path)
-    runner = _FailRunner(None)
+    runner = _AsyncStopRunner()
     app = RunningApp(url="http://127.0.0.1:1", port=1, pid=None, kind="static",
                      project_dir=str(tmp_path), status="running")
     state.app_runner = runner

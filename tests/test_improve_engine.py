@@ -73,6 +73,63 @@ def test_improve_delivers_change_and_records_history(tmp_path):
     assert not any(p.name.startswith("improve-demo-") for p in wt_root.iterdir()) if wt_root.exists() else True
 
 
+def test_improve_prompt_includes_edited_product_contract_without_promoting_backlog(
+    tmp_path,
+):
+    from skyn3t.studio.product_spec import (
+        BacklogRecord,
+        ProductSpecV1,
+        RequirementRecord,
+    )
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    original = ProductSpecV1(
+        project_id="demo",
+        goal="Help operators understand service health",
+        personas=["on-call engineer"],
+        requirements=[RequirementRecord(text="Show a basic service list")],
+        non_goals=["Do not change production infrastructure"],
+        architecture_decisions=["Keep health providers behind an adapter"],
+        backlog=[
+            BacklogRecord(
+                title="Explore anomaly clustering",
+                source="github_research",
+            )
+        ],
+    )
+    edited = original.improve(
+        {
+            "requirements": [
+                RequirementRecord(
+                    text="Show dependency health with an explicit degraded state",
+                    source="user",
+                ).to_dict()
+            ],
+            "non_goals": ["Never auto-remediate production infrastructure"],
+        },
+        base_version=original.version,
+        actor="studio-gui",
+        reason="Tighten the operator contract",
+    )
+    edited.save(project)
+    orchestrator = _FakeOrchestrator()
+    engine = ImproveEngine(EventBus(), orchestrator, settings=settings)
+
+    outcome = asyncio.run(engine.improve("demo", "Add clearer health summaries"))
+
+    assert outcome.status == "completed"
+    prompt = orchestrator.submitted[0].payload["brief"]
+    assert "Show dependency health with an explicit degraded state" in prompt
+    assert "Never auto-remediate production infrastructure" in prompt
+    assert "OPTIONAL RESEARCH BACKLOG" in prompt
+    assert "never treat as current requirements" in prompt
+    persisted = ProductSpecV1.load(project)
+    assert persisted is not None
+    assert persisted.requirements == edited.requirements
+    assert persisted.non_goals == edited.non_goals
+
+
 def test_improve_can_skip_history_during_in_build_repair(tmp_path):
     settings = _settings(tmp_path)
     project = settings.projects_dir / "active-build"

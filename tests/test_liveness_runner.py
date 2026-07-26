@@ -232,6 +232,9 @@ def test_visual_self_heal_repair_does_not_record_improve_history(tmp_path, monke
     captured = []
 
     async def fake_loop(project_dir, goal, **kw):
+        from skyn3t.studio.preview_supervisor import PreviewSupervisor
+
+        assert isinstance(kw["app_runner"], PreviewSupervisor)
         engine = kw["improve_engine"]
         captured.append(getattr(engine, "record_history", True))
 

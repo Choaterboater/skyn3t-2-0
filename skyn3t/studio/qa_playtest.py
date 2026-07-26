@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -483,9 +484,10 @@ async def qa_playtest(
         else:
             driver = drive_fn
 
-        from skyn3t.studio.app_runner import AppRunner, cleanup_serve
+        from skyn3t.studio.app_runner import cleanup_serve
+        from skyn3t.studio.preview_supervisor import PreviewSupervisor
 
-        runner = app_runner or AppRunner()
+        runner = app_runner or PreviewSupervisor()
         app = await runner.start(project_dir, "phaser")
         # Always reap the stopped child + unlink its temp log — even when the game never
         # served (start() can return status="failed" WITH a real log_path, e.g. a vite
@@ -509,7 +511,9 @@ async def qa_playtest(
             return build_verdict(errors, project_dir)
         finally:
             try:
-                runner.stop(app)
+                stopped = runner.stop(app)
+                if inspect.isawaitable(stopped):
+                    await stopped
             except Exception:  # noqa: BLE001
                 pass
             try:

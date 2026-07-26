@@ -4601,6 +4601,18 @@ class StudioRunner:
         # other delegated work can spend. Copy the caller's mapping so injecting
         # an id does not mutate a request object that may be reused elsewhere.
         build_extra = dict(extra or {})
+        # Freeze mutable classification overrides at submission time. The
+        # selector and queue both await, so reading Settings later would let a
+        # UI edit reclassify an already-submitted build. An explicit caller key,
+        # including an empty "auto" value, remains authoritative.
+        if "app_type" not in build_extra:
+            build_extra["app_type"] = str(
+                getattr(self.settings, "app_type_override", "") or ""
+            )
+        if "engine" not in build_extra:
+            build_extra["engine"] = str(
+                getattr(self.settings, "engine_override", "") or ""
+            )
         if not build_extra.get("build_id"):
             build_extra["build_id"] = uuid.uuid4().hex
         # Normalize once before stack selection or any agent runs. Every later
@@ -4704,8 +4716,8 @@ class StudioRunner:
         classification = classify_build(
             brief,
             choice.stack,
-            app_type_override=str(extra.get("app_type") or self.settings.app_type_override),
-            engine_override=str(extra.get("engine") or self.settings.engine_override),
+            app_type_override=str(extra.get("app_type") or ""),
+            engine_override=str(extra.get("engine") or ""),
         )
         profile = resolve_layout_profile(
             classification.app_type, stack=plan.stack, engine=classification.engine,

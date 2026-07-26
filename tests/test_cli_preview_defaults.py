@@ -109,7 +109,11 @@ def test_cli_visual_forwards_stored_manifest_layout_profile(tmp_path, monkeypatc
     import skyn3t.studio.visual_loop as visual_loop
 
     _wire_cli_dependencies(tmp_path, monkeypatch)
-    profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    from skyn3t.studio.layout_profiles import resolve_layout_profile
+
+    profile = resolve_layout_profile(
+        "dashboard", stack="react", engine="dom",
+    ).to_dict()
     manifest = BuildManifest(slug="x", brief="dashboard", stack="nextjs")
     manifest.extra["layout_profile"] = profile
     manifest.save(tmp_path)

@@ -719,7 +719,10 @@ class ImproveEngine:
         slug = manifest.slug if manifest else project_dir.name
         stack = (manifest.stack if manifest and manifest.stack
                  else StackDetector.detect(project_dir))
-        layout_profile = profile_from_payload(None).to_dict()
+        stored_layout_profile = (
+            manifest.extra.get("layout_profile") if manifest is not None else None
+        )
+        layout_profile = profile_from_payload(stored_layout_profile).to_dict()
 
         async def _emit_failed_outcome(outcome: ImproveOutcome) -> None:
             outcome.detail.setdefault("layout_profile", dict(layout_profile))

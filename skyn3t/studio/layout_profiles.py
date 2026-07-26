@@ -93,6 +93,10 @@ _WORKSPACE_TYPES: Final = frozenset({
     "rag_app", "agent_workflow", "agent_pack",
 })
 _EDITORIAL_TYPES: Final = frozenset({"landing_page", "portfolio", "marketing"})
+_COMPACT_TYPES: Final = frozenset({
+    "api_service", "developer_tool", "mobile_app", "desktop_app",
+    "mcp_server", "native_app",
+})
 
 
 def normalize_app_type(value: str) -> str:
@@ -181,6 +185,8 @@ def _source_app_type_matches_profile(name: str, source_app_type: str) -> bool:
         return name == "editorial"
     if source_app_type == "game":
         return name == "immersive"
+    if source_app_type in _COMPACT_TYPES:
+        return name == "compact"
     return name in {"compact", "immersive"}
 
 

@@ -1735,12 +1735,15 @@ async def _run_visual(project: str, *, goal: str, max_rounds: int):
     cand = _Path(project)
     pdir = cand if cand.is_absolute() else (settings.projects_dir / project)
     stack = ""
+    layout_profile = None
     try:
         from skyn3t.studio.manifest import BuildManifest
         man = BuildManifest.load(pdir)
         stack = man.stack if man else ""
+        layout_profile = man.extra.get("layout_profile") if man else None
     except Exception:  # noqa: BLE001
         stack = ""
+        layout_profile = None
     # Auto-wire the vision judge when an OpenRouter key is configured; otherwise
     # make_vision_fn returns None and the loop soft-skips the judgement step.
     vision_fn = make_vision_fn(settings)
@@ -1749,7 +1752,8 @@ async def _run_visual(project: str, *, goal: str, max_rounds: int):
         goal,
         app_runner=PreviewSupervisor(),
         checker=VisualChecker(event_bus=spine["event_bus"]),
-        improve_engine=engine, vision_fn=vision_fn, stack=stack, max_rounds=max_rounds)
+        improve_engine=engine, vision_fn=vision_fn, stack=stack, max_rounds=max_rounds,
+        layout_profile=layout_profile)
 
 
 @studio_app.command("visual")

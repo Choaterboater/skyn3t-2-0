@@ -1,13 +1,17 @@
 # skyn3t/studio/visual_check.py
-"""Visual self-inspection (Spec 3, Slice 3): screenshot a running app and ask a
-vision model whether it matches the goal. EVERY dependency is optional — with no
-Playwright or no vision_fn, check() returns a `skipped` verdict and never blocks.
-Never raises."""
+"""Advisory visual and workspace-layout inspection (Spec 3, Slice 3).
+
+A clean layout audit without a vision model soft-skips. An audit issue remains a
+repairable advisory verdict even when vision is unavailable. Missing Playwright
+still soft-skips, and this module never turns visual evidence into a build gate
+or raises to its caller.
+"""
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
+import math
 import os
 import re
 import shutil
@@ -19,6 +23,7 @@ from typing import Any
 
 from skyn3t.core.events import EventType
 from skyn3t.security.secrets import filter_env
+from skyn3t.studio.layout_profiles import LayoutProfile, profile_from_payload
 
 VisionFn = Callable[[str, str], str]  # (image_path, prompt) -> raw model text
 
@@ -30,6 +35,170 @@ _START_TEXT_PATTERN = re.compile(r"\b(start|play|begin|continue|run|go|enter)\b"
 # with settings.vision_model.
 _DEFAULT_VISION_MODEL = "openai/gpt-4o-mini"
 
+_LAYOUT_METRICS_JS = """() => {
+  const viewportWidth = Math.max(0, Number(window.innerWidth) || 0);
+  const viewportHeight = Math.max(0, Number(window.innerHeight) || 0);
+  const visible = (el) => {
+    if (!(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden"
+      && Number(style.opacity || 1) > 0 && rect.width > 2 && rect.height > 2
+      && rect.bottom > 0 && rect.right > 0
+      && rect.top < viewportHeight && rect.left < viewportWidth;
+  };
+  const clipped = (el) => {
+    const rect = el.getBoundingClientRect();
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(viewportWidth, rect.right);
+    const bottom = Math.min(viewportHeight, rect.bottom);
+    return {
+      left, top, right, bottom,
+      width: Math.max(0, right - left),
+      height: Math.max(0, bottom - top),
+    };
+  };
+  const semanticRoots = Array.from(document.querySelectorAll(
+    "main, [role='main'], [role='application']"
+  )).filter(visible);
+  const applicationRoots = Array.from(document.querySelectorAll("#app, #root"))
+    .filter(visible);
+  const rootCandidates = semanticRoots.length ? semanticRoots : applicationRoots;
+  if (!rootCandidates.length && document.body && visible(document.body)) {
+    rootCandidates.push(document.body);
+  }
+  const root = rootCandidates.reduce((largest, candidate) => {
+    if (!largest) return candidate;
+    const area = clipped(candidate).width * clipped(candidate).height;
+    const largestArea = clipped(largest).width * clipped(largest).height;
+    return area > largestArea ? candidate : largest;
+  }, null);
+  const railCandidates = Array.from(document.querySelectorAll("nav, aside")).filter(visible);
+  let leftRail = 0;
+  let rightRail = 0;
+  for (const rail of railCandidates) {
+    const rect = clipped(rail);
+    if (rect.height < viewportHeight * 0.40 || rect.width > viewportWidth * 0.40) {
+      continue;
+    }
+    if (rect.left <= viewportWidth * 0.08) leftRail = Math.max(leftRail, rect.right);
+    if (rect.right >= viewportWidth * 0.92) {
+      rightRail = Math.max(rightRail, viewportWidth - rect.left);
+    }
+  }
+  const workspaceLeft = Math.min(viewportWidth, leftRail);
+  const workspaceRight = Math.max(workspaceLeft, viewportWidth - rightRail);
+  const workspaceWidth = Math.max(1, workspaceRight - workspaceLeft);
+  const workspaceArea = Math.max(1, workspaceWidth * viewportHeight);
+  const descendants = root ? Array.from(root.querySelectorAll("*")).filter(visible) : [];
+  const contentRects = [];
+  for (const el of descendants) {
+    const tag = el.tagName.toLowerCase();
+    if (["script", "style", "meta", "link", "br"].includes(tag)) continue;
+    if (el.closest("nav, aside, header, footer")) continue;
+    const rect = clipped(el);
+    const left = Math.max(workspaceLeft, rect.left);
+    const right = Math.min(workspaceRight, rect.right);
+    if (right <= left || rect.height <= 0) continue;
+    const style = window.getComputedStyle(el);
+    const directText = Array.from(el.childNodes).some((node) =>
+      node.nodeType === Node.TEXT_NODE && Boolean((node.textContent || "").trim())
+    );
+    const semantic = [
+      "table", "ul", "ol", "form", "canvas", "svg", "img", "input", "select",
+      "textarea", "button",
+    ].includes(tag);
+    const painted = style.backgroundColor !== "rgba(0, 0, 0, 0)"
+      && style.backgroundColor !== "transparent";
+    const paintedLeaf = painted && !Array.from(el.children).some(visible);
+    if (directText || semantic || paintedLeaf) {
+      contentRects.push({
+        left, right, top: rect.top, bottom: rect.bottom,
+        width: right - left, height: rect.height,
+      });
+    }
+  }
+  let fillRatio = 0;
+  if (contentRects.length) {
+    const left = Math.min(...contentRects.map((rect) => rect.left));
+    const right = Math.max(...contentRects.map((rect) => rect.right));
+    const top = Math.min(...contentRects.map((rect) => rect.top));
+    const bottom = Math.max(...contentRects.map((rect) => rect.bottom));
+    fillRatio = Math.min(1, Math.max(0, ((right - left) * (bottom - top)) / workspaceArea));
+  }
+  const cardGroups = new Map();
+  for (const el of descendants) {
+    const rect = clipped(el);
+    if (rect.width < 120 || rect.height < 70 || rect.width > workspaceWidth * 0.80) continue;
+    const style = window.getComputedStyle(el);
+    const radius = Number.parseFloat(style.borderRadius) || 0;
+    const painted = style.backgroundColor !== "rgba(0, 0, 0, 0)"
+      && style.backgroundColor !== "transparent";
+    const bordered = (Number.parseFloat(style.borderTopWidth) || 0) > 0;
+    if (radius < 4 || (!painted && !bordered)) continue;
+    const widthBucket = Math.round(rect.width / 40);
+    const heightBucket = Math.round(rect.height / 40);
+    const key = `${widthBucket}:${heightBucket}:${style.backgroundColor}:${style.borderRadius}`;
+    const current = cardGroups.get(key) || {count: 0, area: 0};
+    current.count += 1;
+    current.area += rect.width * rect.height;
+    cardGroups.set(key, current);
+  }
+  let repeatedCards = 0;
+  let repeatedCardArea = 0;
+  let qualifyingCards = 0;
+  let qualifyingCardArea = 0;
+  for (const group of cardGroups.values()) {
+    if (group.count > repeatedCards
+        || (group.count === repeatedCards && group.area > repeatedCardArea)) {
+      repeatedCards = group.count;
+      repeatedCardArea = group.area;
+    }
+    if (group.count >= 4 && group.area > qualifyingCardArea) {
+      qualifyingCards = group.count;
+      qualifyingCardArea = group.area;
+    }
+  }
+  if (qualifyingCards) {
+    repeatedCards = qualifyingCards;
+    repeatedCardArea = qualifyingCardArea;
+  }
+  const dataSelectors = [
+    "table tbody tr", "[role='row']", "ul", "ol", "[role='list']",
+    "canvas", "svg", "input", "select", "textarea",
+    "[role='textbox']", "[role='combobox']", "[role='checkbox']",
+  ];
+  const dataBearing = new Set();
+  for (const selector of dataSelectors) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (visible(el)) dataBearing.add(el);
+    }
+  }
+  return {
+    viewport: {width: viewportWidth, height: viewportHeight},
+    fill_ratio: Number.isFinite(fillRatio) ? fillRatio : 0,
+    repeated_cards: Number.isFinite(repeatedCards) ? repeatedCards : 0,
+    card_area_ratio: Number.isFinite(repeatedCardArea / workspaceArea)
+      ? Math.min(1, repeatedCardArea / workspaceArea) : 0,
+    data_bearing_count: dataBearing.size,
+  };
+}"""
+
+
+@dataclass(slots=True)
+class LayoutAudit:
+    profile: str
+    viewport: dict[str, int] = field(default_factory=dict)
+    metrics: dict[str, float | int] = field(default_factory=dict)
+    issues: list[str] = field(default_factory=list)
+    fix_hint: str = ""
+    skipped: bool = False
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(slots=True)
 class VisualVerdict:
@@ -39,9 +208,161 @@ class VisualVerdict:
     fix_hint: str = ""
     skipped: bool = False
     reason: str = ""
+    layout_audit: LayoutAudit | None = None
+    advisory_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _safe_number(
+    value: object,
+    *,
+    low: float = 0.0,
+    high: float = 1_000_000.0,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return low
+    number = float(value)
+    if not math.isfinite(number):
+        return low
+    return min(high, max(low, number))
+
+
+def normalize_layout_metrics(raw: object) -> dict[str, float | int | bool]:
+    data = raw if isinstance(raw, dict) else {}
+    viewport_value = data.get("viewport")
+    viewport = viewport_value if isinstance(viewport_value, dict) else {}
+    width = int(_safe_number(viewport.get("width"), high=10_000.0))
+    height = int(_safe_number(viewport.get("height"), high=10_000.0))
+    return {
+        "viewport_width": width,
+        "viewport_height": height,
+        "fill_ratio": _safe_number(data.get("fill_ratio"), high=1.0),
+        "repeated_cards": int(_safe_number(data.get("repeated_cards"), high=10_000.0)),
+        "card_area_ratio": _safe_number(data.get("card_area_ratio"), high=1.0),
+        "data_bearing_count": int(
+            _safe_number(data.get("data_bearing_count"), high=10_000.0)
+        ),
+    }
+
+
+def _has_complete_layout_metrics(raw: object) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    viewport = raw.get("viewport")
+    if not isinstance(viewport, dict):
+        return False
+    values = [
+        viewport.get("width"),
+        viewport.get("height"),
+        raw.get("fill_ratio"),
+        raw.get("repeated_cards"),
+        raw.get("card_area_ratio"),
+        raw.get("data_bearing_count"),
+    ]
+    return all(
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        for value in values
+    )
+
+
+def _workspace_policy(
+    profile: LayoutProfile,
+    metrics: dict[str, float | int | bool],
+) -> LayoutAudit:
+    issues: list[str] = []
+    if float(metrics["fill_ratio"]) < 0.62:
+        issues.append(
+            "Desktop workspace is under-filled after accounting for navigation rails."
+        )
+    if (
+        int(metrics["repeated_cards"]) >= 4
+        and float(metrics["card_area_ratio"]) > 0.50
+    ):
+        issues.append(
+            "Desktop workspace is dominated by similarly sized cards."
+        )
+    viewport = {
+        "width": int(metrics["viewport_width"]),
+        "height": int(metrics["viewport_height"]),
+    }
+    fix_hint = ""
+    if issues:
+        fix_hint = (
+            "Use the desktop workspace for a table/detail or split-pane composition "
+            "instead of a narrow uniform-card layout."
+        )
+    return LayoutAudit(
+        profile=profile.name,
+        viewport=viewport,
+        metrics={key: value for key, value in metrics.items() if not isinstance(value, bool)},
+        issues=issues,
+        fix_hint=fix_hint,
+    )
+
+
+def assess_layout(profile: LayoutProfile, raw: object) -> LayoutAudit:
+    metrics = normalize_layout_metrics(raw)
+    viewport = {
+        "width": int(metrics["viewport_width"]),
+        "height": int(metrics["viewport_height"]),
+    }
+    if not profile.audit_enabled:
+        return LayoutAudit(
+            profile.name,
+            viewport=viewport,
+            metrics=metrics,
+            skipped=True,
+            reason=f"{profile.name} profile audit exemption",
+        )
+    if (
+        not _has_complete_layout_metrics(raw)
+        or int(metrics["viewport_width"]) <= 0
+        or int(metrics["viewport_height"]) <= 0
+    ):
+        return LayoutAudit(
+            profile.name,
+            viewport=viewport,
+            metrics=metrics,
+            skipped=True,
+            reason="missing layout metrics",
+        )
+    if int(metrics["viewport_width"]) < 1024:
+        return LayoutAudit(
+            profile.name,
+            viewport=viewport,
+            metrics=metrics,
+            skipped=True,
+            reason="mobile viewport",
+        )
+    return _workspace_policy(profile, metrics)
+
+
+def _merge_layout_audit(vision: VisualVerdict, audit: LayoutAudit) -> VisualVerdict:
+    if audit.skipped or not audit.issues:
+        return VisualVerdict(
+            matches=vision.matches,
+            confidence=vision.confidence,
+            issues=list(vision.issues),
+            fix_hint=vision.fix_hint,
+            skipped=vision.skipped,
+            reason=vision.reason,
+            layout_audit=audit,
+            advisory_only=vision.advisory_only,
+        )
+    return VisualVerdict(
+        matches=False,
+        confidence=vision.confidence,
+        issues=[*audit.issues, *vision.issues],
+        fix_hint=audit.fix_hint or vision.fix_hint,
+        skipped=False,
+        reason="",
+        layout_audit=audit,
+        advisory_only=vision.skipped or vision.matches,
+    )
 
 
 def playwright_available() -> bool:
@@ -52,17 +373,26 @@ def playwright_available() -> bool:
         return False
 
 
-def screenshot(url: str, out_path: str, *, timeout_ms: int = 8000) -> str | None:
-    """Capture a full-page PNG of `url`. Returns the path, or None on any failure
-    (incl. Playwright not installed). Never raises."""
+def capture_visual_evidence(
+    url: str,
+    out_path: str,
+    *,
+    timeout_ms: int = 8000,
+    audited_desktop: bool = False,
+) -> tuple[str | None, dict[str, object] | None]:
+    """Capture one screenshot and optional aggregate desktop geometry. Never raises."""
     if not playwright_available():
-        return None
+        return None, None
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch()
             try:
-                page = browser.new_page()
+                page = (
+                    browser.new_page(viewport={"width": 1440, "height": 900})
+                    if audited_desktop
+                    else browser.new_page()
+                )
                 page.goto(url, timeout=timeout_ms, wait_until="load")
                 try:
                     page.wait_for_load_state("networkidle", timeout=min(2500, timeout_ms))
@@ -70,11 +400,24 @@ def screenshot(url: str, out_path: str, *, timeout_ms: int = 8000) -> str | None
                     pass
                 page.wait_for_timeout(750)
                 page.screenshot(path=out_path, full_page=True)
+                metrics = None
+                if audited_desktop:
+                    try:
+                        raw = page.evaluate(_LAYOUT_METRICS_JS)
+                        metrics = raw if isinstance(raw, dict) else None
+                    except Exception:  # noqa: BLE001 - audit capture is advisory
+                        metrics = None
             finally:
                 browser.close()
-        return out_path
+        return out_path, metrics
     except Exception:  # noqa: BLE001 - missing browser binary, nav error, etc.
-        return None
+        return None, None
+
+
+def screenshot(url: str, out_path: str, *, timeout_ms: int = 8000) -> str | None:
+    """Compatible screenshot-only wrapper around :func:`capture_visual_evidence`."""
+    shot, _metrics = capture_visual_evidence(url, out_path, timeout_ms=timeout_ms)
+    return shot
 
 
 def _extract_json(text: str) -> str:
@@ -407,8 +750,24 @@ class VisualChecker:
         except Exception:  # noqa: BLE001 - events never break the loop
             pass
 
-    async def check(self, url: str, goal: str, *, vision_fn: VisionFn | None = None,
-                    correlation_id: str | None = None) -> VisualVerdict:
+    async def check(
+        self,
+        url: str,
+        goal: str,
+        *,
+        vision_fn: VisionFn | None = None,
+        correlation_id: str | None = None,
+        layout_profile: object | None = None,
+    ) -> VisualVerdict:
+        profile = None
+        if layout_profile is not None:
+            payload = (
+                layout_profile.to_dict()
+                if isinstance(layout_profile, LayoutProfile)
+                else layout_profile
+            )
+            profile = profile_from_payload(payload)
+        metrics: dict[str, object] | None = None
         if not playwright_available():
             verdict = VisualVerdict(skipped=True, reason="playwright not installed")
         else:
@@ -422,7 +781,12 @@ class VisualChecker:
                     # The sync Playwright API refuses to run inside a live asyncio
                     # loop, and check() is always awaited from one — so run the
                     # capture in a worker thread (no running loop there).
-                    shot = await asyncio.to_thread(screenshot, url, path)
+                    shot, metrics = await asyncio.to_thread(
+                        capture_visual_evidence,
+                        url,
+                        path,
+                        audited_desktop=bool(profile and profile.audit_enabled),
+                    )
                     if shot is None:
                         verdict = VisualVerdict(skipped=True, reason="screenshot failed")
                     else:
@@ -432,5 +796,7 @@ class VisualChecker:
                         os.unlink(path)
                     except OSError:
                         pass
+        if profile is not None:
+            verdict = _merge_layout_audit(verdict, assess_layout(profile, metrics))
         await self._emit({"url": url, "goal": goal, **verdict.to_dict()}, correlation_id)
         return verdict

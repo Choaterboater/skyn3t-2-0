@@ -84,6 +84,7 @@ from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.lab_policy import LabAutonomyPolicy
+from skyn3t.studio.layout_profiles import resolve_layout_profile
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
 from skyn3t.studio.planner import BuildPlan, Planner
@@ -2276,6 +2277,32 @@ class StudioRunner:
             )
         )
 
+    @staticmethod
+    def _visual_failure_is_advisory(data: dict[str, Any]) -> bool:
+        rounds = data.get("rounds")
+        if not isinstance(rounds, list):
+            return False
+        failures = [
+            row
+            for row in rounds
+            if isinstance(row, dict)
+            and row.get("skipped") is not True
+            and row.get("matches") is not True
+        ]
+        return bool(failures) and all(
+            row.get("advisory_only") is True for row in failures
+        )
+
+    @classmethod
+    def _visual_failure_should_gate(cls, data: object, stack: str) -> bool:
+        return bool(
+            isinstance(data, dict)
+            and data.get("passed") is False
+            and data.get("skipped") is not True
+            and stack in _UI_WEB_STACKS
+            and not cls._visual_failure_is_advisory(data)
+        )
+
     async def _run_visual_self_heal(
         self,
         manifest,
@@ -2322,6 +2349,7 @@ class StudioRunner:
                 stack=stack,
                 max_rounds=int(getattr(self.settings, "visual_self_heal_max_rounds", 2)),
                 correlation_id=correlation_id,
+                layout_profile=manifest.extra.get("layout_profile"),
             )
         except Exception as exc:  # noqa: BLE001 - optional visual loop must not crash a build
             log.warning("visual_self_heal.failed", error=str(exc))
@@ -4573,6 +4601,18 @@ class StudioRunner:
         # other delegated work can spend. Copy the caller's mapping so injecting
         # an id does not mutate a request object that may be reused elsewhere.
         build_extra = dict(extra or {})
+        # Freeze mutable classification overrides at submission time. The
+        # selector and queue both await, so reading Settings later would let a
+        # UI edit reclassify an already-submitted build. An explicit caller key,
+        # including an empty "auto" value, remains authoritative.
+        if "app_type" not in build_extra:
+            build_extra["app_type"] = str(
+                getattr(self.settings, "app_type_override", "") or ""
+            )
+        if "engine" not in build_extra:
+            build_extra["engine"] = str(
+                getattr(self.settings, "engine_override", "") or ""
+            )
         if not build_extra.get("build_id"):
             build_extra["build_id"] = uuid.uuid4().hex
         # Normalize once before stack selection or any agent runs. Every later
@@ -4664,12 +4704,6 @@ class StudioRunner:
             brief, pin=pin, llm=sel_llm,
             attended=bool(extra.get("attended", False)),
         )
-        classification = classify_build(
-            brief,
-            choice.stack,
-            app_type_override=str(extra.get("app_type") or self.settings.app_type_override),
-            engine_override=str(extra.get("engine") or self.settings.engine_override),
-        )
         plan = self.planner.plan(
             brief,
             slug,
@@ -4679,7 +4713,20 @@ class StudioRunner:
             gated_stages=tuple(extra.get("gated_stages", ())),
             full_app_contract=bool(extra.get("full_app_contract")),
         )
-
+        classification = classify_build(
+            brief,
+            choice.stack,
+            app_type_override=str(extra.get("app_type") or ""),
+            engine_override=str(extra.get("engine") or ""),
+        )
+        profile = resolve_layout_profile(
+            classification.app_type, stack=plan.stack, engine=classification.engine,
+        )
+        frozen_profile = profile.to_dict()
+        # The layout selection is a build-time classification decision. Persist and
+        # reuse this serialized mapping for every later stage, even if settings
+        # change while the build is queued or executing.
+        extra = {**extra, "layout_profile": frozen_profile}
         manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
         # Honor a caller-supplied build_id (e.g. the web API) so its build
         # record reconciles via BUILD_* events instead of orphaning.
@@ -4787,6 +4834,7 @@ class StudioRunner:
             "confidence": choice.confidence, "rationale": choice.rationale,
         }
         manifest.extra["classification"] = classification.to_dict()
+        manifest.extra["layout_profile"] = frozen_profile
         build_id = manifest.build_id
         manifest.extra["preflight_run_id"] = f"{build_id}-preflight"
 
@@ -4804,7 +4852,8 @@ class StudioRunner:
             {"build_id": build_id, "slug": slug, "brief": brief, "stack": plan.stack,
              "app_type": classification.app_type, "engine": classification.engine,
              "stack_selection": manifest.extra["stack_selection"],
-             "classification": manifest.extra["classification"], "stages": plan.stage_names},
+             "classification": manifest.extra["classification"],
+             "layout_profile": frozen_profile, "stages": plan.stage_names},
             correlation_id=correlation_id,
         )
 
@@ -5632,12 +5681,7 @@ class StudioRunner:
                 visual_changed = await self._run_visual_self_heal(
                     manifest, project_dir, plan, correlation_id)
                 visual_data = manifest.extra.get("visual_self_heal")
-                if (
-                    isinstance(visual_data, dict)
-                    and visual_data.get("passed") is False
-                    and visual_data.get("skipped") is not True
-                    and plan.stack in _UI_WEB_STACKS
-                ):
+                if self._visual_failure_should_gate(visual_data, plan.stack):
                     verdict = "no_go"
                     manifest.extra["visual_self_heal_gate"] = (
                         "rendered UI still failed visual check after self-heal"

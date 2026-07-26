@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from skyn3t.cli import main as cli_main
+from skyn3t.studio.manifest import BuildManifest
 
 
 class _FakePreviewSupervisor:
@@ -102,6 +103,34 @@ def test_cli_visual_and_liveness_use_docker_supervisor(tmp_path, monkeypatch):
     assert live == "liveness"
     assert len(captured) == 2
     assert all(isinstance(runner, _FakePreviewSupervisor) for runner in captured)
+
+
+def test_cli_visual_forwards_stored_manifest_layout_profile(tmp_path, monkeypatch):
+    import skyn3t.studio.visual_loop as visual_loop
+
+    _wire_cli_dependencies(tmp_path, monkeypatch)
+    from skyn3t.studio.layout_profiles import resolve_layout_profile
+
+    profile = resolve_layout_profile(
+        "dashboard", stack="react", engine="dom",
+    ).to_dict()
+    manifest = BuildManifest(slug="x", brief="dashboard", stack="nextjs")
+    manifest.extra["layout_profile"] = profile
+    manifest.save(tmp_path)
+    captured = []
+
+    async def fake_visual(*_args, **kwargs):
+        captured.append(kwargs.get("layout_profile"))
+        return "visual"
+
+    monkeypatch.setattr(visual_loop, "visual_self_improve", fake_visual)
+
+    outcome = asyncio.run(
+        cli_main._run_visual(str(tmp_path), goal="polish", max_rounds=1)
+    )
+
+    assert outcome == "visual"
+    assert captured == [profile]
 
 
 def test_cli_serve_uses_docker_supervisor_and_awaits_stop(tmp_path, monkeypatch):

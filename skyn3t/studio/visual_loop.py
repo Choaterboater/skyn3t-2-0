@@ -5,9 +5,9 @@ Ties the existing pieces into the "Kimi magic" auto-iterate loop: serve the
 delivered app, screenshot + judge it against the goal (VisualChecker), and if it
 looks visually wrong, feed the issues to the ImproveEngine and re-check — up to
 ``max_rounds`` times. Every collaborator is injected, so the control flow is
-testable without a real browser, vision model, or build. It degrades cleanly:
-no live preview, or no vision model wired, yields a ``skipped`` result rather
-than failing.
+testable without a real browser, vision model, or build. A clean audit with no
+vision model soft-skips, while an audit-detected workspace issue can drive an
+advisory repair round without vision. Missing live preview still soft-skips.
 """
 from __future__ import annotations
 
@@ -24,6 +24,8 @@ class VisualRound:
     issues: list[str] = field(default_factory=list)
     improved: bool = False
     proof_passed: bool | None = None
+    layout_audit: Any | None = None
+    advisory_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -54,12 +56,14 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                               checker: Any, improve_engine: Any,
                               vision_fn: Any = None, stack: str = "",
                               max_rounds: int = 2,
-                              correlation_id: str | None = None) -> VisualLoopResult:
+                              correlation_id: str | None = None,
+                              layout_profile: object | None = None) -> VisualLoopResult:
     """Serve -> inspect -> improve -> re-check, up to max_rounds inspections.
 
-    Returns passed when an inspection matches the goal; skipped when there's no
-    live preview or no vision model; otherwise not-passed with the rounds taken.
-    Never raises (each collaborator call is guarded)."""
+    Returns passed when an inspection matches the goal; skipped when there is no
+    live preview or the available evidence is a clean audit without vision;
+    otherwise not-passed with the advisory repair rounds taken. Never raises
+    (each collaborator call is guarded)."""
     rounds: list[VisualRound] = []
     n = max(1, int(max_rounds))
     for i in range(n):
@@ -68,9 +72,17 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
             if getattr(app, "status", "") != "running":
                 return VisualLoopResult(passed=False, skipped=True, rounds=rounds,
                                         reason="no live preview")
-            verdict = await checker.check(getattr(app, "url", ""), goal,
-                                          vision_fn=vision_fn,
-                                          correlation_id=correlation_id)
+            check_kwargs = {
+                "vision_fn": vision_fn,
+                "correlation_id": correlation_id,
+            }
+            if layout_profile is not None:
+                check_kwargs["layout_profile"] = layout_profile
+            verdict = await checker.check(
+                getattr(app, "url", ""),
+                goal,
+                **check_kwargs,
+            )
         finally:
             try:
                 stopped = app_runner.stop(app)
@@ -84,11 +96,25 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
             except Exception:  # noqa: BLE001
                 pass
 
+        layout_audit = getattr(verdict, "layout_audit", None)
+        advisory_only = bool(getattr(verdict, "advisory_only", False))
         if getattr(verdict, "skipped", False):
+            if layout_audit is not None:
+                rounds.append(
+                    VisualRound(
+                        index=i,
+                        matches=False,
+                        skipped=True,
+                        layout_audit=layout_audit,
+                        advisory_only=advisory_only,
+                    )
+                )
             return VisualLoopResult(passed=False, skipped=True, rounds=rounds,
                                     reason=getattr(verdict, "reason", "") or "vision unavailable")
         if getattr(verdict, "matches", False):
-            rounds.append(VisualRound(index=i, matches=True, skipped=False))
+            rounds.append(VisualRound(index=i, matches=True, skipped=False,
+                                      layout_audit=layout_audit,
+                                      advisory_only=advisory_only))
             return VisualLoopResult(passed=True, skipped=False, rounds=rounds)
 
         issues = list(getattr(verdict, "issues", None) or [])
@@ -107,7 +133,9 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                 proof_passed = None
         rounds.append(VisualRound(index=i, matches=False, skipped=False,
                                   issues=issues, improved=improved,
-                                  proof_passed=proof_passed))
+                                  proof_passed=proof_passed,
+                                  layout_audit=layout_audit,
+                                  advisory_only=advisory_only))
         if last or not improved:
             break
 

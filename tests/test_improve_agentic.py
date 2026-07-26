@@ -41,6 +41,28 @@ _VALID_REWRITE_FOR_FALLBACK = (
     "export default function Page() {\n"
     "  return <main>home<aside>fallback change</aside></main>;\n}\n"
 )
+_WORKSPACE_PROFILE = {
+    "name": "workspace",
+    "version": 1,
+    "source_app_type": "dashboard",
+    "desktop_contract": (
+        "Workspace layout contract: use a normal desktop content range of "
+        "1200–1600px as a fluid range and guidance, not a hard CSS pixel rule, "
+        "and preserve a meaningful work area. At wide screens make a wide-screen "
+        "compositional change with an explicit split pane or asymmetric wide "
+        "layout rather than merely stretching one column. Apply this composition "
+        "across at least two surface types, such as overview and detail/editor "
+        "surfaces. Dense domain workflow and data surfaces must expose their real "
+        "tables/lists, filters, charts, timelines, inspectors, forms, and state "
+        "transitions instead of reducing the product to summary cards. Valid "
+        "alternatives include toolbar/filters with table/list plus detail, chart "
+        "plus summary strip, timeline plus inspector, or a multi-step form "
+        "workflow. Require responsive collapse for narrower screens. Do not use "
+        "narrow uniform-card operational pages."
+    ),
+    "audit_enabled": True,
+    "audit_exemption": "",
+}
 
 
 class _AgenticLLM:
@@ -325,6 +347,113 @@ def test_agentic_improve_prompt_includes_stage_role_guidance(tmp_path):
     )
     assert "STAGE ROLE GUIDANCE" in llm.agentic_calls[0]["prompt"]
     assert "imported React builder role" in llm.agentic_calls[0]["prompt"]
+
+
+def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(tmp_path, llm, extra={
+        "layout_profile": _WORKSPACE_PROFILE,
+        "layout_profile_is_stored": True,
+    })
+    agentic_prompt = llm.agentic_calls[0]["prompt"]
+    assert "LAYOUT PROFILE: workspace" in agentic_prompt
+    assert "preserve existing working functionality" in agentic_prompt.lower()
+
+    (tmp_path / "worker.py").write_text("def worker():\n    return 1\n")
+    llm = _AgenticLLM(completions=[
+        _VALID_REWRITE_FOR_FALLBACK,
+        "def worker():\n    return 2\n",
+    ])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/page.jsx", "worker.py"],
+            "layout_profile": _WORKSPACE_PROFILE,
+            "layout_profile_is_stored": True,
+        },
+    )
+    assert result.success
+    ui_call = next(call for call in llm.complete_calls if call["file_hint"] == "app/page.jsx")
+    python_call = next(call for call in llm.complete_calls if call["file_hint"] == "worker.py")
+    assert "LAYOUT PROFILE: workspace" in ui_call["prompt"]
+    assert "LAYOUT PROFILE:" not in python_call["prompt"]
+
+    llm = _AgenticLLM(completions=[
+        "export default function MissingPanel() { return <aside>panel</aside>; }\n",
+    ])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/MissingPanel.jsx"],
+            "layout_profile": _WORKSPACE_PROFILE,
+            "layout_profile_is_stored": True,
+        },
+    )
+    assert result.success
+    assert "LAYOUT PROFILE: workspace" in llm.complete_calls[0]["prompt"]
+
+
+def test_unstored_compact_profile_stays_out_of_improver_prompts(tmp_path):
+    from skyn3t.studio.layout_profiles import profile_from_payload
+
+    compact = profile_from_payload(None).to_dict()
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(tmp_path, llm, extra={
+        "layout_profile": compact,
+        "layout_profile_is_stored": False,
+    })
+    assert "LAYOUT PROFILE:" not in llm.agentic_calls[0]["prompt"]
+
+    llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/page.jsx"],
+            "layout_profile": compact,
+            "layout_profile_is_stored": False,
+        },
+    )
+    assert result.success
+    assert "LAYOUT PROFILE:" not in llm.complete_calls[0]["prompt"]
+
+    llm = _AgenticLLM(completions=[
+        "export default function MissingPanel() { return <aside>panel</aside>; }\n",
+    ])
+    result = _run(
+        tmp_path,
+        llm,
+        extra={
+            "agentic": False,
+            "files": ["app/MissingPanel.jsx"],
+            "layout_profile": compact,
+            "layout_profile_is_stored": False,
+        },
+    )
+    assert result.success
+    assert "LAYOUT PROFILE:" not in llm.complete_calls[0]["prompt"]
+
+
+def test_invalid_stored_profile_cannot_render_an_agentic_layout_prompt(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(tmp_path, llm, extra={
+        "layout_profile": {
+            "name": "workspace",
+            "version": True,
+            "audit_enabled": True,
+        },
+        "layout_profile_is_stored": True,
+    })
+
+    assert "LAYOUT PROFILE:" not in llm.agentic_calls[0]["prompt"]
 
 
 def test_classic_improve_prompt_includes_stage_role_guidance(tmp_path):

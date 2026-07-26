@@ -24,6 +24,26 @@ layout, interaction style, and UI strategy.
 - Day-to-day reliability work should use the app-focused bench. Use the explicit
   `games` or `all` bench suite when changing game routing, assets, or playability.
 
+## Layout profiles
+
+Classification also selects one deterministic, versioned layout profile at build
+start. The complete profile is serialized in the build manifest and remains
+frozen for generation and Improve; Improve restores that delivered profile
+rather than classifying the app again. An explicit app-type override therefore
+determines the frozen profile for the build.
+
+| Profile | App-type mapping | Layout treatment |
+| --- | --- | --- |
+| `workspace` | `dashboard`, `data_viz`, `crud_app`, `saas_product`, `product_app`, `rag_app`, `agent_workflow`, and `agent_pack` | At desktop widths, compose a meaningful work area using a split pane or asymmetric wide arrangement (for example, table/detail, chart/summary, timeline, inspector, or form workflow). The 1200–1600px range is fluid guidance, not a hard CSS rule; narrower screens must collapse responsively. |
+| `editorial` | `landing_page`, `portfolio`, and `marketing` | Content-led layouts are exempt from the workspace split-pane and wide-composition rule. |
+| `immersive` | `game`, plus canvas-first Phaser/static experiences | Game and canvas-first layouts are exempt from the workspace rule. |
+| `compact` | Developer, native, mobile, unknown, and all other app types | Compact experiences are exempt from the workspace rule; backend, configuration, and test paths do not receive a dashboard workspace directive. |
+
+The optional desktop browser audit applies only to `workspace`. It checks only
+conservative aggregate layout measurements for under-filled work areas or
+card-monoculture and offers a repair hint when it finds either. It is advisory
+evidence, not a template library or a blocking visual gate.
+
 ## Style rules
 
 - Use the same design-token system everywhere: one accent, fixed high-contrast

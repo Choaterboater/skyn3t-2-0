@@ -9,6 +9,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Any
 
+from skyn3t.studio.layout_profiles import resolve_layout_profile
 from skyn3t.studio.planner import detect_stack as _planner_detect
 
 # Planner-vocab stacks that map to a real builder, with one-line "best for" hints.
@@ -104,6 +105,7 @@ class BuildClassification:
     engine: str
     method: str
     rationale: str
+    layout_profile: str = "compact"
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -111,6 +113,7 @@ class BuildClassification:
             "engine": self.engine,
             "method": self.method,
             "rationale": self.rationale,
+            "layout_profile": self.layout_profile,
         }
 
 
@@ -162,6 +165,7 @@ def classify_build(
         engine=engine,
         method=method,
         rationale=f"{method} from stack={s}",
+        layout_profile=resolve_layout_profile(app_type, stack=s, engine=engine).name,
     )
 
 

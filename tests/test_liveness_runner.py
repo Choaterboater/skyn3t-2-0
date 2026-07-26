@@ -257,6 +257,41 @@ def test_visual_self_heal_repair_does_not_record_improve_history(tmp_path, monke
     assert captured == [False]
 
 
+def test_visual_self_heal_forwards_frozen_manifest_layout_profile(tmp_path, monkeypatch):
+    profile = {"name": "workspace", "version": 1, "audit_enabled": True}
+    captured = []
+
+    async def fake_loop(project_dir, goal, **kw):
+        captured.append(kw.get("layout_profile"))
+
+        class _Outcome:
+            def to_dict(self):
+                return {
+                    "passed": False,
+                    "skipped": True,
+                    "reason": "no vision provider wired",
+                    "rounds": [],
+                }
+
+        return _Outcome()
+
+    monkeypatch.setattr(runner_mod, "visual_self_improve", fake_loop)
+    runner = _runner(tmp_path)
+    manifest = BuildManifest(slug="x", brief="dashboard", stack="nextjs")
+    manifest.extra["layout_profile"] = profile
+
+    asyncio.run(
+        runner._run_visual_self_heal(
+            manifest,
+            str(tmp_path),
+            SimpleNamespace(stack="nextjs"),
+        )
+    )
+
+    assert captured == [profile]
+    assert captured[0] is profile
+
+
 def test_visual_self_heal_requested_honors_per_build_override(tmp_path):
     r = _runner(tmp_path, visual_self_heal=False)
     assert r._visual_self_heal_requested(r.settings, {}) is False
@@ -266,6 +301,38 @@ def test_visual_self_heal_requested_honors_per_build_override(tmp_path):
     assert globally_enabled._visual_self_heal_requested(globally_enabled.settings, {}) is True
     assert globally_enabled._visual_self_heal_requested(
         globally_enabled.settings, {"visual_self_heal": False}
+    ) is False
+
+
+def test_audit_only_visual_failure_remains_advisory():
+    audit_only = {
+        "passed": False,
+        "skipped": False,
+        "rounds": [
+            {
+                "matches": False,
+                "skipped": False,
+                "advisory_only": True,
+                "layout_audit": {
+                    "profile": "workspace",
+                    "issues": ["Desktop workspace is under-filled."],
+                },
+            }
+        ],
+    }
+    vision_failure = {
+        **audit_only,
+        "rounds": [{**audit_only["rounds"][0], "advisory_only": False}],
+    }
+
+    assert StudioRunner._visual_failure_is_advisory(audit_only) is True
+    assert StudioRunner._visual_failure_is_advisory(vision_failure) is False
+    assert StudioRunner._visual_failure_is_advisory({"rounds": []}) is False
+    assert StudioRunner._visual_failure_should_gate(audit_only, "nextjs") is False
+    assert StudioRunner._visual_failure_should_gate(vision_failure, "nextjs") is True
+    assert StudioRunner._visual_failure_should_gate(
+        {"passed": False, "skipped": True, "rounds": []},
+        "nextjs",
     ) is False
 
 

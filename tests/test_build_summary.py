@@ -157,6 +157,130 @@ def test_build_summary_surfaces_responsive_visual_proof_without_route_payloads()
     assert "failed_routes" not in responsive
 
 
+def test_build_summary_compacts_requirement_trace_without_evidence_payloads():
+    summary = build_summary({
+        "extra": {
+            "requirement_trace": {
+                "schema_version": 1,
+                "mode": "enforced",
+                "status": "failed",
+                "fresh": True,
+                "blocks_delivery": True,
+                "summary": {
+                    "total": 3,
+                    "must_total": 3,
+                    "proven": 2,
+                    "must_proven": 2,
+                    "must_failed": 1,
+                    "must_unbound": 0,
+                    "must_stale": 0,
+                    "requirements_total": 99,
+                    "blocking_failed": 1,
+                },
+                "requirements": [{"text": "large private contract payload"}],
+                "evidence": {"proof:build": {"status": "failed", "reason": "large"}},
+                "binding": {"sha256": "a" * 64},
+            },
+        },
+    })
+
+    trace = summary["quality_scorecard"]["requirement_trace"]
+    assert trace == {
+        "schema_version": 1,
+        "mode": "enforced",
+        "status": "failed",
+        "fresh": True,
+        "blocks_delivery": True,
+        "summary": {
+            "total": 3,
+            "must_total": 3,
+            "proven": 2,
+            "must_proven": 2,
+            "must_failed": 1,
+            "must_unbound": 0,
+            "must_stale": 0,
+        },
+    }
+    assert "requirements" not in trace
+    assert "evidence" not in trace
+    assert "binding" not in trace
+
+
+def test_build_summary_requirement_trace_supports_must_count_aliases():
+    summary = build_summary({
+        "extra": {
+            "requirement_trace": {
+                "mode": "legacy_advisory",
+                "status": "unbound",
+                "fresh": False,
+                "blocks_delivery": False,
+                "summary": {
+                    "must_total": 2,
+                    "must_proven": 0,
+                    "must_failed": 0,
+                    "must_unbound": 2,
+                },
+            },
+        },
+    })
+
+    trace = summary["quality_scorecard"]["requirement_trace"]
+    assert trace["summary"]["total"] == 2
+    assert trace["summary"]["proven"] == 0
+    assert trace["summary"]["must_total"] == 2
+    assert trace["summary"]["must_proven"] == 0
+    assert "must_stale" not in trace["summary"]
+
+
+def test_build_summary_tolerates_absent_or_malformed_requirement_trace():
+    absent = build_summary({"extra": {}})
+    malformed = build_summary({
+        "extra": {
+            "requirement_trace": {
+                "schema_version": 10_000,
+                "mode": ["enforced"],
+                "status": {"value": "passed"},
+                "fresh": "yes",
+                "blocks_delivery": 1,
+                "summary": {
+                    "total": -1,
+                    "must_total": True,
+                    "proven": 10**20,
+                    "must_failed": "not-a-number",
+                },
+                "evidence": "must not be projected",
+            },
+        },
+    })
+
+    assert absent["quality_scorecard"]["requirement_trace"] == {}
+    assert malformed["quality_scorecard"]["requirement_trace"] == {}
+
+
+def test_build_summary_surfaces_invalid_requirement_trace_without_raw_error():
+    summary = build_summary({
+        "extra": {
+            "requirement_trace": {
+                "schema_version": 1,
+                "mode": "invalid",
+                "status": "failed",
+                "fresh": False,
+                "blocks_delivery": True,
+                "freshness_reason": "private compiler detail",
+                "evidence": {"private": "payload"},
+            },
+        },
+    })
+
+    assert summary["quality_scorecard"]["requirement_trace"] == {
+        "schema_version": 1,
+        "mode": "invalid",
+        "status": "failed",
+        "fresh": False,
+        "blocks_delivery": True,
+    }
+
+
 def test_build_summary_compacts_cli_execution_evidence():
     summary = build_summary({
         "extra": {

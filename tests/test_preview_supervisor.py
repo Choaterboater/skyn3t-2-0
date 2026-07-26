@@ -149,6 +149,8 @@ async def test_preview_runs_in_hardened_docker_on_localhost(tmp_path: Path) -> N
     assert "rm -rf /app/.git" in prepare[-1]
     assert "/app/.skyn3t/visual-proof" in prepare[-1]
     assert "/app/.skyn3t/proof-ladder" in prepare[-1]
+    assert "/app/skyn3t_manifest.json" in prepare[-1]
+    assert "/app/skyn3t-observability.json" in prepare[-1]
     assert "chmod -R a+rwX /app" in prepare[-1]
     assert "chown" not in prepare[-1]
     runtime_mount = command[command.index("--mount") + 1]
@@ -245,6 +247,8 @@ async def test_python_preview_installs_into_ephemeral_venv(tmp_path: Path) -> No
     assert "/app/.venv" in source_copy[-1]
     assert "/app/venv" in source_copy[-1]
     assert "/app/.skyn3t/visual-proof" in source_copy[-1]
+    assert "/app/skyn3t_manifest.json" in source_copy[-1]
+    assert "/app/skyn3t-observability.json" in source_copy[-1]
     assert "exec /deps/venv/bin/python app.py" in runtime[-1]
     assert runtime[runtime.index("--network") + 1].endswith("-internal")
     await supervisor.stop(app)
@@ -913,6 +917,23 @@ def test_runtime_fingerprint_ignores_only_internal_proof_parent_churn(
 
     after_proof = proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")
     assert after_proof == before
+
+    (tmp_path / "skyn3t_manifest.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "skyn3t-observability.json").write_text("{}", encoding="utf-8")
+    after_runner_metadata = proof_reuse_mod.preview_input_fingerprint(
+        tmp_path,
+        "react",
+    )
+    assert after_runner_metadata == before
+
+    nested_runner_lookalike = tmp_path / "public" / "skyn3t-observability.json"
+    nested_runner_lookalike.parent.mkdir()
+    nested_runner_lookalike.write_text("{}", encoding="utf-8")
+    after_authored_lookalike = proof_reuse_mod.preview_input_fingerprint(
+        tmp_path,
+        "react",
+    )
+    assert after_authored_lookalike != before
 
     (tmp_path / ".skyn3t" / "product.json").write_text("{}", encoding="utf-8")
     after_product = proof_reuse_mod.preview_input_fingerprint(tmp_path, "react")

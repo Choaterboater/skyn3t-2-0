@@ -757,6 +757,17 @@ def test_studio_recent_build_diagnostics_surface_product_quality_gates() -> None
     assert "workflow depth:" in studio
 
 
+def test_studio_recent_build_diagnostics_surface_requirement_trace() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+    assert "scorecard.requirement_trace" in studio
+    assert '"requirement trace invalid"' in studio
+    assert '"requirements advisory (legacy contract)"' in studio
+    assert '"requirements advisory (partial trace)"' in studio
+    assert 'requirementTrace.status === "stale"' in studio
+    assert '"requirement trace stale"' in studio
+    assert "`requirements ${proven}/${total} proven`" in studio
+
+
 def test_studio_recent_build_diagnostics_surface_agentic_stalls() -> None:
     studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "trace.agentic" in studio

@@ -483,6 +483,45 @@ function buildDiagnostics(build) {
   if (scorecard.build && scorecard.build !== "passed") {
     issues.push(`build ${scorecard.build}`);
   }
+  const requirementTrace =
+    scorecard.requirement_trace &&
+    typeof scorecard.requirement_trace === "object" &&
+    !Array.isArray(scorecard.requirement_trace)
+      ? scorecard.requirement_trace
+      : {};
+  const requirementSummary =
+    requirementTrace.summary &&
+    typeof requirementTrace.summary === "object" &&
+    !Array.isArray(requirementTrace.summary)
+      ? requirementTrace.summary
+      : {};
+  const total = Number.isInteger(requirementSummary.total)
+    ? requirementSummary.total
+    : requirementSummary.must_total;
+  const proven = Number.isInteger(requirementSummary.proven)
+    ? requirementSummary.proven
+    : requirementSummary.must_proven;
+  const requirementTraceStale =
+    requirementTrace.status === "stale" ||
+    (requirementTrace.mode === "enforced" && requirementTrace.fresh === false);
+  if (requirementTrace.mode === "invalid") {
+    issues.push("requirement trace invalid");
+  } else if (requirementTrace.mode === "legacy_advisory") {
+    issues.push("requirements advisory (legacy contract)");
+  } else if (requirementTrace.mode === "partial") {
+    issues.push("requirements advisory (partial trace)");
+  } else if (requirementTraceStale) {
+    issues.push("requirement trace stale");
+  } else if (
+    requirementTrace.mode === "enforced" &&
+    Number.isInteger(total) &&
+    Number.isInteger(proven) &&
+    total > 0 &&
+    proven >= 0 &&
+    proven <= total
+  ) {
+    issues.push(`requirements ${proven}/${total} proven`);
+  }
   const financeSanity = scorecard.finance_sanity || {};
   if (financeSanity.ok === false) {
     const financeIssue = Array.isArray(financeSanity.issues)

@@ -205,6 +205,8 @@ def preview_input_fingerprint(
         Path(".git"),
         Path(".skyn3t/visual-proof"),
         Path(".skyn3t/proof-ladder"),
+        Path("skyn3t_manifest.json"),
+        Path("skyn3t-observability.json"),
     ]
     if spec.kind == "node":
         excluded.append(Path("node_modules"))

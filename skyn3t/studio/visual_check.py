@@ -144,12 +144,22 @@ _LAYOUT_METRICS_JS = """() => {
   }
   let repeatedCards = 0;
   let repeatedCardArea = 0;
+  let qualifyingCards = 0;
+  let qualifyingCardArea = 0;
   for (const group of cardGroups.values()) {
     if (group.count > repeatedCards
         || (group.count === repeatedCards && group.area > repeatedCardArea)) {
       repeatedCards = group.count;
       repeatedCardArea = group.area;
     }
+    if (group.count >= 4 && group.area > qualifyingCardArea) {
+      qualifyingCards = group.count;
+      qualifyingCardArea = group.area;
+    }
+  }
+  if (qualifyingCards) {
+    repeatedCards = qualifyingCards;
+    repeatedCardArea = qualifyingCardArea;
   }
   const dataSelectors = [
     "table tbody tr", "[role='row']", "ul", "ol", "[role='list']",

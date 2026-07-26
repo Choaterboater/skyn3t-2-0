@@ -28,6 +28,11 @@ from skyn3t.agents.code_agent import _FULL_FILE_CONTRACT
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
+from skyn3t.studio.layout_profiles import (
+    LayoutProfile,
+    layout_contract_block,
+    profile_from_payload,
+)
 
 _SYSTEM = (
     "You are a senior engineer improving code. Given a file and a list of issues "
@@ -80,6 +85,9 @@ _MAX_DISCOVERED_TARGETS = 6
 _AGENTIC_REPO_MAP_MAX_CHARS = 12_000
 _REPO_MAP_START = "--- REPOSITORY MAP DATA START ---"
 _REPO_MAP_END = "--- REPOSITORY MAP DATA END ---"
+_UI_LAYOUT_SUFFIXES = frozenset({
+    ".jsx", ".tsx", ".css", ".html", ".vue", ".svelte",
+})
 _log = structlog.get_logger(__name__)
 
 
@@ -217,6 +225,7 @@ class CodeImproverAgent(BaseAgent):
         worktree = Path(root)
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
         knowledge = knowledge_block(p)
+        profile = profile_from_payload(p.get("layout_profile"))
 
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
@@ -264,6 +273,7 @@ class CodeImproverAgent(BaseAgent):
                 p,
                 knowledge,
                 agentic_repo_map,
+                profile,
             )
             if ran and agentic_improved:
                 return TaskResult(task_id=task.task_id, success=True,
@@ -323,7 +333,7 @@ class CodeImproverAgent(BaseAgent):
             if target.is_file():
                 original = target.read_text(encoding="utf-8")
                 new_content, skip_reason = await self._improve_one(
-                    rel, original, brief, gaps, stack, knowledge)
+                    rel, original, brief, gaps, stack, knowledge, profile=profile)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -333,7 +343,7 @@ class CodeImproverAgent(BaseAgent):
                 # boot. Editing can't fix a file that doesn't exist; CREATE it.
                 original = ""
                 new_content = await self._create_one(
-                    rel, brief, gaps, stack, worktree, knowledge
+                    rel, brief, gaps, stack, worktree, knowledge, profile=profile,
                 )
             if new_content and new_content.strip() and new_content != original:
                 from skyn3t.agents.validate import validate_source
@@ -454,12 +464,20 @@ class CodeImproverAgent(BaseAgent):
         return sorted(removed)
 
     @staticmethod
+    def _layout_context_for_path(profile: LayoutProfile, rel: str) -> str:
+        """Return the frozen layout contract only for frontend implementation files."""
+        if Path(rel).suffix.lower() not in _UI_LAYOUT_SUFFIXES:
+            return ""
+        return layout_contract_block(profile)
+
+    @staticmethod
     def _agentic_improve_prompt(
         brief: str,
         gaps: list[Any],
         stack: str,
         knowledge: str = "",
         repo_map: str = "",
+        profile: LayoutProfile | None = None,
     ) -> str:
         goals = "\n".join(f"- {str(g).strip()}" for g in gaps if str(g).strip()) or f"- {brief}"
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
@@ -478,12 +496,19 @@ class CodeImproverAgent(BaseAgent):
             navigation = (
                 "Start with list_files, then read_file the files relevant to the goal.\n"
             )
+        layout_context = ""
+        if profile is not None:
+            layout_context = (
+                f"LAYOUT PROFILE: {profile.name}\n"
+                f"{layout_contract_block(profile)}\n\n"
+            )
         return (
             f"{preamble}"
             "You are IMPROVING an existing, working application — not building "
             "a new one. The project's current files are on disk.\n"
             f"Stack: {stack or 'detect from the files'}\n"
             f"Goal(s):\n{goals}\n\n"
+            f"{layout_context}"
             f"{navigation}"
             "Then implement the goal(s) COMPLETELY: call write_file for every "
             "file you change AND for any NEW files the goal needs (pages, "
@@ -493,6 +518,8 @@ class CodeImproverAgent(BaseAgent):
             "placeholder comments like '// rest unchanged'.\n"
             "- Keep the app building and running: update imports/navigation so "
             "new files are actually reachable.\n"
+            "- Preserve existing working functionality while applying the layout profile; "
+            "do not rebuild the app solely to satisfy it.\n"
             "- When the goal is fully implemented, call finish."
         )
 
@@ -500,6 +527,7 @@ class CodeImproverAgent(BaseAgent):
                                stack: str, payload: dict[str, Any],
                                knowledge: str = "",
                                repo_map: str = "",
+                               profile: LayoutProfile | None = None,
                                ) -> tuple[list[str], dict[str, str], bool, str]:
         """Run one whole-project agentic session toward the goal. Returns
         (improved_rels, skipped_reasons, ran, error). ran=False means the
@@ -515,6 +543,7 @@ class CodeImproverAgent(BaseAgent):
             stack,
             knowledge,
             repo_map,
+            profile,
         )
         try:
             res = await self.llm.agentic_build(
@@ -560,7 +589,8 @@ class CodeImproverAgent(BaseAgent):
 
     async def _improve_one(self, rel: str, original: str, brief: str,
                            gaps: list[Any], stack: str,
-                           knowledge: str = "") -> tuple[str, str]:
+                           knowledge: str = "",
+                           profile: LayoutProfile | None = None) -> tuple[str, str]:
         """Rewrite one file toward the gaps/goal. Returns (content, skip_reason):
         content == original with a reason means the file was deliberately left
         alone (e.g. "already_satisfied") — the caller records the reason instead
@@ -569,8 +599,16 @@ class CodeImproverAgent(BaseAgent):
             ext = Path(rel).suffix.lower()
             tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
             preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
+            layout_prompt = ""
+            if profile is not None:
+                layout_context = self._layout_context_for_path(profile, rel)
+                if layout_context:
+                    layout_prompt = (
+                        f"\nLAYOUT PROFILE: {profile.name}\n{layout_context}\n"
+                    )
             prompt = (
                 f"{preamble}Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
+                f"{layout_prompt}"
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
@@ -605,7 +643,8 @@ class CodeImproverAgent(BaseAgent):
         return self._deterministic_fix(rel, original, stack), ""
 
     async def _create_one(self, rel: str, brief: str, gaps: list[Any], stack: str,
-                          worktree: Path, knowledge: str = "") -> str:
+                          worktree: Path, knowledge: str = "",
+                          profile: LayoutProfile | None = None) -> str:
         """Write a BRAND NEW file at `rel` that some existing file imports but that
         codegen never created. Unlike `_improve_one`, there is no deterministic
         offline fallback here — synthesizing a plausible NEW file (not just a
@@ -631,9 +670,17 @@ class CodeImproverAgent(BaseAgent):
         ext = Path(rel).suffix.lower()
         tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
+        layout_prompt = ""
+        if profile is not None:
+            layout_context = self._layout_context_for_path(profile, rel)
+            if layout_context:
+                layout_prompt = (
+                    f"LAYOUT PROFILE: {profile.name}\n{layout_context}\n"
+                )
         prompt = (
             f"{preamble}Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"
             f"Issues: {gaps}\n{importer_context}\n"
+            f"{layout_prompt}"
             f"This file does NOT exist yet — you are creating it, not editing it. "
             f"Write the COMPLETE, real contents of a new file at {rel} that the "
             f"importer above expects, matching the project's existing code style "

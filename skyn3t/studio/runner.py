@@ -2277,6 +2277,32 @@ class StudioRunner:
             )
         )
 
+    @staticmethod
+    def _visual_failure_is_advisory(data: dict[str, Any]) -> bool:
+        rounds = data.get("rounds")
+        if not isinstance(rounds, list):
+            return False
+        failures = [
+            row
+            for row in rounds
+            if isinstance(row, dict)
+            and row.get("skipped") is not True
+            and row.get("matches") is not True
+        ]
+        return bool(failures) and all(
+            row.get("advisory_only") is True for row in failures
+        )
+
+    @classmethod
+    def _visual_failure_should_gate(cls, data: object, stack: str) -> bool:
+        return bool(
+            isinstance(data, dict)
+            and data.get("passed") is False
+            and data.get("skipped") is not True
+            and stack in _UI_WEB_STACKS
+            and not cls._visual_failure_is_advisory(data)
+        )
+
     async def _run_visual_self_heal(
         self,
         manifest,
@@ -2323,6 +2349,7 @@ class StudioRunner:
                 stack=stack,
                 max_rounds=int(getattr(self.settings, "visual_self_heal_max_rounds", 2)),
                 correlation_id=correlation_id,
+                layout_profile=manifest.extra.get("layout_profile"),
             )
         except Exception as exc:  # noqa: BLE001 - optional visual loop must not crash a build
             log.warning("visual_self_heal.failed", error=str(exc))
@@ -5642,12 +5669,7 @@ class StudioRunner:
                 visual_changed = await self._run_visual_self_heal(
                     manifest, project_dir, plan, correlation_id)
                 visual_data = manifest.extra.get("visual_self_heal")
-                if (
-                    isinstance(visual_data, dict)
-                    and visual_data.get("passed") is False
-                    and visual_data.get("skipped") is not True
-                    and plan.stack in _UI_WEB_STACKS
-                ):
+                if self._visual_failure_should_gate(visual_data, plan.stack):
                     verdict = "no_go"
                     manifest.extra["visual_self_heal_gate"] = (
                         "rendered UI still failed visual check after self-heal"

@@ -37,12 +37,26 @@ determines the frozen profile for the build.
 | `workspace` | `dashboard`, `data_viz`, `crud_app`, `saas_product`, `product_app`, `rag_app`, `agent_workflow`, and `agent_pack` | At desktop widths, compose a meaningful work area using a split pane or asymmetric wide arrangement (for example, table/detail, chart/summary, timeline, inspector, or form workflow). The 1200–1600px range is fluid guidance, not a hard CSS rule; narrower screens must collapse responsively. |
 | `editorial` | `landing_page`, `portfolio`, and `marketing` | Content-led layouts are exempt from the workspace split-pane and wide-composition rule. |
 | `immersive` | `game`, plus canvas-first Phaser/static experiences | Game and canvas-first layouts are exempt from the workspace rule. |
-| `compact` | Developer, native, mobile, unknown, and all other app types | Compact experiences are exempt from the workspace rule; backend, configuration, and test paths do not receive a dashboard workspace directive. |
+| `compact` | API, developer, MCP, native, mobile, desktop, unknown, and other utility app types | Compact experiences are exempt from the workspace rule; backend, configuration, and test paths do not receive a dashboard workspace directive. |
 
 The optional desktop browser audit applies only to `workspace`. It checks only
 conservative aggregate layout measurements for under-filled work areas or
 card-monoculture and offers a repair hint when it finds either. It is advisory
-evidence, not a template library or a blocking visual gate.
+evidence, not a template library or a blocking visual gate: it cannot downgrade
+proof, delivery, or a completed build.
+
+### Persisted-profile safety
+
+- A stored profile must match its known app-type family: workspace types cannot
+  become editorial/immersive/compact, editorial types cannot become workspace,
+  games cannot become another profile, and known compact types cannot gain an
+  immersive contract.
+- A truly unknown canvas-first build may retain its compact or immersive profile,
+  because stack/engine provenance is not re-inferred during Improve.
+- Malformed, incomplete, unregistered, or mismatched profile payloads fall back
+  to the safe compact profile rather than steering generation prompts.
+- When a newer SkyN3t version retains a historical profile contract, a manifest
+  using that exact registered version continues to restore its original contract.
 
 ## Style rules
 

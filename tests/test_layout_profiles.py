@@ -93,6 +93,17 @@ def test_malformed_stored_profile_never_reclassifies_or_raises():
     assert profile.audit_enabled is False
 
 
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_equality_coercible_versions_cannot_restore_or_render_workspace(version: object):
+    profile = profile_from_payload({
+        "name": "workspace",
+        "version": version,
+        "audit_enabled": True,
+    })
+    assert profile.name == "compact"
+    assert "workspace layout contract" not in layout_contract_block(profile).lower()
+
+
 def test_valid_stored_profile_is_restored_without_reclassification():
     profile = profile_from_payload({"name": "editorial", "version": 1, "audit_enabled": False})
     assert profile.to_dict() == {

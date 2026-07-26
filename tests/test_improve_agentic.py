@@ -418,6 +418,21 @@ def test_unstored_compact_profile_stays_out_of_improver_prompts(tmp_path):
     assert "LAYOUT PROFILE:" not in llm.complete_calls[0]["prompt"]
 
 
+def test_invalid_stored_profile_cannot_render_an_agentic_layout_prompt(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(tmp_path, llm, extra={
+        "layout_profile": {
+            "name": "workspace",
+            "version": True,
+            "audit_enabled": True,
+        },
+        "layout_profile_is_stored": True,
+    })
+
+    assert "LAYOUT PROFILE:" not in llm.agentic_calls[0]["prompt"]
+
+
 def test_classic_improve_prompt_includes_stage_role_guidance(tmp_path):
     _seed(tmp_path)
     llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])

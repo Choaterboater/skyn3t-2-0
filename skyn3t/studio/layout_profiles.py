@@ -28,6 +28,7 @@ _EDITORIAL = LayoutProfile("editorial", _VERSION, False)
 _IMMERSIVE = LayoutProfile("immersive", _VERSION, False)
 _COMPACT = LayoutProfile("compact", _VERSION, False)
 _PROFILES: Final = (_WORKSPACE, _EDITORIAL, _IMMERSIVE, _COMPACT)
+_SERIALIZED_PROFILE_KEYS: Final = frozenset({"name", "version", "audit_enabled"})
 
 _WORKSPACE_TYPES: Final = frozenset({
     "dashboard", "data_viz", "crud_app", "saas_product", "product_app",
@@ -68,12 +69,20 @@ def resolve_layout_profile(app_type: str, *, stack: str = "", engine: str = "") 
     return _profile_for("compact", stack=normalized_stack, engine=normalized_engine)
 
 
-def _validated_profile_or_compact_fallback(value: object) -> LayoutProfile:
+def _validated_profile(value: object) -> LayoutProfile | None:
     if not isinstance(value, dict):
-        return _COMPACT
+        return None
+    if set(value) != _SERIALIZED_PROFILE_KEYS:
+        return None
     name = value.get("name")
     version = value.get("version")
     audit_enabled = value.get("audit_enabled")
+    if (
+        type(name) is not str
+        or type(version) is not int
+        or type(audit_enabled) is not bool
+    ):
+        return None
     for profile in _PROFILES:
         if (
             name == profile.name
@@ -81,12 +90,17 @@ def _validated_profile_or_compact_fallback(value: object) -> LayoutProfile:
             and audit_enabled is profile.audit_enabled
         ):
             return profile
-    return _COMPACT
+    return None
+
+
+def is_valid_profile_payload(value: object) -> bool:
+    """Whether ``value`` is an exact, type-safe serialized layout profile."""
+    return _validated_profile(value) is not None
 
 
 def profile_from_payload(value: object) -> LayoutProfile:
     """Restore a persisted profile without re-running application classification."""
-    return _validated_profile_or_compact_fallback(value)
+    return _validated_profile(value) or _COMPACT
 
 
 def _format_layout_contract(profile: LayoutProfile) -> str:
@@ -119,4 +133,4 @@ def _format_layout_contract(profile: LayoutProfile) -> str:
 
 def layout_contract_block(profile: LayoutProfile) -> str:
     """Return the bounded prompt block for a frozen, validated profile."""
-    return _format_layout_contract(_validated_profile_or_compact_fallback(profile.to_dict()))
+    return _format_layout_contract(profile_from_payload(profile.to_dict()))

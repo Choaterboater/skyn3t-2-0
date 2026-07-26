@@ -238,6 +238,39 @@ def test_improve_legacy_manifest_uses_compact_provenance_without_layout_prompt(
     assert outcome.detail["layout_profile"] == compact
 
 
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_improve_coercible_profile_version_stays_compact_provenance_only(
+    tmp_path, version,
+):
+    import json
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    manifest_path = project / "skyn3t_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["extra"] = {
+        "layout_profile": {
+            "name": "workspace",
+            "version": version,
+            "audit_enabled": True,
+        }
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    orchestrator = _FakeOrchestrator()
+
+    outcome = asyncio.run(ImproveEngine(
+        EventBus(), orchestrator, settings=settings,
+    ).improve("demo", "make this a sparse marketing landing page"))
+
+    compact = {"name": "compact", "version": 1, "audit_enabled": False}
+    task = orchestrator.submitted[0]
+    assert outcome.status == "completed"
+    assert task.payload["layout_profile"] == compact
+    assert task.payload["layout_profile_is_stored"] is False
+    assert "workspace layout contract" not in task.payload["brief"].lower()
+    assert outcome.detail["layout_profile"] == compact
+
+
 def test_improve_can_skip_history_during_in_build_repair(tmp_path):
     settings = _settings(tmp_path)
     project = settings.projects_dir / "active-build"

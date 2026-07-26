@@ -243,6 +243,57 @@ def test_layout_metric_script_ignores_full_screen_painted_shell():
     assert "under-filled" in " ".join(audit.issues)
 
 
+def test_layout_metric_script_prefers_qualifying_card_group_by_area():
+    pytest.importorskip("playwright")
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch()
+        except Exception as exc:  # pragma: no cover - environment-dependent binary
+            pytest.skip(f"Playwright Chromium unavailable: {exc}")
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.set_content(
+                """
+                <style>
+                  html, body, main { margin: 0; width: 1440px; height: 900px; }
+                  main { position: relative; }
+                  .large, .small { position: absolute; border-radius: 12px; }
+                  .large { width: 430px; height: 415px; background: #123456; }
+                  .small { width: 252px; height: 360px; background: #654321; }
+                  .large:nth-of-type(1) { left: 0; top: 0; }
+                  .large:nth-of-type(2) { left: 430px; top: 0; }
+                  .large:nth-of-type(3) { left: 860px; top: 0; }
+                  .large:nth-of-type(4) { left: 0; top: 415px; }
+                  .small:nth-of-type(5) { left: 0; top: 540px; }
+                  .small:nth-of-type(6) { left: 252px; top: 540px; }
+                  .small:nth-of-type(7) { left: 504px; top: 540px; }
+                  .small:nth-of-type(8) { left: 756px; top: 540px; }
+                  .small:nth-of-type(9) { left: 1008px; top: 540px; }
+                </style>
+                <main>
+                  <div class="large"></div><div class="large"></div>
+                  <div class="large"></div><div class="large"></div>
+                  <div class="small"></div><div class="small"></div>
+                  <div class="small"></div><div class="small"></div>
+                  <div class="small"></div>
+                </main>
+                """
+            )
+            raw = page.evaluate(visual_check_module._LAYOUT_METRICS_JS)
+        finally:
+            browser.close()
+
+    audit = visual_check_module.assess_layout(
+        resolve_layout_profile("dashboard"),
+        raw,
+    )
+    assert raw["repeated_cards"] == 4
+    assert raw["card_area_ratio"] > 0.50
+    assert "similarly sized cards" in " ".join(audit.issues)
+
+
 def test_non_workspace_profiles_are_explicitly_exempt():
     raw = {
         "viewport": {"width": 1440, "height": 900},

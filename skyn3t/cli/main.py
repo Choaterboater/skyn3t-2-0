@@ -1017,6 +1017,7 @@ async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
     engine = ImproveEngine(
         spine["event_bus"], spine["orchestrator"],
         settings=settings, memory=spine["memory"], skills=skills, rag=rag,
+        llm_client=spine["llm"],
     )
     outcome = await engine.improve(project, goal)
     return outcome.to_dict()
@@ -1729,7 +1730,8 @@ async def _run_visual(project: str, *, goal: str, max_rounds: int):
     settings = spine["settings"]
     _l, _p, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
     engine = ImproveEngine(spine["event_bus"], spine["orchestrator"],
-                           settings=settings, memory=spine["memory"], skills=skills, rag=rag)
+                           settings=settings, memory=spine["memory"], skills=skills,
+                           rag=rag, llm_client=spine.get("llm"))
     cand = _Path(project)
     pdir = cand if cand.is_absolute() else (settings.projects_dir / project)
     stack = ""
@@ -1793,7 +1795,8 @@ async def _run_liveness_cli(
     settings = spine["settings"]
     _l, _p, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
     engine = ImproveEngine(spine["event_bus"], spine["orchestrator"],
-                           settings=settings, memory=spine["memory"], skills=skills, rag=rag)
+                           settings=settings, memory=spine["memory"], skills=skills,
+                           rag=rag, llm_client=spine.get("llm"))
     cand = _Path(project)
     pdir = cand if cand.is_absolute() else (settings.projects_dir / project)
     stack = ""

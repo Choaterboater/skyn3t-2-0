@@ -561,9 +561,30 @@ def test_improve_dispatches_background_task(tmp_path, monkeypatch):
     monkeypatch.setattr("skyn3t.studio.improve.ImproveEngine", _FakeEngine)
     state = _state(tmp_path, orchestrator=SimpleNamespace())
     _static_project(state, "alpha")
+    state.settings.llm_backend = "stub"
+    state.settings.codegen_cli_provider = "codex"
+    state.settings.codegen_cli_model = "submission-model"
+    state.llm_client = SimpleNamespace(
+        _cli_available=lambda _provider: True,
+        build_routing_snapshot=lambda _model="": {
+            "requested_backend": "stub",
+            "effective_backend": "stub",
+            "codegen": {
+                "source": "codegen_cli_pin",
+                "requested_backend": "codex_cli",
+                "effective_backend": "codex_cli",
+                "requested_model": "submission-model",
+                "effective_model": "submission-model",
+            },
+        },
+    )
 
     async def _run():
         out = await improve_project(state, "alpha", "add a footer")
+        # The task has not needed to start for the route to be immutable: the
+        # service captured it synchronously with the GUI request.
+        state.settings.codegen_cli_provider = "claude"
+        state.settings.codegen_cli_model = "live-model"
         # drain the dispatched background task(s)
         if routes._IMPROVE_TASKS:
             await asyncio.gather(*list(routes._IMPROVE_TASKS))
@@ -575,5 +596,9 @@ def test_improve_dispatches_background_task(tmp_path, monkeypatch):
     assert out["correlation_id"]
     # the engine was constructed with the state's collaborators
     assert "settings" in _FakeEngine.last_kwargs
+    assert _FakeEngine.last_kwargs["llm_client"] is state.llm_client
+    frozen = _FakeEngine.last_kwargs["routing_snapshot"]["codegen"]
+    assert frozen["requested_backend"] == "codex_cli"
+    assert frozen["requested_model"] == "submission-model"
     kinds = [e.type for e in state.event_bus.history()]
     assert EventType.IMPROVE_STARTED in kinds and EventType.IMPROVE_COMPLETED in kinds

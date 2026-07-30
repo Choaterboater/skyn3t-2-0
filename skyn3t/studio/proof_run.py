@@ -2233,6 +2233,78 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
     return missing
 
 
+_NODE_BUILTIN_IMPORT_RE = re.compile(
+    r"""(?:from\s*|import\s*|require\s*\(\s*)['"]node:[a-zA-Z_][\w/]*['"]"""
+)
+# Sources a TypeScript project type-checks. .astro/.svelte/.vue carry <script>
+# blocks that `astro check` / `svelte-check` type-check the same way.
+_TYPED_SOURCE_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".astro", ".svelte", ".vue")
+
+
+def reconcile_node_types(root: str | Path) -> list[str]:
+    """Declare ``@types/node`` when typed sources import ``node:`` builtins.
+
+    reconcile_npm_deps deliberately skips ``node:`` specifiers because they need
+    no runtime package — correct for dependencies, and exactly why nothing ever
+    supplied their TYPES. A TypeScript project that imports ``node:fs`` without
+    ``@types/node`` fails its own type-check:
+
+        tests/links.test.ts:2:65 - error ts(2307):
+            Cannot find module 'node:fs' or its corresponding type declarations.
+
+    Measured on a delivered Astro site: 12 such errors failed `astro check`,
+    which failed the build step, which failed proof, which made an otherwise
+    complete 52-file delivery a no_go at 44. Every checklist item was present —
+    the app was fine apart from a missing types package.
+
+    Only acts when the project actually type-checks (a tsconfig or a declared
+    typescript), since @types/node is inert otherwise. Never raises."""
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    import json as _json
+
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared: set[str] = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        section = pkg.get(key)
+        if isinstance(section, dict):
+            declared |= set(section)
+    if "@types/node" in declared:
+        return []
+    type_checked = "typescript" in declared or any(
+        (root / name).is_file() for name in ("tsconfig.json", "jsconfig.json")
+    )
+    if not type_checked:
+        return []
+    for f in _iter_files(root):
+        if f.suffix not in _TYPED_SOURCE_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _NODE_BUILTIN_IMPORT_RE.search(text):
+            break
+    else:
+        return []
+    dev = pkg.setdefault("devDependencies", {})
+    if not isinstance(dev, dict):
+        return []
+    dev["@types/node"] = _KNOWN_NPM_VERSIONS.get("@types/node", "latest")
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return ["@types/node"]
+
+
 # Build-tool PEER deps implied by a next.config flag but never imported in source
 # (so reconcile_npm_deps can't see them): (flag-substring-in-config, package, version).
 # experimental.optimizeCss runs `critters` to inline CSS during `next build`; with
@@ -3447,6 +3519,10 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     relinked = relink_unresolved_relative_imports(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
     added = reconcile_npm_deps(project_dir)
+    # reconcile_npm_deps skips `node:` specifiers (they need no runtime package),
+    # which is why nothing ever supplied their TYPES. Runs after it so it sees
+    # the final declared set.
+    node_types = reconcile_node_types(project_dir)
     peers = reconcile_next_config_peers(project_dir)
     # Next.js App Router: prepend "use client" to interactive components so
     # `next build` doesn't fail static generation on event handlers/hooks.
@@ -3501,6 +3577,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "cjs_tests_renamed": cjs_tests,
         "node_test_script": node_test_script,
         "npm_deps_added": added,
+        "node_types_added": node_types,
         "npm_deps_sanitized": sanitized,
         "next_config_peers": peers,
         "imports_relinked": relinked,

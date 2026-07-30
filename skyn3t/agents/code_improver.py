@@ -576,12 +576,28 @@ class CodeImproverAgent(BaseAgent):
         skipped: dict[str, str] = {
             rel: "untrusted_new_path" for rel in untrusted_paths
         }
+        from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose, looks_elided
+
         for rel, content in after.items():
             original = before.get(rel)
             if original is not None and content == original:
                 continue
             ok, _ = validate_source(rel, content)
-            if ok and self._preserves_html_entrypoints(rel, original or "", content):
+            # validate_source does NOT reject chat prose, so codegen runs a
+            # separate guard (CodeAgent._clean_agentic_files) and improve never
+            # did. Observed shipping as a real homepage:
+            #
+            #   • I'll check the actual file and try building to find the error.
+            #   • Rewrote `src/pages/index.astro` to clear the build failure.
+            #
+            # The agent narrated its work INTO the file it was asked to rewrite.
+            # An elided "// rest unchanged" stub is the same class of damage.
+            prose = False
+            if rel.lower().endswith(_CODE_EXTS):
+                prose = _looks_like_prose(content) or looks_elided(content)
+            if ok and not prose and self._preserves_html_entrypoints(
+                rel, original or "", content
+            ):
                 improved.append(rel)
                 continue
             # Do-no-harm: unwind a broken write — restore the original, or
@@ -594,7 +610,11 @@ class CodeImproverAgent(BaseAgent):
                     target.write_text(original, encoding="utf-8")
             except OSError:
                 pass
-            skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
+            if prose:
+                skipped[rel] = "prose_not_code"
+                _log.warning("code_improver.prose_rejected", file=rel)
+            else:
+                skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
         return improved, skipped, True, ""
 
     async def _improve_one(self, rel: str, original: str, brief: str,

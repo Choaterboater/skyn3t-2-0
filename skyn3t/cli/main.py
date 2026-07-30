@@ -559,10 +559,18 @@ def studio_build(
         raise typer.Exit(code=2)
 
 
-async def _run_debate(question: str, settings: Any | None = None) -> Any:
+async def _run_debate(
+    question: str, settings: Any | None = None, slots: str = "",
+) -> Any:
     """Run a multi-model debate, gated by ``debate_enabled``, feeding the
     ModelTournament that the learned router reads. Returns ``None`` if the LLM
-    stack is unavailable."""
+    stack is unavailable.
+
+    ``slots`` is what makes the debate MULTI-model. Without it every debater
+    resolves through the same tier to the same model — one model arguing with
+    itself, voting on itself, and feeding that self-play to the tournament as
+    if it were independent evidence. Falls back to ``settings.debate_slots``.
+    """
     try:
         from skyn3t.adapters.llm import LLMClient
         from skyn3t.config.settings import get_settings
@@ -583,12 +591,19 @@ async def _run_debate(question: str, settings: Any | None = None) -> Any:
         ),
         tournament=tournament,
         event_bus=EventBus(),
+        slots=slots or str(getattr(settings, "debate_slots", "") or ""),
     )
 
 
 @app.command()
 def debate(
     question: str = typer.Argument(..., help="The question to debate across models."),
+    slots: str = typer.Option(
+        "", "--slots",
+        help="Comma-separated provider:model debaters, e.g. "
+             "'codex_cli,claude_cli,kimi_cli'. Empty uses SKYN3T_DEBATE_SLOTS; "
+             "empty there too means every debater runs the SAME routed model.",
+    ),
 ) -> None:
     """Multi-model debate: propose -> cross-examine -> vote -> synthesise.
 
@@ -596,9 +611,13 @@ def debate(
     is a single cheap completion; on runs several models and records the winner
     into the ModelTournament that feeds the learned router. Degrades
     deterministically on the stub backend.
+
+    Pass --slots to make it an actual ensemble. Without slots the debaters all
+    resolve to one model, so the "winner" beats only itself and the tournament
+    records an unopposed win.
     """
     console = _console()
-    result = asyncio.run(_run_debate(question))
+    result = asyncio.run(_run_debate(question, slots=slots))
     if result is None:
         console.print("[red]LLM stack unavailable — cannot debate.[/red]")
         raise typer.Exit(code=1)

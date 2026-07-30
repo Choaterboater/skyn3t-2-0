@@ -214,6 +214,13 @@ class Settings(BaseSettings):
     # events far more often than this, so it never trips on real progress. 0
     # uses ``agentic_build_timeout`` as the inactivity/no-progress window.
     agentic_idle_timeout: int = 600
+    # Liveness heartbeat (seconds) while a streaming agentic session runs. The
+    # stream is where the only evidence of progress lives, and nothing surfaced
+    # it: a measured build went 24 minutes between log lines while genuinely
+    # working, which is indistinguishable from a hang to anyone watching. With
+    # agentic_build_timeout at 1800 and best_of_n above 1, that silent window is
+    # long enough that "is it running?" is a fair question. 0 disables.
+    agentic_heartbeat_seconds: int = 60
     # Route dashboard Improve goals through the whole-project agentic tool-loop
     # (same machinery as builds) so a feature goal can CREATE new pages and touch
     # multiple files, instead of one entrypoint rewrite. The classic per-file

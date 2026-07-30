@@ -3996,6 +3996,15 @@ class LLMClient:
             except Exception:  # noqa: BLE001 - draining is best-effort
                 return
 
+        # Liveness heartbeat. Stream events are the only progress evidence a CLI
+        # agent produces, and nothing surfaced them — a measured build ran 24
+        # minutes between log lines while working normally, which reads exactly
+        # like a hang. Emitting a periodic line costs nothing and makes "is it
+        # running?" answerable from the log alone.
+        heartbeat_every = float(getattr(self.settings, "agentic_heartbeat_seconds", 60) or 0)
+        stream_started = time.monotonic()
+        last_beat = stream_started
+
         err_task = asyncio.create_task(_drain_err())
         try:
             try:
@@ -4031,6 +4040,14 @@ class LLMClient:
                         break  # EOF — the agent exited
                     events += 1
                     evidence["event_count"] = events
+                    if heartbeat_every > 0:
+                        _now = time.monotonic()
+                        if _now - last_beat >= heartbeat_every:
+                            last_beat = _now
+                            log.info(
+                                "llm.agentic_progress", provider=provider,
+                                events=events, elapsed_s=int(_now - stream_started),
+                            )
                     try:
                         evt = json.loads(line)
                     except (ValueError, TypeError):

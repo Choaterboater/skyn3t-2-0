@@ -403,7 +403,7 @@ async def test_codegen_cli_and_model_pin_stay_locked_after_live_settings_change(
     class _Process:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
             return b"", b""
 
     async def _fake_subprocess(*argv, **kwargs):
@@ -422,7 +422,11 @@ async def test_codegen_cli_and_model_pin_stay_locked_after_live_settings_change(
 
     assert result["backend"] == "copilot_cli"
     assert result["model"] == "gpt-5-mini"
-    assert captured_argv[0] == "copilot"
+    # The locked provider is what matters here, not the launcher spelling:
+    # argv[0] is now a RESOLVED executable, because on Windows a bare name can
+    # resolve to a .ps1 shim that CreateProcess cannot exec at all.
+    assert captured_argv[0].lower().endswith(("copilot", "copilot.exe", "copilot.cmd"))
+    assert "claude" not in captured_argv[0].lower()  # the live edit did not win
     assert captured_argv[captured_argv.index("--model") + 1] == "gpt-5-mini"
 
 

@@ -1097,6 +1097,17 @@ class ProofResult:
         return extract_error_gaps(self.detail, self.syntax_errors)
 
 
+# Terminal colour/cursor escapes emitted by build tools. Stripped at capture:
+# they carry no information SkyN3t needs, and leaving them in is actively
+# harmful — see _ProofCommandResult.__post_init__.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI colour/cursor escapes from captured tool output."""
+    return _ANSI_ESCAPE_RE.sub("", text or "")
+
+
 @dataclass(slots=True)
 class _ProofCommandResult:
     returncode: int
@@ -1104,6 +1115,19 @@ class _ProofCommandResult:
     stderr: str
     backend: str = "local"
     timed_out: bool = False
+
+    def __post_init__(self) -> None:
+        # Strip escapes HERE so no capture site can forget. Observed on a real
+        # build: `astro check` printed the offending file as
+        # "\x1b[96mtests/links.test.ts\x1b[0m". The escapes survived into
+        # build_summary, the repair loop read the path with the ESC byte lost
+        # and the "96m" still glued on, and wrote a source file at
+        # `96mtests/links.test.ts` whose body was the diagnostic's own excerpt
+        # (leading "* " bullet included). That file then failed type-checking
+        # with ts(1127) Invalid character — so one build error manufactured a
+        # second one, in a directory that should never have existed.
+        self.stdout = strip_ansi(self.stdout)
+        self.stderr = strip_ansi(self.stderr)
 
 
 @dataclass(slots=True)

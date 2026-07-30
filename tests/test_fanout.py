@@ -191,3 +191,50 @@ def test_referee_is_authoritative_over_a_no_go_verdict():
     out = asyncio.run(fan_out(cands, build_fn, referee=referee))
     assert out.any_passed is True
     assert out.winner.candidate_id == "p" and out.winner.passed is True
+
+
+def test_fan_out_survives_a_failing_referee():
+    # Symmetric with a crashing build: a referee whose re-proof crashes (proof
+    # toolchain down, OOM, etc.) must fail CLOSED for that candidate — an error
+    # result, not passed — without sinking the rest of the fan-out.
+    cands = _cands("ok", "boom")
+
+    async def build_fn(c):
+        return _outcome(verdict="go", score=80, proof_passed=True)
+
+    def referee(candidate, outcome):
+        if candidate.id == "boom":
+            raise RuntimeError("referee proof infra crashed")
+        return (True, 90.0)
+
+    bus = _Bus()
+    out = asyncio.run(fan_out(cands, build_fn, referee=referee, event_bus=bus,
+                              correlation_id="cid-rf"))
+    by_id = {r.candidate_id: r for r in out.results}
+    assert by_id["boom"].status == "error" and by_id["boom"].passed is False
+    assert by_id["boom"].detail.get("referee_error") is True
+    assert out.winner.candidate_id == "ok"  # the crash didn't sink the fan-out
+    assert out.any_passed is True
+    # the crashed-referee candidate still streamed its (error) result event
+    from skyn3t.core.events import EventType
+    streamed = [p for t, p, _ in bus.events if t == EventType.FANOUT_CANDIDATE]
+    assert len(streamed) == 2
+    assert any(p.get("status") == "error" for p in streamed)
+
+
+def test_fan_out_completes_fail_closed_when_every_referee_crashes():
+    # If the referee infrastructure is down for EVERY candidate, the fan-out
+    # must still complete — with nothing certified (any_passed False), never
+    # by raising out of asyncio.gather.
+    cands = _cands("a", "b")
+
+    async def build_fn(c):
+        return _outcome(verdict="go", score=80, proof_passed=True)
+
+    def referee(candidate, outcome):
+        raise RuntimeError("proof toolchain down")
+
+    out = asyncio.run(fan_out(cands, build_fn, referee=referee))
+    assert out.any_passed is False
+    assert all(r.status == "error" for r in out.results)
+    assert out.winner is not None  # still completes with an ordered result

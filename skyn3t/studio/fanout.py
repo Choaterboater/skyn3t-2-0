@@ -7,6 +7,11 @@ built in parallel, refereed by proof, with the winner selected and the
 exploration delta recorded. build_fn-injected so the logic is testable without
 the agent spine; a real caller passes a build_fn that drives StudioRunner per
 candidate and (optionally) a referee that re-proofs the delivered tree.
+
+Never-sink doctrine: a candidate whose build crashes becomes an error result
+rather than aborting the fan-out, and a referee whose re-proof crashes is
+contained the same way — that candidate fails CLOSED (error result, not
+passed, ``detail["referee_error"]``) while the rest of the fan-out completes.
 """
 from __future__ import annotations
 
@@ -124,6 +129,23 @@ async def _safe_build(build_fn: BuildFn, cand: FanCandidate) -> Any:
         return None
 
 
+_REFEREE_CRASHED = object()  # sentinel: referee raised (distinct from a None verdict)
+
+
+def _safe_referee(referee: RefereeFn, cand: FanCandidate, outcome: Any) -> Any:
+    """Call the referee, containing a crash so it cannot sink the fan-out.
+
+    Returns the referee verdict tuple, or the ``_REFEREE_CRASHED`` sentinel.
+    The referee re-proofs the delivered tree (a subprocess-heavy proof_run), so
+    it is at least as failure-prone as the build itself — and the build path is
+    already protected by ``_safe_build``.
+    """
+    try:
+        return referee(cand, outcome)
+    except Exception:  # noqa: BLE001 - a referee crash must not sink the fan-out
+        return _REFEREE_CRASHED
+
+
 async def _emit(event_bus: Any, etype: Any, payload: dict[str, Any], cid: str) -> None:
     if event_bus is None:
         return
@@ -140,8 +162,20 @@ async def _run_candidate(cand: FanCandidate, build_fn: BuildFn, referee: Referee
         res = FanResult(candidate_id=cand.id, label=cand.label or cand.id,
                         verdict="no_go", score=None, proof_passed=False, status="error")
     else:
-        rv = referee(cand, outcome) if referee is not None else None
-        res = FanResult.from_outcome(cand, outcome, referee_verdict=rv)
+        rv = _safe_referee(referee, cand, outcome) if referee is not None else None
+        if rv is _REFEREE_CRASHED:
+            # Symmetric with a build crash: the referee is AUTHORITATIVE, so a
+            # candidate it could not re-proof is unverifiable — fail it CLOSED
+            # (error result, not passed) instead of trusting the stale build
+            # verdict, and let the rest of the fan-out complete.
+            res = FanResult(candidate_id=cand.id, label=cand.label or cand.id,
+                            verdict="no_go", score=None, proof_passed=False,
+                            status="error",
+                            detail={"referee_error": True,
+                                    "stack": str(getattr(outcome, "stack", "") or ""),
+                                    "slug": str(getattr(outcome, "slug", "") or "")})
+        else:
+            res = FanResult.from_outcome(cand, outcome, referee_verdict=rv)
     # Stream each candidate's result as it resolves so the cockpit can show
     # progress (FANOUT events fan out via the existing EventType.ALL bridge).
     from skyn3t.core.events import EventType
@@ -154,9 +188,11 @@ async def fan_out(candidates: list[FanCandidate], build_fn: BuildFn, *,
                   correlation_id: str = "") -> FanOutOutcome:
     """Build every candidate in parallel, referee, select the winner, record the
     exploration delta (winner score minus the best runner-up). A candidate whose
-    build crashes becomes an error result rather than aborting the fan-out. When
-    an event_bus is supplied, emits FANOUT_STARTED / FANOUT_CANDIDATE (per result)
-    / FANOUT_COMPLETED so the dashboard can watch the exploration live."""
+    build crashes becomes an error result rather than aborting the fan-out; a
+    referee crash on a candidate is contained the same way (fail-closed error
+    result). When an event_bus is supplied, emits FANOUT_STARTED /
+    FANOUT_CANDIDATE (per result) / FANOUT_COMPLETED so the dashboard can watch
+    the exploration live."""
     from skyn3t.core.events import EventType
     cid = correlation_id or ""
     await _emit(event_bus, EventType.FANOUT_STARTED,

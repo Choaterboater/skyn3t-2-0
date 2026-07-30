@@ -96,9 +96,21 @@ If you get disconnected, open these in order:
 ## Defaults (safe + cheap)
 
 - `free_only=true`, autonomy gated (`autonomous_builds=false`, `approval_gates=true`).
-- Hard caps: `per_build_usd_cap=0` (disabled by default), `daily_usd_cap=5.00`,
-  `daily_token_cap=5M`.
+- **Budget guards ship DISABLED, all three of them**: `per_build_usd_cap=0.0`,
+  `daily_usd_cap=0.0`, `daily_token_cap=0`. `0` means "no ceiling", not "no
+  spend" — every cap check is gated on `> 0`. Set a positive value to get one.
+  (This section previously claimed a `$5.00`/day and `5M`-token cap; neither
+  has ever existed in the code.)
+- A dollar cap cannot bound a **CLI** backend in any case: a signed-in CLI
+  reports no per-call price (`cost_usd=0.0`,
+  `cost_source="not_reported_by_cli"`), so CLI spend is invisible to the
+  ledger and bills the operator's subscription directly. Dollar caps bind
+  OpenRouter only. See [docs/MOA.md](docs/MOA.md#cost).
 - Web access is loopback-only unless `SKYN3T_AUTH_TOKEN` is set.
+- Gate posture is `lab`: only proof that the delivery is broken blocks a
+  build. A gate that could not run never blocks in any posture.
+- The MoA advisory council is **on** (`claude_cli,kimi_cli`) and adds N
+  completions per build, inline before codegen.
 
 ## Known gaps / follow-ups
 

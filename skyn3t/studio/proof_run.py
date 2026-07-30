@@ -3281,6 +3281,75 @@ def format_ruff_python_sources(project_dir: str | Path) -> list[str]:
     return sorted(changed)
 
 
+_NODE_TEST_EXTS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")
+
+
+def repair_node_test_script(project_dir: str | Path) -> list[str]:
+    """Rewrite ``node --test <dir>`` to the glob form that actually discovers.
+
+    Node 24 resolves a positional argument as a module entry point rather than
+    walking it, so ``node --test tests`` dies with MODULE_NOT_FOUND naming the
+    CommonJS loader and the runner reports exactly one failing "test". Measured
+    against a known-good ESM suite, isolating the argument form from the test
+    content:
+
+        node --test tests             -> MODULE_NOT_FOUND, pass 0, fail 1
+        node --test "tests/*.test.js" -> pass 1, fail 0
+
+    So every delivered app scripted that way reported a failing suite no matter
+    how good its tests were, and fed the repair loop an imaginary missing
+    module instead of the real defect.
+
+    Only a DIRECTORY positional is rewritten: a file path already works, and a
+    bare ``node --test`` discovers on its own. A directory that does not exist,
+    or holds no test files, is left alone — emitting a glob that matches
+    nothing would exit 0 and report a PASS with zero tests, turning a broken
+    suite into false green evidence. Idempotent: the rewritten positional is no
+    longer a directory, so a second pass is a no-op."""
+    import json as _json
+
+    root = Path(project_dir)
+    pkg_path = root / "package.json"
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    scripts = pkg.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    script = str(scripts.get("test") or "").strip()
+    parts = script.split()
+    if len(parts) < 2 or parts[0] != "node" or "--test" not in parts:
+        return []
+    positionals = [p for p in parts[1:] if not p.startswith("-")]
+    if len(positionals) != 1:
+        # 0 = auto-discovery; >1 = an explicit list the author chose. Both work.
+        return []
+    target = positionals[0].strip("\"'").rstrip("/\\")
+    if not target or (root / target).is_dir() is False:
+        return []
+    tdir = root / target
+    exts = sorted({
+        p.suffix for p in tdir.rglob("*")
+        if p.is_file() and p.suffix in _NODE_TEST_EXTS and ".test." in p.name
+    })
+    if not exts:
+        return []
+    flags = [p for p in parts[1:] if p.startswith("-")]
+    globs = [f'"{target}/**/*.test{ext}"' for ext in exts]
+    rewritten = " ".join(["node", *flags, *globs])
+    if rewritten == script:
+        return []
+    scripts["test"] = rewritten
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return [f"test: {script} -> {rewritten}"]
+
+
 def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
     """Run every deterministic, idempotent, code-MUTATING build repair in one
     pass and return what changed. This is the single source of truth for the
@@ -3341,7 +3410,13 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # they see the final generated Python source.
     python_imports = sort_ruff_imports(project_dir)
     python_formatted = format_ruff_python_sources(project_dir)
+    # `node --test <dir>` does not walk the directory on Node 24 — it resolves
+    # the positional as a module entry point and dies MODULE_NOT_FOUND, so the
+    # suite reports one failing "test" naming a CJS loader even for a pure-ESM
+    # app whose tests are perfect. Rewrite it to the glob form that works.
+    node_test_script = repair_node_test_script(project_dir)
     return {
+        "node_test_script": node_test_script,
         "npm_deps_added": added,
         "npm_deps_sanitized": sanitized,
         "next_config_peers": peers,

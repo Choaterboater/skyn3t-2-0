@@ -10,7 +10,8 @@ import re
 # that replies with chat prose instead of code must not ship as one of these.
 _CODE_EXTS = (
     ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".rb",
-    ".java", ".c", ".h", ".cpp", ".cc", ".php", ".vue", ".svelte", ".swift", ".kt",
+    ".java", ".c", ".h", ".cpp", ".cc", ".php", ".vue", ".svelte", ".astro",
+    ".swift", ".kt",
 )
 
 # Any one of these is strong evidence the content is actually code, not prose:

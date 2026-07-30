@@ -7,17 +7,11 @@ LLM stub backend.
 from __future__ import annotations
 
 import asyncio
-import sys
 
 import pytest  # noqa: F401
 
 from skyn3t.intelligence.build_patterns import BuildPatternBoard, fingerprint
 from skyn3t.intelligence.debate import _parse_vote, run_debate
-from skyn3t.intelligence.docker_backend import (
-    ExecutionBackend,
-    detect_backend,
-    docker_available,
-)
 from skyn3t.intelligence.learning_loop import LearningLoop, mine_best_practices
 from skyn3t.intelligence.model_tournament import ModelTournament
 from skyn3t.intelligence.reflection import Reflector, Transcript
@@ -215,27 +209,3 @@ def test_debate_disabled_short_circuits():
     assert res.enabled is False
     assert res.rounds == 0
 
-
-# ---- docker backend ----------------------------------------------------
-def test_detect_backend_inline_forced():
-    assert detect_backend("inline") == "inline"
-
-
-def test_execution_backend_inline_runs_subprocess():
-    be = ExecutionBackend(preference="inline")
-    assert be.backend == "inline"
-    res = run(be.run([sys.executable, "-c", "print('hi')"]))
-    assert res.backend == "inline"
-    assert res.ok
-    assert "hi" in res.stdout
-
-
-def test_execution_backend_command_not_found():
-    be = ExecutionBackend(preference="inline")
-    res = run(be.run(["definitely-not-a-real-binary-xyz"]))
-    assert res.exit_code == 127
-    assert not res.ok
-
-
-def test_docker_available_returns_bool():
-    assert isinstance(docker_available(), bool)

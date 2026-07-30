@@ -1,8 +1,8 @@
 """Offline tests for the integrations package (no network, no heavy deps).
 
 Covers: Channel brief/approval flow, ChannelRegistry availability gating,
-DeliveryGateway never-raise semantics, GitHub webhook signature + task mapping,
-and NL-cron parsing + pure-Python cron matching.
+GitHub webhook signature + task mapping, and NL-cron parsing + pure-Python
+cron matching.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from skyn3t.integrations.channels import (
     InboundMessage,
     build_default_registry,
 )
-from skyn3t.integrations.gateway import DeliveryGateway
 from skyn3t.integrations.github_webhook import (
     GitHubWebhookHandler,
     event_to_task,
@@ -111,26 +110,10 @@ def test_default_registry_imports_without_deps():
     assert isinstance(reg.describe(), dict)
 
 
-@pytest.mark.asyncio
-async def test_gateway_never_raises_on_unconfigured_or_broken():
-    bus = EventBus()
-    reg = ChannelRegistry()
-    reg.register(_FakeChannel(available=True))
-    reg.register(_BrokenChannel(available=True))
-    gw = DeliveryGateway(reg, event_bus=bus)
-
-    # Unknown channel -> failure record, no raise.
-    r = await gw.send("nope", "t", "hi")
-    assert r.ok is False and r.error == "unknown_channel"
-
-    # Broken channel swallows the exception.
-    r2 = await gw.send("broken", "t", "hi")
-    assert r2.ok is False
-
-    # Broadcast tolerates everything and reports per channel.
-    report = await gw.broadcast("hello", targets={"fake": "x", "broken": "y"})
-    assert report.any_ok is True
-    assert not report.all_ok
+# DeliveryGateway's never-raise test was removed with
+# skyn3t/integrations/gateway.py: it had no production callers, and the one
+# guarantee that mattered (scrubbing secrets before egress) was moved onto the
+# live path in MessagingService.notify, where it is covered below.
 
 
 def test_github_signature_verify():

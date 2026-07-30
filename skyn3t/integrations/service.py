@@ -91,10 +91,10 @@ class MessagingService:
         The text is scrubbed before it leaves the process. This is the only
         egress path for build notifications, and build output routinely
         contains provider tokens (``sk-``, ``ghp_``, ``xox``, ``AKIA``) picked
-        up from logs and error strings. Scrubbing lived only in
-        :class:`~skyn3t.integrations.gateway.DeliveryGateway`, which nothing
-        calls — so the guarantee existed in a dead path while the live one
-        egressed secrets to Telegram/Discord/Slack unredacted.
+        up from logs and error strings. Scrubbing used to live only in a
+        ``DeliveryGateway`` that nothing called — the guarantee existed in a
+        dead path while this live one egressed secrets to
+        Telegram/Discord/Slack unredacted. That module has since been deleted.
         """
         try:
             from skyn3t.security.secrets import scrub_text

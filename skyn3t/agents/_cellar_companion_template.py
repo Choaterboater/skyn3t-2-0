@@ -920,6 +920,19 @@ Mac Terminal commands:
 
 For a physical iPhone, select your development team in Xcode and press Run. For TestFlight, archive in Xcode and distribute through App Store Connect.
 
+## Configuration
+
+Configuration is read ONCE at startup and validated in a single pass.
+
+| Key | Required | Where | Purpose |
+| --- | --- | --- | --- |
+| `PRODUCT_BUNDLE_IDENTIFIER` | yes | Xcode build settings | App identity, set per environment |
+| `DEVELOPMENT_TEAM` | to run on a device | Signing and Capabilities | Apple Development signing team |
+| `NSCameraUsageDescription` | yes | App/Info.plist | Camera privacy string; scanning is unavailable without it |
+| `MARKET_VALUE_BASE_URL` | no | Market-value provider seam | HTTPS endpoint of a licensed provider you control |
+
+A missing required key fails fast at startup with one clear error naming the key. There is no silent fallback to a default and no degraded half-working mode. Optional keys are absent-or-valid: with `MARKET_VALUE_BASE_URL` unset the market-value feature is disabled outright rather than guessing a price. Never ship a vendor API key inside the app bundle — terminate it in a backend you control.
+
 ## Project layout
 
 - App/App.swift: SwiftUI entry and SwiftData container

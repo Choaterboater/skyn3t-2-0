@@ -2,7 +2,7 @@
   "schema_version": 1,
   "suite_id": "golden-v1",
   "name": "SkyN3t Golden Suite v1",
-  "description": "Thirty concrete acceptance contracts spanning every real builder stack and the highest-risk scaffold variants. Thresholds are quality requirements, not previously measured results.",
+  "description": "Thirty-one concrete acceptance contracts spanning every real builder stack and the highest-risk scaffold variants. Thresholds are quality requirements, not previously measured results.",
   "cases": [
     {
       "id": "weather-react",
@@ -197,6 +197,19 @@
         "min_intent_score": 80,
         "required_gates": ["proof", "cli_playtest"],
         "required_artifacts": ["Package.swift", "Sources/AppCore/AppModel.swift", "Sources/App/MainApp.swift", ".skyn3t-cli-playtest.json"]
+      }
+    },
+    {
+      "id": "cellar-companion-swift-ios",
+      "brief": "Build an offline-first iOS SwiftUI app that catalogs wine bottles in a cellar with vintage, quantity and storage location, scans a bottle barcode with a manual-entry alternative, and keeps personal tasting notes.",
+      "stack": "swift_ios",
+      "tags": ["mobile", "native", "inventory", "swiftui"],
+      "expectations": {
+        "expected_stack": "swift_ios",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check"],
+        "required_artifacts": ["App.xcodeproj/project.pbxproj", "App/App.swift", "App/ContentView.swift", "AppTests/AppTests.swift"]
       }
     },
     {

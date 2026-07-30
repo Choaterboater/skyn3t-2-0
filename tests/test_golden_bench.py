@@ -126,9 +126,9 @@ def test_packaged_suite_loads_strictly_with_stable_digest() -> None:
     second = load_suite()
 
     assert first.suite_id == "golden-v1"
-    assert len(first.cases) == 30
+    assert len(first.cases) == 31
     assert suite_digest(first) == suite_digest(second)
-    assert suite_digest(first) == "cc3b90106d0ce6b5915a3a5d324bd0f642740758ae8332fa9ff3a5f9e76eb1be"
+    assert suite_digest(first) == "96dd70d10360752da2aa4c121e8b62f54144bd1ca74f5f9302653acb66ece65e"
 
 
 @pytest.mark.parametrize(

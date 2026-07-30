@@ -56,6 +56,7 @@ EXPECTED_CASE_IDS = [
     "markdown-notes-tauri",
     "parcel-platformer-phaser",
     "focus-timer-swift",
+    "cellar-companion-swift-ios",
     "sqlite-tools-mcp",
     "document-chat-rag",
     "webhook-digest-workflow",
@@ -112,7 +113,7 @@ def test_suite_is_packaged_and_has_the_exact_v1_shape():
     assert SLUG_RE.fullmatch(suite["suite_id"])
     assert suite["name"].strip()
     assert suite["description"].strip()
-    assert len(suite["cases"]) == 30
+    assert len(suite["cases"]) == 31
     assert [case["id"] for case in suite["cases"]] == EXPECTED_CASE_IDS
 
 

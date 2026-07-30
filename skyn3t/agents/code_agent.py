@@ -889,6 +889,16 @@ class CodeAgent(BaseAgent):
                 code_bytes = self._code_bytes(disk)
                 present_planned = self._present_planned_files(worktree, expected_planned)
                 missing_planned = sorted(expected_planned - present_planned)
+                # Decoration the model planned but never wrote must not buy an
+                # agentic round-trip — see _synthesize_trivial_assets.
+                if missing_planned:
+                    synthesized = self._synthesize_trivial_assets(worktree, missing_planned)
+                    if synthesized:
+                        log.info("code_agent.trivial_assets_synthesized",
+                                 files=synthesized[:12])
+                        present_planned = self._present_planned_files(
+                            worktree, expected_planned)
+                        missing_planned = sorted(expected_planned - present_planned)
                 contract_gap = self._agentic_contract_gap(stack, disk)
                 under_delivered = (
                     not (disk and code_bytes >= threshold)
@@ -2001,6 +2011,72 @@ class CodeAgent(BaseAgent):
         "utils",
     })
     _AGENTIC_ALWAYS_ALLOWED_ROOTS = frozenset({"assets", "data", "public", "test", "tests"})
+
+    # Static decoration the model routinely PLANS and then does not write.
+    # Content here is deliberately neutral and unbranded — the point is that the
+    # reference resolves, not that the placeholder is good art.
+    _TRIVIAL_ASSET_BODIES: dict[str, str] = {
+        ".svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" '
+            'role="img" aria-label="App icon">\n'
+            '  <rect width="64" height="64" rx="12" fill="#1f2933"/>\n'
+            '  <circle cx="32" cy="32" r="14" fill="#e6e8eb"/>\n'
+            "</svg>\n"
+        ),
+        "robots.txt": "User-agent: *\nAllow: /\n",
+        ".nojekyll": "",
+        ".gitkeep": "",
+    }
+
+    @classmethod
+    def _synthesize_trivial_assets(cls, worktree: Path, missing: list[str]) -> list[str]:
+        """Create missing planned files that are static decoration, not logic.
+
+        A planned-but-unwritten file makes the delivery "under-delivered" and
+        buys another agentic round-trip. That is the right trade for a missing
+        module and a bad one for a favicon. Measured on a real build: both
+        best-of-N trajectories planned ``public/favicon.svg``, neither wrote it,
+        and each spent ~60s on a resume that did not produce it either — so the
+        round-trip was pure cost with no chance of success.
+
+        Only extensions/names whose content carries no app behaviour are
+        synthesized; anything else stays missing so the resume still happens.
+        Confined to the worktree, and never through a symlinked parent.
+        """
+        root = Path(worktree).resolve()
+        made: list[str] = []
+        for rel in missing:
+            parts = PurePosixPath(rel).parts
+            if not parts or ".." in parts:
+                continue
+            name = parts[-1]
+            body = cls._TRIVIAL_ASSET_BODIES.get(name)
+            if body is None:
+                body = cls._TRIVIAL_ASSET_BODIES.get(PurePosixPath(rel).suffix)
+            if body is None:
+                continue
+            target = root.joinpath(*parts)
+            try:
+                if not target.resolve().is_relative_to(root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            current = root
+            unsafe = False
+            for part in parts:
+                current = current / part
+                if current.is_symlink():
+                    unsafe = True
+                    break
+            if unsafe or target.exists():
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(body, encoding="utf-8")
+            except OSError:
+                continue
+            made.append(rel)
+        return made
 
     @staticmethod
     def _present_planned_files(worktree: Path, expected: set[str]) -> set[str]:

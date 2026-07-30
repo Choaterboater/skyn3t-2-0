@@ -91,9 +91,37 @@ _LLM_BACKENDS = frozenset(
     }
 )
 _EXECUTION_BACKENDS = frozenset({"auto", "docker", "inline"})
+
+
+def _is_secret_setting_name(name: str) -> bool:
+    """Whether a Settings field name must never be recorded into a profile."""
+    return name in _DEPLOY_TOKEN_FIELDS or bool(_SECRET_NAME_RE.search(name))
+
+#: The deploy-token Settings fields, mirroring the tuple in
+#: ``Settings.deploy_tokens``. Listed explicitly because the pattern below
+#: cannot catch them all: it matches ``<vendor>[_-]?token``, so
+#: ``fly_api_token`` / ``cloudflare_api_token`` / ``replicate_api_token`` slip
+#: through (vendor is followed by ``_api_token``, not ``_token``) and
+#: ``railway_token`` has no vendor entry at all. Those four were therefore
+#: written VERBATIM into artifacts/golden/run.json, violating this module's own
+#: "no secret is recordable" contract.
+_DEPLOY_TOKEN_FIELDS = (
+    "fly_api_token",
+    "vercel_token",
+    "cloudflare_api_token",
+    "netlify_auth_token",
+    "railway_token",
+    "render_api_key",
+)
 _SECRET_NAME_RE = re.compile(
     r"(?:secret|password|api[_-]?key|credential|"
-    r"(?:access|refresh|auth|github|replicate|vercel|cloudflare|fly)[_-]?token)",
+    # The optional `api` segment is load-bearing: without it the vendor
+    # alternation matched `<vendor>_token` but NOT `<vendor>_api_token`, so
+    # fly_api_token, cloudflare_api_token and replicate_api_token were recorded
+    # verbatim. Deliberately NOT a bare `token` substring rule — that would also
+    # swallow `daily_token_cap`, a real control the fingerprint must keep.
+    r"(?:access|refresh|auth|github|replicate|vercel|cloudflare|fly)"
+    r"(?:[_-]?api)?[_-]?token)",
     re.I,
 )
 _REQUIRED_SAFETY_PROFILE: dict[str, bool | int | float | str] = {
@@ -138,6 +166,11 @@ _REQUIRED_SAFETY_PROFILE: dict[str, bool | int | float | str] = {
     "isolated_state": True,
     "shared_daily_budget": True,
     "skills_hub_paths": "",
+    # The bench measures the blocking posture. Under "lab" a heuristic finding
+    # records instead of flipping the verdict, so a lab-posture bench would
+    # silently score a different contract than the one it claims to gate.
+    "build_posture": "release",
+    "blocking_gates": "",
 }
 _NON_RESULT_SETTING_NAMES = frozenset(
     {
@@ -815,7 +848,7 @@ def _normalize_profile(profile: Mapping[str, Any] | None) -> dict[str, Any]:
     for key in sorted(source):
         if not isinstance(key, str) or not key or len(key) > 80:
             raise GoldenBenchError("safety profile keys must be short non-empty strings")
-        if _SECRET_NAME_RE.search(key):
+        if _is_secret_setting_name(key):
             raise GoldenBenchError(f"secret-like safety profile key is not recordable: {key!r}")
         out[key] = _profile_value(source[key], label=key)
     if len(canonical_json_bytes(out)) > _MAX_PROFILE_BYTES:
@@ -839,7 +872,7 @@ def benchmark_settings_profile(
         if (
             name in _NON_RESULT_SETTING_NAMES
             or name in _REQUIRED_SAFETY_PROFILE
-            or _SECRET_NAME_RE.search(name)
+            or _is_secret_setting_name(name)
         ):
             continue
         profile[name] = _profile_value(value, label=name)
@@ -1057,12 +1090,14 @@ def isolated_settings(
         "model_evolution": False,
         "auto_route": False,
         "auth_token": "",
-        "cloudflare_api_token": "",
-        "fly_api_token": "",
         "github_token": "",
         "replicate_api_token": "",
         "skills_hub_paths": "",
-        "vercel_token": "",
+        # Driven from the shared tuple rather than hand-listed: the hand-listed
+        # version blanked only 3 of the 6 deploy tokens, so live Netlify,
+        # Railway and Render credentials were carried into every bench build
+        # subprocess with allow_remote_deploy=False as the only defence.
+        **{name: "" for name in _DEPLOY_TOKEN_FIELDS},
     }
     if llm_backend == "stub":
         updates.update(

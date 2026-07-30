@@ -449,6 +449,9 @@ def test_isolated_settings_move_all_mutable_state_and_disable_side_effects(tmp_p
     assert isolated.security_check_enabled is True
     assert isolated.run_generated_tests is True
     assert isolated.run_generated_build is True
+    # The bench must measure the blocking posture, never the lab default.
+    assert isolated.build_posture == "release"
+    assert isolated.blocking_gates == ""
     assert isolated.github_token == ""
     assert isolated.skills_hub_paths == ""
     assert isolated.openrouter_api_key == ""
@@ -458,6 +461,50 @@ def test_isolated_settings_move_all_mutable_state_and_disable_side_effects(tmp_p
     assert profile["daily_usd_cap"] == base.daily_usd_cap
     assert profile["daily_token_cap"] == base.daily_token_cap
     assert profile["game_art_source"] == "offline"
+
+
+def test_no_credential_is_ever_recorded_into_a_benchmark_profile(tmp_path):
+    """No secret may reach artifacts/golden/run.json.
+
+    The name filter matched `<vendor>_token` but not `<vendor>_api_token`, so
+    fly / cloudflare / replicate tokens were written verbatim. Asserted over
+    real Settings values rather than a hand-list so a NEW token field cannot
+    quietly reappear in the profile.
+    """
+    secret = "SENTINEL-DO-NOT-RECORD"
+    base = Settings(
+        fly_api_token=secret, vercel_token=secret, cloudflare_api_token=secret,
+        netlify_auth_token=secret, railway_token=secret, render_api_key=secret,
+        replicate_api_token=secret, github_token=secret, openrouter_api_key=secret,
+    )
+
+    profile = benchmark_settings_profile(base, llm_backend="stub")
+
+    flat = json.dumps(profile)
+    assert secret not in flat
+    # …and a genuine, non-secret control is still recorded.
+    assert "daily_token_cap" in profile
+
+
+def test_isolated_settings_blanks_every_deploy_token(tmp_path):
+    """Bench subprocesses must not inherit live deploy credentials.
+
+    Only 3 of the 6 were blanked, so Netlify/Railway/Render creds rode into
+    every bench build with allow_remote_deploy=False as the sole defence.
+    """
+    secret = "SENTINEL-DO-NOT-LEAK"
+    base = Settings(
+        fly_api_token=secret, vercel_token=secret, cloudflare_api_token=secret,
+        netlify_auth_token=secret, railway_token=secret, render_api_key=secret,
+        replicate_api_token=secret,
+    )
+
+    isolated = isolated_settings(
+        base, tmp_path, llm_backend="stub", execution_backend="inline"
+    )
+
+    assert isolated.deploy_tokens == {}
+    assert isolated.replicate_api_token == ""
 
 
 @pytest.mark.parametrize(

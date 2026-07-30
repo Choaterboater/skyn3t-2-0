@@ -86,6 +86,27 @@ class MessagingService:
         await self.notify(text)
 
     async def notify(self, text: str) -> int:
+        """Send ``text`` to every configured channel. Returns the send count.
+
+        The text is scrubbed before it leaves the process. This is the only
+        egress path for build notifications, and build output routinely
+        contains provider tokens (``sk-``, ``ghp_``, ``xox``, ``AKIA``) picked
+        up from logs and error strings. Scrubbing lived only in
+        :class:`~skyn3t.integrations.gateway.DeliveryGateway`, which nothing
+        calls — so the guarantee existed in a dead path while the live one
+        egressed secrets to Telegram/Discord/Slack unredacted.
+        """
+        try:
+            from skyn3t.security.secrets import scrub_text
+
+            text = scrub_text(text)
+        except Exception:  # noqa: BLE001 - fail CLOSED, see below
+            # Deliberately not the "degrade, don't crash" fallback of returning
+            # the raw text. Rule #6 protects the BUILD; dropping a chat
+            # notification breaks nothing, whereas egressing an unscrubbed token
+            # to a third-party service is irreversible. Send a safe stub instead.
+            log.warning("integrations.scrub_failed_sending_placeholder")
+            text = "SkyN3t build notification (withheld: redaction unavailable)"
         sent = 0
         for name, ch in self.channels.items():
             target = self._target(name)

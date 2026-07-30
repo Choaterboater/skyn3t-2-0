@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from skyn3t.core.events import EventType
+from skyn3t.exec_paths import resolve_executable
 from skyn3t.security.secrets import filter_env
 from skyn3t.studio.layout_profiles import LayoutProfile, profile_from_payload
 
@@ -523,7 +524,16 @@ def _make_cli_vision_fn(settings: Any, provider: str) -> VisionFn | None:
         # degrades to an unparseable refusal string instead of a verdict.
         cwd = os.path.dirname(image_path) or None
         try:
-            out = subprocess.run([provider, "-p", full, *_no_mcp_args(settings, provider)],
+            # Resolve at the exec boundary: a bare "claude" is unrunnable on
+            # Windows (npm ships claude.cmd/.ps1 and CreateProcess only appends
+            # ".exe"), and the WinError 2 is swallowed by the except below —
+            # so the vision judge returned "" and the visual-proof gate
+            # silently soft-skipped instead of ever running. Resolved here
+            # rather than in the factory so a CLI installed later is still
+            # found, and so the shutil.which() availability guard above keeps
+            # its meaning.
+            executable = resolve_executable(provider)
+            out = subprocess.run([executable, "-p", full, *_no_mcp_args(settings, provider)],
                                  capture_output=True, text=True, timeout=120,
                                  cwd=cwd, env=filter_env())
             return out.stdout or ""

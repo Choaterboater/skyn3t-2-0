@@ -150,6 +150,11 @@ class ModelTournament:
             return False
 
     # ---- recording ----------------------------------------------------
+    # Competitor ids are already unambiguous across providers without extra
+    # namespacing: a CLI result is labelled ``<provider>-cli[:model]`` by
+    # ``LLMClient._cli`` and an OpenRouter result is a ``vendor/model`` id, so
+    # the two families cannot collide. Multi-provider fan-out therefore needs no
+    # change here — the distinct labels arrive on their own.
     def _stat(self, bucket: str, model: str) -> ModelStats:
         board = self._boards.setdefault(bucket, {})
         if model not in board:

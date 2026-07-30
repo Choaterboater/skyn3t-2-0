@@ -28,6 +28,7 @@ from time import time
 import structlog
 
 from skyn3t.config.settings import Settings, get_settings
+from skyn3t.exec_paths import resolve_executable
 from skyn3t.security.secrets import SecretsStore, filter_env, scrub_text
 
 log = structlog.get_logger(__name__)
@@ -259,6 +260,16 @@ class SandboxRunner:
     # ---- shared exec -----------------------------------------------------
     async def _exec(self, argv, *, cwd, timeout, backend, env=None) -> SandboxResult:
         start = time()
+        argv = list(argv)
+        if argv:
+            # create_subprocess_exec bypasses the shell, so on Windows a .cmd
+            # shim (npm, npx, yarn) or a .ps1 launcher is not executable and
+            # raises WinError 2 — reported here as exit 127 "exec failed",
+            # indistinguishable from a genuinely missing tool. That is what made
+            # `npm install` fail on a host where npm works fine, which skipped
+            # the generated tests and native build and capped every build's
+            # score as a "degraded proof environment".
+            argv[0] = resolve_executable(argv[0])
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,

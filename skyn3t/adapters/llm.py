@@ -13,11 +13,17 @@ the :class:`ModelRouter`, then dispatches to a backend:
   "brief -> runnable app" demonstrable out of the box.
 
 Backend selection (``settings.llm_backend``): ``auto`` is intentionally local
-only: it resolves to Codex CLI when available and otherwise stays offline. It
-never selects OpenRouter merely because a key happens to be configured. Hosted
-providers remain available only through an explicit backend selection. Every
+only. It walks ``settings.auto_cli_priority`` (default ``codex,claude,kimi``)
+and resolves to the first signed-in CLI, otherwise staying offline on the stub.
+It never selects OpenRouter merely because a key happens to be configured — a
+key is configuration, not consent to spend; hosted routing requires either an
+explicit ``openrouter`` backend or the ``auto_allow_openrouter`` opt-in. Every
 call is metered and checked against budget caps — design rules #5 (cheap by
 default) and #6 (degrade, don't crash).
+
+A per-call ``provider_override`` pins one request to a specific backend
+regardless of the above, which is what lets a Mixture-of-Agents council fan out
+across several providers at once (see :mod:`skyn3t.intelligence.council`).
 """
 
 from __future__ import annotations
@@ -51,9 +57,12 @@ from typing import Any
 import httpx
 import structlog
 
+from skyn3t.adapters.provider_limits import provider_slot, resolve_provider_limit
+from skyn3t.adapters.reasoning_timeouts import apply_reasoning_floor
 from skyn3t.agents._common import confined_path
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.config.settings import Settings, get_settings
+from skyn3t.exec_paths import executable_shim as _executable_shim
 from skyn3t.core.model_router import ModelRouter, Tier
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 from skyn3t.persisted_write import (
@@ -159,23 +168,50 @@ _CLI_COMMANDS: dict[str, list[str]] = {
         "codex", "exec", "--ephemeral", "--sandbox", "read-only",
         "--color", "never", "--skip-git-repo-check",
     ],
-    "kimi": [
-        "kimi", "--print", "--output-format", "text",
-        "--final-message-only", "--prompt",
-    ],
-    "copilot": ["copilot", "-p"],
+    "kimi": ["kimi", "--output-format", "text"],
+    "copilot": ["copilot"],
 }
+# Flags whose VALUE is the prompt. These must be the last argv before the
+# prompt itself, otherwise any flag appended in between (``--model``, the
+# MCP-disabling args) is consumed as the prompt's value and the real prompt
+# becomes a stray positional — which is exactly how ``copilot -p --no-mcp
+# "<prompt>"`` produced "Invalid command format". ``claude``'s ``-p`` is a
+# boolean print flag and ``codex`` reads the prompt from stdin, so neither
+# appears here.
+_CLI_PROMPT_FLAG: dict[str, str] = {
+    "kimi": "--prompt",
+    "copilot": "-p",
+}
+# CLIs that receive the prompt over STDIN instead of as an argv element.
+#
+# This is a correctness requirement on Windows, not an optimisation. npm ships
+# ``claude`` as ``claude.CMD``, a batch shim, so every argument is re-parsed by
+# cmd.exe — and a multi-kilobyte, multi-line prompt gets mangled or truncated
+# there. The observed symptom was an MoA advisor receiving only the leading
+# system-prompt portion and replying "Ready as reference advisor. Send me the
+# task" instead of advising, which then counted as a SUCCESSFUL advisor and was
+# injected into the codegen prompt as if it were real guidance. Codex already
+# used stdin for the same reason (command-line length ceiling).
+_CLI_STDIN_PROMPT: frozenset[str] = frozenset({"codex", "claude"})
 KNOWN_CLI_PROVIDERS = ("codex", "claude", "copilot", "kimi")
 SUPPORTED_LLM_BACKENDS = (
     "auto", "stub", "openrouter",
     *(f"{provider}_cli" for provider in KNOWN_CLI_PROVIDERS),
 )
 _KNOWN_CLI_PROVIDERS = KNOWN_CLI_PROVIDERS
-# ``auto`` is the unattended/default execution policy. Keeping this separate
-# from ``cli_llm_provider`` is deliberate: the latter can still be used by
-# manually selected tooling (for example a vision workflow), but automatic
-# builds must never jump to a hosted API or an arbitrary signed-in CLI.
+# The CLI an unattended build REQUIRES on PATH before it will run (the routing
+# lock at ``explicit_routing_lock_error``). This is a separate question from
+# which CLI ``auto`` then executes on — that is ``auto_cli_priority`` below.
+# Keeping both separate from ``cli_llm_provider`` is deliberate: the latter is
+# for manually selected tooling (for example a vision workflow), while automatic
+# builds must never jump to a hosted API without explicit consent.
 _AUTO_EXECUTION_CLI_PROVIDER = "codex"
+# Fallback order when ``settings.auto_cli_priority`` is empty or all-unknown.
+# Codex leads only because it was the historical single choice, so existing
+# hosts see no behaviour change; nothing about the design privileges it.
+# ``copilot`` is intentionally not in the default chain — it stays fully
+# supported and explicitly selectable, just not auto-preferred.
+_AUTO_EXECUTION_CLI_PRIORITY: tuple[str, ...] = ("codex", "claude", "kimi")
 _CLI_DISPLAY_NAMES = {
     "codex": "Codex CLI",
     "claude": "Claude Code CLI",
@@ -1578,6 +1614,7 @@ class LLMClient:
         """
         provider = str(provider or "").strip().lower()
         resolved = str(shutil.which(provider) or "")
+        resolved = cls._windows_executable_shim(resolved)
         if provider != "codex" or os.name != "nt":
             return resolved
 
@@ -1611,6 +1648,17 @@ class LLMClient:
             return version, modified
 
         return str(max(candidates, key=release_key))
+
+    @classmethod
+    def _windows_executable_shim(cls, resolved: str) -> str:
+        """Swap a non-executable Windows launcher for a runnable sibling.
+
+        Thin wrapper over :func:`skyn3t.exec_paths.executable_shim`, kept as a
+        classmethod because tests and callers reference it here. The shared
+        helper exists because this bug appeared in three unrelated places —
+        the coding CLIs, the vision CLI, and ``npm`` inside the sandbox.
+        """
+        return _executable_shim(resolved)
 
     @classmethod
     def _cli_available(cls, provider: str) -> bool:
@@ -1702,6 +1750,66 @@ class LLMClient:
             "cost_usd_known": False,
         }
 
+    def _auto_cli_priority(self) -> tuple[str, ...]:
+        """``auto``'s CLI preference order, filtered to known providers.
+
+        Unknown entries are dropped with a warning rather than raising: a typo in
+        one entry must not take unattended builds offline.
+        """
+        raw = str(getattr(self.settings, "auto_cli_priority", "") or "")
+        order: list[str] = []
+        for token in raw.split(","):
+            name = token.strip().lower().removesuffix("_cli").removesuffix("-cli")
+            if not name:
+                continue
+            if name not in _KNOWN_CLI_PROVIDERS:
+                log.warning("llm.auto_priority_unknown_provider", provider=name)
+                continue
+            if name not in order:
+                order.append(name)
+        return tuple(order) or _AUTO_EXECUTION_CLI_PRIORITY
+
+    def _auto_cli_provider(self) -> str:
+        """First signed-in CLI in priority order, or "" when none is available."""
+        for provider in self._auto_cli_priority():
+            if self._cli_available(provider):
+                return provider
+        return ""
+
+    def _resolve_backend(self, pref: str) -> str:
+        """Map an explicit backend preference to a concrete backend.
+
+        Shared by the :attr:`backend` property and ``provider_override`` so a
+        slot resolves through exactly the same availability rules as a globally
+        selected backend — an unavailable provider degrades to ``stub``, never to
+        a DIFFERENT provider (silently substituting one would make a
+        multi-provider fan-out's results uninterpretable).
+        """
+        pref = str(pref or "").strip().lower()
+        if pref not in SUPPORTED_LLM_BACKENDS:
+            return "stub"
+        if pref == "stub":
+            return "stub"
+        if pref == "openrouter":
+            return "openrouter" if openrouter_key(self.settings) else "stub"
+        if pref.endswith("_cli"):
+            prov = pref[:-4]
+            return f"{prov}_cli" if self._cli_available(prov) else "stub"
+        # ``auto``: first signed-in CLI in the operator's priority order. This is
+        # deliberately NOT Codex-only any more — Codex merely leads the default
+        # list so existing hosts see no change. An OpenRouter key is still
+        # configuration, not consent to spend: hosted fallback requires the
+        # explicit ``auto_allow_openrouter`` opt-in, otherwise auto degrades to
+        # the offline stub exactly as before.
+        provider = self._auto_cli_provider()
+        if provider:
+            return f"{provider}_cli"
+        if bool(getattr(self.settings, "auto_allow_openrouter", False)) and openrouter_key(
+            self.settings
+        ):
+            return "openrouter"
+        return "stub"
+
     @property
     def backend(self) -> str:
         """Resolve the active backend from policy + availability."""
@@ -1713,23 +1821,21 @@ class LLMClient:
                 and effective[:-4] in _KNOWN_CLI_PROVIDERS
             ):
                 return effective
-        pref = str(self.settings.llm_backend or "auto").strip().lower()
-        if pref not in SUPPORTED_LLM_BACKENDS:
-            return "stub"
-        if pref == "stub":
-            return "stub"
-        if pref == "openrouter":
-            return "openrouter" if openrouter_key(self.settings) else "stub"
-        if pref.endswith("_cli"):
-            prov = pref[:-4]
-            return f"{prov}_cli" if self._cli_available(prov) else "stub"
-        # Auto is intentionally a local Codex-only policy. An OpenRouter key is
-        # configuration, not consent to spend: hosted routing requires the
-        # operator to explicitly select ``openrouter``. Do not fall through to
-        # other CLIs either; a different CLI is likewise an explicit choice.
-        if self._cli_available(_AUTO_EXECUTION_CLI_PROVIDER):
-            return f"{_AUTO_EXECUTION_CLI_PROVIDER}_cli"
-        return "stub"
+        return self._resolve_backend(str(self.settings.llm_backend or "auto"))
+
+    def _effective_backend(self, provider_override: str | None = None) -> str:
+        """Backend for ONE call, honouring a per-call provider pin.
+
+        ``provider_override`` deliberately outranks the ``_BUILD_ROUTING`` lock.
+        That lock exists to keep the ACTING build pinned to one route; advisor /
+        ensemble calls are side-calls whose entire purpose is to span providers,
+        and Hermes resolves each MoA slot's provider surface independently for
+        the same reason (``agent/moa_loop.py:313-338``).
+        """
+        pinned = str(provider_override or "").strip().lower()
+        if not pinned:
+            return self.backend
+        return self._resolve_backend(pinned)
 
     @staticmethod
     def _execution_model_label(backend: str, requested_model: str = "") -> str:
@@ -2332,7 +2438,15 @@ class LLMClient:
         task_type: str = "",
         model_override: str | None = None,
         images: list[str] | None = None,
+        provider_override: str | None = None,
     ) -> LLMResult:
+        """Single completion.
+
+        ``provider_override`` pins THIS call to one backend ("claude_cli",
+        "openrouter", ...) independently of the globally active one, which is
+        what lets an ensemble fan out across several providers at once. Omitted
+        (the default) the call is byte-for-byte what it was before.
+        """
         # Refuse before dispatch when a persisted/shared counter is already over
         # cap. The post-record check still catches the call that crosses a cap.
         self.budget.check()
@@ -2343,7 +2457,7 @@ class LLMClient:
         # and normally bypasses the router; the (tier, task_type) bucket is
         # unchanged. ``free_only`` is the hard cost guard: a paid manual/preferred
         # pin is ignored unless it is itself an OpenRouter ":free" model.
-        backend = self.backend
+        backend = self._effective_backend(provider_override)
         requested_override = (model_override or "").strip()
         # An attached image only matters to the openrouter backend (the only one
         # that speaks the multimodal message shape). stub/CLI ignore it and behave
@@ -2379,7 +2493,13 @@ class LLMClient:
             # session. Consulting the hosted ModelRouter here neither affects
             # execution nor produces useful evidence; it only led Codex runs to
             # be labelled with a cached OpenRouter model such as GLM.
-            result = await self._cli(backend[:-4], prompt, system, json_mode, images)
+            # A CLI normally owns its model selection through the signed-in
+            # session, but an explicitly PINNED slot (claude_cli:sonnet) must
+            # actually reach that model — otherwise two advisor slots on one
+            # provider silently collapse to the same model.
+            result = await self._cli(
+                backend[:-4], prompt, system, json_mode, images, model=requested_override
+            )
         else:
             model = self._resolve_pinned_model(
                 tier=tier,
@@ -2535,11 +2655,17 @@ class LLMClient:
             text=fallback.text,
         )
 
-    async def _cli(self, provider, prompt, system, json_mode, images=None) -> LLMResult:
+    async def _cli(self, provider, prompt, system, json_mode, images=None, *,
+                   model: str = "") -> LLMResult:
         """Run a locally-installed coding-agent CLI in headless print mode.
 
         Degrades to the stub backend (never raises) if the CLI fails or times
         out, so a build keeps moving (design rule #6).
+
+        ``model`` pins the CLI's model (``--model <m>``) the same way
+        ``agentic_build`` already does. Without it a pinned slot such as
+        ``claude_cli:sonnet`` would silently run the CLI's default model, and two
+        advisor slots on one provider would collapse into the same model.
         """
         full = prompt if not system else f"{system}\n\n{prompt}"
         # build-from-image: reference the image FILE(S) so the CLI reads them as a
@@ -2562,16 +2688,28 @@ class LLMClient:
         # The Windows standalone substitution is a Codex-specific sandbox
         # recovery. Other CLIs keep their documented command token so their
         # invocation contracts remain stable.
-        command = self._cli_executable(provider) if provider == "codex" else provider
-        command = command or provider
+        # Resolve a real executable for EVERY provider, not just Codex. On
+        # Windows a bare "claude" is unrunnable (npm ships claude.ps1, and
+        # CreateProcess cannot exec a PowerShell script) — see
+        # _windows_executable_shim.
+        command = self._cli_executable(provider) or provider
         command_template = list(_CLI_COMMANDS.get(provider, [provider, "-p"]))
         if command_template:
             command_template[0] = command
+        # Mirrors agentic_build's per-call pin (see its ``model_args``). Ignored
+        # when no model is given, so the CLI's own default still applies.
+        model_pin = str(model or "").strip()
+        model_args = (
+            ["--model", model_pin]
+            if (model_pin and provider in _KNOWN_CLI_PROVIDERS)
+            else []
+        )
         argv = [
             *command_template,
+            *model_args,
             *_no_mcp_args(self.settings, provider),
         ]
-        stdin_prompt = provider == "codex"
+        stdin_prompt = provider in _CLI_STDIN_PROMPT
         if provider == "codex":
             for path in paths:
                 argv.extend(("--image", path))
@@ -2579,26 +2717,42 @@ class LLMClient:
             # architecture/review prompts. A literal '-' is Codex's documented
             # noninteractive stdin prompt form.
             argv.append("-")
+        elif stdin_prompt:
+            pass  # prompt goes over stdin; no positional argument
         else:
+            # The prompt flag (when the provider has one) goes LAST, immediately
+            # before the prompt, so nothing can be swallowed as its value.
+            prompt_flag = _CLI_PROMPT_FLAG.get(provider)
+            if prompt_flag:
+                argv.append(prompt_flag)
             argv.append(full)
         proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,  # own process group -> killable as a tree
-                env=_cli_subprocess_env(),
-            )
-            communicate = (
-                proc.communicate(full.encode("utf-8"))
-                if stdin_prompt
-                else proc.communicate()
-            )
-            out, err = await asyncio.wait_for(
-                communicate, timeout=self.settings.cli_llm_timeout
-            )
+            # Admission is taken BEFORE the subprocess spawns and before the
+            # wait_for clock starts: if queue time counted against the model's
+            # timeout, a queued call would get a truncated budget and look like a
+            # model failure rather than a busy machine.
+            async with provider_slot(
+                f"{provider}_cli", resolve_provider_limit(self.settings, f"{provider}_cli")
+            ):
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,  # own process group -> killable as a tree
+                    env=_cli_subprocess_env(),
+                )
+                communicate = (
+                    proc.communicate(full.encode("utf-8"))
+                    if stdin_prompt
+                    else proc.communicate()
+                )
+                out, err = await asyncio.wait_for(
+                    communicate, timeout=apply_reasoning_floor(
+                        self.settings.cli_llm_timeout, model_pin
+                    )
+                )
         except TimeoutError:
             log.warning("llm.cli_timeout", provider=provider, timeout=self.settings.cli_llm_timeout)
             await self._terminate(proc)  # don't orphan the CLI subprocess
@@ -2642,8 +2796,11 @@ class LLMClient:
         if json_mode:
             text = _strip_code_fences(text)
         approx_p = max(1, len(full) // 4)
+        # Only a PINNED run reports the model, so the unpinned label stays
+        # exactly "<provider>-cli" as every existing consumer expects.
+        label = f"{provider}-cli:{model_pin}" if model_pin else f"{provider}-cli"
         return LLMResult(
-            text=text, model=f"{provider}-cli", backend=f"{provider}_cli",
+            text=text, model=label, backend=f"{provider}_cli",
             prompt_tokens=approx_p, completion_tokens=max(1, len(text) // 4), cost_usd=0.0,
             cost_source="not_reported_by_cli", status="cli_response",
         )
@@ -3589,8 +3746,15 @@ class LLMClient:
         # --setting-sources project isolates codegen from the host's Claude Code
         # config (output-style plugins, hooks) so they can't corrupt the build.
         cli_command = self._cli_executable(provider) or provider
+        # Providers in _CLI_STDIN_PROMPT take the prompt over stdin and must NOT
+        # carry it on argv — see the constant's docstring. This matters most
+        # here: the codegen prompt is the largest in the system, so a cmd.exe
+        # shim truncating it fails silently, returning a plausible short reply
+        # that counts as a successful build.
+        stdin_prompt = provider in _CLI_STDIN_PROMPT
         argv = {
-            "claude": ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
+            "claude": [cli_command, "-p", *([] if stdin_prompt else [prompt]),
+                       "--permission-mode", "acceptEdits",
                        "--setting-sources", "project", *model_args, *stream_args, *nm],
             "codex": [
                 cli_command, "exec", "--ephemeral", "--sandbox", "workspace-write",
@@ -3598,15 +3762,15 @@ class LLMClient:
                 *codex_windows_sandbox, *cortex_codex_sandbox,
                 "--cd", workdir, *model_args, *nm, "-",
             ],
-            # Kimi requires --print for noninteractive and stream-json modes.
-            # It has no documented disable-all ambient-MCP flag in 1.41.
-            "kimi": ["kimi", "--print", "--prompt", prompt, *model_args, *stream_args],
+            # Kimi's noninteractive form is `-p/--prompt <text>`; it has no
+            # `--print` flag (passing one exits nonzero with "unknown option"),
+            # and no documented disable-all ambient-MCP flag.
+            "kimi": [cli_command, "--prompt", prompt, *model_args, *stream_args],
             "copilot": [
-                "copilot", "-p", prompt, "--allow-all-tools", "--no-ask-user",
+                cli_command, "-p", prompt, "--allow-all-tools", "--no-ask-user",
                 "--no-auto-update", "--no-custom-instructions", *model_args, *nm,
             ],
-        }.get(provider, [provider, "-p", prompt])
-        stdin_prompt = provider == "codex"
+        }.get(provider, [cli_command, "-p", prompt])
         # This is deliberately a compact execution receipt, not a raw CLI log.
         # The latter can contain source files, user prompts, or tool output and
         # does not belong in a durable build manifest.
@@ -4013,7 +4177,15 @@ class LLMClient:
                 body["max_tokens"] = int(max_tokens)
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
-            async with httpx.AsyncClient(timeout=120) as client:
+            # A reasoning model can think silently for longer than the flat 120s
+            # this used to hard-code, dying mid-think -> transport timeout ->
+            # classified transient -> every retry burns the same way. The floor
+            # only ever RAISES the ceiling, and only for known slow families.
+            request_timeout = apply_reasoning_floor(120, m)
+            async with (
+                provider_slot("openrouter", resolve_provider_limit(self.settings, "openrouter")),
+                httpx.AsyncClient(timeout=request_timeout) as client,
+            ):
                 resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
                 # HTTP errors (429/5xx retryable, 404/invalid-model -> failover)
                 # raise here; the resilience layer retries or fails over, and a

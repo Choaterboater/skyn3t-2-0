@@ -331,7 +331,11 @@ def test_candidate_sandbox_denies_network_strips_credentials_and_suppresses_outp
     profile = captured["argv"][2]
     assert captured["argv"][-2:] == ("pytest", "-q")
     assert "(deny network*)" in profile
-    assert str(tmp_path.resolve()) in profile
+    # The profile is a Seatbelt S-expression, so the path is ESCAPED going in.
+    # Asserting the raw path passed only because POSIX paths contain no
+    # backslashes; on a Windows temp path the (correct) escaping made this fail
+    # and the test read as a platform gap rather than a bad assertion.
+    assert service._seatbelt_string(str(tmp_path.resolve())) in profile
     assert captured["env"]["HOME"] != str(Path.home())
     assert "SSH_AUTH_SOCK" not in captured["env"]
     assert "EXAMPLE_API_KEY" not in captured["env"]
@@ -339,3 +343,12 @@ def test_candidate_sandbox_denies_network_strips_credentials_and_suppresses_outp
     assert result.stdout.startswith("[candidate output suppressed:")
     assert "secret-looking" not in result.stdout
     assert "diagnostic text" not in result.stderr
+
+
+def test_seatbelt_string_escapes_backslashes_and_quotes():
+    """Pin the escaping contract the profile assertion above depends on."""
+    from skyn3t.cortex import candidate_service as service
+
+    assert service._seatbelt_string(r"C:\a") == r"C:\\a"
+    assert service._seatbelt_string('say "hi"') == 'say \\"hi\\"'
+    assert service._seatbelt_string("/tmp/plain") == "/tmp/plain"

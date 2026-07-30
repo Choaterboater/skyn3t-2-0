@@ -33,6 +33,11 @@ from skyn3t.security.secrets import SecretsStore, filter_env, scrub_text
 
 log = structlog.get_logger(__name__)
 
+# Full-text fallback warnings already logged in this process, keyed by message
+# (the text differs with/without the network clause). This compacts the LOG
+# only — warnings.warn still fires per exec, and every exec still logs.
+_FALLBACK_LOGGED: set[str] = set()
+
 # Optional heavy dependency — guarded so the module always imports (rule #3).
 try:  # pragma: no cover - import guard
     import docker as _docker  # type: ignore
@@ -243,7 +248,16 @@ class SandboxRunner:
             )
         # LOUD warning — never a silent host exec (spec requirement).
         warnings.warn(warning, RuntimeWarning, stacklevel=2)
-        log.warning("sandbox.fallback.subprocess", message=warning)
+        # Every exec is still recorded, so the "never silent" guarantee holds and
+        # res.warning below carries the full text on each result. Only the
+        # repeated full-text LOG line is compacted: on a host where Docker is
+        # permanently absent this fired for every proof command and made up a
+        # third of a real build log, burying the lines an operator needs.
+        if warning in _FALLBACK_LOGGED:
+            log.info("sandbox.fallback.subprocess", repeat=True)
+        else:
+            _FALLBACK_LOGGED.add(warning)
+            log.warning("sandbox.fallback.subprocess", message=warning)
         if isinstance(command, str):
             argv = ["sh", "-lc", command]
         else:

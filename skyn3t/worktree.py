@@ -160,6 +160,7 @@ def _is_git_repo(path: Path) -> bool:
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=10,
         )
         return out.returncode == 0 and out.stdout.strip() == "true"
@@ -199,6 +200,7 @@ def create_worktree(
                 ["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt_path), "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8", errors="replace",
                 timeout=60,
                 check=True,
             )
@@ -638,6 +640,7 @@ def cleanup_worktree(worktree: Worktree) -> None:
                 ["git", "-C", str(worktree.base_repo), "worktree", "remove", "--force", str(worktree.path)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8", errors="replace",
                 timeout=60,
             )
             if worktree.branch:
@@ -645,6 +648,7 @@ def cleanup_worktree(worktree: Worktree) -> None:
                     ["git", "-C", str(worktree.base_repo), "branch", "-D", worktree.branch],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8", errors="replace",
                     timeout=30,
                 )
         if worktree.path.exists():

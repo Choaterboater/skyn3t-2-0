@@ -408,6 +408,12 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
             cmd, cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, text=True, timeout=timeout,
+            # npm emits non-ASCII (package names, box glyphs). Without an
+            # explicit codec, text mode decodes as cp1252 on Windows; that
+            # fails inside subprocess's reader THREAD, which does not
+            # propagate — stdout silently becomes None and the log tail below
+            # goes empty, destroying the npm error the fix loop needs.
+            encoding="utf-8", errors="replace",
             env=npm_env(),
         )
     except subprocess.TimeoutExpired:

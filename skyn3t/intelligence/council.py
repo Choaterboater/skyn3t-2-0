@@ -265,7 +265,14 @@ class CouncilEngine:
         # A slot whose provider was unavailable degrades to the stub inside
         # complete(). That canned text must NOT reach the codegen prompt dressed
         # up as advice, so treat it as a failed advisor rather than a success.
-        if backend == "stub" and slot.provider not in ("", "stub"):
+        # An empty provider means "inherit the active backend". That used to be
+        # exempted here, on the reasoning that enabled() already refuses to run
+        # on a stub backend — but _cli_available is TTL-cached, so the backend
+        # can resolve to stub BETWEEN that check and this call. The exemption
+        # then let `[stub:<model>] Offline response.` through as ok=True advice,
+        # because _stub() returns the default status="succeeded". Only a slot
+        # that explicitly ASKS for stub may produce stub text.
+        if backend == "stub" and slot.provider != "stub":
             out.error = "provider unavailable (degraded to stub)"
             log.warning("moa.advisor_unavailable", label=label)
             return out

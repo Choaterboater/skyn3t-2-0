@@ -1409,7 +1409,19 @@ class CodeAgent(BaseAgent):
             "Use these real assets; do not invent stock-image URLs, remote CDNs, or missing /assets paths.",
         ]
         if hero:
-            parts.append(f"Hero image: `{hero}`. Render it visibly on the primary page.")
+            # "Render it visibly" was the previous wording and was not enough.
+            # Measured on a delivered site: the model wired the favicon and the
+            # og:image — both mechanical one-liners in <head> — and skipped the
+            # hero, the only asset needing a layout decision in the page body.
+            # So name the element, the placement and the alt text, and state the
+            # consequence, rather than describing the intent.
+            parts.append(
+                f"Hero image: `{hero}`. The primary page MUST render an `<img>` tag "
+                f"(or this stack's image component) whose src is `{hero}`, placed in "
+                "the above-the-fold hero/banner section, with descriptive alt text. "
+                "Wiring it into metadata alone does NOT satisfy this: a page that "
+                "never displays the hero fails acceptance."
+            )
         if og:
             parts.append(f"Open Graph image: `{og}`. Wire it into metadata when the stack supports it.")
         if favicon:

@@ -199,7 +199,7 @@ def create_app(
             if full_path and candidate.is_file():
                 return FileResponse(str(candidate))
             return HTMLResponse(
-                index_html.read_text(),
+                index_html.read_text(encoding="utf-8"),
                 headers={"Cache-Control": "no-cache"},
             )
     else:

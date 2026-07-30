@@ -540,7 +540,7 @@ class SkillLibrary:
             return
         for f in sorted(self.dir.glob("*.md")):
             try:
-                sk = parse_skill(f.read_text(), fallback_slug=f.stem)
+                sk = parse_skill(f.read_text(encoding="utf-8"), fallback_slug=f.stem)
                 if not sk.body.strip():
                     continue
                 self._skills[sk.slug] = sk
@@ -556,7 +556,7 @@ class SkillLibrary:
         if not path.exists():
             return
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
             for slug, raw in data.items():

@@ -4986,7 +4986,7 @@ def _persist_env_vars(values: dict[str, str]) -> None:
 
         env = REPO_ROOT / ".env"
         with _ENV_WRITE_LOCK:
-            lines = env.read_text().splitlines() if env.exists() else []
+            lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
             out: list[str] = []
             found: set[str] = set()
             for ln in lines:

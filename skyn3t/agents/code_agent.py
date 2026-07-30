@@ -733,6 +733,13 @@ class CodeAgent(BaseAgent):
         # depth directive uses it so a retry keeps the SAME design the run committed.
         _game_design = _extra.get("game_design") if isinstance(_extra, dict) else None
         _asset_foundry = _extra.get("asset_foundry") if isinstance(_extra, dict) else None
+        # Advisory-council guidance the runner computed ONCE for this build and
+        # threaded, exactly like art_plan/game_design above. Threading rather
+        # than recomputing keeps every best-of-N trajectory on the SAME advice,
+        # so the trajectories still differ only by model.
+        _moa_guidance = str(
+            (_extra.get("moa_guidance") or "") if isinstance(_extra, dict) else ""
+        )
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         raw_prior = p.get("prior")
@@ -836,7 +843,8 @@ class CodeAgent(BaseAgent):
                     self._agentic_prompt(
                         brief, stack, plan, knowledge,
                         art_plan=_art_plan, game_design=_game_design,
-                        asset_foundry=_asset_foundry, design=design)
+                        asset_foundry=_asset_foundry, design=design,
+                        moa_guidance=_moa_guidance)
                     if attempt == 0
                     else self._agentic_resume_prompt(
                         brief, stack, plan, disk, missing_planned,
@@ -1138,7 +1146,8 @@ class CodeAgent(BaseAgent):
                         *, art_plan: dict[str, Any] | None = None,
                         game_design: dict[str, Any] | None = None,
                         asset_foundry: dict[str, Any] | None = None,
-                        design: dict[str, Any] | None = None) -> str:
+                        design: dict[str, Any] | None = None,
+                        moa_guidance: str = "") -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -1199,6 +1208,15 @@ class CodeAgent(BaseAgent):
             + f"{_FULL_FILE_CONTRACT}\n"
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
+            # Advisory-council guidance goes at the TAIL, after every directive.
+            # The directive block above is byte-identical across every build of a
+            # given stack; splicing brief-varying text into the middle would
+            # fragment the longest span shared across builds and across
+            # best-of-N trajectories. Appending keeps that span contiguous and
+            # gives the advice recency. (Hermes appends for the same reason at a
+            # different scale — agent/moa_loop.py:1303-1337.) Empty by default,
+            # so a council-off build's prompt is byte-identical to before.
+            + (f"\n{moa_guidance}\n" if moa_guidance else "")
             + "Do not ask questions — just build it."
         )
         return self.system_prompt(prompt)

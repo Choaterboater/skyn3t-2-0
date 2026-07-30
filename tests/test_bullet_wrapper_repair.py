@@ -10,8 +10,12 @@ substantial rather than stubbed):
 The entire file is the agent's rendered bullet: a marker on line 1, every
 following line indented beneath it. Critically this is NOT prose — the content
 genuinely is code, so `_looks_like_prose` correctly returns False and
-`validate_source` returns ok=True. It ships. But `* ---` is not an Astro
-frontmatter opener, so the page is broken and the build fails.
+`validate_source` returns ok=True. It ships.
+
+CORRECTION, measured rather than assumed: it does NOT break the build. `npm run
+build` on the delivered tree exits 0 and the page renders correctly. Astro
+tolerates the wrapper. This repair is source hygiene — a delivered file should
+be the code an author would write — not a build fix.
 
 It is the same defect as the markdown FENCE wrapper already handled by
 strip_markdown_fences_in_source_files, in a shape nothing detected.

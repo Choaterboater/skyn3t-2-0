@@ -2812,21 +2812,31 @@ def strip_markdown_bullet_wrapper_in_source_files(root: str | Path) -> list[str]
     """Unwrap a source file the agent wrote as a markdown BULLET instead of code.
 
     Sibling of strip_markdown_fences_in_source_files — same defect (markdown
-    chrome persisted as file content), different shape, and this one is nastier
-    because it survives every existing guard.
+    chrome persisted as file content), different shape, and it survives every
+    existing guard.
 
-    Observed shipping as a real Astro homepage (12,910 bytes, so it looks
-    substantial)::
+    Observed shipping as a real Astro homepage (12,910 bytes)::
 
         * ---
           const lessons = [
             {
 
-The whole file is the agent's rendered bullet: a marker on line 1 and every
+    The whole file is the agent's rendered bullet: a marker on line 1 and every
     following line indented beneath it. It is not prose — `_looks_like_prose`
     correctly returns False because the content genuinely is code — so
-    validate_source passes it and it ships. But `* ---` is not an Astro
-    frontmatter opener, so the page is broken.
+    validate_source passes it and it ships.
+
+    CORRECTION, measured rather than assumed: this does NOT break the build.
+    `npm run build` on the delivered tree exits 0 and the page renders
+    correctly — its own ``title: 'The Grip'`` datum reaches the HTML, with no
+    bullet or raw source leaking. Astro tolerates the wrapper.
+
+    So this is source HYGIENE, not a build fix: a delivered file should be the
+    code an author would write, and a markdown wrapper left in the tree misleads
+    every later reader, diff and static-analysis pass. It is cheap, idempotent
+    and provably non-destructive, which is the bar for a deterministic repair —
+    but it is not load-bearing, and nothing should be built on the assumption
+    that it rescues a failing build.
 
     Detection is deliberately narrow: a bullet marker on the first non-blank
     line AND every other non-blank line indented by a common margin of >= 2.

@@ -44,7 +44,7 @@ DEPLOY_KIND: dict[str, str] = {
     "agent_pack": "artifact", "mcp": "artifact",
     "swift": "artifact", "tauri": "artifact", "desktop": "artifact",
     # mobile app binary
-    "react_native": "mobile",
+    "react_native": "mobile", "swift_ios": "mobile",
 }
 
 _PY_DOCKERFILE = (
@@ -504,6 +504,17 @@ def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None 
             )
 
         if kind == "mobile":
+            norm = _normalize(stack)
+            if norm == "swift_ios":
+                targets, command, note = _apply_target(target, [
+                    ("xcode-testflight", "xcodebuild -project App.xcodeproj -scheme App -configuration Release archive"),
+                ])
+                return DeployPlan(
+                    deployable=True, kind="mobile", serves_url=False,
+                    targets=targets, output_dir=".", build_command="", command=command,
+                    notes=("A native iOS app — archive/sign in Xcode, then upload to TestFlight "
+                           "or install it on a registered device." + note),
+                )
             targets, command, note = _apply_target(target, [
                 ("expo-eas", "eas build --platform all"),
             ])

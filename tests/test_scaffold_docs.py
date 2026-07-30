@@ -39,6 +39,7 @@ _MANIFEST_FILES: dict[str, tuple[str, ...]] = {
     "phaser": ("package.json",),
     # Swift / SwiftUI native macOS: the SwiftPM manifest is the dependency manifest.
     "swift": ("Package.swift",),
+    "swift_ios": ("App.xcodeproj/project.pbxproj",),
     # MCP server (Python stdio): requirements.txt declares the mcp SDK.
     "mcp": ("requirements.txt",),
     # RAG app (FastAPI): requirements.txt declares fastapi/uvicorn/httpx.

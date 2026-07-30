@@ -29,6 +29,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
     "tauri": "a cross-platform desktop app for Mac/Windows (Vite + React frontend + Tauri Rust shell)",
     "phaser": "a 2D browser game — arcade / platformer / shooter (Phaser 3 + Vite, canvas)",
     "swift": "a native macOS SwiftUI desktop app (Swift Package Manager)",
+    "swift_ios": "a native iPhone/iPad app (SwiftUI + SwiftData + Xcode)",
     "mcp": "an MCP server exposing tools to AI assistants (Model Context Protocol, Python stdio)",
     "rag": "a chat-with-your-documents RAG app — ingest docs, semantic /query, grounded /chat (FastAPI, Python)",
     "workflow": "an agent/automation workflow app — multi-step runner, run ledger, dry-run triggers (FastAPI, Python)",
@@ -51,7 +52,7 @@ _TOOLCHAIN_EXE = {
     "react": "npm", "nextjs": "npm", "astro": "npm", "remix": "npm",
     "vue": "npm", "sveltekit": "npm", "react_ts": "npm",
     "express": "npm", "tauri": "npm", "phaser": "npm", "react_native": "npm",
-    "swift": "swift",
+    "swift": "swift", "swift_ios": "xcodebuild",
 }
 
 # Where an unbuildable HEURISTIC/LLM choice degrades to (first AVAILABLE
@@ -65,6 +66,7 @@ _TOOLCHAIN_FALLBACK = {
     "react_ts": ("static",), "express": ("fastapi",), "tauri": ("static",),
     "phaser": ("static",), "react_native": ("static",),
     "swift": ("tauri", "python"),
+    "swift_ios": ("react_native", "python"),
 }
 
 
@@ -199,7 +201,7 @@ def _infer_app_type(low: str, stack: str) -> str:
     # reserve ``api_service`` for a server stack or an otherwise API-only brief.
     if stack in ("fastapi", "express"):
         return "api_service"
-    if stack == "react_native":
+    if stack in ("react_native", "swift_ios"):
         return "mobile_app"
     if stack in ("tauri", "swift"):
         return "desktop_app"
@@ -235,6 +237,8 @@ def _infer_engine(low: str, stack: str) -> str:
         return "expo"
     if stack == "swift":
         return "swiftui"
+    if stack == "swift_ios":
+        return "swiftui_ios"
     if stack == "tauri":
         return "tauri"
     if stack in ("fastapi", "express"):

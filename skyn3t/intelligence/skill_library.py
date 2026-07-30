@@ -85,6 +85,11 @@ _STACK_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"sveltekit", "svelte", "svelte-kit"}),
     frozenset({"react_ts", "react-typescript", "typescript", "ts", "tsx"}),
     frozenset({"react_native", "mobile", "expo"}),
+    # Keep native iOS knowledge separate from Expo guidance. A future skill tagged
+    # `swift_ios`/`swiftui_ios` will now be recalled for this stack without
+    # accidentally injecting React Native implementation advice.
+    frozenset({"swift_ios", "ios_swift", "swiftui_ios", "ios_swiftui",
+               "ios_native", "native_ios", "iphone_swift", "ipad_swift"}),
     frozenset({"node", "node_express", "express"}),
     frozenset({"fastapi", "flask", "django", "python_api"}),
     frozenset({"static", "static_html", "html"}),

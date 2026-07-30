@@ -3143,6 +3143,13 @@ def _swift(app_name: str, brief: str) -> dict[str, str]:
     }
 
 
+def _swift_ios(app_name: str, brief: str) -> dict[str, str]:
+    """Native SwiftUI iPhone/iPad scaffold built with Xcode."""
+    from skyn3t.agents._swift_ios_scaffold import build_swift_ios_scaffold
+
+    return build_swift_ios_scaffold(app_name, brief)
+
+
 def _fastapi_market_data(app_name: str, brief: str) -> dict[str, str]:
     """The market-data variant of the fastapi scaffold (wave-2 §3.9): a data
     API with a VENDOR SEAM (``DATA_VENDOR`` env, default ``canned`` — fixtures,
@@ -6769,6 +6776,7 @@ _BUILDERS: dict[str, Callable[[str, str], dict[str, str]]] = {
     "desktop": _tauri,
     "phaser": _phaser,
     "swift": _swift,
+    "swift_ios": _swift_ios,
     "mcp": _mcp,
     "rag": _rag,
     "workflow": _workflow,

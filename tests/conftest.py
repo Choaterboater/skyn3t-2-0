@@ -193,6 +193,13 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     # pin "release" here and let the focused posture tests opt into lab via an
     # explicit Settings(build_posture="lab") kwarg (init args outrank env).
     monkeypatch.setenv("SKYN3T_BUILD_POSTURE", "release")
+    # The MoA council ships ON. It is inert on the stub backend, so most of the
+    # suite would be unaffected — but ~18 files construct a NON-stub backend,
+    # and there an advisor slot would spawn a real signed-in CLI mid-test. Pin
+    # the master switch off and let the focused council tests opt in with an
+    # explicit Settings(moa_enabled=True, moa_advisors=...) kwarg.
+    monkeypatch.setenv("SKYN3T_MOA_ENABLED", "false")
+    monkeypatch.setenv("SKYN3T_MOA_ADVISORS", "")
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
     # Don't read the developer's real repo .env during tests. Settings hard-codes
     # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github

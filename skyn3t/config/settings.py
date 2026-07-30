@@ -527,23 +527,44 @@ class Settings(BaseSettings):
     # aggregator, i.e. the code agent). Advisors never write files, never score,
     # never gate — this is a capability layer, not a check. Adapted from
     # NousResearch/hermes-agent (MIT); see docs/MOA.md and CREDITS.md.
-    # Off by default: it costs N extra completions per build.
-    moa_enabled: bool = False
+    # ON by default. The council is what makes a build multi-model instead of
+    # whatever one CLI happens to be routed, so it is the default posture, not
+    # an add-on. It stays inert until moa_advisors is non-empty AND the backend
+    # is not stub, so the offline test suite and a keyless checkout still cost
+    # nothing. Clearing moa_advisors is the ordinary way to turn it off;
+    # SKYN3T_MOA_ENABLED=0 is the master switch.
+    moa_enabled: bool = True
     # Advisor slots as comma-separated "provider:model" (model optional, empty =
     # that CLI's own default). Providers may DIFFER per slot — that is the whole
     # point. Addressable backends: codex_cli, claude_cli, kimi_cli, openrouter
-    # (and copilot_cli, supported but not in the default chain). For example:
-    #   "codex_cli,claude_cli:sonnet,kimi_cli:k3"
-    # Model ids churn — verify against your CLI's own aliases or the live
-    # OpenRouter catalog rather than copying an example verbatim.
+    # (and copilot_cli, supported but not in the default chain). Prefer the BARE
+    # form — no ":model" — so each CLI uses its own configured default:
+    #   "codex_cli,claude_cli,kimi_cli"
+    # A bare slot also sidesteps id churn. "kimi_cli:k3" in particular does NOT
+    # work: that CLI needs the fully-qualified "kimi-code/k3", which its own
+    # config.toml already sets as the default, so bare "kimi_cli" is correct.
+    # Pin a model only when you mean it, e.g. "claude_cli:sonnet".
     # Empty => the council is off even when moa_enabled.
-    moa_advisors: str = ""
+    # Defaults to the two CLIs that are NOT the usual acting model: auto routes
+    # codegen to Codex first (auto_cli_priority), so advising with Claude and
+    # Kimi makes the council genuinely multi-model instead of Codex reviewing
+    # itself. Copilot is deliberately excluded, matching auto_cli_priority.
+    # A slot whose CLI is not installed is recorded as a failed advisor and the
+    # build proceeds on the survivors; if BOTH fail the codegen prompt is
+    # byte-identical to a council-off build, so this default costs nothing on a
+    # machine without them. Set SKYN3T_MOA_ADVISORS="" to turn the council off.
+    moa_advisors: str = "claude_cli,kimi_cli"
     # Concurrent advisor calls. Matches the ceiling code_agent already uses for
     # nested CLI children; per-provider limits still apply underneath.
     moa_max_concurrency: int = Field(default=4, ge=1, le=8)
-    # Wall-clock ceiling per advisor. A slow advisor is DROPPED, never waited on:
-    # advisors must not extend a build's critical path.
-    moa_advisor_timeout: int = Field(default=180, ge=10)
+    # Wall-clock ceiling per advisor. A slow advisor is dropped AT THIS DEADLINE
+    # — but the council IS awaited inline before codegen, so it can delay a
+    # build by up to ceil(N_advisors / moa_max_concurrency) * this value. The
+    # earlier claim that advisors "never extend the critical path" was wrong.
+    # 60s, not 180s: a tool-free advisory of <=400 words does not need three
+    # minutes, and now that the council is on by default that delay is paid by
+    # every build.
+    moa_advisor_timeout: int = Field(default=60, ge=10)
     # Output cap per advisor (binds on OpenRouter; CLI backends are governed by
     # the byte budget below, since complete() cannot pass max_tokens to a CLI).
     moa_advisor_max_tokens: int = Field(default=1200, ge=128)

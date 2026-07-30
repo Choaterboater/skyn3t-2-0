@@ -1696,6 +1696,7 @@ class LLMClient:
                 capture_output=True,
                 check=False,
                 text=True,
+                encoding="utf-8", errors="replace",
                 timeout=3,
                 env=_cli_subprocess_env(),
             )

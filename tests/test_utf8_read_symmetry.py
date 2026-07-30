@@ -79,6 +79,56 @@ def test_build_patterns_survives_non_ascii(tmp_path):
     assert BuildPatternBoard(path=path) is not None
 
 
+def test_subprocess_text_mode_without_a_codec_loses_output_silently(tmp_path):
+    """The second shape of this bug, and the nastier one.
+
+    `subprocess.run(..., text=True)` with no `encoding=` decodes through the
+    locale codec. On Windows that decode happens inside subprocess's reader
+    THREAD, so it does not propagate to the caller: the traceback prints to
+    stderr and `stdout` comes back as None. Callers that write
+    `(proc.stdout or "")` — which is the defensive-looking idiom — then report
+    an EMPTY log while believing they captured one.
+
+    That is how an npm install failure loses its own error text.
+    """
+    import subprocess
+    import sys
+
+    # Valid UTF-8, unmappable in cp1252 (0x81 has no cp1252 code point).
+    prog = r"import sys; sys.stdout.buffer.write('ok 繁體 done'.encode('utf-8'))"
+
+    good = subprocess.run(
+        [sys.executable, "-c", prog], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30,
+    )
+    assert good.stdout is not None
+    assert "ok" in good.stdout and "done" in good.stdout
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        "skyn3t/studio/app_runner.py",
+        "skyn3t/worktree.py",
+        "skyn3t/adapters/llm.py",
+    ],
+)
+def test_no_text_mode_subprocess_without_an_explicit_codec(relpath):
+    """Every `text=True` must be paired with an explicit encoding."""
+    root = Path(__file__).resolve().parents[1]
+    lines = (root / relpath).read_text(encoding="utf-8").splitlines()
+
+    for n, line in enumerate(lines):
+        if "text=True" not in line:
+            continue
+        window = "\n".join(lines[max(0, n - 8):n + 9])
+        assert "encoding=" in window, (
+            f"{relpath}:{n + 1} runs a subprocess in text mode with no explicit "
+            "codec; on Windows the decode fails in a reader thread and stdout "
+            "silently becomes None"
+        )
+
+
 @pytest.mark.parametrize(
     "relpath",
     [

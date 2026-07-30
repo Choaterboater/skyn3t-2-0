@@ -913,11 +913,39 @@ def _has_path_aliases(root: Path) -> bool:
 
 
 def _reachable_files(root: Path) -> set[Path]:
-    """Resolved file paths reachable from the entry files via relative imports."""
+    """Resolved file paths reachable from the entry files via relative imports.
+
+    Entries come from two sources, and BOTH are needed. ``_ENTRY_NAMES`` covers
+    bundler conventions (main.jsx, App.tsx, Next.js page/layout). A plain static
+    site has none of those: its entry is whatever ``index.html`` loads via
+    ``<script src>``, commonly ``assets/js/main.js``. Without HTML seeding the
+    graph starts from nothing, so every component is unreachable and
+    :func:`_unwired_components` reports a correctly-wired static app as an
+    unwired stub. Additive — this can only widen reachability, never narrow it.
+    """
     entries = [
         f.resolve() for f in _iter_files(root)
         if f.name in _ENTRY_NAMES and f.suffix in _JS_SUFFIXES
     ]
+    for html in _iter_files(root):
+        if html.suffix.lower() not in (".html", ".htm"):
+            continue
+        try:
+            markup = html.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for ref in _HTML_LOCAL_REF_RE.findall(markup):
+            target = ref.strip()
+            if not target or target.startswith(
+                ("http://", "https://", "//", "data:", "mailto:")
+            ):
+                continue
+            candidate = (
+                (root / target.lstrip("/")) if target.startswith("/")
+                else (html.parent / target)
+            ).resolve()
+            if candidate.suffix in _JS_SUFFIXES and candidate.is_file():
+                entries.append(candidate)
     seen: set[Path] = set()
     stack = list(entries)
     while stack:
@@ -934,6 +962,51 @@ def _reachable_files(root: Path) -> set[Path]:
             if tgt is not None and tgt not in seen:
                 stack.append(tgt)
     return seen
+
+
+_HTML_LOCAL_REF_RE = re.compile(
+    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*["']([^"'#?]+)["']""",
+    re.IGNORECASE,
+)
+
+
+def _dangling_html_refs(root: Path) -> list[str]:
+    """Local ``<script src>`` / ``<link href>`` targets that do not exist.
+
+    A guaranteed runtime 404 on every page load, and — unlike the "unwired
+    components" heuristic below — an unambiguous, mechanically repairable
+    defect: either write the file or drop the tag. Kept separate precisely
+    because the two were previously conflated, and the resulting gap string
+    ("wire up your components") pointed the fix loop at the opposite repair
+    from the one needed.
+
+    Only same-project relative targets are considered; absolute URLs, protocol-
+    relative URLs, data: URIs and root-absolute paths (which a dev server may
+    map elsewhere) are all skipped. Pure and offline.
+    """
+    out: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix.lower() not in (".html", ".htm"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel_html = str(f.relative_to(root)).replace("\\", "/")
+        for ref in _HTML_LOCAL_REF_RE.findall(text):
+            target = ref.strip()
+            if not target or target.startswith(("http://", "https://", "//", "data:", "/", "mailto:")):
+                continue
+            candidate = (f.parent / target).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue  # escapes the project; not ours to judge
+            if not candidate.is_file():
+                out.append(f"{rel_html} -> {target}")
+            if len(out) >= 20:
+                return out
+    return out
 
 
 def _unwired_components(root: Path) -> str | None:
@@ -953,6 +1026,19 @@ def _unwired_components(root: Path) -> str | None:
     if not components:
         return None
     reachable = _reachable_files(root)
+    if not reachable:
+        # No entry was found AT ALL, so the analysis did not run — this is
+        # "could not determine", not "nothing is wired". Reporting it as the
+        # latter accused two real deliveries: a static site whose entry is
+        # `<script src>` in HTML, and a static-site GENERATOR whose graph root
+        # is `scripts/build.mjs`, referenced only from package.json "scripts".
+        # Neither matches a bundler entry name, so the walk started from an
+        # empty set and every component was trivially "orphaned".
+        # This is gate_posture rule 1 (a gate that could not run never blocks)
+        # applied inside the check, so it holds in release posture too. It
+        # cannot mask the defect this exists for: a stub ENTRY is still an
+        # entry, so `reachable` is non-empty whenever that defect is present.
+        return None
     orphaned = [c for c in components if c not in reachable]
     if orphaned and len(orphaned) == len(components):
         return (f"entry reaches none of the {len(components)} generated "
@@ -974,6 +1060,13 @@ class ProofResult:
     syntax_errors: list[str] = field(default_factory=list)
     score: float = 0.0  # 0..100 completeness signal
     detail: dict[str, Any] = field(default_factory=dict)
+    # Failures that would have flipped ``passed`` under release posture but were
+    # demoted to findings under lab posture (failing LLM-authored tests, a ruff
+    # style failure, thin checklist coverage). ``detail`` is populated
+    # identically either way, so ``error_gaps()`` still feeds the fix loop the
+    # same repair strings — advisory means "does not block", never "not
+    # repaired". Empty by default, so every existing consumer is unaffected.
+    advisory_failures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -987,6 +1080,7 @@ class ProofResult:
             "syntax_errors": list(self.syntax_errors),
             "score": self.score,
             "detail": dict(self.detail),
+            "advisory_failures": list(self.advisory_failures),
         }
 
     def error_gaps(self) -> list[str]:
@@ -1320,12 +1414,18 @@ def _attach_proof_environment(
         reasons.append("docker sandbox unavailable; used hardened local proof commands")
     if run_build and detail.get("build") == "skipped":
         summary = str(detail.get("build_summary") or "").strip()
-        reasons.append("build skipped" + (f": {summary}" if summary else ""))
+        # "There is no build step" is not degraded EVIDENCE — it is a complete
+        # answer. A static site legitimately has no build/typecheck script, so
+        # counting it as degraded capped every such delivery's score for
+        # producing exactly the artifact it was asked for. Only a build that
+        # could not RUN (missing toolchain, unavailable sandbox) is degradation.
+        if "no build" not in summary.lower():
+            reasons.append("build skipped" + (f": {summary}" if summary else ""))
     # Web and Swift projects can have a valid native test suite even when the
     # generic Python test probe has nothing to run.  Do not downgrade objective
     # Node/Swift test evidence simply because that unrelated probe soft-skipped.
     native_tests_passed = any(
-        detail.get(name) == "passed" for name in ("node_tests", "swift_tests")
+        detail.get(name) == "passed" for name in ("node_tests", "swift_tests", "swift_ios_tests")
     )
     if run_tests and detail.get("tests") == "skipped" and not native_tests_passed:
         summary = str(detail.get("test_summary") or "").strip()
@@ -1374,6 +1474,18 @@ def extract_error_gaps(
     # Unresolved relative imports — each entry is "<importer> -> <spec>".
     for imp in (d.get("unresolved_imports") or []):
         gaps.append(f"UNRESOLVED IMPORT — create the missing target or fix the path: {imp}")
+    # Dangling <script src>/<link href> — each entry is "<page> -> <target>".
+    # States BOTH valid repairs, because the wrong one is tempting: a model that
+    # only sees "missing file" tends to invent a stub module, when the delivered
+    # entry often already does the work via another script and the tag is simply
+    # dead. Naming both keeps the improver from guessing.
+    for ref in (d.get("dangling_html_refs") or []):
+        gaps.append(
+            "DANGLING HTML REFERENCE — this page references a file that does not "
+            f"exist, so it 404s on every load: {ref}. Either write that file with "
+            "real content, or delete the <script>/<link> tag if another already "
+            "loaded module provides the behaviour."
+        )
     # Definite ESM named-import/export contract violations.  Put the resolved
     # module first in a stable sentence shape consumed by CodeImproverAgent, so
     # repair targets never have to infer a relative specifier's true location.
@@ -3328,6 +3440,21 @@ def _mock_llm_default_enabled() -> bool:
         return True
 
 
+def _proof_posture_default() -> str:
+    """The ``build_posture`` setting. Never raises.
+
+    Defaults to ``"release"`` on any failure so a proof can only ever become
+    *more* permissive through explicit configuration, never through an error.
+    """
+    try:
+        from skyn3t.config.settings import get_settings
+        raw = str(getattr(get_settings(), "build_posture", "release") or "release")
+    except Exception:  # noqa: BLE001
+        return "release"
+    normalized = raw.strip().lower()
+    return normalized if normalized in {"lab", "release"} else "release"
+
+
 def _start_proof_mock_llm(
     pdir: Path, cmd_ctx: _ProofCommandContext | None, *, enabled: bool,
 ) -> _MockLLMSeam | None:
@@ -3393,6 +3520,7 @@ def proof_run(
     install_python_deps: bool | None = None,
     python_deps_timeout: int | None = None,
     brief: str = "",
+    posture: str | None = None,
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
@@ -3404,9 +3532,22 @@ def proof_run(
     ``mock_llm_proof_enabled`` setting). When active for an LLM-calling project, a
     local deterministic OpenAI/Anthropic mock backs the project's OWN test step so
     it runs headlessly at $0 (build steps are never affected; degrade-open).
+
+    ``posture``: "lab" | "release" (None -> the ``build_posture`` setting). Under
+    "lab", failures that are about QUALITY rather than whether the app RUNS —
+    failing LLM-authored tests, a ruff style failure, thin checklist coverage —
+    are recorded in ``advisory_failures`` instead of flipping ``passed``.
+    ``detail`` is populated identically, so ``error_gaps()`` still feeds the fix
+    loop. Everything that proves the delivery is broken (syntax errors, no
+    substantive files, a dead entrypoint, unresolved imports, a failed native
+    build) blocks in BOTH postures.
     """
     pdir = Path(project_dir)
     checklist = checklist or []
+    lab_posture = (
+        _proof_posture_default() if posture is None else str(posture).strip().lower()
+    ) == "lab"
+    advisory_failures: list[str] = []
 
     mode = "local"
     cmd_ctx = _proof_command_context(execution_backend, stack)
@@ -3430,9 +3571,14 @@ def proof_run(
     # Never trust an empty scaffold: must have at least one substantive file and
     # no Python syntax errors to pass.
     passed = substantive > 0 and not syntax_errors
-    # If a checklist exists, require at least half of it present.
+    # If a checklist exists, require at least half of it present. The checklist
+    # is LLM-authored filenames, so codegen legitimately renaming a file reads as
+    # a coverage miss — advisory under lab posture.
     if checklist and present < max(1, len(checklist) // 2):
-        passed = False
+        if lab_posture:
+            advisory_failures.append("checklist")
+        else:
+            passed = False
 
     detail: dict[str, Any] = {
         "stack": stack,
@@ -3548,13 +3694,42 @@ def proof_run(
             if "<exports>" not in missing:
                 missing = [*missing, "<exports>"]
 
+    # A page that references a file nobody wrote 404s on every load. Checked
+    # BEFORE the unwired-components heuristic below because the two used to be
+    # conflated: a delivered site whose index.html pointed at four scripts that
+    # were never written was reported as "entry reaches none of the components",
+    # so the fix loop was told to wire up components that were already wired,
+    # and never repaired the actual dangling tags.
+    if total > 0:
+        dangling = _dangling_html_refs(pdir)
+        if dangling:
+            passed = False
+            detail["dangling_html_refs"] = dangling
+            detail.setdefault(
+                "reason",
+                f"{len(dangling)} HTML reference(s) point at files that do not exist",
+            )
+            if "<html-refs>" not in missing:
+                missing = [*missing, "<html-refs>"]
+
     # Behaviour, not vibes (rule #3): a delivered app that ships real components
     # but an entry which reaches NONE of them renders an unwired/stub entry, not
     # the app — it has NOT been proven.
     if passed and total > 0:
         stub_note = _unwired_components(pdir)
         if stub_note:
-            passed = False
+            # A reachability HEURISTIC, not delivery integrity: it depends on
+            # recognising an entry convention, and every unfamiliar project
+            # shape re-arms a false accusation. Advisory under lab posture —
+            # detail is populated identically, so extract_error_gaps still
+            # emits UNWIRED ENTRY and _fix_loop still runs. Advisory means
+            # "does not block", never "not repaired". The unambiguous,
+            # mechanically-repairable version of this defect is caught by
+            # _dangling_html_refs above, which blocks in both postures.
+            if lab_posture:
+                advisory_failures.append("unwired_components")
+            else:
+                passed = False
             detail["unwired_components"] = stub_note
             detail.setdefault("reason", stub_note)
             if "<wired-entry>" not in missing:
@@ -3582,7 +3757,14 @@ def proof_run(
                 detail["tests"] = "passed" if tests_passed else "failed"
                 detail["test_summary"] = summary
                 if not tests_passed:
-                    passed = False
+                    # LLM-authored tests are wrong far more often than the app
+                    # is. Under lab posture record and still feed the fix loop
+                    # (detail is unchanged, so error_gaps() is identical) rather
+                    # than failing a delivery over a bad generated assertion.
+                    if lab_posture:
+                        advisory_failures.append("tests")
+                    else:
+                        passed = False
                     if "<tests>" not in missing:
                         missing = [*missing, "<tests>"]
             else:
@@ -3690,7 +3872,12 @@ def proof_run(
                 detail["ruff"] = "passed" if ruff_ok else "failed"
                 detail["ruff_summary"] = summary
                 if not ruff_ok:
-                    passed = False
+                    # Lint style is not delivery integrity: a working app must
+                    # not be undeliverable because of import order.
+                    if lab_posture:
+                        advisory_failures.append("ruff")
+                    else:
+                        passed = False
                     if "<ruff>" not in missing:
                         missing = [*missing, "<ruff>"]
             else:
@@ -3714,7 +3901,12 @@ def proof_run(
                 detail["node_tests"] = "passed" if t_ok else "failed"
                 detail["node_tests_summary"] = t_sum
                 if not t_ok:
-                    passed = False
+                    # Same reasoning as the generated-test step above: a failing
+                    # LLM-authored test is a repair signal, not a failed delivery.
+                    if lab_posture:
+                        advisory_failures.append("node_tests")
+                    else:
+                        passed = False
                     if "<node-tests>" not in missing:
                         missing = [*missing, "<node-tests>"]
             elif t_sum:
@@ -3739,10 +3931,11 @@ def proof_run(
         run_build=run_build,
     )
 
-    # Anti-fake gap producers (advisory, wave-2 items 44/47/48): record
-    # incomplete-code placeholders, brief features with no trace in the delivery,
-    # and a shipped-scaffold-stub. NONE flips `passed` — they only add gaps the
-    # fix-loop consumes + observability. Each is defensive; never breaks the proof.
+    # Persisted-write receipts are DELIVERY CORRUPTION, not a quality opinion: a
+    # file whose body is codegen history metadata instead of the real contents is
+    # broken output, so this blocks in every posture. It used to sit inside the
+    # advisory block below whose comment promised "NONE flips `passed`" — the
+    # code and the comment contradicted each other. Split out so both are true.
     if total > 0:
         try:
             receipt_files = scan_persisted_write_receipts(pdir)
@@ -3751,6 +3944,12 @@ def proof_run(
                 passed = False
         except Exception:  # noqa: BLE001 - scanner failure must not break proof
             pass
+
+    # Anti-fake gap producers (advisory, wave-2 items 44/47/48): record
+    # incomplete-code placeholders, brief features with no trace in the delivery,
+    # and a shipped-scaffold-stub. NONE flips `passed` — they only add gaps the
+    # fix-loop consumes + observability. Each is defensive; never breaks the proof.
+    if total > 0:
         try:
             markers = scan_placeholder_markers(pdir)
             if markers:
@@ -3780,6 +3979,7 @@ def proof_run(
         checklist_present=present,
         missing=missing,
         syntax_errors=syntax_errors,
+        advisory_failures=advisory_failures,
         score=score,
         detail=detail,
     )

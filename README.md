@@ -137,12 +137,27 @@ From a source checkout, the build lands in `../Projects/<slug>/` (sibling of
 the repo). A wheel install keeps its writable data, logs, configuration, and
 projects under `~/.skyn3t/` instead of writing into `site-packages`. Add API
 keys to `.env` (see `.env.example`) only when you intentionally want a hosted
-provider. By default, `auto` uses a signed-in Codex CLI when it is available;
-it never switches to OpenRouter merely because a key exists. Select the
-OpenRouter backend explicitly in Foundry Settings (or set
-`SKYN3T_LLM_BACKEND=openrouter`) to use hosted API billing. Without Codex CLI
-or an explicitly selected, configured provider, SkyN3t uses its deterministic
-stub so the whole pipeline still runs.
+provider. `auto` walks `SKYN3T_AUTO_CLI_PRIORITY` (default `codex,claude,kimi`)
+and uses the first CLI you are signed in to; Copilot is supported but stays out
+of that chain. It never switches to OpenRouter merely because a key exists —
+that needs explicit consent via `SKYN3T_AUTO_ALLOW_OPENROUTER=1`, or selecting
+the OpenRouter backend in Foundry Settings (or `SKYN3T_LLM_BACKEND=openrouter`)
+to use hosted API billing. With no signed-in CLI and no explicitly selected
+provider, SkyN3t uses its deterministic stub so the whole pipeline still runs.
+
+Two defaults worth knowing:
+
+- **Gate posture is `lab`.** Only proof that the delivery is broken blocks a
+  build. Heuristics, taste rules and environment-dependent probes record a
+  finding, dampen the score and feed the fix loop, then let the build finish. A
+  gate that *could not run* — no Docker, no Playwright — never blocks in any
+  posture. Set `SKYN3T_BUILD_POSTURE=release` for the old all-gates-block
+  behaviour.
+- **The Mixture-of-Agents council is on**, advised by `claude_cli,kimi_cli` —
+  deliberately not the acting model, so codegen is not reviewing its own work.
+  It is inert unless those CLIs are signed in. See [docs/MOA.md](docs/MOA.md),
+  including the honest cost note: a CLI advisor reports no price, so
+  `per_build_usd_cap` cannot bound it.
 
 ### The Foundry — web control plane
 
@@ -209,7 +224,9 @@ flowchart TD
     VERDICT --> DELIVER["Projects/&lt;slug&gt;/"]
     VERDICT --> SHIP["plan_deploy → keyless deploy plan<br/>(static · node_ssr · container · artifact · mobile)"]
 
-    AGENTS --> LLM["LLMClient<br/>(Codex CLI | explicit OpenRouter | stub) + BudgetTracker"]
+    AGENTS --> MOA["MoA council<br/>(N tool-free advisors, multi-provider)"]
+    MOA --> LLM
+    AGENTS --> LLM["LLMClient<br/>(codex/claude/kimi CLI | OpenRouter | stub) + BudgetTracker"]
     LLM --> ROUTER
     SPINE --> MEM["Memory · lessons · bench"]
     MEM --> LEARN["Learning loop<br/>inject + grade lessons"]

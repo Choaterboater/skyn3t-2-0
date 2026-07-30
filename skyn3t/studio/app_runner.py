@@ -401,8 +401,15 @@ def build_run_spec(
 # Serving must install deps first. Idempotent + thread-offloaded (sync subprocess
 # must never run on the asyncio loop -- same gotcha as the Playwright screenshot).
 
-def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tuple[bool, dict]:
-    """Run an npm install/ci command, capturing output. Never raises."""
+# A resolution failure that a STALE metadata cache can invent. Under
+# --prefer-offline npm resolves a range from cached registry metadata; when that
+# metadata is stale it can pick a version the registry does not actually serve,
+# and the install dies on a package the app never asked for.
+_NPM_STALE_METADATA_MARKERS = ("ETARGET", "notarget", "ETARGETNOTFOUND")
+
+
+def _npm_run_once(cmd: list[str], cwd: str, timeout: float) -> tuple[int | None, str, str]:
+    """Return (returncode, output, error). returncode None means it never ran."""
     try:
         proc = subprocess.run(  # noqa: S603 - npm path resolved via shutil.which
             cmd, cwd=cwd,
@@ -417,12 +424,47 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
             env=npm_env(),
         )
     except subprocess.TimeoutExpired:
-        return False, {"error": f"npm install timed out after {timeout:.0f}s"}
+        return None, "", f"npm install timed out after {timeout:.0f}s"
     except OSError as exc:
-        return False, {"error": str(exc)}
-    tail = scrub_text((proc.stdout or "")[-2000:])
-    if proc.returncode != 0:
-            return False, {"error": f"npm exited {proc.returncode}", "log_tail": tail}
+        return None, "", str(exc)
+    return proc.returncode, proc.stdout or "", ""
+
+
+def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tuple[bool, dict]:
+    """Run an npm install/ci command, capturing output. Never raises.
+
+    Retries ONCE without ``--prefer-offline`` on a stale-metadata failure.
+    Measured on a real build: a delivered app declaring ``tailwindcss ^4.1.11``
+    failed three consecutive proof runs with::
+
+        npm error code ETARGET
+        npm error notarget No matching version found for tailwindcss@4.3.3.
+
+    4.3.3 appears nowhere in the tree — npm resolved the range from stale
+    cached metadata under --prefer-offline and then could not fetch what it
+    had chosen. The same install succeeds once the metadata is refreshed
+    (observed directly: the refreshing run took 39s against 7s cached). So the
+    app was fine and the build failed on cache state, which is exactly the kind
+    of environmental failure that should self-heal rather than sink a verdict.
+    """
+    code, out, err = _npm_run_once(cmd, cwd, timeout)
+    if code is None:
+        return False, {"error": err}
+    if code != 0 and "--prefer-offline" in cmd and any(
+        marker in out for marker in _NPM_STALE_METADATA_MARKERS
+    ):
+        retry = [arg for arg in cmd if arg != "--prefer-offline"]
+        r_code, r_out, r_err = _npm_run_once(retry, cwd, timeout)
+        if r_code is not None:
+            code, out = r_code, r_out
+            if code == 0:
+                return True, {
+                    "log_tail": scrub_text(out[-2000:]),
+                    "stale_metadata_retry": True,
+                }
+    tail = scrub_text(out[-2000:])
+    if code != 0:
+        return False, {"error": f"npm exited {code}", "log_tail": tail}
     return True, {"log_tail": tail}
 
 

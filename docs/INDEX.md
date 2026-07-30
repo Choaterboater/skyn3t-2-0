@@ -9,6 +9,7 @@ Open this folder as an Obsidian vault if you want backlinks and graph navigation
 | [`WORKFLOW.md`](WORKFLOW.md) | How work moves through SkyN3t |
 | [`FILE_MAP.md`](FILE_MAP.md) | Owner map for important code |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | System architecture and package map |
+| [`MOA.md`](MOA.md) | Mixture-of-Agents advisory council (multi-provider) |
 | [`APP_TYPES.md`](APP_TYPES.md) | UI/style defaults by app type |
 | [`ENGINE_OPTIONS.md`](ENGINE_OPTIONS.md) | Engine selection guidance |
 | [`ADDING_A_STACK.md`](ADDING_A_STACK.md) | How to add a new build target (stack or variant) |

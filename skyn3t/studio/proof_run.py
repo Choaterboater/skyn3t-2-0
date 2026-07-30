@@ -2805,6 +2805,75 @@ def _looks_like_source_path_header(line: str, rel: str) -> bool:
     return clean in {rel, Path(rel).name}
 
 
+_BULLET_WRAPPER_RE = re.compile(r"^([•*+-])[ \t]+(?=\S)")
+
+
+def strip_markdown_bullet_wrapper_in_source_files(root: str | Path) -> list[str]:
+    """Unwrap a source file the agent wrote as a markdown BULLET instead of code.
+
+    Sibling of strip_markdown_fences_in_source_files — same defect (markdown
+    chrome persisted as file content), different shape, and this one is nastier
+    because it survives every existing guard.
+
+    Observed shipping as a real Astro homepage (12,910 bytes, so it looks
+    substantial)::
+
+        * ---
+          const lessons = [
+            {
+
+The whole file is the agent's rendered bullet: a marker on line 1 and every
+    following line indented beneath it. It is not prose — `_looks_like_prose`
+    correctly returns False because the content genuinely is code — so
+    validate_source passes it and it ships. But `* ---` is not an Astro
+    frontmatter opener, so the page is broken.
+
+    Detection is deliberately narrow: a bullet marker on the first non-blank
+    line AND every other non-blank line indented by a common margin of >= 2.
+    Real source has top-level lines at column 0 (imports, declarations, a
+    closing brace), so a file where nothing else reaches column 0 is a wrapper,
+    not a program. Never raises."""
+    root = Path(root)
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in _SOURCE_FENCE_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        head_at = 0
+        while head_at < len(lines) and not lines[head_at].strip():
+            head_at += 1
+        if head_at >= len(lines):
+            continue
+        match = _BULLET_WRAPPER_RE.match(lines[head_at])
+        if not match:
+            continue
+        rest = lines[head_at + 1:]
+        body = [ln for ln in rest if ln.strip()]
+        if not body:
+            continue
+        common = min(len(ln) - len(ln.lstrip(" ")) for ln in body)
+        if common < 2:
+            continue
+        rebuilt = (
+            lines[:head_at]
+            + [lines[head_at][match.end():]]
+            + [(ln[common:] if ln.strip() else ln) for ln in rest]
+        )
+        new_text = "\n".join(rebuilt) + ("\n" if text.endswith("\n") else "")
+        if new_text == text:
+            continue
+        try:
+            f.write_text(new_text, encoding="utf-8")
+        except OSError:
+            continue
+        changed.append(str(f.relative_to(root)).replace("\\", "/"))
+    return changed
+
+
 def strip_markdown_fences_in_source_files(root: str | Path) -> list[str]:
     """Remove accidental markdown wrappers from source files.
 
@@ -3539,6 +3608,10 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     repeatedly (a complete tree is a no-op). Never raises on an individual
     repair's expected filesystem errors (each function is already defensive)."""
     source_fences = strip_markdown_fences_in_source_files(project_dir)
+    # Same defect as the fences above, different shape: the file is the agent's
+    # rendered markdown BULLET rather than code. Runs first so every later
+    # repair reads real source instead of an indented wrapper.
+    bullet_wrappers = strip_markdown_bullet_wrapper_in_source_files(project_dir)
     sanitized = sanitize_package_json_deps(project_dir)
     relinked = relink_unresolved_relative_imports(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
@@ -3608,6 +3681,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "imports_scaffolded": stubbed,
         "use_client_added": use_client,
         "source_fences_stripped": source_fences,
+        "bullet_wrappers_stripped": bullet_wrappers,
         "path_alias_config": alias_cfg,
         "vitest_alias_config": vitest_alias_cfg,
         "ts_in_js_stripped": ts_stripped,

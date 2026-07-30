@@ -757,7 +757,7 @@ class ModelRouter:
         try:
             if not path.exists():
                 return {}
-            raw = json.loads(path.read_text())
+            raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 return {}
             out: dict[str, str] = {}
@@ -967,7 +967,7 @@ class ModelRouter:
         path = self.settings.data_dir / "model_tier_overrides.json"
         if path.exists():
             try:
-                return json.loads(path.read_text())
+                return json.loads(path.read_text(encoding="utf-8"))
             except Exception as exc:  # noqa: BLE001
                 log.warning("router.overrides_unreadable", error=str(exc))
         return {}

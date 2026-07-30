@@ -101,7 +101,7 @@ class ModelTournament:
         if self.path is None or not self.path.exists():
             return
         try:
-            raw = json.loads(self.path.read_text())
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - unreadable/corrupt file
             if _log:
                 _log.warning("tournament.load_failed", error=str(exc))

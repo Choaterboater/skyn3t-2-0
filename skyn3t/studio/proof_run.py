@@ -3282,6 +3282,83 @@ def format_ruff_python_sources(project_dir: str | Path) -> list[str]:
 
 
 _NODE_TEST_EXTS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")
+# A leading import/export is the unambiguous ESM marker; `require(`/__dirname/
+# module.exports are the CommonJS ones. A file carrying BOTH is ambiguous and is
+# deliberately left for the fix loop rather than guessed at.
+_ESM_SYNTAX_RE = re.compile(r"^\s*(?:import[\s{(]|export[\s{*])", re.MULTILINE)
+_CJS_SYNTAX_RE = re.compile(r"\brequire\s*\(|\b__dirname\b|\b__filename\b|\bmodule\.exports\b")
+
+
+def repair_commonjs_test_extensions(project_dir: str | Path) -> list[str]:
+    """Rename ``*.test.js`` to ``*.test.cjs`` when the file is CommonJS but
+    package.json declares ``"type": "module"``.
+
+    Codegen routinely emits a module-type package.json and then writes tests in
+    CommonJS, which Node refuses outright::
+
+        ReferenceError: require is not defined in ES module scope
+
+    Renaming wins over rewriting to ESM because of ``__dirname``. Measured on a
+    real delivered suite, all seven test files called
+    ``path.resolve(__dirname, '..')`` — a binding an ES module does not have —
+    so converting would mean rewriting every require AND substituting
+    ``import.meta.dirname``. The rename fixes both and touches no code.
+
+    Do-no-harm boundaries: only ``*.test.js`` (never app source, whose importers
+    would break), never ``.mjs`` (explicitly ESM by extension), never a file
+    that already parses as ESM (the rename would break a working test), never a
+    mixed file, and never over an existing ``.cjs``. Runs BEFORE
+    ``repair_node_test_script`` so the emitted glob follows the new extension."""
+    import json as _json
+
+    root = Path(project_dir)
+    pkg_path = root / "package.json"
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict) or str(pkg.get("type") or "") != "module":
+        return []
+
+    renamed: list[str] = []
+    for path in sorted(root.rglob("*.test.js")):
+        if "node_modules" in path.parts:
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        if not _CJS_SYNTAX_RE.search(body) or _ESM_SYNTAX_RE.search(body):
+            continue
+        target = path.parent / (path.name[: -len(".js")] + ".cjs")
+        if target.exists():
+            continue
+        try:
+            path.rename(target)
+        except OSError:
+            continue
+        renamed.append(path.relative_to(root).as_posix())
+
+    scripts = pkg.get("scripts")
+    if renamed and isinstance(scripts, dict):
+        touched = False
+        for key, value in list(scripts.items()):
+            if not isinstance(value, str):
+                continue
+            updated = value
+            for rel in renamed:
+                new_rel = rel[: -len(".js")] + ".cjs"
+                updated = updated.replace(rel, new_rel).replace(
+                    rel.replace("/", "\\"), new_rel.replace("/", "\\"))
+            if updated != value:
+                scripts[key] = updated
+                touched = True
+        if touched:
+            try:
+                pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+    return renamed
 
 
 def repair_node_test_script(project_dir: str | Path) -> list[str]:
@@ -3410,12 +3487,18 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # they see the final generated Python source.
     python_imports = sort_ruff_imports(project_dir)
     python_formatted = format_ruff_python_sources(project_dir)
+    # CommonJS tests under `"type": "module"` are refused by Node outright.
+    # MUST precede repair_node_test_script: that one derives its glob from the
+    # extensions actually on disk, so renaming afterwards would leave the glob
+    # pointing at files that no longer exist.
+    cjs_tests = repair_commonjs_test_extensions(project_dir)
     # `node --test <dir>` does not walk the directory on Node 24 — it resolves
     # the positional as a module entry point and dies MODULE_NOT_FOUND, so the
     # suite reports one failing "test" naming a CJS loader even for a pure-ESM
     # app whose tests are perfect. Rewrite it to the glob form that works.
     node_test_script = repair_node_test_script(project_dir)
     return {
+        "cjs_tests_renamed": cjs_tests,
         "node_test_script": node_test_script,
         "npm_deps_added": added,
         "npm_deps_sanitized": sanitized,

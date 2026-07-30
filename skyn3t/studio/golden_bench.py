@@ -171,6 +171,12 @@ _REQUIRED_SAFETY_PROFILE: dict[str, bool | int | float | str] = {
     # silently score a different contract than the one it claims to gate.
     "build_posture": "release",
     "blocking_gates": "",
+    # The council ships ON. A bench inherits the operator's Settings, so without
+    # this an operator who has named advisors would fan out extra models on
+    # every case — non-deterministic input to a measurement whose whole point is
+    # comparability, and billed silently. Same reasoning as best_of_n=1 above.
+    "moa_enabled": False,
+    "moa_advisors": "",
 }
 _NON_RESULT_SETTING_NAMES = frozenset(
     {

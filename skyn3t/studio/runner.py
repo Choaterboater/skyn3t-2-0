@@ -884,9 +884,13 @@ class StudioRunner:
         try:
             from skyn3t.intelligence.council import CouncilEngine
 
-            # Same client the intent judge uses: it shares the build's
-            # BudgetTracker contextvar, so advisor spend counts against
-            # per_build_usd_cap automatically and cannot escape the cap.
+            # Same client the intent judge uses, so advisors share the build's
+            # BudgetTracker contextvar. That does NOT mean per_build_usd_cap
+            # contains them: a CLI backend reports cost_usd=0.0 on every path
+            # (llm.py, cost_source="not_reported_by_cli"), so CLI advisors add
+            # $0.00 to spent_build however much subscription they burn. The cap
+            # binds OpenRouter slots only; CLI slots are bounded by
+            # moa_advisor_timeout and cli_max_concurrency instead. See docs/MOA.md.
             llm = self._intent_llm()
             if llm is None:
                 return extra
@@ -5194,7 +5198,8 @@ class StudioRunner:
             # argument the art plan above makes: recomputing per best-of-N
             # trajectory would multiply spend AND advise each candidate
             # differently, destroying the premise that trajectories differ only
-            # by model. Off unless configured; never gates anything.
+            # by model. On by default but inert until advisors are named; this
+            # await is INLINE, so a slow council delays codegen. Never gates.
             extra = await self._run_moa_council(brief, manifest, extra, plan)
 
             # Budget guard wiring for this build (all best-effort). Cost tracking

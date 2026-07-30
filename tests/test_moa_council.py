@@ -78,7 +78,40 @@ def test_council_fans_out_across_every_configured_provider(tmp_path):
     assert "Advisor 1 — claude_cli:sonnet" in advice.guidance
 
 
-def test_disabled_council_makes_no_calls(tmp_path):
+def test_the_shipped_default_is_on_but_inert(tmp_path, monkeypatch):
+    """What actually ships, with conftest's suite-wide pins removed.
+
+    The council ships ON with two advisors, and they are deliberately NOT the
+    acting model: auto routes codegen to Codex, so advising with Claude and
+    Kimi is what makes the council multi-model rather than Codex reviewing
+    itself. Copilot stays out, matching auto_cli_priority.
+
+    Inert on the stub backend regardless — that short-circuit is now the fence
+    keeping an offline run free, since neither the master switch nor the
+    advisor list is empty any more.
+    """
+    monkeypatch.delenv("SKYN3T_MOA_ENABLED", raising=False)
+    monkeypatch.delenv("SKYN3T_MOA_ADVISORS", raising=False)
+
+    shipped = Settings(data_dir=tmp_path / "data", logs_dir=tmp_path / "logs")
+
+    assert shipped.moa_enabled is True
+    assert [s.address for s in CouncilEngine(_FakeLLM(), shipped).slots()] == [
+        "claude_cli", "kimi_cli",
+    ]
+    assert "codex" not in shipped.moa_advisors, "the actor must not advise itself"
+    assert "copilot" not in shipped.moa_advisors
+
+    stub = _FakeLLM()
+    stub.backend = "stub"
+    advice = _advise(CouncilEngine(stub, shipped))
+    assert stub.calls == []
+    assert advice.guidance == ""
+
+
+def test_the_master_switch_off_makes_no_calls(tmp_path):
+    """Explicitly disabled — no longer the shipped default, so this covers the
+    override rather than what ships. See the defaults test above."""
     llm = _FakeLLM()
     advice = _advise(CouncilEngine(llm, _settings(tmp_path, moa_enabled=False)))
 
@@ -87,6 +120,8 @@ def test_disabled_council_makes_no_calls(tmp_path):
 
 
 def test_no_configured_advisors_makes_no_calls(tmp_path):
+    """Clearing moa_advisors is the ordinary way to turn the council off now
+    that the master switch defaults on."""
     llm = _FakeLLM()
     advice = _advise(CouncilEngine(llm, _settings(tmp_path, moa_advisors="")))
 

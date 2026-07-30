@@ -30,9 +30,18 @@ physically impossible for four of five backends.
 
 ## Configuration
 
+The council is **on by default**, advised by `claude_cli` and `kimi_cli`. Those
+two are chosen because `auto` routes codegen to Codex first, so advising with
+the other two makes the council genuinely multi-model instead of Codex reviewing
+its own work. A slot whose CLI is not installed is recorded as a failed advisor
+and the build proceeds on the survivors, so the default costs nothing on a
+machine without them.
+
+To turn it off, clear the advisor list (`SKYN3T_MOA_ADVISORS=""`) or flip the
+master switch (`SKYN3T_MOA_ENABLED=0`). To change who advises:
+
 ```bash
-SKYN3T_MOA_ENABLED=1
-# Simplest: let every CLI use its own configured default model.
+# Let every CLI use its own configured default model.
 SKYN3T_MOA_ADVISORS="codex_cli,claude_cli,kimi_cli"
 # Or pin explicitly (verified working):
 SKYN3T_MOA_ADVISORS="codex_cli,claude_cli:sonnet,kimi_cli:kimi-code/k3"
@@ -61,10 +70,10 @@ on the survivors.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `moa_enabled` | `false` | Master switch. |
-| `moa_advisors` | `""` | Comma-separated `provider:model` slots. Model optional. Empty ⇒ off even when enabled. |
+| `moa_enabled` | `true` | Master switch. Set `SKYN3T_MOA_ENABLED=0` to force off. |
+| `moa_advisors` | `"claude_cli,kimi_cli"` | Comma-separated `provider:model` slots. Model optional. Empty ⇒ off even when enabled, and clearing it is the ordinary off-switch. Excludes the usual acting model on purpose. |
 | `moa_max_concurrency` | `4` | Concurrent advisor calls (per-provider limits still apply underneath). |
-| `moa_advisor_timeout` | `180` | Seconds per advisor. A slow advisor is **dropped**, never waited on. |
+| `moa_advisor_timeout` | `60` | Seconds per advisor, then **dropped**. Bounds — but does not eliminate — added build latency; see Cost. |
 | `moa_advisor_max_tokens` | `1200` | Output cap. Binds on OpenRouter only — `complete()` cannot pass `max_tokens` to a CLI. |
 | `moa_advisor_block_bytes` | `3000` | Hard per-advisor byte budget for the assembled guidance. |
 | `moa_trace_enabled` | `false` | Append a full-fidelity JSONL line per run under `logs_dir/moa/`. |
@@ -102,11 +111,27 @@ Honestly: this is **N extra completions per build**, on top of codegen. Three
 advisors at ~1200 output tokens each is real spend on a build that previously
 cost one codegen session.
 
-Advisor spend counts against `per_build_usd_cap` automatically — the council uses
-the same `LLMClient` as the intent judge, so it shares the build's
-`BudgetTracker` contextvar and cannot escape the cap. Note that
-`per_build_usd_cap` **defaults to `0.0`, which means disabled**. Set it if you
-want a ceiling.
+**`per_build_usd_cap` does not contain a CLI council.** The contextvar plumbing
+is real — advisors share the build's `BudgetTracker` and cannot escape the
+accounting context — but a CLI backend reports no price: `_cli` hard-codes
+`cost_usd=0.0, cost_source="not_reported_by_cli"` (`adapters/llm.py:2802`) on
+every path, success and failure alike. So two `claude_cli`/`kimi_cli` advisors
+add exactly **$0.00** to `spent_build` no matter how much subscription they
+consume, and any cap you set is compared against zero forever. The cap binds
+**OpenRouter advisor slots only**. (`per_build_usd_cap` also defaults to `0.0`,
+which means *disabled*, not *zero spend allowed*.)
+
+What actually bounds a CLI council is not currency:
+
+- `moa_advisor_timeout` (60s) × `ceil(N / moa_max_concurrency)` — the council is
+  awaited **inline before codegen**, so this is added build latency, not
+  background work
+- `cli_max_concurrency` admission, and one fan-out per build over exactly the
+  slots you named
+- `daily_token_cap`, via an estimated `len(text) // 4` — also disabled by default
+
+The honest summary: for signed-in CLI advisors the real cost is subscription
+rate-limit consumption and wall clock, and SkyN3t cannot meter either.
 
 Slots dropped by `free_only` (a paid OpenRouter pin) or `no_claude` are recorded
 in `manifest.extra["moa"]["dropped"]` with a reason, so a council that looks

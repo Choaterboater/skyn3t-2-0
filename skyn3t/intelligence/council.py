@@ -40,7 +40,8 @@ Deliberately NOT ported, and why:
 * the privacy filter (``moa_loop.py:24-150``) — this is a local lab.
 
 Design rules this module answers to (docs/ARCHITECTURE.md): #5 cheap by default
-(off unless configured, one fan-out per build), #6 degrade don't crash (an
+(the master switch ships ON, but ``moa_advisors`` ships EMPTY, so a fresh
+checkout still makes zero calls; one fan-out per build), #6 degrade don't crash (an
 advisor failure, a dead provider, or a council exception can never fail a
 build). It adds NO gate: the council never inspects output, never scores, never
 touches the verdict.
@@ -216,6 +217,12 @@ class CouncilEngine:
         suite's codegen prompts byte-stable and offline builds at $0, and stops
         a stub's canned "Offline response." text being injected as if it were
         real advice.
+
+        That stub check now carries more weight than it used to. ``moa_enabled``
+        defaults True, so it is no longer a second, independent fence behind an
+        off-by-default switch — for an offline run it is THE fence, alongside
+        the empty ``moa_advisors`` default. Do not weaken either without
+        replacing the guarantee.
         """
         if not bool(getattr(self.settings, "moa_enabled", False)):
             return False

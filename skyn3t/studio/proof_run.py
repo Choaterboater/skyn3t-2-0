@@ -4090,31 +4090,6 @@ def proof_run(
     if mock_seam is not None:
         detail["mock_llm"] = "active"
     try:
-        # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
-        # A real failure fails the proof (and routes into the fix loop). Inability to
-        # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
-        if run_tests and passed:
-            ran, tests_passed, summary = _run_generated_tests(
-                pdir, stack, test_timeout, cmd_ctx, extra_env=mock_env)
-            if ran:
-                detail["tests"] = "passed" if tests_passed else "failed"
-                detail["test_summary"] = summary
-                if not tests_passed:
-                    # LLM-authored tests are wrong far more often than the app
-                    # is. Under lab posture record and still feed the fix loop
-                    # (detail is unchanged, so error_gaps() is identical) rather
-                    # than failing a delivery over a bad generated assertion.
-                    if lab_posture:
-                        advisory_failures.append("tests")
-                    else:
-                        passed = False
-                    if "<tests>" not in missing:
-                        missing = [*missing, "<tests>"]
-            else:
-                detail["tests"] = "skipped"
-                if summary:
-                    detail["test_summary"] = summary
-
         # Behaviour, not vibes: compile an emitted project through its native
         # package workflow. Node/web uses npm and Python packages build an isolated
         # wheel; a static manifest check alone can greenlight a tree that cannot be
@@ -4199,6 +4174,42 @@ def proof_run(
                     detail.setdefault("build", "skipped")
                     if summary:
                         detail["build_summary"] = summary
+
+        # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
+        # A real failure fails the proof (and routes into the fix loop). Inability to
+        # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
+        #
+        # AFTER the build, deliberately. Delivered apps declare build-then-test
+        # themselves — one measured here was literally
+        # `"test": "npm run build && python -m pytest"` — and running the probe
+        # first meant every assertion against build output failed on a missing
+        # dist/. On that build a YouTube-links test found 0 and read as an
+        # unimplemented brief requirement; the source had 22 such references and
+        # the built output has 29. Node tests were always post-build; this makes
+        # the generic probe agree. It also fails better: `passed` is already
+        # False when the build failed, so tests are skipped rather than
+        # producing a pile of downstream failures the build caused.
+        if run_tests and passed:
+            ran, tests_passed, summary = _run_generated_tests(
+                pdir, stack, test_timeout, cmd_ctx, extra_env=mock_env)
+            if ran:
+                detail["tests"] = "passed" if tests_passed else "failed"
+                detail["test_summary"] = summary
+                if not tests_passed:
+                    # LLM-authored tests are wrong far more often than the app
+                    # is. Under lab posture record and still feed the fix loop
+                    # (detail is unchanged, so error_gaps() is identical) rather
+                    # than failing a delivery over a bad generated assertion.
+                    if lab_posture:
+                        advisory_failures.append("tests")
+                    else:
+                        passed = False
+                    if "<tests>" not in missing:
+                        missing = [*missing, "<tests>"]
+            else:
+                detail["tests"] = "skipped"
+                if summary:
+                    detail["test_summary"] = summary
 
         # A delivered Python project that explicitly configures Ruff promises a
         # quality contract beyond syntax and package assembly. The deterministic

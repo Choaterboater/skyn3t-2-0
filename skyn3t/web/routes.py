@@ -1036,11 +1036,85 @@ def _restore_submission_routing_trace(
     rec.model_trace = trace
 
 
+def _normalize_moa_advisors(value: Any) -> str | None:
+    """Coerce a dashboard advisor selection into a slot string.
+
+    Accepts a list (checkbox selection) or a comma string. ``None``/absent means
+    "use the configured default"; an explicit empty list or string means "no
+    advisors for THIS build" — the two are deliberately different, so unchecking
+    every box is honoured rather than silently falling back to the default.
+    Unknown providers are dropped here so a hand-crafted request cannot smuggle
+    an arbitrary token into an advisor slot.
+    """
+    if value is None:
+        return None
+    from skyn3t.adapters.model_slot import parse_slots
+
+    if isinstance(value, (list, tuple, set)):
+        raw = ",".join(str(v) for v in value)
+    else:
+        raw = str(value)
+    # Require a RECOGNISED provider. parse_slots treats an unknown token as a
+    # bare model id on the active backend, which is right for an operator's
+    # settings string but wrong for request input: it would let a caller aim an
+    # advisor at an arbitrary model instead of picking from the offered list.
+    return ",".join(slot.address for slot in parse_slots(raw) if slot.provider)
+
+
+async def cli_providers_payload(state: AppState) -> dict[str, Any]:
+    """Selectable advisor providers with live availability, for the build form.
+
+    Registry-driven so a newly supported backend appears in the GUI with no
+    route change (the same rule ``gates_payload`` follows). ``available``
+    reflects PATH detection only — it cannot prove a CLI is signed in, so a
+    listed provider may still fail at call time and be recorded as a failed
+    advisor rather than breaking the build.
+    """
+    from skyn3t.adapters.llm import KNOWN_CLI_PROVIDERS, LLMClient, openrouter_key
+    from skyn3t.adapters.model_slot import parse_slots
+
+    settings = state.settings
+    labels = {
+        "codex": "Codex CLI",
+        "claude": "Claude Code CLI",
+        "kimi": "Kimi Code CLI",
+        "copilot": "GitHub Copilot CLI",
+    }
+    selected = {s.address for s in parse_slots(getattr(settings, "moa_advisors", "") or "")}
+    providers: list[dict[str, Any]] = []
+    for name in KNOWN_CLI_PROVIDERS:
+        slot = f"{name}_cli"
+        try:
+            available = bool(LLMClient._cli_available(name))
+        except Exception:  # noqa: BLE001 - a probe failure must not 500 the route
+            available = False
+        providers.append({
+            "slot": slot,
+            "provider": name,
+            "label": labels.get(name, name),
+            "available": available,
+            "selected": slot in selected,
+        })
+    providers.append({
+        "slot": "openrouter",
+        "provider": "openrouter",
+        "label": "OpenRouter (hosted)",
+        "available": bool(openrouter_key(settings)),
+        "selected": any(s.startswith("openrouter") for s in selected),
+    })
+    return {
+        "providers": providers,
+        "moa_enabled": bool(getattr(settings, "moa_enabled", False)),
+        "default_advisors": getattr(settings, "moa_advisors", "") or "",
+    }
+
+
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
                        reference_image: str = "", reference_images: list[str] | None = None,
                        build_profile: str = "cheap_learned",
                        model_override: str = "", full_app: bool = False,
-                       source_product_spec: dict[str, Any] | None = None) -> dict[str, Any]:
+                       source_product_spec: dict[str, Any] | None = None,
+                       moa_advisors: str | None = None) -> dict[str, Any]:
     """Queue a build. Uses the studio if wired, else records + emits an event.
 
     ``reference_image`` is an optional base64 ``data:`` URL; ``reference_images``
@@ -1124,6 +1198,11 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     }
     if source_product_spec is not None:
         build_extra["source_product_spec"] = deepcopy(source_product_spec)
+    if moa_advisors is not None:
+        # Per-build advisory-council selection from the dashboard picker. An
+        # explicit empty string means "no advisors for this build", which is
+        # distinct from the key being absent (use the configured default).
+        build_extra["moa_advisors"] = str(moa_advisors)
     build_extra.update(
         _orchestration_extra(
             profile,
@@ -6314,7 +6393,18 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "github_similarity_max_repos", "proof_ladder_required",
             "build_graph_max_concurrency", "cortex_candidates_enabled",
             "cortex_candidate_auto_merge",
-            "cortex_candidate_merge_strategy", "cortex_candidate_timeout")
+            "cortex_candidate_merge_strategy", "cortex_candidate_timeout",
+            # Gate posture: whether a gate's finding BLOCKS the verdict, as
+            # opposed to whether the gate RUNS (that stays each gate's own
+            # *_enabled flag, driven by gates_payload/set_gate_enabled).
+            "build_posture", "blocking_gates",
+            # Multi-provider routing.
+            "auto_cli_priority", "auto_allow_openrouter",
+            "cli_max_concurrency", "provider_max_concurrency",
+            # Mixture-of-Agents advisory council.
+            "moa_enabled", "moa_advisors", "moa_max_concurrency",
+            "moa_advisor_timeout", "moa_advisor_max_tokens",
+            "moa_advisor_block_bytes", "moa_trace_enabled")
     payload = {k: getattr(s, k, None) for k in keys}
     deploy = await deploy_settings_payload(state)
     payload["allow_remote_deploy"] = deploy["allow_remote_deploy"]
@@ -6502,6 +6592,10 @@ def build_router(state: AppState) -> Any:
     async def _settings() -> dict[str, Any]:
         return await settings_payload(state)
 
+    @router.get("/cli-providers", dependencies=[auth])
+    async def _cli_providers() -> dict[str, Any]:
+        return await cli_providers_payload(state)
+
     @router.get("/builds", dependencies=[auth])
     async def _builds_alias(limit: int = Query(default=25, ge=1, le=200)) -> dict[str, Any]:
         return await list_builds(state, limit=limit)
@@ -6520,6 +6614,7 @@ def build_router(state: AppState) -> Any:
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=_coerce_bool(body.get("full_app", False)),
+                moa_advisors=_normalize_moa_advisors(body.get("moa_advisors")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -7176,6 +7271,7 @@ def build_router(state: AppState) -> Any:
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=_coerce_bool(body.get("full_app", False)),
+                moa_advisors=_normalize_moa_advisors(body.get("moa_advisors")),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

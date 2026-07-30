@@ -58,3 +58,4 @@ dist/
 .eggs/
 /skyn3t/cortex/staged/
 .DS_Store
+data/*.sqlite3

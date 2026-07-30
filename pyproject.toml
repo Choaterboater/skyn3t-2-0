@@ -110,6 +110,8 @@ filterwarnings = [
 markers = [
     "real_cli_vision: opt out of the suite-wide CLI-vision neutering (test stubs which/subprocess itself)",
     "requires_loopback: test binds a local 127.0.0.1 socket and is skipped when loopback bind is unavailable",
+    "requires_docker: test needs a reachable Docker daemon (preview supervisor / reverify runtime probe)",
+    "requires_posix_modes: test asserts POSIX permission bits chmod cannot represent on Windows",
 ]
 
 [tool.ruff]

@@ -81,6 +81,7 @@ from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
 from skyn3t.studio.finance_sanity import check_finance_sanity
 from skyn3t.studio.fix_feedback import format_fix_feedback
+from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.studio.gate_verdict import GateVerdict
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.lab_policy import LabAutonomyPolicy
@@ -869,6 +870,66 @@ class StudioRunner:
             log.warning("recall.failed", error=str(exc))
             return []
 
+    # ---- Mixture-of-Agents advisory council (opt-in) --------------------
+    async def _run_moa_council(
+        self, brief: str, manifest, extra: dict[str, Any], plan,
+    ) -> dict[str, Any]:
+        """Fan out to advisor models and thread their guidance into codegen.
+
+        Records a bounded summary in ``manifest.extra["moa"]``. Never raises and
+        never influences the verdict: with the council off, all advisors failed,
+        or any unexpected error, ``extra`` comes back untouched and the codegen
+        prompt is byte-identical to a council-off build.
+        """
+        try:
+            from skyn3t.intelligence.council import CouncilEngine
+
+            # Same client the intent judge uses: it shares the build's
+            # BudgetTracker contextvar, so advisor spend counts against
+            # per_build_usd_cap automatically and cannot escape the cap.
+            llm = self._intent_llm()
+            if llm is None:
+                return extra
+            # A per-build advisor selection (dashboard picker) overrides the
+            # configured default. Absent key -> fall back to settings.
+            selected = extra.get("moa_advisors") if isinstance(extra, dict) else None
+            engine = CouncilEngine(
+                llm,
+                self.settings,
+                advisors=str(selected) if selected is not None else None,
+            )
+            if not engine.enabled():
+                return extra
+            files = (plan.checklist or []) if hasattr(plan, "checklist") else []
+            plan_block = "\n".join(f"  {f}" for f in list(files)[:40])
+            advice = await engine.advise(
+                brief=brief,
+                stack=str(getattr(plan, "stack", "") or ""),
+                plan=plan_block,
+            )
+            manifest.extra["moa"] = advice.to_dict()
+            from skyn3t.intelligence.council_trace import save_council_run
+
+            save_council_run(
+                self.settings,
+                build_id=str(getattr(manifest, "build_id", "") or manifest.slug),
+                slug=str(manifest.slug),
+                stack=str(getattr(plan, "stack", "") or ""),
+                task=plan_block,
+                advice=advice,
+            )
+            if advice.guidance:
+                extra = {**extra, "moa_guidance": advice.guidance}
+                log.info(
+                    "moa.council_ready",
+                    advisors=advice.ok_count,
+                    chars=len(advice.guidance),
+                    cost_usd=advice.cost_usd,
+                )
+        except Exception as exc:  # noqa: BLE001 - the council may never break a build
+            log.warning("moa.step_failed", error=str(exc)[:160])
+        return extra
+
     # ---- asset generation (Replicate, opt-in) ---------------------------
     async def _generate_assets(
         self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any],
@@ -1142,6 +1203,21 @@ class StudioRunner:
         the learning loop (graded on score) isn't trained backward by failures."""
         return min(float(score), 49.0) if verdict != "go" else float(score)
 
+    def _score_after_finding(self, score: float, verdict: str) -> float:
+        """Score once a gate recorded a real (non-skipped) failed finding.
+
+        A blocked finding clamps to the failed-delivery band as before. A finding
+        that did NOT block (lab posture) still must not carry a success-looking
+        score: it caps at ``degraded_proof_score_cap``, the same honesty rule
+        already applied to a go earned under degraded proof evidence. Otherwise
+        the learning loop (graded on score) would be trained that a build with
+        six recorded findings is a 95.
+        """
+        if verdict != "go":
+            return self._clamp_score_to_verdict(score, verdict)
+        cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        return min(float(score), cap)
+
     @staticmethod
     def _game_quality_gate_ok(ok: bool | None, skipped: bool, gates: bool) -> bool:
         """Visual/QA verdict gate for game stacks. Blocks ONLY on a REAL, non-skipped
@@ -1263,7 +1339,55 @@ class StudioRunner:
             )
         return verdict, None
 
-    def _run_product_quality_gates(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+    def _gate_outcome(
+        self,
+        manifest,
+        gate: str,
+        ok: bool | None,
+        verdict: str,
+        reason: str = "",
+        *,
+        posture: GatePosture | None = None,
+    ) -> str:
+        """Record one gate finding and return the verdict the posture allows.
+
+        ``ok is None`` means the gate COULD NOT RUN: recorded, never blocking,
+        in every posture (``GateVerdict.skipped`` semantics generalised — see
+        :mod:`skyn3t.studio.gate_posture`).
+
+        This only writes the uniform ``gate_findings`` ledger; each gate keeps
+        writing its own legacy ``manifest.extra`` key with its own wording, so
+        every existing consumer and assertion is untouched.
+        """
+        if ok is True:
+            return verdict
+        resolved = posture if posture is not None else GatePosture.from_settings(self.settings)
+        if ok is None:
+            status, blocked = "skipped", False
+        else:
+            status, blocked = "failed", resolved.blocks(gate)
+        findings = manifest.extra.setdefault("gate_findings", [])
+        if isinstance(findings, list):
+            findings.append(
+                {
+                    "gate": str(gate),
+                    "status": status,
+                    "reason": str(reason)[:500],
+                    "blocked": blocked,
+                    "posture": resolved.posture,
+                }
+            )
+        log.info(
+            "gate.finding",
+            gate=str(gate),
+            status=status,
+            blocked=blocked,
+            posture=resolved.posture,
+        )
+        return "no_go" if blocked else verdict
+
+    def _run_product_quality_gates(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
+                                   *, posture: GatePosture | None = None):
         """Run brief-scoped product quality gates on the delivered tree."""
         brief = str(getattr(manifest, "brief", "") or getattr(plan, "brief", "") or "")
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
@@ -1288,15 +1412,18 @@ class StudioRunner:
             and workflow.get("ok") is False
         )
         if failed:
-            verdict = "no_go"
-            final_score = self._clamp_score_to_verdict(final_score, verdict)
-            manifest.score = final_score
             reasons: list[str] = []
             if finance.get("ok") is False:
                 reasons.extend(str(issue) for issue in finance.get("issues", [])[:3])
             if workflow.get("ok") is False:
                 reasons.extend(str(issue) for issue in workflow.get("issues", [])[:3])
-            manifest.extra["product_quality_gate"] = "; ".join(reasons)[:500]
+            reason = "; ".join(reasons)[:500]
+            manifest.extra["product_quality_gate"] = reason
+            verdict = self._gate_outcome(
+                manifest, "product_quality", False, verdict, reason, posture=posture
+            )
+            final_score = self._score_after_finding(final_score, verdict)
+            manifest.score = final_score
         return final_score, verdict
 
     def _apply_ai_native_gates(self, manifest, verdict: str) -> str:
@@ -1466,13 +1593,16 @@ class StudioRunner:
             }
         return shaped
 
-    def _apply_scaffold_stub_proof_gate(self, manifest, proof, final_score: float, verdict: str):
+    def _apply_scaffold_stub_proof_gate(self, manifest, proof, final_score: float, verdict: str,
+                                        *, posture: GatePosture | None = None):
         detail = getattr(proof, "detail", None) or {}
         reason = detail.get("scaffold_stub") if isinstance(detail, dict) else None
         if not reason:
             return final_score, verdict
-        verdict = "no_go"
-        final_score = self._clamp_score_to_verdict(final_score, verdict)
+        verdict = self._gate_outcome(
+            manifest, "scaffold_stub", False, verdict, str(reason), posture=posture
+        )
+        final_score = self._score_after_finding(final_score, verdict)
         manifest.score = final_score
         manifest.extra["scaffold_stub_gate"] = {
             "triggered": True,
@@ -1482,7 +1612,8 @@ class StudioRunner:
         }
         return final_score, verdict
 
-    def _run_security_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+    def _run_security_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
+                           *, posture: GatePosture | None = None):
         if not bool(getattr(self.settings, "security_check_enabled", True)):
             return final_score, verdict
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
@@ -1493,13 +1624,17 @@ class StudioRunner:
             sec = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
         manifest.extra["security_check"] = sec
         if sec.get("skipped") is not True and sec.get("ok") is False:
-            verdict = "no_go"
-            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            reason = "; ".join(str(i) for i in sec.get("issues", [])[:3])[:500]
+            manifest.extra["security_gate"] = reason
+            verdict = self._gate_outcome(
+                manifest, "security", False, verdict, reason, posture=posture
+            )
+            final_score = self._score_after_finding(final_score, verdict)
             manifest.score = final_score
-            manifest.extra["security_gate"] = "; ".join(str(i) for i in sec.get("issues", [])[:3])[:500]
         return final_score, verdict
 
-    def _run_web_polish_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+    def _run_web_polish_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
+                             *, posture: GatePosture | None = None):
         if not bool(getattr(self.settings, "web_polish_gate_enabled", True)):
             return final_score, verdict
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
@@ -1510,10 +1645,13 @@ class StudioRunner:
             polish = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
         manifest.extra["web_polish"] = polish
         if polish.get("skipped") is not True and polish.get("ok") is False:
-            verdict = "no_go"
-            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            reason = "; ".join(str(i) for i in polish.get("issues", [])[:3])[:500]
+            manifest.extra["web_polish_gate"] = reason
+            verdict = self._gate_outcome(
+                manifest, "web_polish", False, verdict, reason, posture=posture
+            )
+            final_score = self._score_after_finding(final_score, verdict)
             manifest.score = final_score
-            manifest.extra["web_polish_gate"] = "; ".join(str(i) for i in polish.get("issues", [])[:3])[:500]
         return final_score, verdict
 
     async def _reproof_after_post_proof_repairs(self, manifest, plan, project_dir, proof):
@@ -1681,6 +1819,7 @@ class StudioRunner:
         blocking: bool = True,
         routes: list[str] | tuple[str, ...] | None = None,
         include_discovered_routes: bool = True,
+        posture: GatePosture | None = None,
     ) -> tuple[float, str]:
         """Run Docker+Playwright or Maestro evidence for UI builds.
 
@@ -1746,12 +1885,44 @@ class StudioRunner:
             and step.get("status") != "passed"
         ]
         status = str(payload.get("status") or "failed")
-        suffix = f" ({', '.join(failed_steps[:4])})" if failed_steps else ""
-        manifest.extra["proof_ladder_gate"] = (
-            f"required UI proof did not pass: {status}{suffix}"
-        )
-        verdict = "no_go"
         cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        if status == "skipped":
+            # The ladder COULD NOT RUN (no docker/playwright/maestro on this
+            # host), which is not evidence that the app is broken.
+            # ProofLadderResult.finalize() already distinguishes skipped from
+            # failed; only `result.passed` collapsed the two, so every web build
+            # on a tooling-less host was no_go regardless of quality. Record the
+            # gap and cap the score — exactly what degraded_proof_score_cap is
+            # documented for — but never flip the verdict, in ANY posture: a
+            # gate that cannot run must not fail a build.
+            skipped_steps = [
+                str(step.get("name") or "proof")
+                for step in payload.get("steps", [])
+                if isinstance(step, dict)
+                and step.get("required")
+                and step.get("status") == "skipped"
+            ]
+            suffix = f" ({', '.join(skipped_steps[:4])})" if skipped_steps else ""
+            manifest.extra.pop("proof_ladder_gate", None)
+            manifest.extra["proof_ladder_unavailable"] = (
+                f"required UI proof tooling unavailable{suffix}"
+            )[:500]
+            final_score = min(final_score, cap)
+            manifest.score = final_score
+            log.info(
+                "proof_ladder.unavailable",
+                slug=getattr(plan, "slug", ""),
+                steps=skipped_steps[:4],
+            )
+            return final_score, verdict
+
+        manifest.extra.pop("proof_ladder_unavailable", None)
+        suffix = f" ({', '.join(failed_steps[:4])})" if failed_steps else ""
+        reason = f"required UI proof did not pass: {status}{suffix}"
+        manifest.extra["proof_ladder_gate"] = reason
+        verdict = self._gate_outcome(
+            manifest, "proof_ladder", False, verdict, reason, posture=posture
+        )
         final_score = min(final_score, cap)
         manifest.score = final_score
         return final_score, verdict
@@ -1950,6 +2121,7 @@ class StudioRunner:
         proof: Any,
         final_score: float,
         verdict: str,
+        posture: GatePosture | None = None,
     ) -> tuple[float, str, Any]:
         selection = self._requirement_trace_selection(product_spec, plan.stack)
         if selection.fully_bound and selection.safe_proof_ids:
@@ -1978,10 +2150,15 @@ class StudioRunner:
                 "acceptance_ids": list(selection.safe_proof_ids),
             }
             if (ran and not passed) or summary == "invalid source tree":
-                verdict = "no_go"
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    f"dependency stabilization failed: {str(summary)[:160]}",
+                    posture=posture,
+                )
         verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
         return await self._run_final_requirement_evidence(
-            manifest, product_spec, project_dir, plan, proof, final_score, verdict, selection
+            manifest, product_spec, project_dir, plan, proof, final_score, verdict,
+            selection, posture=posture,
         )
 
     async def _run_final_requirement_evidence(
@@ -1994,6 +2171,7 @@ class StudioRunner:
         final_score: float,
         verdict: str,
         selection: _RequirementTraceSelection,
+        posture: GatePosture | None = None,
     ) -> tuple[float, str, Any]:
         source_before = source_tree_snapshot(project_dir)
         source_current = source_before
@@ -2020,14 +2198,24 @@ class StudioRunner:
                 manifest.extra["proof"] = proof_payload
                 proof = final_proof
                 if not final_proof.passed:
-                    verdict = "no_go"
+                    verdict = self._gate_outcome(
+                        manifest, "proof", False, verdict,
+                        "final re-proof did not pass", posture=posture,
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"final proof failed to execute: {exc}"[:500])
-                verdict = "no_go"
+                # Could not RUN, which is not evidence the app is broken.
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    f"final proof failed to execute: {exc}"[:200], posture=posture,
+                )
             source_current = source_tree_snapshot(project_dir)
             if not self._same_evidence_snapshot(source_before, source_current):
                 errors.append("authored source changed during final proof")
-                verdict = "no_go"
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    "authored source changed during final proof", posture=posture,
+                )
         global_ladder = bool(getattr(self.settings, "proof_ladder_required", True)) and (
             plan.stack in _UI_WEB_STACKS or plan.stack == "react_native"
         )
@@ -2056,7 +2244,10 @@ class StudioRunner:
                 after_ladder = source_tree_snapshot(project_dir)
                 if not self._same_evidence_snapshot(source_current, after_ladder):
                     errors.append("authored source changed during final UI proof")
-                    verdict = "no_go"
+                    verdict = self._gate_outcome(
+                        manifest, "requirement_trace", False, verdict,
+                        "authored source changed during final UI proof", posture=posture,
+                    )
                 source_current = after_ladder
                 if plan.stack in _WEB_STACKS:
                     try:
@@ -2075,10 +2266,23 @@ class StudioRunner:
                 }
                 if global_ladder:
                     manifest.extra["proof_ladder_gate"] = f"required UI proof did not run: {reason}"
-                verdict = "no_go"
+                # Routed through the recorder rather than assigning the verdict
+                # directly. "The UI proof could not RUN" is not evidence that the
+                # app is broken — the observed trigger was a preview fingerprint
+                # being unavailable because .gitignore changed mid-validation,
+                # which blocked a build whose objective proof had PASSED. The
+                # evidence is still recorded and the trace still fails closed;
+                # only the veto is now posture-governed.
+                verdict = self._gate_outcome(
+                    manifest, "proof_ladder", False, verdict,
+                    f"required UI proof did not run: {reason}", posture=posture,
+                )
         if errors:
             if selection.fully_bound or global_ladder:
-                verdict = "no_go"
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    "; ".join(str(e) for e in errors[:3]), posture=posture,
+                )
             manifest.extra["requirement_trace_evidence_errors"] = list(dict.fromkeys(errors))
         else:
             manifest.extra.pop("requirement_trace_evidence_errors", None)
@@ -2155,7 +2359,12 @@ class StudioRunner:
             trace.get("mode") == "enforced" and trace.get("go_eligible") is not True
         ) or (trace.get("mode") == "invalid" and selection.fully_bound)
         if blocked:
-            verdict = "no_go"
+            verdict = self._gate_outcome(
+                manifest, "requirement_trace", False, verdict,
+                f"requirement trace mode={trace.get('mode')} "
+                f"go_eligible={trace.get('go_eligible')}",
+                posture=posture,
+            )
             final_score = min(
                 final_score,
                 float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
@@ -2676,7 +2885,11 @@ class StudioRunner:
                 "note": "a post-repair stage left the delivered tree unbootable",
             }
             log.warning("runner.final_consistency_no_go", unresolved=final_unresolved[:10])
-            return "no_go"
+            return self._gate_outcome(
+                manifest, "final_consistency", False, verdict,
+                "unresolved imports after post-proof repair: "
+                + ", ".join(str(u) for u in final_unresolved[:4]),
+            )
         try:
             final_export_mismatches = _esm_named_export_mismatches(Path(project_dir))
         except Exception as exc:  # noqa: BLE001
@@ -2691,7 +2904,18 @@ class StudioRunner:
                 "runner.final_consistency_no_go",
                 named_export_mismatches=final_export_mismatches[:10],
             )
-            return "no_go"
+            # Entries are dicts ({importer, specifier, module, missing}), not
+            # strings — render them rather than joining raw.
+            rendered = ", ".join(
+                f"{m.get('importer', '?')} -> {m.get('specifier', '?')}"
+                f" missing {','.join(m.get('missing') or [])}"
+                if isinstance(m, dict) else str(m)
+                for m in final_export_mismatches[:4]
+            )
+            return self._gate_outcome(
+                manifest, "final_consistency", False, verdict,
+                f"invalid ESM named import/export contract after post-proof repair: {rendered}",
+            )
         if contract_clones_remaining:
             manifest.extra["final_consistency_check"] = {
                 "acceptance_contract_clones": contract_clones_remaining[:10],
@@ -2701,7 +2925,11 @@ class StudioRunner:
                 "runner.final_consistency_no_go",
                 acceptance_contract_clones=contract_clones_remaining[:10],
             )
-            return "no_go"
+            return self._gate_outcome(
+                manifest, "final_consistency", False, verdict,
+                "pytest-conflicting signed acceptance-test clones remain: "
+                + ", ".join(str(c) for c in contract_clones_remaining[:4]),
+            )
         return verdict
 
     @staticmethod
@@ -4642,6 +4870,11 @@ class StudioRunner:
         # one immutable policy for this request so later builds see live
         # settings without concurrent builds changing each other's decisions.
         lab_policy = LabAutonomyPolicy.from_settings(self.settings)
+        # Resolved once and threaded, so a live settings edit mid-build cannot
+        # change which gates block underneath a build already in flight. Same
+        # rule as lab_policy above, different axis: this one governs the verdict,
+        # that one governs side effects.
+        posture = GatePosture.from_settings(self.settings)
         configured_approval_gates = (
             bool(self.settings.approval_gates)
             if self._approval_gate_uses_live_settings
@@ -4740,6 +4973,7 @@ class StudioRunner:
         manifest.extra["owner_pid"] = _os.getpid()
         manifest.extra["owner_host"] = _socket.gethostname()
         manifest.extra["lab_autonomy"] = lab_policy.enabled
+        manifest.extra["build_posture"] = posture.posture
         build_profile = str(extra["build_profile"])
         model_override = str(extra.get("model_override") or "").strip()
         manifest.extra["build_profile"] = build_profile
@@ -4953,6 +5187,15 @@ class StudioRunner:
             extra = await self._generate_assets(
                 main_wt.dir, brief, manifest, extra, stack=plan.stack
             )
+
+            # Mixture-of-Agents advisory council: N tool-free advisor models read
+            # the brief + stack + plan and hand private guidance to the coding
+            # agent (the aggregator). Computed ONCE and threaded — the same
+            # argument the art plan above makes: recomputing per best-of-N
+            # trajectory would multiply spend AND advise each candidate
+            # differently, destroying the premise that trajectories differ only
+            # by model. Off unless configured; never gates anything.
+            extra = await self._run_moa_council(brief, manifest, extra, plan)
 
             # Budget guard wiring for this build (all best-effort). Cost tracking
             # already began in start(), before selector/planner/asset delegation.
@@ -5326,7 +5569,11 @@ class StudioRunner:
             # Bounded fix loop: if the objective proof failed, repair and
             # re-verify (fill missing files + code-improve) until it passes or
             # attempts run out. A no_go no longer just stops.
-            if not proof.passed:
+            # advisory_failures is included deliberately: under lab posture a
+            # failing generated test or ruff run no longer flips `passed`, and
+            # without this the repair it used to trigger would silently stop
+            # happening. Advisory means "does not block", never "not repaired".
+            if not proof.passed or getattr(proof, "advisory_failures", None):
                 proof = await self._fix_loop(
                     manifest, plan, project_dir, proof, correlation_id, extra
                 )
@@ -5633,15 +5880,34 @@ class StudioRunner:
             proof = await self._reproof_after_post_proof_repairs(
                 manifest, plan, project_dir, proof
             )
-            verdict = (
-                "go"
-                if (verdict == "go" and proof.passed and delivered_nonempty
-                    and substantive and has_entry and intent_ok and critic_gate
-                    and verifiers_ok and not scaffold_stub and not code_degraded
-                    and not native_llm_key and headless_gate_ok
-                    and game_visual_ok and qa_playtest_ok)
-                else "no_go"
+            # The reviewer "go" is necessary but NOT sufficient. Folded rather
+            # than ANDed so every failed signal lands in the gate_findings ledger
+            # with a name — an ANDed conjunct left no trace unless it happened to
+            # own a legacy *_gate key — and so the posture decides which of them
+            # actually block (see skyn3t/studio/gate_posture.py).
+            _signals: tuple[tuple[str, bool, str], ...] = (
+                ("proof", bool(proof.passed), "objective proof did not pass"),
+                ("delivery", delivered_nonempty, "delivered no substantive files"),
+                ("substance", substantive,
+                 f"largest source {biggest}B < {self._substance_floor}B floor"),
+                ("entrypoint", has_entry, "no runnable entrypoint on disk"),
+                ("intent", intent_ok, "delivered content does not match the brief"),
+                ("critic", critic_gate, str(manifest.extra.get("critic_gate", "critic blocked"))),
+                ("verify_build", verifiers_ok, str(manifest.extra.get("verifier_gate", ""))),
+                ("scaffold_stub", not scaffold_stub, "delivered the offline scaffold stub"),
+                ("code_degraded", not code_degraded, str(manifest.extra.get("degraded_gate", ""))),
+                ("native_llm", not native_llm_key, str(manifest.extra.get("native_llm_gate", ""))),
+                ("headless_gate", headless_gate_ok,
+                 str(manifest.extra.get("headless_gate_gate", "runtime invariant violation"))),
+                ("game_quality", game_visual_ok and qa_playtest_ok,
+                 "game visual/playtest gate failed"),
             )
+            if verdict != "go":
+                verdict = "no_go"
+            for _name, _ok, _reason in _signals:
+                verdict = self._gate_outcome(
+                    manifest, _name, bool(_ok), verdict, _reason, posture=posture
+                )
             # Don't let the learning loop reward an under-delivered build (only
             # dampen when proof PASSED — a proof-failed build is already halved by
             # _honest_score, so this would otherwise double-penalize).
@@ -5682,7 +5948,11 @@ class StudioRunner:
                     manifest, project_dir, plan, correlation_id)
                 visual_data = manifest.extra.get("visual_self_heal")
                 if self._visual_failure_should_gate(visual_data, plan.stack):
-                    verdict = "no_go"
+                    verdict = self._gate_outcome(
+                        manifest, "visual_self_heal", False, verdict,
+                        "rendered UI still failing after visual self-heal",
+                        posture=posture,
+                    )
                     manifest.extra["visual_self_heal_gate"] = (
                         "rendered UI still failed visual check after self-heal"
                     )
@@ -5703,7 +5973,11 @@ class StudioRunner:
                     manifest.extra["proof"] = proof.to_dict()
                     manifest.extra["proof_after_visual_self_heal"] = proof.to_dict()
                     if not proof.passed:
-                        verdict = "no_go"
+                        verdict = self._gate_outcome(
+                            manifest, "proof", False, verdict,
+                            "re-proof after visual self-heal did not pass",
+                            posture=posture,
+                        )
 
             # End-of-build liveness (web stacks): serve the delivered app, hit
             # every route/page, repair failures, and dampen the score by how many
@@ -5714,13 +5988,13 @@ class StudioRunner:
                     manifest, project_dir, plan, proof, final_score, verdict)
 
             final_score, verdict = self._run_product_quality_gates(
-                manifest, project_dir, plan, final_score, verdict
+                manifest, project_dir, plan, final_score, verdict, posture=posture
             )
             final_score, verdict = self._run_security_gate(
-                manifest, project_dir, plan, final_score, verdict
+                manifest, project_dir, plan, final_score, verdict, posture=posture
             )
             final_score, verdict = self._run_web_polish_gate(
-                manifest, project_dir, plan, final_score, verdict
+                manifest, project_dir, plan, final_score, verdict, posture=posture
             )
 
             # End-of-build SEO check (web/HTML stacks, ADVISORY): a deterministic static
@@ -5803,9 +6077,10 @@ class StudioRunner:
                 proof,
                 final_score,
                 verdict,
+                posture=posture,
             )
             final_score, verdict = self._apply_scaffold_stub_proof_gate(
-                manifest, proof, final_score, verdict
+                manifest, proof, final_score, verdict, posture=posture
             )
             final_score = self._apply_degraded_proof_score(
                 manifest, proof, final_score, verdict

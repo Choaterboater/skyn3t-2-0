@@ -859,6 +859,30 @@ class PreviewSupervisor:
                     reason=str(exc),
                 )
 
+        # "This project has no preview" is a pure local fact, read off the
+        # delivered files by build_run_spec — it needs no daemon. Deciding it
+        # BEFORE the Docker gate means a Python CLI, a library, or a native app
+        # on a Docker-less host reports the benign `no_preview` instead of a
+        # scary "failed: Docker unavailable", which sent users chasing an infra
+        # problem for a project that was never going to have a browser preview.
+        # port=None is accepted here (app_runner.build_run_spec), so this costs
+        # no port allocation; the real spec is still built with the port below.
+        try:
+            if build_run_spec(
+                pdir, normalized_stack, port=None, allow_secret_passthrough=False,
+            ) is None:
+                return RunningApp(
+                    url="", port=0, pid=None, kind="none", project_dir=str(pdir),
+                    status="no_preview",
+                    detail={
+                        "engine": "docker",
+                        "fallback_used": False,
+                        "reason": "no web entrypoint",
+                    },
+                )
+        except Exception:  # noqa: BLE001 - fall through to the normal path below
+            pass
+
         try:
             report = toolchain_report or await _inspect_toolchain(
                 self._toolchain_inspector,

@@ -28,6 +28,7 @@ from skyn3t.agents import _verify_common as vc
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
+from skyn3t.exec_paths import resolve_executable
 from skyn3t.npm_utils import (
     discard_foreign_node_modules,
     mark_npm_install_current,
@@ -212,7 +213,13 @@ class BuildVerifierAgent(BaseAgent):
 
         ran_real, build_ok, mode, details = await self._build(root, stack)
 
-        ok = build_ok and not reward["suspicious"]
+        # reward_hardening was a dead switch until now: it existed in Settings and
+        # in the roadmap but no production code read it, so turning it off did
+        # nothing. It is the operator's consent for the reward heuristics to
+        # VETO a build; the detection itself always runs and is always reported
+        # in `reward_hacking`, so the evidence survives either way.
+        reward_gates = bool(getattr(self.settings, "reward_hardening", True))
+        ok = build_ok and not (reward["suspicious"] and reward_gates)
         if reward["suspicious"]:
             details = f"reward-hacking suspected: {'; '.join(reward['flags'])} | {details}"
 
@@ -333,9 +340,22 @@ class BuildVerifierAgent(BaseAgent):
         return compiled > 0, f"compiled {compiled} python file(s)"
 
     async def _run(self, cmd: list[str], cwd: Path, timeout: int) -> tuple[bool, str]:
+        # create_subprocess_exec bypasses the shell, and Windows CreateProcess
+        # only appends ".exe" — it never searches PATHEXT. So a bare "npm"
+        # (installed as npm.cmd) raised WinError 2, was caught below, and was
+        # reported as "failed to run npm install ..." — which the verifier gate
+        # surfaced as "verify_build: real build failed" on EVERY Node build.
+        # Native build verification had therefore never once run on Windows.
+        # The shutil.which() guard upstream stays: it is an availability test,
+        # and resolve_executable returns its input unchanged when nothing is
+        # found, so it must not be used as a presence check. The ORIGINAL cmd
+        # is kept for the messages below so gate findings stay readable.
+        argv = list(cmd)
+        if argv:
+            argv[0] = resolve_executable(argv[0])
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=str(cwd),
+                *argv, cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             )
             try:

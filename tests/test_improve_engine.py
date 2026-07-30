@@ -1005,10 +1005,37 @@ def test_improve_preserves_project_inode_git_runtime_state_and_private_modes(
 
     assert outcome.status == "completed"
     assert project.stat().st_ino == before_inode
-    assert stat.S_IMODE(project.stat().st_mode) == 0o700
-    assert stat.S_IMODE(private.stat().st_mode) == 0o700
     for marker in runtime_markers:
         assert marker.read_text() == "machine local\n"
+
+
+@pytest.mark.requires_posix_modes
+def test_improve_preserves_private_directory_modes(tmp_path):
+    """Split out of the test above so the rest runs everywhere.
+
+    Directory chmod is a total no-op on Windows — `project.chmod(0o700)` reads
+    back as 0o777 before the engine even runs — so bundling this with the
+    inode/runtime-state assertions cost those assertions their coverage on the
+    owner's own machine.
+    """
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    project.chmod(0o700)
+    private = project / "private"
+    private.mkdir(mode=0o700)
+    (private / "settings.json").write_text("{}\n")
+
+    outcome = asyncio.run(
+        ImproveEngine(
+            EventBus(),
+            _FakeOrchestrator(),
+            settings=settings,
+        ).improve("demo", "make it say improved")
+    )
+
+    assert outcome.status == "completed"
+    assert stat.S_IMODE(project.stat().st_mode) == 0o700
+    assert stat.S_IMODE(private.stat().st_mode) == 0o700
 
 
 def test_improve_proof_runs_off_event_loop(tmp_path, monkeypatch):
@@ -1231,7 +1258,12 @@ def test_deliverable_executable_mode_drift_fails_and_rolls_back(
         script = Path(destination_root) / "run.sh"
         if not injected and Path(destination_root) == project and script.exists():
             injected = True
-            script.chmod(0o644)
+            # 0o444 not 0o644: Windows collapses 0o755 and 0o644 to the same
+            # 0o666, so the injected "drift" was invisible there and the
+            # rollback path went untested on the owner's own machine. The
+            # read-only bit round-trips exactly, so this exercises the same
+            # mode-drift detection on both platforms.
+            script.chmod(0o444)
         return result
 
     monkeypatch.setattr(

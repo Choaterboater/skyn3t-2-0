@@ -53,14 +53,71 @@ def _test_file_needs_loopback(path: str) -> bool:
     return any(pattern in text for pattern in _LOOPBACK_BIND_PATTERNS)
 
 
+@lru_cache(maxsize=1)
+def _docker_available() -> bool:
+    """Reuse the product's own probe so the skip cannot drift from the need."""
+    try:
+        from skyn3t.config.settings import Settings
+        from skyn3t.security.sandbox import SandboxRunner
+
+        return bool(SandboxRunner(Settings()).docker_available())
+    except Exception:  # noqa: BLE001 - absent/unimportable docker == unavailable
+        return False
+
+
+@lru_cache(maxsize=1)
+def _posix_modes_available() -> bool:
+    """True when chmod can express distinct permission bits.
+
+    Windows collapses 0o755 and 0o644 to 0o666 and ignores directory chmod
+    entirely, so tests asserting exact POSIX modes cannot pass there. Probed
+    rather than keyed off sys.platform so the reason stays factual.
+    """
+    import os as _os
+    import stat as _stat
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            probe = _os.path.join(directory, "probe")
+            with open(probe, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            _os.chmod(probe, 0o755)
+            executable = _stat.S_IMODE(_os.stat(probe).st_mode)
+            _os.chmod(probe, 0o644)
+            plain = _stat.S_IMODE(_os.stat(probe).st_mode)
+            return executable != plain
+    except OSError:
+        return False
+
+
 def pytest_collection_modifyitems(config, items):
-    if _loopback_bind_available():
-        return
-    skip = pytest.mark.skip(reason="loopback socket bind is not available in this environment")
+    """Skip on MISSING CAPABILITY, never on a known-bad list.
+
+    A capability skip states why it did not run and what would make it run. A
+    known-failures allowlist states neither and rots — which is exactly how a
+    real product bug (proof-artifact reuse being broken on Windows) sat
+    undetected inside a "these always fail here" pile.
+    """
+    loopback_ok = _loopback_bind_available()
+    capabilities = (
+        ("requires_loopback", loopback_ok,
+         "loopback socket bind is not available in this environment"),
+        ("requires_docker", _docker_available(),
+         "Docker daemon is not available in this environment"),
+        ("requires_posix_modes", _posix_modes_available(),
+         "filesystem cannot represent POSIX permission bits (Windows)"),
+    )
     for item in items:
-        path = str(getattr(item, "path", "") or "")
-        if item.get_closest_marker("requires_loopback") or _test_file_needs_loopback(path):
-            item.add_marker(skip)
+        for marker, available, reason in capabilities:
+            if not available and item.get_closest_marker(marker):
+                item.add_marker(pytest.mark.skip(reason=reason))
+        if not loopback_ok:
+            path = str(getattr(item, "path", "") or "")
+            if _test_file_needs_loopback(path):
+                item.add_marker(
+                    pytest.mark.skip(reason=capabilities[0][2])
+                )
 
 
 @pytest.fixture(autouse=True)
@@ -131,6 +188,11 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     # External Docker/Playwright/Maestro proof has focused seam tests. Keep the
     # rest of the suite hermetic even though production builds require it.
     monkeypatch.setenv("SKYN3T_PROOF_LADDER_REQUIRED", "false")
+    # Gate posture defaults to "lab" for real builds (findings are recorded, not
+    # blocking). The suite asserts on 2.0's blocking behaviour in ~51 files, so
+    # pin "release" here and let the focused posture tests opt into lab via an
+    # explicit Settings(build_posture="lab") kwarg (init args outrank env).
+    monkeypatch.setenv("SKYN3T_BUILD_POSTURE", "release")
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
     # Don't read the developer's real repo .env during tests. Settings hard-codes
     # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github

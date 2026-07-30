@@ -131,10 +131,23 @@ class Settings(BaseSettings):
     allow_remote_deploy: bool = False
 
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
-    # ``auto`` is intentionally local Codex CLI only. It never uses OpenRouter
-    # merely because a key is configured; select ``openrouter`` explicitly in
-    # Settings when a hosted provider is intended.
+    # ``auto`` resolves to the first signed-in CLI in ``auto_cli_priority``. It
+    # never uses OpenRouter merely because a key is configured: a key is
+    # configuration, not consent to spend. Select ``openrouter`` explicitly, or
+    # set ``auto_allow_openrouter``, when a hosted provider is intended.
     llm_backend: str = "auto"  # auto|stub|openrouter|codex_cli|claude_cli|kimi_cli|copilot_cli
+    # Order ``auto`` tries local CLIs in. Codex leads only because it was the
+    # historical default, so existing hosts see no change — there is nothing
+    # special about it, and reordering this is the supported way to prefer a
+    # different provider for unattended builds. Unknown entries are ignored.
+    # ``copilot`` is deliberately absent from the default chain (add it here to
+    # opt in); it remains fully supported and explicitly addressable as
+    # ``copilot_cli`` for both ``llm_backend`` and MoA advisor slots.
+    auto_cli_priority: str = "codex,claude,kimi"
+    # Explicit consent for ``auto`` to fall back to hosted OpenRouter when NO
+    # local CLI is available. Off by default: without it, ``auto`` degrades to
+    # the offline stub rather than silently spending.
+    auto_allow_openrouter: bool = False
     # Used by manually selected CLI-adjacent features (for example vision
     # checks). Automatic build execution always uses Codex CLI.
     cli_llm_provider: str = "claude"
@@ -269,6 +282,15 @@ class Settings(BaseSettings):
     # Shared stage admission. Eight lets several full-app candidate/slice agents
     # progress together; provider-side retry/backoff still absorbs rate pressure.
     openrouter_max_concurrency: int = Field(default=8, ge=1)
+    # Concurrent dispatches to any ONE local CLI provider. Fan-out multiplies
+    # here (best_of_n x parallel_code_slices x per-file generation), and a CLI
+    # slot is a 300MB-1GB agentic process tree whose subscription rate-limits per
+    # account — so 32 concurrent `claude -p` produces thrash, not throughput.
+    # This queues work, it never rejects it. 0 = unbounded (pre-2.1 behaviour).
+    cli_max_concurrency: int = Field(default=2, ge=0)
+    # Per-provider overrides, e.g. {"codex_cli": 1, "openrouter": 12}. Keys may
+    # be "codex" or "codex_cli". Wins over the two class defaults above.
+    provider_max_concurrency: dict[str, int] = Field(default_factory=dict)
 
     # ---- Optional cost/build ceilings ----------------------------------
     # Values <= 0 disable the corresponding guard.
@@ -491,6 +513,61 @@ class Settings(BaseSettings):
     visual_self_heal: bool = False  # opt-in: drive rendered UI + repair with vision (needs browser)
     visual_self_heal_max_rounds: int = Field(default=2, ge=1, le=5)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
+
+    # Debaters for `skyn3t debate`, as comma-separated provider:model slots
+    # (same grammar as moa_advisors). Empty means every debater resolves to the
+    # SAME routed model — one model arguing with itself, whose "win" is then
+    # recorded unopposed into the ModelTournament. Set this to make it a real
+    # ensemble, e.g. "codex_cli,claude_cli,kimi_cli".
+    debate_slots: str = ""
+
+    # ---- Mixture-of-Agents advisory council -------------------------------
+    # N tool-free advisor models read the brief + stack + plan and hand private
+    # engineering guidance to the ONE agent that actually writes the app (the
+    # aggregator, i.e. the code agent). Advisors never write files, never score,
+    # never gate — this is a capability layer, not a check. Adapted from
+    # NousResearch/hermes-agent (MIT); see docs/MOA.md and CREDITS.md.
+    # Off by default: it costs N extra completions per build.
+    moa_enabled: bool = False
+    # Advisor slots as comma-separated "provider:model" (model optional, empty =
+    # that CLI's own default). Providers may DIFFER per slot — that is the whole
+    # point. Addressable backends: codex_cli, claude_cli, kimi_cli, openrouter
+    # (and copilot_cli, supported but not in the default chain). For example:
+    #   "codex_cli,claude_cli:sonnet,kimi_cli:k3"
+    # Model ids churn — verify against your CLI's own aliases or the live
+    # OpenRouter catalog rather than copying an example verbatim.
+    # Empty => the council is off even when moa_enabled.
+    moa_advisors: str = ""
+    # Concurrent advisor calls. Matches the ceiling code_agent already uses for
+    # nested CLI children; per-provider limits still apply underneath.
+    moa_max_concurrency: int = Field(default=4, ge=1, le=8)
+    # Wall-clock ceiling per advisor. A slow advisor is DROPPED, never waited on:
+    # advisors must not extend a build's critical path.
+    moa_advisor_timeout: int = Field(default=180, ge=10)
+    # Output cap per advisor (binds on OpenRouter; CLI backends are governed by
+    # the byte budget below, since complete() cannot pass max_tokens to a CLI).
+    moa_advisor_max_tokens: int = Field(default=1200, ge=128)
+    # Hard per-advisor byte budget for the assembled guidance block. Prompt bloat
+    # is the real hazard here: an oversized codegen prompt slows the agentic CLI
+    # enough to blow agentic_build_timeout and ship a stub.
+    moa_advisor_block_bytes: int = Field(default=3000, ge=500)
+    # Opt-in JSONL trace: one line per council run under logs_dir/moa/.
+    moa_trace_enabled: bool = False
+
+    # ---- Gate posture ----------------------------------------------------
+    # Whether a gate's finding BLOCKS the verdict, separately from whether the
+    # gate RUNS (that stays each gate's own *_enabled flag, above). "lab"
+    # (default): only proof that the DELIVERY IS BROKEN blocks; heuristics,
+    # taste rules, environment-dependent probes and policy preferences record
+    # their finding, dampen the score, feed the fix loop, and let the build
+    # complete. "release": every gate blocks (2.0's historical behaviour).
+    # A gate that COULD NOT RUN never blocks in EITHER posture — that is
+    # GateVerdict's `skipped` contract applied to every gate, including the
+    # ones that never adopted it. See skyn3t/studio/gate_posture.py.
+    build_posture: Literal["lab", "release"] = "lab"
+    # Escape hatch: comma-separated gate names that block regardless of posture
+    # (for example "security,proof_ladder"). Empty -> the posture decides.
+    blocking_gates: str = ""
 
     # ---- Autonomy --------------------------------------------------------
     autonomous_builds: bool = False

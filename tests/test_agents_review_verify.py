@@ -534,3 +534,20 @@ def test_modules_import_without_side_effects():
     import skyn3t.agents.critic  # noqa: F401
     import skyn3t.agents.reviewer  # noqa: F401
     assert True
+
+def test_test_author_accepts_native_ios_app_entrypoint(tmp_path):
+    root = tmp_path / "ios-app"
+    app = root / "App" / "CellarCompanionApp.swift"
+    app.parent.mkdir(parents=True)
+    app.write_text("import SwiftUI\n@main struct Demo: App { var body: some Scene { WindowGroup {} } }\n")
+
+    generated = render_test_file(
+        ["project produces a native iOS entrypoint"],
+        "A native SwiftUI iPhone app",
+        "ios-app",
+    )
+    namespace = {"__file__": str(root / "tests" / "test_acceptance_ios.py")}
+    exec(compile(generated, namespace["__file__"], "exec"), namespace)
+
+    namespace["test_project_has_source_content"]()
+    namespace["test_project_has_entrypoint"]()

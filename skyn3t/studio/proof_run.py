@@ -3598,7 +3598,31 @@ def proof_run(
         if run_build and passed:
             # Swift takes its OWN branch (`swift build`); it is NOT a node stack, so it
             # must not go through the npm install/build path.
-            if (stack or "").lower() in _SWIFT_STACKS:
+            if (stack or "").lower() in _SWIFT_IOS_STACKS:
+                ran, build_ok, summary = _run_swift_ios_build(pdir, build_timeout, cmd_ctx)
+                if ran:
+                    detail["build"] = "passed" if build_ok else "failed"
+                    detail["build_summary"] = summary
+                    if not build_ok:
+                        passed = False
+                        if "<build>" not in missing:
+                            missing = [*missing, "<build>"]
+                    elif run_tests:
+                        t_ran, t_ok, t_sum = _run_swift_ios_tests(pdir, test_timeout, cmd_ctx)
+                        if t_ran:
+                            detail["swift_ios_tests"] = "passed" if t_ok else "failed"
+                            detail["swift_ios_tests_summary"] = t_sum
+                            if not t_ok:
+                                passed = False
+                                if "<swift-ios-tests>" not in missing:
+                                    missing = [*missing, "<swift-ios-tests>"]
+                        elif t_sum:
+                            detail["swift_ios_tests_summary"] = t_sum
+                else:
+                    detail.setdefault("build", "skipped")
+                    if summary:
+                        detail["build_summary"] = summary
+            elif (stack or "").lower() in _SWIFT_STACKS:
                 ran, build_ok, summary = _run_swift_build(pdir, build_timeout, cmd_ctx)
                 if ran:
                     detail["build"] = "passed" if build_ok else "failed"
@@ -3836,6 +3860,29 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 except OSError:
                     pass
             return (True, False, f"{low} stack: no file imports/references {low}")
+
+        # ---- native iOS SwiftUI / Xcode -----------------------------------
+        if low in _SWIFT_IOS_STACKS:
+            project = pdir / "App.xcodeproj" / "project.pbxproj"
+            info = pdir / "App" / "Info.plist"
+            swift_srcs = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".swift" and "App" in f.relative_to(pdir).parts
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not project.exists() or project.stat().st_size < _NONEMPTY:
+                return (True, False, "swift_ios stack: App.xcodeproj/project.pbxproj missing")
+            if not info.exists() or info.stat().st_size < _NONEMPTY:
+                return (True, False, "swift_ios stack: App/Info.plist missing")
+            if not swift_srcs:
+                return (True, False, "swift_ios stack: no App/**/*.swift sources found")
+            try:
+                pbx = project.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pbx = ""
+            if "PBXNativeTarget" not in pbx or "IPHONEOS_DEPLOYMENT_TARGET" not in pbx:
+                return (True, False, "swift_ios stack: project lacks an iOS app target")
+            return (True, True, "swift_ios stack: Xcode target + Info.plist + Swift sources present")
 
         # ---- swift (SwiftUI / Swift Package Manager) ---------------------
         if low == "swift":
@@ -4894,6 +4941,9 @@ def _run_ruff_check(
 # Manager (`swift build`), not npm. Its own proof branch keeps it out of the
 # node install/build path entirely.
 _SWIFT_STACKS = ("swift",)
+# Native iOS uses Xcode rather than SwiftPM. Keep a separate family so proof
+# never routes a simulator build through swift build or npm.
+_SWIFT_IOS_STACKS = ("swift_ios",)
 
 
 def _run_swift_build(
@@ -4946,6 +4996,76 @@ def _run_swift_build(
     if bld.returncode == 0:
         return (True, True, out[-300:])
     return (True, False, out[-700:])
+
+
+def _ios_xcode_project(pdir: Path) -> Path | None:
+    preferred = pdir / "App.xcodeproj"
+    if (preferred / "project.pbxproj").is_file():
+        return preferred
+    for candidate in pdir.glob("*.xcodeproj"):
+        if (candidate / "project.pbxproj").is_file():
+            return candidate
+    return None
+
+
+def _run_swift_ios_build(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Build a native iOS target with the simulator SDK when a Mac provides Xcode."""
+    import shutil
+
+    if _use_container_command_names(cmd_ctx):
+        return (False, False, "xcodebuild requires a macOS host — build skipped")
+    xcodebuild = shutil.which("xcodebuild")
+    project = _ios_xcode_project(pdir)
+    if xcodebuild is None:
+        return (False, False, "xcodebuild missing — native iOS build skipped")
+    if project is None:
+        return (False, False, "no .xcodeproj — native iOS build skipped")
+    result = _run_proof_command(
+        cmd_ctx,
+        [str(xcodebuild), "-project", project.name, "-scheme", "App", "-sdk",
+         "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build"],
+        cwd=pdir, timeout=timeout, env=dict(os.environ), network=False,
+    )
+    if result.timed_out:
+        return (True, False, f"xcodebuild timed out after {timeout}s")
+    if result.returncode == 127:
+        return (False, False, "xcodebuild could not be launched — build skipped")
+    out = ((result.stdout or "") + (result.stderr or "")).strip()
+    return (True, result.returncode == 0, out[-900:] or "xcodebuild build finished")
+
+
+def _run_swift_ios_tests(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Run XCTest only when the Mac user selected an installed simulator destination."""
+    import shutil
+
+    if _use_container_command_names(cmd_ctx):
+        return (False, False, "xcodebuild XCTest requires a macOS host")
+    xcodebuild = shutil.which("xcodebuild")
+    project = _ios_xcode_project(pdir)
+    destination = os.getenv("SKYN3T_IOS_TEST_DESTINATION", "").strip()
+    if xcodebuild is None or project is None:
+        return (False, False, "")
+    if not destination:
+        return (False, False, "set SKYN3T_IOS_TEST_DESTINATION to run XCTest on an installed simulator")
+    result = _run_proof_command(
+        cmd_ctx,
+        [str(xcodebuild), "-project", project.name, "-scheme", "App", "-destination", destination, "test"],
+        cwd=pdir, timeout=timeout, env=dict(os.environ), network=False,
+    )
+    if result.timed_out:
+        return (True, False, "xcodebuild test timed out")
+    if result.returncode == 127:
+        return (False, False, "xcodebuild test could not launch")
+    out = ((result.stdout or "") + (result.stderr or "")).strip()
+    return (True, result.returncode == 0, out[-900:] or "xcodebuild test finished")
 
 
 def _run_swift_tests(

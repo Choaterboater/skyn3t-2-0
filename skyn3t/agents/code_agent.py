@@ -398,6 +398,33 @@ _SWIFT_DIRECTIVE = (
 )
 
 
+# Native iOS is deliberately separate from the macOS SwiftPM directive: it needs
+# an Xcode target, iOS privacy declarations, device-only capture APIs, and a
+# first-class accessibility contract.
+_SWIFT_IOS_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a NATIVE iPhone/iPad app in Swift + SwiftUI for Xcode, "
+    "not a website and not a macOS SwiftPM executable. NEVER emit package.json, npm, "
+    "node_modules, index.html, JavaScript/TypeScript, Vite, React, Expo, or web files. "
+    "PROJECT: preserve/create App.xcodeproj with a real application target named App and "
+    "an XCTest target; use its synced App/ source folder so new Swift files compile without "
+    "fragile manual PBX lists. Keep App/Info.plist and include NSCameraUsageDescription. "
+    "Use Swift 6 strict concurrency, @MainActor UI mutation, structured async/await, and "
+    "Observation (@Observable) for nonpersistent screen state. PERSISTENCE: use SwiftData "
+    "@Model, ModelContainer, @Query, and explicit relationships; ship offline-first data with "
+    "no account or key required. Keep parsing/normalization/business rules testable via XCTest. "
+    "SCANNING: use VisionKit DataScannerViewController only after support/availability checks; "
+    "always offer prominent manual entry and let people correct every OCR field. REVIEWS: never "
+    "scrape sites or invent external scores. Model attributed provider links/adapters, fetch only "
+    "documented user-configured APIs, and keep community tasting notes as first-party local data. "
+    "ACCESSIBILITY IS LOAD-BEARING: Dynamic Type, VoiceOver labels/hints, semantic colors, 44pt "
+    "targets, visible text actions, high contrast, and simple large-button navigation for older "
+    "adults. DESIGN: standard SwiftUI navigation, tabs, sheets, SF Symbols, and semantic materials "
+    "that adapt to Liquid Glass; newer visual APIs need availability fallbacks. Implement the full "
+    "brief, never a starter counter. MAC PROOF: xcodebuild -project App.xcodeproj -scheme App -sdk "
+    "iphonesimulator -destination generic/platform=iOS Simulator build."
+)
+
+
 _MCP_DIRECTIVE = (
     "STACK — NON-NEGOTIABLE: build a Model Context Protocol (MCP) SERVER in Python "
     "that exposes TOOLS to AI assistants over the stdio transport. This is NOT a web "
@@ -1126,6 +1153,7 @@ class CodeAgent(BaseAgent):
             + (f"{_GAME_FEEL_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
+            + (f"{_SWIFT_IOS_DIRECTIVE}\n\n" if stack == "swift_ios" else "")
             + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
             + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
             + (f"{_WORKFLOW_DIRECTIVE}\n\n" if stack == "workflow" else "")

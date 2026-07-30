@@ -45,16 +45,17 @@ ENTRYPOINT_NAMES = {
     # Swift / SwiftUI (Swift Package Manager): the manifest declares the executable
     # target, so it is the stack's runnable-root marker (like next.config.js /
     # manage.py above). Codegen names the @main file inconsistently, but
-    # Package.swift is always present, so it is the reliable entry marker.
-    "Package.swift",
+    # Package.swift is always present for SwiftPM; project.pbxproj declares a
+    # native Xcode/iOS app target.
+    "Package.swift", "project.pbxproj",
 }
 
 MANIFEST_NAMES = {
     "package.json", "pyproject.toml", "requirements.txt", "setup.py",
     "setup.cfg", "Cargo.toml", "go.mod", "pom.xml", "build.gradle",
     "Gemfile", "composer.json",
-    # Swift Package Manager manifest.
-    "Package.swift",
+    # Swift Package Manager manifest; project.pbxproj declares the Xcode iOS app.
+    "Package.swift", "project.pbxproj",
 }
 
 # Source extensions that count as meaningful implementation content.

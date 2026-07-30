@@ -111,6 +111,16 @@ _STACK_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
                   "multi-agent", "multi agent", "agent that",
                   "automation pipeline", "monitor and notify",
                   "scheduled briefing", "daily briefing")),
+    # Native SwiftUI iOS must precede Expo: a brief that explicitly asks for
+    # Swift/SwiftUI on an iPhone must never silently become a React Native app.
+    # Keep the phrases specific; bare "ios" continues to mean the cross-platform
+    # mobile stack below, while bare "swift" is intentionally omitted because it
+    # appears in ordinary prose.
+    ("swift_ios", (
+        "swift ios", "ios swift", "swiftui ios", "ios swiftui",
+        "swift iphone", "iphone swift", "swift ipad", "ipad swift",
+        "native ios", "native iphone", "native ipad",
+    )),
     # react_native must precede `react`/`nextjs`: "react native expo app" and
     # "ios app" should resolve to the mobile stack, not the web React scaffold.
     ("react_native", (
@@ -200,6 +210,11 @@ _STACK_FILE_CHECKLIST: dict[str, tuple[str, ...]] = {
     # the load-bearing artifact (it declares the executable + test targets). NO
     # package.json / index.html — this stack has no npm and no DOM.
     "swift": ("README.md", "Package.swift"),
+    # Native iOS is an Xcode project, not a SwiftPM macOS executable. The app
+    # target, SwiftUI entry, and Info.plist are load-bearing (camera privacy is
+    # required for bottle scanning).
+    "swift_ios": ("README.md", "App.xcodeproj/project.pbxproj", "App", "AppTests",
+                  "App/Info.plist"),
     # MCP server (Python stdio Model Context Protocol): the runnable server is the
     # load-bearing artifact, its tools split into a pure tools.py, plus the SDK
     # manifest. NO package.json / index.html — this stack is a stdio program.

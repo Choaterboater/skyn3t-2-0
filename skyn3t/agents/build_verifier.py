@@ -267,6 +267,19 @@ class BuildVerifierAgent(BaseAgent):
                 return True, True, "npm", detail
             return True, False, "npm", out[-500:]
 
+        # Native Swift/iOS: build a real simulator target when Xcode is available.
+        # Windows/Linux fall through to structural verification rather than pretending
+        # a simulator build ran.
+        if stack == "swift_ios" and allow_real and shutil.which("xcodebuild"):
+            project = root / "App.xcodeproj"
+            if (project / "project.pbxproj").is_file():
+                ok, out = await self._run(
+                    ["xcodebuild", "-project", "App.xcodeproj", "-scheme", "App", "-sdk",
+                     "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build"],
+                    root, timeout=600,
+                )
+                return True, ok, "xcodebuild", (out[-700:] if out else "xcodebuild build")
+
         # Swift Package Manager: key on the manifest (like package.json above),
         # NOT the stack label, and compile for real with `swift build`. Absent
         # toolchain falls through to the degraded dry check below.

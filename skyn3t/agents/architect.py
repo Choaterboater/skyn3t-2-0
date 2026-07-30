@@ -263,6 +263,7 @@ from skyn3t.core.stacks import GAME_STACKS as _GAME_STACKS  # noqa: E402
 # Swift / SwiftUI native macOS (Swift Package Manager): plan a SwiftPM package
 # (Package.swift + Sources/App + a pure Sources/AppCore + Tests), never web files.
 _SWIFT_STACKS = frozenset({"swift"})
+_SWIFT_IOS_STACKS = frozenset({"swift_ios"})
 
 
 def _jsx_only(files: list[Any]) -> list[Any]:
@@ -378,6 +379,15 @@ class ArchitectAgent(BaseAgent):
                        "under Sources/AppCLI/main.swift, `.skyn3t-cli-playtest.json`, and "
                        "XCTests under Tests/AppCoreTests/. Use ONLY "
                        ".swift files — NEVER package.json, index.html, JS/TS, or any web files.")
+        if stack in _SWIFT_IOS_STACKS:
+            prompt += ("\n\nIMPORTANT: this is a NATIVE iPhone/iPad app in Swift + SwiftUI, "
+                       "built by Xcode — NOT a macOS SwiftPM package and NOT a web app. Plan "
+                       "a root `App.xcodeproj/project.pbxproj` with an app target and XCTest "
+                       "target, SwiftUI sources under `App/`, tests under `AppTests/`, and an "
+                       "`App/Info.plist` that explains camera use. Plan SwiftData models and "
+                       "a ModelContainer for offline-first inventory, plus a VisionKit scanning "
+                       "flow with a manual-entry fallback. Use ONLY Swift/Xcode files — NEVER "
+                       "package.json, npm, index.html, JavaScript/TypeScript, Vite, or web files.")
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."

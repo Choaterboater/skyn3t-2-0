@@ -606,6 +606,10 @@ export default function Studio({ stream }) {
   const fileInputRef = useRef(null);
   const [buildProfile, setBuildProfile] = useState("cheap_learned");
   const [fullApp, setFullApp] = useState(false);
+  // Advisory-council picker. `null` = use the server's configured default;
+  // a Set (even an empty one) = an explicit per-build choice, so unchecking
+  // everything means "no advisors for this build" rather than falling back.
+  const [advisorSel, setAdvisorSel] = useState(null);
   const [modelOverride, setModelOverride] = useState("");
   const [foundryBackend, setFoundryBackend] = useState("");
   const [variantSource, setVariantSource] = useState(null);
@@ -640,6 +644,26 @@ export default function Studio({ stream }) {
     queryKey: ["stacks"],
     queryFn: queryFn("/stacks"),
   });
+
+  // Selectable Mixture-of-Agents advisors (registry-driven, with live PATH
+  // availability) so the council can be chosen per build instead of only
+  // through settings.
+  const { data: cliProviders } = useQuery({
+    queryKey: ["cli-providers"],
+    queryFn: queryFn("/cli-providers"),
+  });
+  const advisorOptions = cliProviders?.providers || [];
+  const defaultAdvisors = useMemo(
+    () => new Set(advisorOptions.filter((p) => p.selected).map((p) => p.slot)),
+    [advisorOptions],
+  );
+  const effectiveAdvisors = advisorSel ?? defaultAdvisors;
+  const toggleAdvisor = (slot) => {
+    const next = new Set(effectiveAdvisors);
+    if (next.has(slot)) next.delete(slot);
+    else next.add(slot);
+    setAdvisorSel(next);
+  };
   const stackOptions = useMemo(() => {
     const opts = stacksData?.stacks;
     return Array.isArray(opts) && opts.length > 0 ? opts : FALLBACK_STACKS;
@@ -1060,7 +1084,7 @@ export default function Studio({ stream }) {
       : "auto stack",
   };
   const routingPolicy = usesCliBackend
-    ? "Codex CLI is the execution route; hosted model routing is inactive."
+    ? "A local CLI is the execution route; hosted model routing is inactive."
     : routingPolicyHint(routingPreview.data?.build_profile || effectiveBuildProfile);
   const routingRows = routingTiers.map((tier) => {
     const costRows = ROUTING_PREVIEW_ESTIMATES.map(({ key, label, promptTokens, completionTokens }) => {
@@ -1173,6 +1197,9 @@ export default function Studio({ stream }) {
                   payload.model_override = normalizedModelOverride;
                 }
                 if (refImage?.url) payload.reference_image = refImage.url;
+                // Only send an explicit choice. Omitting the key entirely lets
+                // the server use its configured default.
+                if (advisorSel) payload.moa_advisors = [...advisorSel];
                 submit.mutate(payload);
               }}
             >
@@ -1237,6 +1264,54 @@ export default function Studio({ stream }) {
                 {submit.isPending ? "Forging…" : "Forge build"}
               </button>
             </form>
+            {/* Mixture-of-Agents advisors for THIS build. Tool-free models that
+                read the brief and advise the coding agent — they never write
+                files and never gate the verdict. An unavailable CLI stays
+                selectable: it is recorded as a failed advisor, never a failed
+                build. */}
+            {advisorOptions.length > 0 ? (
+              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline pt-3">
+                <span className="font-mono text-[11px] uppercase tracking-wide text-ash">
+                  Advisors
+                </span>
+                {advisorOptions.map((p) => (
+                  <label
+                    key={p.slot}
+                    title={
+                      p.available
+                        ? `${p.label} — advises the coding agent, never writes files`
+                        : `${p.label} — not detected on PATH; it would be recorded as a failed advisor`
+                    }
+                    className="flex cursor-pointer items-center gap-1.5 text-[12px]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={effectiveAdvisors.has(p.slot)}
+                      onChange={() => toggleAdvisor(p.slot)}
+                      aria-label={`Use ${p.label} as an advisor`}
+                    />
+                    <span className={p.available ? "" : "text-ash"}>{p.label}</span>
+                    {p.available ? null : (
+                      <span className="font-mono text-[10px] text-ash">(not found)</span>
+                    )}
+                  </label>
+                ))}
+                <span className="font-mono text-[11px] text-ash">
+                  {effectiveAdvisors.size === 0
+                    ? "none — council off for this build"
+                    : `${effectiveAdvisors.size} selected`}
+                </span>
+                {advisorSel ? (
+                  <button
+                    type="button"
+                    onClick={() => setAdvisorSel(null)}
+                    className="font-mono text-[11px] text-ash underline hover:text-ember"
+                  >
+                    reset to default
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {submit.isError ? (
               <ErrorText className="mt-3 max-h-28">
                 {String(submit.error.message)}
@@ -1304,7 +1379,9 @@ export default function Studio({ stream }) {
                     ) : null}
                     {selectedFoundryBackend === "auto" ? (
                       <p className="mt-1 text-ash/80">
-                        Auto uses Codex CLI locally and never falls back to OpenRouter.
+                        Auto uses the first signed-in local CLI in priority order
+                        (Codex, then Claude, then Kimi) and never falls back to
+                        hosted OpenRouter without explicit consent.
                       </p>
                     ) : null}
                     {selectedFoundryOpenRouterMissing ? (

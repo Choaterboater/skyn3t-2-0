@@ -1823,6 +1823,36 @@ async def test_settings_payload_surfaces_improve_agentic():
     assert payload["parallel_code_slices_min_files"] >= 2
 
 
+async def test_settings_payload_surfaces_gate_posture_and_moa():
+    """Every new knob is GUI-configurable, not env-only.
+
+    The house rule is GUI-first configuration; a setting that exists only as an
+    env var is effectively hidden. Posture governs whether a gate BLOCKS, which
+    is orthogonal to the per-gate enable flags gates_payload already drives.
+    """
+    st = _state()
+    st.settings.build_posture = "lab"
+    st.settings.blocking_gates = "security"
+    st.settings.moa_enabled = True
+    st.settings.moa_advisors = "codex_cli,claude_cli,kimi_cli"
+    st.settings.auto_cli_priority = "kimi,codex"
+    st.settings.auto_allow_openrouter = False
+
+    payload = await routes.settings_payload(st)
+
+    assert payload["build_posture"] == "lab"
+    assert payload["blocking_gates"] == "security"
+    assert payload["moa_enabled"] is True
+    assert payload["moa_advisors"] == "codex_cli,claude_cli,kimi_cli"
+    assert payload["auto_cli_priority"] == "kimi,codex"
+    assert payload["auto_allow_openrouter"] is False
+    for key in ("moa_max_concurrency", "moa_advisor_timeout",
+                "moa_advisor_max_tokens", "moa_advisor_block_bytes",
+                "moa_trace_enabled", "cli_max_concurrency",
+                "provider_max_concurrency"):
+        assert key in payload, key
+
+
 async def test_improve_agentic_setting_toggle_does_not_persist_in_tests():
     st = _state()
     res = await routes.set_improve_agentic(st, False, persist=False)

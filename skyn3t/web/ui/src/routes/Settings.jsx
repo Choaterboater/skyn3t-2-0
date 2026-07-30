@@ -347,7 +347,7 @@ export default function Settings() {
       if (providerToClear === "openrouter" && returnToAuto) {
         const backend = await apiPost("/llm/backend", { backend: "auto" });
         updateBackendStatus(backend, "auto");
-        setBackendMsg("OpenRouter disconnected. Auto remains Codex CLI-only for future builds.");
+        setBackendMsg("OpenRouter disconnected. Auto remains local-CLI-only for future builds.");
       }
       setKey("");
       setKeyMsg(
@@ -736,9 +736,10 @@ export default function Settings() {
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
               This choice is persisted for every future Foundry run. <span className="font-mono text-bone">auto</span>{" "}
-              is Codex CLI-only: it never sends a request to OpenRouter or another paid
-              API, even when a provider key is stored. CLI backends use the installed
-              command and its signed-in provider account.
+              is local-CLI-only: it picks the first signed-in CLI in priority order
+              (Codex, then Claude, then Kimi) and never sends a request to OpenRouter
+              or another paid API, even when a provider key is stored. CLI backends
+              use the installed command and its signed-in provider account.
             </p>
             <p className="mb-4 text-[11px] text-ash/80">
               An explicitly selected CLI never falls back to OpenRouter. If its command
@@ -790,7 +791,7 @@ export default function Settings() {
                 OpenRouter is never selected from <span className="font-mono text-bone">auto</span>.
                 Connect a key and choose this route intentionally when you want hosted
                 provider billing. Disconnecting disables this app&apos;s route and returns
-                future builds to Codex CLI-only auto mode.
+                future builds to local-CLI-only auto mode.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {openrouterConfigured ? (
@@ -1156,7 +1157,7 @@ export default function Settings() {
             <p className="mb-4 text-sm text-ash">
               Stored in the server&apos;s <code className="font-mono text-bone">.env</code>.
               A stored key does not activate a provider. <span className="font-mono text-bone">auto</span>{" "}
-              always remains Codex CLI-only. OpenRouter runs only after you explicitly
+              always remains local-CLI-only. OpenRouter runs only after you explicitly
               choose its manual route in the Backend panel.
             </p>
             <div className="mb-3">

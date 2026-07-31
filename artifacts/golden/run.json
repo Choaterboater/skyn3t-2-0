@@ -6229,6 +6229,1238 @@
       "stack": "python",
       "started_at": "2026-07-31T19:16:41.750168Z",
       "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-02b81811fac155f8",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\supabase-auth-nextjs\\repeat-1\\projects\\golden-r1-02b81811fac155f8-supabase-auth-nextjs",
+        "score": 68.0,
+        "slug": "golden-r1-02b81811fac155f8-supabase-auth-nextjs",
+        "stack": "nextjs",
+        "status": "completed",
+        "verdict": "go"
+      },
+      "case_id": "supabase-auth-nextjs",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\supabase-auth-nextjs\\repeat-1\\projects\\golden-r1-02b81811fac155f8-supabase-auth-nextjs",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-02b81811fac155f8-supabase-auth-nextjs",
+          "detail": "",
+          "expected": "golden-r1-02b81811fac155f8-supabase-auth-nextjs",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": true
+        },
+        {
+          "actual": "go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": true
+        },
+        {
+          "actual": "nextjs",
+          "detail": "",
+          "expected": "nextjs",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "68",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": true
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:seo",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:.env.example",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:lib/supabaseClient.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app/page.jsx",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:19:08.565850Z",
+      "duration_seconds": 110.814082,
+      "error": "",
+      "failed_expectations": [],
+      "passed": true,
+      "repeat": 1,
+      "seed": 195933049291101688,
+      "slug": "golden-r1-02b81811fac155f8-supabase-auth-nextjs",
+      "stack": "nextjs",
+      "started_at": "2026-07-31T19:17:17.749552Z",
+      "status": "passed"
+    },
+    {
+      "build": {
+        "build_id": "golden-0b6b189b8dc7a7b6",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\supabase-auth-nextjs\\repeat-2\\projects\\golden-r2-0b6b189b8dc7a7b6-supabase-auth-nextjs",
+        "score": 68.0,
+        "slug": "golden-r2-0b6b189b8dc7a7b6-supabase-auth-nextjs",
+        "stack": "nextjs",
+        "status": "completed",
+        "verdict": "go"
+      },
+      "case_id": "supabase-auth-nextjs",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\supabase-auth-nextjs\\repeat-2\\projects\\golden-r2-0b6b189b8dc7a7b6-supabase-auth-nextjs",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r2-0b6b189b8dc7a7b6-supabase-auth-nextjs",
+          "detail": "",
+          "expected": "golden-r2-0b6b189b8dc7a7b6-supabase-auth-nextjs",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": true
+        },
+        {
+          "actual": "go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": true
+        },
+        {
+          "actual": "nextjs",
+          "detail": "",
+          "expected": "nextjs",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "68",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": true
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:seo",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:.env.example",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:lib/supabaseClient.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app/page.jsx",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:20:52.594945Z",
+      "duration_seconds": 104.012734,
+      "error": "",
+      "failed_expectations": [],
+      "passed": true,
+      "repeat": 2,
+      "seed": 822778413302917046,
+      "slug": "golden-r2-0b6b189b8dc7a7b6-supabase-auth-nextjs",
+      "stack": "nextjs",
+      "started_at": "2026-07-31T19:19:08.580130Z",
+      "status": "passed"
+    },
+    {
+      "build": {
+        "build_id": "golden-2aee0c114387463c",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\local-tasks-nextjs\\repeat-1\\projects\\golden-r1-2aee0c114387463c-local-tasks-nextjs",
+        "score": 34.0,
+        "slug": "golden-r1-2aee0c114387463c-local-tasks-nextjs",
+        "stack": "nextjs",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "local-tasks-nextjs",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\local-tasks-nextjs\\repeat-1\\projects\\golden-r1-2aee0c114387463c-local-tasks-nextjs",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-2aee0c114387463c-local-tasks-nextjs",
+          "detail": "",
+          "expected": "golden-r1-2aee0c114387463c-local-tasks-nextjs",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "nextjs",
+          "detail": "",
+          "expected": "nextjs",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:seo",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:skyn3t-backend.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:lib/localBackend.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app/api/items/route.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app/page.jsx",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:22:30.920039Z",
+      "duration_seconds": 98.309987,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 1,
+      "seed": 3093423262337025596,
+      "slug": "golden-r1-2aee0c114387463c-local-tasks-nextjs",
+      "stack": "nextjs",
+      "started_at": "2026-07-31T19:20:52.608087Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-32782cffa732702b",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\local-tasks-nextjs\\repeat-2\\projects\\golden-r2-32782cffa732702b-local-tasks-nextjs",
+        "score": 34.0,
+        "slug": "golden-r2-32782cffa732702b-local-tasks-nextjs",
+        "stack": "nextjs",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "local-tasks-nextjs",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\local-tasks-nextjs\\repeat-2\\projects\\golden-r2-32782cffa732702b-local-tasks-nextjs",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r2-32782cffa732702b-local-tasks-nextjs",
+          "detail": "",
+          "expected": "golden-r2-32782cffa732702b-local-tasks-nextjs",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "nextjs",
+          "detail": "",
+          "expected": "nextjs",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:seo",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:skyn3t-backend.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:lib/localBackend.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app/api/items/route.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app/page.jsx",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:24:18.691834Z",
+      "duration_seconds": 107.754128,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 2,
+      "seed": 3636706175635058731,
+      "slug": "golden-r2-32782cffa732702b-local-tasks-nextjs",
+      "stack": "nextjs",
+      "started_at": "2026-07-31T19:22:30.935550Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-288167df8b6a7a60",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\memory-chat-rag\\repeat-1\\projects\\golden-r1-288167df8b6a7a60-memory-chat-rag",
+        "score": 34.0,
+        "slug": "golden-r1-288167df8b6a7a60-memory-chat-rag",
+        "stack": "rag",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "memory-chat-rag",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\memory-chat-rag\\repeat-1\\projects\\golden-r1-288167df8b6a7a60-memory-chat-rag",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-288167df8b6a7a60-memory-chat-rag",
+          "detail": "",
+          "expected": "golden-r1-288167df8b6a7a60-memory-chat-rag",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "rag",
+          "detail": "",
+          "expected": "rag",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:rag_check",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:rag_core.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:main.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:memory_store.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:test_memory_store.py",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:24:27.361506Z",
+      "duration_seconds": 8.653276,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 1,
+      "seed": 2918728243327171168,
+      "slug": "golden-r1-288167df8b6a7a60-memory-chat-rag",
+      "stack": "rag",
+      "started_at": "2026-07-31T19:24:18.708056Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-17571316e9d1fbfe",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\memory-chat-rag\\repeat-2\\projects\\golden-r2-17571316e9d1fbfe-memory-chat-rag",
+        "score": 34.0,
+        "slug": "golden-r2-17571316e9d1fbfe-memory-chat-rag",
+        "stack": "rag",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "memory-chat-rag",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\memory-chat-rag\\repeat-2\\projects\\golden-r2-17571316e9d1fbfe-memory-chat-rag",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r2-17571316e9d1fbfe-memory-chat-rag",
+          "detail": "",
+          "expected": "golden-r2-17571316e9d1fbfe-memory-chat-rag",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "rag",
+          "detail": "",
+          "expected": "rag",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:rag_check",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:rag_core.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:main.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:memory_store.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:test_memory_store.py",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:24:35.903833Z",
+      "duration_seconds": 8.528996,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 2,
+      "seed": 1681833974979230718,
+      "slug": "golden-r2-17571316e9d1fbfe-memory-chat-rag",
+      "stack": "rag",
+      "started_at": "2026-07-31T19:24:27.374666Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-38dd9f168e4d1f96",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\dino-runner-phaser\\repeat-1\\projects\\golden-r1-38dd9f168e4d1f96-dino-runner-phaser",
+        "score": 68.0,
+        "slug": "golden-r1-38dd9f168e4d1f96-dino-runner-phaser",
+        "stack": "phaser",
+        "status": "completed",
+        "verdict": "go"
+      },
+      "case_id": "dino-runner-phaser",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\dino-runner-phaser\\repeat-1\\projects\\golden-r1-38dd9f168e4d1f96-dino-runner-phaser",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-38dd9f168e4d1f96-dino-runner-phaser",
+          "detail": "",
+          "expected": "golden-r1-38dd9f168e4d1f96-dino-runner-phaser",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": true
+        },
+        {
+          "actual": "go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": true
+        },
+        {
+          "actual": "phaser",
+          "detail": "",
+          "expected": "phaser",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "68",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": true
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:headless_gate",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/sim.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/main.js",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:25:24.198001Z",
+      "duration_seconds": 48.278836,
+      "error": "",
+      "failed_expectations": [],
+      "passed": true,
+      "repeat": 1,
+      "seed": 4097606155202535318,
+      "slug": "golden-r1-38dd9f168e4d1f96-dino-runner-phaser",
+      "stack": "phaser",
+      "started_at": "2026-07-31T19:24:35.918201Z",
+      "status": "passed"
+    },
+    {
+      "build": {
+        "build_id": "golden-795700d46d51dbbf",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\dino-runner-phaser\\repeat-2\\projects\\golden-r2-795700d46d51dbbf-dino-runner-phaser",
+        "score": 68.0,
+        "slug": "golden-r2-795700d46d51dbbf-dino-runner-phaser",
+        "stack": "phaser",
+        "status": "completed",
+        "verdict": "go"
+      },
+      "case_id": "dino-runner-phaser",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\dino-runner-phaser\\repeat-2\\projects\\golden-r2-795700d46d51dbbf-dino-runner-phaser",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r2-795700d46d51dbbf-dino-runner-phaser",
+          "detail": "",
+          "expected": "golden-r2-795700d46d51dbbf-dino-runner-phaser",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": true
+        },
+        {
+          "actual": "go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": true
+        },
+        {
+          "actual": "phaser",
+          "detail": "",
+          "expected": "phaser",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "68",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": true
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:headless_gate",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/sim.js",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/main.js",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:26:12.009573Z",
+      "duration_seconds": 47.791334,
+      "error": "",
+      "failed_expectations": [],
+      "passed": true,
+      "repeat": 2,
+      "seed": 8743458113930255295,
+      "slug": "golden-r2-795700d46d51dbbf-dino-runner-phaser",
+      "stack": "phaser",
+      "started_at": "2026-07-31T19:25:24.217281Z",
+      "status": "passed"
+    },
+    {
+      "build": {
+        "build_id": "golden-74595114b067998c",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\security-agent-pack\\repeat-1\\projects\\golden-r1-74595114b067998c-security-agent-pack",
+        "score": 34.0,
+        "slug": "golden-r1-74595114b067998c-security-agent-pack",
+        "stack": "agent_pack",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "security-agent-pack",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\security-agent-pack\\repeat-1\\projects\\golden-r1-74595114b067998c-security-agent-pack",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-74595114b067998c-security-agent-pack",
+          "detail": "",
+          "expected": "golden-r1-74595114b067998c-security-agent-pack",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "agent_pack",
+          "detail": "",
+          "expected": "agent_pack",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:catalog.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:pack_tools.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:main.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:test_agent_pack.py",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:26:15.254202Z",
+      "duration_seconds": 3.230439,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 1,
+      "seed": 8383821330627664268,
+      "slug": "golden-r1-74595114b067998c-security-agent-pack",
+      "stack": "agent_pack",
+      "started_at": "2026-07-31T19:26:12.023699Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-7d04f8a73d6210bc",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\security-agent-pack\\repeat-2\\projects\\golden-r2-7d04f8a73d6210bc-security-agent-pack",
+        "score": 34.0,
+        "slug": "golden-r2-7d04f8a73d6210bc-security-agent-pack",
+        "stack": "agent_pack",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "security-agent-pack",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-59125192d13c-a7623999\\security-agent-pack\\repeat-2\\projects\\golden-r2-7d04f8a73d6210bc-security-agent-pack",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r2-7d04f8a73d6210bc-security-agent-pack",
+          "detail": "",
+          "expected": "golden-r2-7d04f8a73d6210bc-security-agent-pack",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "agent_pack",
+          "detail": "",
+          "expected": "agent_pack",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:catalog.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:pack_tools.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:main.py",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:test_agent_pack.py",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T19:26:18.421171Z",
+      "duration_seconds": 3.152695,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 2,
+      "seed": 9008598551820898492,
+      "slug": "golden-r2-7d04f8a73d6210bc-security-agent-pack",
+      "stack": "agent_pack",
+      "started_at": "2026-07-31T19:26:15.268412Z",
+      "status": "failed"
     }
   ],
   "case_check_names": {
@@ -6760,7 +7992,7 @@
     "weather-react": "react",
     "webhook-digest-workflow": "workflow"
   },
-  "completed_at": null,
+  "completed_at": "2026-07-31T19:26:18.439304Z",
   "created_at": "2026-07-31T18:54:06.943627Z",
   "error": "",
   "metadata": {
@@ -7081,7 +8313,7 @@
   "repeats": 2,
   "schema_version": 1,
   "seed": 20260709,
-  "status": "partial",
+  "status": "completed",
   "suite_digest": "96dd70d10360752da2aa4c121e8b62f54144bd1ca74f5f9302653acb66ece65e",
   "suite_id": "golden-v1",
   "summary": {
@@ -7123,15 +8355,15 @@
         }
       },
       "dino-runner-phaser": {
-        "attempts": 0,
+        "attempts": 2,
         "errors": 0,
         "failed": 0,
-        "pass_rate": 0.0,
-        "passed": 0,
+        "pass_rate": 1.0,
+        "passed": 2,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.0,
-          "low": 0.0
+          "high": 1.0,
+          "low": 0.34238
         }
       },
       "document-chat-rag": {
@@ -7207,14 +8439,14 @@
         }
       },
       "local-tasks-nextjs": {
-        "attempts": 0,
+        "attempts": 2,
         "errors": 0,
-        "failed": 0,
+        "failed": 2,
         "pass_rate": 0.0,
         "passed": 0,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.0,
+          "high": 0.65762,
           "low": 0.0
         }
       },
@@ -7243,14 +8475,14 @@
         }
       },
       "memory-chat-rag": {
-        "attempts": 0,
+        "attempts": 2,
         "errors": 0,
-        "failed": 0,
+        "failed": 2,
         "pass_rate": 0.0,
         "passed": 0,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.0,
+          "high": 0.65762,
           "low": 0.0
         }
       },
@@ -7375,14 +8607,14 @@
         }
       },
       "security-agent-pack": {
-        "attempts": 0,
+        "attempts": 2,
         "errors": 0,
-        "failed": 0,
+        "failed": 2,
         "pass_rate": 0.0,
         "passed": 0,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.0,
+          "high": 0.65762,
           "low": 0.0
         }
       },
@@ -7411,15 +8643,15 @@
         }
       },
       "supabase-auth-nextjs": {
-        "attempts": 0,
+        "attempts": 2,
         "errors": 0,
         "failed": 0,
-        "pass_rate": 0.0,
-        "passed": 0,
+        "pass_rate": 1.0,
+        "passed": 2,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.0,
-          "low": 0.0
+          "high": 1.0,
+          "low": 0.34238
         }
       },
       "support-ops-vue": {
@@ -7461,14 +8693,14 @@
     },
     "by_stack": {
       "agent_pack": {
-        "attempts": 2,
+        "attempts": 4,
         "errors": 0,
-        "failed": 2,
+        "failed": 4,
         "pass_rate": 0.0,
         "passed": 0,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.65762,
+          "high": 0.489891,
           "low": 0.0
         }
       },
@@ -7521,27 +8753,27 @@
         }
       },
       "nextjs": {
-        "attempts": 2,
+        "attempts": 6,
         "errors": 0,
-        "failed": 2,
-        "pass_rate": 0.0,
-        "passed": 0,
-        "wilson": {
-          "confidence": 0.95,
-          "high": 0.65762,
-          "low": 0.0
-        }
-      },
-      "phaser": {
-        "attempts": 2,
-        "errors": 0,
-        "failed": 0,
-        "pass_rate": 1.0,
+        "failed": 4,
+        "pass_rate": 0.333333,
         "passed": 2,
         "wilson": {
           "confidence": 0.95,
+          "high": 0.700007,
+          "low": 0.096771
+        }
+      },
+      "phaser": {
+        "attempts": 4,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 1.0,
+        "passed": 4,
+        "wilson": {
+          "confidence": 0.95,
           "high": 1.0,
-          "low": 0.34238
+          "low": 0.510109
         }
       },
       "python": {
@@ -7557,14 +8789,14 @@
         }
       },
       "rag": {
-        "attempts": 2,
+        "attempts": 4,
         "errors": 0,
-        "failed": 2,
+        "failed": 4,
         "pass_rate": 0.0,
         "passed": 0,
         "wilson": {
           "confidence": 0.95,
-          "high": 0.65762,
+          "high": 0.489891,
           "low": 0.0
         }
       },
@@ -7702,15 +8934,15 @@
       }
     },
     "overall": {
-      "attempts": 52,
+      "attempts": 62,
       "errors": 0,
-      "failed": 44,
-      "pass_rate": 0.153846,
-      "passed": 8,
+      "failed": 50,
+      "pass_rate": 0.193548,
+      "passed": 12,
       "wilson": {
         "confidence": 0.95,
-        "high": 0.275241,
-        "low": 0.080077
+        "high": 0.308518,
+        "low": 0.114338
       }
     }
   }

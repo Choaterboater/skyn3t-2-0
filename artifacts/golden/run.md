@@ -1,28 +1,28 @@
 # Golden benchmark: golden-v1
 
-- Status: **partial**
+- Status: **completed**
 - Suite digest: `96dd70d10360752da2aa4c121e8b62f54144bd1ca74f5f9302653acb66ece65e`
 - Metadata fingerprint: `59125192d13c1491145735a51d29f0e8137d559f2d63ce86ee444451d2448234`
 - Commit: `cdbd637d1723a8d67d81e296713f4f5233b8ac44`
 - Working tree: `dirty` (status digest `e841a084cca2fc629f238aedee198c3fd226b3b67cb7dbef8117824bc7369f69`)
 - Backends: `stub` / `inline`
 - Seed / repeats: `20260709` / `2`
-- Pass rate: **8/52 (15.4%)**
-- Wilson 95% interval: `8.0%` to `27.5%`
+- Pass rate: **12/62 (19.4%)**
+- Wilson 95% interval: `11.4%` to `30.9%`
 
 ## Per stack
 
 | Stack | Passed | Attempts | Pass rate | Wilson 95% | Errors |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| agent_pack | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
+| agent_pack | 0 | 4 | 0.0% | 0.0-49.0% | 0 |
 | astro | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
 | express | 2 | 2 | 100.0% | 34.2-100.0% | 0 |
 | fastapi | 0 | 8 | 0.0% | 0.0-32.4% | 0 |
 | mcp | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
-| nextjs | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
-| phaser | 2 | 2 | 100.0% | 34.2-100.0% | 0 |
+| nextjs | 2 | 6 | 33.3% | 9.7-70.0% | 0 |
+| phaser | 4 | 4 | 100.0% | 51.0-100.0% | 0 |
 | python | 2 | 4 | 50.0% | 15.0-85.0% | 0 |
-| rag | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
+| rag | 0 | 4 | 0.0% | 0.0-49.0% | 0 |
 | react | 0 | 4 | 0.0% | 0.0-49.0% | 0 |
 | react_native | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
 | react_ts | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
@@ -65,11 +65,11 @@
 | paper-trading-fastapi | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
 | model-router-fastapi | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
 | release-copilot-python | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
-| supabase-auth-nextjs | 0 | 0 | 0.0% | 0.0-0.0% | 0 |
-| local-tasks-nextjs | 0 | 0 | 0.0% | 0.0-0.0% | 0 |
-| memory-chat-rag | 0 | 0 | 0.0% | 0.0-0.0% | 0 |
-| dino-runner-phaser | 0 | 0 | 0.0% | 0.0-0.0% | 0 |
-| security-agent-pack | 0 | 0 | 0.0% | 0.0-0.0% | 0 |
+| supabase-auth-nextjs | 2 | 2 | 100.0% | 34.2-100.0% | 0 |
+| local-tasks-nextjs | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
+| memory-chat-rag | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
+| dino-runner-phaser | 2 | 2 | 100.0% | 34.2-100.0% | 0 |
+| security-agent-pack | 0 | 2 | 0.0% | 0.0-65.8% | 0 |
 
 ## Failed expectations
 
@@ -209,3 +209,21 @@
 | release-copilot-python | 2 | failed | verdict | go | no_go |
 | release-copilot-python | 2 | failed | score | &gt;= 60 | 34 |
 | release-copilot-python | 2 | failed | gate:proof | executed and passed | passed=False |
+| local-tasks-nextjs | 1 | failed | build_status | completed | completed_no_go |
+| local-tasks-nextjs | 1 | failed | verdict | go | no_go |
+| local-tasks-nextjs | 1 | failed | score | &gt;= 60 | 34 |
+| local-tasks-nextjs | 2 | failed | build_status | completed | completed_no_go |
+| local-tasks-nextjs | 2 | failed | verdict | go | no_go |
+| local-tasks-nextjs | 2 | failed | score | &gt;= 60 | 34 |
+| memory-chat-rag | 1 | failed | build_status | completed | completed_no_go |
+| memory-chat-rag | 1 | failed | verdict | go | no_go |
+| memory-chat-rag | 1 | failed | score | &gt;= 60 | 34 |
+| memory-chat-rag | 2 | failed | build_status | completed | completed_no_go |
+| memory-chat-rag | 2 | failed | verdict | go | no_go |
+| memory-chat-rag | 2 | failed | score | &gt;= 60 | 34 |
+| security-agent-pack | 1 | failed | build_status | completed | completed_no_go |
+| security-agent-pack | 1 | failed | verdict | go | no_go |
+| security-agent-pack | 1 | failed | score | &gt;= 60 | 34 |
+| security-agent-pack | 2 | failed | build_status | completed | completed_no_go |
+| security-agent-pack | 2 | failed | verdict | go | no_go |
+| security-agent-pack | 2 | failed | score | &gt;= 60 | 34 |

@@ -1593,9 +1593,16 @@ class StudioRunner:
             if env.get("degraded") is True:
                 # The degraded proof cap is a maximum, not a bucket. More degraded
                 # reasons shave the ceiling so these do not all land exactly on 74.
-                degraded_cap = float(extra.get("proof_environment_gate", {}).get("score_cap", 74.0))
-                cap(max(60.0, degraded_cap - max(2.0, min(10.0, 2.0 * len(degraded_reasons or [1])))),
-                    "degraded proof environment")
+                # score_cap None is MEANINGFUL, not missing: isolation-only
+                # degradation under lab posture is deliberately UNCAPPED (see
+                # the proof_environment_gate writer). float(None) here killed
+                # every lab-posture "go" on a Docker-less host at the finish
+                # line — the first live build after the win-rate campaign.
+                raw_cap = extra.get("proof_environment_gate", {}).get("score_cap", 74.0)
+                if raw_cap is not None:
+                    degraded_cap = float(raw_cap)
+                    cap(max(60.0, degraded_cap - max(2.0, min(10.0, 2.0 * len(degraded_reasons or [1])))),
+                        "degraded proof environment")
             if file_counts_known and files_substantive < 3:
                 cap(72.0 + files_substantive * 5.0, "thin substantive file count")
             elif file_counts_known and files_substantive < 8:
@@ -6450,7 +6457,8 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - never crash the factory
             if open_stage is not None:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
-            log.error("studio.build_failed", build_id=build_id, error=str(exc))
+            log.error("studio.build_failed", build_id=build_id, error=str(exc),
+                      exc_info=True)
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
             # A crashed build is a settled negative outcome: flush buffered

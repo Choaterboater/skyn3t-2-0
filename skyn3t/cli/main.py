@@ -1304,6 +1304,7 @@ async def _golden_run_async(
     execution_backend: str,
     llm_backend: str,
     work_root: Path | None,
+    live_overrides: dict | None = None,
 ):
     """Execute golden cases through fresh, isolated ``StudioRunner.start`` paths."""
     from skyn3t.adapters.llm import BudgetTracker
@@ -1316,7 +1317,9 @@ async def _golden_run_async(
     from skyn3t.studio.runner import StudioRunner
 
     base_settings = get_settings()
-    settings_profile = benchmark_settings_profile(base_settings, llm_backend=llm_backend)
+    settings_profile = benchmark_settings_profile(
+        base_settings, llm_backend=llm_backend, live_overrides=live_overrides
+    )
     shared_budget = None
 
     async def build_fn(case, context):
@@ -1326,6 +1329,7 @@ async def _golden_run_async(
             context.workspace_dir,
             llm_backend=llm_backend,
             execution_backend=execution_backend,
+            live_overrides=live_overrides,
         )
         spine = await _assemble_spine(settings_override=settings)
         rag = None
@@ -1473,6 +1477,24 @@ def golden_run(
         "--work-root",
         help="Optional root for isolated per-attempt state and projects.",
     ),
+    moa: bool = typer.Option(
+        False,
+        "--moa",
+        help=(
+            "LIVE opt-in: lift the bench's MoA pin and advise every case with "
+            "the operator's configured advisors (non-deterministic, uses real "
+            "model subscriptions/keys)."
+        ),
+    ),
+    codegen_cli: str = typer.Option(
+        "",
+        "--codegen-cli",
+        help=(
+            "LIVE opt-in: route codegen to this CLI (codex|claude|kimi|copilot) "
+            "like the operator's real builds, instead of the bench-pinned "
+            "follow-the-backend default."
+        ),
+    ),
 ) -> None:
     """Run every golden contract through StudioRunner and write durable evidence."""
     from skyn3t.studio.golden_bench import GoldenBenchError, load_suite
@@ -1480,6 +1502,22 @@ def golden_run(
     console = _console()
     out_path = Path(out).expanduser()
     report_path = Path(report).expanduser()
+    live_overrides: dict[str, object] = {}
+    if moa:
+        from skyn3t.config.settings import get_settings
+
+        live_overrides["moa_enabled"] = True
+        live_overrides["moa_advisors"] = str(
+            getattr(get_settings(), "moa_advisors", "") or ""
+        )
+    if codegen_cli.strip():
+        live_overrides["codegen_cli_provider"] = codegen_cli.strip().lower()
+    if live_overrides:
+        console.print(
+            "[yellow]LIVE overrides active[/yellow] "
+            f"({', '.join(sorted(live_overrides))}): real models will run — "
+            "subscription/API usage, non-deterministic ledger."
+        )
     try:
         suite = load_suite(suite_path or None)
         console.print(
@@ -1496,6 +1534,7 @@ def golden_run(
                 execution_backend=execution_backend.strip().lower(),
                 llm_backend=llm_backend.strip().lower(),
                 work_root=Path(work_root).expanduser() if work_root.strip() else None,
+                live_overrides=live_overrides,
             )
         )
     except (GoldenBenchError, OSError) as exc:

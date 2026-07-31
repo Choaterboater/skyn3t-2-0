@@ -527,6 +527,45 @@ def test_isolated_settings_pin_out_the_operator_codegen_cli_override(tmp_path):
     assert isolated.openrouter_codegen_model == ""
 
 
+def test_isolated_settings_live_overrides_lift_only_permitted_pins(tmp_path):
+    # bench golden run --moa / --codegen-cli: an EXPLICIT opt-in lifts exactly
+    # these pins; everything else in the safety profile stays non-negotiable.
+    base = Settings(moa_advisors="claude_cli,kimi_cli")
+
+    isolated = isolated_settings(
+        base, tmp_path, llm_backend="claude_cli", execution_backend="inline",
+        live_overrides={
+            "moa_enabled": True,
+            "moa_advisors": "claude_cli,kimi_cli",
+            "codegen_cli_provider": "codex",
+        },
+    )
+
+    assert isolated.moa_enabled is True
+    assert isolated.moa_advisors == "claude_cli,kimi_cli"
+    assert isolated.codegen_cli_provider == "codex"
+    assert isolated.best_of_n == 1  # the rest of the profile still pins
+
+
+def test_isolated_settings_rejects_unlisted_live_overrides(tmp_path):
+    with pytest.raises(GoldenBenchError, match="not permitted"):
+        isolated_settings(
+            Settings(), tmp_path, llm_backend="stub", execution_backend="inline",
+            live_overrides={"best_of_n": 5},
+        )
+
+
+def test_settings_profile_records_lifted_pins(tmp_path):
+    # A live ledger must never masquerade as the deterministic floor: the
+    # recorded profile (and thus the metadata fingerprint) reflects the lift.
+    profile = benchmark_settings_profile(
+        Settings(), llm_backend="claude_cli",
+        live_overrides={"moa_enabled": True, "codegen_cli_provider": "codex"},
+    )
+    assert profile["moa_enabled"] is True
+    assert profile["codegen_cli_provider"] == "codex"
+
+
 @pytest.mark.parametrize(
     ("setting", "first", "second"),
     [

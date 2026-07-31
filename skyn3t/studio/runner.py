@@ -982,6 +982,49 @@ class StudioRunner:
             log.warning("moa.step_failed", error=str(exc)[:160])
         return extra
 
+    async def _repair_council_guidance(
+        self, manifest, plan, extra: dict[str, Any] | None, failure: str,
+    ) -> str:
+        """One bounded advisor fan-out on a FAILING build's real proof errors.
+
+        Hermes-parity: the pre-codegen council never saw the stage where
+        builds actually die. Returns assembled guidance for the improver
+        prompt ("" when the council is off/failed — the repair prompt is then
+        byte-identical to a council-off repair). Records
+        ``manifest.extra["moa_repair"]``; never raises.
+        """
+        try:
+            from skyn3t.intelligence.council import CouncilEngine
+
+            llm = self._intent_llm()
+            if llm is None:
+                return ""
+            selected = extra.get("moa_advisors") if isinstance(extra, dict) else None
+            engine = CouncilEngine(
+                llm,
+                self.settings,
+                advisors=str(selected) if selected is not None else None,
+            )
+            if not engine.enabled():
+                return ""
+            advice = await engine.advise_repair(
+                brief=manifest.brief,
+                stack=str(getattr(plan, "stack", "") or ""),
+                failure=failure,
+            )
+            manifest.extra["moa_repair"] = advice.to_dict()
+            if advice.guidance:
+                log.info(
+                    "moa.repair_council_ready",
+                    advisors=advice.ok_count,
+                    chars=len(advice.guidance),
+                    cost_usd=advice.cost_usd,
+                )
+            return advice.guidance
+        except Exception as exc:  # noqa: BLE001 - the council may never break a repair
+            log.warning("moa.repair_step_failed", error=str(exc)[:160])
+            return ""
+
     # ---- asset generation (Replicate, opt-in) ---------------------------
     async def _generate_assets(
         self, worktree_dir: str, brief: str, manifest, extra: dict[str, Any],
@@ -4258,6 +4301,7 @@ class StudioRunner:
         previous_proof_signature = proof_signature(proof)
         unchanged_rounds = 0
         stalled = False
+        repair_guidance: str | None = None  # council advises at most once per build
         runtime_self_heal = str(getattr(plan, "stack", "") or "") not in _GAME_STACKS
         if runtime_self_heal:
             manifest.extra["runtime_self_heal"] = {
@@ -4302,6 +4346,15 @@ class StudioRunner:
                 raw_gaps = list(proof.missing or []) + (
                     error_gaps or [f"proof failed: {proof.detail}"]
                 )
+                # Hermes-parity: from the second attempt on (a repeat attempt
+                # means the direct fix didn't take), fan the REAL proof errors
+                # to the advisory council ONCE and hand its guidance to every
+                # remaining improver pass. First attempt stays fast.
+                if attempt >= 2 and repair_guidance is None:
+                    repair_guidance = await self._repair_council_guidance(
+                        manifest, plan, extra,
+                        "\n".join(str(g) for g in raw_gaps[:12]),
+                    )
                 payload = {
                     "brief": manifest.brief, "slug": manifest.slug,
                     "worktree_dir": project_dir, "project_dir": project_dir,
@@ -4314,6 +4367,8 @@ class StudioRunner:
                         raw_gaps, stage="proof", attempt=attempt,
                         max_attempts=max_attempts),
                 }
+                if repair_guidance:
+                    payload["moa_guidance"] = repair_guidance
                 if extra:
                     payload["extra"] = extra
                 task = TaskRequest(

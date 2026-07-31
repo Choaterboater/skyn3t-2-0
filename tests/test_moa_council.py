@@ -41,8 +41,16 @@ class _FakeLLM:
             key = provider_override or ""
             if key in self.fail:
                 raise RuntimeError(f"{key} is down")
+            # Long enough to clear the punt guard — real advisor replies are
+            # paragraphs, and _is_punt refuses acknowledgement-length text.
+            default_reply = (
+                f"advice from {key}: keep the component tree shallow, colocate "
+                "state with its consumers, define the API error envelope up "
+                "front, and wire routing before styling so every page is "
+                "reachable from day one."
+            )
             return SimpleNamespace(
-                text=self.replies.get(key, f"advice from {key}"),
+                text=self.replies.get(key, default_reply),
                 model=model_override or key,
                 backend=provider_override or "codex_cli",
                 cost_usd=0.001,
@@ -76,6 +84,73 @@ def test_council_fans_out_across_every_configured_provider(tmp_path):
     assert advice.ok_count == 3
     assert "ADVISORY COUNCIL" in advice.guidance
     assert "Advisor 1 — claude_cli:sonnet" in advice.guidance
+
+
+def test_a_punt_reply_is_a_failed_advisor_never_credited(tmp_path):
+    # The original MoA failure: a mangled prompt yielded "Ready as reference
+    # advisor. Send me the task", which counted as a SUCCESSFUL advisor and
+    # was injected into codegen as guidance. Non-empty is not advice.
+    llm = _FakeLLM(replies={
+        "claude_cli": "Ready as reference advisor. Send me the task.",
+        "codex_cli": "I need more information to help you. Please provide the details.",
+    })
+    advice = _advise(CouncilEngine(llm, _settings(tmp_path)))
+
+    failed = {a.label: a for a in advice.advisors if not a.ok}
+    assert "claude_cli:sonnet" in failed
+    assert "codex_cli" in failed
+    assert "not usable guidance" in failed["claude_cli:sonnet"].error
+    # The one real advisor still carries the council.
+    assert advice.ok_count == 1
+    assert "kimi_cli" in advice.guidance
+
+
+def test_long_genuine_advice_mentioning_cant_is_not_a_punt(tmp_path):
+    real = (
+        "I can't overstate how much the data model matters here: define the "
+        "recipe schema first (title, ingredients as structured rows, steps as "
+        "an ordered list), keep favorites as a separate persisted set keyed by "
+        "recipe id, debounce the ingredient search, and make the card grid a "
+        "pure function of the filtered collection so search/favorites compose."
+    )
+    llm = _FakeLLM(replies={"claude_cli": real})
+    advice = _advise(CouncilEngine(llm, _settings(tmp_path)))
+
+    ok = {a.label for a in advice.advisors if a.ok}
+    assert "claude_cli:sonnet" in ok
+
+
+def test_advise_repair_feeds_failure_evidence_to_advisors(tmp_path):
+    class _RecordingLLM(_FakeLLM):
+        def __init__(self):
+            super().__init__()
+            self.prompts: list[str] = []
+
+        async def complete(self, prompt, **kw):
+            self.prompts.append(prompt)
+            return await super().complete(prompt, **kw)
+
+    llm = _RecordingLLM()
+    advice = asyncio.run(CouncilEngine(llm, _settings(tmp_path)).advise_repair(
+        brief="a habit tracker",
+        stack="react_ts",
+        failure="TS2307: Cannot find module './components/HabitCard'",
+    ))
+
+    assert advice.ok_count == 3
+    assert advice.guidance  # assembled for the improver prompt
+    assert all("TS2307" in p for p in llm.prompts)
+    assert all("FAILED its objective proof" in p for p in llm.prompts)
+
+
+def test_advise_repair_is_inert_when_council_disabled(tmp_path):
+    llm = _FakeLLM()
+    advice = asyncio.run(
+        CouncilEngine(llm, _settings(tmp_path, moa_enabled=False)).advise_repair(
+            brief="x", stack="react_ts", failure="boom")
+    )
+    assert advice.guidance == ""
+    assert llm.calls == []
 
 
 def test_the_shipped_default_is_on_but_inert(tmp_path, monkeypatch):

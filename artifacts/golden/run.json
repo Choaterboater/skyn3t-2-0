@@ -1,0 +1,1842 @@
+{
+  "attempts": [
+    {
+      "build": {
+        "build_id": "golden-38412ae27238c817",
+        "cost_usd": 0.0,
+        "intent_score": 92.31,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-cc4d0a627e4a-0e03b3cb\\weather-react\\repeat-1\\projects\\golden-r1-38412ae27238c817-weather-react",
+        "score": 34.0,
+        "slug": "golden-r1-38412ae27238c817-weather-react",
+        "stack": "react",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "weather-react",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-cc4d0a627e4a-0e03b3cb\\weather-react\\repeat-1\\projects\\golden-r1-38412ae27238c817-weather-react",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-38412ae27238c817-weather-react",
+          "detail": "",
+          "expected": "golden-r1-38412ae27238c817-weather-react",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "react",
+          "detail": "",
+          "expected": "react",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "92.31",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:seo",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/App.jsx",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/styles.css",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T18:36:24.627840Z",
+      "duration_seconds": 253.27169,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 1,
+      "seed": 4053568291677456407,
+      "slug": "golden-r1-38412ae27238c817-weather-react",
+      "stack": "react",
+      "started_at": "2026-07-31T18:32:11.351059Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-18da72061bf6f229",
+        "cost_usd": 0.0,
+        "intent_score": 100.0,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-cc4d0a627e4a-0e03b3cb\\weather-react\\repeat-2\\projects\\golden-r2-18da72061bf6f229-weather-react",
+        "score": 34.0,
+        "slug": "golden-r2-18da72061bf6f229-weather-react",
+        "stack": "react",
+        "status": "completed_no_go",
+        "verdict": "no_go"
+      },
+      "case_id": "weather-react",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-cc4d0a627e4a-0e03b3cb\\weather-react\\repeat-2\\projects\\golden-r2-18da72061bf6f229-weather-react",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r2-18da72061bf6f229-weather-react",
+          "detail": "",
+          "expected": "golden-r2-18da72061bf6f229-weather-react",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed_no_go",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": false
+        },
+        {
+          "actual": "no_go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": false
+        },
+        {
+          "actual": "react",
+          "detail": "",
+          "expected": "react",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "34",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": false
+        },
+        {
+          "actual": "100",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:seo",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/App.jsx",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:src/styles.css",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T18:40:06.653503Z",
+      "duration_seconds": 222.012428,
+      "error": "",
+      "failed_expectations": [
+        "build_status",
+        "verdict",
+        "score"
+      ],
+      "passed": false,
+      "repeat": 2,
+      "seed": 1790869172397732393,
+      "slug": "golden-r2-18da72061bf6f229-weather-react",
+      "stack": "react",
+      "started_at": "2026-07-31T18:36:24.636633Z",
+      "status": "failed"
+    },
+    {
+      "build": {
+        "build_id": "golden-2ed660295b52da92",
+        "cost_usd": 0.0,
+        "intent_score": 86.67,
+        "project_dir": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-cc4d0a627e4a-0e03b3cb\\habit-expo\\repeat-1\\projects\\golden-r1-2ed660295b52da92-habit-expo",
+        "score": 68.0,
+        "slug": "golden-r1-2ed660295b52da92-habit-expo",
+        "stack": "react_native",
+        "status": "completed",
+        "verdict": "go"
+      },
+      "case_id": "habit-expo",
+      "checks": [
+        {
+          "actual": "C:\\Users\\choat\\AppData\\Local\\Temp\\skyn3t-golden-work\\golden-v1-cc4d0a627e4a-0e03b3cb\\habit-expo\\repeat-1\\projects\\golden-r1-2ed660295b52da92-habit-expo",
+          "detail": "",
+          "expected": "project directory inside attempt workspace",
+          "name": "project_isolation",
+          "passed": true
+        },
+        {
+          "actual": "golden-r1-2ed660295b52da92-habit-expo",
+          "detail": "",
+          "expected": "golden-r1-2ed660295b52da92-habit-expo",
+          "name": "build_slug",
+          "passed": true
+        },
+        {
+          "actual": "completed",
+          "detail": "",
+          "expected": "completed",
+          "name": "build_status",
+          "passed": true
+        },
+        {
+          "actual": "go",
+          "detail": "",
+          "expected": "go",
+          "name": "verdict",
+          "passed": true
+        },
+        {
+          "actual": "react_native",
+          "detail": "",
+          "expected": "react_native",
+          "name": "stack",
+          "passed": true
+        },
+        {
+          "actual": "68",
+          "detail": "",
+          "expected": ">= 60",
+          "name": "score",
+          "passed": true
+        },
+        {
+          "actual": "86.67",
+          "detail": "",
+          "expected": ">= 80",
+          "name": "intent_score",
+          "passed": true
+        },
+        {
+          "actual": "passed=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:proof",
+          "passed": true
+        },
+        {
+          "actual": "ok=True",
+          "detail": "",
+          "expected": "executed and passed",
+          "name": "gate:security_check",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:package.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:app.json",
+          "passed": true
+        },
+        {
+          "actual": "present",
+          "detail": "",
+          "expected": "file exists",
+          "name": "artifact:App.tsx",
+          "passed": true
+        }
+      ],
+      "completed_at": "2026-07-31T18:48:09.507309Z",
+      "duration_seconds": 482.83279,
+      "error": "",
+      "failed_expectations": [],
+      "passed": true,
+      "repeat": 1,
+      "seed": 3374990701502847634,
+      "slug": "golden-r1-2ed660295b52da92-habit-expo",
+      "stack": "react_native",
+      "started_at": "2026-07-31T18:40:06.664862Z",
+      "status": "passed"
+    }
+  ],
+  "case_check_names": {
+    "billing-portal-sveltekit": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:svelte.config.js",
+      "artifact:src/routes/+page.svelte"
+    ],
+    "cellar-companion-swift-ios": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:App.xcodeproj/project.pbxproj",
+      "artifact:App/App.swift",
+      "artifact:App/ContentView.swift",
+      "artifact:AppTests/AppTests.swift"
+    ],
+    "csv-cleaner-python": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:cli_check",
+      "artifact:pyproject.toml",
+      "artifact:main.py",
+      "artifact:tests/test_core.py"
+    ],
+    "dino-runner-phaser": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:headless_gate",
+      "artifact:package.json",
+      "artifact:src/sim.js",
+      "artifact:src/main.js"
+    ],
+    "document-chat-rag": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:rag_check",
+      "artifact:rag_core.py",
+      "artifact:main.py",
+      "artifact:test_rag_core.py",
+      "artifact:corpus/seed.md"
+    ],
+    "editorial-nextjs": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:app/layout.jsx",
+      "artifact:app/page.jsx"
+    ],
+    "focus-timer-swift": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:cli_playtest",
+      "artifact:Package.swift",
+      "artifact:Sources/AppCore/AppModel.swift",
+      "artifact:Sources/App/MainApp.swift",
+      "artifact:.skyn3t-cli-playtest.json"
+    ],
+    "habit-expo": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:package.json",
+      "artifact:app.json",
+      "artifact:App.tsx"
+    ],
+    "inventory-react-ts": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:tsconfig.json",
+      "artifact:src/App.tsx"
+    ],
+    "lamp-configurator-threejs": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:src/App.jsx",
+      "artifact:src/main.jsx"
+    ],
+    "local-tasks-nextjs": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:skyn3t-backend.json",
+      "artifact:lib/localBackend.js",
+      "artifact:app/api/items/route.js",
+      "artifact:app/page.jsx"
+    ],
+    "markdown-notes-tauri": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:package.json",
+      "artifact:src-tauri/Cargo.toml",
+      "artifact:src-tauri/src/main.rs"
+    ],
+    "marketing-agent-pack": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "artifact:catalog.json",
+      "artifact:pack_tools.py",
+      "artifact:main.py",
+      "artifact:test_agent_pack.py"
+    ],
+    "memory-chat-rag": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:rag_check",
+      "artifact:rag_core.py",
+      "artifact:main.py",
+      "artifact:memory_store.py",
+      "artifact:test_memory_store.py"
+    ],
+    "model-router-fastapi": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:router_core.py",
+      "artifact:providers.py",
+      "artifact:main.py",
+      "artifact:test_main.py"
+    ],
+    "museum-threejs-static": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:index.html",
+      "artifact:styles.css",
+      "artifact:main.js"
+    ],
+    "notes-fastapi": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:main.py",
+      "artifact:test_main.py",
+      "artifact:requirements.txt"
+    ],
+    "ohlcv-market-data-api": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:vendors.py",
+      "artifact:main.py",
+      "artifact:test_main.py"
+    ],
+    "outdoor-store-remix": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:app/routes/_index.tsx",
+      "artifact:app/routes/cart.tsx"
+    ],
+    "paper-trading-fastapi": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:market.py",
+      "artifact:strategy.py",
+      "artifact:ledger.py",
+      "artifact:main.py"
+    ],
+    "parcel-platformer-phaser": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:headless_gate",
+      "artifact:package.json",
+      "artifact:src/sim.js",
+      "artifact:src/main.js"
+    ],
+    "release-copilot-python": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:cli_check",
+      "gate:cli_playtest",
+      "artifact:cli_core.py",
+      "artifact:main.py",
+      "artifact:scenarios.json",
+      "artifact:.skyn3t-cli-playtest.json"
+    ],
+    "restaurant-static": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:index.html",
+      "artifact:styles.css",
+      "artifact:main.js"
+    ],
+    "sdk-docs-astro": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:astro.config.mjs",
+      "artifact:src/pages/index.astro"
+    ],
+    "security-agent-pack": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "artifact:catalog.json",
+      "artifact:pack_tools.py",
+      "artifact:main.py",
+      "artifact:test_agent_pack.py"
+    ],
+    "shortener-express": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "artifact:package.json",
+      "artifact:server.js",
+      "artifact:test.js"
+    ],
+    "sqlite-tools-mcp": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:mcp_check",
+      "artifact:server.py",
+      "artifact:tools.py",
+      "artifact:tests/test_tools.py"
+    ],
+    "supabase-auth-nextjs": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:.env.example",
+      "artifact:lib/supabaseClient.js",
+      "artifact:app/page.jsx"
+    ],
+    "support-ops-vue": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:src/main.ts",
+      "artifact:src/App.vue"
+    ],
+    "weather-react": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:seo",
+      "artifact:package.json",
+      "artifact:src/App.jsx",
+      "artifact:src/styles.css"
+    ],
+    "webhook-digest-workflow": [
+      "project_isolation",
+      "build_slug",
+      "build_status",
+      "verdict",
+      "stack",
+      "score",
+      "intent_score",
+      "gate:proof",
+      "gate:security_check",
+      "gate:workflow_check",
+      "artifact:workflow_core.py",
+      "artifact:main.py",
+      "artifact:test_workflow_core.py"
+    ]
+  },
+  "case_ids": [
+    "weather-react",
+    "habit-expo",
+    "editorial-nextjs",
+    "sdk-docs-astro",
+    "outdoor-store-remix",
+    "support-ops-vue",
+    "billing-portal-sveltekit",
+    "inventory-react-ts",
+    "notes-fastapi",
+    "restaurant-static",
+    "csv-cleaner-python",
+    "shortener-express",
+    "markdown-notes-tauri",
+    "parcel-platformer-phaser",
+    "focus-timer-swift",
+    "cellar-companion-swift-ios",
+    "sqlite-tools-mcp",
+    "document-chat-rag",
+    "webhook-digest-workflow",
+    "marketing-agent-pack",
+    "lamp-configurator-threejs",
+    "museum-threejs-static",
+    "ohlcv-market-data-api",
+    "paper-trading-fastapi",
+    "model-router-fastapi",
+    "release-copilot-python",
+    "supabase-auth-nextjs",
+    "local-tasks-nextjs",
+    "memory-chat-rag",
+    "dino-runner-phaser",
+    "security-agent-pack"
+  ],
+  "case_stacks": {
+    "billing-portal-sveltekit": "sveltekit",
+    "cellar-companion-swift-ios": "swift_ios",
+    "csv-cleaner-python": "python",
+    "dino-runner-phaser": "phaser",
+    "document-chat-rag": "rag",
+    "editorial-nextjs": "nextjs",
+    "focus-timer-swift": "swift",
+    "habit-expo": "react_native",
+    "inventory-react-ts": "react_ts",
+    "lamp-configurator-threejs": "react",
+    "local-tasks-nextjs": "nextjs",
+    "markdown-notes-tauri": "tauri",
+    "marketing-agent-pack": "agent_pack",
+    "memory-chat-rag": "rag",
+    "model-router-fastapi": "fastapi",
+    "museum-threejs-static": "static",
+    "notes-fastapi": "fastapi",
+    "ohlcv-market-data-api": "fastapi",
+    "outdoor-store-remix": "remix",
+    "paper-trading-fastapi": "fastapi",
+    "parcel-platformer-phaser": "phaser",
+    "release-copilot-python": "python",
+    "restaurant-static": "static",
+    "sdk-docs-astro": "astro",
+    "security-agent-pack": "agent_pack",
+    "shortener-express": "express",
+    "sqlite-tools-mcp": "mcp",
+    "supabase-auth-nextjs": "nextjs",
+    "support-ops-vue": "vue",
+    "weather-react": "react",
+    "webhook-digest-workflow": "workflow"
+  },
+  "completed_at": null,
+  "created_at": "2026-07-31T18:32:11.341692Z",
+  "error": "",
+  "metadata": {
+    "execution_backend": "inline",
+    "fingerprint": "cc4d0a627e4a9fca42d96e1e80a86c861a14c481b022eb2881aa7464d771c55f",
+    "fingerprint_inputs": {
+      "execution_backend": "inline",
+      "ledger_schema_version": 1,
+      "llm_backend": "stub",
+      "machine": "AMD64",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "python_implementation": "CPython",
+      "python_version": "3.14.0",
+      "repeats": 2,
+      "runner_path": "skyn3t.studio.runner.StudioRunner.start",
+      "safety_profile": {
+        "a2a_conversation": false,
+        "agentic_build_timeout": 1800,
+        "agentic_context_budget_bytes": 200000,
+        "agentic_context_editing": true,
+        "agentic_context_keep_last": 6,
+        "agentic_heartbeat_seconds": 60,
+        "agentic_idle_timeout": 600,
+        "agentic_retries": 1,
+        "agentic_verify_on_stop": true,
+        "ai_native_gates_verdict": true,
+        "allow_remote_deploy": false,
+        "app_name": "SkyN3t",
+        "app_type_override": "auto",
+        "approval_gates": false,
+        "art_director_enabled": false,
+        "asset_gen": false,
+        "auto_allow_openrouter": false,
+        "auto_cli_priority": "codex,claude,kimi",
+        "auto_route": false,
+        "autonomous_builds": false,
+        "autonomous_daily_build_cap": 0,
+        "autonomous_fanout_stacks": "",
+        "autonomous_learning": false,
+        "bench_capture_failures": false,
+        "best_of_n": 1,
+        "best_of_n_across_models": false,
+        "blocking_gates": "",
+        "build_graph_max_concurrency": 4,
+        "build_posture": "release",
+        "cli_check_enabled": true,
+        "cli_disable_mcp": true,
+        "cli_llm_provider": "claude",
+        "cli_llm_timeout": 300,
+        "cli_max_concurrency": 2,
+        "cli_playtest_enabled": true,
+        "codegen_cli_model": "",
+        "codegen_cli_provider": "codex",
+        "cortex_auto_approve_safe": true,
+        "cortex_candidate_auto_merge": true,
+        "cortex_candidate_merge_strategy": "ff-only",
+        "cortex_candidate_timeout": 1800,
+        "cortex_candidates_enabled": true,
+        "critic_enabled": true,
+        "critic_gates_verdict": false,
+        "curiosity_loop_enabled": false,
+        "daily_token_cap": 0,
+        "daily_usd_cap": 0.0,
+        "debate_enabled": false,
+        "debate_slots": "",
+        "degraded_proof_score_cap": 74.0,
+        "deploy_check_enabled": true,
+        "engine_override": "auto",
+        "fix_loop_budget_s": 720,
+        "free_only": false,
+        "game_art_enabled": true,
+        "game_art_source": "offline",
+        "game_designer_enabled": false,
+        "game_quality_gates_verdict": true,
+        "game_visual_check_enabled": false,
+        "game_visual_repair_enabled": true,
+        "generated_build_timeout": 300,
+        "generated_test_timeout": 90,
+        "github_similarity_max_repos": 8,
+        "github_similarity_research": false,
+        "headless_gate_attempts": 3,
+        "headless_gate_enabled": true,
+        "headless_gate_requires_reachable": false,
+        "improve_agentic": true,
+        "improve_agentic_timeout": 900,
+        "intent_judge_samples": 1,
+        "isolated_state": true,
+        "lab_autonomy": true,
+        "liveness_check_enabled": true,
+        "liveness_gates_verdict": false,
+        "liveness_max_rounds": 2,
+        "llm_call_deadline_seconds": 0.0,
+        "llm_fallback_enabled": true,
+        "llm_fallback_models": "",
+        "llm_max_fallbacks": 4,
+        "llm_max_retries": 3,
+        "llm_retry_base_delay": 0.5,
+        "llm_retry_enabled": true,
+        "llm_retry_max_delay": 8.0,
+        "max_fix_attempts": 6,
+        "mcp_check_enabled": true,
+        "moa_advisor_block_bytes": 3000,
+        "moa_advisor_max_tokens": 1200,
+        "moa_advisor_timeout": 60,
+        "moa_advisors": "",
+        "moa_enabled": false,
+        "moa_max_concurrency": 4,
+        "moa_trace_enabled": false,
+        "mock_llm_proof_enabled": true,
+        "model_backend": "",
+        "model_cheap": "",
+        "model_docs": "",
+        "model_evolution": false,
+        "model_strong": "",
+        "model_ui": "",
+        "no_claude": false,
+        "openrouter_agentic": true,
+        "openrouter_agentic_max_turns": 60,
+        "openrouter_codegen_model": "",
+        "openrouter_enabled": true,
+        "openrouter_max_concurrency": 8,
+        "parallel_code_slices": false,
+        "parallel_code_slices_min_files": 8,
+        "per_build_usd_cap": 0.0,
+        "preferred_model": "",
+        "proof_install_python_deps": true,
+        "proof_ladder_required": true,
+        "proof_python_deps_timeout": 120,
+        "provider_access": {
+          "anthropic": false,
+          "kimi": false,
+          "openai": false,
+          "openrouter": false
+        },
+        "provider_max_concurrency": {},
+        "qa_playtest_enabled": false,
+        "rag_check_enabled": true,
+        "reflective_retry": true,
+        "reliability_ratchet_enabled": false,
+        "replicate_model": "",
+        "reward_hardening": true,
+        "run_generated_build": true,
+        "run_generated_tests": true,
+        "sandbox_drop_caps": true,
+        "sandbox_hardening": true,
+        "security_check_enabled": true,
+        "seo_check_enabled": true,
+        "shared_daily_budget": true,
+        "skills_hub_paths": "",
+        "slice_tier_models": {},
+        "tournament_model_pool": "",
+        "version": "2.0.0",
+        "vision_model": "",
+        "visual_self_heal": false,
+        "visual_self_heal_max_rounds": 2,
+        "web_polish_gate_enabled": true,
+        "workflow_check_enabled": true
+      },
+      "seed": 20260709,
+      "suite_digest": "96dd70d10360752da2aa4c121e8b62f54144bd1ca74f5f9302653acb66ece65e",
+      "suite_id": "golden-v1",
+      "system": "Windows"
+    },
+    "git_commit": "ad4c27ea6cdc736a245e4510c939304cb2ddae9e",
+    "git_dirty": true,
+    "git_status_digest": "198aa8c0c33969d866dd46046d104c1a57821ea72ef02ec42789bfdbb9d7bd3d",
+    "llm_backend": "stub",
+    "machine": "AMD64",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python_implementation": "CPython",
+    "python_version": "3.14.0",
+    "runner_path": "skyn3t.studio.runner.StudioRunner.start",
+    "safety_profile": {
+      "a2a_conversation": false,
+      "agentic_build_timeout": 1800,
+      "agentic_context_budget_bytes": 200000,
+      "agentic_context_editing": true,
+      "agentic_context_keep_last": 6,
+      "agentic_heartbeat_seconds": 60,
+      "agentic_idle_timeout": 600,
+      "agentic_retries": 1,
+      "agentic_verify_on_stop": true,
+      "ai_native_gates_verdict": true,
+      "allow_remote_deploy": false,
+      "app_name": "SkyN3t",
+      "app_type_override": "auto",
+      "approval_gates": false,
+      "art_director_enabled": false,
+      "asset_gen": false,
+      "auto_allow_openrouter": false,
+      "auto_cli_priority": "codex,claude,kimi",
+      "auto_route": false,
+      "autonomous_builds": false,
+      "autonomous_daily_build_cap": 0,
+      "autonomous_fanout_stacks": "",
+      "autonomous_learning": false,
+      "bench_capture_failures": false,
+      "best_of_n": 1,
+      "best_of_n_across_models": false,
+      "blocking_gates": "",
+      "build_graph_max_concurrency": 4,
+      "build_posture": "release",
+      "cli_check_enabled": true,
+      "cli_disable_mcp": true,
+      "cli_llm_provider": "claude",
+      "cli_llm_timeout": 300,
+      "cli_max_concurrency": 2,
+      "cli_playtest_enabled": true,
+      "codegen_cli_model": "",
+      "codegen_cli_provider": "codex",
+      "cortex_auto_approve_safe": true,
+      "cortex_candidate_auto_merge": true,
+      "cortex_candidate_merge_strategy": "ff-only",
+      "cortex_candidate_timeout": 1800,
+      "cortex_candidates_enabled": true,
+      "critic_enabled": true,
+      "critic_gates_verdict": false,
+      "curiosity_loop_enabled": false,
+      "daily_token_cap": 0,
+      "daily_usd_cap": 0.0,
+      "debate_enabled": false,
+      "debate_slots": "",
+      "degraded_proof_score_cap": 74.0,
+      "deploy_check_enabled": true,
+      "engine_override": "auto",
+      "fix_loop_budget_s": 720,
+      "free_only": false,
+      "game_art_enabled": true,
+      "game_art_source": "offline",
+      "game_designer_enabled": false,
+      "game_quality_gates_verdict": true,
+      "game_visual_check_enabled": false,
+      "game_visual_repair_enabled": true,
+      "generated_build_timeout": 300,
+      "generated_test_timeout": 90,
+      "github_similarity_max_repos": 8,
+      "github_similarity_research": false,
+      "headless_gate_attempts": 3,
+      "headless_gate_enabled": true,
+      "headless_gate_requires_reachable": false,
+      "improve_agentic": true,
+      "improve_agentic_timeout": 900,
+      "intent_judge_samples": 1,
+      "isolated_state": true,
+      "lab_autonomy": true,
+      "liveness_check_enabled": true,
+      "liveness_gates_verdict": false,
+      "liveness_max_rounds": 2,
+      "llm_call_deadline_seconds": 0.0,
+      "llm_fallback_enabled": true,
+      "llm_fallback_models": "",
+      "llm_max_fallbacks": 4,
+      "llm_max_retries": 3,
+      "llm_retry_base_delay": 0.5,
+      "llm_retry_enabled": true,
+      "llm_retry_max_delay": 8.0,
+      "max_fix_attempts": 6,
+      "mcp_check_enabled": true,
+      "moa_advisor_block_bytes": 3000,
+      "moa_advisor_max_tokens": 1200,
+      "moa_advisor_timeout": 60,
+      "moa_advisors": "",
+      "moa_enabled": false,
+      "moa_max_concurrency": 4,
+      "moa_trace_enabled": false,
+      "mock_llm_proof_enabled": true,
+      "model_backend": "",
+      "model_cheap": "",
+      "model_docs": "",
+      "model_evolution": false,
+      "model_strong": "",
+      "model_ui": "",
+      "no_claude": false,
+      "openrouter_agentic": true,
+      "openrouter_agentic_max_turns": 60,
+      "openrouter_codegen_model": "",
+      "openrouter_enabled": true,
+      "openrouter_max_concurrency": 8,
+      "parallel_code_slices": false,
+      "parallel_code_slices_min_files": 8,
+      "per_build_usd_cap": 0.0,
+      "preferred_model": "",
+      "proof_install_python_deps": true,
+      "proof_ladder_required": true,
+      "proof_python_deps_timeout": 120,
+      "provider_access": {
+        "anthropic": false,
+        "kimi": false,
+        "openai": false,
+        "openrouter": false
+      },
+      "provider_max_concurrency": {},
+      "qa_playtest_enabled": false,
+      "rag_check_enabled": true,
+      "reflective_retry": true,
+      "reliability_ratchet_enabled": false,
+      "replicate_model": "",
+      "reward_hardening": true,
+      "run_generated_build": true,
+      "run_generated_tests": true,
+      "sandbox_drop_caps": true,
+      "sandbox_hardening": true,
+      "security_check_enabled": true,
+      "seo_check_enabled": true,
+      "shared_daily_budget": true,
+      "skills_hub_paths": "",
+      "slice_tier_models": {},
+      "tournament_model_pool": "",
+      "version": "2.0.0",
+      "vision_model": "",
+      "visual_self_heal": false,
+      "visual_self_heal_max_rounds": 2,
+      "web_polish_gate_enabled": true,
+      "workflow_check_enabled": true
+    },
+    "system": "Windows"
+  },
+  "repeats": 2,
+  "schema_version": 1,
+  "seed": 20260709,
+  "status": "partial",
+  "suite_digest": "96dd70d10360752da2aa4c121e8b62f54144bd1ca74f5f9302653acb66ece65e",
+  "suite_id": "golden-v1",
+  "summary": {
+    "by_case": {
+      "billing-portal-sveltekit": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "cellar-companion-swift-ios": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "csv-cleaner-python": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "dino-runner-phaser": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "document-chat-rag": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "editorial-nextjs": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "focus-timer-swift": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "habit-expo": {
+        "attempts": 1,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 1.0,
+        "passed": 1,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 1.0,
+          "low": 0.206549
+        }
+      },
+      "inventory-react-ts": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "lamp-configurator-threejs": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "local-tasks-nextjs": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "markdown-notes-tauri": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "marketing-agent-pack": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "memory-chat-rag": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "model-router-fastapi": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "museum-threejs-static": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "notes-fastapi": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "ohlcv-market-data-api": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "outdoor-store-remix": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "paper-trading-fastapi": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "parcel-platformer-phaser": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "release-copilot-python": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "restaurant-static": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "sdk-docs-astro": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "security-agent-pack": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "shortener-express": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "sqlite-tools-mcp": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "supabase-auth-nextjs": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "support-ops-vue": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "weather-react": {
+        "attempts": 2,
+        "errors": 0,
+        "failed": 2,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.65762,
+          "low": 0.0
+        }
+      },
+      "webhook-digest-workflow": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      }
+    },
+    "by_stack": {
+      "agent_pack": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "astro": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "express": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "fastapi": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "mcp": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "nextjs": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "phaser": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "python": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "rag": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "react": {
+        "attempts": 2,
+        "errors": 0,
+        "failed": 2,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.65762,
+          "low": 0.0
+        }
+      },
+      "react_native": {
+        "attempts": 1,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 1.0,
+        "passed": 1,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 1.0,
+          "low": 0.206549
+        }
+      },
+      "react_ts": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "remix": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "static": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "sveltekit": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "swift": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "swift_ios": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "tauri": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "vue": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      },
+      "workflow": {
+        "attempts": 0,
+        "errors": 0,
+        "failed": 0,
+        "pass_rate": 0.0,
+        "passed": 0,
+        "wilson": {
+          "confidence": 0.95,
+          "high": 0.0,
+          "low": 0.0
+        }
+      }
+    },
+    "overall": {
+      "attempts": 3,
+      "errors": 0,
+      "failed": 2,
+      "pass_rate": 0.333333,
+      "passed": 1,
+      "wilson": {
+        "confidence": 0.95,
+        "high": 0.79234,
+        "low": 0.061492
+      }
+    }
+  }
+}

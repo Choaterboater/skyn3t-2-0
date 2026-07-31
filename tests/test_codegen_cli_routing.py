@@ -38,6 +38,33 @@ def test_codegen_cli_provider_setting_default_empty():
     assert Settings().codegen_cli_provider == ""
 
 
+def test_explicit_stub_backend_refuses_codegen_cli_override(monkeypatch):
+    # Money fence: llm_backend=stub EXPLICITLY selected means offline and free
+    # — the operator's codegen CLI pin must not launch a subscription CLI on
+    # its behalf. (A --llm-backend stub golden bench was observed running real
+    # codex agentic builds through this exact combination.)
+    client = LLMClient(Settings(llm_backend="stub", codegen_cli_provider="codex"))
+    monkeypatch.setattr(client, "_cli_available", lambda provider: True)
+
+    codegen = client.build_routing_snapshot()["codegen"]
+
+    assert codegen["source"] == "global_backend"
+    assert codegen["effective_backend"] == "stub"
+
+
+def test_degraded_to_stub_backend_keeps_codegen_cli_override(monkeypatch):
+    # "Stages offline, codegen on my signed-in CLI" stays a legitimate setup:
+    # only an EXPLICIT stub selection triggers the fence, not a degradation
+    # (here: openrouter requested with no key -> effective backend stub).
+    client = LLMClient(Settings(llm_backend="openrouter", codegen_cli_provider="codex"))
+    monkeypatch.setattr(client, "_cli_available", lambda provider: True)
+
+    codegen = client.build_routing_snapshot()["codegen"]
+
+    assert codegen["source"] == "codegen_cli_pin"
+    assert codegen["effective_backend"] == "codex_cli"
+
+
 def test_codegen_cli_model_setting_default_empty():
     # default is no pin -> the CLI's own default model applies (today's behaviour)
     assert Settings().codegen_cli_model == ""

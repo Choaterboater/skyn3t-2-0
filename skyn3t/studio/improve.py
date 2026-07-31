@@ -48,6 +48,7 @@ from skyn3t.worktree import (
     cleanup_worktree,
     create_worktree,
     deliverable_tree_snapshot,
+    delivery_staging_dir,
     list_files,
     merge_back,
     source_tree_snapshot,
@@ -1247,11 +1248,11 @@ class ImproveEngine:
             # will not match the exact tree that passed proof.
             source_files = list_files(wt.dir)
             expected_files = set(source_files)
-            delivery_stage_root = Path(
-                tempfile.mkdtemp(
-                    prefix=f".improve-stage-{slug}-",
-                    dir=project_dir.parent,
-                )
+            # delivery_staging_dir, not raw mkdtemp: mkdtemp's owner-only
+            # Windows ACL rode the same-volume swap into delivered projects
+            # and made every file unreadable to Docker preview/proof mounts.
+            delivery_stage_root = delivery_staging_dir(
+                f".improve-stage-{slug}-", project_dir.parent
             )
             staged_project = delivery_stage_root / "candidate"
             staged_project.mkdir()
@@ -1322,11 +1323,8 @@ class ImproveEngine:
                 await _emit_failed_outcome(outcome)
                 return outcome
 
-            backup_root = Path(
-                tempfile.mkdtemp(
-                    prefix=f".improve-backup-{slug}-",
-                    dir=project_dir.parent,
-                )
+            backup_root = delivery_staging_dir(
+                f".improve-backup-{slug}-", project_dir.parent
             )
             backup_project = backup_root / "project"
             backup_project.mkdir()

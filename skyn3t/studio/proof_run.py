@@ -5022,6 +5022,16 @@ _BUILD_DIAG_RE = re.compile(
     r"|Type error:"
     r"|Failed to collect page data for"
     r"|Error occurred prerendering page"
+    # `astro check`, vue-tsc and svelte-check emit
+    #   src/utils/lessons.ts:19:18 - error ts(2352): Conversion of type ...
+    # and raw tsc emits
+    #   src/utils/lessons.ts(19,18): error TS2352: Conversion of type ...
+    # Neither matched anything above, so type errors reached the improver only
+    # if they happened to survive the 700-char tail. Measured on a delivered
+    # Astro site: 12 such errors, of which the stored tail preserved 2 — the
+    # improver was asked to fix a build it could only see a sixth of.
+    r"|error ts\(\d+\)"
+    r"|error TS\d+"
     r"|^\s*\./[\w./\-@\[\]]+\.(?:jsx?|tsx?|mjs|cjs)\s*$"   # offending file path line
 )
 

@@ -10,6 +10,8 @@ digest to the resolved, in-root file even while the tree is being mutated.
 from __future__ import annotations
 
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -21,7 +23,34 @@ from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResul
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.runner import StudioRunner
-from skyn3t.worktree import source_tree_snapshot
+from skyn3t.worktree import delivery_staging_dir, source_tree_snapshot
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics")
+def test_delivery_staging_dir_files_do_not_carry_owner_only_acl(tmp_path):
+    # Raw mkdtemp hardens the dir to an owner-only security descriptor; files
+    # staged inside inherit it, and the delivery swap carries it into the
+    # project — where Docker's bind mount maps them to mode 000 (observed
+    # live: every preview after an improve failed with cp: Permission denied).
+    raw = tempfile.mkdtemp(dir=tmp_path)
+    raw_file = os.path.join(raw, "probe.txt")
+    with open(raw_file, "w", encoding="utf-8") as fh:
+        fh.write("x")
+    raw_acl = subprocess.run(
+        ["icacls", raw_file], capture_output=True, text=True
+    ).stdout
+    assert "OWNER RIGHTS" in raw_acl  # the poison signature exists at all
+    assert "Authenticated Users" not in raw_acl  # and nobody else can read
+
+    staged_root = delivery_staging_dir(".stage-test-", tmp_path)
+    staged_file = staged_root / "probe.txt"
+    staged_file.write_text("x", encoding="utf-8")
+    staged_acl = subprocess.run(
+        ["icacls", str(staged_file)], capture_output=True, text=True
+    ).stdout
+    # The explicit inheritable grant guarantees world-readability even when
+    # the parent chain (pytest tmp) would re-inherit owner-only ACEs.
+    assert "Authenticated Users" in staged_acl
 
 
 # ---- H2b: resolve-then-open fallback -------------------------------------

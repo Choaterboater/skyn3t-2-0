@@ -297,6 +297,40 @@ def _iter_files(root: Path):
         yield p
 
 
+def delivery_staging_dir(prefix: str, parent: str | Path) -> Path:
+    """A staging dir for delivery swaps whose files must stay world-readable.
+
+    ``tempfile.mkdtemp`` hardens the new directory to an owner-only security
+    descriptor on Windows; every file staged inside inherits it, and a
+    same-volume swap then carries those ACLs into the delivered project —
+    where Docker's bind mount maps them to mode 000 and every preview/proof
+    container dies with ``cp: Permission denied``. Delivered trees must
+    inherit the projects root's ACL, so restore inheritance on the staging
+    dir the moment it exists (its future children then inherit normally).
+    """
+    import tempfile
+
+    created = Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent)))
+    if os.name == "nt":
+        try:
+            # /reset drops mkdtemp's explicit owner-only descriptor; the
+            # explicit inheritable read grant (S-1-5-11 = Authenticated
+            # Users, locale-independent) guarantees readability even when
+            # the PARENT chain itself is temp-rooted and would re-inherit
+            # owner-only ACEs.
+            subprocess.run(
+                ["icacls", str(created), "/reset", "/Q"],
+                check=False, capture_output=True, timeout=30,
+            )
+            subprocess.run(
+                ["icacls", str(created), "/grant", "*S-1-5-11:(OI)(CI)(RX)", "/Q"],
+                check=False, capture_output=True, timeout=30,
+            )
+        except OSError:
+            pass
+    return created
+
+
 def merge_back(
     worktree_dir: str | Path,
     project_dir: str | Path,

@@ -115,6 +115,20 @@ _ADVISOR_TASK = (
     "Give your most useful engineering judgement per your instructions.]"
 )
 
+# Hermes' moa_loop advises on EVERY turn; this port originally advised only
+# before codegen, so the council never saw the stage where builds actually
+# die. This is the repair-stage task: same advisors, same bounds, fed the
+# real captured proof errors.
+_REPAIR_TASK = (
+    "Brief:\n{brief}\n\n"
+    "Stack: {stack}\n\n"
+    "The build FAILED its objective proof. Real captured errors:\n{failure}\n"
+    "\n[A separate repair agent will edit the files next. Diagnose the most "
+    "likely root causes and give it your most useful, concrete repair "
+    "guidance: the exact files/config to inspect, the minimal fixes, and the "
+    "traps to avoid. You have no tools — reason from the errors above.]"
+)
+
 # Adapted from hermes-agent's guidance block (``moa_loop.py:2042-2054``). The
 # final clause has no Hermes counterpart and is load-bearing here: their
 # aggregator writes a chat reply, ours writes SOURCE FILES THAT SHIP, and a cheap
@@ -189,6 +203,34 @@ class CouncilAdvice:
         }
 
 
+# A reply below this length is an acknowledgement, not advice — every real
+# advisor reply is paragraphs (live builds measure 2-3KB). Punt PHRASING is
+# only consulted for short replies so a long genuine review that happens to
+# say "I can't overstate…" is never dropped.
+_MIN_GUIDANCE_CHARS = 120
+_PUNT_MARKERS = (
+    "send me the task",
+    "ready as reference advisor",
+    "need more information",
+    "please provide",
+    "i'm unable to",
+    "i am unable to",
+    "i cannot help",
+    "awaiting the task",
+    "what would you like",
+)
+
+
+def _is_punt(text: str) -> bool:
+    """Whether an advisor reply is a non-answer that must not be credited."""
+    if len(text) < _MIN_GUIDANCE_CHARS:
+        return True
+    if len(text) < 400:
+        low = text.lower()
+        return any(marker in low for marker in _PUNT_MARKERS)
+    return False
+
+
 class CouncilEngine:
     """Runs one bounded, tool-free advisor fan-out and assembles guidance."""
 
@@ -236,7 +278,7 @@ class CouncilEngine:
         label = slot.address
         started = time.monotonic()
         out = AdvisorOutput(label=label, provider=slot.provider, model=slot.model)
-        timeout = max(10, int(getattr(self.settings, "moa_advisor_timeout", 180)))
+        timeout = max(10, int(getattr(self.settings, "moa_advisor_timeout", 60)))
         try:
             kwargs: dict[str, Any] = {}
             if slot.provider:
@@ -290,6 +332,17 @@ class CouncilEngine:
         if not text:
             out.error = "empty response"
             return out
+        if _is_punt(text):
+            # Technically non-empty is not the same as advice. The original MoA
+            # failure was exactly this: a mangled prompt yielded "Ready as
+            # reference advisor. Send me the task", which counted as a
+            # SUCCESSFUL advisor and was injected into codegen as guidance.
+            # The truncation cause is fenced upstream now, but a model can punt
+            # for any reason (refusal, rate-limit fallback text, confusion) —
+            # a punt must be a failed advisor, never credited work.
+            out.error = f"reply is not usable guidance ({len(text)} chars)"
+            log.warning("moa.advisor_punt", label=label, chars=len(text))
+            return out
         out.text = text
         out.ok = True
         return out
@@ -319,6 +372,39 @@ class CouncilEngine:
             stack=stack.strip() or "(unpinned)",
             plan_block=plan_block,
         )
+        return await self._fan_out(task, slots, dropped)
+
+    async def advise_repair(
+        self, *, brief: str, stack: str = "", failure: str = ""
+    ) -> CouncilAdvice:
+        """Advise the improver on a FAILING build (same bounds as ``advise``).
+
+        Never raises. Empty guidance (council off, all advisors failed, any
+        unexpected error) leaves the repair prompt byte-identical to a
+        council-off repair.
+        """
+        if not self.enabled():
+            return CouncilAdvice()
+        try:
+            slots, dropped = self._admissible_slots()
+            if not slots:
+                return CouncilAdvice(degraded=bool(dropped), dropped=dropped)
+            task = _REPAIR_TASK.format(
+                brief=(brief or "").strip() or "(no brief supplied)",
+                stack=(stack or "").strip() or "(unpinned)",
+                failure=(failure or "").strip()[:6000] or "(no error text captured)",
+            )
+            return await self._fan_out(task, slots, dropped)
+        except Exception as exc:  # noqa: BLE001 - the council may never break a repair
+            log.warning("moa.repair_council_failed", error=str(exc)[:160])
+            return CouncilAdvice(degraded=True)
+
+    async def _fan_out(
+        self,
+        task: str,
+        slots: list[ModelSlot],
+        dropped: list[dict[str, str]],
+    ) -> CouncilAdvice:
         limit = max(1, int(getattr(self.settings, "moa_max_concurrency", 4)))
         sem = asyncio.Semaphore(limit)
 

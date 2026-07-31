@@ -1,0 +1,29 @@
+Golden benchmark golden-v1: 31 cases x 2 repeats through StudioRunner
+2026-07-31 13:32:11 [info     ] agent.registered               agent=brainstorm type=brainstorm
+2026-07-31 13:32:11 [info     ] agent.registered               agent=research type=research
+2026-07-31 13:32:11 [info     ] agent.registered               agent=architect type=architecture
+2026-07-31 13:32:11 [info     ] agent.registered               agent=designer type=design
+2026-07-31 13:32:11 [info     ] agent.registered               agent=code type=codegen
+2026-07-31 13:32:11 [info     ] agent.registered               agent=code_improver type=code_improve
+2026-07-31 13:32:11 [info     ] agent.registered               agent=reviewer type=review
+2026-07-31 13:32:11 [info     ] agent.registered               agent=critic type=critique
+2026-07-31 13:32:11 [info     ] agent.registered               agent=writer type=documentation
+2026-07-31 13:32:11 [info     ] agent.registered               agent=contract_verifier type=verify_contract
+2026-07-31 13:32:11 [info     ] agent.registered               agent=build_verifier type=verify_build
+2026-07-31 13:32:11 [info     ] agent.registered               agent=boot_verifier type=verify_boot
+2026-07-31 13:32:11 [info     ] agent.registered               agent=consistency_reviewer type=verify_consistency
+2026-07-31 13:32:11 [info     ] agent.registered               agent=integration_verifier type=verify_integration
+2026-07-31 13:32:11 [info     ] agent.registered               agent=stack_detector type=stack_detect
+2026-07-31 13:32:11 [info     ] agent.registered               agent=env_scanner type=env_scan
+2026-07-31 13:32:11 [info     ] agent.registered               agent=test_author type=test_author
+2026-07-31 13:32:11 [info     ] agent.registered               agent=config_ui type=config_ui
+2026-07-31 13:32:11 [info     ] agent.registered               agent=packaging type=packaging
+2026-07-31 13:32:11 [info     ] agent.registered               agent=deploy type=deploy
+2026-07-31 13:32:11 [info     ] agent.registered               agent=browser type=browser
+2026-07-31 13:32:11 [info     ] agent.registered               agent=github_explorer type=github_explorer
+2026-07-31 13:32:11 [info     ] agent.registered               agent=github_ingestor type=github_ingestor
+2026-07-31 13:32:12 [info     ] web_asset_foundry.step         count=3
+2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=z-ai/glm-5.2 profile=cheap_learned tier=strong
+2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=qwen/qwen3-coder-next profile=cheap_learned tier=ui

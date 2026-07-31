@@ -488,9 +488,15 @@ class CodeImproverAgent(BaseAgent):
         knowledge: str = "",
         repo_map: str = "",
         profile: LayoutProfile | None = None,
+        moa_guidance: str = "",
     ) -> str:
         goals = "\n".join(f"- {str(g).strip()}" for g in gaps if str(g).strip()) or f"- {brief}"
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
+        # Repair-stage council guidance (already carries its own header +
+        # never-mention rules from council._assemble). Whole-app agentic
+        # repairs only — the per-file rewrite prompts stay tight.
+        if moa_guidance.strip():
+            preamble += f"{moa_guidance.strip()}\n\n"
         bounded_map = _bounded_agentic_repo_map(repo_map)
         if bounded_map:
             navigation = (
@@ -554,6 +560,7 @@ class CodeImproverAgent(BaseAgent):
             knowledge,
             repo_map,
             profile,
+            moa_guidance=str(payload.get("moa_guidance") or ""),
         )
         try:
             res = await self.llm.agentic_build(

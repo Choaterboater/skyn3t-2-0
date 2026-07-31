@@ -547,6 +547,8 @@ def studio_build(
     table.add_row("files", str(len(outcome.get("files", []))))
     table.add_row("cost_usd", str(outcome.get("cost_usd", 0.0)))
     table.add_row("artifact", str(outcome.get("project_dir", "")))
+    for label, value in _verdict_explanation(outcome):
+        table.add_row(label, value)
     console.print(table)
     fo = outcome.get("fanout")
     if isinstance(fo, dict):
@@ -557,6 +559,59 @@ def studio_build(
             f"trashed {len(fo.get('trashed_losers', []))} loser(s)")
     if outcome.get("status") != "completed":
         raise typer.Exit(code=2)
+
+
+def _verdict_explanation(outcome: dict[str, Any]) -> list[tuple[str, str]]:
+    """Rows explaining WHY the verdict and score came out as they did.
+
+    The result table reported a number and nothing else, so a no_go at 44 gave
+    no clue whether the app was bad or the toolchain was. This session that
+    distinction turned out to matter enormously: a delivery with intent 100 and
+    a green test suite scored 44 because of an npm cache artifact. The evidence
+    was always in manifest.extra; it was just never surfaced where it is read.
+
+    Defensive by construction — any missing/odd shape yields no rows rather
+    than breaking the summary of a build that already completed.
+    """
+    extra = outcome.get("extra")
+    if not isinstance(extra, dict):
+        return []
+    rows: list[tuple[str, str]] = []
+
+    findings = extra.get("gate_findings")
+    if isinstance(findings, list) and findings:
+        blocked = [
+            str(f.get("gate")) for f in findings
+            if isinstance(f, dict) and f.get("blocked")
+        ]
+        advisory = [
+            str(f.get("gate")) for f in findings
+            if isinstance(f, dict) and not f.get("blocked")
+        ]
+        parts: list[str] = []
+        if blocked:
+            parts.append(f"[red]blocked: {', '.join(blocked)}[/red]")
+        if advisory:
+            parts.append(f"[yellow]advisory: {', '.join(advisory)}[/yellow]")
+        if parts:
+            rows.append(("findings", " · ".join(parts)))
+        first_block = next(
+            (f for f in findings if isinstance(f, dict) and f.get("blocked")), None
+        )
+        if first_block:
+            reason = " ".join(str(first_block.get("reason") or "").split())
+            if reason:
+                rows.append(("blocked_by", reason[:160]))
+
+    gate = extra.get("proof_environment_gate")
+    if isinstance(gate, dict) and gate.get("capped"):
+        reasons = gate.get("reasons")
+        why = "; ".join(str(r) for r in reasons[:2]) if isinstance(reasons, list) else ""
+        rows.append((
+            "score_capped_at",
+            f"{gate.get('score_cap')}" + (f" — {why[:120]}" if why else ""),
+        ))
+    return rows
 
 
 async def _run_debate(

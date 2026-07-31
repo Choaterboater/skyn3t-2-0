@@ -73,6 +73,54 @@ def test_an_uncapped_degradation_adds_no_row():
     assert "score_capped_at" not in rows
 
 
+def _reviewer_stage(verdict, score, gaps=()):
+    return {
+        "agent_type": "reviewer", "status": "completed",
+        "output_summary": {"verdict": verdict, "score": score, "gaps": list(gaps)},
+    }
+
+
+def test_a_disagreeing_reviewer_is_surfaced():
+    """The measured case: reviewer said go@100, the build shipped no_go@44."""
+    rows = dict(_verdict_explanation({
+        "verdict": "no_go", "score": 44.0, "extra": {},
+        "stages": [_reviewer_stage("go", 100.0)],
+    }))
+
+    said = rows["reviewer_said"]
+    assert "go" in said and "100" in said
+    assert "0 gaps" in said
+
+
+def test_an_agreeing_reviewer_adds_no_row():
+    """Only the disagreement is worth a line; agreement is just noise."""
+    rows = dict(_verdict_explanation({
+        "verdict": "go", "score": 92.0, "extra": {},
+        "stages": [_reviewer_stage("go", 92.0)],
+    }))
+
+    assert "reviewer_said" not in rows
+
+
+def test_reviewer_gaps_are_counted():
+    rows = dict(_verdict_explanation({
+        "verdict": "go", "score": 80.0, "extra": {},
+        "stages": [_reviewer_stage("no_go", 40.0, ["missing nav", "no tests"])],
+    }))
+
+    assert "2 gaps" in rows["reviewer_said"]
+
+
+def test_an_incomplete_reviewer_stage_is_ignored():
+    rows = dict(_verdict_explanation({
+        "verdict": "no_go", "score": 44.0, "extra": {},
+        "stages": [{"agent_type": "reviewer", "status": "running",
+                    "output_summary": {"verdict": "go", "score": 100.0}}],
+    }))
+
+    assert "reviewer_said" not in rows
+
+
 def test_a_clean_build_adds_no_rows():
     assert _verdict_explanation({"verdict": "go", "score": 92.0, "extra": {}}) == []
 

@@ -507,6 +507,26 @@ def test_isolated_settings_blanks_every_deploy_token(tmp_path):
     assert isolated.replicate_api_token == ""
 
 
+def test_isolated_settings_pin_out_the_operator_codegen_cli_override(tmp_path):
+    # SKYN3T_CODEGEN_CLI_PROVIDER routes codegen to a REAL agentic CLI
+    # regardless of the pinned global backend: a --llm-backend stub golden run
+    # was observed silently executing codex agentic builds (billed, slow,
+    # non-deterministic). Codegen must follow the backend the bench chose.
+    base = Settings(
+        codegen_cli_provider="codex",
+        codegen_cli_model="gpt-5-codex",
+        openrouter_codegen_model="qwen/qwen3-coder",
+    )
+
+    isolated = isolated_settings(
+        base, tmp_path, llm_backend="stub", execution_backend="inline"
+    )
+
+    assert isolated.codegen_cli_provider == ""
+    assert isolated.codegen_cli_model == ""
+    assert isolated.openrouter_codegen_model == ""
+
+
 @pytest.mark.parametrize(
     ("setting", "first", "second"),
     [

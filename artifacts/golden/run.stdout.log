@@ -27,3 +27,115 @@ Golden benchmark golden-v1: 31 cases x 2 repeats through StudioRunner
 2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
 2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=z-ai/glm-5.2 profile=cheap_learned tier=strong
 2026-07-31 13:32:12 [info     ] router.cheap_offline_fallback  model=qwen/qwen3-coder-next profile=cheap_learned tier=ui
+2026-07-31 13:35:22 [info     ] llm.agentic_progress           elapsed_s=189 events=10 provider=codex
+2026-07-31 13:36:18 [info     ] runner.web_assets_applied      files=['index.html']
+2026-07-31 13:36:22 [info     ] config.ui_generated            files=['src/Settings.jsx', '.env.example']
+2026-07-31 13:36:23 [info     ] seo_check.done                 issues=0 ok=True skipped=False warnings=2
+2026-07-31 13:36:23 [warning  ] runner.final_consistency_no_go named_export_mismatches=[{'importer': 'src/Settings.jsx', 'specifier': './config.js', 'module': 'src/config.js', 'missing': ['CONFIG_KEYS', 'getConfig', 'setConfig']}]
+2026-07-31 13:36:23 [info     ] gate.finding                   blocked=True gate=final_consistency posture=release status=failed
+2026-07-31 13:36:24 [info     ] proof_ladder.unavailable       slug=golden-r1-38412ae27238c817-weather-react steps=['docker']
+2026-07-31 13:36:24 [info     ] learning.captured              count=2 stage=verification
+react
+2026-07-31 13:36:24 [info     ] agent.registered               agent=brainstorm type=brainstorm
+2026-07-31 13:36:24 [info     ] agent.registered               agent=research type=research
+2026-07-31 13:36:24 [info     ] agent.registered               agent=architect type=architecture
+2026-07-31 13:36:24 [info     ] agent.registered               agent=designer type=design
+2026-07-31 13:36:24 [info     ] agent.registered               agent=code type=codegen
+2026-07-31 13:36:24 [info     ] agent.registered               agent=code_improver type=code_improve
+2026-07-31 13:36:24 [info     ] agent.registered               agent=reviewer type=review
+2026-07-31 13:36:24 [info     ] agent.registered               agent=critic type=critique
+2026-07-31 13:36:24 [info     ] agent.registered               agent=writer type=documentation
+2026-07-31 13:36:24 [info     ] agent.registered               agent=contract_verifier type=verify_contract
+2026-07-31 13:36:24 [info     ] agent.registered               agent=build_verifier type=verify_build
+2026-07-31 13:36:24 [info     ] agent.registered               agent=boot_verifier type=verify_boot
+2026-07-31 13:36:24 [info     ] agent.registered               agent=consistency_reviewer type=verify_consistency
+2026-07-31 13:36:24 [info     ] agent.registered               agent=integration_verifier type=verify_integration
+2026-07-31 13:36:24 [info     ] agent.registered               agent=stack_detector type=stack_detect
+2026-07-31 13:36:24 [info     ] agent.registered               agent=env_scanner type=env_scan
+2026-07-31 13:36:24 [info     ] agent.registered               agent=test_author type=test_author
+2026-07-31 13:36:24 [info     ] agent.registered               agent=config_ui type=config_ui
+2026-07-31 13:36:24 [info     ] agent.registered               agent=packaging type=packaging
+2026-07-31 13:36:24 [info     ] agent.registered               agent=deploy type=deploy
+2026-07-31 13:36:24 [info     ] agent.registered               agent=browser type=browser
+2026-07-31 13:36:24 [info     ] agent.registered               agent=github_explorer type=github_explorer
+2026-07-31 13:36:24 [info     ] agent.registered               agent=github_ingestor type=github_ingestor
+2026-07-31 13:36:25 [info     ] web_asset_foundry.step         count=3
+2026-07-31 13:36:25 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:36:25 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:36:25 [info     ] router.cheap_offline_fallback  model=z-ai/glm-5.2 profile=cheap_learned tier=strong
+2026-07-31 13:36:25 [info     ] router.cheap_offline_fallback  model=qwen/qwen3-coder-next profile=cheap_learned tier=ui
+2026-07-31 13:38:03 [info     ] llm.agentic_progress           elapsed_s=97 events=7 provider=codex
+2026-07-31 13:39:34 [info     ] llm.agentic_progress           elapsed_s=188 events=9 provider=codex
+2026-07-31 13:40:00 [info     ] runner.web_assets_applied      files=['index.html']
+2026-07-31 13:40:04 [info     ] config.ui_generated            files=['src/Settings.jsx', '.env.example']
+2026-07-31 13:40:05 [info     ] seo_check.done                 issues=0 ok=True skipped=False warnings=2
+2026-07-31 13:40:05 [warning  ] runner.final_consistency_no_go named_export_mismatches=[{'importer': 'src/Settings.jsx', 'specifier': './config.js', 'module': 'src/config.js', 'missing': ['CONFIG_KEYS', 'getConfig', 'setConfig']}]
+2026-07-31 13:40:05 [info     ] gate.finding                   blocked=True gate=final_consistency posture=release status=failed
+2026-07-31 13:40:06 [info     ] proof_ladder.unavailable       slug=golden-r2-18da72061bf6f229-weather-react steps=['docker']
+2026-07-31 13:40:06 [info     ] learning.captured              count=1 stage=
+react
+2026-07-31 13:40:06 [info     ] agent.registered               agent=brainstorm type=brainstorm
+2026-07-31 13:40:06 [info     ] agent.registered               agent=research type=research
+2026-07-31 13:40:06 [info     ] agent.registered               agent=architect type=architecture
+2026-07-31 13:40:06 [info     ] agent.registered               agent=designer type=design
+2026-07-31 13:40:06 [info     ] agent.registered               agent=code type=codegen
+2026-07-31 13:40:06 [info     ] agent.registered               agent=code_improver type=code_improve
+2026-07-31 13:40:06 [info     ] agent.registered               agent=reviewer type=review
+2026-07-31 13:40:06 [info     ] agent.registered               agent=critic type=critique
+2026-07-31 13:40:06 [info     ] agent.registered               agent=writer type=documentation
+2026-07-31 13:40:06 [info     ] agent.registered               agent=contract_verifier type=verify_contract
+2026-07-31 13:40:06 [info     ] agent.registered               agent=build_verifier type=verify_build
+2026-07-31 13:40:06 [info     ] agent.registered               agent=boot_verifier type=verify_boot
+2026-07-31 13:40:06 [info     ] agent.registered               agent=consistency_reviewer type=verify_consistency
+2026-07-31 13:40:06 [info     ] agent.registered               agent=integration_verifier type=verify_integration
+2026-07-31 13:40:06 [info     ] agent.registered               agent=stack_detector type=stack_detect
+2026-07-31 13:40:06 [info     ] agent.registered               agent=env_scanner type=env_scan
+2026-07-31 13:40:06 [info     ] agent.registered               agent=test_author type=test_author
+2026-07-31 13:40:06 [info     ] agent.registered               agent=config_ui type=config_ui
+2026-07-31 13:40:06 [info     ] agent.registered               agent=packaging type=packaging
+2026-07-31 13:40:06 [info     ] agent.registered               agent=deploy type=deploy
+2026-07-31 13:40:06 [info     ] agent.registered               agent=browser type=browser
+2026-07-31 13:40:06 [info     ] agent.registered               agent=github_explorer type=github_explorer
+2026-07-31 13:40:06 [info     ] agent.registered               agent=github_ingestor type=github_ingestor
+2026-07-31 13:40:07 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:40:07 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:40:07 [info     ] router.cheap_offline_fallback  model=z-ai/glm-5.2 profile=cheap_learned tier=strong
+2026-07-31 13:40:07 [info     ] router.cheap_offline_fallback  model=qwen/qwen3-coder-next profile=cheap_learned tier=ui
+2026-07-31 13:41:21 [info     ] llm.agentic_progress           elapsed_s=74 events=10 provider=codex
+2026-07-31 13:42:25 [info     ] llm.agentic_progress           elapsed_s=138 events=12 provider=codex
+2026-07-31 13:43:57 [info     ] llm.agentic_progress           elapsed_s=230 events=14 provider=codex
+2026-07-31 13:44:55 [warning  ] code_agent.agentic_retry       attempt=1 code_bytes=28941 contract_gap= missing_planned=['src/components/Counter.tsx'] ok=True threshold=3520
+2026-07-31 13:45:56 [info     ] llm.agentic_progress           elapsed_s=61 events=13 provider=codex
+2026-07-31 13:48:00 [info     ] proof_ladder.unavailable       slug=golden-r1-2ed660295b52da92-habit-expo steps=['maestro']
+2026-07-31 13:48:04 [info     ] learning.captured              count=1 stage=verification
+react_native
+2026-07-31 13:48:09 [info     ] agent.registered               agent=brainstorm type=brainstorm
+2026-07-31 13:48:09 [info     ] agent.registered               agent=research type=research
+2026-07-31 13:48:09 [info     ] agent.registered               agent=architect type=architecture
+2026-07-31 13:48:09 [info     ] agent.registered               agent=designer type=design
+2026-07-31 13:48:09 [info     ] agent.registered               agent=code type=codegen
+2026-07-31 13:48:09 [info     ] agent.registered               agent=code_improver type=code_improve
+2026-07-31 13:48:09 [info     ] agent.registered               agent=reviewer type=review
+2026-07-31 13:48:09 [info     ] agent.registered               agent=critic type=critique
+2026-07-31 13:48:09 [info     ] agent.registered               agent=writer type=documentation
+2026-07-31 13:48:09 [info     ] agent.registered               agent=contract_verifier type=verify_contract
+2026-07-31 13:48:09 [info     ] agent.registered               agent=build_verifier type=verify_build
+2026-07-31 13:48:09 [info     ] agent.registered               agent=boot_verifier type=verify_boot
+2026-07-31 13:48:09 [info     ] agent.registered               agent=consistency_reviewer type=verify_consistency
+2026-07-31 13:48:09 [info     ] agent.registered               agent=integration_verifier type=verify_integration
+2026-07-31 13:48:09 [info     ] agent.registered               agent=stack_detector type=stack_detect
+2026-07-31 13:48:09 [info     ] agent.registered               agent=env_scanner type=env_scan
+2026-07-31 13:48:09 [info     ] agent.registered               agent=test_author type=test_author
+2026-07-31 13:48:09 [info     ] agent.registered               agent=config_ui type=config_ui
+2026-07-31 13:48:09 [info     ] agent.registered               agent=packaging type=packaging
+2026-07-31 13:48:09 [info     ] agent.registered               agent=deploy type=deploy
+2026-07-31 13:48:09 [info     ] agent.registered               agent=browser type=browser
+2026-07-31 13:48:09 [info     ] agent.registered               agent=github_explorer type=github_explorer
+2026-07-31 13:48:09 [info     ] agent.registered               agent=github_ingestor type=github_ingestor
+2026-07-31 13:48:09 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:48:09 [info     ] router.cheap_offline_fallback  model=deepseek/deepseek-v4-flash profile=cheap_learned tier=cheap
+2026-07-31 13:48:09 [info     ] router.cheap_offline_fallback  model=z-ai/glm-5.2 profile=cheap_learned tier=strong
+2026-07-31 13:48:10 [info     ] router.cheap_offline_fallback  model=qwen/qwen3-coder-next profile=cheap_learned tier=ui
+2026-07-31 13:51:13 [info     ] llm.agentic_progress           elapsed_s=183 events=10 provider=codex
+2026-07-31 13:52:14 [info     ] llm.agentic_progress           elapsed_s=244 events=22 provider=codex
+2026-07-31 13:52:15 [warning  ] code_agent.agentic_retry       attempt=1 code_bytes=25641 contract_gap= missing_planned=['src/components/Counter.tsx'] ok=True threshold=3520

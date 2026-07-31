@@ -177,6 +177,14 @@ _REQUIRED_SAFETY_PROFILE: dict[str, bool | int | float | str] = {
     # comparability, and billed silently. Same reasoning as best_of_n=1 above.
     "moa_enabled": False,
     "moa_advisors": "",
+    # The operator's codegen CLI override routes codegen to a REAL agentic CLI
+    # regardless of the pinned global backend — observed live: a
+    # ``--llm-backend stub`` golden run silently executing codex agentic
+    # builds (subscription-billed, non-deterministic, 62 of them). Codegen
+    # must follow the backend the bench CHOSE; same reasoning as moa above.
+    "codegen_cli_provider": "",
+    "codegen_cli_model": "",
+    "openrouter_codegen_model": "",
 }
 _NON_RESULT_SETTING_NAMES = frozenset(
     {

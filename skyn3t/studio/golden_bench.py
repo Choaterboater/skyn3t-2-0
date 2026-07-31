@@ -586,10 +586,15 @@ class RunMetadata(_StrictModel):
     @field_validator("safety_profile")
     @classmethod
     def _valid_safety_profile(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # _LIVE_OVERRIDE_KEYS must still be PRESENT (a live ledger records its
+        # lifted pins) but may deviate from the pinned values — mirroring
+        # _normalize_profile; the deviation is what fingerprints a run as live.
         if any(
             key not in value
-            or type(value[key]) is not type(expected)
-            or value[key] != expected
+            or (
+                key not in _LIVE_OVERRIDE_KEYS
+                and (type(value[key]) is not type(expected) or value[key] != expected)
+            )
             for key, expected in _REQUIRED_SAFETY_PROFILE.items()
         ):
             raise ValueError("safety_profile is missing or weakens a required control")

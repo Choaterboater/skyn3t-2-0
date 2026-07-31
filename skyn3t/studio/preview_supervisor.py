@@ -792,6 +792,11 @@ class PreviewSupervisor:
         ] = _default_readiness_probe,
         poll_interval: float = 0.25,
         launch_timeout: float = 120.0,
+        # Dependency preparation is a COLD npm ci/pip install inside the
+        # container — routinely 2-5 minutes for framework stacks on Docker
+        # Desktop's Windows filesystem. Sharing launch_timeout (meant for app
+        # STARTUP) made every first preview of a heavier stack "fail" at 120s.
+        prepare_timeout: float = 600.0,
         cleanup_timeout: float = 15.0,
         node_image: str = _DEFAULT_NODE_IMAGE,
         python_image: str = _DEFAULT_PYTHON_IMAGE,
@@ -802,6 +807,7 @@ class PreviewSupervisor:
         self._readiness_probe = readiness_probe
         self._poll_interval = max(0.0, float(poll_interval))
         self._launch_timeout = max(1.0, float(launch_timeout))
+        self._prepare_timeout = max(self._launch_timeout, float(prepare_timeout))
         self._cleanup_timeout = max(1.0, float(cleanup_timeout))
         self._node_image = str(node_image)
         self._python_image = str(python_image)
@@ -1071,7 +1077,7 @@ class PreviewSupervisor:
                 self._command_runner,
                 prepare_argv,
                 cwd=pdir,
-                timeout=self._launch_timeout,
+                timeout=self._prepare_timeout,
             )
             if not prepare_result.passed:
                 await self._remove_container(name)
@@ -1092,7 +1098,7 @@ class PreviewSupervisor:
                     self._command_runner,
                     source_copy_argv,
                     cwd=pdir,
-                    timeout=self._launch_timeout,
+                    timeout=self._prepare_timeout,
                 )
                 if not source_copy_result.passed:
                     await self._remove_container(name)

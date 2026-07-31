@@ -573,10 +573,48 @@ def _verdict_explanation(outcome: dict[str, Any]) -> list[tuple[str, str]]:
     Defensive by construction — any missing/odd shape yields no rows rather
     than breaking the summary of a build that already completed.
     """
+    rows: list[tuple[str, str]] = []
+
+    # What the REVIEWERS thought, when it differs from what shipped. Measured on
+    # a build that reported no_go 44: the reviewer returned
+    # {"score": 100.0, "verdict": "go", "gaps": []} and the critic passed it —
+    # both were overridden by a failed proof, correctly, since an app that
+    # cannot build must not ship. But the output showed only the 44, so there
+    # was no way to tell an app problem from a toolchain problem without
+    # reading the manifest by hand. When these two disagree that IS the story.
+    stages = outcome.get("stages")
+    if isinstance(stages, list):
+        for value in reversed(stages):
+            if not isinstance(value, dict):
+                continue
+            if str(value.get("agent_type") or "").strip().lower() != "reviewer":
+                continue
+            if str(value.get("status") or "").strip().lower() != "completed":
+                continue
+            summary = value.get("output_summary")
+            summary = summary if isinstance(summary, dict) else {}
+            rv = str(summary.get("verdict") or "").strip().lower()
+            if not rv:
+                break
+            try:
+                rs = float(summary.get("score"))
+            except (TypeError, ValueError):
+                rs = None
+            gaps = summary.get("gaps")
+            n_gaps = len(gaps) if isinstance(gaps, list) else 0
+            if rv != str(outcome.get("verdict") or "").strip().lower():
+                colour = "green" if rv == "go" else "yellow"
+                shown = f"{rs:g}" if rs is not None else "?"
+                rows.append((
+                    "reviewer_said",
+                    f"[{colour}]{rv} @ {shown}[/{colour}] "
+                    f"({n_gaps} gap{'s' if n_gaps != 1 else ''}) — overridden below",
+                ))
+            break
+
     extra = outcome.get("extra")
     if not isinstance(extra, dict):
-        return []
-    rows: list[tuple[str, str]] = []
+        return rows
 
     findings = extra.get("gate_findings")
     if isinstance(findings, list) and findings:

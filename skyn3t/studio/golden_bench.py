@@ -852,7 +852,12 @@ def _normalize_profile(profile: Mapping[str, Any] | None) -> dict[str, Any]:
     weakened = [
         key
         for key, value in required.items()
-        if type(source.get(key)) is not type(value) or source.get(key) != value
+        # _LIVE_OVERRIDE_KEYS may deviate: those pins are liftable by the
+        # explicit --moa/--codegen-cli opt-ins, and the deviation is exactly
+        # what marks a live ledger as live (it changes the fingerprint, so a
+        # live run can never be compared against the deterministic floor).
+        if key not in _LIVE_OVERRIDE_KEYS
+        and (type(source.get(key)) is not type(value) or source.get(key) != value)
     ]
     if weakened:
         raise GoldenBenchError(
@@ -874,9 +879,15 @@ def benchmark_settings_profile(
     settings: Any,
     *,
     llm_backend: str | None = None,
+    live_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record every non-secret Settings input copied into benchmark attempts."""
     profile: dict[str, Any] = dict(_REQUIRED_SAFETY_PROFILE)
+    # Lifted pins must be RECORDED as lifted, or the ledger would claim the
+    # deterministic floor while measuring a live run.
+    for key, value in dict(live_overrides or {}).items():
+        if key in _LIVE_OVERRIDE_KEYS:
+            profile[key] = _profile_value(value, label=key)
     dumper = getattr(settings, "model_dump", None)
     if callable(dumper):
         raw_settings = dumper(mode="python")
@@ -1063,18 +1074,37 @@ def build_run_metadata(
         raise GoldenBenchError(f"invalid run metadata: {_validation_summary(exc)}") from exc
 
 
+# The ONLY safety-profile pins an operator may lift, per explicit CLI opt-in
+# (bench golden run --moa / --codegen-cli). Everything else in the profile
+# stays non-negotiable; the recorded profile and metadata fingerprint reflect
+# lifted pins so a live ledger can never masquerade as the deterministic floor.
+_LIVE_OVERRIDE_KEYS = frozenset({
+    "moa_enabled",
+    "moa_advisors",
+    "codegen_cli_provider",
+    "codegen_cli_model",
+})
+
+
 def isolated_settings(
     base_settings: Any,
     workspace_dir: str | Path,
     *,
     llm_backend: str,
     execution_backend: str,
+    live_overrides: Mapping[str, Any] | None = None,
 ) -> Any:
     """Clone Settings into a case-local state/project root with safe side effects."""
     if llm_backend not in _LLM_BACKENDS:
         raise GoldenBenchError(f"unsupported LLM backend: {llm_backend!r}")
     if execution_backend not in _EXECUTION_BACKENDS:
         raise GoldenBenchError(f"unsupported execution backend: {execution_backend!r}")
+    live_overrides = dict(live_overrides or {})
+    unknown = set(live_overrides) - _LIVE_OVERRIDE_KEYS
+    if unknown:
+        raise GoldenBenchError(
+            f"live overrides not permitted for: {', '.join(sorted(unknown))}"
+        )
     root = Path(workspace_dir).resolve()
     data_dir = root / "state"
     projects_dir = root / "projects"
@@ -1123,6 +1153,10 @@ def isolated_settings(
             }
         )
     for key, value in _REQUIRED_SAFETY_PROFILE.items():
+        if hasattr(base_settings, key):
+            updates[key] = value
+    # Explicit CLI opt-ins lift their pins LAST, after the safety loop.
+    for key, value in live_overrides.items():
         if hasattr(base_settings, key):
             updates[key] = value
     copier = getattr(base_settings, "model_copy", None)

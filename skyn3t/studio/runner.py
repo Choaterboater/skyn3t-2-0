@@ -1449,6 +1449,13 @@ class StudioRunner:
         manifest.extra["ai_native_gate"] = "; ".join(blocking[:3])
         return "no_go"
 
+    # Degraded-proof reasons that describe ISOLATION rather than MEASUREMENT.
+    # The command still ran and produced a real pass/fail; only the sandbox was
+    # weaker. Every other reason ("build skipped", "tests skipped", "dependency
+    # install failed") means evidence is genuinely absent, which is what the
+    # score cap exists for. See proof_run._attach_proof_environment.
+    _ISOLATION_ONLY_DEGRADED: tuple[str, ...] = ("docker sandbox unavailable",)
+
     def _apply_degraded_proof_score(self, manifest, proof, final_score: float, verdict: str) -> float:
         if verdict != "go":
             return final_score
@@ -1457,11 +1464,27 @@ class StudioRunner:
         if not isinstance(env, dict) or env.get("degraded") is not True:
             return final_score
         cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        reasons = [str(r) for r in (env.get("degraded_reasons") or [])]
+        # A host without Docker degrades every build forever, so under lab
+        # posture an isolation-only degradation must not permanently cap an
+        # otherwise clean delivery at 74 — the app's evidence is real, the
+        # container is not. Release posture keeps 2.0's behaviour: there,
+        # weaker isolation IS a reason to withhold a top score.
+        isolation_only = bool(reasons) and all(
+            any(r.startswith(prefix) for prefix in self._ISOLATION_ONLY_DEGRADED)
+            for r in reasons
+        )
+        posture = GatePosture.from_settings(self.settings)
+        capped = not (isolation_only and posture.posture == "lab")
         manifest.extra["proof_environment_gate"] = {
             "degraded": True,
-            "score_cap": cap,
-            "reasons": list(env.get("degraded_reasons") or []),
+            "score_cap": cap if capped else None,
+            "reasons": reasons,
+            "isolation_only": isolation_only,
+            "capped": capped,
         }
+        if not capped:
+            return final_score
         return min(float(final_score), cap)
 
     @staticmethod

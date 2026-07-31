@@ -4162,7 +4162,9 @@ def proof_run(
                     if summary:
                         detail["build_summary"] = summary
             else:
-                ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
+                node_findings: dict[str, str] = {}
+                ran, build_ok, summary = _run_node_build(
+                    pdir, stack, build_timeout, cmd_ctx, findings=node_findings)
                 if ran:
                     detail["build"] = "passed" if build_ok else "failed"
                     detail["build_summary"] = summary
@@ -4170,6 +4172,21 @@ def proof_run(
                         passed = False
                         if "<build>" not in missing:
                             missing = [*missing, "<build>"]
+                    elif node_findings.get("type_check"):
+                        # The app COMPILES — `astro build` alone produced the
+                        # pages — but a chained type-checker objected. That is a
+                        # quality finding, not a broken delivery, so it is
+                        # treated exactly like ruff and the generated tests:
+                        # recorded, score-dampening, fed to the fix loop, and
+                        # blocking only under release posture.
+                        detail["type_check"] = "failed"
+                        detail["type_check_summary"] = node_findings["type_check"]
+                        if lab_posture:
+                            advisory_failures.append("type_check")
+                        else:
+                            passed = False
+                        if "<type-check>" not in missing:
+                            missing = [*missing, "<type-check>"]
                 else:
                     detail.setdefault("build", "skipped")
                     if summary:
@@ -5036,6 +5053,37 @@ _BUILD_DIAG_RE = re.compile(
 )
 
 
+# Type-checkers codegen chains into `build` even though our own scaffold does
+# not (skyn3t/agents/_scaffold.py emits a plain `"build": "astro build"`).
+_TYPE_CHECK_COMMANDS: tuple[str, ...] = (
+    "astro check", "vue-tsc", "svelte-check", "tsc --noEmit", "tsc -b", "tsc --build",
+)
+# The diagnostics those tools emit. Same shapes _BUILD_DIAG_RE matches.
+_TYPE_DIAGNOSTIC_RE = re.compile(r"error ts\(\d+\)|error TS\d+")
+
+
+def compile_only_segment(build_script: str) -> str:
+    """Return the compile half of a `<type-check> && <build>` script, else "".
+
+    Measured on a delivered Astro site: codegen overwrote the scaffold's
+    ``"build": "astro build"`` with ``"astro check && astro build"``, so one
+    ts(2352) was reported as ``<build>`` — "the delivery is broken" — for an app
+    where ``astro build`` alone exits 0 and emits 14 pages. Both MoA advisors
+    had independently specified the plain script too; codegen was the only
+    party that disagreed.
+
+    Deliberately narrow: the FIRST segment must be a recognised type-checker
+    and exactly one command may follow. A three-part chain, or a leading
+    segment we do not recognise, returns "" and the failure stays a hard build
+    failure — this must never turn a genuine compile error into a pass."""
+    parts = [p.strip() for p in str(build_script or "").split("&&")]
+    if len(parts) != 2 or not all(parts):
+        return ""
+    if not any(parts[0].startswith(cmd) for cmd in _TYPE_CHECK_COMMANDS):
+        return ""
+    return parts[1]
+
+
 def _distill_build_errors(output: str, *, tail: int = 700, max_diag: int = 30) -> str:
     """Pair the actionable, file/symbol-naming diagnostic lines pulled from the
     FULL build log (import errors, module-not-found, type errors, offending file
@@ -5248,12 +5296,20 @@ def _run_node_build(
     stack: str,
     timeout: int,
     cmd_ctx: _ProofCommandContext | None = None,
+    *,
+    findings: dict[str, str] | None = None,
 ) -> tuple[bool, bool, str]:
     """Compile a node/web project for real: npm install + npm run build.
 
     Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no npm, no
     build script, or the install failed — e.g. offline) and must NOT fail the
     proof. A non-zero build IS a real failure. Never raises.
+
+    ``findings`` is an optional out-parameter. When a compound
+    ``<type-check> && <build>`` script fails on TYPE diagnostics but the compile
+    half alone succeeds, the app is reported as BUILT and
+    ``findings["type_check"]`` carries the diagnostics — a quality finding, not
+    a broken delivery. Omitting it preserves the previous behaviour exactly.
     """
     import json as _json
     import shutil
@@ -5317,6 +5373,37 @@ def _run_node_build(
             return (False, False, "")
         out = ((bld.stdout or "") + (bld.stderr or "")).strip()
         if bld.returncode != 0:
+            # A `<type-check> && <build>` script reports a TYPE error as a build
+            # failure. Re-run the compile half alone: if the app builds, the
+            # delivery is not broken and the type error is a quality finding.
+            # Only ever attempted for a recognised two-part script whose output
+            # carries type diagnostics, so a genuine compile error still fails.
+            compile_only = compile_only_segment(str(scripts.get(build_cmd) or ""))
+            if compile_only and _TYPE_DIAGNOSTIC_RE.search(out):
+                retry = _run_proof_command(
+                    cmd_ctx,
+                    [npm_cmd, "exec", "--", *compile_only.split()],
+                    cwd=pdir,
+                    timeout=max(30, timeout - install_budget),
+                    env=env,
+                )
+                retry_out = ((retry.stdout or "") + (retry.stderr or "")).strip()
+                if not retry.timed_out and retry.returncode == 0:
+                    if findings is not None:
+                        findings["type_check"] = _distill_build_errors(out)
+                    mark_npm_build_current(pdir, build_cmd)
+                    summaries.append(
+                        retry_out[-300:] if retry_out else f"{compile_only} ok"
+                    )
+                    return (True, True, "; ".join(p for p in summaries if p))
+                # The compile half failed too, so the app genuinely does not
+                # build. Report THAT error rather than the type diagnostics:
+                # the chained checker aborts before compiling, so the real
+                # blocker appears only in this second run. Same reasoning as
+                # the npm stale-metadata retry — the retry's error is the one
+                # the fix loop needs.
+                if retry_out and not retry.timed_out:
+                    return (True, False, _distill_build_errors(retry_out))
             # Surface file/symbol diagnostics so the fix-loop targets the real
             # compiler cause instead of receiving an unhelpful output tail.
             return (True, False, _distill_build_errors(out))

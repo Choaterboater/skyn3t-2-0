@@ -61,11 +61,14 @@ def _record_order(monkeypatch) -> list[str]:
     """Stub both steps so only their call ORDER is observed."""
     order: list[str] = []
 
-    def fake_tests(pdir, stack, timeout, ctx, extra_env=None):
+    # Tolerant of extra kwargs: the real signatures gain optional parameters
+    # (e.g. _run_node_build's `findings` out-param) and a double that pins the
+    # exact arity turns an additive change into a false failure.
+    def fake_tests(pdir, stack, timeout, ctx, **_kw):
         order.append("tests")
         return (True, True, "2 passed")
 
-    def fake_node_build(pdir, stack, timeout, ctx):
+    def fake_node_build(pdir, stack, timeout, ctx, **_kw):
         order.append("build")
         return (True, True, "built")
 
@@ -103,6 +106,7 @@ def test_tests_are_skipped_when_the_build_fails(node_project, monkeypatch):
         lambda *a, **k: (order.append("build"), (True, False, "build blew up"))[1],
     )
     monkeypatch.setattr(pr, "_run_node_tests", lambda *a, **k: (False, False, ""))
+    monkeypatch.setattr(pr, "_run_ruff_check", lambda *a, **k: (False, False, ""))
 
     res = pr.proof_run(
         node_project, checklist=[], stack="react",

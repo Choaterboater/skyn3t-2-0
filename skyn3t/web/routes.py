@@ -5184,6 +5184,68 @@ async def set_replicate_token(
     return result
 
 
+async def golden_bench_payload(state: AppState) -> dict[str, Any]:
+    """Live progress of golden-bench ledgers, straight from the durable files.
+
+    Bench attempts run in ISOLATED per-attempt state on purpose (they must
+    never pollute real build memory), which also made every run invisible to
+    the dashboard — operators watched a blank cockpit while 62 builds ran.
+    The ledgers under artifacts/golden are the bench's own progressive
+    checkpoints, so reading them is the honest window.
+    """
+
+    def _collect() -> dict[str, Any]:
+        from skyn3t.config.settings import REPO_ROOT
+
+        ledgers: list[dict[str, Any]] = []
+        root = REPO_ROOT / "artifacts" / "golden"
+        try:
+            candidates = sorted(root.glob("*.json"))
+        except OSError:
+            candidates = []
+        for path in candidates:
+            if path.name.startswith("comparison"):
+                continue
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(raw, dict) or "attempts" not in raw:
+                continue
+            attempts = [a for a in raw.get("attempts") or [] if isinstance(a, dict)]
+            cases = raw.get("case_ids") or []
+            repeats = int(raw.get("repeats") or 0)
+            metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            profile = (
+                metadata.get("safety_profile")
+                if isinstance(metadata.get("safety_profile"), dict)
+                else {}
+            )
+            try:
+                updated_at = path.stat().st_mtime
+            except OSError:
+                updated_at = 0.0
+            ledgers.append({
+                "name": path.stem,
+                "status": str(raw.get("status") or ""),
+                "attempts": len(attempts),
+                "passed": sum(1 for a in attempts if a.get("passed")),
+                "expected": (len(cases) * repeats) if cases and repeats else None,
+                "llm_backend": str(metadata.get("llm_backend") or ""),
+                # A lifted pin is what distinguishes a live (billed,
+                # non-deterministic) ledger from the free floor.
+                "live": bool(
+                    profile.get("moa_enabled") or profile.get("codegen_cli_provider")
+                ),
+                "updated_at": updated_at,
+                "completed_at": raw.get("completed_at"),
+            })
+        ledgers.sort(key=lambda entry: entry["updated_at"], reverse=True)
+        return {"ledgers": ledgers}
+
+    return await asyncio.to_thread(_collect)
+
+
 async def deploy_settings_payload(state: AppState) -> dict[str, Any]:
     """Return deploy credential presence without returning credential values."""
     providers = {
@@ -6583,6 +6645,10 @@ def build_router(state: AppState) -> Any:
     @router.get("/status", dependencies=[auth])
     async def _status() -> dict[str, Any]:
         return await status_payload(state)
+
+    @router.get("/bench/golden", dependencies=[auth])
+    async def _bench_golden() -> dict[str, Any]:
+        return await golden_bench_payload(state)
 
     @router.get("/agents", dependencies=[auth])
     async def _agents() -> dict[str, Any]:

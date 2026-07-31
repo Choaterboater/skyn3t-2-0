@@ -19,6 +19,7 @@ import {
   StageLedger,
   pipelineFromEvents,
 } from "../components/cockpit.jsx";
+import GoldenBenchCard from "../components/GoldenBenchCard.jsx";
 import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
 import { streamStaleness } from "../streamSignals.js";
 import {
@@ -1932,6 +1933,9 @@ export default function Studio({ stream }) {
 
       {/* dead stream: the forge line + ledgers below render a frozen buffer */}
       <StreamStaleBanner stream={stream} />
+
+      {/* bench runs execute in isolated state — surface them on the build console */}
+      <GoldenBenchCard />
 
       <Panel className="mb-6 overflow-hidden">
         <PanelHead

@@ -12,6 +12,7 @@ execution_backend="inline" flag so no daemon probe occurs.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -682,3 +683,32 @@ def test_local_proof_command_replaces_invalid_utf8_output(tmp_path):
 
     assert result.returncode == 0
     assert "\ufffd" in result.stdout
+
+
+def test_local_proof_command_timeout_kills_grandchildren(tmp_path):
+    """A timed-out command must return promptly even when grandchildren survive.
+
+    Killing only the direct child leaves grandchildren (npm -> node) holding the
+    inherited stdout/stderr pipes, so the pipe readers block until the orphan
+    exits and the timeout guarantee is voided.
+    """
+    import skyn3t.studio.proof_run as proof_mod
+
+    script = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        "                 stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr)\n"
+        "time.sleep(60)\n"
+    )
+    started = time.monotonic()
+    result = proof_mod._run_proof_command(
+        None,
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        timeout=3,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 124
+    assert result.timed_out is True
+    assert elapsed < 30

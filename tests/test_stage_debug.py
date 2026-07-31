@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from skyn3t.core.events import EventType
+from skyn3t.studio import stage_debug as stage_debug_mod
 from skyn3t.studio.manifest import StageRecord
 from skyn3t.studio.stage_debug import StageDebugResult, debug_stage
 
@@ -68,6 +69,110 @@ def test_code_stage_degrades_when_unfixable(tmp_path):
         assert calls == 1
         resolved = [p for t, p in emitted if t == EventType.STAGE_DEBUG_RESOLVED][-1]
         assert resolved["status"] == "degraded"
+
+    asyncio.run(go())
+
+
+def test_checks_run_off_the_event_loop(tmp_path, monkeypatch):
+    # proof_run blocks for minutes (installs + builds); an on-loop _run_check
+    # freezes the shared studio loop, so every check must be thread-offloaded.
+    async def go():
+        wt, spec, record, plan, settings, emitted, emit = _ctx(tmp_path)
+        on_loop: list[bool] = []
+
+        def fake_check(*_args):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                on_loop.append(False)
+            else:
+                on_loop.append(True)
+            passed = len(on_loop) > 1
+            return stage_debug_mod._Check(
+                passed=passed, score=None, gaps=[] if passed else ["gap"],
+            )
+
+        monkeypatch.setattr(stage_debug_mod, "_run_check", fake_check)
+
+        async def improve(_gaps):
+            return True
+
+        result = await debug_stage(
+            build_id="b1", spec=spec, record=record, worktree_dir=str(wt),
+            plan=plan, settings=settings, emit=emit, improve=improve, max_attempts=2,
+        )
+        assert on_loop == [False, False]
+        assert result.passed
+
+    asyncio.run(go())
+
+
+def test_build_failure_error_text_reaches_the_improver(tmp_path, monkeypatch):
+    """A failed build appends only a bare "<build>" sentinel to proof.missing;
+    the improver must ALSO get the captured compiler text via error_gaps(),
+    wrapped in the structured QA-FAIL contract, or early repair is blind."""
+    async def go():
+        wt, spec, record, plan, settings, emitted, emit = _ctx(tmp_path)
+        build_error = "BUILD FAILED — src/App.jsx: Unexpected token (12:3)"
+
+        def fake_proof(*_args, **_kwargs):
+            return SimpleNamespace(
+                passed=False, score=10.0, missing=["<build>"], syntax_errors=[],
+                error_gaps=lambda: [build_error],
+            )
+
+        monkeypatch.setattr(stage_debug_mod, "proof_run", fake_proof)
+        received: list[list[str]] = []
+
+        async def improve(gaps):
+            received.append(list(gaps))
+            return False
+
+        await debug_stage(
+            build_id="b1", spec=spec, record=record, worktree_dir=str(wt),
+            plan=plan, settings=settings, emit=emit, improve=improve, max_attempts=2,
+        )
+
+        assert received, "the improver must be invoked on a build failure"
+        gaps = received[0]
+        assert any(build_error in g for g in gaps)
+        assert any("[QA-FAIL stage_debug" in g for g in gaps)
+        # The event payload keeps the RAW gaps (sentinel + compiler text).
+        attempt = [p for t, p in emitted if t == EventType.STAGE_DEBUG_ATTEMPT][-1]
+        assert "<build>" in attempt["errors"]
+        assert build_error in attempt["errors"]
+
+    asyncio.run(go())
+
+
+def test_noop_improver_skips_the_redundant_reproof(tmp_path, monkeypatch):
+    """An improver that changed zero files cannot make the identical proof pass:
+    the loop must break BEFORE paying another full proof of the unchanged tree."""
+    async def go():
+        wt, spec, record, plan, settings, emitted, emit = _ctx(tmp_path)
+        checks = 0
+
+        def fake_check(*_args):
+            nonlocal checks
+            checks += 1
+            return stage_debug_mod._Check(passed=False, score=5.0, gaps=["gap"])
+
+        monkeypatch.setattr(stage_debug_mod, "_run_check", fake_check)
+
+        async def improve(_gaps):
+            return False
+
+        result = await debug_stage(
+            build_id="b1", spec=spec, record=record, worktree_dir=str(wt),
+            plan=plan, settings=settings, emit=emit, improve=improve, max_attempts=3,
+        )
+
+        assert checks == 1  # initial check only — no re-proof after the no-op
+        assert result.degraded and result.attempts == 1
+        attempt = [p for t, p in emitted if t == EventType.STAGE_DEBUG_ATTEMPT][-1]
+        assert attempt["fix_applied"] is False
+        assert attempt["passed"] is False
+        assert attempt["score_after"] == attempt["score_before"] == 5.0
 
     asyncio.run(go())
 

@@ -1331,6 +1331,18 @@ class PreviewSupervisor:
             timeout=self._cleanup_timeout,
         )
         cleanup_results.append(container_result)
+        # `docker run --rm` auto-removes only on in-container exit: a hung
+        # prepare/source-copy keeps running daemon-side after its CLI client
+        # is killed and pins the app volume, so force-remove both (a no-op
+        # "no such container" counts as cleaned) before the volume removals.
+        for auxiliary_name in (f"{name}-prepare", f"{name}-source-copy"):
+            cleanup_results.append(
+                await _invoke_command(
+                    self._command_runner,
+                    ["docker", "rm", "--force", auxiliary_name],
+                    timeout=self._cleanup_timeout,
+                )
+            )
         network_name = str(resources.get("network_name") or "")
         volume_name = str(resources.get("volume_name") or "")
         dependency_volume_name = str(

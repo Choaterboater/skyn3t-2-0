@@ -186,6 +186,137 @@ async def test_build_cortex_wires_default_ratchet_when_enabled(monkeypatch):
     assert load_overrides(settings.data_dir)["best_of_n"] == 2
 
 
+async def test_default_ratchet_skips_bench_when_budget_exhausted(monkeypatch):
+    """An already-exhausted budget would produce two equally-dead bench runs
+    (every case dies on BudgetExceeded) that gate_change could accept on
+    garbage evidence — the evaluator must preflight and skip the 2x bench."""
+    from types import SimpleNamespace
+
+    from skyn3t.adapters.llm import BudgetExceeded
+
+    bus = EventBus()
+    settings = _settings(reliability_ratchet_enabled=True)
+
+    class FakeOrchestrator:
+        @property
+        def agents(self):
+            return {}
+
+    class ExhaustedBudget:
+        def check(self):
+            raise BudgetExceeded("daily usd cap 5.0 exceeded (5.2)")
+
+    bench_calls = []
+
+    async def fake_evaluate_change(**kwargs):
+        bench_calls.append(kwargs["label"])
+        return {"kept": True, "reasons": []}
+
+    monkeypatch.setattr("skyn3t.cortex.ratchet.evaluate_change", fake_evaluate_change)
+
+    cortex = build_cortex(
+        bus, settings=settings, orchestrator=FakeOrchestrator(),
+        llm=SimpleNamespace(budget=ExhaustedBudget()),
+    )
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.TUNING,
+            title="ratchet best_of_n",
+            payload={"setting": "best_of_n", "value": 2},
+            confidence=0.9,
+            safe=True,
+        )
+    )
+
+    assert bench_calls == []  # the 2x bench never ran
+    assert prop.status == ProposalStatus.FAILED
+    assert any(
+        "insufficient budget" in str(r) for r in prop.result["ratchet"]["reasons"]
+    )
+
+
+async def test_default_ratchet_bounds_cases_and_wires_budget_scoping(monkeypatch):
+    """The auto-ratchet bench must (1) cap the suite at DEFAULT_CASES plus only
+    the MOST RECENT app regressions (all_cases could pull in up to 200 — one
+    auto-approved proposal then meant 2x(20+200) unguarded real builds), and
+    (2) build runners with the same cost/budget wiring the CLI bench uses, so
+    per-build spend is scoped per case instead of accumulating across the
+    whole before+after bench."""
+    from types import SimpleNamespace
+
+    from skyn3t.studio.bench import DEFAULT_CASES, capture_regression_case
+
+    bus = EventBus()
+    settings = _settings(reliability_ratchet_enabled=True, best_of_n=1)
+    for i in range(12):
+        capture_regression_case(
+            settings.data_dir, f"regression-{i:02d}", f"a captured failure number {i}", "python"
+        )
+
+    class FakeOrchestrator:
+        @property
+        def agents(self):
+            return {}
+
+    resets = []
+
+    class FakeBudget:
+        def check(self):
+            return None
+
+        def reset_build(self):
+            resets.append(True)
+
+    captured = {}
+
+    async def fake_evaluate_change(**kwargs):
+        captured["cases"] = kwargs["cases"]
+        captured["make_build_fn"] = kwargs["make_build_fn"]
+        kwargs["apply_change"]()
+        return {
+            "kept": True, "reasons": [],
+            "before": {"go_rate": 0.5}, "after": {"go_rate": 1.0}, "go_rate_delta": 0.5,
+        }
+
+    monkeypatch.setattr("skyn3t.cortex.ratchet.evaluate_change", fake_evaluate_change)
+
+    llm = SimpleNamespace(budget=FakeBudget())
+    cortex = build_cortex(bus, settings=settings, orchestrator=FakeOrchestrator(), llm=llm)
+    prop = await cortex.submit(
+        Proposal(
+            type=ProposalType.TUNING,
+            title="ratchet best_of_n",
+            payload={"setting": "best_of_n", "value": 2},
+            confidence=0.9,
+            safe=True,
+        )
+    )
+    assert prop.status == ProposalStatus.APPLIED
+
+    # Bounded: the built-in exam + the 10 most recent captured regressions.
+    case_ids = [c.id for c in captured["cases"]]
+    assert len(captured["cases"]) == len(DEFAULT_CASES) + 10
+    assert "regression-11" in case_ids  # most recent kept
+    assert "regression-00" not in case_ids  # oldest dropped
+
+    # The build_fn wires cost/budget observability and scopes spend per case.
+    runner_kwargs = {}
+
+    class FakeRunner:
+        def __init__(self, _bus, _orch, **kwargs):
+            runner_kwargs.update(kwargs)
+
+        async def start(self, _brief, slug=None, extra=None):
+            return SimpleNamespace(verdict="go", score=90.0)
+
+    monkeypatch.setattr("skyn3t.studio.runner.StudioRunner", FakeRunner)
+    build_fn = captured["make_build_fn"]()
+    await build_fn(captured["cases"][0])
+    assert runner_kwargs["cost_tracker"] is not None
+    assert runner_kwargs["budget_guard"] is not None
+    assert resets, "per-case budget reset did not run"
+
+
 async def test_apply_is_idempotent_no_double_apply():
     # Re-approving an already-APPLIED proposal must not re-run its handler
     # (the handler could duplicate a tuning change or emit conflicting events).
@@ -606,6 +737,36 @@ async def test_gated_tuner_counts_low_scores_per_stage():
     for _ in range(2):
         await bus.emit(EventType.BUILD_STAGE_COMPLETED, "studio", {"stage": "review", "score": 40.0})
     assert len(cortex.submitted) == 1
+
+
+async def test_gated_tuner_escalates_best_of_n_past_an_applied_bump():
+    """The dedupe key is value-bearing: an APPLIED bump to 3 must not block the
+    next rung (value 4) of the escalation ladder as a 'duplicate' — the
+    title-derived constant key made the designed low-score -> more-samples
+    ladder one-shot per installation. Identical values still dedupe."""
+    from skyn3t.cortex.components import GatedTuner
+
+    bus = EventBus()
+    settings = _settings(best_of_n=2)
+    cortex = Cortex(bus, settings=settings)
+    tuner = GatedTuner(cortex, bus, settings=settings)
+    await tuner.run()
+
+    def applied():
+        return [p for p in cortex.store.all() if p.status is ProposalStatus.APPLIED]
+
+    # First trigger: bump 2 -> 3, auto-applied.
+    for _ in range(3):
+        await bus.emit(EventType.BUILD_STAGE_COMPLETED, "studio", {"stage": "review", "score": 40.0})
+    assert [p.payload["value"] for p in applied()] == [3]
+    assert settings.best_of_n == 3
+
+    # Scores stay low: the next trigger must escalate to 4, not be rejected
+    # as a duplicate of the already-applied value-3 proposal.
+    for _ in range(3):
+        await bus.emit(EventType.BUILD_STAGE_COMPLETED, "studio", {"stage": "review", "score": 40.0})
+    assert sorted(p.payload["value"] for p in applied()) == [3, 4]
+    assert settings.best_of_n == 4
 
 
 async def test_reflection_loop_closes_tuning_loop():

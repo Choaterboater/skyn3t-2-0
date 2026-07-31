@@ -29,6 +29,8 @@ def test_web_polish_accepts_structured_page(tmp_path):
 
 
 def test_web_polish_flags_decorative_emoji_ui(tmp_path):
+    # Emoji are a weak, brief-dependent signal: advisory warning, never a
+    # blocking issue (a single glyph must not fail an otherwise polished UI).
     (tmp_path / "index.html").write_text(
         "<main class='grid hero'><h1>Planner</h1><button>" + chr(0x1F3CC) + " Start</button></main>",
         encoding="utf-8",
@@ -36,8 +38,35 @@ def test_web_polish_flags_decorative_emoji_ui(tmp_path):
 
     verdict = check_web_polish(tmp_path, "static")
 
-    assert verdict["ok"] is False
-    assert "decorative emoji glyphs detected in UI source" in verdict["issues"]
+    assert verdict["ok"] is True
+    assert verdict["issues"] == []
+    assert any("decorative emoji" in w for w in verdict["warnings"])
+
+
+def test_web_polish_emoji_warning_counts_glyphs_and_ignores_css(tmp_path):
+    (tmp_path / "index.html").write_text(
+        "<main class='grid hero'><h1>Planner</h1>"
+        + "<button>" + chr(0x2605) + chr(0x1F3CC) + " Start</button></main>",
+        encoding="utf-8",
+    )
+    (tmp_path / "style.css").write_text(
+        "body::before { content: '" + chr(0x2699) + "'; }\n", encoding="utf-8"
+    )
+    (tmp_path / "app.js").write_text(
+        "document.querySelector('link[rel=stylesheet]');\n"
+        "// wired via <link rel=\"stylesheet\" href=\"style.css\">\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "page.html").write_text(
+        "<link rel='stylesheet' href='style.css'><main><h1>Planner</h1></main>",
+        encoding="utf-8",
+    )
+
+    verdict = check_web_polish(tmp_path, "static")
+
+    # CSS content is excluded from the emoji scan; markup glyphs are counted.
+    assert verdict["ok"] is True
+    assert "decorative emoji glyphs detected in UI source (2)" in verdict["warnings"]
 
 
 def test_web_polish_flags_unwired_stylesheet(tmp_path):

@@ -366,3 +366,63 @@ def test_primed_web_catalog_prevents_duplicate_core_fetch(monkeypatch) -> None:
 
     assert [item["id"] for item in mr.live_catalog()] == [item["id"] for item in catalog]
     assert mr.live_free_model_ids() == [free["id"]]
+
+
+def test_free_ids_derive_from_fresh_catalog_without_second_fetch(monkeypatch) -> None:
+    """An expired free-id cache next to a FRESH catalog snapshot must derive from
+    the catalog instead of re-fetching the identical endpoint (the duplicate-cache
+    double fetch that stacked two blocking 8s calls per degraded window)."""
+    free = {
+        "id": "vendor/value:free",
+        "created": 201,
+        "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+    }
+    monkeypatch.setattr(mr, "_LIVE_CATALOG", [*_catalog(), free])
+    monkeypatch.setattr(mr, "_LIVE_CATALOG_AT", time.time())
+    monkeypatch.setattr(mr, "_LIVE_FREE_IDS", None)
+    monkeypatch.setattr(mr, "_LIVE_FREE_AT", 0.0)
+    monkeypatch.setattr(mr, "_LIVE_FREE_ERROR_AT", 0.0)
+
+    def no_fetch(*_args, **_kwargs):
+        raise AssertionError("free ids should derive from the fresh catalog")
+
+    monkeypatch.setattr("urllib.request.urlopen", no_fetch)
+
+    assert mr.live_free_model_ids() == [free["id"]]
+    assert mr.live_free_model_ids() == [free["id"]]  # now served from its own cache
+
+
+def test_catalog_fetch_refreshes_free_ids_cache(monkeypatch) -> None:
+    """One successful live_catalog() fetch must feed BOTH caches, so the free-id
+    path never fires a second network call for the same endpoint in-window."""
+    import json as _json
+
+    free = {
+        "id": "vendor/value:free",
+        "created": 201,
+        "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+    }
+    catalog = [*_catalog(), free]
+    calls = {"n": 0}
+
+    class _Payload:
+        def read(self):
+            return _json.dumps({"data": catalog}).encode()
+
+    def fake_urlopen(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise AssertionError("the single catalog fetch must feed both caches")
+        return _Payload()
+
+    monkeypatch.setattr(mr, "_LIVE_CATALOG", None)
+    monkeypatch.setattr(mr, "_LIVE_CATALOG_AT", 0.0)
+    monkeypatch.setattr(mr, "_LIVE_CATALOG_ERROR_AT", 0.0)
+    monkeypatch.setattr(mr, "_LIVE_FREE_IDS", None)
+    monkeypatch.setattr(mr, "_LIVE_FREE_AT", 0.0)
+    monkeypatch.setattr(mr, "_LIVE_FREE_ERROR_AT", 0.0)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert [item["id"] for item in mr.live_catalog()] == [item["id"] for item in catalog]
+    assert mr.live_free_model_ids() == [free["id"]]
+    assert calls["n"] == 1

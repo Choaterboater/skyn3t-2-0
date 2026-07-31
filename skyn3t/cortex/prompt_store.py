@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.atomic_io import atomic_write_text
+from skyn3t.cortex.tuning_store import overrides_file_lock
 
 
 def overrides_path(data_dir: Any) -> Path:
@@ -47,11 +48,16 @@ def persist_prompt_override(data_dir: Any, agent: str, instruction: str) -> dict
     try:
         agent = str(agent or "").strip()
         instruction = str(instruction or "").strip()
-        current = load_prompt_overrides(data_dir)
         if not agent or not instruction:
-            return current
-        current[agent] = instruction
-        atomic_write_text(overrides_path(data_dir), json.dumps(current, indent=2))
+            return load_prompt_overrides(data_dir)
+        p = overrides_path(data_dir)
+        # The load must happen INSIDE the lock: a concurrent writer (approval
+        # in the serve process vs a CLI build) that also read the pre-lock
+        # baseline would have its override overwritten by this merge.
+        with overrides_file_lock(p):
+            current = load_prompt_overrides(data_dir)
+            current[agent] = instruction
+            atomic_write_text(p, json.dumps(current, indent=2))
         return current
     except Exception:  # noqa: BLE001
         return {}

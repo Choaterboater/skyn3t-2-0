@@ -8,12 +8,16 @@ crash — features degrade instead.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field
+import structlog
+from pydantic import Field, TypeAdapter, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = structlog.get_logger(__name__)
 
 
 def _resolve_runtime_layout(
@@ -37,6 +41,34 @@ def _resolve_runtime_layout(
 # Checkouts keep their historical repo-relative layout. Installed wheels must
 # never try to write mutable state into site-packages.
 REPO_ROOT, DEFAULT_PROJECTS_DIR = _resolve_runtime_layout(__file__)
+
+
+def _validated_tuning_overrides(settings_cls, data: dict) -> dict:
+    """Drop persisted tuning values the target field would reject.
+
+    ``load_overrides`` allow-lists KEYS only; a hand-edited
+    ``settings_overrides.json`` with a bad VALUE (``{"best_of_n": "x"}``)
+    previously raised ``ValidationError`` out of every ``get_settings()``
+    caller — the exact crash the surrounding try/except promises to prevent.
+    Trial-validate each value against its field (constraints included) so a
+    bad value costs that one override, never config construction.
+    """
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        field_info = settings_cls.model_fields.get(key)
+        if field_info is None:
+            continue
+        annotation = field_info.annotation if field_info.annotation is not None else Any
+        if field_info.metadata:
+            annotation = Annotated[tuple([annotation, *field_info.metadata])]
+        try:
+            TypeAdapter(annotation).validate_python(value)
+        except Exception as exc:  # noqa: BLE001 - drop the override, keep booting
+            log.warning("settings.tuning_override_dropped", key=key,
+                        error=str(exc)[:120])
+            continue
+        out[key] = value
+    return out
 
 
 class Settings(BaseSettings):
@@ -71,11 +103,45 @@ class Settings(BaseSettings):
         try:
             from skyn3t.cortex.tuning_store import load_overrides  # local: no import cycle
 
-            data = load_overrides(REPO_ROOT / "data")
+            # The allow-list filters keys; _validated_tuning_overrides filters
+            # VALUES — both are needed for the "never break construction"
+            # promise, because pydantic validates these after this hook.
+            #
+            # Root resolution mirrors the writers (cli/main.py and
+            # cortex/bootstrap.py persist to ``settings.data_dir``) and
+            # pydantic's own precedence for that field: OS env first, then the
+            # .env file, else the repo default. Reading only REPO_ROOT/data
+            # meant that with SKYN3T_DATA_DIR set, persisted tuning was
+            # written to one root and silently never applied from the other
+            # (audit M2); reading only OS env left the flagship .env surface
+            # (.env.example documents SKYN3T_DATA_DIR) with the same split.
+            # An init-kwarg data_dir remains unknowable this early.
+            data_root = os.environ.get("SKYN3T_DATA_DIR", "").strip()
+            if not data_root:
+                try:
+                    # dotenv source keys are FIELD names (prefix stripped):
+                    # a .env SKYN3T_DATA_DIR arrives as "data_dir".
+                    data_root = str(dotenv_settings().get("data_dir") or "").strip()
+                except Exception:  # noqa: BLE001 - a bad .env must not cost tuning for default roots
+                    data_root = ""
+            data = _validated_tuning_overrides(
+                settings_cls, load_overrides(data_root or REPO_ROOT / "data")
+            )
         except Exception:  # noqa: BLE001 - never let tuning break config construction
             data = {}
         overrides_source = InitSettingsSource(settings_cls, data)
         return (init_settings, env_settings, overrides_source, dotenv_settings, file_secret_settings)
+
+    @field_validator("llm_backend", "execution_backend", "game_art_source", mode="before")
+    @classmethod
+    def _normalize_choice_fields(cls, value):
+        """Keep the historical tolerance for case/whitespace on choice fields.
+
+        These were free strings that every consumer ``.strip().lower()``-ed;
+        now that they are Literal-typed, ``Auto`` must still mean ``auto`` —
+        only genuinely unknown values should fail construction.
+        """
+        return value.strip().lower() if isinstance(value, str) else value
 
     # ---- Identity / paths ------------------------------------------------
     app_name: str = "SkyN3t"
@@ -99,6 +165,9 @@ class Settings(BaseSettings):
     # OPENROUTER_API_KEY fallback without destroying an externally managed
     # credential. Saving a key through Settings turns this back on.
     openrouter_enabled: bool = True
+    # Stored for redaction seeding (SecretsStore) and possible future native
+    # backends — NO current backend consumes these three; only the OpenRouter
+    # key above (and the local CLIs' own logins) can actually generate.
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     kimi_api_key: str = ""
@@ -135,7 +204,14 @@ class Settings(BaseSettings):
     # never uses OpenRouter merely because a key is configured: a key is
     # configuration, not consent to spend. Select ``openrouter`` explicitly, or
     # set ``auto_allow_openrouter``, when a hosted provider is intended.
-    llm_backend: str = "auto"  # auto|stub|openrouter|codex_cli|claude_cli|kimi_cli|copilot_cli
+    # Mirrors SUPPORTED_LLM_BACKENDS in skyn3t/adapters/llm.py (settings cannot
+    # import the adapter). Literal-typed so a typo like ``claude`` (missing
+    # ``_cli``) fails construction loudly instead of silently degrading the
+    # whole system to the offline stub.
+    llm_backend: Literal[
+        "auto", "stub", "openrouter",
+        "codex_cli", "claude_cli", "kimi_cli", "copilot_cli",
+    ] = "auto"
     # Order ``auto`` tries local CLIs in. Codex leads only because it was the
     # historical default, so existing hosts see no change — there is nothing
     # special about it, and reordering this is the supported way to prefer a
@@ -149,7 +225,8 @@ class Settings(BaseSettings):
     # the offline stub rather than silently spending.
     auto_allow_openrouter: bool = False
     # Used by manually selected CLI-adjacent features (for example vision
-    # checks). Automatic build execution always uses Codex CLI.
+    # checks). Automatic build execution walks ``auto_cli_priority`` (any
+    # available CLI in that chain satisfies the routing lock), never this field.
     cli_llm_provider: str = "claude"
     # Route ONLY the codegen (code agent) stage to a coding-agent CLI's agentic
     # whole-app build, while every OTHER stage keeps the global backend (e.g. cheap
@@ -212,7 +289,9 @@ class Settings(BaseSettings):
     # NO stream events for this long it has hung, so we kill it early instead of
     # burning the full build budget. A working `claude -p` emits message/tool
     # events far more often than this, so it never trips on real progress. 0
-    # uses ``agentic_build_timeout`` as the inactivity/no-progress window.
+    # (or any negative value) uses ``agentic_build_timeout`` as the
+    # inactivity/no-progress window — the same rule on both agentic paths
+    # (see llm._resolved_agentic_idle_timeout).
     agentic_idle_timeout: int = 600
     # Liveness heartbeat (seconds) while a streaming agentic session runs. The
     # stream is where the only evidence of progress lives, and nothing surfaced
@@ -262,6 +341,13 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=3, ge=0, le=8)
     llm_retry_base_delay: float = Field(default=0.5, ge=0.0)
     llm_retry_max_delay: float = Field(default=8.0, ge=0.0)
+    # Failover ladder bounds (win-rate sweep): at most this many fallback
+    # candidates are appended after the primary misses (0 = primary only), and
+    # an optional wall-clock deadline (seconds, 0 = disabled) caps one
+    # resilient call end-to-end so retries x fallbacks x timeout cannot stack
+    # into an unbounded stall.
+    llm_max_fallbacks: int = Field(default=4, ge=0)
+    llm_call_deadline_seconds: float = Field(default=0.0, ge=0.0)
     # Agentic tool-loop context editing (langchain ClearToolUsesEdit): when the
     # SENT history exceeds this byte budget, OLD tool-result file dumps (read_file/
     # list_files output) are replaced with a short stub on a COPY of the history —
@@ -319,7 +405,7 @@ class Settings(BaseSettings):
     # (themed sprites generated at build time, ~cents), or "auto"
     # (Kenney when installed, else replicate when configured, else offline).
     game_art_enabled: bool = True
-    game_art_source: str = "auto"  # offline | kenney | replicate | auto
+    game_art_source: Literal["offline", "kenney", "replicate", "auto"] = "auto"
     # When on, a cheap LLM art-director (one call/build, gated here) tailors a game's
     # roles + palette to the brief for the long tail of games the deterministic
     # planner doesn't recognize (e.g. fishing -> boat/fish/hook). Off -> the
@@ -418,7 +504,9 @@ class Settings(BaseSettings):
     # SEO check records findings to manifest.extra["mcp_check"] and feeds ONE
     # repair (snapshot → improve → re-proof → keep or roll back). When
     # ai_native_gates_verdict is on, a real non-skipped MCP/RAG/workflow contract
-    # failure blocks the final verdict; soft-skips never block.
+    # failure blocks under release posture (or via blocking_gates /
+    # ai_native_gates_verdict); under lab it records findings, dampens the
+    # score, and feeds the repair loop. Soft-skips never block.
     mcp_check_enabled: bool = True
     # Deterministic RAG-app gate (rag stack, wave-2 §3.1): boot the delivered
     # FastAPI app and drive the real HTTP contract (/health → /v1/stats → /ingest
@@ -625,7 +713,7 @@ class Settings(BaseSettings):
     reliability_ratchet_enabled: bool = False
 
     # ---- Sandbox ---------------------------------------------------------
-    execution_backend: str = "auto"  # auto | docker | inline
+    execution_backend: Literal["auto", "docker", "inline"] = "auto"
     sandbox_hardening: bool = True
     sandbox_drop_caps: bool = True
 
@@ -669,12 +757,18 @@ class Settings(BaseSettings):
 
     @property
     def has_any_llm(self) -> bool:
-        return bool(
-            self.openrouter_api_key
-            or self.anthropic_api_key
-            or self.openai_api_key
-            or self.kimi_api_key
-        )
+        """Whether a CONSUMABLE hosted-LLM credential is configured.
+
+        Only the OpenRouter key counts: no backend consumes the
+        anthropic/openai/kimi keys, so including them made ``/api/status``
+        claim LLM availability while generation stayed on the offline stub.
+        (Local CLI availability is reported separately by the runtime — see
+        ``web/deps.py`` status(), which ORs in the resolved backend.)
+        The ``openrouter_enabled`` disconnect flag suppresses availability
+        just as it suppresses key resolution (mirror of ``llm.openrouter_key``):
+        a disabled key cannot generate, so it must not report as available.
+        """
+        return bool(self.openrouter_api_key) and bool(self.openrouter_enabled)
 
 
 @lru_cache

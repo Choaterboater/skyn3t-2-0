@@ -103,15 +103,22 @@ class GatedTuner(_BaseComponent):
         current = int(self.settings.best_of_n)
         if current >= 8:
             return
+        # Value-bearing dedupe key: the default title-derived key is constant,
+        # so once one bump was APPLIED every further rung of the escalation
+        # ladder (value 3, 4, ...) was auto-rejected as a duplicate. Each
+        # distinct target value must be a distinct proposal, while an identical
+        # open/applied value still dedupes (the intended anti-spam semantics).
+        target = min(current + 1, 8)
         await self.cortex.submit(
             Proposal(
                 type=ProposalType.TUNING,
                 title="increase best_of_n after repeated low stage scores",
                 source=self.name,
                 rationale=f"{self._threshold} consecutive '{stage}' scores under 70",
-                payload={"setting": "best_of_n", "value": min(current + 1, 8)},
+                payload={"setting": "best_of_n", "value": target},
                 confidence=0.8,
                 safe=True,
+                dedupe_key=f"tuning:best_of_n:{target}",
             )
         )
 

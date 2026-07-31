@@ -152,6 +152,65 @@ def test_sample_keeps_compact_loser_evidence_after_loser_tree_cleanup(tmp_path, 
         cleanup_worktree(selection.winner.worktree)
 
 
+def test_sample_forwards_build_and_test_knobs_to_proof_run(tmp_path, monkeypatch):
+    """Candidate ranking must use the same objective proof the delivered tree
+    later faces, so the runner's build/test settings thread into proof_run."""
+    captured: list[dict] = []
+
+    async def trajectory(worktree, index):
+        return TaskResult(task_id=str(index), success=True, output={"files_written": 0})
+
+    def fake_proof(path, **kwargs):
+        captured.append(kwargs)
+        return _proof(True, score=80.0)
+
+    monkeypatch.setattr(bon, "proof_run", fake_proof)
+    selection = asyncio.run(
+        bon.sample(
+            str(tmp_path / "projects"),
+            "knobs",
+            1,
+            trajectory,
+            checklist=["src/main.py"],
+            stack="react",
+            run_tests=True,
+            test_timeout=45,
+            run_build=True,
+            build_timeout=120,
+            brief="a build-aware candidate proof",
+        )
+    )
+    try:
+        assert captured and captured[0]["run_build"] is True
+        assert captured[0]["run_tests"] is True
+        assert captured[0]["build_timeout"] == 120
+        assert captured[0]["test_timeout"] == 45
+        assert captured[0]["brief"] == "a build-aware candidate proof"
+        assert captured[0]["stack"] == "react"
+    finally:
+        cleanup_worktree(selection.winner.worktree)
+
+
+def test_sample_defaults_keep_the_structural_proof(tmp_path, monkeypatch):
+    """Direct callers that pass no knobs must keep proof_run's own defaults."""
+    captured: list[dict] = []
+
+    async def trajectory(worktree, index):
+        return TaskResult(task_id=str(index), success=True, output={"files_written": 0})
+
+    def fake_proof(path, **kwargs):
+        captured.append(kwargs)
+        return _proof(True, score=80.0)
+
+    monkeypatch.setattr(bon, "proof_run", fake_proof)
+    selection = asyncio.run(bon.sample(str(tmp_path / "projects"), "plain", 1, trajectory))
+    try:
+        assert captured[0]["run_build"] is False
+        assert captured[0]["run_tests"] is False
+    finally:
+        cleanup_worktree(selection.winner.worktree)
+
+
 def test_build_summary_and_live_api_record_surface_compact_evidence(tmp_path):
     worktree = create_worktree(tmp_path, "summary")
     try:

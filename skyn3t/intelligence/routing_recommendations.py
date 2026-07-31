@@ -29,7 +29,7 @@ try:
 except Exception:  # pragma: no cover - defensive
     _log = None  # type: ignore[assignment]
 
-from skyn3t.core.model_router import ModelRouter, Tier
+from skyn3t.core.model_router import ModelRouter, Tier, is_free_model_id
 
 
 class RoutingRecommender:
@@ -142,11 +142,16 @@ class LearnedModelRouter(ModelRouter):
         allow_live_catalog: bool | None = None,
     ) -> bool:
         m = model.lower()
+        # CLI transport labels ("<provider>-cli[:model]") are legitimate
+        # tournament citizens but are not routable OpenRouter ids; routable
+        # ids are always vendor/model (``openrouter/free`` included).
+        if "/" not in m:
+            return True
         no_claude = bool(getattr(self.settings, "no_claude", False))
         free_only = bool(getattr(self.settings, "free_only", False))
         if no_claude and ("claude" in m or "anthropic" in m):
             return True
-        if free_only and not (m.endswith(":free") or "free" in m):
+        if free_only and not is_free_model_id(model):
             return True
         if not self.auto_model_allowed(
             model,

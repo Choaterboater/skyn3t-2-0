@@ -53,6 +53,10 @@ class EventType(StrEnum):
     BUILD_STAGE_COMPLETED = "build.stage.completed"
     BUILD_COMPLETED = "build.completed"
     BUILD_FAILED = "build.failed"
+    # A gated stage is waiting on operator approval — event-driven discovery
+    # for the dashboard banner (which otherwise only polls; the gate can
+    # auto-reject before a poll lands).
+    APPROVAL_REQUESTED = "approval.requested"
     FIX_STALLED = "fix.stalled"
     # Per-stage autonomous debug loop + live artifact snapshots (cockpit, Phase A)
     STAGE_DEBUG_STARTED = "build.stage.debug.started"

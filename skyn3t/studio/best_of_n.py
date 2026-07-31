@@ -275,6 +275,11 @@ async def sample(
     checklist: list[str] | None = None,
     execution_backend: str = "auto",
     stack: str = "",
+    run_tests: bool = False,
+    test_timeout: int = 90,
+    run_build: bool = False,
+    build_timeout: int = 300,
+    brief: str = "",
     seed_dir: str | None = None,
     worktrees_root: str | None = None,
     worktree_registry: list[Worktree] | None = None,
@@ -287,6 +292,12 @@ async def sample(
     before any trajectory starts. This preserves deterministic tests and assets
     authored by earlier stages so each candidate is generated and proved
     against the same complete input tree.
+    ``run_tests``/``run_build`` (and their timeouts, plus ``brief``) thread
+    straight into :func:`proof_run` and default to its own defaults, so direct
+    callers keep the structural-only proof. The runner passes its settings so
+    candidate ranking uses the SAME objective proof the delivered tree must
+    later pass — otherwise a fatter tree that fails ``npm run build`` can beat
+    a leaner one that compiles.
     The caller owns merging and cleaning the winner; this function normally
     cleans every loser. A runner that needs to recover partial output on
     cancellation can register every worktree up front and defer cancellation
@@ -323,6 +334,11 @@ async def sample(
                 checklist=checklist,
                 execution_backend=execution_backend,
                 stack=stack,
+                run_tests=run_tests,
+                test_timeout=test_timeout,
+                run_build=run_build,
+                build_timeout=build_timeout,
+                brief=brief,
             )
         except Exception as exc:  # noqa: BLE001 - isolate proof failures per candidate
             cand.proof = None

@@ -144,8 +144,18 @@ class ProposalStore:
             ProposalStatus.APPLIED,
         }
         for existing in self._items.values():
-            if existing.dedupe_key == proposal.dedupe_key and existing.status in blocking:
-                return True
+            if existing.dedupe_key != proposal.dedupe_key or existing.status not in blocking:
+                continue
+            if (
+                existing.status is ProposalStatus.APPLIED
+                and (existing.result or {}).get("durable") is False
+            ):
+                # Effect could not be persisted (autonomy flags): it evaporates on
+                # restart, so an identical re-proposal is a genuine re-request.
+                # Strict ``is False``: legacy records without the marker (None)
+                # keep blocking exactly as before.
+                continue
+            return True
         return False
 
     def get(self, proposal_id: str) -> Proposal | None:

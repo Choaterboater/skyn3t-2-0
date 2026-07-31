@@ -73,10 +73,27 @@ class SecretsStore:
         for attr in (
             "openrouter_api_key", "anthropic_api_key", "openai_api_key",
             "kimi_api_key", "auth_token", "replicate_api_token", "github_token",
+            # Deploy tokens (mirrors Settings.deploy_tokens). Omitting them
+            # meant redact()/scrub_text could not see them, and golden_bench
+            # documented several leaking VERBATIM into artifacts/run.json.
+            "fly_api_token", "vercel_token", "cloudflare_api_token",
+            "netlify_auth_token", "railway_token", "render_api_key",
         ):
             val = getattr(self.settings, attr, "") or ""
             if val:
                 self._store[attr.upper()] = val
+        # Messaging-channel credentials are env-only (integrations.channels
+        # reads bare and SKYN3T_-prefixed names, never Settings), so seed both
+        # spellings — none of these token formats match _TOKEN_PATTERNS, so
+        # value-based seeding is the only way redact() can scrub them.
+        for name in (
+            "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "DISCORD_WEBHOOK_URL",
+            "SLACK_BOT_TOKEN", "SLACK_TOKEN", "GITHUB_WEBHOOK_SECRET",
+        ):
+            for env_name in (name, f"SKYN3T_{name}"):
+                val = (os.environ.get(env_name) or "").strip()
+                if val:
+                    self._store[env_name] = val
 
     # ---- vault ops -------------------------------------------------------
     def put(self, name: str, value: str) -> None:
@@ -155,6 +172,9 @@ _TOKEN_PATTERNS = (
 # scheme://user:pass@host — a credential embedded in a URL value (DATABASE_URL,
 # GIT_REMOTE, REDIS_URL, npm registry _authToken urls, ...).
 _URL_CRED = re.compile(r"://[^/\s:@]+:[^/\s@]+@")
+# The same shape, grouped so scrub_text can redact ONLY the userinfo while the
+# scheme/host stay readable in logs.
+_URL_CRED_SUB = re.compile(r"(://)[^/\s:@]+:[^/\s@]+(@)")
 
 
 def _value_has_credential(value: str) -> bool:
@@ -182,4 +202,8 @@ def scrub_text(text: str, store: SecretsStore | None = None) -> str:
     out = store.redact(text) if store is not None else text
     for pat in _TOKEN_PATTERNS:
         out = pat.sub(REDACTED, out)
+    # Credentialed DSNs (postgres://user:pass@host/db ...) passed through
+    # verbatim: filter_env used _URL_CRED to DETECT them but nothing redacted
+    # them from free text. Keep scheme and host; drop the userinfo.
+    out = _URL_CRED_SUB.sub(rf"\1{REDACTED}\2", out)
     return out

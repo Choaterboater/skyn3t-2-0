@@ -251,6 +251,63 @@ def test_studio_fanout_sends_the_selected_build_contract() -> None:
     assert "payload.reference_image = refImage.url" in studio
 
 
+def test_studio_catalog_refresh_forces_openrouter_refresh() -> None:
+    """The refresh button must actually send refresh=true.
+
+    As useState the flag never worked: the button's refetch() ran the queryFn
+    closure from the previous render (flag still false), and the unchanged
+    queryKey meant the re-render fetched nothing — so the request always
+    carried refresh=false and routing pins kept stale pricing. The flag lives
+    in a ref consumed inside the queryFn at fetch time instead.
+    """
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+
+    assert "const catalogForceRefreshRef = useRef(false)" in studio
+    assert "catalogRefreshing" not in studio
+    # The handler arms the ref; the paged case routes through the key change
+    # alone so a second unforced fetch cannot race the forced one.
+    assert "catalogForceRefreshRef.current = true;" in studio
+    assert "if (modelCatalogPage === 0) catalog.refetch();" in studio
+    assert "else setModelCatalogPage(0);" in studio
+    # The queryFn consumes the ref at execution time, next to the param.
+    assert "const force = catalogForceRefreshRef.current;" in studio
+    assert "catalogForceRefreshRef.current = false;" in studio
+    assert "refresh: String(force)," in studio
+    # Refetches keep isLoading false; feedback must key off isFetching.
+    assert 'catalog.isFetching ? "refreshing…" : "refresh"' in studio
+    assert "disabled={catalog.isFetching}" in studio
+    assert 'catalog.isLoading ? "refreshing…"' not in studio
+
+
+def test_dead_event_stream_is_labelled_stale_on_live_status_routes() -> None:
+    """A dead websocket must not freeze panels that still look live.
+
+    The hook exposes the last frame timestamp, a shared banner names the
+    staleness on every stream-fed route, and the live-pulse animations are
+    gated so a frozen buffer stops masquerading as live telemetry.
+    """
+    api = (SRC / "api.js").read_text(encoding="utf-8")
+    assert "setLastFrameAt(Date.now());" in api
+    assert "return { status, events, last, lastFrameAt, send };" in api
+
+    banner = (COMPONENTS / "StreamStaleBanner.jsx").read_text(encoding="utf-8")
+    assert "streamStaleness" in banner
+    assert 'role="alert"' in banner
+
+    for name in ("Overview.jsx", "Studio.jsx", "Projects.jsx"):
+        route = (ROUTES / name).read_text(encoding="utf-8")
+        assert "<StreamStaleBanner stream={stream}" in route, (
+            f"{name} does not mount the shared stale banner"
+        )
+
+    ladder = (COMPONENTS / "GateLadder.jsx").read_text(encoding="utf-8")
+    assert "streamStaleness" in ladder
+    assert "heat.live && !stale" in ladder
+
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+    assert "<ForgeStage s={p} stale={streamStale} />" in studio
+
+
 def test_build_terminal_settles_active_slice_rows() -> None:
     helper = SRC / "agentSignals.js"
     script = f"""
@@ -291,6 +348,123 @@ def test_build_terminal_settles_active_slice_rows() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_build_terminal_settles_running_stage_rows() -> None:
+    helper = SRC / "agentSignals.js"
+    script = f"""
+      import {{ settleStageRowsOnBuildTerminal }} from {json.dumps(helper.as_uri())};
+      const rows = [
+        {{ stage: "codegen", state: "running" }},
+        {{ stage: "review", state: "pending" }},
+        {{ stage: "research", state: "done", status: "completed" }},
+        {{ capability: "slice", stage: "code/frontend", state: "running" }},
+      ];
+      settleStageRowsOnBuildTerminal(rows, {{
+        type: "build.failed",
+        payload: {{ status: "cancelled", reason: "cancelled by user" }},
+      }});
+      if (rows[0].state !== "failed" || rows[0].status !== "cancelled") {{
+        throw new Error("running stage did not settle as failed");
+      }}
+      if (rows[0].gaps[0] !== "cancelled by user") {{
+        throw new Error("failed stage did not retain the terminal reason");
+      }}
+      if (rows[1].state !== "pending") {{
+        throw new Error("a planned stage that never ran must not be marked failed");
+      }}
+      if (rows[2].state !== "done") {{
+        throw new Error("terminal stage state was overwritten");
+      }}
+      if (rows[3].state !== "running") {{
+        throw new Error("slice row must be left to the slice helper");
+      }}
+
+      const completed = [{{ stage: "package", state: "running" }}];
+      settleStageRowsOnBuildTerminal(completed, {{
+        type: "build.completed",
+        payload: {{ status: "completed" }},
+      }});
+      if (completed[0].state !== "done" || completed[0].status !== "completed") {{
+        throw new Error("successful build did not settle its running stage");
+      }}
+
+      const untouched = [{{ stage: "codegen", state: "running" }}];
+      settleStageRowsOnBuildTerminal(untouched, {{ type: "build.stage.started", payload: {{}} }});
+      if (untouched[0].state !== "running") {{
+        throw new Error("non-terminal events must not settle stage rows");
+      }}
+    """
+    subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=UI_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_cockpit_settles_stage_rows_and_shows_failed_ledger() -> None:
+    cockpit = (COMPONENTS / "cockpit.jsx").read_text(encoding="utf-8")
+
+    # Terminal settlement runs for stage rows too — after the slice helper,
+    # before the name check that drops stage-less terminal events.
+    assert "settleStageRowsOnBuildTerminal(rec.values(), e)" in cockpit
+    assert cockpit.index("settleSliceRowsOnBuildTerminal(rec.values(), e)") < cockpit.index(
+        "settleStageRowsOnBuildTerminal(rec.values(), e)"
+    )
+    assert cockpit.index("settleStageRowsOnBuildTerminal(rec.values(), e)") < cockpit.index(
+        "const name = p.stage || p.capability"
+    )
+    # A build that fails in its first stage must keep the ledger visible.
+    assert 'r.state === "running" || r.state === "done" || r.state === "failed"' in cockpit
+
+
+def test_gate_ladder_settles_terminal_heat_and_names_the_blocker() -> None:
+    ladder = (COMPONENTS / "GateLadder.jsx").read_text(encoding="utf-8")
+    heat = (SRC / "gateHeat.js").read_text(encoding="utf-8")
+
+    assert "gateHeatFromEvents" in ladder
+    assert "blockedBy" in ladder
+    assert "gate {blockedBy.gate} failed" in ladder
+    assert "export function gateHeatFromEvents" in heat
+    assert "running.forEach((gate) => failed.add(gate));" in heat
+    assert "running.clear();" in heat
+    assert "gate_findings" in heat
+
+
+def test_event_stream_seeds_from_trajectory_and_dedups_by_id() -> None:
+    api = (SRC / "api.js").read_text(encoding="utf-8")
+    buffer = (SRC / "eventBuffer.js").read_text(encoding="utf-8")
+
+    assert "appendEventBounded(prev, evt, maxEvents)" in api
+    assert "apiFetch(`/trajectory?limit=${maxEvents}`)" in api
+    assert "mergeSeededEvents(prev, data?.events, maxEvents)" in api
+    assert "export function appendEventBounded" in buffer
+    assert "export function mergeSeededEvents" in buffer
+
+
+def test_studio_recent_build_diagnostics_surface_gate_findings() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+
+    assert "scorecard.gate_findings" in studio
+    assert "`blocked: ${gate} — ${reason}`" in studio
+    assert "advisory: ${String(finding.gate || \"gate\")}" in studio
+
+
+def test_app_surfaces_pending_approvals_on_every_route() -> None:
+    app = (SRC / "App.jsx").read_text(encoding="utf-8")
+    banner = (COMPONENTS / "PendingApprovalsBanner.jsx").read_text(encoding="utf-8")
+
+    assert "PendingApprovalsBanner" in app
+    assert "<PendingApprovalsBanner stream={stream} />" in app
+    assert 'queryKey: ["builds"]' in banner
+    assert "approval_pending" in banner
+    assert "approval_stages" in banner
+    assert 'apiPost("/studio/approve", { build_id, approved, reason: "" })' in banner
+    assert '"approval.requested"' in banner
+    assert "auto-rejects" in banner
+    assert "isActiveBuild" in banner
 
 
 def test_concurrent_slice_completion_keeps_code_agent_busy() -> None:
@@ -575,7 +749,9 @@ def test_settings_wires_presence_only_deploy_controls() -> None:
     assert "DEPLOY_PROVIDERS" in helper
     assert "deployProviderConfigured" in helper
     assert "deployProviderDetail" in helper
-    assert '"render"' not in helper
+    # Render is fully supported by Settings + DeployAgent; the GUI list was
+    # the only layer missing it (audit finding M20).
+    assert '"render"' in helper
     assert 'setDeployToken("")' in settings
 
 

@@ -73,7 +73,7 @@ class _Capture:
             async def __aexit__(self, *a):
                 return False
 
-            async def post(self, url, json=None, headers=None):
+            async def post(self, url, json=None, headers=None, timeout=None):
                 captured.body = json
                 return _Resp()
 

@@ -3,7 +3,9 @@
 * **Inbound** (opt-in, start/stop from the dashboard): a Telegram long-poll loop
   (``getUpdates`` — no public URL needed) that turns chat messages into briefs
   and runs them through the studio (``/build <idea>``, ``/approve <id>``,
-  ``/ping``, or bare text).
+  ``/ping``, or bare text). Only allow-listed chat ids are processed, and the
+  listener refuses to start without one — getUpdates delivers messages from
+  anyone who discovers the bot.
 * **Outbound** (always on): build-completion notifications pushed to each
   configured channel's default target.
 
@@ -143,6 +145,16 @@ class MessagingService:
         tg = self.channels.get("telegram")
         if tg is None:
             return {"running": False, "error": "no telegram bot token configured"}
+        if not getattr(tg, "allowed_chat_ids", frozenset()):
+            # Fail closed: an unfiltered listener would hand /build and
+            # /approve to any Telegram user who finds the bot username.
+            return {
+                "running": False,
+                "error": (
+                    "no telegram chat allowlist configured — set "
+                    "SKYN3T_TELEGRAM_ALLOWED_CHAT_IDS (or SKYN3T_TELEGRAM_CHAT_ID)"
+                ),
+            }
         if self._running:
             return self.status()
         self._running = True
@@ -176,8 +188,14 @@ class MessagingService:
                     for upd in resp.json().get("result", []):
                         offset = int(upd["update_id"]) + 1
                         msg = channel.parse_update(upd)
-                        if msg:
-                            await channel.handle_inbound(msg)
+                        if not msg:
+                            continue
+                        # Second gate alongside TelegramChannel.handle_inbound:
+                        # unlisted chats never reach the brief/approve flow.
+                        if msg.target not in getattr(channel, "allowed_chat_ids", frozenset()):
+                            log.warning("telegram.unauthorized_chat", chat=msg.target)
+                            continue
+                        await channel.handle_inbound(msg)
                 except asyncio.CancelledError:  # pragma: no cover - shutdown
                     break
                 except Exception as exc:  # noqa: BLE001 - keep polling through errors

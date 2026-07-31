@@ -13,10 +13,13 @@ import asyncio
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from skyn3t.agents.deploy_agent import DeployAgent, _normalize_provider
 from skyn3t.config.settings import Settings
@@ -804,6 +807,153 @@ def test_execute_ignores_payload_plan_command(tmp_path, monkeypatch):
     asyncio.run(agent.execute(task))
     assert captured["command"].startswith("vercel deploy . --prod --yes")
     assert "arbitrary-command" not in captured["command"]
+
+
+def _deployable_project(tmp_path):
+    root = _project(tmp_path)
+    BuildManifest(
+        slug="site",
+        brief="site",
+        stack="static",
+        status="completed",
+        verdict="go",
+        extra={"proof": {"passed": True}},
+    ).save(root)
+    return root
+
+
+def _ok_result(target):
+    return {
+        "ok": True,
+        "url": "https://gated.vercel.app",
+        "provider": "vercel",
+        "target": target,
+        "status": "succeeded",
+        "commands": [],
+        "remote_deploy_attempted": True,
+        "remote_deploy_performed": True,
+        "remote_state": "succeeded",
+        "error": None,
+    }
+
+
+async def test_execute_applies_enabled_health_gate_before_activation(tmp_path, monkeypatch):
+    root = _deployable_project(tmp_path)
+    agent = DeployAgent(config={"deploy_check_enabled": True})
+    checked = {}
+
+    def fake_deploy(directory, target="static", port=0, *, plan=None):
+        return _ok_result(target)
+
+    async def fake_check(url, stack=""):
+        checked["url"] = url
+        return SimpleNamespace(to_dict=lambda: {
+            "ok": False,
+            "skipped": False,
+            "issues": ["root route dead"],
+            "checked": {"/": 503},
+            "reason": "",
+            "gaps": [],
+        })
+
+    monkeypatch.setattr(agent, "deploy", fake_deploy)
+    monkeypatch.setattr("skyn3t.studio.deploy_check.check_deploy", fake_check)
+    task = TaskRequest(type="deploy", payload={"project_dir": str(root), "stack": "static"})
+    result = await agent.execute(task)
+
+    assert checked["url"] == "https://gated.vercel.app"
+    assert result.success is False
+    assert result.output["status"] == "deployed_unhealthy"
+    assert result.output["activation_blocked"] is True
+    assert result.output["provider_command_ok"] is True
+    assert result.output["url"] == "https://gated.vercel.app"
+    assert result.output["deployment"]["manifest_pointer_active"] is False
+    manifest = BuildManifest.load(root)
+    assert "live_url" not in manifest.extra
+
+
+async def test_execute_unavailable_health_check_persists_unverified(tmp_path, monkeypatch):
+    root = _deployable_project(tmp_path)
+    agent = DeployAgent(config={"deploy_check_enabled": True})
+
+    def fake_deploy(directory, target="static", port=0, *, plan=None):
+        return _ok_result(target)
+
+    async def broken_check(url, stack=""):
+        raise RuntimeError("probe dependency missing")
+
+    monkeypatch.setattr(agent, "deploy", fake_deploy)
+    monkeypatch.setattr("skyn3t.studio.deploy_check.check_deploy", broken_check)
+    task = TaskRequest(type="deploy", payload={"project_dir": str(root), "stack": "static"})
+    result = await agent.execute(task)
+
+    assert result.success is False
+    assert result.output["status"] == "deployed_unverified"
+    assert result.output["activation_blocked"] is True
+    assert result.output["deploy_check"]["skipped"] is True
+    manifest = BuildManifest.load(root)
+    assert "live_url" not in manifest.extra
+
+
+async def test_execute_cancelled_deploy_records_unknown_remote_state(tmp_path, monkeypatch):
+    root = _deployable_project(tmp_path)
+    agent = DeployAgent(config={})
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_deploy(directory, target="static", port=0, *, plan=None):
+        started.set()
+        release.wait(timeout=10)
+        return _ok_result(target)
+
+    monkeypatch.setattr(agent, "deploy", slow_deploy)
+    task = TaskRequest(type="deploy", payload={"project_dir": str(root), "stack": "static"})
+    job = asyncio.create_task(agent.execute(task))
+    try:
+        await asyncio.to_thread(started.wait, 10)
+        job.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await job
+    finally:
+        release.set()
+
+    manifest = BuildManifest.load(root)
+    record = manifest.extra["deployments"][-1]
+    assert record["status"] == "cancelled"
+    assert record["remote_state"] == "unknown"
+    assert record["remote_deploy_attempted"] is True
+    assert record["manifest_pointer_active"] is False
+    assert "live_url" not in manifest.extra
+
+
+async def test_execute_cancelled_health_check_blocks_activation(tmp_path, monkeypatch):
+    root = _deployable_project(tmp_path)
+    agent = DeployAgent(config={"deploy_check_enabled": True})
+    entered = asyncio.Event()
+
+    def fake_deploy(directory, target="static", port=0, *, plan=None):
+        return _ok_result(target)
+
+    async def hanging_check(url, stack=""):
+        entered.set()
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(agent, "deploy", fake_deploy)
+    monkeypatch.setattr("skyn3t.studio.deploy_check.check_deploy", hanging_check)
+    task = TaskRequest(type="deploy", payload={"project_dir": str(root), "stack": "static"})
+    job = asyncio.create_task(agent.execute(task))
+    await asyncio.wait_for(entered.wait(), 10)
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+
+    manifest = BuildManifest.load(root)
+    record = manifest.extra["deployments"][-1]
+    assert record["status"] == "deployed_unverified"
+    assert record["activation_blocked"] is True
+    assert record["url"] == "https://gated.vercel.app"
+    assert record["manifest_pointer_active"] is False
+    assert "live_url" not in manifest.extra
 
 
 def test_execute_rejects_remote_deploy_without_objective_proof(tmp_path, monkeypatch):

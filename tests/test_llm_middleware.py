@@ -73,7 +73,7 @@ def _install_scripted(monkeypatch, script: list) -> dict:
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url, json=None, headers=None):
+        async def post(self, url, json=None, headers=None, timeout=None):
             state["calls"] += 1
             state["models"].append((json or {}).get("model"))
             item = seq[state["i"]]
@@ -429,3 +429,142 @@ def test_agentic_consults_context_editing_each_turn(monkeypatch, tmp_path):
     res = asyncio.run(c._openrouter_agentic("build", str(tmp_path), "m", stack="phaser"))
     assert res["ok"] is True
     assert calls  # context editing was consulted before each POST
+
+
+# ---------------------------------------------------------------------------
+# 6. Outage bounds: capped ladder, reduced fallback retries, wall-clock deadline,
+#    and off-loop fallback resolution.
+# ---------------------------------------------------------------------------
+async def test_fallback_ladder_capped_at_llm_max_fallbacks(monkeypatch):
+    """The lazy extend appends at most llm_max_fallbacks (default 4) candidates —
+    not the full ~23-rung ranked ladder whose marginal success probability during
+    a provider-wide outage is ~zero."""
+    c = _or_client(llm_max_retries=0)
+    fallbacks = [f"fb/model-{i}" for i in range(10)]
+    monkeypatch.setattr(
+        c, "_healthy_fallback_models", lambda primary, tier: list(fallbacks)
+    )
+    calls: list[str] = []
+
+    async def attempt(model):
+        calls.append(model)
+        raise _http_error(503)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await c._resilient_call("pri/mary", Tier.UI, attempt)
+
+    assert calls == ["pri/mary", *fallbacks[:4]]
+
+
+async def test_fallback_candidates_get_at_most_one_transient_retry(monkeypatch):
+    """The transient-retry budget belongs to the PRIMARY: fallback rungs get at
+    most one retry, so retries x ladder no longer multiplies an outage."""
+    c = _or_client(llm_max_retries=3)
+    monkeypatch.setattr(
+        c, "_healthy_fallback_models", lambda primary, tier: ["fb/one"]
+    )
+    counts: dict[str, int] = {}
+
+    async def attempt(model):
+        counts[model] = counts.get(model, 0) + 1
+        raise _http_error(503)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await c._resilient_call("pri/mary", Tier.UI, attempt)
+
+    assert counts["pri/mary"] == 4  # full budget on the primary (3 retries + 1)
+    assert counts["fb/one"] == 2    # one retry only on a fallback rung
+
+
+async def test_call_deadline_stops_ladder_and_raises_original_error(monkeypatch):
+    """llm_call_deadline_seconds bounds the whole call BETWEEN attempts (never
+    cancelling one in flight) and surfaces the ORIGINAL error, preserving the
+    exhaustion contract."""
+    c = _or_client(llm_max_retries=3)
+
+    class _Cfg:
+        def __init__(self, base):
+            self._base = base
+
+        def __getattr__(self, name):
+            if name == "llm_call_deadline_seconds":
+                return 0.01
+            return getattr(self._base, name)
+
+    monkeypatch.setattr(c, "_routing_settings", lambda: _Cfg(c.settings))
+    monkeypatch.setattr(
+        c, "_healthy_fallback_models", lambda primary, tier: ["fb/one", "fb/two"]
+    )
+    calls: list[str] = []
+
+    async def attempt(model):
+        calls.append(model)
+        await asyncio.sleep(0.02)  # one attempt outlives the whole deadline
+        raise _http_error(503)
+
+    with pytest.raises(httpx.HTTPStatusError) as ei:
+        await c._resilient_call("pri/mary", Tier.UI, attempt)
+
+    assert ei.value.response.status_code == 503  # the original error, not a TimeoutError
+    assert calls == ["pri/mary"]  # deadline spent between attempts: no retry, no ladder
+
+
+async def test_deadline_off_by_default_keeps_walking_the_ladder(monkeypatch):
+    c = _or_client(llm_max_retries=0)
+    monkeypatch.setattr(
+        c, "_healthy_fallback_models", lambda primary, tier: ["fb/one"]
+    )
+    calls: list[str] = []
+
+    async def attempt(model):
+        calls.append(model)
+        raise _http_error(503)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await c._resilient_call("pri/mary", Tier.UI, attempt)
+
+    assert calls == ["pri/mary", "fb/one"]
+
+
+async def test_fallback_resolution_runs_off_the_event_loop(monkeypatch):
+    """Fallback resolution can hit the live catalog via blocking urllib, so
+    _resilient_call must dispatch it off the event loop (asyncio.to_thread)."""
+    import threading
+
+    c = _or_client(llm_max_retries=0)
+    seen: dict[str, object] = {}
+
+    def fake_fallbacks(primary, tier):
+        seen["thread"] = threading.current_thread()
+        return []
+
+    monkeypatch.setattr(c, "_healthy_fallback_models", fake_fallbacks)
+
+    async def attempt(model):
+        raise _http_error(503)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await c._resilient_call("pri/mary", Tier.UI, attempt)
+
+    assert seen["thread"] is not threading.main_thread()
+
+
+async def test_complete_resolves_model_off_the_event_loop(monkeypatch, no_router_network):
+    """Model resolution (which may refresh the live catalog through blocking
+    urllib) must not run on the event loop inside complete()."""
+    import threading
+
+    _install_scripted(monkeypatch, [_Resp(status=200)])
+    c = _or_client()
+    seen: dict[str, object] = {}
+
+    def spy(self, **kwargs):
+        seen["thread"] = threading.current_thread()
+        return "m/fixed"
+
+    monkeypatch.setattr(LLMClient, "_resolve_pinned_model", spy)
+
+    res = await c.complete("p", Tier.CHEAP)
+
+    assert res.text == "ok"
+    assert seen["thread"] is not threading.main_thread()

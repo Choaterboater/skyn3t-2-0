@@ -28,6 +28,11 @@ _IGNORE_PARTS = frozenset({
     ".git", "node_modules", ".venv", "__pycache__", "dist", "build",
     ".next", "out", ".vite", ".svelte-kit", ".turbo", ".cache", "coverage", ".output",
 })
+# Test/fixture dirs define routes the delivered app never serves (conftest
+# fixture apps, tests/fixtures/*.html); probing them 404s and counts as dead.
+# Conservative names only — never the singular "test", which real apps use.
+_TEST_PARTS = frozenset({"tests", "__tests__", "fixtures", "cypress", "e2e"})
+_SKIP_PARTS = _IGNORE_PARTS | _TEST_PARTS
 _STATIC_FRAGMENT_PARTS = frozenset({
     "includes", "_includes", "partials", "_partials", "templates", "_templates", "snippets",
 })
@@ -48,7 +53,10 @@ def _iter_source(root: Path):
     for p in root.rglob("*"):
         if not p.is_file() or p.suffix not in _SRC_SUFFIXES:
             continue
-        if _IGNORE_PARTS.intersection(p.parts):
+        # Only root-relative parts may match: p.parts includes every ancestor of
+        # the project root, so a workspace living under a dir named "build" or
+        # "dist" would otherwise suppress all route discovery (false-healthy).
+        if _SKIP_PARTS.intersection(p.relative_to(root).parts):
             continue
         try:
             yield p.read_text(encoding="utf-8", errors="ignore")
@@ -106,17 +114,19 @@ def enumerate_routes(project_dir: str | Path, stack: str = "") -> list[Route]:
                     parts.pop()
                 add("/" + "/".join(parts) if parts else "/")
     for html in root.rglob("*.html"):
-        if _IGNORE_PARTS.intersection(html.parts):
+        # Same root-relative constraint as _iter_source: ancestor dir names must
+        # never suppress (or pollute) the served-page enumeration.
+        rel = html.relative_to(root)
+        if _SKIP_PARTS.intersection(rel.parts):
             continue
-        rel = html.relative_to(root).as_posix()
-        if _STATIC_FRAGMENT_PARTS.intersection(Path(rel).parts[:-1]):
+        if _STATIC_FRAGMENT_PARTS.intersection(rel.parts[:-1]):
             continue
         # Astro copies `public/*` to the served root; the directory name is not
         # part of the URL.  Probing `/public/settings.html` creates a fake 404
         # while the real `/settings.html` page is healthy.
-        served_rel = rel
-        if (stack or "").lower() == "astro" and rel.startswith("public/"):
-            served_rel = rel.removeprefix("public/")
+        served_rel = rel.as_posix()
+        if (stack or "").lower() == "astro" and served_rel.startswith("public/"):
+            served_rel = served_rel.removeprefix("public/")
         add("/" if served_rel == "index.html" else f"/{served_rel}")
     return list(seen.values())
 

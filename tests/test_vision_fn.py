@@ -12,6 +12,7 @@ import pytest
 from skyn3t.studio.visual_check import (
     _image_data_url,
     _vision_messages,
+    make_click_vision_fn,
     make_vision_fn,
 )
 
@@ -32,6 +33,35 @@ def test_make_vision_fn_is_callable_with_a_key():
         llm_backend="openrouter", openrouter_api_key="sk-or-test", vision_model=""
     )
     assert callable(make_vision_fn(s))
+
+
+def test_openrouter_vision_fn_soft_skips_under_free_only_without_vision_model():
+    # The hard cost guard: with free_only set and no vision_model configured,
+    # the factory must NOT hand back a fn that bills the paid built-in default
+    # outside the budget ledger. Mirrors the adapter contract in
+    # LLMClient._resolve_vision ("configuring vision_model IS the spend opt-in").
+    s = SimpleNamespace(
+        llm_backend="openrouter",
+        openrouter_api_key="sk-or-test",
+        vision_model="",
+        free_only=True,
+    )
+    assert make_vision_fn(s) is None
+    # Click grounding routes through the same factory and must skip too.
+    assert make_click_vision_fn(s) is None
+
+
+def test_openrouter_vision_fn_honors_explicit_vision_model_under_free_only():
+    # An explicitly configured vision_model is the spend opt-in — the judge
+    # still runs under free_only (spend stays visible via a per-call warning).
+    s = SimpleNamespace(
+        llm_backend="openrouter",
+        openrouter_api_key="sk-or-test",
+        vision_model="openai/gpt-4o-mini",
+        free_only=True,
+    )
+    assert callable(make_vision_fn(s))
+    assert callable(make_click_vision_fn(s))
 
 
 def test_vision_messages_carry_text_and_image():

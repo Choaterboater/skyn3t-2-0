@@ -126,10 +126,32 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
                     os.close(descriptor)
                 except OSError:
                     pass
+    # No dir_fd walk on this platform (Windows), so the open must target the
+    # RESOLVED path and then prove the descriptor still names that in-root
+    # file: opening the original path after the containment check would let a
+    # concurrently swapped intermediate junction bind out-of-root bytes into
+    # the source digest.
     resolved = path.resolve(strict=True)
     if not resolved.is_relative_to(root):
         raise OSError("source path escaped project root")
-    return os.open(path, file_flags)
+    descriptor = os.open(resolved, file_flags)
+    try:
+        if path.resolve(strict=True) != resolved:
+            raise OSError("source path re-resolved outside the opened target")
+        opened = os.fstat(descriptor)
+        current = os.lstat(resolved)
+        # st_dev/st_ino are 0 on filesystems without stable file ids
+        # (FAT/exFAT, some network shares); a zeroed pair proves nothing.
+        if (
+            opened.st_ino
+            and current.st_ino
+            and (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise OSError("source file replaced during open")
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 @dataclass(slots=True)

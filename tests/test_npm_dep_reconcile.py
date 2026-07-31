@@ -83,22 +83,37 @@ def _node_proj(tmp_path):
     return tmp_path
 
 
+def _fake_proof_exec(monkeypatch, rc, out):
+    """Fake the Popen seam of proof_run._run_proof_command.
+
+    The local execution path is Popen-based (tree-killable on timeout), so a
+    subprocess.run fake no longer intercepts anything but taskkill.
+    """
+    import subprocess as _sp
+
+    class _Proc:
+        def __init__(self, *_a, **_k):
+            self.returncode = None
+
+        def communicate(self, timeout=None):
+            self.returncode = rc
+            return out, ""
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(_sp, "Popen", _Proc)
+
+
 def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
     """ERESOLVE/E404/ETARGET install failures must return ran=True, ok=False so
     proof.passed flips to False (was soft-skipped as 'offline')."""
-    import subprocess as _sp
-
     import skyn3t.studio.proof_run as pr
     _node_proj(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
-
-    class _CP:
-        def __init__(self, rc, out):
-            self.returncode = rc
-            self.stdout = out
-            self.stderr = ""
-    monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(
-        1, "npm error code ETARGET\nnpm error notarget No matching version found for @react-three/fiber@8.15.21"))
+    _fake_proof_exec(
+        monkeypatch, 1,
+        "npm error code ETARGET\nnpm error notarget No matching version found for @react-three/fiber@8.15.21")
 
     ran, ok, summary = pr._run_node_build(tmp_path, "nextjs", 120)
     assert ran is True and ok is False, (ran, ok, summary)
@@ -106,19 +121,12 @@ def test_run_node_build_real_install_failure_hard_fails(tmp_path, monkeypatch):
 
 def test_run_node_build_offline_soft_skips(tmp_path, monkeypatch):
     """A genuine ENOTFOUND connectivity failure stays a soft-skip (ran=False)."""
-    import subprocess as _sp
-
     import skyn3t.studio.proof_run as pr
     _node_proj(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
-
-    class _CP:
-        def __init__(self, rc, out):
-            self.returncode = rc
-            self.stdout = out
-            self.stderr = ""
-    monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(
-        1, "npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND"))
+    _fake_proof_exec(
+        monkeypatch, 1,
+        "npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND")
 
     ran, ok, summary = pr._run_node_build(tmp_path, "nextjs", 120)
     assert ran is False, (ran, ok, summary)
@@ -444,8 +452,6 @@ def test_idempotent(tmp_path):
 def test_run_node_tests_classification(tmp_path, monkeypatch):
     """_run_node_tests runs only with a real runner + node_modules, and a
     failure returns (ran=True, passed=False) for the proof gate to enforce."""
-    import subprocess as _sp
-
     import skyn3t.studio.proof_run as pr
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "package.json").write_text(json.dumps({
@@ -453,13 +459,7 @@ def test_run_node_tests_classification(tmp_path, monkeypatch):
         "devDependencies": {"vitest": "^1.0.0"},
     }), encoding="utf-8")
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
-
-    class _CP:
-        def __init__(self, rc):
-            self.returncode = rc
-            self.stdout = "2 failed"
-            self.stderr = ""
-    monkeypatch.setattr(_sp, "run", lambda *a, **k: _CP(1))
+    _fake_proof_exec(monkeypatch, 1, "2 failed")
     ran, ok, _ = pr._run_node_tests(tmp_path, 60)
     assert ran is True and ok is False
 

@@ -18,7 +18,10 @@ from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.runner import StudioRunner
 
-_EMOJI_PAGE = "<main class='grid hero'><h1>Planner</h1><button>" + chr(0x1F3CC) + " Go</button></main>"
+# A page thin enough to fail the structural polish checks deterministically
+# (no heading, no action, no styling). Emoji alone no longer fail web_polish —
+# they are an advisory warning — so the posture test pins a real failure.
+_THIN_PAGE = "<html><body>hello</body></html>"
 
 
 def _runner(tmp_path, **overrides) -> StudioRunner:
@@ -88,10 +91,10 @@ def test_security_finding_blocks_in_release(tmp_path):
     assert _findings(manifest, "security")[0]["blocked"] is True
 
 
-def test_emoji_web_polish_finding_is_advisory_in_lab_and_blocking_in_release(tmp_path):
+def test_web_polish_finding_is_advisory_in_lab_and_blocking_in_release(tmp_path):
     project = tmp_path / "app"
     project.mkdir()
-    (project / "index.html").write_text(_EMOJI_PAGE, encoding="utf-8")
+    (project / "index.html").write_text(_THIN_PAGE, encoding="utf-8")
 
     lab = _runner(tmp_path, build_posture="lab")
     lab_manifest = BuildManifest(slug="app", brief="brief", stack="static")

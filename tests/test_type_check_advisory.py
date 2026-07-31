@@ -52,6 +52,16 @@ def test_other_type_checkers_split_too(checker):
     assert compile_only_segment(f"{checker} && vite build") == "vite build"
 
 
+def test_the_stock_vite_ts_template_script_splits():
+    """The legacy create-vite TS template emits a bare `tsc` first segment."""
+    assert compile_only_segment("tsc && vite build") == "vite build"
+
+
+def test_a_tsc_lookalike_binary_is_not_split():
+    """Token boundary: `tsc-watch` is not a type check we recognise."""
+    assert compile_only_segment("tsc-watch && vite build") == ""
+
+
 def test_a_plain_build_is_not_split():
     """The scaffold's own script — nothing to separate."""
     assert compile_only_segment("astro build") == ""
@@ -149,6 +159,62 @@ def test_a_plain_build_failure_is_not_retried(tmp_path, monkeypatch):
 
     assert (ran, ok) == (True, False)
     assert len(seen) == 1
+
+
+def _project_with_scripts(tmp_path, scripts):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "demo-app", "version": "1.0.0", "scripts": scripts}),
+        encoding="utf-8",
+    )
+    (tmp_path / "node_modules").mkdir(exist_ok=True)
+    return tmp_path
+
+
+def test_a_standalone_typecheck_type_failure_is_advisory_after_a_passing_build(
+    tmp_path, monkeypatch
+):
+    """A separately declared `typecheck` script failing on TYPE diagnostics is
+    the same quality finding as a chained `<check> && <build>` script."""
+    root = _project_with_scripts(
+        tmp_path, {"build": "vite build", "typecheck": "tsc --noEmit"}
+    )
+    seen = _stub_commands(
+        monkeypatch,
+        [
+            (0, "built in 1.2s"),
+            (1, "src/App.tsx(4,7): error TS2322: Type 'string' is not assignable."),
+        ],
+    )
+    findings: dict[str, str] = {}
+
+    ran, ok, summary = pr._run_node_build(root, "react", 300, None, findings=findings)
+
+    assert (ran, ok) == (True, True), "the app builds; the type error must not fail proof"
+    assert "TS2322" in findings["type_check"]
+    assert "advisory" in summary
+    assert seen == [["npm", "run", "build"], ["npm", "run", "typecheck"]]
+
+
+def test_a_standalone_check_crash_still_fails_the_build(tmp_path, monkeypatch):
+    """No type diagnostics means a checker crash/misconfig — still a hard fail."""
+    root = _project_with_scripts(
+        tmp_path, {"build": "astro build", "check": "astro check"}
+    )
+    seen = _stub_commands(
+        monkeypatch,
+        [
+            (0, "14 pages built"),
+            (1, "Cannot find module 'typescript'"),
+        ],
+    )
+    findings: dict[str, str] = {}
+
+    ran, ok, summary = pr._run_node_build(root, "astro", 300, None, findings=findings)
+
+    assert (ran, ok) == (True, False)
+    assert "type_check" not in findings
+    assert "Cannot find module" in summary
+    assert len(seen) == 2
 
 
 def test_omitting_findings_preserves_the_old_signature(tmp_path, monkeypatch):

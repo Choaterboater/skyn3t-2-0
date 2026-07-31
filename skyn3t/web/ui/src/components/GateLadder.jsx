@@ -1,7 +1,8 @@
 import React, { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
-import { latestBuildEvents } from "../buildSignals.js";
+import { gateHeatFromEvents } from "../gateHeat.js";
+import { streamStaleness } from "../streamSignals.js";
 import { Panel, PanelHead, Empty } from "./ui.jsx";
 
 // The signature of the Foundry: the VERIFY LADDER. skyn3t doesn't just emit
@@ -34,61 +35,13 @@ const FALLBACK = ["headless_gate", "liveness", "seo_check", "rag_check", "qa_pla
   (g) => ({ gate: g, enabled: true, stacks: [] })
 );
 
-// Read live heat off the event stream: which gate (if any) is running right now,
-// and which just cleared. Gate stages surface as events whose type/source name
-// the gate. Loose match by design — a resting ladder is the honest default.
+// Read live heat off the event stream (pure fold in gateHeat.js): which gate
+// is running right now, which just cleared, and — from the gate_findings
+// ledger on build.completed — which gate actually blocked a no_go verdict.
+const GATE_NAMES = Object.keys(GATE_META);
+
 function useGateHeat(events) {
-  return useMemo(() => {
-    const running = new Set();
-    const passed = new Set();
-    const failed = new Set();
-    let sealed = false;
-
-    for (const e of latestBuildEvents(events)) {
-      const payload = e.payload || {};
-      if (e.type === "build.completed") {
-        const verdict = String(payload.verdict || payload.status || "").toLowerCase();
-        sealed = ["go", "completed", "applied"].includes(verdict);
-      } else if (e.type === "build.failed") {
-        sealed = false;
-      }
-
-      const tag = [
-        e.type,
-        e.source,
-        payload.stage,
-        payload.gate,
-        payload.capability,
-      ].join(" ").toLowerCase();
-      for (const gate of Object.keys(GATE_META)) {
-        if (!tag.includes(gate)) continue;
-        const starting =
-          /(start|run|forg)/.test(tag) &&
-          !/(done|complete|pass|fail|ok|kept)/.test(tag);
-        const completing = /(done|complete|pass|fail|ok|kept)/.test(tag);
-        const status = String(payload.status || payload.verdict || "").toLowerCase();
-        const gateFailed =
-          payload.passed === false ||
-          ["failed", "no_go", "completed_no_go", "rejected"].includes(status);
-
-        if (starting) {
-          running.add(gate);
-          passed.delete(gate);
-          failed.delete(gate);
-        } else if (completing) {
-          running.delete(gate);
-          if (gateFailed) {
-            passed.delete(gate);
-            failed.add(gate);
-          } else {
-            failed.delete(gate);
-            passed.add(gate);
-          }
-        }
-      }
-    }
-    return { running, passed, failed, live: running.size > 0, sealed };
-  }, [events]);
+  return useMemo(() => gateHeatFromEvents(events, GATE_NAMES), [events]);
 }
 
 function stationState(gate, enabled, heat) {
@@ -132,6 +85,9 @@ export default function GateLadder({ stream }) {
   const events = stream?.events || [];
   const gatesQ = useQuery({ queryKey: ["gates"], queryFn: queryFn("/gates"), retry: 0 });
   const heat = useGateHeat(events);
+  // A dead stream keeps the frozen event buffer — the heat is stale, so stop
+  // the "live" animations (rail flow, forging pulse) instead of lying.
+  const { stale } = streamStaleness(stream?.status, stream?.lastFrameAt);
 
   const gates = useMemo(() => {
     const raw = Array.isArray(gatesQ.data?.gates) ? gatesQ.data.gates : null;
@@ -146,18 +102,29 @@ export default function GateLadder({ stream }) {
   const proven = gates.filter((g) => heat.passed.has(g.gate)).length;
   const failed = gates.filter((g) => heat.failed.has(g.gate)).length;
   const sealed = heat.sealed;
+  const blockedBy = heat.blockedBy;
+  const live = heat.live && !stale;
   const railCls =
     "forge-rail " +
-    (heat.live ? "is-live" : failed ? "is-failed" : sealed ? "is-proven" : "is-cold");
+    (live ? "is-live" : failed ? "is-failed" : sealed ? "is-proven" : "is-cold");
 
   return (
-    <Panel glow={heat.live} className="mb-6 overflow-hidden">
+    <Panel glow={live} className="mb-6 overflow-hidden">
       <PanelHead
         label="The Verify Ladder"
         right={
           <span className="font-mono text-[11px]">
             {forging ? (
               <span className="text-ember">forging · {forging} gate{forging > 1 ? "s" : ""} hot</span>
+            ) : blockedBy && !sealed ? (
+              // A no_go always names its blocker, even when the ledger gate
+              // has no station on the rail (proof, security, intent, ...).
+              <span
+                className="inline-block max-w-[24rem] truncate align-bottom text-ember"
+                title={`gate ${blockedBy.gate} failed${blockedBy.reason ? ` — ${blockedBy.reason}` : ""}`}
+              >
+                gate {blockedBy.gate} failed{blockedBy.reason ? ` — ${blockedBy.reason}` : ""}
+              </span>
             ) : failed ? (
               <span className="text-ember">{failed} gate{failed > 1 ? "s" : ""} failed</span>
             ) : sealed ? (
@@ -184,6 +151,10 @@ export default function GateLadder({ stream }) {
                 {gates.map((g, i) => {
                   const state = stationState(g.gate, g.enabled, heat);
                   const s = STATE_STYLES[state] || STATE_STYLES.armed;
+                  // Stale stream: a "forging" station must not keep pulsing.
+                  const nodeCls = stale
+                    ? s.node.replace(" animate-forgepulse", "")
+                    : s.node;
                   return (
                     <Column
                       key={g.gate}
@@ -191,7 +162,7 @@ export default function GateLadder({ stream }) {
                       proves={g.meta.proves}
                       glyph={state === "proven" ? "✓" : g.meta.glyph}
                       labelCls={s.label}
-                      nodeCls={s.node}
+                      nodeCls={nodeCls}
                       tagCls={s.tag}
                       name={g.gate}
                       index={i}

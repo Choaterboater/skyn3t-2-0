@@ -9,14 +9,40 @@ error and never raises. Import has zero side effects (httpx is imported lazily).
 from __future__ import annotations
 
 
+def resolve_github_token() -> str:
+    """Resolve the GitHub token every consumer should honor, "" when absent.
+
+    Single source of truth for the chain: ``SKYN3T_GITHUB_TOKEN`` (the
+    GUI-managed name) -> ``GITHUB_TOKEN`` -> ``GH_TOKEN`` ->
+    ``Settings.github_token`` (the .env-persisted value, which
+    pydantic-settings does NOT export to os.environ). Consumers that read
+    only the bare names silently lost the dashboard-configured token and
+    degraded to unauthenticated rate limits. Never raises.
+    """
+    import os
+
+    token = (
+        os.environ.get("SKYN3T_GITHUB_TOKEN")
+        or os.environ.get("GITHUB_TOKEN")
+        or os.environ.get("GH_TOKEN")
+    )
+    if token and token.strip():
+        return token.strip()
+    try:
+        from skyn3t.config.settings import get_settings
+
+        return str(getattr(get_settings(), "github_token", "") or "").strip()
+    except Exception:  # noqa: BLE001 - degrade, don't crash
+        return ""
+
+
 async def fetch_github_repo_text(url: str) -> str | None:
     """Fetch ``owner/repo`` description + README via the GitHub API, redacted.
 
-    Honors ``SKYN3T_GITHUB_TOKEN`` / ``GITHUB_TOKEN`` for higher rate limits and
-    private repos. Returns ``None`` for a non-GitHub URL, when httpx is missing,
-    or when the network is unavailable. Never raises.
+    Honors the full token chain (see ``resolve_github_token``) for higher rate
+    limits and private repos. Returns ``None`` for a non-GitHub URL, when httpx
+    is missing, or when the network is unavailable. Never raises.
     """
-    import os
     import re as _re
 
     try:
@@ -27,16 +53,7 @@ async def fetch_github_repo_text(url: str) -> str | None:
     if not m:
         return None
     owner, repo = m.group(1), m.group(2).removesuffix(".git")
-    token = os.environ.get("SKYN3T_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if not token:
-        # Fall back to the configured token (.env -> Settings.github_token), which
-        # is NOT exported to os.environ by pydantic-settings.
-        try:
-            from skyn3t.config.settings import get_settings
-
-            token = getattr(get_settings(), "github_token", "") or None
-        except Exception:  # noqa: BLE001
-            token = None
+    token = resolve_github_token() or None
     headers = {"Accept": "application/vnd.github+json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"

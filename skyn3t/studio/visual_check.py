@@ -21,12 +21,16 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+import structlog
+
 from skyn3t.core.events import EventType
 from skyn3t.exec_paths import resolve_executable
 from skyn3t.security.secrets import filter_env
 from skyn3t.studio.layout_profiles import LayoutProfile, profile_from_payload
 
 VisionFn = Callable[[str, str], str]  # (image_path, prompt) -> raw model text
+
+log = structlog.get_logger(__name__)
 
 # Common "begin/continue play" affordance text — used by _dom_start_click for
 # accessibility-tree/DOM matching BEFORE any vision call is attempted.
@@ -476,18 +480,41 @@ def _vision_messages(data_url: str, prompt: str) -> list[dict[str, Any]]:
 
 def _make_openrouter_vision_fn(settings: Any) -> VisionFn | None:
     """Build a vision_fn that judges a screenshot via OpenRouter, or None when no key
-    is configured."""
-    from skyn3t.adapters.llm import openrouter_key
+    is configured — or when ``free_only`` is set with no ``vision_model``
+    configured. This mirrors the adapter's cost guard (``LLMClient._resolve_vision``):
+    configuring ``vision_model`` at all IS the explicit spend opt-in for image
+    calls; the paid built-in default is never billed silently under the hard
+    cost guard. Every caller already treats a None vision_fn as a soft-skip."""
+    from skyn3t.adapters.llm import _is_free_model_id, openrouter_key
 
     key = openrouter_key(settings)
     if not key:
         return None
-    model = str(getattr(settings, "vision_model", "") or "") or _DEFAULT_VISION_MODEL
+    model = str(getattr(settings, "vision_model", "") or "").strip()
+    free_only = bool(getattr(settings, "free_only", False))
+    if not model:
+        if free_only:
+            # Don't silently bill the paid default (mirror of the adapter's
+            # "llm.vision_skipped_free_only"): log the skip loudly so the
+            # operator knows to set vision_model as the explicit opt-in.
+            log.info(
+                "vision.skipped_free_only",
+                reason="free_only with no vision_model configured",
+                default_model=_DEFAULT_VISION_MODEL,
+            )
+            return None
+        model = _DEFAULT_VISION_MODEL
+    paid_under_free_only = free_only and not _is_free_model_id(model)
 
     def _vision_fn(image_path: str, prompt: str) -> str:
         import httpx
 
         from skyn3t.adapters.llm import OPENROUTER_URL
+        if paid_under_free_only:
+            # DELIBERATE exception to free_only (mirror of the adapter's
+            # "llm.vision_paid_under_free_only"): an explicitly configured
+            # vision_model is the spend opt-in; keep the spend visible per call.
+            log.warning("vision.paid_under_free_only", model=model)
         body = {"model": model,
                 "messages": _vision_messages(_image_data_url(image_path), prompt),
                 "max_tokens": 700}
@@ -547,23 +574,41 @@ def _explicit_vision_backend(settings: Any) -> str:
     """Return the only backend allowed to judge screenshots for this run.
 
     Liveness, self-heal, game checks, and click grounding all call this module.
-    They must respect the same explicit provider selection as code generation:
-    ``auto`` is Codex-only and currently has no supported image-input adapter, so it
-    soft-skips rather than falling through to OpenRouter, Claude, or Kimi.
+    They must respect the same provider RESOLUTION as code generation: an
+    explicit ``openrouter``/``claude_cli``/``kimi_cli`` selection is honored
+    directly, and ``auto`` mirrors ``LLMClient._resolve_backend``'s auto arm —
+    the first available CLI in ``auto_cli_priority`` judges screenshots iff it
+    has an image adapter (claude/kimi). When auto resolves to a CLI without
+    one (codex/copilot), vision soft-skips rather than skipping past to a
+    provider codegen did not select. OpenRouter under ``auto`` requires the
+    same explicit ``auto_allow_openrouter`` opt-in as codegen: a dormant key
+    alone is configuration, not consent to spend.
     """
     backend = str(getattr(settings, "llm_backend", "auto") or "auto").strip().lower()
-    if backend == "openrouter":
+    if backend in {"openrouter", "claude_cli", "kimi_cli"}:
         return backend
-    if backend in {"claude_cli", "kimi_cli"}:
-        return backend
+    if backend != "auto":
+        return ""
+    # Local import (same no-cycle pattern as `_no_mcp_args` above). The
+    # availability probe goes through LLMClient's cached classmethod — never
+    # raw shutil.which — so the resolution here can't disagree with the
+    # dispatch layer's, and the suite's CLI fence keeps governing it.
+    from skyn3t.adapters.llm import LLMClient, _auto_priority_order, openrouter_key
+
+    for provider in _auto_priority_order(settings):
+        if LLMClient._cli_available(provider):
+            return f"{provider}_cli" if provider in {"claude", "kimi"} else ""
+    if bool(getattr(settings, "auto_allow_openrouter", False)) and openrouter_key(settings):
+        return "openrouter"
     return ""
 
 
 def make_vision_fn(settings: Any) -> VisionFn | None:
     """Build a vision_fn that judges a screenshot (true/false + free-text issues), or
-    None when the selected backend has no supported image adapter (the loop then soft-
-    skips). OpenRouter is allowed only when it is the explicitly selected backend;
-    automatic builds never activate it from a dormant credential."""
+    None when the resolved backend has no supported image adapter (the loop then soft-
+    skips). ``auto`` follows codegen's resolution (a winning claude/kimi CLI judges;
+    codex/copilot soft-skip); OpenRouter needs an explicit selection or the
+    ``auto_allow_openrouter`` opt-in — never just a dormant credential."""
     backend = _explicit_vision_backend(settings)
     if backend == "openrouter":
         return _make_openrouter_vision_fn(settings)
@@ -574,9 +619,10 @@ def make_vision_fn(settings: Any) -> VisionFn | None:
 
 def make_click_vision_fn(settings: Any) -> VisionFn | None:
     """Build a vision_fn for PIXEL-GROUNDING tasks (locating a click target on a
-    screenshot). It follows the same explicit routing policy as ``make_vision_fn``:
-    a selected Claude/Kimi CLI can inspect files, a selected OpenRouter backend can use
-    its vision model, and auto never activates either as an implicit fallback."""
+    screenshot). It follows the same routing policy as ``make_vision_fn``: a selected
+    (or auto-resolved) Claude/Kimi CLI can inspect files, a selected OpenRouter
+    backend can use its vision model, and ``auto`` activates OpenRouter only under
+    the explicit ``auto_allow_openrouter`` opt-in — never from a dormant key."""
     backend = _explicit_vision_backend(settings)
     if backend == "openrouter":
         return _make_openrouter_vision_fn(settings)

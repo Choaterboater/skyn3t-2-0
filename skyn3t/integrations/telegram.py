@@ -6,8 +6,10 @@ no-op instead of crashing (design rule #6).
 
 Outbound ``send`` falls back to a dependency-free raw HTTPS call (urllib) when
 the SDK is missing but a token is present, so reporting still works in lean
-environments. Inbound messages are normalized and routed through the shared
-``Channel.route_inbound`` brief/approval flow.
+environments. Inbound messages are normalized, dropped unless their chat id is
+allow-listed (``TELEGRAM_ALLOWED_CHAT_IDS``, falling back to the outbound
+``TELEGRAM_CHAT_ID`` target; ``SKYN3T_``-prefixed variants win), and routed
+through the shared ``Channel.route_inbound`` brief/approval flow.
 """
 
 from __future__ import annotations
@@ -45,6 +47,17 @@ class TelegramChannel(Channel):
     ) -> None:
         super().__init__(event_bus=event_bus, submit_fn=submit_fn, config=config)
         self.token = (self.config.get("token") or env_token("TELEGRAM_BOT_TOKEN"))
+        # Inbound gate: only these chat ids may drive the brief/approve flow.
+        # Comma-separated, falling back to the outbound notify chat. Empty means
+        # inbound is refused entirely (fail closed) — getUpdates delivers
+        # messages from ANY chat that can see the bot.
+        raw = self.config.get("allowed_chat_ids") or env_token(
+            "TELEGRAM_ALLOWED_CHAT_IDS", "TELEGRAM_CHAT_ID"
+        )
+        parts = raw.split(",") if isinstance(raw, str) else list(raw or ())
+        self.allowed_chat_ids: frozenset[str] = frozenset(
+            s for s in (str(p).strip() for p in parts) if s
+        )
         self._bot = None
         if self.token and _HAS_TELEGRAM:
             try:
@@ -59,6 +72,11 @@ class TelegramChannel(Channel):
     async def handle_inbound(self, msg: InboundMessage) -> dict[str, Any]:
         if not self.is_available():
             return {"action": "disabled", "channel": self.name}
+        # Anyone who finds the bot username (or any channel the bot is added
+        # to) can send updates; unlisted chats must never reach route_inbound,
+        # which runs real builds and flips proposal decisions.
+        if msg.target not in self.allowed_chat_ids:
+            return {"action": "unauthorized", "channel": self.name, "chat": msg.target}
         return await self.route_inbound(msg)
 
     @staticmethod

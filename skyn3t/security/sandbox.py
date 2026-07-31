@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import signal
 import subprocess
 import uuid
 import warnings
@@ -234,6 +235,14 @@ class SandboxRunner:
 
     # ---- subprocess (hardened local) ------------------------------------
     async def _run_subprocess(self, command, *, cwd, timeout, env, network: bool = False) -> SandboxResult:
+        if isinstance(command, str):
+            # A str here would run through HOST `sh -lc` — a shell-injection
+            # footgun outside the container boundary. Only the docker backend
+            # may wrap strings in a shell; this backend requires argv lists.
+            raise TypeError(
+                "SandboxRunner subprocess backend does not accept str commands; "
+                "pass an argv list (e.g. ['echo', 'hi'])."
+            )
         warning = (
             "SANDBOX FALLBACK: Docker unavailable; running command in a HARDENED "
             "LOCAL SUBPROCESS on the host. This is NOT fully isolated. Install "
@@ -258,10 +267,7 @@ class SandboxRunner:
         else:
             _FALLBACK_LOGGED.add(warning)
             log.warning("sandbox.fallback.subprocess", message=warning)
-        if isinstance(command, str):
-            argv = ["sh", "-lc", command]
-        else:
-            argv = list(command)
+        argv = list(command)
         # Minimal, scrubbed env. Force a temp HOME so commands can't read host dotfiles.
         safe_env = dict(env or {})
         safe_env.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
@@ -291,6 +297,10 @@ class SandboxRunner:
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own process group on POSIX so the timeout tree-kill (killpg
+                # below) can't take skyn3t's own group down with it. The kwarg
+                # is accepted-and-ignored on Windows; the guard documents intent.
+                start_new_session=(os.name != "nt"),
             )
         except (FileNotFoundError, OSError) as exc:
             return SandboxResult(
@@ -302,12 +312,39 @@ class SandboxRunner:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
             timed_out = True
+            # Kill the WHOLE tree before the root. On Windows npm.cmd runs
+            # under cmd.exe: proc.kill() terminates only that shell while the
+            # node grandchildren inherit the stdout/stderr pipes, and an
+            # unbounded communicate() then blocks until every grandchild exits
+            # (a stalled install or a watcher = forever) — hanging the entire
+            # proof and leaving orphans that keep node_modules locked for the
+            # NEXT build. taskkill /T must enumerate the tree while the root
+            # is still alive, so it runs first; proc.kill() stays as backstop.
+            if os.name == "nt":
+                try:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
+                except (OSError, subprocess.SubprocessError):  # pragma: no cover
+                    pass
+            else:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             try:
-                out, err = await proc.communicate()
+                # Bound the drain: any survivor of the tree-kill still holding
+                # the pipes must not block the build forever.
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=10)
             except Exception:  # noqa: BLE001
                 out, err = b"", b"timeout"
         stdout = scrub_text((out or b"").decode("utf-8", "replace"), self.secrets)

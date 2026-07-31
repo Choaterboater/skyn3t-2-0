@@ -40,8 +40,8 @@ class _RecordingClient:
     async def __aexit__(self, *_args):
         return False
 
-    async def post(self, _url, json=None, headers=None):
-        del headers
+    async def post(self, _url, json=None, headers=None, timeout=None):
+        del headers, timeout
         self.bodies.append(copy.deepcopy(json))
         index = len(self.bodies) - 1
         return _Response(self.turns[index])

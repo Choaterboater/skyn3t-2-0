@@ -60,15 +60,36 @@ def _hvac_tree(root: Path) -> None:
     )
 
 
-def test_hvac_initial_proof_security_and_liveness_gates_agree(tmp_path):
-    """The real selector is safe; the missing named export is the boot defect."""
+def test_hvac_initial_proof_security_and_liveness_gates_agree(tmp_path, monkeypatch):
+    """The real selector is safe; the missing named export is the boot defect.
+
+    Visual liveness is posture-routed through ``_gate_outcome`` now, so the
+    agreement is asserted through ``_run_liveness`` under release posture (the
+    posture the historical build ran with)."""
+    from types import SimpleNamespace
+
+    from skyn3t.studio import runner as runner_mod
+    from skyn3t.studio.liveness import LivenessOutcome, LivenessReport, RouteResult
+
     _hvac_tree(tmp_path)
 
     security = check_security(tmp_path, "static")
     proof = proof_run(tmp_path, stack="static_html", execution_backend="inline")
-    liveness_verdict, reason = StudioRunner._liveness_gate(
-        "go", "static_html", 0, [], False, ["/"]
-    )
+
+    async def fake_liveness(*_a, **_k):
+        return LivenessOutcome(passed=False, report=LivenessReport(
+            results=[RouteResult("/", "GET", 200, True, "page",
+                                 {"matches": False, "issues": ["blank page"]})],
+            total=1, ok=1, dead=0, dead_routes=[], health=1.0,
+            visual_total=1, visual_failed=1, visual_failed_routes=["/"],
+            visual_health=0.0))
+
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake_liveness)
+    runner = _runner(tmp_path, build_posture="release")
+    manifest = BuildManifest(slug="hvac", brief="a static HVAC website")
+    _score, liveness_verdict = asyncio.run(runner._run_liveness(
+        manifest, str(tmp_path), SimpleNamespace(stack="static_html"),
+        SimpleNamespace(passed=False), 80.0, "go"))
 
     assert security["ok"] is True and security["issues"] == []
     assert proof.passed is False
@@ -79,7 +100,7 @@ def test_hvac_initial_proof_security_and_liveness_gates_agree(tmp_path):
         "missing": ["bootstrap"],
     }]
     assert liveness_verdict == "no_go"
-    assert "visual liveness" in str(reason)
+    assert "visual liveness" in str(manifest.extra["liveness_gate"])
 
 
 def test_hvac_late_named_export_regression_is_caught_by_final_consistency(tmp_path):

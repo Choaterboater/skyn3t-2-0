@@ -157,6 +157,7 @@ def _no_real_llm_cli(monkeypatch):
     )
     monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {})
     monkeypatch.setattr(LLMClient, "_cli_version_cache", {})
+    monkeypatch.setattr(LLMClient, "_stub_degrade_logged", {})
     yield
 
 

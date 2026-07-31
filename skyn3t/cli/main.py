@@ -1787,7 +1787,13 @@ def studio_serve(
             console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
             raise typer.Exit(code=1)
         if app.status != "running":
-            console.print(f"[red]Failed to start[/red]: {app.detail.get('log_tail', '')[-400:]}")
+            # The supervisor always records WHY (detail["reason"]); the old
+            # message printed only log_tail, which is empty for pre-launch
+            # failures (docker missing, port conflicts) — a blank error.
+            reason = str(app.detail.get("reason") or "").strip()
+            tail = str(app.detail.get("log_tail") or "")[-400:].strip()
+            message = " — ".join(p for p in (reason, tail) if p) or str(app.detail)[:400]
+            console.print(f"[red]Failed to start[/red]: {message}")
             raise typer.Exit(code=2)
         console.print(
             f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] "

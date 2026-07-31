@@ -2137,6 +2137,19 @@ class LLMClient:
             getattr(self.settings, "openrouter_codegen_model", "") or ""
         ).strip()
 
+        if codegen_provider and requested_backend == "stub":
+            # Money fence, deeper than any bench/profile pin list: an
+            # EXPLICITLY selected stub backend means offline and free — no
+            # subscription CLI may be launched on its behalf by a codegen
+            # override. A ``--llm-backend stub`` golden bench was observed
+            # running real codex agentic builds because the operator's .env
+            # codegen pin survived into the attempt settings. (A backend that
+            # merely DEGRADED to stub keeps the pin: "stages offline, codegen
+            # on my signed-in CLI" is a legitimate configuration.)
+            log.warning("llm.codegen_override_ignored_stub_backend",
+                        provider=codegen_provider)
+            codegen_provider = ""
+
         if codegen_provider:
             requested_codegen_backend = f"{codegen_provider}_cli"
             effective_codegen_backend = (

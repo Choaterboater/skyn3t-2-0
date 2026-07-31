@@ -98,6 +98,34 @@ def test_settings_field_itself_defaults_to_lab(monkeypatch):
     assert GatePosture.from_settings(Settings()).posture == "lab"
 
 
+def test_game_quality_master_switch_outranks_lab_posture():
+    # game_quality_gates_verdict is DOCUMENTED as a hard no_go on a real,
+    # non-skipped visual/playtest failure ("the fix for a broken game still
+    # scored go"). Default lab posture must not silently neuter it — the
+    # switch forces blocking exactly like a blocking_gates entry. Skipped
+    # checks still never block: the runner's _game_quality_gate_ok short-
+    # circuits before blocks() is consulted.
+    on = GatePosture.from_settings(
+        Settings(build_posture="lab", game_quality_gates_verdict=True)
+    )
+    off = GatePosture.from_settings(
+        Settings(build_posture="lab", game_quality_gates_verdict=False)
+    )
+
+    assert on.blocks("game_quality") is True
+    assert off.blocks("game_quality") is False
+
+
+def test_game_quality_switch_absent_on_settings_fake_keeps_posture_default():
+    # The getattr compatibility floor: a settings-like object without the
+    # field must not gain forced blocking it never asked for.
+    posture = GatePosture.from_settings(
+        SimpleNamespace(build_posture="lab", blocking_gates="")
+    )
+
+    assert posture.blocks("game_quality") is False
+
+
 def test_gate_classification_sets_are_disjoint():
     assert not (_ALWAYS_BLOCKING & _RELEASE_ONLY)
 

@@ -206,12 +206,18 @@ class CandidateStatus(StrEnum):
     ERROR = "error"
 
 
+# STALE_BASE is deliberately NOT in this set: it is only ever assigned AFTER
+# every verification command and the candidate-integrity check passed, so it
+# always denotes a fully verified candidate whose base simply moved mid-verify.
+# Treating it as a failure made _finish delete the worktree and branch under
+# the production policy (preserve_failed_worktrees=False), leaving the verified
+# commit dangling. It now follows the READY retention path instead, so the
+# operator can rebase/merge manually from the preserved worktree.
 _FAILED_CANDIDATE_STATUSES = frozenset(
     {
         CandidateStatus.APPLY_FAILED,
         CandidateStatus.REJECTED_PATHS,
         CandidateStatus.VERIFY_FAILED,
-        CandidateStatus.STALE_BASE,
         CandidateStatus.MERGE_FAILED,
         CandidateStatus.ERROR,
     }

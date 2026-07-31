@@ -128,11 +128,25 @@ class HandlerRegistry:
                 observed[k] = v
             else:
                 unobserved.append(k)
+        # Make the change survive a restart: persist the allow-listed keys to
+        # settings_overrides.json (Settings reads it back on construction).
+        # ``durable`` is honest — True only when EVERY observed key persists;
+        # a non-durable APPLIED record must not dedupe-block a re-proposal
+        # forever (the enacted effect evaporates with the process).
+        durable = False
+        if observed and self.data_dir is not None:
+            from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING, persist_overrides
+
+            to_persist = {k: v for k, v in observed.items() if k in PERSISTABLE_TUNING}
+            if to_persist:
+                persist_overrides(self.data_dir, to_persist)  # never raises; merge-writes
+            durable = set(observed) <= PERSISTABLE_TUNING
         result: dict[str, Any] = {
             "applied": True,
             "changed": applied,
             "previous": before,
             "observed": observed,
+            "durable": durable,
         }
         if unobserved:
             result["unobserved"] = unobserved

@@ -420,6 +420,16 @@ def run_cortex_candidate(
             selected_client = LLMClient(settings=settings)
             selected_route = _candidate_route(settings, selected_client)
             _require_candidate_route(selected_route, selected_client)
+            # Fail fast BEFORE any authoring spend: the production verification
+            # runner (sandboxed_candidate_verification_runner) hard-requires
+            # macOS sandbox-exec, so on any other host the candidate would burn
+            # the full agentic_build cost and then deterministically fail the
+            # first verification gate. Mirrors the runner's own check exactly.
+            if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
+                raise RuntimeError(
+                    "secure Cortex verification is unavailable on this host: "
+                    "Cortex code candidates require macOS sandbox-exec"
+                )
             route.update(selected_route.trace())
         raw_merge_strategy = str(
             getattr(

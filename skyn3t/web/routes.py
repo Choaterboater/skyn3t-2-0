@@ -898,9 +898,11 @@ def _orchestration_extra(
 def _enforce_build_routing(state: AppState) -> None:
     """Reject unusable routes before an API request creates build state.
 
-    Dashboard ``auto`` builds are local Codex-only. A configured OpenRouter key
-    is never implicit consent to use it, so surface a missing Codex CLI before
-    queueing a build or allocating its ledger.
+    Dashboard ``auto`` builds run on a local CLI from the operator's
+    ``auto_cli_priority`` chain; hosted fallback needs the explicit
+    ``auto_allow_openrouter`` opt-in. A configured OpenRouter key is never
+    implicit consent to use it, so surface a missing executor before queueing
+    a build or allocating its ledger.
     """
     from skyn3t.adapters.llm import enforce_explicit_routing_lock
 
@@ -4945,6 +4947,7 @@ _DEPLOY_PROVIDER_FIELDS = {
     "cloudflare": "cloudflare_api_token",
     "netlify": "netlify_auth_token",
     "railway": "railway_token",
+    "render": "render_api_key",
 }
 
 _DEPLOY_PROVIDER_NATIVE_ENV = {
@@ -4953,14 +4956,20 @@ _DEPLOY_PROVIDER_NATIVE_ENV = {
     "cloudflare": "CLOUDFLARE_API_TOKEN",
     "netlify": "NETLIFY_AUTH_TOKEN",
     "railway": "RAILWAY_TOKEN",
+    "render": "RENDER_API_KEY",
 }
 
+# Mirrors DeployAgent._PROVIDER_CLIS — these three maps must list the same
+# providers Settings.deploy_tokens and DeployAgent support, or a provider
+# becomes unreachable from the GUI (render was missing from all three while
+# being fully supported downstream).
 _DEPLOY_PROVIDER_CLIS = {
     "fly": "flyctl",
     "vercel": "vercel",
     "cloudflare": "wrangler",
     "netlify": "netlify",
     "railway": "railway",
+    "render": "render",
 }
 
 
@@ -6225,8 +6234,10 @@ async def set_llm_routing(
     """Set model-routing controls used by future builds.
 
     Missing fields are left unchanged; explicit empty strings clear a
-    pin/override. Values are written to the live Settings object, process env,
-    and optionally .env.
+    pin/override. Values are always written to the live Settings object;
+    ``persist=True`` additionally writes process env and .env, while
+    ``persist=False`` stays scoped to the live object so the change cannot
+    survive a Settings() reconstruction.
     """
     import os
 
@@ -6251,6 +6262,12 @@ async def set_llm_routing(
             setattr(state.settings, field, value)
         except Exception:  # noqa: BLE001
             pass
+        # persist=False is DELIBERATELY env-free (pinned by
+        # test_set_llm_routing_persist_false_does_not_mutate_env): a
+        # non-persisted routing change is scoped to this AppState's live
+        # settings and must not survive a Settings() reconstruction via
+        # process env. Audit M22 flagged the old docstring, which promised
+        # env writes — the docs were wrong, not this gate.
         env_key = f"SKYN3T_{field.upper()}"
         if persist:
             if value:

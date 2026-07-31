@@ -62,6 +62,10 @@ _RELEASE_ONLY = frozenset(
         "checklist",
         "code_degraded",
         "critic",
+        # Release-only by CLASSIFICATION, but forced blocking in every posture
+        # while the game_quality_gates_verdict master switch is ON (see
+        # ``from_settings``) — that switch is documented as a hard no_go on a
+        # REAL, non-skipped visual/playtest failure.
         "game_quality",
         "generated_tests",
         "headless_gate",
@@ -124,6 +128,16 @@ class GatePosture:
             for part in str(getattr(settings, "blocking_gates", "") or "").split(",")
             if part.strip()
         )
+        # The documented game-quality master switch
+        # (``settings.game_quality_gates_verdict``, default ON) promises a hard
+        # no_go on a REAL visual/playtest failure. It must outrank the posture
+        # default, exactly like an entry in ``blocking_gates``. Skipped checks
+        # still never block: the runner's ``_game_quality_gate_ok`` returns
+        # ok=True for skipped/gates-off before ``blocks`` is ever consulted.
+        # ``getattr`` defaults to False so settings-like fakes without the
+        # field are untouched.
+        if bool(getattr(settings, "game_quality_gates_verdict", False)):
+            forced = forced | {"game_quality"}
         return cls(posture=posture, forced_blocking=forced)
 
     @property

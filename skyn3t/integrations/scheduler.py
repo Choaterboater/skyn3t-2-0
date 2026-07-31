@@ -134,7 +134,12 @@ def parse_nl_schedule(text: str) -> str | None:
 
 
 def _field_match(field: str, value: int, lo: int, hi: int) -> bool:
-    """Match one cron field (supports *, lists, ranges, step */n and a/n)."""
+    """Match one cron field (supports *, lists, ranges, step */n and a/n).
+
+    Malformed pieces ("1-", "x/2") never match and never raise: a ValueError
+    escaping here aborts tick() mid-scan, silently starving every job
+    registered after the bad one.
+    """
     if field == "*":
         return True
     for part in field.split(","):
@@ -146,19 +151,25 @@ def _field_match(field: str, value: int, lo: int, hi: int) -> bool:
                 continue
             if step <= 0:
                 continue
-            if base in ("*", ""):
-                start, end = lo, hi
-            elif "-" in base:
-                a, b = base.split("-", 1)
-                start, end = int(a), int(b)
-            else:
-                start, end = int(base), hi
+            try:
+                if base in ("*", ""):
+                    start, end = lo, hi
+                elif "-" in base:
+                    a, b = base.split("-", 1)
+                    start, end = int(a), int(b)
+                else:
+                    start, end = int(base), hi
+            except ValueError:
+                continue
             if start <= value <= end and (value - start) % step == 0:
                 return True
         elif "-" in part:
             a, b = part.split("-", 1)
-            if int(a) <= value <= int(b):
-                return True
+            try:
+                if int(a) <= value <= int(b):
+                    return True
+            except ValueError:
+                continue
         else:
             try:
                 if int(part) == value:
@@ -265,11 +276,14 @@ class CronScheduler:
         for job in list(self._jobs.values()):
             if not job.enabled or job.last_run_minute == minute_key:
                 continue
-            if cron_matches(job.cron, now):
-                job.last_run_minute = minute_key
-                job.runs += 1
-                fired.append(job.job_id)
-                await self._fire(job)
+            try:
+                if cron_matches(job.cron, now):
+                    job.last_run_minute = minute_key
+                    job.runs += 1
+                    fired.append(job.job_id)
+                    await self._fire(job)
+            except Exception:  # noqa: BLE001 - one bad job must not starve the rest
+                continue
         return fired
 
     async def _fire(self, job: ScheduledJob) -> None:

@@ -738,6 +738,43 @@ class DeployAgent(BaseAgent):
         except Exception:  # noqa: BLE001 - deploy must never crash the caller
             return False
 
+    def _deploy_check_enabled(self) -> bool:
+        """Whether an ok remote URL must pass live health verification before
+        it may become the manifest's active pointer. A config override wins
+        (for tests); otherwise the GUI Settings flag. Off by default."""
+        if "deploy_check_enabled" in self.config:
+            return bool(self.config.get("deploy_check_enabled"))
+        try:
+            from skyn3t.config.settings import get_settings
+            return bool(getattr(get_settings(), "deploy_check_enabled", False))
+        except Exception:  # noqa: BLE001 - deploy must never crash the caller
+            return False
+
+    async def _health_gated(self, result: dict[str, Any], stack: str) -> dict[str, Any]:
+        """Apply the enabled live-health gate to an ok provider result, matching
+        the CLI and web deploy surfaces: a provider command succeeding does not
+        make its URL the active release. A check that cannot run persists an
+        unverified attempt instead of raising."""
+        if not (result.get("ok") and result.get("url") and self._deploy_check_enabled()):
+            return result
+        from skyn3t.studio.deploy import apply_deploy_health_gate
+
+        try:
+            from skyn3t.studio.deploy_check import check_deploy
+
+            verdict = await check_deploy(str(result.get("url") or ""), stack)
+            deploy_check = verdict.to_dict()
+        except Exception as exc:  # noqa: BLE001 - persist an unverified attempt
+            deploy_check = {
+                "ok": False,
+                "skipped": True,
+                "issues": [],
+                "checked": {},
+                "reason": f"deploy check unavailable: {str(exc)[:160]}",
+                "gaps": [],
+            }
+        return apply_deploy_health_gate(result, deploy_check)
+
     def _provider_token(self, provider: str) -> str:
         """The GUI-configured token for a provider, or ''. A config override wins
         (tests inject without a Settings singleton); else read Settings. Never
@@ -1250,6 +1287,7 @@ class DeployAgent(BaseAgent):
             except Exception:  # noqa: BLE001 - content detection remains available
                 stack = ""
         from skyn3t.studio.deploy import (
+            apply_deploy_health_gate,
             deployment_quality_gate,
             plan_deploy,
             record_deployment,
@@ -1306,12 +1344,45 @@ class DeployAgent(BaseAgent):
             )
         selected = plan.targets[0]
         written = write_deploy_artifacts(plan, root) if plan.artifacts else []
-        result = await asyncio.to_thread(
-            self.deploy,
-            root,
-            target=selected,
-            plan=plan,
-        )
+        result: dict[str, Any] | None = None
+        try:
+            result = await asyncio.to_thread(
+                self.deploy,
+                root,
+                target=selected,
+                plan=plan,
+            )
+            result = await self._health_gated(result, stack)
+        except asyncio.CancelledError:
+            # The executor thread and its provider subprocess cannot be
+            # interrupted, so the remote deploy may still complete after this
+            # task dies. Persist the attempt (remote state unknown) instead of
+            # silently losing a real remote execution; an already-finished
+            # deploy cancelled before verification must never activate.
+            if result is None:
+                result = {
+                    "ok": False,
+                    "url": None,
+                    "provider": "",
+                    "target": selected,
+                    "status": "cancelled",
+                    "commands": [],
+                    "remote_deploy_attempted": True,
+                    "remote_deploy_performed": False,
+                    "remote_state": "unknown",
+                    "error": "deploy was cancelled while the provider command was running",
+                }
+            else:
+                result = apply_deploy_health_gate(result, {
+                    "ok": False,
+                    "skipped": True,
+                    "issues": [],
+                    "checked": {},
+                    "reason": "deploy check was cancelled before verification",
+                    "gaps": [],
+                })
+            record_deployment(root, result=result, plan=plan, target=selected)
+            raise
         result["plan"] = plan.to_dict()
         result["artifacts_written"] = written
         result["deployment"] = record_deployment(

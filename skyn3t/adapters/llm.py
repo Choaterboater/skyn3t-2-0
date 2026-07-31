@@ -58,7 +58,7 @@ import httpx
 import structlog
 
 from skyn3t.adapters.provider_limits import provider_slot, resolve_provider_limit
-from skyn3t.adapters.reasoning_timeouts import apply_reasoning_floor
+from skyn3t.adapters.reasoning_timeouts import apply_reasoning_floor, reasoning_timeout_floor
 from skyn3t.agents._common import confined_path
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.config.settings import Settings, get_settings
@@ -145,6 +145,45 @@ log = structlog.get_logger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# One keep-alive HTTP client per running event loop for the plain OpenRouter
+# completion path. ``_openrouter``'s per-attempt ``httpx.AsyncClient`` used to
+# pay a fresh SSLContext/CA-bundle construction (CPU on the event-loop thread)
+# plus a new TCP+TLS handshake to openrouter.ai on EVERY attempt — every retry,
+# every failover rung, and every one of a build's many small ``complete()``
+# calls. Keyed by running loop (the house pattern of
+# ``provider_limits._ADMISSIONS``) because a client binds to the loop that
+# first uses it and this repo calls ``asyncio.run()`` from the CLI and many
+# tests. Entries for closed loops are evicted WITHOUT ``aclose()`` — their
+# connections died with the loop; the pool is process-lifetime by design. The
+# agentic loop (``_openrouter_agentic``) already shares one client per session
+# and does not route through this cache.
+_OPENROUTER_CLIENTS: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+
+
+def reset_openrouter_clients() -> None:
+    """Drop every cached per-loop OpenRouter client. Test hook; mirrors
+    :func:`skyn3t.adapters.provider_limits.reset_provider_limits`."""
+    _OPENROUTER_CLIENTS.clear()
+
+
+def _shared_openrouter_client() -> httpx.AsyncClient:
+    """Return the current loop's shared keep-alive OpenRouter client.
+
+    Construction goes through the module attribute ``httpx.AsyncClient`` so
+    tests that monkeypatch ``llm.httpx.AsyncClient`` keep intercepting it. The
+    constructor timeout is only a safety net: every request passes its own
+    per-request ``timeout=`` (the httpx-supported override), which is how the
+    per-model reasoning floor keeps its exact semantics on a shared client.
+    """
+    loop = asyncio.get_running_loop()
+    for stale in [cached for cached in _OPENROUTER_CLIENTS if cached.is_closed()]:
+        _OPENROUTER_CLIENTS.pop(stale, None)
+    client = _OPENROUTER_CLIENTS.get(loop)
+    if client is None or getattr(client, "is_closed", False):
+        client = httpx.AsyncClient(timeout=120)
+        _OPENROUTER_CLIENTS[loop] = client
+    return client
+
 # Default vision-capable model when ``settings.vision_model`` is unset but an
 # image is attached. Cheap + widely available on OpenRouter — same default the
 # visual loop uses (skyn3t/studio/visual_check.py).
@@ -193,6 +232,66 @@ _CLI_PROMPT_FLAG: dict[str, str] = {
 # injected into the codegen prompt as if it were real guidance. Codex already
 # used stdin for the same reason (command-line length ceiling).
 _CLI_STDIN_PROMPT: frozenset[str] = frozenset({"codex", "claude"})
+# kimi and copilot CANNOT read the prompt from stdin: kimi's ``--prompt`` is a
+# commander option requiring an argv value (verified against the binary and
+# ``--help``), and copilot documents that piped stdin is IGNORED when ``-p``
+# is present (github/copilot-cli#1046 tracks stdin support). So when argv
+# cannot carry the prompt intact (see ``_argv_prompt_hazard``) the agentic
+# path hands it over via a transient FILE plus a short bootstrap prompt, and
+# the plain completion path — which cannot rely on file-read tools — fails
+# loudly instead of letting a silently truncated prompt count as success.
+_CLI_PROMPT_FILENAME = "skyn3t-agentic-prompt.md"
+
+
+# Characters cmd.exe re-interprets while re-parsing a .cmd/.bat shim's argv:
+# newlines terminate the command outright; the rest expand or redirect.
+_CMD_UNSAFE_CHARS = ("\n", "\r", "%", "^", "&", "|", "<", ">", '"')
+
+
+def _argv_prompt_hazard(command: str, text: str, *, os_name: str | None = None) -> str | None:
+    """Why ``text`` cannot safely travel as one argv element of ``command``.
+
+    Returns a reason string, or ``None`` when argv is safe. Three regimes:
+
+    - A Windows ``.cmd``/``.bat`` npm shim re-executes through cmd.exe, which
+      treats a newline as a command terminator, expands/redirects on
+      ``% ^ & | < > "``, and caps its command line at 8191 chars — a large or
+      metacharacter-bearing prompt is truncated or mangled SILENTLY and the
+      CLI answers the surviving fragment plausibly enough to count as success
+      (the exact failure ``_CLI_STDIN_PROMPT`` documents).
+    - A native Windows executable is bounded by the 32767-char CreateProcess
+      command-line ceiling (loud failure, but still a failure).
+    - POSIX allows ~128KB per element (Linux MAX_ARG_STRLEN).
+
+    Each threshold keeps headroom for the executable path and other flags.
+    ``os_name`` exists so tests can pin every regime on any platform.
+    """
+    platform = os_name if os_name is not None else os.name
+    if platform == "nt" and command.lower().endswith((".cmd", ".bat")):
+        if len(text) > 6_000 or any(ch in text for ch in _CMD_UNSAFE_CHARS):
+            return "cmd_shim_reparse"
+        return None
+    if platform == "nt":
+        return "createprocess_limit" if len(text) > 30_000 else None
+    return "posix_arg_strlen" if len(text) > 100_000 else None
+
+
+def _prompt_file_bootstrap(prompt_path: str) -> str:
+    """Single-line argv prompt pointing the agent at the real prompt file.
+
+    Deliberately newline-free: it must survive the same cmd.exe re-parse that
+    forced the real prompt off argv in the first place.
+    """
+    return (
+        f"Your complete build instructions are in the file {prompt_path} - "
+        "read that file now and carry out everything in it exactly as if its "
+        "contents had been given to you directly as this prompt. The file is "
+        "transient build scaffolding outside your output directory: never "
+        "copy it, reference it from generated code, or count it as part of "
+        "the app."
+    )
+
+
 KNOWN_CLI_PROVIDERS = ("codex", "claude", "copilot", "kimi")
 SUPPORTED_LLM_BACKENDS = (
     "auto", "stub", "openrouter",
@@ -220,6 +319,9 @@ _CLI_DISPLAY_NAMES = {
 }
 _CLI_VERSION_ARGS = {provider: ("--version",) for provider in KNOWN_CLI_PROVIDERS}
 _CLI_STATUS_TTL_SECONDS = 5.0
+# Minimum seconds between repeated "backend degraded to stub" warnings for the
+# same (preference, reason) pair — backend resolution is a hot path.
+_STUB_DEGRADE_LOG_INTERVAL_S = 300.0
 
 
 def _cli_subprocess_env() -> dict[str, str]:
@@ -342,7 +444,12 @@ _AGENTIC_SYSTEM_TAIL = (
     "the OpenAI SDK at https://openrouter.ai/api/v1 reading OPENROUTER_API_KEY."
 )
 # Stack -> body mapping. Keep these aligned with KNOWN_STACKS in skyn3t/agents/_common.py.
-_WEB_UI_STACKS = frozenset({"react_vite", "nextjs", "astro", "remix", "static_html"})
+# vue/sveltekit/react_ts are first-class KNOWN_STACKS web stacks; omitting them
+# here silently dropped the ENTIRE web-engineering prompt body from their builds.
+_WEB_UI_STACKS = frozenset({
+    "react_vite", "nextjs", "astro", "remix", "static_html",
+    "vue", "sveltekit", "react_ts",
+})
 _MOBILE_STACKS = frozenset({"react_native"})
 _DESKTOP_STACKS = frozenset({"tauri"})
 _API_STACKS = frozenset({"fastapi", "node_express"})
@@ -352,11 +459,31 @@ _CLI_STACKS = frozenset({"python_cli"})
 from skyn3t.core.stacks import GAME_STACKS as _GAME_STACKS  # noqa: E402
 
 
+def _resolved_agentic_idle_timeout(settings, total_timeout: float) -> float:
+    """One meaning for ``agentic_idle_timeout`` across BOTH agentic paths.
+
+    The documented convention (see the settings field): a positive value is
+    the inactivity window; 0 falls back to the TOTAL agentic budget as the
+    window. Negative values are clamped into the 0 case — previously a ``-5``
+    was truthy on the CLI path and instantly killed every build (the first
+    readline "timed out" immediately), while the OpenRouter path treated
+    0/negative as no watchdog at all, contradicting the docstring (audit M13).
+    """
+    try:
+        value = float(getattr(settings, "agentic_idle_timeout", 0) or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value > 0:
+        return value
+    return float(total_timeout)
+
+
 def _agentic_system_for(stack: str) -> str:
     """Compose the agentic codegen system prompt for ``stack``. SkyN3t builds every kind
     of app, so the body is stack-specific (web / game / mobile / desktop / api / cli)
     instead of the old hardcoded 'build a React marketing site' that derailed non-web
-    builds. An unknown/empty stack falls back to the web body (the react_vite default)."""
+    builds. An EMPTY stack falls back to the web body (the react_vite default); an
+    unrecognized stack gets only the core+tail so wrong-genre guidance can't derail it."""
     if stack in _GAME_STACKS:
         body = _AGENTIC_SYSTEM_GAME
     elif stack in _MOBILE_STACKS:
@@ -484,6 +611,29 @@ class RoutingLockError(ValueError):
     """An explicitly selected LLM route cannot be honored as configured."""
 
 
+def _auto_priority_order(settings: Any) -> tuple[str, ...]:
+    """``auto``'s CLI preference order, filtered to known providers.
+
+    Unknown entries are dropped with a warning rather than raising: a typo in
+    one entry must not take unattended builds offline. Narrow settings doubles
+    may omit the field entirely, so it is read defensively. Shared by
+    ``LLMClient._auto_cli_priority`` and the routing lock so preflight and
+    resolution can never disagree about which chain ``auto`` searches.
+    """
+    raw = str(getattr(settings, "auto_cli_priority", "") or "")
+    order: list[str] = []
+    for token in raw.split(","):
+        name = token.strip().lower().removesuffix("_cli").removesuffix("-cli")
+        if not name:
+            continue
+        if name not in _KNOWN_CLI_PROVIDERS:
+            log.warning("llm.auto_priority_unknown_provider", provider=name)
+            continue
+        if name not in order:
+            order.append(name)
+    return tuple(order) or _AUTO_EXECUTION_CLI_PRIORITY
+
+
 def explicit_routing_lock_error(
     settings: Any,
     *,
@@ -494,10 +644,12 @@ def explicit_routing_lock_error(
 
     Explicit selections are locks and must never be silently reinterpreted as
     a different provider. Callers that are about to start an unattended build
-    can also require the local Codex CLI for ``auto``; this turns a missing
-    executor into an upfront, zero-spend failure instead of a fake offline
-    scaffold. The CLI probe is injectable so callers and tests can validate
-    policy without running a model command.
+    can also require a usable ``auto`` executor — any CLI in the operator's
+    ``auto_cli_priority`` chain, or hosted OpenRouter only under the explicit
+    ``auto_allow_openrouter`` opt-in; this turns a missing executor into an
+    upfront, zero-spend failure instead of a fake offline scaffold. The CLI
+    probe is injectable so callers and tests can validate policy without
+    running a model command.
     """
     # Older narrow test doubles and third-party callers may provide only the
     # fields they need for one feature. They never explicitly opted into the
@@ -572,15 +724,25 @@ def explicit_routing_lock_error(
             )
 
     # An explicitly selected codegen provider is the tighter routing lock and
-    # is intentionally validated above. Only then apply the automatic Codex
+    # is intentionally validated above. Only then apply the automatic executor
     # requirement, and only when the settings object actually exposes an LLM
     # backend field (real Settings does; legacy minimal doubles may not).
     if require_codex_for_auto and has_explicit_backend and requested == "auto":
-        if not provider_available(_AUTO_EXECUTION_CLI_PROVIDER):
-            return (
-                "Automatic builds require Codex CLI on PATH; OpenRouter fallback "
-                "is disabled. Select a backend explicitly to use another provider."
-            )
+        # Mirror ``LLMClient._resolve_backend``: ``auto`` executes on the first
+        # available CLI in the operator's priority order, and a configured
+        # OpenRouter key is consent to spend only under the explicit opt-in.
+        order = _auto_priority_order(settings)
+        if not any(provider_available(provider) for provider in order):
+            hosted_ok = bool(
+                getattr(settings, "auto_allow_openrouter", False)
+            ) and bool(openrouter_key(settings))
+            if not hosted_ok:
+                return (
+                    "Automatic builds require one of these CLIs on PATH: "
+                    f"{', '.join(order)}. Hosted OpenRouter fallback requires "
+                    "the auto_allow_openrouter opt-in. Select a backend "
+                    "explicitly to use another provider."
+                )
     return ""
 
 
@@ -1098,10 +1260,10 @@ def _exclusive_ledger_lock(ledger_path: Path) -> Iterator[None]:
                 break
             candidate.close()
             if time.monotonic() >= deadline:
-                raise BudgetExceeded("timed out initializing the budget ledger lock")
+                raise BudgetLedgerError("timed out initializing the budget ledger lock")
             time.sleep(0.02)
     except OSError as exc:
-        raise BudgetExceeded(f"budget ledger lock unavailable: {exc}") from exc
+        raise BudgetLedgerError(f"budget ledger lock unavailable: {exc}") from exc
 
     locked = False
     assert handle is not None
@@ -1116,7 +1278,9 @@ def _exclusive_ledger_lock(ledger_path: Path) -> Iterator[None]:
                     locked = True
                 except OSError as exc:
                     if time.monotonic() >= deadline:
-                        raise BudgetExceeded("timed out waiting for the budget ledger lock") from exc
+                        raise BudgetLedgerError(
+                            "timed out waiting for the budget ledger lock"
+                        ) from exc
                     time.sleep(0.02)
         else:
             fcntl = importlib.import_module("fcntl")
@@ -1127,7 +1291,9 @@ def _exclusive_ledger_lock(ledger_path: Path) -> Iterator[None]:
                     locked = True
                 except BlockingIOError as exc:
                     if time.monotonic() >= deadline:
-                        raise BudgetExceeded("timed out waiting for the budget ledger lock") from exc
+                        raise BudgetLedgerError(
+                            "timed out waiting for the budget ledger lock"
+                        ) from exc
                     time.sleep(0.02)
         yield
     finally:
@@ -1150,6 +1316,11 @@ def _exclusive_ledger_lock(ledger_path: Path) -> Iterator[None]:
 @dataclass
 class BudgetTracker:
     """Hard backstop on spend, safe across tasks and local processes."""
+
+    # Unannotated on purpose (not a dataclass field): process-wide throttle
+    # stamp for the ledger-write-failure warning in _save_ledger.
+    _last_save_warn = -1e9
+
     per_build_cap: float
     daily_cap: float
     token_cap: int
@@ -1166,41 +1337,63 @@ class BudgetTracker:
 
     def record(self, r: LLMResult) -> None:
         with self._ledger_guard():
-            self._rollover_if_needed()
-            # Disk is authoritative inside the process-wide transaction. Using
-            # max(local, disk) here loses updates when two processes start with
-            # the same stale snapshot and then perform read-modify-write.
-            self._load_ledger()
-            self.spent_day += r.cost_usd
-            self.tokens_day += r.prompt_tokens + r.completion_tokens
-            state = _BUILD_BUDGET_STATE.get()
-            if state is None:
-                self.spent_build += r.cost_usd
-            else:
-                state.spent_usd += r.cost_usd
-                self.spent_build = state.spent_usd
-                if r.build_id is None:
-                    r.build_id = state.build_id
-            self.calls.append(r)
-            self._save_ledger()
+            self._record_locked(r)
+
+    def record_and_check(self, r: LLMResult) -> None:
+        """Record ``r`` and enforce caps in ONE cross-process transaction.
+
+        Semantically identical to ``record(r)`` followed by ``check()``:
+        after ``_save_ledger`` the ledger file equals memory, so check()'s
+        merge re-load would be a no-op. Fusing them matters because every
+        completion pays the ledger guard — a cross-process lock file plus a
+        JSON read/rewrite, and up to ``_LEDGER_LOCK_TIMEOUT_S`` under
+        contention — once here instead of twice.
+        """
+        with self._ledger_guard():
+            self._record_locked(r)
+            self._check_caps()
+
+    def _record_locked(self, r: LLMResult) -> None:
+        """Apply one result to the ledger. Callers hold ``_ledger_guard``."""
+        self._rollover_if_needed()
+        # Disk is authoritative inside the process-wide transaction. Using
+        # max(local, disk) here loses updates when two processes start with
+        # the same stale snapshot and then perform read-modify-write.
+        self._load_ledger()
+        self.spent_day += r.cost_usd
+        self.tokens_day += r.prompt_tokens + r.completion_tokens
+        state = _BUILD_BUDGET_STATE.get()
+        if state is None:
+            self.spent_build += r.cost_usd
+        else:
+            state.spent_usd += r.cost_usd
+            self.spent_build = state.spent_usd
+            if r.build_id is None:
+                r.build_id = state.build_id
+        self.calls.append(r)
+        self._save_ledger()
 
     def check(self) -> None:
         with self._ledger_guard():
             self._rollover_if_needed()
             self._load_ledger(merge=True)
-            spent_build = self.current_build_spend()
-            if self.per_build_cap > 0 and spent_build > self.per_build_cap:
-                raise BudgetExceeded(
-                    f"per-build cap ${self.per_build_cap} exceeded (${spent_build:.4f})"
-                )
-            if self.daily_cap > 0 and self.spent_day > self.daily_cap:
-                raise BudgetExceeded(
-                    f"daily cap ${self.daily_cap} exceeded (${self.spent_day:.4f})"
-                )
-            if self.token_cap > 0 and self.tokens_day > self.token_cap:
-                raise BudgetExceeded(
-                    f"daily token cap {self.token_cap} exceeded ({self.tokens_day})"
-                )
+            self._check_caps()
+
+    def _check_caps(self) -> None:
+        """Raise :class:`BudgetExceeded` when any configured cap is crossed."""
+        spent_build = self.current_build_spend()
+        if self.per_build_cap > 0 and spent_build > self.per_build_cap:
+            raise BudgetExceeded(
+                f"per-build cap ${self.per_build_cap} exceeded (${spent_build:.4f})"
+            )
+        if self.daily_cap > 0 and self.spent_day > self.daily_cap:
+            raise BudgetExceeded(
+                f"daily cap ${self.daily_cap} exceeded (${self.spent_day:.4f})"
+            )
+        if self.token_cap > 0 and self.tokens_day > self.token_cap:
+            raise BudgetExceeded(
+                f"daily token cap {self.token_cap} exceeded ({self.tokens_day})"
+            )
 
     def reset_build(self) -> None:
         # Scoped builds are started by CostTracker.begin_build. A private helper
@@ -1232,9 +1425,24 @@ class BudgetTracker:
         with _BUDGET_LEDGER_LOCK:
             if self.ledger_path is None:
                 yield
-            else:
-                with _exclusive_ledger_lock(self.ledger_path):
-                    yield
+                return
+            lock = _exclusive_ledger_lock(self.ledger_path)
+            try:
+                lock.__enter__()
+            except BudgetLedgerError as exc:
+                # Fail OPEN, loudly: cross-process cap enforcement degrades
+                # for this one operation (the in-process lock above still
+                # holds). Failing closed here used to surface as
+                # BudgetExceeded — the orchestrator classified the "timed
+                # out" text as transient, burned the whole task-retry budget,
+                # and reported the build as a spend-cap hit.
+                log.warning("llm.budget_ledger_unavailable", error=str(exc)[:160])
+                yield
+                return
+            try:
+                yield
+            finally:
+                lock.__exit__(None, None, None)
 
     def _load_ledger(self, *, merge: bool = False) -> None:
         if self.ledger_path is None:
@@ -1277,8 +1485,14 @@ class BudgetTracker:
                     "tokens_day": self.tokens_day,
                 }, sort_keys=True),
             )
-        except OSError:
-            pass
+        except OSError as exc:
+            # Cross-process daily-cap enforcement silently stopped here for
+            # quota/AV-file-lock failures; every other degrade path in this
+            # file logs. Throttled: record() calls this on every LLM result.
+            now = time.monotonic()
+            if now - BudgetTracker._last_save_warn >= 60.0:
+                BudgetTracker._last_save_warn = now
+                log.warning("llm.budget_ledger_write_failed", error=str(exc)[:160])
 
     def _rollover_if_needed(self) -> None:
         today = date.today().isoformat()
@@ -1297,7 +1511,18 @@ class BudgetTracker:
 
 
 class BudgetExceeded(RuntimeError):
-    pass
+    """A configured spend/token cap was genuinely hit. Nothing else may raise
+    this: callers (and the orchestrator's error classifier) treat it as a
+    spend-cap verdict, so infrastructure noise dressed in this type burned
+    task-retry budgets and misreported builds as over-budget."""
+
+
+class BudgetLedgerError(RuntimeError):
+    """The cross-process budget ledger (its lock file) is unavailable.
+
+    Deliberately NOT a ``BudgetExceeded``: a lock hiccup is infrastructure
+    noise, not a spend verdict. Handled inside ``BudgetTracker._ledger_guard``
+    (fail-open with a loud warning) so it never escapes to callers."""
 
 
 def _build_router(settings: Settings) -> ModelRouter:
@@ -1599,6 +1824,10 @@ class LLMClient:
     _cli_cache: dict[str, bool] = {}
     _cli_cache_checked_at: dict[str, float] = {}
     _cli_version_cache: dict[str, tuple[str, str]] = {}
+    # (preference, reason) -> monotonic time of the last degraded-to-stub
+    # warning; see _degraded_to_stub. Class-level like the CLI caches so the
+    # throttle holds across the many short-lived clients a build creates.
+    _stub_degrade_logged: dict[tuple[str, str], float] = {}
 
     @classmethod
     def _cli_executable(cls, provider: str) -> str:
@@ -1754,21 +1983,10 @@ class LLMClient:
     def _auto_cli_priority(self) -> tuple[str, ...]:
         """``auto``'s CLI preference order, filtered to known providers.
 
-        Unknown entries are dropped with a warning rather than raising: a typo in
-        one entry must not take unattended builds offline.
+        Delegates to the module-level helper so the routing lock searches the
+        exact same chain that resolution executes on.
         """
-        raw = str(getattr(self.settings, "auto_cli_priority", "") or "")
-        order: list[str] = []
-        for token in raw.split(","):
-            name = token.strip().lower().removesuffix("_cli").removesuffix("-cli")
-            if not name:
-                continue
-            if name not in _KNOWN_CLI_PROVIDERS:
-                log.warning("llm.auto_priority_unknown_provider", provider=name)
-                continue
-            if name not in order:
-                order.append(name)
-        return tuple(order) or _AUTO_EXECUTION_CLI_PRIORITY
+        return _auto_priority_order(self.settings)
 
     def _auto_cli_provider(self) -> str:
         """First signed-in CLI in priority order, or "" when none is available."""
@@ -1788,14 +2006,18 @@ class LLMClient:
         """
         pref = str(pref or "").strip().lower()
         if pref not in SUPPORTED_LLM_BACKENDS:
-            return "stub"
+            return self._degraded_to_stub(pref, "unsupported_backend")
         if pref == "stub":
             return "stub"
         if pref == "openrouter":
-            return "openrouter" if openrouter_key(self.settings) else "stub"
+            if openrouter_key(self.settings):
+                return "openrouter"
+            return self._degraded_to_stub(pref, "missing_key")
         if pref.endswith("_cli"):
             prov = pref[:-4]
-            return f"{prov}_cli" if self._cli_available(prov) else "stub"
+            if self._cli_available(prov):
+                return f"{prov}_cli"
+            return self._degraded_to_stub(pref, "cli_missing")
         # ``auto``: first signed-in CLI in the operator's priority order. This is
         # deliberately NOT Codex-only any more — Codex merely leads the default
         # list so existing hosts see no change. An OpenRouter key is still
@@ -1809,6 +2031,25 @@ class LLMClient:
             self.settings
         ):
             return "openrouter"
+        return self._degraded_to_stub(pref, "no_cli_available")
+
+    def _degraded_to_stub(self, pref: str, reason: str) -> str:
+        """Return ``"stub"``, warning that a REQUESTED backend was degraded.
+
+        A typo'd ``SKYN3T_LLM_BACKEND``, a missing OpenRouter key, or an
+        unknown ``provider_override`` used to reach the offline stub with no
+        log at resolve time — only ``backend_status()`` carried the reason,
+        so builds silently produced stub output. ``_resolve_backend`` runs on
+        every :attr:`backend` read (a hot path), so each distinct
+        (preference, reason) pair is reported at most once per throttle
+        window, not per read. The reason vocabulary mirrors
+        ``backend_status()``'s ``state`` field.
+        """
+        now = time.monotonic()
+        last = self._stub_degrade_logged.get((pref, reason))
+        if last is None or now - last >= _STUB_DEGRADE_LOG_INTERVAL_S:
+            self._stub_degrade_logged[(pref, reason)] = now
+            log.warning("llm.backend_degraded_to_stub", requested=pref, reason=reason)
         return "stub"
 
     @property
@@ -2046,8 +2287,12 @@ class LLMClient:
         ).strip().lower()
         active = self.backend
         openrouter_configured = bool(openrouter_key(self.settings))
+        # For ``auto`` the honest label is the head of the operator's priority
+        # order, not a hardcoded codex (auto executes on the first signed-in
+        # CLI in auto_cli_priority).
+        auto_priority = self._auto_cli_priority()
         preferred_cli = (
-            _AUTO_EXECUTION_CLI_PROVIDER
+            (auto_priority[0] if auto_priority else _AUTO_EXECUTION_CLI_PROVIDER)
             if pref == "auto"
             else (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
         )
@@ -2065,9 +2310,12 @@ class LLMClient:
             state = "cli_missing"
             reason = f"{pref[:-4]} CLI was selected but is not available on PATH."
         elif pref == "auto" and active == "stub":
-            state = "auto_codex_missing"
+            state = "auto_no_cli"
             reason = (
-                "Auto requires Codex CLI on PATH and never falls back to OpenRouter."
+                "Auto found none of the priority CLIs "
+                f"({', '.join(auto_priority) or 'codex, claude, kimi'}) signed in "
+                "on PATH. Hosted OpenRouter fallback requires the explicit "
+                "SKYN3T_AUTO_ALLOW_OPENROUTER opt-in plus a configured key."
             )
 
         codegen_provider = str(getattr(self.settings, "codegen_cli_provider", "") or "").strip().lower()
@@ -2242,27 +2490,58 @@ class LLMClient:
         Fallback candidates are resolved LAZILY (only once the primary misses) so the
         happy path never pays the router lookup. A ``fatal`` error short-circuits
         immediately; on total exhaustion the ORIGINAL (primary) error is re-raised —
-        so the caller sees the real root cause, not a downstream fallback's noise."""
+        so the caller sees the real root cause, not a downstream fallback's noise.
+
+        Three bounds keep a provider-wide outage from stacking into hours of
+        serialized attempts (retries x ~23 ranked fallbacks x 120-900s timeouts):
+        the lazy extend appends at most ``llm_max_fallbacks`` candidates (0 keeps
+        the unbounded ladder), non-primary candidates get at most ONE transient
+        retry (the transient budget belongs to the primary), and an optional
+        ``llm_call_deadline_seconds`` wall-clock deadline (0 = off) — checked only
+        BETWEEN attempts, never cancelling an in-flight request, so a 900s
+        reasoning-floor attempt is never truncated — re-raises the ORIGINAL error
+        once spent. Fallback resolution can hit the live catalog (blocking
+        urllib), so it runs off-loop via ``asyncio.to_thread``."""
+        settings = self._routing_settings()
         max_retries = self._retry_budget()
+        try:
+            limit = float(getattr(settings, "llm_call_deadline_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            limit = 0.0
+        deadline = (time.monotonic() + limit) if limit > 0 else 0.0
         first_exc: BaseException | None = None
         candidates = [primary]
         if self._model_unhealthy(primary):
-            fallbacks = self._healthy_fallback_models(primary, tier)
+            fallbacks = await asyncio.to_thread(
+                self._healthy_fallback_models, primary, tier
+            )
             if fallbacks:
                 log.info("llm.model_quarantine_skip",
                          model=primary,
                          to=fallbacks[0],
                          tier=getattr(tier, "value", str(tier)))
                 candidates = fallbacks
+        extended = False  # the lazy fallback resolve happens at most once
         ci = 0
         while ci < len(candidates):
+            if deadline and first_exc is not None and time.monotonic() >= deadline:
+                log.warning("llm.call_deadline_spent",
+                            limit_s=limit, candidates_tried=ci)
+                raise first_exc
             model = candidates[ci]
             model_exc: BaseException | None = None
-            for attempt in range(max_retries + 1):
+            # The transient-retry budget belongs to the PRIMARY; re-spending it
+            # on every rung of the ladder multiplies an outage's wall clock.
+            budget = max_retries if ci == 0 else min(max_retries, 1)
+            for attempt in range(budget + 1):
                 try:
                     return await attempt_fn(model)
                 except Exception as exc:  # noqa: BLE001 - classified for recovery
-                    self._record_failed_openrouter_attempt(
+                    # Ledger write (budget.record) — keep it off the loop; a
+                    # contended cross-process lock otherwise blocks every task
+                    # sharing this loop for the duration of the transaction.
+                    await asyncio.to_thread(
+                        self._record_failed_openrouter_attempt,
                         model,
                         exc,
                         prompt_tokens=prompt_tokens,
@@ -2274,17 +2553,39 @@ class LLMClient:
                     cat = classify_llm_error(exc)
                     if cat == "fatal":
                         raise
-                    if cat == "transient" and attempt < max_retries:
+                    if cat == "transient" and attempt < budget:
+                        if deadline and time.monotonic() >= deadline:
+                            log.warning("llm.call_deadline_spent",
+                                        limit_s=limit, candidates_tried=ci + 1)
+                            raise first_exc
                         log.info("llm.retry", model=model, attempt=attempt + 1,
                                  reason=_err_reason(exc))
                         await asyncio.sleep(self._retry_delay(attempt))
                         continue
                     break  # transient budget spent, or a model error -> try a fallback
-            # Resolve fallbacks lazily the first time the primary misses.
-            if ci == 0 and len(candidates) == 1:
-                candidates.extend(self._healthy_fallback_models(primary, tier))
+            # Resolve fallbacks lazily the first time a candidate misses, and
+            # never re-append a model already tried this call: with exactly
+            # one fallback the old extend re-added it, spending 2x(retries+1)
+            # paid attempts on the same dead model in a single call. The ladder
+            # is capped: past the first few healthy candidates the marginal
+            # success probability of an outage-wide walk is ~zero.
+            if ci + 1 >= len(candidates) and not extended:
+                extended = True
+                extra = [
+                    m for m in await asyncio.to_thread(
+                        self._healthy_fallback_models, primary, tier
+                    )
+                    if m not in candidates
+                ]
+                cap = max(0, int(getattr(settings, "llm_max_fallbacks", 4) or 0))
+                if cap:
+                    extra = extra[:cap]
+                candidates.extend(extra)
+            # Quarantine EVERY exhausted candidate — including the terminal
+            # one, which the old guard skipped, so a permanently broken final
+            # candidate burned its full retry budget on every subsequent call.
+            self._mark_model_unhealthy(model, model_exc or first_exc)
             if ci + 1 < len(candidates):
-                self._mark_model_unhealthy(model, model_exc or first_exc)
                 log.info("llm.model_failover",
                          **{"from": model, "to": candidates[ci + 1],
                             "tier": getattr(tier, "value", str(tier)),
@@ -2450,7 +2751,12 @@ class LLMClient:
         """
         # Refuse before dispatch when a persisted/shared counter is already over
         # cap. The post-record check still catches the call that crosses a cap.
-        self.budget.check()
+        # Off-loop: the ledger guard does synchronous cross-process file
+        # locking (up to _LEDGER_LOCK_TIMEOUT_S under contention) plus a JSON
+        # re-read; run on the loop thread it stalled every concurrent slice
+        # and stream watchdog. to_thread copies the contextvars context, so
+        # _BUILD_BUDGET_STATE still resolves to this build's shared state.
+        await asyncio.to_thread(self.budget.check)
         # Pass task_type so the LearnedModelRouter can serve per-task picks. It
         # was dead-wired (resolve(tier, file_hint) only) -> the learned router
         # always queried the empty task bucket and could never serve.
@@ -2464,7 +2770,12 @@ class LLMClient:
         # that speaks the multimodal message shape). stub/CLI ignore it and behave
         # exactly as today — degrade, don't crash (design rule #6).
         if backend == "openrouter":
-            model = self._resolve_pinned_model(
+            # Resolution may refresh the live catalog through blocking urllib —
+            # run it off-loop so an 8s+ fetch never freezes every concurrent
+            # slice/stream sharing this event loop. (to_thread copies the
+            # context, so the _ROUTING_* contextvars still apply.)
+            model = await asyncio.to_thread(
+                self._resolve_pinned_model,
                 tier=tier,
                 model_override=requested_override,
                 setting_names=("preferred_model",),
@@ -2513,8 +2824,11 @@ class LLMClient:
             result = self._stub(model, prompt, system, json_mode)
         tier_s = getattr(tier, "value", str(tier))
         self._record_completion(tier_s, task_type, result.model)
-        self.budget.record(result)
-        self.budget.check()
+        # One fused off-loop ledger transaction instead of record()+check() —
+        # each used to pay its own cross-process lock + JSON read/rewrite,
+        # synchronously on the event-loop thread, three transactions per
+        # completion in total (with the pre-dispatch check above).
+        await asyncio.to_thread(self.budget.record_and_check, result)
         return result
 
     def _resolve_vision(self, resolved: str, model_override: str | None) -> tuple[str, bool]:
@@ -2547,6 +2861,13 @@ class LLMClient:
             if no_claude and _is_claude(configured):
                 return resolved, False  # forbidden by policy -> drop the image
             if free_only and not _is_free(configured):
+                # DELIBERATE exception to free_only, not a cost-guard gap
+                # (audit finding M10 was rejected): configuring vision_model
+                # at all IS the explicit spend opt-in for image calls, because
+                # free_only is the DEFAULT posture and a vision call without a
+                # vision model silently drops the image instead. Pinned by
+                # test_openrouter_image_keeps_vision_model_under_free_only.
+                # The spend stays visible via this warning.
                 log.warning("llm.vision_paid_under_free_only", model=configured)
             return configured, True
         # No vision model configured.
@@ -2721,6 +3042,27 @@ class LLMClient:
         elif stdin_prompt:
             pass  # prompt goes over stdin; no positional argument
         else:
+            # kimi/copilot cannot read the prompt from stdin, and in print
+            # mode file-read tools are not guaranteed, so there is no safe
+            # alternate transport here. When argv cannot carry the prompt
+            # intact (cmd.exe shim re-parse / CreateProcess ceiling — see
+            # _argv_prompt_hazard) fail LOUDLY: a silently truncated prompt
+            # produces a plausible reply that counts as success, which is
+            # exactly how a mangled MoA advisor once poisoned codegen.
+            hazard = _argv_prompt_hazard(command, full)
+            if hazard:
+                log.warning("llm.cli_prompt_exceeds_argv_limit",
+                            provider=provider, reason=hazard,
+                            prompt_chars=len(full))
+                for tp in temp_images:
+                    try:
+                        os.unlink(tp)
+                    except OSError:
+                        pass
+                return self._failed_cli_fallback(
+                    provider, prompt, system, json_mode,
+                    status="failed_cli_prompt_too_large",
+                )
             # The prompt flag (when the provider has one) goes LAST, immediately
             # before the prompt, so nothing can be swallowed as its value.
             prompt_flag = _CLI_PROMPT_FLAG.get(provider)
@@ -3036,7 +3378,11 @@ class LLMClient:
         write_argument_bytes_compacted = 0
         cached_tokens = 0
         cache_write_tokens = 0
-        idle_timeout = float(getattr(self.settings, "agentic_idle_timeout", 0) or 0)
+        idle_timeout = _resolved_agentic_idle_timeout(
+            self.settings,
+            int(getattr(self.settings, "agentic_build_timeout", 0))
+            or (self.settings.cli_llm_timeout * 3),
+        )
         stub_nudges, _MAX_STUB_NUDGES = 0, 2
         verify_on_stop_enabled = (
             bool(getattr(self.settings, "agentic_verify_on_stop", True))
@@ -3089,6 +3435,22 @@ class LLMClient:
                         _wrote=wrote,
                         _sent_context_bytes=sent_context_bytes,
                     ):
+                        # A slow-thinking reasoning model can exceed the flat 180s
+                        # client timeout mid-think -> ReadTimeout -> classified
+                        # transient -> every retry burns identically (the exact
+                        # failure reasoning_timeouts was written for; the plain
+                        # path already floors at llm.py _openrouter). The floor
+                        # only ever RAISES the ceiling, and only for known slow
+                        # families — everything else keeps 180 exactly. The idle
+                        # watchdog is floored the same way, per-model, so it
+                        # cannot kill the very turn the request floor allows;
+                        # no-floor models keep the operator's window untouched.
+                        request_timeout = apply_reasoning_floor(180, m)
+                        floor = reasoning_timeout_floor(m)
+                        watchdog = (
+                            max(idle_timeout, float(floor)) if floor else idle_timeout
+                        )
+
                         async def _post():
                             nonlocal provider_requests, context_bytes_sent
                             nonlocal max_context_bytes_sent
@@ -3099,24 +3461,29 @@ class LLMClient:
                             )
                             body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
                                     "tool_choice": "auto", "session_id": session_id}
-                            resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                            resp = await client.post(
+                                OPENROUTER_URL,
+                                json=body,
+                                headers=headers,
+                                timeout=request_timeout,
+                            )
                             resp.raise_for_status()
                             return resp, m
 
                         if idle_timeout > 0:
                             try:
-                                return await asyncio.wait_for(_post(), timeout=idle_timeout)
+                                return await asyncio.wait_for(_post(), timeout=watchdog)
                             except TimeoutError as exc:
                                 nonlocal turn_timeouts, stall_reason
                                 turn_timeouts += 1
                                 stall_reason = (
-                                    f"OpenRouter agentic turn stalled after {idle_timeout:g}s"
+                                    f"OpenRouter agentic turn stalled after {watchdog:g}s"
                                 )
                                 log.warning(
                                     "llm.or_agentic_stalled",
                                     model=m,
                                     turn=_turn,
-                                    idle_s=idle_timeout,
+                                    idle_s=watchdog,
                                     wrote=_wrote,
                                 )
                                 raise _AgenticTurnStall(stall_reason) from exc
@@ -3129,7 +3496,12 @@ class LLMClient:
                         resp, model = await asyncio.wait_for(
                             self._resilient_call(
                                 model,
-                                Tier.CHEAP,
+                                # Fallbacks must come from the SAME quality class the
+                                # primary was resolved at (Tier.BACKEND codegen — see
+                                # agentic_build): Tier.CHEAP here imposed the hard
+                                # $1/M price gate + free ladder, pinning whole-app
+                                # codegen to a bargain model after one 404/stall.
+                                Tier.BACKEND,
                                 _do,
                                 prompt_tokens=max(
                                     1, sum(self._msg_bytes(item) for item in sent) // 4
@@ -3146,7 +3518,11 @@ class LLMClient:
                         loop_error = stall_reason or "agentic provider turn stalled"
                         break
                     except TimeoutError:
-                        self._record_failed_openrouter_attempt(
+                        # Off-loop for the same reason as _resilient_call's
+                        # failed-attempt accounting: the ledger transaction
+                        # must not block the event loop.
+                        await asyncio.to_thread(
+                            self._record_failed_openrouter_attempt,
                             model,
                             TimeoutError("agentic request exceeded its progress window"),
                             prompt_tokens=max(
@@ -3687,7 +4063,10 @@ class LLMClient:
             if backend == "openrouter" and bool(
                 getattr(self._routing_settings(), "openrouter_agentic", True)
             ):
-                m = self._resolve_pinned_model(
+                # Off-loop: the resolve can hit the live catalog via blocking
+                # urllib (see complete()).
+                m = await asyncio.to_thread(
+                    self._resolve_pinned_model,
                     tier=Tier.BACKEND,
                     model_override=model,
                     setting_names=("openrouter_codegen_model", "preferred_model"),
@@ -3753,6 +4132,56 @@ class LLMClient:
         # shim truncating it fails silently, returning a plausible short reply
         # that counts as a successful build.
         stdin_prompt = provider in _CLI_STDIN_PROMPT
+        # kimi/copilot cannot take stdin (see _CLI_PROMPT_FILENAME's comment),
+        # so when argv cannot carry the prompt intact it is handed over via a
+        # transient file in its own temp dir plus a newline-free bootstrap
+        # prompt on argv. Both CLIs run agentically here with file-read tools
+        # and get the temp dir allow-listed via --add-dir, so the handoff is
+        # reliable — and the file never touches the collected app workdir.
+        prompt_file = ""
+        prompt_file_args: list[str] = []
+        argv_prompt = prompt
+        if provider in ("kimi", "copilot") and _argv_prompt_hazard(cli_command, prompt):
+            try:
+                prompt_dir = tempfile.mkdtemp(prefix="skyn3t_agentic_prompt_")
+                candidate = os.path.join(prompt_dir, _CLI_PROMPT_FILENAME)
+                with open(candidate, "w", encoding="utf-8") as fh:
+                    fh.write(prompt)
+            except OSError as exc:
+                # Do NOT fall back to argv: a hazardous prompt on argv is the
+                # exact silent-truncation corruption this transport prevents.
+                # Fail the build loudly instead.
+                log.warning("llm.agentic_prompt_file_write_failed",
+                            provider=provider, error=str(exc)[:120])
+                self._record_failed_cli_attempt(
+                    provider, prompt, status="failed_cli_prompt_file"
+                )
+                return {
+                    "ok": False,
+                    "completed": False,
+                    "timed_out": False,
+                    "backend": f"{provider}_cli",
+                    "model": model or f"{provider}-cli",
+                    "account_source": "local_cli_session",
+                    "cost_source": "not_reported_by_cli",
+                    "cost_usd": None,
+                    "cli_execution": _new_cli_execution_evidence(
+                        provider,
+                        streamed=False,
+                        cli_version=self._cached_cli_version(provider),
+                    ),
+                    "error": (
+                        "could not stage the agentic prompt file: "
+                        f"{str(exc)[:120]}"
+                    ),
+                }
+            else:
+                prompt_file = candidate
+                prompt_file_args = ["--add-dir", prompt_dir]
+                argv_prompt = _prompt_file_bootstrap(prompt_file)
+                log.info("llm.agentic_prompt_via_file", provider=provider,
+                         prompt_chars=len(prompt),
+                         reason=_argv_prompt_hazard(cli_command, prompt))
         argv = {
             "claude": [cli_command, "-p", *([] if stdin_prompt else [prompt]),
                        "--permission-mode", "acceptEdits",
@@ -3766,10 +4195,12 @@ class LLMClient:
             # Kimi's noninteractive form is `-p/--prompt <text>`; it has no
             # `--print` flag (passing one exits nonzero with "unknown option"),
             # and no documented disable-all ambient-MCP flag.
-            "kimi": [cli_command, "--prompt", prompt, *model_args, *stream_args],
+            "kimi": [cli_command, "--prompt", argv_prompt, *model_args,
+                     *stream_args, *prompt_file_args],
             "copilot": [
-                cli_command, "-p", prompt, "--allow-all-tools", "--no-ask-user",
+                cli_command, "-p", argv_prompt, "--allow-all-tools", "--no-ask-user",
                 "--no-auto-update", "--no-custom-instructions", *model_args, *nm,
+                *prompt_file_args,
             ],
         }.get(provider, [cli_command, "-p", prompt])
         # This is deliberately a compact execution receipt, not a raw CLI log.
@@ -3813,9 +4244,8 @@ class LLMClient:
             # resets _consume_agentic_stream's idle wait, so productive full-app
             # builds may continue until their terminal result event.
             if stream:
-                idle_timeout = (
-                    int(getattr(self.settings, "agentic_idle_timeout", 0))
-                    or agentic_timeout
+                idle_timeout = int(
+                    _resolved_agentic_idle_timeout(self.settings, agentic_timeout)
                 )
                 ok = await self._consume_agentic_stream(proc, provider, idle_timeout)
                 observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
@@ -3930,6 +4360,14 @@ class LLMClient:
             }
         finally:
             _AGENTIC_STREAM_EVIDENCE.reset(stream_evidence_token)
+            if prompt_file:
+                # The transient prompt handoff (file + its private temp dir)
+                # must not outlive the invocation on any exit path.
+                try:
+                    os.unlink(prompt_file)
+                    os.rmdir(os.path.dirname(prompt_file))
+                except OSError:
+                    pass
         effective_model = model or f"{provider}-cli"
         self.budget.record(LLMResult(
             text="",
@@ -4200,11 +4638,17 @@ class LLMClient:
             # classified transient -> every retry burns the same way. The floor
             # only ever RAISES the ceiling, and only for known slow families.
             request_timeout = apply_reasoning_floor(120, m)
-            async with (
-                provider_slot("openrouter", resolve_provider_limit(self.settings, "openrouter")),
-                httpx.AsyncClient(timeout=request_timeout) as client,
+            async with provider_slot(
+                "openrouter", resolve_provider_limit(self.settings, "openrouter")
             ):
-                resp = await client.post(OPENROUTER_URL, json=body, headers=headers)
+                # Shared per-loop keep-alive client — no fresh TCP+TLS
+                # handshake per attempt. The reasoning floor rides the
+                # per-request ``timeout=`` override, keeping per-model
+                # semantics identical on the shared client.
+                client = _shared_openrouter_client()
+                resp = await client.post(
+                    OPENROUTER_URL, json=body, headers=headers, timeout=request_timeout
+                )
                 # HTTP errors (429/5xx retryable, 404/invalid-model -> failover)
                 # raise here; the resilience layer retries or fails over, and a
                 # persistent failure re-raises to the orchestrator's own retries.

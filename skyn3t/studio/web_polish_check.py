@@ -28,8 +28,9 @@ _CSS_LINK_RE = re.compile(
     r"<link\b(?=[^>]*\brel\s*=\s*['\"]stylesheet['\"])(?=[^>]*\bhref\s*=\s*['\"][^'\"]+\.css(?:[?#][^'\"]*)?['\"])[^>]*>",
     re.I,
 )
-# Decorative pictographs are a frequent signal of placeholder UI. Product builds
-# should use their icon system or meaningful imagery instead.
+# Decorative pictographs are a WEAK signal of placeholder UI: the range also
+# matches legitimate glyphs (star ratings, hamburger menus, card suits) and a
+# brief may explicitly ask for emoji. Advisory warning only \u2014 never blocking.
 _DECORATIVE_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u26FF]")
 
 
@@ -61,19 +62,29 @@ def check_web_polish(project_dir: str | Path, stack: str = "") -> dict[str, Any]
         if not checked:
             return {"ok": True, "skipped": True, "issues": [], "checked": []}
         text = "\n".join(corpus)
+        markup_text = "\n".join(markup)
         issues: list[str] = []
+        warnings: list[str] = []
         if not _HEADING_RE.search(text):
             issues.append("no primary heading or hero-scale title detected")
         if not _ACTION_RE.search(text):
             issues.append("no user action/link/form control detected")
         if not _STYLE_RE.search(text):
             issues.append("no meaningful styling/layout signal detected")
-        if _DECORATIVE_EMOJI_RE.search("\n".join(markup)):
-            issues.append("decorative emoji glyphs detected in UI source")
+        emoji_hits = _DECORATIVE_EMOJI_RE.findall(markup_text)
+        if emoji_hits:
+            warnings.append(
+                f"decorative emoji glyphs detected in UI source ({len(emoji_hits)})"
+            )
         if stylesheets:
-            markup_text = "\n".join(markup)
             if not (_CSS_IMPORT_RE.search(markup_text) or _CSS_LINK_RE.search(markup_text)):
                 issues.append("stylesheets exist but no CSS import or stylesheet link was found")
-        return {"ok": not issues, "skipped": False, "issues": issues, "checked": checked[:100]}
+        return {
+            "ok": not issues,
+            "skipped": False,
+            "issues": issues,
+            "warnings": warnings,
+            "checked": checked[:100],
+        }
     except Exception as exc:  # noqa: BLE001
         return {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}

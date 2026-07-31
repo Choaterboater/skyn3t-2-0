@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { appendEventBounded, mergeSeededEvents } from "./eventBuffer.js";
+
 // ---------------------------------------------------------------------------
 // Fetch wrapper for the SkyN3t control-plane API.
 // All endpoints are mounted under /api/* by the FastAPI app. The dashboard is
@@ -80,15 +82,19 @@ export async function apiPost(path, body) {
 
 // ---------------------------------------------------------------------------
 // WebSocket hook for the live event stream at /ws.
-// Returns { status, events, last, send } and auto-reconnects with backoff.
-// The server is expected to push JSON event frames matching skyn3t.core.events
-// Event.to_dict() — { type, source, payload, id, timestamp, correlation_id }.
+// Returns { status, events, last, lastFrameAt, send } and auto-reconnects with
+// backoff. The server is expected to push JSON event frames matching
+// skyn3t.core.events Event.to_dict() — { type, source, payload, id, timestamp,
+// correlation_id }. `lastFrameAt` is the wall-clock ms of the newest frame: a
+// disconnected stream keeps its frozen `events` buffer, so consumers need the
+// timestamp to label that data stale instead of presenting it as live.
 // ---------------------------------------------------------------------------
 
 export function useEventStream({ maxEvents = 200 } = {}) {
   const [status, setStatus] = useState("connecting");
   const [events, setEvents] = useState([]);
   const [last, setLast] = useState(null);
+  const [lastFrameAt, setLastFrameAt] = useState(null);
   const wsRef = useRef(null);
   const sendQueue = useRef([]);
   const [authRevision, setAuthRevision] = useState(0);
@@ -105,6 +111,25 @@ export function useEventStream({ maxEvents = 200 } = {}) {
       window.removeEventListener("storage", onStorage);
     };
   }, []);
+
+  // Seed the buffer from the durable trajectory so a dashboard opened (or
+  // refreshed) mid-build is not blind to everything older than the server's
+  // 50-frame websocket prime — without it the live cockpit loses the
+  // build.started frame carrying the real stage plan and slug. Merged, not
+  // assigned: primed/live WS frames can land before this fetch resolves.
+  // Best-effort — a failed fetch leaves the stream exactly as it was.
+  useEffect(() => {
+    let alive = true;
+    apiFetch(`/trajectory?limit=${maxEvents}`)
+      .then((data) => {
+        if (!alive) return;
+        setEvents((prev) => mergeSeededEvents(prev, data?.events, maxEvents));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [maxEvents, authRevision]);
 
   useEffect(() => {
     let closedByUser = false;
@@ -146,6 +171,7 @@ export function useEventStream({ maxEvents = 200 } = {}) {
 
       ws.onmessage = (msg) => {
         if (closedByUser || wsRef.current !== ws) return;
+        setLastFrameAt(Date.now());
         let evt;
         try {
           evt = JSON.parse(msg.data);
@@ -156,12 +182,9 @@ export function useEventStream({ maxEvents = 200 } = {}) {
         // the UI expects (e.type/e.payload/e.source/e.timestamp).
         if (evt && evt.event) evt = evt.event;
         setLast(evt);
-        setEvents((prev) => {
-          const next = [...prev, evt];
-          return next.length > maxEvents
-            ? next.slice(next.length - maxEvents)
-            : next;
-        });
+        // Dedup by event id: every reconnect re-primes the server's last 50
+        // frames, which used to append again as duplicate rows.
+        setEvents((prev) => appendEventBounded(prev, evt, maxEvents));
       };
 
       ws.onerror = () => {
@@ -207,5 +230,5 @@ export function useEventStream({ maxEvents = 200 } = {}) {
     }
   }
 
-  return { status, events, last, send };
+  return { status, events, last, lastFrameAt, send };
 }

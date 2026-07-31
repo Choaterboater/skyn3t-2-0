@@ -24,6 +24,7 @@ import {
   canReverifyLocally,
   describeLocalReverify,
 } from "../projectReverify.js";
+import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -969,6 +970,9 @@ export default function Projects({ stream }) {
       </Panel>
 
       <CleanupPanel qc={qc} />
+
+      {/* dead stream: the serve/improve columns replay a frozen event buffer */}
+      <StreamStaleBanner stream={stream} />
 
       <Panel className="overflow-hidden">
         <PanelHead

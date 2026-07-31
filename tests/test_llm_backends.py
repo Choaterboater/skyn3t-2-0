@@ -370,8 +370,16 @@ def test_unknown_backend_is_stubbed_without_executable_lookup(monkeypatch):
         raise AssertionError("unknown backend must not trigger a PATH lookup")
 
     monkeypatch.setattr(llm_mod.shutil, "which", _unexpected)
-    client = _client("arbitrary_cli", openrouter_api_key="sk-or-present", free_only=False)
-    assert client.backend == "stub"
+    # Settings now rejects an unknown llm_backend at construction (Literal),
+    # so an arbitrary preference can only arrive via provider_override — it
+    # resolves through _resolve_backend, which must stub WITHOUT a PATH probe.
+    import pytest as _pytest
+    from pydantic import ValidationError as _ValidationError
+
+    with _pytest.raises(_ValidationError):
+        _client("arbitrary_cli", openrouter_api_key="sk-or-present", free_only=False)
+    client = _client("stub", openrouter_api_key="sk-or-present", free_only=False)
+    assert client._resolve_backend("arbitrary_cli") == "stub"
     # Avoid probing allowlisted status rows; the routing assertion above is the
     # security contract under test.
     assert client._cli_available("arbitrary") is False

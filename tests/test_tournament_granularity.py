@@ -4,7 +4,15 @@ Before this, the runner recorded only the last route an agent took, so a code
 stage writing backend .py + a ui file fed only the last file's bucket — the
 `backend` bucket the router queries stayed empty. Now the LLMClient accumulates
 the routes of every completion, BaseAgent snapshots the ones a stage used, and
-_feed_tournament records each distinct bucket (with a single batched save).
+_feed_tournament buffers each distinct (bucket, model, task_type) tuple.
+
+Buffer + flush contract (tournament rewire): _feed_tournament records NOTHING —
+solo appearances used to be written as unconditional wins at stage time, which
+made the learned router's confidence vacuous (a model whose builds all ended
+no_go still had win_rate 1.0). Tuples are buffered per build and flushed at the
+build's settle points via _flush_tournament, graded by the terminal verdict:
+record_solo(won=True) only for a "go" build, won=False otherwise, with one
+batched save per build.
 """
 
 from __future__ import annotations
@@ -61,18 +69,90 @@ def _settings(tmp_path):
                     logs_dir=tmp_path / "l", critic_enabled=False)
 
 
-def test_feed_records_all_routes(tmp_path):
+def _runner(tmp_path):
     bus = EventBus()
-    runner = StudioRunner(bus, Orchestrator(bus), settings=_settings(tmp_path), memory=None)
-    result = TaskResult(
+    return StudioRunner(bus, Orchestrator(bus), settings=_settings(tmp_path), memory=None)
+
+
+def _two_route_result():
+    return TaskResult(
         task_id="t", success=True, model_id="m1",
         metadata={"routes": [("backend", "codegen", "m1"), ("ui", "codegen", "m2")]},
     )
-    spec = types.SimpleNamespace(agent_type="codegen", name="code")
-    runner._feed_tournament(spec, result)
-    buckets = set(ModelTournament(runner.settings.data_dir / "model_tournament.json").buckets())
-    assert "backend:codegen" in buckets
-    assert "ui:codegen" in buckets
+
+
+_SPEC = types.SimpleNamespace(agent_type="codegen", name="code")
+
+
+def _stat(settings, bucket, model):
+    t = ModelTournament(settings.data_dir / "model_tournament.json")
+    return {s.model: s for s in t.leaderboard(bucket)}[model]
+
+
+def test_feed_buffers_all_routes_without_recording(tmp_path):
+    runner = _runner(tmp_path)
+    runner._feed_tournament(_SPEC, _two_route_result(), "b1")
+    # Every distinct route is buffered for the build's settle-time flush...
+    assert set(runner._tournament_pending["b1"]) == {
+        ("backend:codegen", "m1", "codegen"),
+        ("ui:codegen", "m2", "codegen"),
+    }
+    # ...but NOTHING hits the tournament yet: a stage completing says nothing
+    # about whether the build shipped.
+    assert not (runner.settings.data_dir / "model_tournament.json").exists()
+
+
+def test_feed_dedupes_repeat_routes_across_stages(tmp_path):
+    runner = _runner(tmp_path)
+    runner._feed_tournament(_SPEC, _two_route_result(), "b1")
+    runner._feed_tournament(_SPEC, _two_route_result(), "b1")
+    assert len(runner._tournament_pending["b1"]) == 2
+
+
+def test_no_go_build_flushes_solos_as_losses(tmp_path):
+    runner = _runner(tmp_path)
+    runner._feed_tournament(_SPEC, _two_route_result(), "b1")
+    runner._flush_tournament("b1", won=False)
+    assert "b1" not in runner._tournament_pending  # buffer consumed
+    for bucket, model in (("backend:codegen", "m1"), ("ui:codegen", "m2")):
+        s = _stat(runner.settings, bucket, model)
+        assert (s.wins, s.losses, s.plays) == (0, 1, 1)
+        assert s.win_rate == 0.0
+
+
+def test_go_build_flushes_solos_as_wins(tmp_path):
+    runner = _runner(tmp_path)
+    runner._feed_tournament(_SPEC, _two_route_result(), "b1")
+    runner._flush_tournament("b1", won=True)
+    assert "b1" not in runner._tournament_pending
+    for bucket, model in (("backend:codegen", "m1"), ("ui:codegen", "m2")):
+        s = _stat(runner.settings, bucket, model)
+        assert (s.wins, s.losses, s.plays) == (1, 0, 1)
+        assert s.win_rate == 1.0
+
+
+def test_crashed_build_settles_buffered_solos_as_losses(tmp_path, monkeypatch):
+    """Settle-point wiring: a build that never reaches "go" (here: the generic
+    exception handler) flushes its buffered solos with won=False on disk."""
+    import skyn3t.studio.runner as runner_mod
+
+    runner = _runner(tmp_path)
+    runner._feed_tournament(_SPEC, _two_route_result(), "fixed-b1")
+
+    async def boom(**_kw):
+        raise RuntimeError("intelligence exploded")
+
+    monkeypatch.setattr(runner_mod, "prepare_build_intelligence", boom)
+    outcome = asyncio.run(runner._start_build(
+        "tiny python cli tool",
+        extra={"build_id": "fixed-b1", "build_profile": "balanced",
+               "app_type": "", "engine": ""},
+    ))
+    assert outcome.status == "failed"
+    assert outcome.verdict == "no_go"
+    assert "fixed-b1" not in runner._tournament_pending
+    s = _stat(runner.settings, "backend:codegen", "m1")
+    assert (s.wins, s.losses) == (0, 1)
 
 
 def test_record_win_save_false_defers_write(tmp_path):

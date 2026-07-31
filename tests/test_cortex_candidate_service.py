@@ -274,6 +274,100 @@ def test_non_codex_cli_candidate_is_rejected_before_worktree_creation(
     assert not (tmp_path / ".skyn3t-cortex-worktrees").exists()
 
 
+class _OpenRouterFakeClient:
+    """A Codex-eligible (OpenRouter) client whose authoring behaviour is set
+    per-test via ``agentic_build_impl`` — used to pin that the sandbox-host
+    fail-fast fires BEFORE authoring, and only on hosts where the production
+    verification runner would deterministically fail."""
+
+    backend = "openrouter"
+    agentic_build_impl = None
+
+    def __init__(self, *, settings):
+        self.settings = settings
+
+    def build_routing_snapshot(self):
+        return {
+            "requested_backend": "openrouter",
+            "effective_backend": "openrouter",
+            "codegen": {
+                "source": "global_backend",
+                "requested_backend": "openrouter",
+                "effective_backend": "openrouter",
+                "requested_model": "openai/gpt-5.1-codex",
+                "effective_model": "openai/gpt-5.1-codex",
+            },
+        }
+
+    async def agentic_build(self, *args, **kwargs):
+        return await type(self).agentic_build_impl(*args, **kwargs)
+
+
+def test_production_candidate_fails_fast_without_macos_sandbox(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """On a non-macOS host the production verification runner always returns
+    rc 126, so a production candidate must be rejected BEFORE the full
+    agentic_build spend — not after it, at the first verification gate."""
+    from skyn3t.cortex import candidate_service as service
+
+    repo = _repo(tmp_path)
+
+    async def must_not_author(*_args, **_kwargs):
+        raise AssertionError("authoring must not run without a usable sandbox")
+
+    monkeypatch.setattr(_OpenRouterFakeClient, "agentic_build_impl", must_not_author)
+    monkeypatch.setattr(
+        "skyn3t.cortex.candidate_service.LLMClient",
+        _OpenRouterFakeClient,
+    )
+    monkeypatch.setattr(service.sys, "platform", "linux")
+    monkeypatch.setattr(service.shutil, "which", lambda _name: None)
+    settings = _settings(tmp_path, llm_backend="openrouter")
+
+    with pytest.raises(RuntimeError, match="sandbox-exec"):
+        run_cortex_candidate(settings, "Improve the product editor", repo_path=repo)
+
+    assert not (tmp_path / "data" / "cortex" / "candidates").exists()
+    assert not (tmp_path / ".skyn3t-cortex-worktrees").exists()
+
+
+def test_production_candidate_authors_when_macos_sandbox_available(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The fail-fast mirrors the verification runner's own check exactly: with
+    darwin + sandbox-exec present, authoring is reached (never blocked on a
+    host where verification would work)."""
+    from skyn3t.cortex import candidate_service as service
+
+    repo = _repo(tmp_path)
+    called = {"authored": False}
+
+    async def author_then_stop(*_args, **_kwargs):
+        called["authored"] = True
+        return {"ok": False, "error": "stop after reaching authoring"}
+
+    monkeypatch.setattr(_OpenRouterFakeClient, "agentic_build_impl", author_then_stop)
+    monkeypatch.setattr(
+        "skyn3t.cortex.candidate_service.LLMClient",
+        _OpenRouterFakeClient,
+    )
+    monkeypatch.setattr(service.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        service.shutil,
+        "which",
+        lambda name: "/usr/bin/sandbox-exec" if name == "sandbox-exec" else None,
+    )
+    settings = _settings(tmp_path, llm_backend="openrouter", cortex_candidate_timeout=1800)
+
+    result = run_cortex_candidate(settings, "Improve the product editor", repo_path=repo)
+
+    assert called["authored"] is True
+    assert result["candidate"]["status"] == CandidateStatus.APPLY_FAILED
+
+
 def test_default_candidate_dependency_step_is_offline_and_disables_scripts() -> None:
     dependency = next(
         command

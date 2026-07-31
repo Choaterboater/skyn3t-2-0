@@ -3,6 +3,7 @@ import { latestBuildEvents } from "../buildSignals.js";
 import { apiFetch } from "../api.js";
 import {
   settleSliceRowsOnBuildTerminal,
+  settleStageRowsOnBuildTerminal,
   sliceTaskIdentity,
 } from "../agentSignals.js";
 
@@ -80,6 +81,10 @@ export function pipelineFromEvents(events, fallback = []) {
       planned = p.stages;
     }
     settleSliceRowsOnBuildTerminal(rec.values(), e);
+    // Terminal build events carry no stage name, so the name check below used
+    // to drop them and every mid-flight stage row pulsed "running" forever
+    // after a cancel/exception. Settle running stage rows here as well.
+    settleStageRowsOnBuildTerminal(rec.values(), e);
     const slice = sliceTaskIdentity(e);
     if (slice && (eventType.startsWith("task.") || eventType === "build.stage.artifact.snapshot")) {
       const r = ensure(slice.label);
@@ -249,7 +254,12 @@ export function PreviewPanel({ events }) {
 // cost, gaps, and wall-clock — all read from data the backend already emits.
 export function StageLedger({ events, fallback = [] }) {
   const rows = useMemo(() => pipelineFromEvents(events, fallback), [events, fallback]);
-  const active = rows.some((r) => r.state === "running" || r.state === "done");
+  // "failed" counts as activity: a build that dies during its first stage
+  // settles its only row to failed, and the ledger must show that error
+  // instead of collapsing to "No stage activity yet".
+  const active = rows.some(
+    (r) => r.state === "running" || r.state === "done" || r.state === "failed",
+  );
   if (!active) {
     return (
       <p className="px-4 py-3 font-mono text-[11px] text-ash/70">

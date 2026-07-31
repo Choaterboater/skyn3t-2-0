@@ -36,7 +36,7 @@ class _FakeClient:
     async def __aexit__(self, *a):
         return False
 
-    async def post(self, url, json=None, headers=None):
+    async def post(self, url, json=None, headers=None, timeout=None):
         if self.i >= len(self._turns):
             return _FakeResp({"choices": [{"message": {"content": "done"}}]})  # terminal: no tool calls
         p = self._turns[self.i]
@@ -51,9 +51,9 @@ class _DelayedClient(_FakeClient):
         super().__init__(turns)
         self.delay = delay
 
-    async def post(self, url, json=None, headers=None):
+    async def post(self, url, json=None, headers=None, timeout=None):
         await asyncio.sleep(self.delay)
-        return await super().post(url, json=json, headers=headers)
+        return await super().post(url, json=json, headers=headers, timeout=timeout)
 
 
 class _StallPrimaryThenFallbackClient:
@@ -69,7 +69,7 @@ class _StallPrimaryThenFallbackClient:
     async def __aexit__(self, *a):
         return False
 
-    async def post(self, url, json=None, headers=None):
+    async def post(self, url, json=None, headers=None, timeout=None):
         model = (json or {}).get("model", "")
         self.models.append(model)
         if model == "primary/slow":
@@ -862,3 +862,153 @@ def test_supports_agentic_openrouter_flag():
     off = LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x", openrouter_agentic=False))
     assert on.supports_agentic is True
     assert off.supports_agentic is False
+
+
+# ---------------------------------------------------------------------------
+# Failover tier + reasoning-timeout floors in the agentic loop.
+# ---------------------------------------------------------------------------
+class _RetiredPrimaryThenFallbackClient:
+    """Primary model 404s (retired); the fallback then writes and finishes."""
+
+    def __init__(self):
+        self.models: list[str] = []
+        self.fallback_turn = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, json=None, headers=None, timeout=None):
+        import httpx
+
+        model = (json or {}).get("model", "")
+        self.models.append(model)
+        if model == "primary/retired":
+            req = httpx.Request("POST", url)
+            resp = httpx.Response(404, request=req, text="model not found")
+            raise httpx.HTTPStatusError("404", request=req, response=resp)
+        self.fallback_turn += 1
+        if self.fallback_turn == 1:
+            return _FakeResp(_tool_turn(
+                "write_file", {"path": "a.txt", "content": "hi"},
+            ))
+        return _FakeResp(_tool_turn("finish", {}, "t2"))
+
+
+def test_agentic_failover_draws_fallbacks_from_backend_tier(tmp_path, monkeypatch):
+    """A mid-loop retired model must fail over WITHIN the BACKEND quality class
+    the codegen primary was resolved at — Tier.CHEAP here demoted whole-app
+    codegen to the bargain/free ladder and pinned it for the session."""
+    from skyn3t.core.model_router import Tier
+
+    fake = _RetiredPrimaryThenFallbackClient()
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+    client = LLMClient(Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        free_only=False,
+        llm_max_retries=0,
+        agentic_verify_on_stop=False,
+    ))
+    tiers: list = []
+
+    def _capture(primary, tier):
+        tiers.append(tier)
+        return ["fallback/fast"]
+
+    monkeypatch.setattr(client, "_healthy_fallback_models", _capture)
+
+    res = asyncio.run(client._openrouter_agentic(
+        "build", str(tmp_path), "primary/retired", stack="fastapi",
+    ))
+
+    assert res["ok"] is True
+    assert res["fallback_model"] == "fallback/fast"
+    assert tiers and all(t is Tier.BACKEND for t in tiers)
+
+
+class _TimeoutCapturingClient(_FakeClient):
+    """Records the per-request timeout each POST was issued with."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.timeouts: list = []
+
+    async def post(self, url, json=None, headers=None, timeout=None):
+        self.timeouts.append(timeout)
+        return await super().post(url, json=json, headers=headers, timeout=timeout)
+
+
+def test_agentic_request_timeout_floored_for_reasoning_models(tmp_path, monkeypatch):
+    """A slow-thinking family gets its reasoning floor per request instead of the
+    flat 180s that killed every turn mid-think (then burned each retry the same)."""
+    turns = [
+        _tool_turn("write_file", {"path": "a.txt", "content": "hi"}),
+        _tool_turn("finish", {}, "t2"),
+    ]
+    fake = _TimeoutCapturingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+    client = LLMClient(Settings(
+        llm_backend="openrouter", openrouter_api_key="x",
+        agentic_verify_on_stop=False,
+    ))
+
+    res = asyncio.run(client._openrouter_agentic(
+        "build", str(tmp_path), "moonshotai/kimi-k3-thinking", stack="fastapi",
+    ))
+
+    assert res["ok"] is True
+    assert fake.timeouts and all(t == 600 for t in fake.timeouts)
+
+
+def test_agentic_request_timeout_stays_180_for_fast_models(tmp_path, monkeypatch):
+    turns = [
+        _tool_turn("write_file", {"path": "a.txt", "content": "hi"}),
+        _tool_turn("finish", {}, "t2"),
+    ]
+    fake = _TimeoutCapturingClient(turns)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+    client = LLMClient(Settings(
+        llm_backend="openrouter", openrouter_api_key="x",
+        agentic_verify_on_stop=False,
+    ))
+
+    res = asyncio.run(client._openrouter_agentic(
+        "build", str(tmp_path), "deepseek/deepseek-v3.2", stack="fastapi",
+    ))
+
+    assert res["ok"] is True
+    assert fake.timeouts and all(t == 180 for t in fake.timeouts)
+
+
+def test_agentic_idle_watchdog_floored_for_reasoning_models(tmp_path, monkeypatch):
+    """The idle watchdog must not kill the very turn the request floor allows: a
+    floor-family model thinking past a small operator window is NOT a stall.
+    No-floor models keep the operator's window exactly (pinned elsewhere)."""
+    delayed = _DelayedClient(
+        [
+            _tool_turn("write_file", {"path": "a.txt", "content": "hi"}),
+            _tool_turn("finish", {}, "t2"),
+        ],
+        delay=0.05,
+    )
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: delayed)
+    client = LLMClient(Settings(
+        llm_backend="openrouter",
+        openrouter_api_key="x",
+        free_only=False,
+        llm_max_retries=0,
+        llm_fallback_enabled=False,
+        agentic_verify_on_stop=False,
+    ))
+    client.settings.agentic_idle_timeout = 0.01  # would stall a no-floor model
+
+    res = asyncio.run(client._openrouter_agentic(
+        "build", str(tmp_path), "moonshotai/kimi-k3", stack="fastapi",
+    ))
+
+    assert res["ok"] is True
+    assert res["turn_timeouts"] == 0
+    assert (tmp_path / "a.txt").read_text() == "hi"

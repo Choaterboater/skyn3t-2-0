@@ -67,6 +67,7 @@ from skyn3t.intelligence.learning_loop import (
 )
 from skyn3t.security.audit import AuditLog
 from skyn3t.security.permissions import PermissionManager, auto_approve_safe_fn
+from skyn3t.security.secrets import SecretsStore
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.acceptance_contract import (
     acceptance_contract_clones,
@@ -285,7 +286,13 @@ class StudioRunner:
         self.cost_tracker = cost_tracker  # observability.CostTracker | None
         self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
         self.rag = rag                    # rag.RagEngine | None — recall into prompts
-        self.audit_log = AuditLog(path=self.settings.logs_dir / "audit.jsonl")
+        # Without a SecretsStore the audit trail only gets regex scrubbing, so
+        # non-pattern secrets (deploy tokens, channel tokens) land verbatim in
+        # logs/audit.jsonl.
+        self.audit_log = AuditLog(
+            path=self.settings.logs_dir / "audit.jsonl",
+            secrets=SecretsStore(settings=self.settings),
+        )
         initial_lab_policy = LabAutonomyPolicy.from_settings(self.settings)
         if bool(self.settings.cortex_auto_approve_safe):
             self.permission_manager = PermissionManager(
@@ -314,15 +321,26 @@ class StudioRunner:
         # so real build traffic — not only the rarely-run debate path — builds the
         # leaderboard (closes swarm #16). Lazily built; never breaks a build.
         self._tournament: Any | None = None
+        # Per-build buffer of deduped (bucket, model, task_type) solo tuples.
+        # Stages BUFFER here; nothing is recorded until the build's verdict
+        # settles, at which point _flush_tournament grades every tuple by the
+        # terminal outcome (won iff the build ended "go"). Insertion-ordered
+        # dict keys double as the dedup set.
+        self._tournament_pending: dict[str, dict[tuple[str, str, str], None]] = {}
 
     # ---- model tournament feed (closes swarm #16) -----------------------
-    def _feed_tournament(self, spec: StageSpec, result: TaskResult) -> None:
-        """Record a stage's model into the tournament the router reads.
+    def _feed_tournament(self, spec: StageSpec, result: TaskResult,
+                         build_id: str) -> None:
+        """Buffer a stage's model routes for the tournament the router reads.
 
         Best-effort and import-light: any failure is swallowed so feeding the
-        learning loop can never break a build (design rule #6). Records a solo
-        appearance (the model produced a successful stage) into the same
-        ``(tier, task_type)`` bucket the ``LearnedModelRouter`` later queries.
+        learning loop can never break a build (design rule #6). Nothing is
+        recorded here: a stage completing says nothing about whether the build
+        shipped, and recording every solo appearance as a win made the learned
+        router's confidence vacuous (win_rate pinned at 1.0 regardless of
+        verdict). Deduped ``(bucket, model, task_type)`` tuples are buffered
+        per build and flushed by :meth:`_flush_tournament` at the build's
+        settle points, graded by the terminal verdict.
         """
         model = getattr(result, "model_id", None)
         model_id = str(model) if model else ""
@@ -335,16 +353,12 @@ class StudioRunner:
         try:
             from skyn3t.intelligence.model_tournament import ModelTournament
 
-            if self._tournament is None:
-                self._tournament = ModelTournament(
-                    self.settings.data_dir / "model_tournament.json"
-                )
-            # Prefer the full set of routes this stage used (one record per
-            # distinct tier×task_type bucket) so per-file tiers like 'backend'
+            pending = self._tournament_pending.setdefault(build_id, {})
+            # Prefer the full set of routes this stage used (one tuple per
+            # distinct tier×task_type×model) so per-file tiers like 'backend'
             # actually populate — not just the last file's bucket. Fall back to
             # the single route / agent-type bucket for agents that report neither.
             routes = meta.get("routes")
-            seen: set[str] = set()
             if routes:
                 for r in routes:
                     if not (isinstance(r, (list, tuple)) and len(r) == 3):
@@ -353,26 +367,42 @@ class StudioRunner:
                     if not rmodel:
                         continue
                     bucket = ModelTournament.bucket_key(tier, task_type)
-                    if bucket in seen:
-                        continue
-                    # Record before marking seen: if record_win raised, the bucket
-                    # must not be counted as persisted (keeps the batched save
-                    # consistent with what actually got recorded).
-                    self._tournament.record_win(
-                        bucket, rmodel, losers=[], task_type=task_type, save=False)
-                    seen.add(bucket)
+                    pending[(bucket, rmodel, task_type)] = None
             else:
                 route = meta.get("route")
                 if route and len(route) == 2:
                     tier, task_type = str(route[0]), str(route[1])
                 else:
                     tier, task_type = "", spec.agent_type
-                self._tournament.record_win(
-                    ModelTournament.bucket_key(tier, task_type), model_id,
-                    losers=[], task_type=task_type, save=False)
-                seen.add("_")
-            if seen:
-                self._tournament.save()  # one batched write per stage
+                bucket = ModelTournament.bucket_key(tier, task_type)
+                pending[(bucket, model_id, task_type)] = None
+        except Exception:  # noqa: BLE001 - learning feed must never break a build
+            pass
+
+    def _flush_tournament(self, build_id: str, *, won: bool) -> None:
+        """Flush the build's buffered solo appearances, graded by its verdict.
+
+        Called at the build's settle points (verdict settled, build rejected,
+        build crashed) with ``won=True`` only when the build ended ``go`` — so
+        solo evidence demotes models whose builds keep ending no_go instead of
+        auto-winning on stage success alone (:meth:`ModelTournament.record_solo`
+        semantics). One batched disk write per build. Best-effort: any failure
+        is swallowed so the learning feed can never break a build (rule #6).
+        """
+        pending = self._tournament_pending.pop(build_id, None)
+        if not pending:
+            return
+        try:
+            from skyn3t.intelligence.model_tournament import ModelTournament
+
+            if self._tournament is None:
+                self._tournament = ModelTournament(
+                    self.settings.data_dir / "model_tournament.json"
+                )
+            for bucket, model, task_type in pending:
+                self._tournament.record_solo(
+                    bucket, model, won=won, task_type=task_type, save=False)
+            self._tournament.save()  # one batched write per build
         except Exception:  # noqa: BLE001 - learning feed must never break a build
             pass
 
@@ -586,6 +616,17 @@ class StudioRunner:
             # this brief beats a higher-scored but off-topic one (Spec 2 semantic
             # retrieval, symmetric with _skill_advice). Degrades to score order.
             candidates = await self.memory.relevant_lessons(stack, stage=stage, limit=15)
+            # Exploration slots: blend in the newest never-injected lessons so
+            # a fresh actionable rule can enter injection -> grading -> score;
+            # the score-DESC fetch alone locks in entrenched incumbents
+            # (win-rate sweep, brain: brief-echo lessons dominate ranking).
+            recent_fn = getattr(self.memory, "recent_lessons", None)
+            if callable(recent_fn):
+                recent = await recent_fn(stack, stage=stage, limit=3)
+                seen_texts = {c.get("text") for c in candidates}
+                candidates.extend(
+                    r for r in (recent or []) if r.get("text") not in seen_texts
+                )
             if not brief or len(candidates) <= 5:
                 return candidates[:5]
             emb = self._skill_embedder()
@@ -861,10 +902,17 @@ class StudioRunner:
         if self.rag is None:
             return []
         try:
-            hits = self.rag.query(f"{stack} project: {brief}", top_k=5)
+            # Over-fetch, then drop experience-ledger stubs (marked
+            # {"experience": True} at ingest): they are build metadata, not
+            # patterns, and were being injected as "relevant patterns".
+            hits = self.rag.query(f"{stack} project: {brief}", top_k=10)
+            kept = [
+                h for h in (hits or [])
+                if not (getattr(h, "metadata", None) or {}).get("experience")
+            ][:5]
             return [
                 {"text": getattr(h, "text", str(h)), "score": getattr(h, "score", 0.0)}
-                for h in (hits or [])
+                for h in kept
             ]
         except Exception as exc:  # noqa: BLE001 - recall is best-effort
             log.warning("recall.failed", error=str(exc))
@@ -1321,26 +1369,23 @@ class StudioRunner:
 
     @staticmethod
     def _liveness_gate(verdict: str, stack: str, dead: int,
-                       dead_routes: list[str], broad_gate_on: bool,
-                       visual_failed_routes: list[str] | None = None) -> tuple[str, str | None]:
+                       dead_routes: list[str], broad_gate_on: bool) -> tuple[str, str | None]:
         """Decide the post-liveness verdict from real route health.
 
         Always-on (conservative): a UI web app whose ROOT '/' is dead after
         repair does not serve a homepage — an unambiguous failed delivery. This
         is scoped to UI stacks and the root only, so a 405/POST-only/SPA
         sub-route never falsely fails a working app. The broad "any dead route"
-        gate stays opt-in via ``liveness_gates_verdict``."""
+        gate stays opt-in via ``liveness_gates_verdict``. Visual-liveness
+        failures (viewport heuristics / vision judgements) are NOT decided
+        here: they are posture-routed through ``_gate_outcome`` at the
+        ``_run_liveness`` call site, so lab posture records them without
+        blocking."""
         routes = dead_routes or []
         if broad_gate_on and dead > 0:
             return "no_go", f"{dead} route(s) dead: {', '.join(routes[:5])}"
         if stack in _UI_WEB_STACKS and "/" in routes:
             return "no_go", "root route '/' dead after repair — app does not serve a homepage"
-        visual_routes = visual_failed_routes or []
-        if stack in _UI_WEB_STACKS and visual_routes:
-            return "no_go", (
-                "rendered page(s) failed visual liveness after repair: "
-                f"{', '.join(visual_routes[:5])}"
-            )
         return verdict, None
 
     def _gate_outcome(
@@ -1430,7 +1475,14 @@ class StudioRunner:
             manifest.score = final_score
         return final_score, verdict
 
-    def _apply_ai_native_gates(self, manifest, verdict: str) -> str:
+    def _apply_ai_native_gates(
+        self, manifest, verdict: str, *, posture: GatePosture | None = None
+    ) -> str:
+        # ai_native_gates_verdict stays the does-the-aggregation-run switch;
+        # the POSTURE decides whether a real finding blocks (release, or an
+        # explicit blocking_gates="ai_native") or records + caps the score
+        # (lab). These checks are environment-dependent contract probes, so
+        # they are classified release-only in gate_posture.
         if verdict != "go" or not bool(getattr(self.settings, "ai_native_gates_verdict", True)):
             return verdict
         blocking: list[str] = []
@@ -1446,8 +1498,11 @@ class StudioRunner:
             blocking.append(f"{key}: {issues[0]}")
         if not blocking:
             return verdict
-        manifest.extra["ai_native_gate"] = "; ".join(blocking[:3])
-        return "no_go"
+        reason = "; ".join(blocking[:3])
+        manifest.extra["ai_native_gate"] = reason
+        return self._gate_outcome(
+            manifest, "ai_native", False, verdict, reason, posture=posture
+        )
 
     # Degraded-proof reasons that describe ISOLATION rather than MEASUREMENT.
     # The command still ran and produced a real pass/fail; only the sandbox was
@@ -1701,7 +1756,8 @@ class StudioRunner:
         return refreshed
 
     async def _run_liveness(self, manifest, project_dir, plan, proof,
-                            final_score: float, verdict: str):
+                            final_score: float, verdict: str,
+                            *, posture: GatePosture | None = None):
         """Serve the delivered web app, check every route/page, repair failures,
         and dampen the score by route health (opt-in: gate the verdict). Returns
         the possibly-adjusted (final_score, verdict). Never raises."""
@@ -1817,8 +1873,23 @@ class StudioRunner:
         verdict, gate_reason = self._liveness_gate(
             verdict, plan.stack, report.dead, report.dead_routes,
             bool(getattr(self.settings, "liveness_gates_verdict", False)),
-            list(getattr(report, "visual_failed_routes", []) or []),
         )
+        # Visual liveness is a viewport heuristic OR a vision-model judgement —
+        # not proof the delivery is broken — so it is posture-routed: recorded
+        # (with the score already dampened by health above) under lab, blocking
+        # under release or an explicit blocking_gates="liveness". The always-on
+        # dead-root and opt-in broad gates above rightly stay direct.
+        if gate_reason is None:
+            visual_routes = list(getattr(report, "visual_failed_routes", []) or [])
+            if plan.stack in _UI_WEB_STACKS and visual_routes:
+                gate_reason = (
+                    "rendered page(s) failed visual liveness after repair: "
+                    f"{', '.join(visual_routes[:5])}"
+                )
+                verdict = self._gate_outcome(
+                    manifest, "liveness", False, verdict, gate_reason,
+                    posture=posture,
+                )
         if (
             "visual_self_heal_gate" in manifest.extra
             and plan.stack in _UI_WEB_STACKS
@@ -1829,8 +1900,13 @@ class StudioRunner:
         ):
             manifest.extra.pop("visual_self_heal_gate", None)
             manifest.extra["visual_self_heal_reconciled_by_liveness"] = True
-            if verdict == "no_go":
-                verdict = "go"
+            # Restore ONLY the flip the visual_self_heal gate itself caused.
+            # A no_go from any other cause (reviewer/rescore, delivery signals,
+            # forced_blocking gates, ...) must survive reconciliation — a healthy
+            # render says nothing about those findings.
+            restored = manifest.extra.pop("visual_self_heal_gate_flipped_from", None)
+            if restored is not None and verdict == "no_go":
+                verdict = restored
         if gate_reason:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
@@ -2651,10 +2727,12 @@ class StudioRunner:
     ) -> tuple[str, float, list[str]]:
         """Run the reviewer heuristic against the delivered tree (post-fix).
 
-        Returns (verdict, score, gaps). Pure/offline — works even when no
-        reviewer agent is registered. Never raises. ``stack`` matters: the
-        heuristic scores content stacks (agent packs) by their content shape —
-        omitting it no_go'd a perfect pack on code-suffix counting.
+        Returns (verdict, score, gaps); verdict is "go"/"no_go", or the
+        "error" sentinel when the heuristic itself crashed (gate unavailable,
+        not a failed delivery). Pure/offline — works even when no reviewer
+        agent is registered. Never raises. ``stack`` matters: the heuristic
+        scores content stacks (agent packs) by their content shape — omitting
+        it no_go'd a perfect pack on code-suffix counting.
         """
         from pathlib import Path
 
@@ -2670,7 +2748,11 @@ class StudioRunner:
             return verdict, float(score), list(gaps)
         except Exception as exc:  # noqa: BLE001
             log.warning("rescore.failed", error=str(exc))
-            return "no_go", 0.0, []
+            # "error", not "no_go": the structural gate could not run, which is
+            # not evidence the delivery failed. The combine treats it as
+            # "structural gate unavailable" — a reviewer verdict is honoured
+            # alone; without a reviewer the fail-closed default no_go stands.
+            return "error", 0.0, []
 
     @staticmethod
     def _stub_for(rel: str, plan: BuildPlan, brief: str) -> str | None:
@@ -4843,9 +4925,10 @@ class StudioRunner:
     ) -> BuildOutcome:
         # All entrypoints (web, CLI, Cortex, autonomy, and messaging) converge
         # here. Validate provider locks before stack selection can make an LLM
-        # call or any build ledger is opened. The automatic route is Codex-only:
-        # a missing local executor fails before it can silently emit a stub or
-        # spend through an ambient OpenRouter key.
+        # call or any build ledger is opened. The automatic route needs a local
+        # CLI from the operator's priority order (or the explicit OpenRouter
+        # opt-in): a missing executor fails before it can silently emit a stub
+        # or spend through an ambient OpenRouter key.
         from skyn3t.adapters.llm import enforce_explicit_routing_lock
 
         enforce_explicit_routing_lock(
@@ -5135,6 +5218,12 @@ class StudioRunner:
         # no_go that stands in when the reviewer stage never ran (stale — the
         # structural rescore is then the legitimate recovery signal).
         reviewer_ran = False
+        # Captured so a reviewer no_go graded on the PRE-repair worktree can be
+        # refreshed against the DELIVERED tree once the fix loop changed it.
+        reviewer_spec: StageSpec | None = None
+        reviewer_stage_extra: dict[str, Any] | None = None
+        reviewed_tree_sha = ""
+        reviewed_tree_valid = False
         used_lessons: list[dict[str, Any]] = []
 
         # Inject advisory skills for this stack (non-binding) and remember which
@@ -5282,6 +5371,15 @@ class StudioRunner:
                             enabled=approval_gates_enabled,
                             auto_approve=approval_auto_approve,
                         )
+                        # Event-driven banner discovery: the gate can
+                        # auto-reject before the dashboard's next poll lands.
+                        await self.event_bus.emit(
+                            EventType.APPROVAL_REQUESTED,
+                            "studio",
+                            {"build_id": build_id, "stage": spec.name,
+                             "approval_id": approval.approval_id},
+                            correlation_id=correlation_id,
+                        )
                         decision = await self.approval_gate.wait(
                             approval.approval_id, timeout=self.stage_timeout)
                         if decision is GateDecision.REJECTED:
@@ -5354,8 +5452,9 @@ class StudioRunner:
                         self._promote_architect_contract(
                             plan, prior, manifest, record
                         )
-                    # Feed the learned router from this real stage outcome.
-                    self._feed_tournament(spec, result)
+                    # Buffer the learned-router feed; it is recorded at verdict
+                    # settle time, graded by the build's terminal outcome.
+                    self._feed_tournament(spec, result, build_id)
                 else:
                     record.status = "failed"
                     record.error = result.error
@@ -5436,7 +5535,11 @@ class StudioRunner:
                     verdict = str(result.output.get("verdict", "no_go"))
                     reviewer_gaps = list(result.output.get("gaps") or [])
                     reviewer_ran = True
+                    reviewer_spec = spec
+                    reviewer_stage_extra = stage_extra
                     reviewed_tree = source_tree_snapshot(main_wt.dir)
+                    reviewed_tree_sha = str(reviewed_tree.get("sha256") or "")
+                    reviewed_tree_valid = bool(reviewed_tree.get("valid"))
                     record.output_summary["source_tree_snapshot_valid"] = bool(
                         reviewed_tree.get("valid")
                     )
@@ -5471,6 +5574,15 @@ class StudioRunner:
                         enabled=approval_gates_enabled,
                         auto_approve=approval_auto_approve,
                     )
+                    # Event-driven banner discovery: the gate can auto-reject
+                    # before the dashboard's next poll lands.
+                    await self.event_bus.emit(
+                        EventType.APPROVAL_REQUESTED,
+                        "studio",
+                        {"build_id": build_id, "stage": spec.name,
+                         "approval_id": approval.approval_id},
+                        correlation_id=correlation_id,
+                    )
                     decision = await self.approval_gate.wait(approval.approval_id, timeout=self.stage_timeout)
                     if decision is GateDecision.REJECTED:
                         manifest.status = "failed"
@@ -5481,6 +5593,25 @@ class StudioRunner:
             # clean=True so a re-build of the same slug delivers a fresh tree
             # instead of accumulating stale files from previous builds.
             copied = merge_back(main_wt.dir, project_dir, clean=True)
+            # merge_back is best-effort: with clean=True the previous app is
+            # already wiped before the copy, and a per-file failure (disk
+            # full, AV/file lock) is silently skipped. A shortfall means the
+            # project dir holds a partial app, so the build must fail rather
+            # than claim "delivered" — after snapshotting the still-intact
+            # worktree under data_dir/recovery (the finally block removes the
+            # worktree itself). An empty worktree yields no shortfall, so
+            # product_spec-only rebuilds keep their list_files fallback below.
+            undelivered = set(self._safe_list_files(main_wt.dir)) - set(copied)
+            if undelivered:
+                manifest.extra["delivery_shortfall"] = sorted(undelivered)[:100]
+                manifest.extra["delivery_recovery"] = [
+                    {key: entry[key] for key in ("candidate", "path", "file_count")}
+                    for entry in self._recover_cancelled_worktrees(build_id, [main_wt])
+                ]
+                raise RuntimeError(
+                    f"delivery incomplete: {len(undelivered)} generated file(s) "
+                    f"failed to copy into {project_dir}"
+                )
             manifest.files = copied or list_files(project_dir)
             self._set_main_worktree_status(manifest, main_wt, status="delivered")
             manifest.artifact_dir = project_dir
@@ -5653,7 +5784,58 @@ class StudioRunner:
             re_verdict, re_score, re_gaps = self._rescore_delivered(
                 project_dir, plan.stack)
             manifest.extra["rescore"] = {"verdict": re_verdict, "score": re_score, "gaps": re_gaps}
-            if reviewer_ran:
+            # A reviewer no_go was graded on the PRE-repair worktree. Once the
+            # deterministic repairs / fix loop changed what actually ships, that
+            # verdict is stale: re-dispatch the SAME registered reviewer agent
+            # (brief-aware, including its optional LLM blend) ONCE against the
+            # DELIVERED tree and honour its fresh verdict in the AND-combine
+            # below. A stale "go" is never refreshed — the AND with re_verdict
+            # already guards it, and a refresh could only downgrade. Any
+            # dispatch failure/timeout keeps the stale values.
+            if reviewer_ran and verdict == "no_go" and reviewer_spec is not None:
+                delivered_sha = ""
+                delivered_valid = False
+                try:
+                    _delivered_snap = source_tree_snapshot(project_dir)
+                    delivered_sha = str(_delivered_snap.get("sha256") or "")
+                    delivered_valid = bool(_delivered_snap.get("valid"))
+                except Exception:  # noqa: BLE001 - invalid snapshot counts as changed
+                    pass
+                tree_changed = (
+                    not reviewed_tree_valid
+                    or not delivered_valid
+                    or delivered_sha != reviewed_tree_sha
+                )
+                if tree_changed:
+                    refresh = None
+                    try:
+                        refresh_payload = self._base_payload(
+                            plan, project_dir, project_dir, prior, [],
+                            reviewer_stage_extra,
+                        )
+                        refresh_payload.update(reviewer_spec.extra)
+                        refresh = await self._submit_stage(
+                            reviewer_spec, refresh_payload, correlation_id
+                        )
+                    except Exception as exc:  # noqa: BLE001 - keep the stale verdict
+                        log.warning("review_refresh.failed", error=str(exc)[:200])
+                    if refresh is not None and refresh.success:
+                        fresh_verdict = str(refresh.output.get("verdict", "no_go"))
+                        manifest.extra["review_refreshed"] = {
+                            "stale_verdict": verdict,
+                            "verdict": fresh_verdict,
+                            "tree_changed": True,
+                        }
+                        verdict = fresh_verdict
+                        reviewer_score = self._extract_score(refresh.output) or 0.0
+                        reviewer_gaps = list(refresh.output.get("gaps") or [])
+            if reviewer_ran and re_verdict not in ("go", "no_go"):
+                # The structural rescore itself errored ("error" sentinel): the
+                # gate is UNAVAILABLE, not failed. Honour the brief-aware
+                # reviewer verdict alone rather than fail-closed no_go over a
+                # broken measuring stick.
+                review_gaps = reviewer_gaps
+            elif reviewer_ran:
                 # Honour the brief-aware verdict. AND-combine: a "go" needs BOTH
                 # the brief-aware reviewer AND the structural gate to agree; a
                 # brief-aware no_go stays no_go regardless of structure (the fix
@@ -5677,7 +5859,9 @@ class StudioRunner:
                 # — the structural rescore is the legitimate recovery signal.
                 reviewer_score = max(reviewer_score, re_score)
                 review_gaps = reviewer_gaps or re_gaps
-                verdict = re_verdict
+                # An errored rescore cannot recover anything: the fail-closed
+                # default no_go stands.
+                verdict = re_verdict if re_verdict in ("go", "no_go") else "no_go"
 
             # Final score: blend reviewer score with proof completeness.
             # When NO brief-aware reviewer ran, the score must be proof-based only:
@@ -5976,11 +6160,19 @@ class StudioRunner:
                     manifest, project_dir, plan, correlation_id)
                 visual_data = manifest.extra.get("visual_self_heal")
                 if self._visual_failure_should_gate(visual_data, plan.stack):
+                    pre_gate_verdict = verdict
                     verdict = self._gate_outcome(
                         manifest, "visual_self_heal", False, verdict,
                         "rendered UI still failing after visual self-heal",
                         posture=posture,
                     )
+                    if verdict != pre_gate_verdict:
+                        # Record that THIS gate caused the flip, so the liveness
+                        # reconciliation can restore exactly that flip (and only
+                        # that flip) when the rendered UI later proves healthy.
+                        manifest.extra["visual_self_heal_gate_flipped_from"] = (
+                            pre_gate_verdict
+                        )
                     manifest.extra["visual_self_heal_gate"] = (
                         "rendered UI still failed visual check after self-heal"
                     )
@@ -6013,7 +6205,8 @@ class StudioRunner:
             if _gate_applies("liveness", plan.stack) and getattr(
                     self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
-                    manifest, project_dir, plan, proof, final_score, verdict)
+                    manifest, project_dir, plan, proof, final_score, verdict,
+                    posture=posture)
 
             final_score, verdict = self._run_product_quality_gates(
                 manifest, project_dir, plan, final_score, verdict, posture=posture
@@ -6091,7 +6284,14 @@ class StudioRunner:
                 await self._run_cli_playtest(
                     manifest, plan, project_dir, correlation_id, extra)
 
-            verdict = self._apply_ai_native_gates(manifest, verdict)
+            verdict = self._apply_ai_native_gates(manifest, verdict, posture=posture)
+            if "ai_native_gate" in manifest.extra:
+                # Same honesty rule as product_quality: even a NON-blocking
+                # (lab-posture) contract finding must not ship a 95-looking
+                # score — cap at degraded_proof_score_cap; a blocked finding
+                # clamps to the failed-delivery band via the verdict.
+                final_score = self._score_after_finding(final_score, verdict)
+                manifest.score = final_score
 
             # Final consistency owns the last repair opportunity. Only after it
             # settles do we run registry-v1's bounded proof replay and the one
@@ -6139,6 +6339,12 @@ class StudioRunner:
                 "valid": delivered_tree.get("valid"),
                 "verdict": verdict,
             }
+
+            # Verdict is settled: flush the build's buffered solo tournament
+            # evidence graded by the terminal outcome. Same principle as the
+            # lesson grading below — a stage completing is not a win unless the
+            # build actually shipped.
+            self._flush_tournament(build_id, won=manifest.verdict == "go")
 
             # Grade the learning loop by the REAL outcome (a 'go'), not merely
             # "files were written". Crediting every non-empty no_go as helpful is
@@ -6217,6 +6423,9 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            # A rejected build is a settled negative outcome: flush buffered
+            # solo tournament evidence graded by it (won only on "go").
+            self._flush_tournament(build_id, won=manifest.verdict == "go")
             self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
@@ -6244,6 +6453,9 @@ class StudioRunner:
             log.error("studio.build_failed", build_id=build_id, error=str(exc))
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            # A crashed build is a settled negative outcome: flush buffered
+            # solo tournament evidence graded by it (won only on "go").
+            self._flush_tournament(build_id, won=manifest.verdict == "go")
             self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
@@ -6272,6 +6484,10 @@ class StudioRunner:
                 pass
             return self._outcome(manifest)
         finally:
+            # Cancellation is operator intent, not model evidence: discard any
+            # unflushed tournament buffer instead of grading it. No-op on the
+            # settled paths above (their flush already popped the entry).
+            self._tournament_pending.pop(build_id, None)
             self._obs_call(self.budget_guard, "detach")
             flush_events = getattr(self.memory, "flush_events", None)
             if callable(flush_events):
@@ -6330,6 +6546,14 @@ class StudioRunner:
             seed_dir=main_wt.dir,
             worktree_registry=worktrees,
             preserve_on_cancel=True,
+            # Candidate selection must clear the same objective bar the
+            # delivered tree faces — a structurally-plausible winner that
+            # doesn't compile beat a working sibling here (win-rate sweep).
+            run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+            test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+            run_build=bool(getattr(self.settings, "run_generated_build", True)),
+            build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+            brief=plan.brief,
         )
 
         if selection.winner is None:

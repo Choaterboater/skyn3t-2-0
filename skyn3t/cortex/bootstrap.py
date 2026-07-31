@@ -75,6 +75,7 @@ def _make_default_ratchet_evaluator(
     memory: Any | None,
     rag: Any | None,
     skills: Any | None,
+    llm: Any | None = None,
 ) -> Callable[[Proposal], Awaitable[dict[str, Any]]] | None:
     if orchestrator is None:
         return None
@@ -87,10 +88,29 @@ def _make_default_ratchet_evaluator(
                 "reasons": ["tuning proposal had no persistable ratchet-safe settings"],
             }
 
+        # Preflight the shared budget: an already-exhausted day would produce
+        # two equally-dead bench runs (every case fails on BudgetExceeded) that
+        # gate_change could then accept on garbage evidence — skip the 2x bench
+        # instead. _apply_with_ratchet maps kept=False to FAILED (safe-by-default).
+        budget = getattr(llm, "budget", None)
+        if budget is not None and hasattr(budget, "check"):
+            try:
+                from skyn3t.adapters.llm import BudgetExceeded
+
+                try:
+                    budget.check()
+                except BudgetExceeded as exc:
+                    return {
+                        "kept": False,
+                        "reasons": [f"insufficient budget for ratchet bench: {exc}"],
+                    }
+            except ImportError:  # pragma: no cover - adapter always ships
+                pass
+
         from skyn3t.config.settings import get_settings
         from skyn3t.cortex.ratchet import evaluate_change, restore_overrides, snapshot_overrides
         from skyn3t.cortex.tuning_store import persist_overrides
-        from skyn3t.studio.bench import all_cases
+        from skyn3t.studio.bench import DEFAULT_CASES, load_regression_cases
 
         data_dir = settings.data_dir
         snapshot = snapshot_overrides(data_dir)
@@ -109,6 +129,39 @@ def _make_default_ratchet_evaluator(
             get_settings.cache_clear()
 
         def make_build_fn():
+            # Mirror the CLI bench build_fn (cli/main.py _make_ratchet_build_fn):
+            # wire cost tracking, budget guarding, and the learning layer so the
+            # ratchet benches the same pipeline production builds run — and so
+            # per-build spend is scoped per case (CostTracker.start_build zeroes
+            # it) instead of accumulating across the whole before+after bench.
+            # Each piece is guarded: a missing module degrades, never blocks.
+            cost_tracker = budget_guard = learning = patterns = None
+            try:
+                from skyn3t.observability.cost_tracker import CostTracker
+
+                if llm is not None:
+                    cost_tracker = CostTracker.from_llm(llm, settings)
+            except Exception:  # noqa: BLE001 - observability is best-effort
+                pass
+            try:
+                from skyn3t.self_healing.budget import BudgetGuard
+
+                budget_guard = BudgetGuard(settings=settings, budget=getattr(llm, "budget", None))
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from skyn3t.intelligence.learning_loop import LearningLoop
+
+                learning = LearningLoop(store=memory, event_bus=event_bus)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from skyn3t.intelligence.build_patterns import BuildPatternBoard
+
+                patterns = BuildPatternBoard(settings.data_dir / "build_patterns.json")
+            except Exception:  # noqa: BLE001
+                pass
+
             async def build_fn(case: Any) -> Any:
                 from skyn3t.studio.runner import StudioRunner
 
@@ -117,19 +170,43 @@ def _make_default_ratchet_evaluator(
                     orchestrator,
                     settings=settings,
                     memory=memory,
+                    learning=learning,
+                    patterns=patterns,
                     rag=rag,
                     skills=skills,
+                    cost_tracker=cost_tracker,
+                    budget_guard=budget_guard,
                 )
+                # Belt-and-braces per-case reset (like cli._reset_bench_budget)
+                # for the cost_tracker-construction-failed path. reset_build is
+                # a no-op inside an active tracked build, so a concurrent real
+                # build can never escape its own cap through this. Never touches
+                # spent_day — the daily ledger is the cross-process backstop.
+                case_budget = getattr(llm, "budget", None)
+                if case_budget is not None and hasattr(case_budget, "reset_build"):
+                    try:
+                        case_budget.reset_build()
+                    except Exception:  # noqa: BLE001
+                        pass
                 extra = {"stack": case.stack} if getattr(case, "stack", "") else {}
                 return await runner.start(case.brief, slug=None, extra=extra)
 
             return build_fn
 
+        # Bounded suite: the built-in app exam plus only the MOST RECENT app
+        # regressions. all_cases() pulls in up to 200 captured regressions —
+        # one auto-approved proposal would then trigger 2x(20+200) real builds.
+        regressions = [
+            c
+            for c in load_regression_cases(data_dir)
+            if str(getattr(c, "stack", "")).strip().lower() != "phaser"
+        ][-10:]
+
         return await evaluate_change(
             apply_change=apply_change,
             revert_change=revert_change,
             make_build_fn=make_build_fn,
-            cases=all_cases(data_dir),
+            cases=list(DEFAULT_CASES) + regressions,
             label=f"ratchet-{prop.id[:8]}",
         )
 
@@ -415,7 +492,7 @@ def build_cortex(
     settings = settings or get_settings()
     if ratchet_evaluator is None and getattr(settings, "reliability_ratchet_enabled", False):
         ratchet_evaluator = _make_default_ratchet_evaluator(
-            event_bus, settings, orchestrator, memory, rag, skills
+            event_bus, settings, orchestrator, memory, rag, skills, llm
         )
     # Pass the live orchestrator agents so approved PROMPT proposals can write
     # their evolved instruction onto the matching agent (closes the prompt loop).

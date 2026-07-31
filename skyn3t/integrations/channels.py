@@ -67,10 +67,13 @@ def env_token(*names: str) -> str:
 
     Channels look in the environment for credentials so the pinned Settings
     contract need not carry per-channel secrets. Both ``SKYN3T_``-prefixed and
-    bare variants are accepted.
+    bare variants are accepted — SKYN3T_ FIRST, matching every other credential
+    chain in the system: the GUI persists the prefixed name, so bare-first let
+    a stale ambient TELEGRAM_BOT_TOKEN silently shadow the GUI-saved token for
+    sends while the status payload reported the SKYN3T one (audit M23).
     """
     for name in names:
-        val = os.environ.get(name) or os.environ.get(f"SKYN3T_{name}")
+        val = os.environ.get(f"SKYN3T_{name}") or os.environ.get(name)
         if val:
             return val.strip()
     return ""

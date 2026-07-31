@@ -19,7 +19,6 @@ the agent degrades to "limited / disabled" rather than crashing.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,6 +29,7 @@ from skyn3t.agents.github_explorer import (
     _normalize_repo,
     assess_github_learning_source,
 )
+from skyn3t.agents.github_fetch import resolve_github_token
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 
@@ -269,8 +269,7 @@ class GithubIngestor(BaseAgent):
 
     async def initialize(self) -> None:
         self.metadata["httpx_available"] = _HTTPX_AVAILABLE
-        self.metadata["has_token"] = bool(
-            os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+        self.metadata["has_token"] = bool(resolve_github_token())
         self.metadata["ready"] = True
 
     async def health_check(self) -> bool:

@@ -309,6 +309,7 @@ class MemoryStore:
             await conn.run_sync(Base.metadata.create_all)
             await conn.run_sync(self._drop_orphan_fts_triggers)
             await conn.run_sync(self._relax_builds_score_nullable)
+            await conn.run_sync(self._enforce_unique_lessons)
 
     @staticmethod
     def _drop_orphan_fts_triggers(conn: Any) -> None:
@@ -380,6 +381,54 @@ class MemoryStore:
                     "ALTER TABLE builds__pre_score_fix RENAME TO builds"
                 )
                 raise
+        except Exception:  # noqa: BLE001 - self-heal must never break startup
+            pass
+
+    @staticmethod
+    def _enforce_unique_lessons(conn: Any) -> None:
+        """Merge duplicate ``lessons`` rows, then add a unique (stack, text) index.
+
+        ``add_lesson`` is check-then-insert across sessions (``lesson_exists``
+        SELECT, then a bare INSERT in its own session), so two concurrent builds
+        minting the identical deterministic lesson text can both pass the check
+        and both insert — re-splitting one lesson's helpful/hurt history across
+        rows. The unique index makes the database reject the second insert.
+        Databases written before the index existed may already hold duplicate
+        (stack, text) rows, which would make CREATE UNIQUE INDEX fail at
+        startup — so merge those first: keep the lowest id per (stack, text)
+        and fold the extras' grading counters into it (``grade_lesson`` no-ops
+        on the deleted ids). SQLite-only; best-effort, never raises into
+        startup.
+        """
+        try:
+            if conn.dialect.name != "sqlite":
+                return
+            if conn.exec_driver_sql(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='index' AND name='ux_lessons_stack_text'"
+            ).first():
+                return  # already migrated (idempotent fast path)
+            conn.exec_driver_sql(
+                "UPDATE lessons SET "
+                "helpful = (SELECT SUM(d.helpful) FROM lessons d "
+                "  WHERE d.stack = lessons.stack AND d.text = lessons.text), "
+                "hurt = (SELECT SUM(d.hurt) FROM lessons d "
+                "  WHERE d.stack = lessons.stack AND d.text = lessons.text), "
+                "times_used = (SELECT SUM(d.times_used) FROM lessons d "
+                "  WHERE d.stack = lessons.stack AND d.text = lessons.text), "
+                "score = (SELECT SUM(d.score) FROM lessons d "
+                "  WHERE d.stack = lessons.stack AND d.text = lessons.text) "
+                "WHERE id IN (SELECT MIN(id) FROM lessons "
+                "  GROUP BY stack, text HAVING COUNT(*) > 1)"
+            )
+            conn.exec_driver_sql(
+                "DELETE FROM lessons WHERE id NOT IN "
+                "(SELECT MIN(id) FROM lessons GROUP BY stack, text)"
+            )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_lessons_stack_text "
+                "ON lessons(stack, text)"
+            )
         except Exception:  # noqa: BLE001 - self-heal must never break startup
             pass
 
@@ -621,6 +670,30 @@ class MemoryStore:
         return result
 
     @staticmethod
+    def _artifact_dir_reclaimed(artifact_dir: str, build_id: str, slug: str) -> bool:
+        """True when the dir's on-disk manifest attributes it to ANOTHER build.
+
+        A same-slug rebuild can re-claim a deleted project's folder path while
+        the stale history row still points at it; the dir's manifest then names
+        the new build, and deleting the stale row must not rmtree the new app.
+        A missing/unreadable manifest keeps the best-effort delete.
+        """
+        path = Path(str(artifact_dir)) / MANIFEST_FILENAME
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        disk_build_id = str(data.get("build_id") or "")
+        disk_slug = str(data.get("slug") or "")
+        if disk_build_id:
+            return disk_build_id != str(build_id)
+        if disk_slug:
+            return disk_slug != str(slug)
+        return False
+
+    @staticmethod
     def _disk_manifest_for_row(row: BuildRow) -> dict[str, Any] | None:
         artifact_dir = getattr(row, "artifact_dir", None)
         if not artifact_dir:
@@ -670,18 +743,30 @@ class MemoryStore:
         if not bid:
             return False
         artifact_dir = None
+        slug = ""
+        shared_dir = False
         async with self._session() as s:
             row = await s.get(BuildRow, bid)
             if row is None:
                 return False
             artifact_dir = row.artifact_dir
+            slug = row.slug
+            if artifact_dir:
+                # Legacy same-slug rows can share one artifact_dir; deleting one
+                # row must not destroy a dir a sibling row still references.
+                others = await s.execute(
+                    select(func.count())
+                    .select_from(BuildRow)
+                    .where(BuildRow.artifact_dir == artifact_dir, BuildRow.build_id != bid)
+                )
+                shared_dir = bool(others.scalar_one())
             await s.delete(row)
             await s.commit()
 
-        if artifact_dir:
+        if artifact_dir and not shared_dir:
             try:
                 p = Path(str(artifact_dir))
-                if p.exists():
+                if p.exists() and not self._artifact_dir_reclaimed(artifact_dir, bid, slug):
                     shutil.rmtree(p)
             except Exception:  # noqa: BLE001 - artifact cleanup must never block DB cleanup
                 pass
@@ -782,25 +867,60 @@ class MemoryStore:
         async with self._session() as s:
             stmt = select(LessonRow).where(LessonRow.stack == stack)
             if stage:
-                # Match stage-specific lessons AND stage-agnostic ones (stored
-                # with stage=''). The build pipeline mints lessons with an empty
-                # stage, so an exact ``== stage`` filter matched nothing and
-                # severed the capture->inject edge entirely.
-                stmt = stmt.where(LessonRow.stage.in_(("", stage)))
+                stmt = stmt.where(LessonRow.stage.in_(self._injectable_stages(stage)))
             order = LessonRow.score.asc() if ascending else LessonRow.score.desc()
             stmt = stmt.order_by(order).limit(limit)
             rows = (await s.execute(stmt)).scalars().all()
-            return [
-                {
-                    "id": r.id,
-                    "text": r.text,
-                    "score": r.score,
-                    "times_used": r.times_used,
-                    "helpful": r.helpful,
-                    "hurt": r.hurt,
-                }
-                for r in rows
-            ]
+            return [self._lesson_row_dict(r) for r in rows]
+
+    async def recent_lessons(
+        self, stack: str, stage: str = "", limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Return the newest never-injected lessons for a stack/stage.
+
+        Exploration companion to :meth:`relevant_lessons`: that fetch is score-
+        DESC, so once ~limit incumbents hold a positive score a newly captured
+        lesson (score 0, ``times_used`` 0) can never enter the fetch, is never
+        injected, never graded — and so never earns the score it would need to
+        compete. Reserving a few injection slots for the newest ungraded rows
+        gives fresh avoid/gap rules a path into injection → grading → score.
+        """
+        async with self._session() as s:
+            stmt = select(LessonRow).where(
+                LessonRow.stack == stack, LessonRow.times_used == 0
+            )
+            if stage:
+                stmt = stmt.where(LessonRow.stage.in_(self._injectable_stages(stage)))
+            stmt = stmt.order_by(LessonRow.id.desc()).limit(limit)
+            rows = (await s.execute(stmt)).scalars().all()
+            return [self._lesson_row_dict(r) for r in rows]
+
+    @staticmethod
+    def _injectable_stages(stage: str) -> tuple[str, ...]:
+        """Stage values a lesson row may carry and still match ``stage``.
+
+        Match stage-specific lessons AND stage-agnostic ones (stored with
+        stage=''). The build pipeline mints lessons with an empty stage, so an
+        exact ``== stage`` filter matched nothing and severed the
+        capture->inject edge entirely. Also match rows captured under
+        ``"verification"``: the runner stamped that pseudo-stage on any build
+        with proof_errors/gate_findings, but no injection caller ever passes it
+        (pipeline stages are "code", "verify_build", ... — see
+        studio/stages.py), so every error-derived avoid-rule was a dead row —
+        captured, deduped, never injected, never graded.
+        """
+        return ("", "verification", stage)
+
+    @staticmethod
+    def _lesson_row_dict(r: LessonRow) -> dict[str, Any]:
+        return {
+            "id": r.id,
+            "text": r.text,
+            "score": r.score,
+            "times_used": r.times_used,
+            "helpful": r.helpful,
+            "hurt": r.hurt,
+        }
 
     async def grade_lesson(
         self, lesson_id: int, helpful: bool, quality: float | None = None

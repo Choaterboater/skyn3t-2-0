@@ -1265,25 +1265,65 @@ def _run_proof_command(
 
     import subprocess
 
+    def _kill_tree(proc: subprocess.Popen) -> None:
+        # proc.kill() reaps only the direct child; npm/build commands spawn
+        # grandchildren that inherit the output pipes and hold both the process
+        # tree and the pipe readers open past the timeout.
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+        else:
+            import signal
+
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    popen_kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        # Own process group so the timeout path can kill the whole tree.
+        popen_kwargs["start_new_session"] = True
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(cwd),
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=safe_env,
+            **popen_kwargs,
         )
-        return _ProofCommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return _ProofCommandResult(124, stdout, stderr, timed_out=True)
     except (OSError, ValueError) as exc:
         return _ProofCommandResult(127, "", f"exec failed: {exc}")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            stdout, stderr = "", ""
+        return _ProofCommandResult(124, stdout or "", stderr or "", timed_out=True)
+    except BaseException:
+        _kill_tree(proc)
+        raise
+    return _ProofCommandResult(proc.returncode, stdout or "", stderr or "")
 
 
 def _use_container_command_names(ctx: _ProofCommandContext | None) -> bool:
@@ -5079,7 +5119,12 @@ def compile_only_segment(build_script: str) -> str:
     parts = [p.strip() for p in str(build_script or "").split("&&")]
     if len(parts) != 2 or not all(parts):
         return ""
-    if not any(parts[0].startswith(cmd) for cmd in _TYPE_CHECK_COMMANDS):
+    first = parts[0]
+    # The stock Vite TS template ships `"build": "tsc && vite build"` — a bare
+    # `tsc` first segment is a type check too. Token-bounded so a lookalike
+    # binary ("tsc-watch") never qualifies.
+    bare_tsc = first == "tsc" or first.startswith("tsc ")
+    if not bare_tsc and not any(first.startswith(cmd) for cmd in _TYPE_CHECK_COMMANDS):
         return ""
     return parts[1]
 
@@ -5307,9 +5352,11 @@ def _run_node_build(
 
     ``findings`` is an optional out-parameter. When a compound
     ``<type-check> && <build>`` script fails on TYPE diagnostics but the compile
-    half alone succeeds, the app is reported as BUILT and
-    ``findings["type_check"]`` carries the diagnostics — a quality finding, not
-    a broken delivery. Omitting it preserves the previous behaviour exactly.
+    half alone succeeds — or a separately declared ``typecheck``/``check``
+    script fails on type diagnostics after the build itself passed — the app is
+    reported as BUILT and ``findings["type_check"]`` carries the diagnostics —
+    a quality finding, not a broken delivery. Omitting it preserves the
+    previous return values exactly.
     """
     import json as _json
     import shutil
@@ -5439,6 +5486,18 @@ def _run_node_build(
             or "Continue?" in validation_out
         )
         if validation.returncode != 0 or incomplete_prompt:
+            if not incomplete_prompt and _TYPE_DIAGNOSTIC_RE.search(validation_out):
+                # The app already BUILT; a separately declared typecheck/check
+                # script failing on TYPE diagnostics is the same quality
+                # finding as a chained `<check> && <build>` script — reported
+                # via ``findings["type_check"]`` (advisory under lab posture),
+                # not a broken delivery. A checker crash, misconfiguration, or
+                # incomplete-install prompt (no type diagnostics) still fails
+                # the build outright.
+                if findings is not None:
+                    findings["type_check"] = _distill_build_errors(validation_out)
+                summaries.append(f"npm run {validation_cmd}: type errors (advisory)")
+                return (True, True, "; ".join(part for part in summaries if part))
             return (True, False, _distill_build_errors(validation_out))
         summaries.append(
             validation_out[-300:]

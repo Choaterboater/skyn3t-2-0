@@ -84,7 +84,15 @@ class RagEngine:
         source: str = "",
         kind: str | None = None,
         metadata: dict[str, object] | None = None,
+        replace_source: bool = False,
     ) -> int:
+        # Chunk ids are content hashes, so edited text mints new ids and the
+        # old chunks would otherwise keep surfacing as current context.
+        # replace_source stays opt-in: callers like the experience ingestor
+        # accumulate many distinct docs under one source and must not have
+        # them purged on every call.
+        if replace_source and source:
+            self._remove_source(source)
         chunks = self.processor.process(text, source=source, kind=kind)
         if not chunks:
             return 0
@@ -108,13 +116,29 @@ class RagEngine:
         self._ingested += n
         return n
 
+    def _remove_source(self, source: str) -> None:
+        self.store.delete_by_source(source)
+        # The retriever keeps a lexical mirror of every doc; purge it in
+        # lockstep with the store or BM25 keeps ranking deleted chunks.
+        docs = self.retriever._docs
+        stale = [
+            _id for _id, doc in docs.items() if doc.metadata.get("source") == source
+        ]
+        for _id in stale:
+            docs.pop(_id, None)
+            self.retriever._tokens.pop(_id, None)
+        if stale:
+            self.retriever._dirty = True
+
     def ingest_file(self, path: str) -> int:
         p = Path(path)
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return 0
-        return self.ingest_text(text, source=str(p))
+        # A file path is a stable identity: re-ingesting it means the file
+        # changed, so its previous chunks are stale by definition.
+        return self.ingest_text(text, source=str(p), replace_source=True)
 
     def ingest_directory(
         self,
@@ -241,6 +265,13 @@ class RagEngine:
             "ingested": self._ingested,
             "llm": self.llm_client is not None,
         }
+
+    # -- lifecycle ---------------------------------------------------------
+    def close(self) -> None:
+        """Release the vector store's backing client (a chroma
+        PersistentClient holds an open SQLite handle). Idempotent and never
+        raises."""
+        self.store.close()
 
 
 __all__ = ["RagEngine", "RagAnswer", "build_repo_map", "get_repo_map"]

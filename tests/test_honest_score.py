@@ -61,6 +61,29 @@ def test_final_score_shape_degraded_cap_is_not_a_bucket():
     assert "degraded proof environment" in man.extra["final_score_shape"]["reasons"]
 
 
+def test_final_score_shape_uncapped_degraded_environment_none_cap():
+    # score_cap None is the proof_environment_gate writer's DELIBERATE
+    # "degraded but uncapped" state (isolation-only degradation under lab
+    # posture). float(None) here crashed every lab-posture "go" on a
+    # Docker-less host at the finish line — the first live build after the
+    # win-rate campaign died on it.
+    man = BuildManifest(slug="site", brief="site", stack="static")
+    man.extra["proof_environment_gate"] = {"score_cap": None}
+    proof = SimpleNamespace(
+        passed=True,
+        score=100.0,
+        files_total=20,
+        files_substantive=10,
+        detail={"proof_environment": {"degraded": True, "degraded_reasons": ["docker unavailable"]}},
+    )
+
+    score = StudioRunner._shape_final_score(man, proof, 95.0, "go")
+
+    assert score == 95.0  # no degraded cap applied — and no crash
+    assert "degraded proof environment" not in man.extra.get(
+        "final_score_shape", {}).get("reasons", [])
+
+
 def test_final_score_shape_no_go_uses_failure_reason_below_49():
     man = BuildManifest(slug="stub", brief="rag", stack="rag")
     man.extra["scaffold_stub_gate"] = {"triggered": True}

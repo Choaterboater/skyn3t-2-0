@@ -32,6 +32,7 @@ from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import build_repo_context_pack
+from skyn3t.studio.design_tokens import read_design_md
 from skyn3t.studio.layout_profiles import (
     is_valid_profile_payload,
     layout_contract_block,
@@ -856,6 +857,18 @@ class ImproveEngine:
                 max_tokens=2000,
             )
             repo_ctx = context_pack.context
+            # Anti-drift: the delivered DESIGN.md (from the project dir — the
+            # source of truth, not a manifest copy) locks the build's design
+            # direction into the improver's context, so styling stays
+            # consistent unless the goal explicitly restyles.
+            design_md = read_design_md(project_dir)
+            if design_md:
+                repo_ctx = (
+                    "The project's locked design direction (DESIGN.md) — keep "
+                    "styling consistent with it unless the goal explicitly "
+                    "restyles:\n"
+                    f"{design_md}\n\n{repo_ctx}"
+                )
             context_pack_summary = context_pack.summary()
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "localize",

@@ -202,3 +202,40 @@ def test_design_summary_handles_missing_gracefully():
     assert "accent:#6750f2" in summary
     assert "metric cards" in summary
     assert "loading" in summary
+
+
+def test_nested_designer_stage_payload_is_unwrapped():
+    """Regression (F1): the designer stage returns {"design": {...}, "model": ...}
+    and the runner stores it verbatim in prior["design"] — without the unwrap the
+    whole design direction silently dropped out of every codegen prompt."""
+    nested = {"design": _DESIGN, "model": "m", "backend": "stub"}
+
+    assert CodeAgent._unwrap_design_payload(nested) == _DESIGN
+    assert CodeAgent._unwrap_design_payload(_DESIGN) == _DESIGN  # flat stays flat
+    assert CodeAgent._unwrap_design_payload(None) is None
+
+
+def test_design_tokens_block_reaches_web_prompts_but_not_games():
+    """Regression (F2/F3): brief-derived tokens travel beside the DESIGN BAR,
+    gated on _DESIGN_WEB_STACKS — never into the head-capped skill bucket, and
+    never into a phaser prompt."""
+    agent = _agent()
+    web = agent._agentic_prompt("a cozy bakery site", "react", {"files": []}, "", design=_DESIGN)
+    assert "DESIGN TOKENS" in web
+    assert "--accent-text:" in web
+    assert "fonts.googleapis.com" in web
+
+    game = agent._agentic_prompt("a neon arcade platformer", "phaser", {"files": []}, "", design=None)
+    assert "DESIGN TOKENS" not in game
+    assert "DESIGN BAR" not in game  # the bar stays excluded for canvas games
+
+
+def test_design_directive_says_compose_scaffold_primitives():
+    """The bar points codegen at the shipped ui.jsx primitives so it composes
+    pages instead of hand-rolling one-off duplicates."""
+    from skyn3t.agents.code_agent import _DESIGN_DIRECTIVE
+
+    assert "COMPOSE" in _DESIGN_DIRECTIVE
+    assert "src/components/ui.jsx" in _DESIGN_DIRECTIVE
+    for name in ("Button", "Panel", "StatCard", "TextInput", "Badge", "Modal", "Table", "FormField"):
+        assert name in _DESIGN_DIRECTIVE, f"directive missing primitive {name}"

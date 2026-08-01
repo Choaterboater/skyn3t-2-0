@@ -55,6 +55,7 @@ from skyn3t.studio.acceptance_contract import (
     restore_acceptance_contracts,
     snapshot_acceptance_contracts,
 )
+from skyn3t.studio.design_tokens import design_md_block
 from skyn3t.studio.layout_profiles import LayoutProfile, layout_contract_block, profile_from_payload
 from skyn3t.worktree import list_files
 
@@ -113,7 +114,22 @@ _DESIGN_DIRECTIVE = (
     "BANNED AI-DEFAULT LOOK (do NOT ship these unless the brief explicitly asks for "
     "them — they read as a generic AI template): a generic purple/violet gradient hero "
     "band on a white page, and emoji-bullet feature grids (an emoji next to each "
-    "feature card). Pick a palette that fits THIS product instead."
+    "feature card). Pick a palette that fits THIS product instead. "
+    "GRADIENTS: off by default — if one genuinely fits the product, use subtle "
+    "ANALOGOUS hues only (e.g. blue into teal), 2-3 stops max, never on primary "
+    "surfaces. "
+    "LAYOUT: flexbox first; CSS grid only for true 2-D arrangements; prefer gap "
+    "over margins; no floats, no absolute-positioned scaffolding. "
+    "TYPE POLISH: headings wrap with text-wrap: balance; body line-height "
+    "1.4-1.6; set the page background on <html> so it never flashes white. "
+    "NO FILLER VISUALS: no abstract blobs, gradient circles or decorative shape "
+    "divs as filler; no hand-drawn SVG illustrations — real content and real "
+    "imagery only. "
+    "COMPOSE FROM PRIMITIVES: the scaffold ships UI primitives at "
+    "src/components/ui.jsx (Button, Panel, StatCard, TextInput, Badge, Modal, "
+    "Table, FormField) — COMPOSE pages from them; never restyle them with "
+    "one-off inline classes, never hand-roll a duplicate of a primitive — "
+    "extend the primitives file instead."
 )
 # Config hygiene — keeps codegen from hardcoding API keys/endpoints. Reading
 # config through env/an accessor lets the post-build config surfacer detect it and
@@ -744,7 +760,7 @@ class CodeAgent(BaseAgent):
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         raw_prior = p.get("prior")
         prior = raw_prior if isinstance(raw_prior, dict) else {}
-        raw_design = prior.get("design")
+        raw_design = self._unwrap_design_payload(prior.get("design"))
         profile = profile_from_payload(_extra.get("layout_profile") if isinstance(_extra, dict) else None)
         design = self._design_with_layout_profile(
             raw_design if isinstance(raw_design, dict) else None, profile,
@@ -1200,6 +1216,10 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
+            # Brief-derived tokens travel WITH the design bar, not in the
+            # head-capped skill-advice bucket (a mature skill library truncated
+            # them to 0 bytes). Same stack gate as the bar: never phaser/mobile.
+            + (f"{design_md_block(brief)}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
             + (
                 f"Follow this design direction: {self._design_summary(design)}\n"
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
@@ -1413,14 +1433,18 @@ class CodeAgent(BaseAgent):
             # Measured on a delivered site: the model wired the favicon and the
             # og:image — both mechanical one-liners in <head> — and skipped the
             # hero, the only asset needing a layout decision in the page body.
-            # So name the element, the placement and the alt text, and state the
-            # consequence, rather than describing the intent.
+            # So name the element and the alt text and state the consequence,
+            # rather than describing the intent. Placement stays with the design:
+            # an earlier "above-the-fold hero/banner" mandate made every page a
+            # banner-band template.
             parts.append(
                 f"Hero image: `{hero}`. The primary page MUST render an `<img>` tag "
-                f"(or this stack's image component) whose src is `{hero}`, placed in "
-                "the above-the-fold hero/banner section, with descriptive alt text. "
-                "Wiring it into metadata alone does NOT satisfy this: a page that "
-                "never displays the hero fails acceptance."
+                f"(or this stack's image component) whose src is `{hero}`, with "
+                "descriptive alt text. Place it where it strengthens THIS design — "
+                "a hero, feature, about or media section, sized and cropped by the "
+                "layout — never as a boilerplate full-width banner band pasted at "
+                "the top. Wiring it into metadata alone does NOT satisfy this: a "
+                "page that never displays the hero fails acceptance."
             )
         if og:
             parts.append(f"Open Graph image: `{og}`. Wire it into metadata when the stack supports it.")
@@ -1535,7 +1559,7 @@ class CodeAgent(BaseAgent):
         raw_extra = p.get("extra")
         extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
         profile = profile_from_payload(extra.get("layout_profile"))
-        raw_design = prior.get("design")
+        raw_design = self._unwrap_design_payload(prior.get("design"))
         design = self._design_with_layout_profile(
             raw_design if isinstance(raw_design, dict) else None, profile,
         )
@@ -1727,7 +1751,7 @@ class CodeAgent(BaseAgent):
             (slice_name == "frontend" or slice_name.startswith("frontend_"))
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n\n{_DESIGN_DIRECTIVE}"
+            design_block = f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_md_block(brief)}"
             summary = self._design_summary(design)
             if summary:
                 design_block += f"\nFollow this design direction: {summary}"
@@ -1771,7 +1795,10 @@ class CodeAgent(BaseAgent):
         ):
             summary = self._design_summary(design)
             if summary:
-                design_block = f"\n\n{_DESIGN_DIRECTIVE}\nFollow this design direction: {summary}"
+                design_block = (
+                    f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_md_block(brief)}"
+                    f"\nFollow this design direction: {summary}"
+                )
         return self.system_prompt(
             "RESUME THIS SLICE IN PLACE. Preserve every working file and do not restart "
             "or reduce the implementation.\n\n"
@@ -1804,6 +1831,16 @@ class CodeAgent(BaseAgent):
         if profile.name == "editorial":
             return contract + " A constrained reading column is permitted where it suits the content."
         return contract
+
+    @staticmethod
+    def _unwrap_design_payload(raw_design: Any) -> Any:
+        """The designer stage returns {"design": {...}, "model"/"backend": ...}
+        and the runner stores that verbatim in prior["design"] — unwrap the
+        payload when nested, else the whole design direction silently drops
+        out of every codegen prompt."""
+        if isinstance(raw_design, dict) and isinstance(raw_design.get("design"), dict):
+            return raw_design["design"]
+        return raw_design
 
     @staticmethod
     def _design_summary(design: dict[str, Any] | None) -> str:
@@ -1994,7 +2031,8 @@ class CodeAgent(BaseAgent):
             f"Files already present (inspect before editing):\n{existing}\n\n"
             + (f"Variant contract: {variant}\n\n" if variant else "")
             + (
-                f"{_DESIGN_DIRECTIVE}\nFollow this design direction: {self._design_summary(design)}\n\n"
+                f"{_DESIGN_DIRECTIVE}\n{design_md_block(brief)}\n"
+                f"Follow this design direction: {self._design_summary(design)}\n\n"
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
                 else ""
             )
@@ -2750,7 +2788,7 @@ class CodeAgent(BaseAgent):
             ext in _FRONTEND_EXTENSIONS
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n{_DESIGN_DIRECTIVE}"
+            design_block = f"\n{_DESIGN_DIRECTIVE}\n{design_md_block(brief)}"
             if design_summary:
                 design_block += f"\nFollow this design direction: {design_summary}"
         prompt = (

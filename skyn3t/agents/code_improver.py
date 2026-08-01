@@ -24,7 +24,11 @@ from skyn3t.agents._common import (
     extract_code,
     knowledge_block,
 )
-from skyn3t.agents.code_agent import _FULL_FILE_CONTRACT
+from skyn3t.agents.code_agent import (
+    _DESIGN_DIRECTIVE,
+    _FRONTEND_EXTENSIONS,
+    _FULL_FILE_CONTRACT,
+)
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
@@ -227,13 +231,18 @@ class CodeImproverAgent(BaseAgent):
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
         knowledge = knowledge_block(p)
         payload_profile = p.get("layout_profile")
+        is_stored = p.get("layout_profile_is_stored") is True
+        if payload_profile is None and isinstance(p.get("extra"), dict):
+            # Build-time repair dispatches thread the frozen profile only inside
+            # extra (every runner dispatch site); ImproveEngine passes it
+            # top-level with the stored flag. Falling back here gives ALL repair
+            # paths the layout contract, not just the ImproveEngine one.
+            payload_profile = p["extra"].get("layout_profile")
+            is_stored = payload_profile is not None
         profile = profile_from_payload(payload_profile)
         layout_profile = (
             profile
-            if (
-                p.get("layout_profile_is_stored") is True
-                and is_valid_profile_payload(payload_profile)
-            )
+            if (is_stored and is_valid_profile_payload(payload_profile))
             else None
         )
 
@@ -634,7 +643,9 @@ class CodeImproverAgent(BaseAgent):
         of silently dropping the write."""
         if self.llm.backend != "stub":
             ext = Path(rel).suffix.lower()
-            tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+            # Same frontend set as codegen (.astro/.scss/.less/.htm included):
+            # it drives both model tier and the design bar below.
+            tier = Tier.UI if ext in _FRONTEND_EXTENSIONS else Tier.BACKEND
             preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
             layout_prompt = ""
             if profile is not None:
@@ -643,9 +654,19 @@ class CodeImproverAgent(BaseAgent):
                     layout_prompt = (
                         f"\nLAYOUT PROFILE: {profile.name}\n{layout_context}\n"
                     )
+            # Full-file rewrites must not quietly regress the styling: re-assert
+            # the design bar for UI files (it is only in the initial codegen
+            # prompt otherwise, so every repair pass used to dilute it further).
+            # Phaser is excluded exactly like in codegen — a canvas game's
+            # index.html must not get the web design bar.
+            design_prompt = (
+                f"\n{_DESIGN_DIRECTIVE}\n"
+                if tier is Tier.UI and (stack or "").lower() != "phaser" else ""
+            )
             prompt = (
                 f"{preamble}Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
                 f"{layout_prompt}"
+                f"{design_prompt}"
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
@@ -705,7 +726,7 @@ class CodeImproverAgent(BaseAgent):
                 f"Full contents of {importer_rel} for context:\n{importer_src}\n"
             )
         ext = Path(rel).suffix.lower()
-        tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+        tier = Tier.UI if ext in _FRONTEND_EXTENSIONS else Tier.BACKEND
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
         layout_prompt = ""
         if profile is not None:
@@ -714,10 +735,16 @@ class CodeImproverAgent(BaseAgent):
                 layout_prompt = (
                     f"LAYOUT PROFILE: {profile.name}\n{layout_context}\n"
                 )
+        # A brand-new UI file must land on the same design bar as a rewritten one.
+        design_prompt = (
+            f"\n{_DESIGN_DIRECTIVE}\n"
+            if tier is Tier.UI and (stack or "").lower() != "phaser" else ""
+        )
         prompt = (
             f"{preamble}Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"
             f"Issues: {gaps}\n{importer_context}\n"
             f"{layout_prompt}"
+            f"{design_prompt}"
             f"This file does NOT exist yet — you are creating it, not editing it. "
             f"Write the COMPLETE, real contents of a new file at {rel} that the "
             f"importer above expects, matching the project's existing code style "

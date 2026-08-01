@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import colorsys
 import hashlib
+import math
 import re
 from pathlib import Path
 
@@ -271,6 +272,65 @@ def _rotate_hue(hex_color: str, degrees: float) -> str:
     return f"#{round(cr * 255):02x}{round(cg * 255):02x}{round(cb * 255):02x}"
 
 
+# ---- OKLCH color space (Björn Ottosson's OKLab) ----------------------------------
+#
+# OKLCH is perceptually uniform: equal L steps READ as equal lightness steps and
+# chroma/hue edits do not shift perceived lightness the way HSL edits do. Used for
+# tinting neutrals toward the accent hue, the --accent-100..900 lightness scale,
+# and deriving the second (dark/light) theme — all places where HSL would lie.
+#
+# Matrices (Ottosson, https://bottosson.github.io/posts/oklab/):
+#   linear sRGB -> LMS (M1):                OKLab L,a,b from cbrt(LMS) (M2):
+#   l = 0.4122214708 r + 0.5363325363 g + 0.0514459929 b    L = 0.2104542553 l' + 0.7936177850 m' - 0.0040720468 s'
+#   m = 0.2119034982 r + 0.6806995451 g + 0.1073969566 b    a = 1.9779984951 l' - 2.4285922050 m' + 0.4505937099 s'
+#   s = 0.0883024619 r + 0.2817188376 g + 0.6299787005 b    b = 0.0259040371 l' + 0.7827717662 m' - 0.8086757660 s'
+# Inverse: l' = L + 0.3963377774 a + 0.2158037573 b, m' = L - 0.1055613458 a - 0.0638541728 b,
+#          s' = L - 0.0894841775 a - 1.2914855480 b, then cube and apply M1^-1:
+#   r = +4.0767416621 l - 3.3077115913 m + 0.2309699292 s
+#   g = -1.2684380046 l + 2.6097574011 m - 0.3413193965 s
+#   b = -0.0041960863 l - 0.7034186147 m + 1.7076147010 s
+
+
+def _hex_to_oklch(hex_color: str) -> tuple[float, float, float]:
+    """sRGB hex -> OKLCH (L in 0..1, C chroma, h hue in degrees 0..360).
+    Grays have no hue: C ~ 0 pins h to 0.0 so downstream hue math stays sane."""
+    r, g, b = (c / 255.0 for c in _to_rgb(hex_color))
+    # sRGB electro-optical transfer -> linear sRGB
+    r = r / 12.92 if r <= 0.04045 else ((r + 0.055) / 1.055) ** 2.4
+    g = g / 12.92 if g <= 0.04045 else ((g + 0.055) / 1.055) ** 2.4
+    b = b / 12.92 if b <= 0.04045 else ((b + 0.055) / 1.055) ** 2.4
+    lc = math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+    mc = math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+    sc = math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+    L = 0.2104542553 * lc + 0.7936177850 * mc - 0.0040720468 * sc
+    a = 1.9779984951 * lc - 2.4285922050 * mc + 0.4505937099 * sc
+    bb = 0.0259040371 * lc + 0.7827717662 * mc - 0.8086757660 * sc
+    C = math.hypot(a, bb)
+    h = math.degrees(math.atan2(bb, a)) % 360.0 if C > 1e-9 else 0.0
+    return L, C, h
+
+
+def _oklch_to_hex(L: float, C: float, h: float) -> str:
+    """OKLCH -> sRGB hex. Out-of-gamut chroma folds to the gamut edge: RGB
+    channels are clamped into [0, 1] on the way back (no gamut mapping, so a
+    too-vivid request returns the closest edge color, not an error)."""
+    a = C * math.cos(math.radians(h))
+    bb = C * math.sin(math.radians(h))
+    lc = L + 0.3963377774 * a + 0.2158037573 * bb
+    mc = L - 0.1055613458 * a - 0.0638541728 * bb
+    sc = L - 0.0894841775 * a - 1.2914855480 * bb
+    l, m, s = lc ** 3, mc ** 3, sc ** 3
+    r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+
+    def encode(c: float) -> float:
+        c = min(1.0, max(0.0, c))  # gamut clamp
+        return 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+
+    return "#%02x%02x%02x" % tuple(round(encode(c) * 255) for c in (r, g, b))
+
+
 def _fit_on_bg(hex_color: str, bg: str, *, minimum: float = 4.5) -> str:
     """Shift a color darker (on light bg) or lighter (on dark bg) until the pair
     clears the WCAG ratio. Best-effort within 12 steps; converges for any sane
@@ -331,8 +391,10 @@ def derive_archetype(brief: str) -> str:
 
 
 def derive_tokens(brief: str) -> dict[str, str]:
-    """A complete token set: the brief's theme ramp plus one brand accent, the
-    shape preset's radius scale, semantic on-accent/chart colors.
+    """A complete token set: the brief's theme ramp with neutrals tinted toward
+    the accent hue (lightness untouched), one brand accent plus its OKLCH
+    lightness scale, the shape preset's radius scale, semantic on-accent/chart
+    colors.
     Text-on-surface pairs pass WCAG AA in every theme by construction, and
     --accent-text is the accent itself shifted until it clears AA on --bg, so
     accent-colored text/links stay readable on light AND dark themes."""
@@ -340,6 +402,17 @@ def derive_tokens(brief: str) -> dict[str, str]:
     theme = derive_theme(brief)
     tokens = dict(_THEMES[theme])
     dark_bg = _rel_luminance(tokens["--bg"]) < 0.18
+    aL, aC, ah = _hex_to_oklch(accent)
+    # Tinted neutrals: a pure gray/black ramp is the #1 "default vs designed"
+    # tell — real brands tint their neutrals a whisper toward the accent hue.
+    # Shift each neutral in OKLCH to the accent's hue with a tiny chroma step,
+    # keeping lightness EXACTLY unchanged so every AA ratio below is preserved
+    # by construction (contrast lives in lightness, not hue).
+    for key, cap, step in (("--bg", 0.012, 0.008), ("--surface", 0.012, 0.008),
+                           ("--surface-2", 0.012, 0.008), ("--border", 0.012, 0.008),
+                           ("--text", 0.02, 0.01), ("--text-muted", 0.02, 0.01)):
+        L, C, _ = _hex_to_oklch(tokens[key])
+        tokens[key] = _oklch_to_hex(L, min(cap, C + step), ah)
     # Fit against the worst-case surface for the text direction: --surface-2 is
     # the DARKEST surface on light themes (worst for darkened text) and the
     # LIGHTEST on dark themes (worst for lightened text). The lint below checks
@@ -352,6 +425,11 @@ def derive_tokens(brief: str) -> dict[str, str]:
         "--accent-text": _fit_on_bg(accent, fit_bg),
         "--text-on-accent": _on_accent_text(accent),
     })
+    # Accent scale: OKLCH lightness steps around the accent's own L (500 = the
+    # brand accent), hue+chroma kept, gamut-clamped on the way back to sRGB.
+    # 100/300 for fills/tints, 700/900 for emphasis and text-on-light.
+    for name, delta in ((100, 0.30), (300, 0.15), (500, 0.0), (700, -0.15), (900, -0.30)):
+        tokens[f"--accent-{name}"] = _oklch_to_hex(min(0.97, max(0.08, aL + delta)), aC, ah)
     radius_sm, radius, radius_lg = _STYLES[derive_style(brief)]["radius"]
     tokens.update({
         "--radius-sm": f"{radius_sm}px",
@@ -364,6 +442,35 @@ def derive_tokens(brief: str) -> dict[str, str]:
     for i in range(5):
         tokens[f"--chart-{i + 1}"] = _rotate_hue(accent, 60 * i)
     return tokens
+
+
+def _second_theme(tokens: dict[str, str]) -> dict[str, str]:
+    """The other-mode ramp DERIVED from the token ramp, so a second theme is
+    generated, never hand-invented: OKLCH lightness inversion (L' = 1.06 - L,
+    clamped into [0.06, 0.97]) with hue/chroma kept — the same mapping swaps
+    the text/bg roles (dark text lands light, light surfaces land dark). The
+    three surfaces are then re-ordered into the target mode's convention —
+    dark themes go bg < surface < surface-2 by lightness (raised panels get
+    lighter), light themes go surface-2 < bg < surface — because raw
+    inversion alone lands the card color DARKER than the page. Text colors
+    are re-fitted against the variant's worst-case surface so the derived
+    pairs clear WCAG AA too."""
+    out = {}
+    for key in ("--bg", "--surface", "--surface-2", "--border", "--text", "--text-muted"):
+        L, C, h = _hex_to_oklch(tokens[key])
+        out[key] = _oklch_to_hex(min(0.97, max(0.06, 1.06 - L)), C, h)
+    derived_is_dark = _rel_luminance(tokens["--bg"]) >= 0.18
+    surfaces = ["--bg", "--surface", "--surface-2"]
+    by_lightness = sorted(surfaces, key=lambda k: _hex_to_oklch(out[k])[0])
+    order = surfaces if derived_is_dark else list(reversed(surfaces))
+    fixed = dict(zip(order, (out[k] for k in by_lightness), strict=True))
+    out.update(fixed)
+    # --surface-2 is the worst-case surface for the text direction in BOTH
+    # modes: the lightest surface on a dark variant, the darkest on a light
+    # one (same structural trick as --accent-text fitting in derive_tokens).
+    for key in ("--text", "--text-muted"):
+        out[key] = _fit_on_bg(out[key], out["--surface-2"])
+    return out
 
 
 def _heading_fallback(heading: str) -> str:
@@ -387,35 +494,43 @@ def design_md_block(brief: str) -> str:
     bq = body.replace(" ", "+")
     weights = "" if heading == "Archivo Black" else ":wght@400;500;700"
     bweights = "" if body == "Archivo Black" else ":wght@400;500;700"
+    # Second theme DERIVED from this ramp (OKLCH lightness inversion, AA
+    # re-checked), so the model offers the other mode without inventing hex.
+    variant = "light" if theme == "ink" else "dark"
+    v = _second_theme(t)
+    vline = " ".join(f"{k}: {v[k]};" for k in
+                     ("--bg", "--surface", "--surface-2", "--border", "--text", "--text-muted"))
     return (
         f"## DESIGN TOKENS — base theme '{theme}'\n"
-        "Define these CSS variables once in `:root` and reference them everywhere — "
-        "never hard-code hex. Text/bg pairs ship WCAG-AA checked.\n"
+        "Define once in `:root`, reference everywhere — never hard-code hex. "
+        "Text/bg pairs ship AA-checked.\n"
         f"```css\n:root {{\n{lines}\n}}\n```\n"
-        "- `--accent` = brand color for FILLED elements (buttons, chips, nav) "
-        "with `--text-on-accent` on top; `--accent-hover` for hover.\n"
-        "- `--accent-text` = accent tuned for AA on `--bg`: links, focus rings, "
+        "- `--accent` = brand FILLS (buttons, chips, nav) + `--text-on-accent` "
+        "on top; `--accent-hover` on hover.\n"
+        "- `--accent-text` = accent tuned for AA: links, focus rings, "
         "ANY accent-colored text.\n"
-        "- `--text-on-accent` = text on `--accent` fills; `--chart-1`..`--chart-5` = "
-        "data series (never improvise chart hex).\n"
-        "- `--bg`/`--surface`/`--surface-2` = page/panel/raised; `--border` = dividers; "
-        "`--text`/`--text-muted` on those, `--danger`/`--good` = state.\n"
+        "- `--accent-100`..`--accent-900` scale: 500 = brand accent; "
+        "100/300 fills/tints, 700/900 emphasis/text-on-light.\n"
+        "- `--chart-1`..`--chart-5` = data series (never improvise chart hex); "
+        "`--bg`/`--surface`/`--surface-2` = page/panel/raised, `--border` dividers; "
+        "`--text`/`--text-muted` on those, `--danger`/`--good` state.\n"
         f"Typography: heading '{heading}', body '{body}':\n"
         f"  <link href=\"https://fonts.googleapis.com/css2?family={hq}{weights}"
         f"&family={bq}{bweights}&display=swap\" rel=\"stylesheet\">\n"
-        "stacks (offline-safe fallbacks):\n"
         f"  --font-heading: '{heading}', {_heading_fallback(heading)};\n"
         f"  --font-body: '{body}', {_SANS_FALLBACK};\n"
-        "Pair a characterful display with a quiet body; extreme heading weight "
-        "contrast (700 vs 400, not 400 vs 500).\n"
         f"Shape language: {style_name} — radius scale via --radius tokens; "
         f"{style['density']} spacing; {style['depth']}.\n"
         f"LAYOUT ARCHETYPE: {archetype} — {_ARCHETYPES[archetype]['guidance']}. "
-        "Compose the page from THIS shape, not a centered hero + 3-card grid.\n"
-        "- BASE theme, not a straitjacket: tune type scale and imagery to fit THIS "
-        "product — keep text/bg pairs at WCAG AA.\n"
+        "Compose from THIS shape, not a centered hero + 3-card grid.\n"
+        f"Second theme = OKLCH lightness inversion of this ramp (AA-checked) — "
+        f"offer BOTH modes, toggle `.{variant}` on <html>; "
+        "accent/scale/radii carry over:\n"
+        f"```css\n.{variant} {{ {vline} }}\n```\n"
+        "- BASE theme, not a straitjacket: tune type/imagery to THIS product; "
+        "keep text/bg at AA.\n"
         "- Apply the theme class to <html> BEFORE first paint (not in a "
-        "useEffect); sync code-editor themes — no flash, no stuck white default.\n"
+        "useEffect) — no flash, no stuck white default.\n"
     )
 
 

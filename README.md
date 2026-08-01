@@ -90,13 +90,23 @@ passes. A failed verification keeps the previous healthy URL active.
   editorial, game, native, and utility builds retain their appropriate layout
   profile. The stored contract is restored for Improve instead of being guessed
   again; see [app types and layout profiles](docs/APP_TYPES.md).
+- **Design as a deterministic input, not a vibe.** Every web build gets a
+  brief-derived design contract — AA-checked theme and accent (with an
+  AA-fitted `--accent-text`), a curated font pair, a shape language, and a
+  named layout archetype — injected beside the DESIGN BAR in codegen and
+  persisted as `DESIGN.md` in the delivered tree, so Improve runs re-read it
+  instead of drifting. Advisory AI-look detectors (indigo gradients,
+  Inter-first type, glassmorphism, placeholder copy, identical card grids)
+  record on the manifest, brief-aware so invited playfulness never false-flags.
 - **Adversarial critic gate.** A critic tries to break the result before delivery.
 - **Closed learning loop.** Lessons are injected into stage prompts and graded by
   build outcome, so the factory gets measurably better over time.
 - **Reliability as a number.** The default bench is app-factory focused; use
   `skyn3t bench run --suite all` or `--suite games` when you intentionally want
   game/full-stack coverage. Before/after gating keeps a change from lifting the
-  average while silently regressing one app type.
+  average while silently regressing one app type. A second packaged suite,
+  `skyn3t/benchmarks/golden-design-v1.json`, exams design distinctiveness
+  specifically (`skyn3t bench golden run --suite skyn3t/benchmarks/golden-design-v1.json`).
 - **Safe + observable by default.** Offline stub on, autonomy gated behind
   approval, optional USD/token ceilings disabled unless you configure them,
   exact provider cost evidence where available, and loopback-only web access.

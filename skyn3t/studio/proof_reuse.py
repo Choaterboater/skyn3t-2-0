@@ -224,9 +224,12 @@ def preview_input_fingerprint(
         Path(".gitignore"),
         Path(".gitattributes"),
     ]
-    if spec.kind == "node":
-        excluded.append(Path("node_modules"))
-    elif spec.kind == "python_web":
+    # node_modules is ALWAYS derived content (rebuilt from the lockfile), never
+    # a runtime input — and npm churns transient dirs (.tap/coverage) mid-walk,
+    # which used to kill the fingerprint with WinError 3 on static sites that
+    # merely HAPPEN to ship a node_modules tree. Exclude it for every kind.
+    excluded.append(Path("node_modules"))
+    if spec.kind == "python_web":
         excluded.extend((Path(".venv"), Path("venv")))
 
     digest = hashlib.sha256()

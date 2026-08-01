@@ -2,7 +2,7 @@
   "schema_version": 1,
   "suite_id": "golden-design-v1",
   "name": "SkyN3t Golden Design Suite v1",
-  "description": "Five design-distinctiveness contracts: each brief demands a specific, non-default aesthetic so generic output (the AI-default indigo-gradient/Inter/glassmorphism look) is visible as a failure. Compare runs by score AND by the advisory AI-look warnings recorded in manifest.extra.web_polish.warnings. Run: skyn3t bench golden run --suite skyn3t/benchmarks/golden-design-v1.json. The brutalist case floors intent at 70, not 80: style-direction words ('grotesque', 'anti-corporate', '2px borders') legitimately never appear as page copy on a CORRECT delivery — verified against a real build whose site was unmistakably on-brief.",
+  "description": "Five design-distinctiveness contracts: each brief demands a specific, non-default aesthetic so generic output (the AI-default indigo-gradient/Inter/glassmorphism look) is visible as a failure. Compare runs by score AND by the advisory AI-look warnings recorded in manifest.extra.web_polish.warnings. Run: skyn3t bench golden run --suite skyn3t/benchmarks/golden-design-v1.json. The brutalist and swiss cases floor intent at 70, not 80: style-direction words ('grotesque', 'anti-corporate', 'tabular numerals', 'swiss') legitimately never appear as page copy or code on a CORRECT delivery — verified against real builds whose sites were unmistakably on-brief.",
   "cases": [
     {
       "id": "brutalist-zine-static",
@@ -38,7 +38,7 @@
       "expectations": {
         "expected_stack": "react",
         "min_score": 60,
-        "min_intent_score": 80,
+        "min_intent_score": 70,
         "required_gates": ["proof", "security_check", "seo"],
         "required_artifacts": ["package.json", "src/App.jsx", "src/styles.css"]
       }

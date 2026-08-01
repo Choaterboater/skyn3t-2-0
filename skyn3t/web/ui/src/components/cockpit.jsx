@@ -51,6 +51,18 @@ export function latestRunningSlug(events) {
   return slug;
 }
 
+// The preview route only serves a DELIVERED project, so a fetch fired while
+// the build is still running 409s. Track the terminal build event
+// (build.completed / build.failed) so the preview effect re-runs — and the
+// mid-build 409 clears — once the build behind the slug settles.
+export function latestBuildTerminal(events) {
+  let terminal = null;
+  for (const e of latestBuildEvents(events)) {
+    if (e.type === "build.completed" || e.type === "build.failed") terminal = e.type;
+  }
+  return terminal; // "build.completed" | "build.failed" | null
+}
+
 // The REAL build pipeline, folded from the live event stream — never a hardcoded
 // stage list. `build.started` carries the planner's actual stage names
 // (payload.stages); each `build.stage.started` / `build.stage.completed` carries
@@ -203,6 +215,7 @@ export function PreviewPanel({ events }) {
   const slug = useMemo(() => latestRunningSlug(events), [events]);
   const snap = useMemo(() => latestSnapshot(events), [events]);
   const hasIndex = (snap?.files || []).includes("index.html");
+  const settled = useMemo(() => latestBuildTerminal(events), [events]);
   const [preview, setPreview] = useState({ slug: "", url: "", error: "" });
   useEffect(() => {
     let alive = true;
@@ -216,12 +229,16 @@ export function PreviewPanel({ events }) {
         if (alive) setPreview({ slug, url: payload.preview_url || "", error: "" });
       })
       .catch((error) => {
-        if (alive) {
-          setPreview({ slug, url: "", error: String(error?.message || error) });
-        }
+        if (!alive) return;
+        const message = String(error?.message || error);
+        // apiFetch prefixes errors with the HTTP status. A mid-build 409 is
+        // "not ready yet", not a failure — stay pending; the `settled` dep
+        // re-fires this effect once the build finishes and the fetch succeeds.
+        if (message.startsWith("409")) setPreview({ slug, url: "", error: "" });
+        else setPreview({ slug, url: "", error: message });
       });
     return () => { alive = false; };
-  }, [slug, hasIndex]);
+  }, [slug, hasIndex, settled]);
   if (!slug) {
     return <p className="px-4 py-3 font-mono text-[11px] text-ash/70">Submit a brief to preview.</p>;
   }

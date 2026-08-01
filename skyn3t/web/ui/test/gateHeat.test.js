@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { gateHeatFromEvents } from "../src/gateHeat.js";
 
-const GATES = ["headless_gate", "liveness", "qa_playtest"];
+const GATES = ["headless_gate", "liveness", "qa_playtest", "seo_check"];
 
 test("a failed build drains still-forging gates into failed instead of pulsing forever", () => {
   const heat = gateHeatFromEvents(
@@ -103,4 +103,25 @@ test("event-name sniffing for live gate heat is preserved", () => {
   assert.equal(heat.running.has("qa_playtest"), true);
   assert.equal(heat.live, true);
   assert.equal(heat.blockedBy, null);
+});
+
+test("gate names arriving via payload.metadata.stage produce live heat", () => {
+  // Gate repair dispatches carry the gate name in TaskRequest.metadata.stage,
+  // which the orchestrator nests at payload.metadata.stage — the source and
+  // payload.stage name nothing gate-shaped for these events.
+  const heat = gateHeatFromEvents(
+    [
+      { type: "build.started", correlation_id: "b1", payload: { build_id: "b1" } },
+      {
+        type: "task.started",
+        source: "orchestrator",
+        correlation_id: "b1",
+        payload: { build_id: "b1", metadata: { stage: "seo_check" } },
+      },
+    ],
+    GATES,
+  );
+
+  assert.equal(heat.running.has("seo_check"), true);
+  assert.equal(heat.live, true);
 });

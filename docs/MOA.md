@@ -28,6 +28,13 @@ downgrade: Hermes' own default and cheapest cadence is `user_turn` — advisors 
 topology exactly, and skip the two cadences (`per_iteration`, `every_n`) that are
 physically impossible for four of five backends.
 
+Advisors are deliberately scoped to **engineering judgement** — architecture,
+wiring, failure modes. Visual design direction (palette, typography, layout
+aesthetics) is owned by the build's DESIGN TOKENS block and DESIGN BAR
+directive, and the advisor prompt says so: the council must not prescribe
+colors, fonts, or decorative styling. One taste stays in charge of look and
+feel instead of N advisors' averaged defaults.
+
 ## Configuration
 
 The council is **on by default**, advised by `claude_cli` and `kimi_cli`. Those

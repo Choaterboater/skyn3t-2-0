@@ -14,8 +14,8 @@ Use this when you need the fastest path to the important code.
 | Web control plane | `skyn3t/web/app.py, skyn3t/web/routes.py, skyn3t/web/ui/` |
 | RAG / corpus | `skyn3t/rag/` |
 | Cortex / autonomous loop | `skyn3t/cortex/` |
-| Game work | `docs/game-capability-roadmap.md, skyn3t/agents/` |
-| Visual / repair loops | `skyn3t/studio/visual_proof.py, skyn3t/studio/visual_check.py, skyn3t/studio/liveness.py, skyn3t/studio/game_visual_loop.py` |
+| Game work | `docs/archive/game-capability-roadmap.md, skyn3t/agents/` |
+| Visual / repair loops | `skyn3t/studio/game_visual_loop.py, skyn3t/studio/game_visual_check.py` |
 | Repo map refresh | `scripts/refresh_file_map.py, skyn3t/rag/repo_map.py` |
 | Docs hub | `docs/INDEX.md, docs/START_HERE.md, docs/WORKFLOW.md, docs/ARCHITECTURE.md, docs/ROADMAP.md, STATUS.md` |
 

@@ -3785,6 +3785,29 @@ def ensure_nextjs_metadata(root: str | Path) -> list[str]:
         except OSError:
             return []
         return [f"app/{rel}"]
+    # Every candidate is a client component (models love 'use client' root
+    # layouts): a metadata export would be invalid — but a literal <title> and
+    # meta description inside the layout's manual <head> is valid HTML and
+    # React hoists it. That is the last honest floor.
+    for rel in ("layout.tsx", "layout.jsx", "layout.ts", "layout.js"):
+        path = app_dir / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "<head>" not in text or re.search(r"<title[\s>]", text):
+            continue
+        snippet = (
+            "        <title>{" + json.dumps(title) + "}</title>\n"
+            '        <meta name="description" content={' + json.dumps(description) + "} />\n"
+        )
+        try:
+            path.write_text(text.replace("<head>", "<head>\n" + snippet, 1), encoding="utf-8")
+        except OSError:
+            return []
+        return [f"app/{rel}"]
     return []
 
 

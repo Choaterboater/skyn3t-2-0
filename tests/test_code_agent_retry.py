@@ -15,7 +15,7 @@ from skyn3t.agents.code_agent import CodeAgent
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
 
-_REAL_APP = "// a real multi-line app\n" + ("const item = { id: 1, name: 'x' };\n" * 200)
+_REAL_APP = "// a real multi-line app\n" + ("const item = { id: 1, name: 'x' };\n" * 400)
 _BIG_PHASER_MAIN = (
     "import Phaser from 'phaser';\n"
     "class GameScene extends Phaser.Scene { create(){ this.add.text(10,10,'play'); } }\n"

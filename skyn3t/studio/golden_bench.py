@@ -246,7 +246,12 @@ def _safe_artifact_path(value: str) -> str:
 class GoldenExpectations(_StrictModel):
     expected_stack: str
     min_score: float = Field(ge=60.0, le=100.0)
-    min_intent_score: float = Field(ge=80.0, le=100.0)
+    # ge=60, not 80: the intent heuristic is keyword coverage of brief terms in
+    # delivered source, and style-direction vocabulary ("grotesque",
+    # "anti-corporate") legitimately never appears as page copy on a CORRECT
+    # delivery (verified on a live golden-design build). 60 still stops a
+    # meaningless near-zero threshold; individual cases set their own floor.
+    min_intent_score: float = Field(ge=60.0, le=100.0)
     required_gates: list[str] = Field(min_length=1, max_length=16)
     required_artifacts: list[str] = Field(min_length=1, max_length=64)
 

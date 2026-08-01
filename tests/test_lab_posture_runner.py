@@ -47,7 +47,10 @@ def test_security_finding_records_but_does_not_block_in_lab(tmp_path):
     project = tmp_path / "app"
     project.mkdir()
     (project / "config.js").write_text(
-        'const api_key = "REPLACE_WITH_YOUR_KEY_HERE";\n', encoding="utf-8"
+        # A leaked key in a NON-assignment form: the deterministic secret
+        # rewrite (runner._rewrite_secret_findings) cannot repair it, so the
+        # finding still reaches the posture decision these tests pin.
+        'console.log("sk-live-1234567890abcdef");\n', encoding="utf-8"
     )
     runner = _runner(tmp_path, build_posture="lab")
     manifest = BuildManifest(slug="app", brief="brief", stack="static")
@@ -76,7 +79,10 @@ def test_security_finding_blocks_in_release(tmp_path):
     project = tmp_path / "app"
     project.mkdir()
     (project / "config.js").write_text(
-        'const api_key = "REPLACE_WITH_YOUR_KEY_HERE";\n', encoding="utf-8"
+        # A leaked key in a NON-assignment form: the deterministic secret
+        # rewrite (runner._rewrite_secret_findings) cannot repair it, so the
+        # finding still reaches the posture decision these tests pin.
+        'console.log("sk-live-1234567890abcdef");\n', encoding="utf-8"
     )
     runner = _runner(tmp_path, build_posture="release")
     manifest = BuildManifest(slug="app", brief="brief", stack="static")
@@ -120,7 +126,10 @@ def test_blocking_gates_escape_hatch_restores_one_gate_in_lab(tmp_path):
     project = tmp_path / "app"
     project.mkdir()
     (project / "config.js").write_text(
-        'const api_key = "REPLACE_WITH_YOUR_KEY_HERE";\n', encoding="utf-8"
+        # A leaked key in a NON-assignment form: the deterministic secret
+        # rewrite (runner._rewrite_secret_findings) cannot repair it, so the
+        # finding still reaches the posture decision these tests pin.
+        'console.log("sk-live-1234567890abcdef");\n', encoding="utf-8"
     )
     runner = _runner(tmp_path, build_posture="lab", blocking_gates="security")
     manifest = BuildManifest(slug="app", brief="brief", stack="static")

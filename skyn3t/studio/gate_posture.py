@@ -38,6 +38,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 # Gates proving the DELIVERY IS BROKEN. Blocking in EVERY posture.
 _ALWAYS_BLOCKING = frozenset(
     {
@@ -95,6 +99,23 @@ _RELEASE_ONLY = frozenset(
 #: drift test can assert the runner never invents an unclassified name.
 KNOWN_GATES = _ALWAYS_BLOCKING | _RELEASE_ONLY
 
+# Classified above for posture bookkeeping, but the runner never passes these
+# names to ``blocks`` — their findings fold into other signals (``verify_boot``
+# and ``reward_hacking`` -> ``verify_build``; ``ruff`` / ``unwired_components``
+# / ``generated_tests`` -> ``proof``; ``checklist`` -> the acceptance contract).
+# A ``blocking_gates`` entry naming one of them silently does nothing, so
+# ``from_settings`` warns loudly instead of accepting it quietly.
+_NEVER_EMITTED = frozenset(
+    {
+        "checklist",
+        "generated_tests",
+        "reward_hacking",
+        "ruff",
+        "unwired_components",
+        "verify_boot",
+    }
+)
+
 _VALID_POSTURES = frozenset({"lab", "release"})
 
 
@@ -128,6 +149,14 @@ class GatePosture:
             for part in str(getattr(settings, "blocking_gates", "") or "").split(",")
             if part.strip()
         )
+        noop = forced & _NEVER_EMITTED
+        if noop:
+            log.warning(
+                "gate_posture.blocking_gates_noop",
+                gates=sorted(noop),
+                hint="the runner never emits these gate names; their findings "
+                "fold into other gates, so the entries block nothing",
+            )
         # The documented game-quality master switch
         # (``settings.game_quality_gates_verdict``, default ON) promises a hard
         # no_go on a REAL visual/playtest failure. It must outrank the posture

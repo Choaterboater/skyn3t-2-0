@@ -80,10 +80,12 @@ from skyn3t.studio.build_intelligence import prepare_build_intelligence
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
+from skyn3t.studio.design_seeds import design_seed_for
 from skyn3t.studio.finance_sanity import check_finance_sanity
 from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.studio.gate_verdict import GateVerdict
+from skyn3t.studio.grounding_check import check_grounding
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.lab_policy import LabAutonomyPolicy
 from skyn3t.studio.layout_profiles import resolve_layout_profile
@@ -1810,6 +1812,16 @@ class StudioRunner:
             log.warning("web_polish.failed", error=str(exc))
             polish = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
         manifest.extra["web_polish"] = polish
+        # Semantic grounding lint: advisory-only (never gates), merged into
+        # the SAME polish record so the operator sees one warnings list.
+        try:
+            grounding = check_grounding(project_dir, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("grounding_check.failed", error=str(exc))
+            grounding = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
+        manifest.extra["grounding"] = grounding
+        if grounding.get("warnings"):
+            polish.setdefault("warnings", []).extend(str(w)[:300] for w in grounding["warnings"][:20])
         if polish.get("skipped") is not True and polish.get("ok") is False:
             reason = "; ".join(str(i) for i in polish.get("issues", [])[:3])[:500]
             manifest.extra["web_polish_gate"] = reason
@@ -6660,8 +6672,35 @@ class StudioRunner:
             requested=bool(extra.get("best_of_n_across_models")),
         )
 
+        # Divergence-seeded best-of-N (design web stacks only): each trajectory
+        # gets a DISTINCT design seed via extra["design_seed"] so candidates
+        # sample aesthetic diversity, not just implementation luck. Candidate 0
+        # is the control (today's derived tokens, byte-identical prompt). Seed
+        # and judge construction are best-effort — neither may break a build.
+        design_web = False
+        try:
+            from skyn3t.agents.code_agent import _DESIGN_WEB_STACKS
+
+            design_web = (plan.stack or "").lower() in _DESIGN_WEB_STACKS
+        except Exception:  # noqa: BLE001 - no seeding on resolution failure
+            design_web = False
+        bon_vision_fn = None
+        if design_web:
+            try:
+                from skyn3t.studio.visual_check import make_vision_fn
+
+                bon_vision_fn = make_vision_fn(self.settings)
+            except Exception:  # noqa: BLE001 - no judge -> rank-order ties
+                bon_vision_fn = None
+
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
-            payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
+            traj_extra = extra
+            if design_web:
+                try:
+                    traj_extra = {**extra, "design_seed": design_seed_for(plan.brief, index)}
+                except Exception as exc:  # noqa: BLE001 - seeding must never break a build
+                    log.warning("best_of_n.design_seed_failed", index=index, error=str(exc)[:120])
+            payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, traj_extra)
             payload.update(spec.extra)
             payload["worktree_role"] = f"candidate:{index}"
             payload["trajectory_index"] = index
@@ -6688,6 +6727,9 @@ class StudioRunner:
             run_build=bool(getattr(self.settings, "run_generated_build", True)),
             build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
             brief=plan.brief,
+            # Proof-ties between the seeded candidates break toward this judge
+            # (None -> rank order, logged inside best_of_n).
+            vision_fn=bon_vision_fn,
         )
 
         if selection.winner is None:

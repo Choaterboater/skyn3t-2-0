@@ -33,6 +33,7 @@ from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import build_repo_context_pack
 from skyn3t.studio.design_tokens import read_design_md
+from skyn3t.studio.grounding_check import check_grounding
 from skyn3t.studio.layout_profiles import (
     is_valid_profile_payload,
     layout_contract_block,
@@ -69,6 +70,18 @@ _CONTROL_RELATIVE_PATHS = (
     _MANIFEST_RELATIVE_PATH,
     _OBSERVABILITY_RELATIVE_PATH,
 )
+
+
+def _grounding_fix_hints(project_dir: Path, stack: str) -> list[str]:
+    """Advisory grounding-lint warnings for the delivered project, phrased
+    as fix hints for the improver. Never raises — a lint failure must not
+    break an improve run."""
+    try:
+        result = check_grounding(project_dir, stack)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("improve.grounding_check_failed", error=str(exc))
+        return []
+    return [str(w) for w in (result.get("warnings") or [])][:10]
 
 
 def _project_lock(project_dir: Path) -> Lock:
@@ -868,6 +881,19 @@ class ImproveEngine:
                     "styling consistent with it unless the goal explicitly "
                     "restyles:\n"
                     f"{design_md}\n\n{repo_ctx}"
+                )
+            # Semantic grounding lint: undefined design tokens and phantom
+            # local imports in the DELIVERED project (the source of truth,
+            # not the worktree copy) are deterministic facts the improver
+            # can act on. Advisory hints only — they inform the fix, they
+            # never block the run.
+            grounding_hints = _grounding_fix_hints(project_dir, stack)
+            if grounding_hints:
+                repo_ctx = (
+                    "Advisory grounding-lint findings in the current project "
+                    "(fix when relevant to the goal; these are hints, not "
+                    "failures):\n- " + "\n- ".join(grounding_hints)
+                    + f"\n\n{repo_ctx}"
                 )
             context_pack_summary = context_pack.summary()
             await self._emit(EventType.IMPROVE_STAGE,

@@ -7,6 +7,10 @@ from skyn3t.studio.design_tokens import (
     _FONT_ROTATION,
     _STYLES,
     _THEMES,
+    _hex_to_oklch,
+    _oklch_to_hex,
+    _second_theme,
+    _to_rgb,
     contrast_ratio,
     derive_accent,
     derive_archetype,
@@ -229,3 +233,123 @@ def test_lint_checks_text_on_accent_against_accent_not_bg(tmp_path):
         ":root { --text-on-accent: #ffffff; --accent: #f59e0b; --bg: #f8f7f5; }")
     issues = lint_contrast(tmp_path)
     assert issues and issues[0]["bg"].startswith("--accent")
+
+
+# ---- OKLCH helpers --------------------------------------------------------------
+
+def test_oklch_round_trip_within_one_lsb():
+    # Primaries, extremes and three arbitrary hexes must survive the
+    # sRGB -> OKLCH -> sRGB round trip within ~1/255 per channel.
+    for hexv in ("#ff0000", "#00ff00", "#0000ff", "#ffffff", "#000000",
+                 "#16a34a", "#f59e0b", "#7c3aed"):
+        L, C, h = _hex_to_oklch(hexv)
+        back = _oklch_to_hex(L, C, h)
+        diffs = [abs(a - b) for a, b in zip(_to_rgb(hexv), _to_rgb(back))]
+        assert max(diffs) <= 1, (hexv, back)
+
+
+def test_oklch_out_of_gamut_folds_to_gamut_edge():
+    # A chroma far beyond sRGB must clamp into a valid hex, not raise or wrap.
+    # Naive channel clamping (no gamut mapping) keeps L approximate, not exact.
+    out = _oklch_to_hex(0.7, 0.4, 30.0)
+    assert re.fullmatch(r"#[0-9a-f]{6}", out)
+    L, C, _ = _hex_to_oklch(out)
+    assert abs(L - 0.7) < 0.1 and C < 0.4  # chroma folded to the gamut edge
+
+
+# ---- Tinted neutrals -------------------------------------------------------------
+
+_NEUTRAL_CAPS = {  # key -> (chroma cap, chroma step) from derive_tokens
+    "--bg": (0.012, 0.008), "--surface": (0.012, 0.008),
+    "--surface-2": (0.012, 0.008), "--border": (0.012, 0.008),
+    "--text": (0.02, 0.01), "--text-muted": (0.02, 0.01),
+}
+
+
+def test_tinted_neutrals_keep_lightness_exactly():
+    # The AA guarantee rests on this: tinting shifts hue/chroma only, so every
+    # neutral keeps the lightness its contrast ratio was built on.
+    for theme, brief in _THEME_BRIEFS.items():
+        base = _THEMES[theme]
+        t = derive_tokens(brief)
+        for key in _NEUTRAL_CAPS:
+            L0 = _hex_to_oklch(base[key])[0]
+            L1 = _hex_to_oklch(t[key])[0]
+            assert abs(L1 - L0) < 0.01, (theme, key)
+
+
+def test_tinted_neutrals_move_toward_accent_hue_within_cap():
+    for theme, brief in _THEME_BRIEFS.items():
+        t = derive_tokens(brief)
+        ah = _hex_to_oklch(t["--accent"])[2]
+        for key, (cap, _step) in _NEUTRAL_CAPS.items():
+            _, C1, h1 = _hex_to_oklch(t[key])
+            assert t[key] != _THEMES[theme][key]  # a real tint, not a no-op
+            assert C1 <= cap + 0.004  # never more chroma than the cap allows
+            if C1 >= 0.008:  # where chroma survives gamut, hue is the accent's
+                dist = abs((h1 - ah + 180.0) % 360.0 - 180.0)
+                assert dist <= 25.0, (theme, key, h1, ah)
+
+
+# ---- Accent scale -----------------------------------------------------------------
+
+def test_accent_scale_is_monotonic_in_lightness():
+    for brief in _THEME_BRIEFS.values():
+        t = derive_tokens(brief)
+        Ls = [_hex_to_oklch(t[f"--accent-{s}"])[0]
+              for s in (100, 300, 500, 700, 900)]
+        # 100 lightest .. 900 darkest (non-strict: the 0.08/0.97 clamp can
+        # merge neighbors for very light/dark accents)
+        assert all(a >= b - 0.01 for a, b in zip(Ls, Ls[1:]))
+        assert all(0.08 - 0.01 <= L <= 0.97 + 0.01 for L in Ls)
+        # 500 is the brand accent's own lightness
+        assert abs(Ls[2] - _hex_to_oklch(t["--accent"])[0]) < 0.01
+
+
+def test_accent_scale_strictly_ordered_for_mid_lightness_accent():
+    t = derive_tokens("an ocean weather app")  # #2563eb, L ~ 0.55
+    Ls = [_hex_to_oklch(t[f"--accent-{s}"])[0] for s in (100, 300, 500, 700, 900)]
+    assert all(a > b for a, b in zip(Ls, Ls[1:]))
+    assert t["--accent-500"] == "#2563eb"  # 500 round-trips to the accent
+
+
+# ---- Derived second theme -----------------------------------------------------------
+
+def test_second_theme_variant_clears_AA_and_lints_clean(tmp_path):
+    # The derived variant of EVERY theme (dark for light briefs, light for
+    # ink) must clear AA on every text/bg pair and pass our own lint.
+    for theme, brief in _THEME_BRIEFS.items():
+        v = _second_theme(derive_tokens(brief))
+        for text_key in ("--text", "--text-muted"):
+            for bg_key in ("--bg", "--surface", "--surface-2"):
+                assert contrast_ratio(v[text_key], v[bg_key]) >= 4.5, (theme, text_key, bg_key)
+        css = ":root {\n" + "\n".join(f"  {k}: {val};" for k, val in v.items()) + "\n}\n"
+        (tmp_path / "styles.css").write_text(css)
+        assert lint_contrast(tmp_path) == [], theme
+
+
+def test_second_theme_swaps_text_bg_roles():
+    # Light ramp -> dark variant: bg lands dark, text lands light; ink inverts.
+    v = _second_theme(derive_tokens("a cozy bakery site"))
+    assert _hex_to_oklch(v["--bg"])[0] < 0.2
+    assert _hex_to_oklch(v["--text"])[0] > 0.6
+    v = _second_theme(derive_tokens("a dark neon crypto terminal"))
+    assert _hex_to_oklch(v["--bg"])[0] > 0.8
+    assert _hex_to_oklch(v["--text"])[0] < 0.3
+
+
+def test_design_md_block_offers_derived_second_theme():
+    dark = design_md_block("a cozy bakery site")
+    assert "Second theme" in dark and ".dark {" in dark
+    light = design_md_block("a dark neon crypto terminal")  # ink brief
+    assert ".light {" in light
+
+
+def test_design_md_block_stays_compact():
+    # Prompt real estate is scarce: tokens + scale + second theme must fit.
+    for brief in ("an operations dashboard", "a cozy bakery site",
+                  "a green text editor", "a recipe box for home cooks"):
+        assert len(design_md_block(brief)) <= 2500, brief
+    block = design_md_block("an operations dashboard")
+    assert "--accent-100:" in block and "--accent-900:" in block
+    assert "100/300 fills/tints, 700/900 emphasis/text-on-light" in block

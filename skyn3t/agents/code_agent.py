@@ -370,6 +370,20 @@ _WEB_STACKS = frozenset({
 # Generated app composition contracts apply to conventional web frontends, not
 # canvas-game prompts. Phaser retains its dedicated game/art directives.
 _DESIGN_WEB_STACKS = _WEB_STACKS - {"phaser"}
+
+
+def _seed_tokens_md(extra: Any) -> str:
+    """The per-build design-seed override the runner threads for divergence-
+    seeded best-of-N: ``extra["design_seed"]["tokens_md"]`` replaces the
+    brief-derived ``design_md_block(brief)`` so each candidate themes from a
+    DISTINCT token set. '' when absent/malformed -> derive (the byte-identical
+    default path)."""
+    seed = extra.get("design_seed") if isinstance(extra, dict) else None
+    if isinstance(seed, dict):
+        tokens_md = seed.get("tokens_md")
+        if isinstance(tokens_md, str):
+            return tokens_md
+    return ""
 _FRONTEND_EXTENSIONS = frozenset({
     ".jsx", ".tsx", ".css", ".html", ".htm", ".vue", ".svelte",
     ".astro", ".scss", ".sass", ".less",
@@ -756,6 +770,9 @@ class CodeAgent(BaseAgent):
         _moa_guidance = str(
             (_extra.get("moa_guidance") or "") if isinstance(_extra, dict) else ""
         )
+        # Per-trajectory design seed (divergence-seeded best-of-N): threaded
+        # exactly like moa_guidance above; overrides the derived token block.
+        _design_tokens_md = _seed_tokens_md(_extra)
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         raw_prior = p.get("prior")
@@ -860,11 +877,13 @@ class CodeAgent(BaseAgent):
                         brief, stack, plan, knowledge,
                         art_plan=_art_plan, game_design=_game_design,
                         asset_foundry=_asset_foundry, design=design,
-                        moa_guidance=_moa_guidance)
+                        moa_guidance=_moa_guidance,
+                        design_tokens_md=_design_tokens_md)
                     if attempt == 0
                     else self._agentic_resume_prompt(
                         brief, stack, plan, disk, missing_planned,
-                        agentic_error, contract_gap, design=design)
+                        agentic_error, contract_gap, design=design,
+                        design_tokens_md=_design_tokens_md)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
@@ -1035,7 +1054,8 @@ class CodeAgent(BaseAgent):
                     try:
                         return rel_path, await self._generate_file(
                             rel_path, brief, stack, plan, knowledge,
-                            model_override=model_override, design=design)
+                            model_override=model_override, design=design,
+                            design_tokens_md=_design_tokens_md)
                     except Exception:  # noqa: BLE001 - keep scaffold fallback for this file
                         return rel_path, None
 
@@ -1173,7 +1193,8 @@ class CodeAgent(BaseAgent):
                         game_design: dict[str, Any] | None = None,
                         asset_foundry: dict[str, Any] | None = None,
                         design: dict[str, Any] | None = None,
-                        moa_guidance: str = "") -> str:
+                        moa_guidance: str = "",
+                        design_tokens_md: str | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -1219,7 +1240,9 @@ class CodeAgent(BaseAgent):
             # Brief-derived tokens travel WITH the design bar, not in the
             # head-capped skill-advice bucket (a mature skill library truncated
             # them to 0 bytes). Same stack gate as the bar: never phaser/mobile.
-            + (f"{design_md_block(brief)}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
+            # A threaded design seed (best-of-N divergence) overrides the
+            # derived block; default (falsy) derives exactly as before.
+            + (f"{design_tokens_md or design_md_block(brief)}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
             + (
                 f"Follow this design direction: {self._design_summary(design)}\n"
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
@@ -1558,6 +1581,7 @@ class CodeAgent(BaseAgent):
         prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
         raw_extra = p.get("extra")
         extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+        design_tokens_md = _seed_tokens_md(extra)
         profile = profile_from_payload(extra.get("layout_profile"))
         raw_design = self._unwrap_design_payload(prior.get("design"))
         design = self._design_with_layout_profile(
@@ -1588,11 +1612,12 @@ class CodeAgent(BaseAgent):
             while True:
                 prompt = (
                     self._agentic_slice_prompt(
-                        brief, stack, name, slice_files, manifest, knowledge, design=design)
+                        brief, stack, name, slice_files, manifest, knowledge, design=design,
+                        design_tokens_md=design_tokens_md)
                     if attempt == 0
                     else self._agentic_slice_resume_prompt(
                         brief, stack, name, slice_files, disk, missing, agentic_error,
-                        design=design)
+                        design=design, design_tokens_md=design_tokens_md)
                 )
                 self._task_metadata.setdefault("prompts", []).append({
                     "stage": f"codegen_slice_{name}"
@@ -1681,7 +1706,8 @@ class CodeAgent(BaseAgent):
                     try:
                         return rel, await self._generate_file(
                             rel, brief, stack, plan, knowledge,
-                            model_override=model_override, manifest=manifest, design=design)
+                            model_override=model_override, manifest=manifest, design=design,
+                            design_tokens_md=design_tokens_md)
                     except Exception:  # noqa: BLE001 - isolate per file
                         return rel, None
 
@@ -1741,6 +1767,7 @@ class CodeAgent(BaseAgent):
     def _agentic_slice_prompt(
         self, brief: str, stack: str, slice_name: str, slice_files: list[str],
         manifest: str, knowledge: str, design: dict[str, Any] | None = None,
+        design_tokens_md: str | None = None,
     ) -> str:
         want = "\n".join(f"  {f}" for f in slice_files) or "  (none listed)"
         # The frontend slice owns the look — give it the design bar + the chosen
@@ -1751,7 +1778,7 @@ class CodeAgent(BaseAgent):
             (slice_name == "frontend" or slice_name.startswith("frontend_"))
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_md_block(brief)}"
+            design_block = f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
             summary = self._design_summary(design)
             if summary:
                 design_block += f"\nFollow this design direction: {summary}"
@@ -1780,6 +1807,7 @@ class CodeAgent(BaseAgent):
         missing: list[str],
         previous_error: str,
         design: dict[str, Any] | None = None,
+        design_tokens_md: str | None = None,
     ) -> str:
         """Compact continuation for an incomplete specialist slice."""
         remaining = "\n".join(f"- {path}" for path in missing) or (
@@ -1796,7 +1824,7 @@ class CodeAgent(BaseAgent):
             summary = self._design_summary(design)
             if summary:
                 design_block = (
-                    f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_md_block(brief)}"
+                    f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
                     f"\nFollow this design direction: {summary}"
                 )
         return self.system_prompt(
@@ -1999,6 +2027,7 @@ class CodeAgent(BaseAgent):
         previous_error: str,
         contract_gap: str,
         design: dict[str, Any] | None = None,
+        design_tokens_md: str | None = None,
     ) -> str:
         """Compact in-place continuation after an incomplete agentic session.
 
@@ -2031,7 +2060,7 @@ class CodeAgent(BaseAgent):
             f"Files already present (inspect before editing):\n{existing}\n\n"
             + (f"Variant contract: {variant}\n\n" if variant else "")
             + (
-                f"{_DESIGN_DIRECTIVE}\n{design_md_block(brief)}\n"
+                f"{_DESIGN_DIRECTIVE}\n{design_tokens_md or design_md_block(brief)}\n"
                 f"Follow this design direction: {self._design_summary(design)}\n\n"
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
                 else ""
@@ -2757,7 +2786,8 @@ class CodeAgent(BaseAgent):
                              plan: dict[str, Any], knowledge: str = "",
                              model_override: str | None = None,
                              manifest: str = "",
-                             design: dict[str, Any] | None = None) -> str | None:
+                             design: dict[str, Any] | None = None,
+                             design_tokens_md: str | None = None) -> str | None:
         ext = Path(rel_path).suffix.lower()
         base = Path(rel_path).name.lower()
         is_readme = base in _README_NAMES
@@ -2788,7 +2818,7 @@ class CodeAgent(BaseAgent):
             ext in _FRONTEND_EXTENSIONS
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n{_DESIGN_DIRECTIVE}\n{design_md_block(brief)}"
+            design_block = f"\n{_DESIGN_DIRECTIVE}\n{design_tokens_md or design_md_block(brief)}"
             if design_summary:
                 design_block += f"\nFollow this design direction: {design_summary}"
         prompt = (

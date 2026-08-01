@@ -50,12 +50,15 @@ export function gateHeatFromEvents(events, gateNames) {
       running.clear();
     }
 
+    // Gate repair dispatches nest the gate name at payload.metadata.stage
+    // (the orchestrator wraps TaskRequest.metadata), not payload.stage.
     const tag = [
       e.type,
       e.source,
       payload.stage,
       payload.gate,
       payload.capability,
+      payload.metadata?.stage,
     ].join(" ").toLowerCase();
     for (const gate of gateNames) {
       if (!tag.includes(gate)) continue;

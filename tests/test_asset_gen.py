@@ -466,10 +466,10 @@ def test_apply_web_asset_foundry_wires_html_when_codegen_ignored_assets(tmp_path
 
     html = (tmp_path / "index.html").read_text(encoding="utf-8")
     assert out["changed"] is True
-    assert out["hero_applied"] is True
+    assert "skyn3t-asset-hero" not in html  # hero is the design's call, never pasted on
     assert out["favicon_applied"] is True
     assert out["og_applied"] is True
-    assert '<img src="/assets/hero.png"' in html
+    assert '<img src="/assets/hero.png"' not in html  # no deterministic banner injection
     assert '<link rel="icon" href="/assets/favicon.png">' in html
     assert '<meta property="og:image" content="/assets/og.png">' in html
 

@@ -3642,6 +3642,85 @@ def repair_node_test_script(project_dir: str | Path) -> list[str]:
     return [f"test: {script} -> {rewritten}"]
 
 
+def pin_astro_estree_walker_override(root: str | Path) -> list[str]:
+    """Force the ESM estree-walker@3 for Astro projects.
+
+    Astro's CLI chain (@rollup/pluginutils) resolves a nested CJS
+    estree-walker@2 whose named exports Node's ESM loader rejects
+    ("'walk' not found" — astro 4 AND 5 on Node 24), killing `astro build`
+    before a page exists. The scaffold pins this via package.json
+    ``overrides``; a model-written package.json has no such pin, so inject it
+    here — estree-walker@3 is API-compatible and the only version that builds.
+    Idempotent, merges with any existing overrides. Never raises."""
+    pkg_path = Path(root) / "package.json"
+    if not pkg_path.is_file():
+        return []
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared = {
+        **(pkg.get("dependencies") or {}),
+        **(pkg.get("devDependencies") or {}),
+    }
+    if "astro" not in declared:
+        return []
+    overrides = pkg.setdefault("overrides", {})
+    if not isinstance(overrides, dict):
+        return []
+    existing = str(overrides.get("estree-walker", ""))
+    if existing.lstrip("^~").startswith("3."):
+        return []
+    overrides["estree-walker"] = "^3.0.3"
+    try:
+        pkg_path.write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return ["package.json"]
+
+
+_SCRIPT_NODE_FILE_RE = re.compile(r"^node\s+(?:\./)?([\w./-]+\.(?:mjs|cjs|js))\s*$")
+
+
+def drop_dangling_node_script_files(root: str | Path) -> list[str]:
+    """Remove package.json scripts that invoke a Node file which does not exist.
+
+    A model that wires `"build": "node scripts/validate.mjs"` and never writes
+    the file fails its own build with MODULE_NOT_FOUND (the brutalist-zine
+    golden case): the page was complete, a phantom script killed it. Only
+    touches the simple `node <file>` form (no && chains, no args, no binaries)
+    — anything richer is the model's business. Idempotent. Never raises."""
+    pkg_path = Path(root) / "package.json"
+    if not pkg_path.is_file():
+        return []
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    scripts = pkg.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    removed: list[str] = []
+    for name, command in list(scripts.items()):
+        if not isinstance(command, str):
+            continue
+        m = _SCRIPT_NODE_FILE_RE.match(command.strip())
+        if m and not (Path(root) / m.group(1)).is_file():
+            del scripts[name]
+            removed.append(f"scripts.{name}")
+    if not removed:
+        return []
+    try:
+        pkg_path.write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return removed
+
+
 def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
     """Run every deterministic, idempotent, code-MUTATING build repair in one
     pass and return what changed. This is the single source of truth for the
@@ -3666,6 +3745,12 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     relinked = relink_unresolved_relative_imports(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
     added = reconcile_npm_deps(project_dir)
+    # Astro: force ESM estree-walker@3 or `astro build` dies on Node 24's CJS
+    # named-export analysis (a model-written package.json has no such pin).
+    astro_pin = pin_astro_estree_walker_override(project_dir)
+    # package.json scripts invoking a Node file that was never written
+    # (MODULE_NOT_FOUND at build time) — remove the phantom entry.
+    dangling_scripts = drop_dangling_node_script_files(project_dir)
     # reconcile_npm_deps skips `node:` specifiers (they need no runtime package),
     # which is why nothing ever supplied their TYPES. Runs after it so it sees
     # the final declared set.
@@ -3746,6 +3831,8 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "texture_placeholders_created": textures.get("placeholders_created", []),
         "python_imports_sorted": python_imports,
         "python_formatted": python_formatted,
+        "astro_estree_pin": astro_pin,
+        "dangling_scripts_dropped": dangling_scripts,
     }
 
 

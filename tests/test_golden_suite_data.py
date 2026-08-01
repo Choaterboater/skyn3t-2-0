@@ -198,3 +198,25 @@ def test_required_artifacts_are_safe_and_exist_in_each_deterministic_scaffold():
         scaffold = scaffold_for(agent_stack, case_id, case["brief"])
         missing = set(artifacts) - set(scaffold)
         assert not missing, f"{case_id}: scaffold no longer emits {sorted(missing)}"
+
+
+def test_golden_design_suite_is_well_formed():
+    """The design-distinctiveness suite: same contract shape as golden-v1,
+    with the documented 70 intent floor on style-direction briefs."""
+    path = ROOT / "skyn3t" / "benchmarks" / "golden-design-v1.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert set(data) == TOP_KEYS
+    assert data["suite_id"] == "golden-design-v1"
+    assert len(data["cases"]) >= 4
+    for case in data["cases"]:
+        assert set(case) == CASE_KEYS, case["id"]
+        assert case["stack"] in REAL_BUILDER_STACKS
+        expectations = case["expectations"]
+        assert set(expectations) == EXPECTATION_KEYS, case["id"]
+        assert expectations["expected_stack"] == case["stack"]
+        assert expectations["min_score"] == 60
+        assert 70 <= expectations["min_intent_score"] <= 100, case["id"]
+        gates = expectations["required_gates"]
+        assert gates and len(gates) == len(set(gates))
+        assert set(gates) <= KNOWN_GATES
+        assert expectations["required_artifacts"], case["id"]

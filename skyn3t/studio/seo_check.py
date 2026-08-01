@@ -186,10 +186,17 @@ def _attr(tag: str, name: str) -> str | None:
 
 
 def _meta_has_named(meta_tags: list[str], name: str) -> bool:
-    """A ``<meta name="{name}" content="...non-empty...">`` (attribute order agnostic)."""
+    """A ``<meta name="{name}" content="...non-empty...">`` (attribute order agnostic).
+
+    Also accepts the Astro/JSX expression form ``content={identifier}``: a bound
+    prop is a real description when the layout defaults it (our own Astro scaffold
+    ships ``content={description}`` with ``description = title`` as the default).
+    """
     for tag in meta_tags:
         n = _attr(tag, "name")
         if n and n.lower() == name and (_attr(tag, "content") or ""):
+            return True
+        if n and n.lower() == name and re.search(r"\bcontent\s*=\s*\{[^{}]+\}", tag):
             return True
     return False
 

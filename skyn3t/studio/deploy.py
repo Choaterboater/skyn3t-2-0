@@ -134,6 +134,7 @@ class DeployPlan:
     artifacts: dict[str, str] = field(default_factory=dict)
     serves_url: bool = False
     notes: str = ""
+    env_vars: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +147,7 @@ class DeployPlan:
             "artifacts": dict(self.artifacts),
             "serves_url": self.serves_url,
             "notes": self.notes,
+            "env_vars": list(self.env_vars),
         }
 
 
@@ -406,6 +408,47 @@ def _provider_project_name(project_dir: Path) -> str:
     return (normalized or "skyn3t-app")[:63].rstrip("-")
 
 
+# Environment reads the operator must satisfy at deploy time. Regex-based and
+# offline: each pattern captures the variable NAME from one read idiom —
+# process.env.NAME, import.meta.env.VITE_NAME, os.getenv("NAME"),
+# os.environ["NAME"], os.environ.get("NAME").
+_PROCESS_ENV_RE = re.compile(r"\bprocess\.env\.([A-Za-z_][A-Za-z0-9_]*)")
+_IMPORT_META_ENV_RE = re.compile(r"\bimport\.meta\.env\.([A-Za-z_][A-Za-z0-9_]*)")
+_PY_ENV_RE = re.compile(
+    r"\bos\.(?:getenv\(\s*|environ\[\s*|environ\.get\(\s*)['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
+)
+# Vite injects these build-time meta vars itself; they are not operator config.
+_VITE_META_VARS = {"MODE", "BASE_URL", "PROD", "DEV", "SSR"}
+_ENV_SOURCE_SUFFIXES = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro",
+}
+_ENV_SKIP_DIRS = {"node_modules", ".next", "dist", "build", "out", ".venv", "venv", "__pycache__", ".git"}
+
+
+def _scan_env_vars(project_dir: Path) -> list[str]:
+    """Return the sorted, deduplicated env vars the project source reads.
+    Same file-selection posture as the other offline scans: source suffixes
+    only, dependency/build dirs skipped, link-like files never followed."""
+    found: set[str] = set()
+    for path in project_dir.rglob("*"):
+        if any(part in _ENV_SKIP_DIRS for part in path.relative_to(project_dir).parts):
+            continue
+        if path.suffix.lower() not in _ENV_SOURCE_SUFFIXES:
+            continue
+        if not _safe_project_file(project_dir, path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        found.update(_PROCESS_ENV_RE.findall(text))
+        found.update(
+            name for name in _IMPORT_META_ENV_RE.findall(text) if name not in _VITE_META_VARS
+        )
+        found.update(_PY_ENV_RE.findall(text))
+    return sorted(found)
+
+
 def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None = None) -> DeployPlan:
     """Classify ``project_dir`` and return a keyless :class:`DeployPlan`. Never
     raises; a missing dir or unknown stack still yields a sane plan.
@@ -413,7 +456,31 @@ def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None 
     ``target`` is an optional preferred host (e.g. ``"vercel"``, ``"fly"``):
     when it is a valid host for the detected kind it is moved to the front of
     ``targets`` and its host-specific ``command`` is chosen; an unavailable
-    target keeps the default and is explained in ``notes``."""
+    target keeps the default and is explained in ``notes``.
+
+    Every plan also carries ``env_vars`` — the sorted, deduplicated environment
+    variables the project source reads — rendered into ``notes`` as a
+    "Required environment variables" section so the operator knows what to set
+    before deploying (or "none detected")."""
+    plan = _plan_deploy(project_dir, stack, target=target)
+    try:
+        pdir = Path(project_dir)
+        if pdir.is_dir() and not _path_is_link_like(pdir):
+            plan.env_vars = _scan_env_vars(pdir)
+    except Exception:  # noqa: BLE001 - the env scan must never break planning
+        plan.env_vars = []
+    section = (
+        "Required environment variables: " + ", ".join(plan.env_vars)
+        if plan.env_vars
+        else "Required environment variables: none detected"
+    )
+    plan.notes = f"{plan.notes}\n{section}" if plan.notes else section
+    return plan
+
+
+def _plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None = None) -> DeployPlan:
+    """Classify the build and pick a deploy kind/targets (see :func:`plan_deploy`,
+    which layers the env-var manifest on top). Never raises."""
     try:
         pdir = Path(project_dir)
         if not pdir.is_dir() or _path_is_link_like(pdir):

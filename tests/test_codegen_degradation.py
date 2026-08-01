@@ -44,7 +44,7 @@ async def _run_agentic(
 
     async def fake_agentic_build(prompt, workdir, timeout=None, **kwargs):
         if write_code:
-            code = "# Generated app\n" + ("x = 1  # substantial padding line\n" * 240)
+            code = "# Generated app\n" + ("x = 1  # substantial padding line\n" * 480)
             pathlib.Path(workdir, "main.py").write_text(code)
         for rel, content in (partial_files or {}).items():
             target = pathlib.Path(workdir, rel)

@@ -22,7 +22,8 @@ def test_golden_suite_is_declared_as_package_data() -> None:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert config["tool"]["setuptools"]["package-data"]["skyn3t.benchmarks"] == [
-        "golden-v1.json"
+        "golden-v1.json",
+        "golden-design-v1.json",
     ]
 
 

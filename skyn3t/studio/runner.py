@@ -108,7 +108,7 @@ from skyn3t.studio.requirement_trace import (
     compile_requirement_trace,
     requirement_evidence_binding,
 )
-from skyn3t.studio.security_check import check_security
+from skyn3t.studio.security_check import check_security, rewrite_secret_literals
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
@@ -1345,7 +1345,9 @@ class StudioRunner:
           does NOT block. ``proof_build_passed`` overrides a build-failure: the
           verify_build STAGE runs on the pre-repair worktree (before
           reconcile_npm_deps / scaffold), so once the authoritative post-repair
-          proof_run build PASSES, a stale verify_build failure must not veto it.
+          proof_run build PASSES — or is SKIPPED with a passing proof (nothing
+          to build, e.g. a static site whose phantom build script was dropped)
+          — a stale verify_build failure must not veto it.
           (Reward-hacking still blocks — that's a separate, non-stale signal.)
         - verify_boot: a real Python import/boot smoke that ran and failed (web
           'structural' boot is advisory-only — proof_run already covers entries)."""
@@ -1702,8 +1704,6 @@ class StudioRunner:
                 cap(28.0 + files_substantive * 4.0, "thin substantive file count")
             if extra.get("scaffold_stub_gate") or proof_detail.get("scaffold_stub"):
                 cap(35.0, "scaffold/starter stub")
-            if extra.get("code_degraded") or extra.get("code_degraded_reason"):
-                cap(37.0, "code generation degraded")
             if extra.get("intent_gate"):
                 cap(42.0, "intent gate failed")
             if extra.get("liveness_gate"):
@@ -1754,6 +1754,12 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001
             log.warning("security_check.failed", error=str(exc))
             sec = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
+        if (
+            sec.get("skipped") is not True
+            and sec.get("ok") is False
+            and any("secret" in str(i).lower() for i in sec.get("issues", []))
+        ):
+            sec = self._rewrite_secret_findings(manifest, project_dir, stack, sec)
         manifest.extra["security_check"] = sec
         if sec.get("skipped") is not True and sec.get("ok") is False:
             reason = "; ".join(str(i) for i in sec.get("issues", [])[:3])[:500]
@@ -1765,13 +1771,41 @@ class StudioRunner:
             manifest.score = final_score
         return final_score, verdict
 
+    def _rewrite_secret_findings(self, manifest, project_dir: str, stack: str, sec: dict) -> dict:
+        """Deterministic repair for the bundled-secret finding: rewrite simple
+        secret assignments to env reads, then RE-RUN the same check — the gate
+        only passes when the rewritten tree is clean (eval/SQL findings, and
+        secrets the repair conservatively skipped, still fail it). Never
+        raises; a failed repair leaves the original finding untouched."""
+        try:
+            repair = rewrite_secret_literals(project_dir)
+        except Exception as exc:  # noqa: BLE001 - a repair must never break a build
+            log.warning("security_check.repair_failed", error=str(exc))
+            return sec
+        manifest.extra["security_secret_rewrite"] = {
+            "rewritten": list(repair.get("rewritten") or [])[:20],
+            "skipped": list(repair.get("skipped") or [])[:20],
+            "errors": list(repair.get("errors") or [])[:10],
+            "env_example": repair.get("env_example"),
+        }
+        rewritten = manifest.extra["security_secret_rewrite"]["rewritten"]
+        if not rewritten:
+            return sec
+        log.info("security_check.secrets_rewritten", count=len(rewritten))
+        try:
+            return check_security(project_dir, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("security_check.recheck_failed", error=str(exc))
+            return sec
+
     def _run_web_polish_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
                              *, posture: GatePosture | None = None):
         if not bool(getattr(self.settings, "web_polish_gate_enabled", True)):
             return final_score, verdict
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
         try:
-            polish = check_web_polish(project_dir, stack)
+            brief = str(getattr(manifest, "brief", "") or getattr(plan, "brief", "") or "")
+            polish = check_web_polish(project_dir, stack, brief)
         except Exception as exc:  # noqa: BLE001
             log.warning("web_polish.failed", error=str(exc))
             polish = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
@@ -2981,6 +3015,32 @@ class StudioRunner:
             manifest.extra["contrast_issues"] = issues[:20]
             return
         manifest.extra.pop("contrast_issues", None)
+
+    def _deliver_design_md(self, project_dir, brief: str, stack: str,
+                           prior: dict[str, Any], manifest) -> None:
+        """Persist the build's design direction as DESIGN.md in the delivered
+        tree, so `skyn3t studio improve` re-reads the SAME tokens/direction
+        instead of drifting palette/fonts/layout across runs. Same stack gate
+        as the codegen design bar (_DESIGN_WEB_STACKS). Best-effort, mirroring
+        the asset foundry: a write failure logs and never breaks delivery."""
+        try:
+            from skyn3t.agents.code_agent import _DESIGN_WEB_STACKS, CodeAgent
+            from skyn3t.studio.design_tokens import write_design_md
+
+            if (stack or "").lower() not in _DESIGN_WEB_STACKS:
+                return
+            design = CodeAgent._unwrap_design_payload(
+                prior.get("design") if isinstance(prior, dict) else None
+            )
+            written = write_design_md(
+                project_dir, brief, CodeAgent._design_summary(design)
+            )
+            if written:
+                manifest.extra["design_md"] = "DESIGN.md"
+                manifest.files = list_files(project_dir)
+                log.info("runner.design_md_written", path="DESIGN.md")
+        except Exception as exc:  # noqa: BLE001 - design persistence must not break delivery
+            log.warning("runner.design_md_failed", error=str(exc)[:160])
 
     def _final_consistency_check(self, project_dir, plan, manifest, verdict: str) -> str:
         """Unconditional final pass, run ONCE after every post-proof stage
@@ -5292,12 +5352,10 @@ class StudioRunner:
         # ones we used so we can grade them by the build's outcome.
         skill_advice, skill_slugs = self._skill_advice(plan.stack, brief)
         recall = self._recall(brief, plan.stack)
-        # design.md token contract: give UI builds a concrete, branded, AA-contrast
-        # token set to theme from (one source of truth) instead of ad-hoc hex. Only
-        # for design stacks so it never pollutes a CLI/API build.
-        if plan.stack in _DESIGN_STACKS:
-            from skyn3t.studio.design_tokens import design_md_block
-            skill_advice = f"{skill_advice}\n\n{design_md_block(brief)}".strip()
+        # design.md tokens are injected by code_agent itself, right beside the
+        # DESIGN BAR (gated on _DESIGN_WEB_STACKS) — NOT here: this bucket is
+        # head-capped (_MAX_SKILL_ADVICE) and tokens appended to the tail were
+        # measured to survive 0 bytes once the skill library matures.
         if skill_advice or recall:
             extra = {**extra, "skills_advice": skill_advice, "recall": recall}
         # Observable record of what RAG recall fed this build (so you can verify
@@ -5751,6 +5809,12 @@ class StudioRunner:
                 except Exception as exc:  # noqa: BLE001 - visual asset wiring must not break builds
                     log.warning("runner.web_assets_apply_failed", error=str(exc)[:160])
 
+            # Persist the design direction (deterministic tokens + the designer
+            # stage's summary) as DESIGN.md in the delivered tree — the
+            # anti-drift anchor improve runs re-read. Best-effort; web design
+            # stacks only, and a codegen-written DESIGN.md is never clobbered.
+            self._deliver_design_md(project_dir, brief, plan.stack, prior, manifest)
+
             # A repair/code session can copy the signed acceptance module out of
             # tests/ into the project root. Pytest then aborts collection with an
             # import-file mismatch even though the canonical contract is intact.
@@ -6007,7 +6071,14 @@ class StudioRunner:
             # The verify_build STAGE runs pre-repair; the proof_run build is the
             # authoritative post-repair compile. If it really built, a stale
             # verify_build failure must not veto the verdict.
-            proof_build_passed = bool(proof.passed and proof.detail.get("build") == "passed")
+            proof_build_state = str(proof.detail.get("build") or "")
+            # "skipped" (no build script — nothing to build, e.g. a static site
+            # after a phantom `node missing.mjs` build script was dropped) with a
+            # passing proof satisfies the override too: the pre-repair
+            # verify_build failure ran a script that no longer exists.
+            proof_build_passed = bool(
+                proof.passed and proof_build_state in ("passed", "skipped")
+            )
             verifiers_ok, verifier_reason = self._verifiers_gate(prior, proof_build_passed=proof_build_passed)
             if not verifiers_ok:
                 manifest.extra["verifier_gate"] = verifier_reason

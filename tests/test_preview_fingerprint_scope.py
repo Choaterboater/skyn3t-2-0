@@ -107,3 +107,22 @@ def test_real_runtime_changes_still_change_the_fingerprint(tmp_path, name, body)
     _write(tmp_path / name, body)
 
     assert _fp(tmp_path) != before
+
+
+def test_node_modules_is_excluded_for_static_stacks_too(tmp_path):
+    """Regression: a STATIC site with a node_modules tree used to die mid-walk
+    (npm churns transient .tap/coverage dirs; exclusion was keyed to
+    spec.kind == 'node', which a static stack is not). node_modules is derived
+    content and must never be fingerprinted, whatever the stack."""
+    _static_site(tmp_path)
+    tap = tmp_path / "node_modules" / "brace-expansion" / ".tap" / "coverage" / "deep"
+    tap.mkdir(parents=True)
+    _write(tap / "transient.json", "{}\n")
+    _write(tmp_path / "package.json", '{"name": "golf", "private": true}\n')
+
+    sha = _fp(tmp_path)  # must not raise
+
+    # and removing the whole node_modules tree changes nothing
+    import shutil
+    shutil.rmtree(tmp_path / "node_modules")
+    assert _fp(tmp_path) == sha

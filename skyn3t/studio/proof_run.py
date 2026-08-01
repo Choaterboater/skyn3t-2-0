@@ -3721,6 +3721,73 @@ def drop_dangling_node_script_files(root: str | Path) -> list[str]:
     return removed
 
 
+def ensure_nextjs_metadata(root: str | Path) -> list[str]:
+    """Ensure a Next.js App Router project exports page metadata somewhere.
+
+    Model-written layouts/pages regularly ship no metadata export and no
+    literal <title> (the artdeco golden case: a 'use client' layout with a
+    manual <head> and zero metadata — the seo gate hard-fails it, correctly).
+    The deterministic floor: prepend ``export const metadata = {...}`` to the
+    first SERVER component among app/layout.* / app/page.* — metadata exports
+    are only valid from server components, so a file carrying a "use client"
+    directive is never touched. Title/description come from package.json. If
+    a metadata export or generateMetadata already exists anywhere under app/,
+    the model handled it and this is a no-op. Never raises."""
+    root = Path(root)
+    app_dir = root / "app"
+    if not app_dir.is_dir():
+        return []
+    source_exts = {".jsx", ".tsx", ".js", ".ts"}
+    try:
+        app_files = [p for p in app_dir.rglob("*")
+                     if p.is_file() and p.suffix.lower() in source_exts]
+    except OSError:
+        return []
+    for path in app_files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "export const metadata" in text or "generateMetadata" in text:
+            return []
+    pkg_path = root / "package.json"
+    pkg: dict = {}
+    if pkg_path.is_file():
+        try:
+            loaded = json.loads(pkg_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                pkg = loaded
+        except (OSError, ValueError):
+            pkg = {}
+    title = str(pkg.get("name") or root.name or "App")
+    description = str(pkg.get("description") or f"{title} — generated with SkyN3t.")
+    export = (
+        "export const metadata = { title: "
+        + json.dumps(title)
+        + ", description: "
+        + json.dumps(description)
+        + " };\n\n"
+    )
+    for rel in ("layout.tsx", "layout.jsx", "layout.ts", "layout.js",
+                "page.tsx", "page.jsx", "page.ts", "page.js"):
+        path = app_dir / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        head = text[:300].lower()
+        if '"use client"' in head or "'use client'" in head:
+            continue  # metadata exports are invalid from client components
+        try:
+            path.write_text(export + text, encoding="utf-8")
+        except OSError:
+            return []
+        return [f"app/{rel}"]
+    return []
+
+
 def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
     """Run every deterministic, idempotent, code-MUTATING build repair in one
     pass and return what changed. This is the single source of truth for the
@@ -3764,6 +3831,10 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
     alias_cfg = ensure_path_alias_config(project_dir)
     vitest_alias_cfg = ensure_vitest_alias_config(project_dir)
+    # Next.js App Router: guarantee SOME metadata export exists (models ship
+    # 'use client' layouts with manual <head> and no metadata — the seo gate
+    # then has no title/description to find).
+    nextjs_metadata = ensure_nextjs_metadata(project_dir)
     ts_stripped = strip_ts_type_in_js(project_dir)
     react_entry = repair_react_vite_entrypoint_to_tsx(project_dir, stack=stack)
     # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
@@ -3833,6 +3904,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "python_formatted": python_formatted,
         "astro_estree_pin": astro_pin,
         "dangling_scripts_dropped": dangling_scripts,
+        "nextjs_metadata_added": nextjs_metadata,
     }
 
 

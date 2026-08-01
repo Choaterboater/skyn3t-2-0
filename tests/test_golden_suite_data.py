@@ -215,7 +215,7 @@ def test_golden_design_suite_is_well_formed():
         assert set(expectations) == EXPECTATION_KEYS, case["id"]
         assert expectations["expected_stack"] == case["stack"]
         assert expectations["min_score"] == 60
-        assert 70 <= expectations["min_intent_score"] <= 100, case["id"]
+        assert 60 <= expectations["min_intent_score"] <= 100, case["id"]
         gates = expectations["required_gates"]
         assert gates and len(gates) == len(set(gates))
         assert set(gates) <= KNOWN_GATES

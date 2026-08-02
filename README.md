@@ -178,9 +178,10 @@ Two defaults worth knowing:
   gate that *could not run* — no Docker, no Playwright — never blocks in any
   posture. Set `SKYN3T_BUILD_POSTURE=release` for the old all-gates-block
   behaviour.
-- **The Mixture-of-Agents council is on**, advised by `kimi_cli` by default —
-  Claude only when you select it — adding multi-model engineering judgement
-  deliberately not the acting model, so codegen is not reviewing its own work.
+- **The Mixture-of-Agents council is on**, advised by `kimi_cli,copilot_cli,openrouter`
+  by default — Claude only when you select it — adding multi-model engineering
+  judgement deliberately not the acting model, so codegen is not reviewing its
+  own work.
   It is inert unless those CLIs are signed in. See [docs/MOA.md](docs/MOA.md),
   including the honest cost note: a CLI advisor reports no price, so
   `per_build_usd_cap` cannot bound it.

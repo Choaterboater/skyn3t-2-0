@@ -156,11 +156,13 @@ def test_advise_repair_is_inert_when_council_disabled(tmp_path):
 def test_the_shipped_default_is_on_but_inert(tmp_path, monkeypatch):
     """What actually ships, with conftest's suite-wide pins removed.
 
-    The council ships ON with one advisor, and it is deliberately NOT the
-    acting model: auto routes codegen to Codex, so the default advisor is
-    Kimi. Claude is opt-in only — no default anywhere routes work to Claude
-    without the operator selecting it. Copilot stays out, matching
-    auto_cli_priority.
+    The council ships ON as a genuinely multi-model ensemble — Kimi, Copilot,
+    and a hosted OpenRouter model — with two deliberate exclusions: Claude is
+    opt-in only (no default anywhere routes work to Claude without the
+    operator selecting it), and Codex is the acting model so it must not
+    advise itself. Uninstalled CLIs are recorded as failed advisors and the
+    build proceeds on the survivors, so the default costs nothing on a machine
+    without them.
 
     Inert on the stub backend regardless — that short-circuit is now the fence
     keeping an offline run free, since neither the master switch nor the
@@ -172,14 +174,14 @@ def test_the_shipped_default_is_on_but_inert(tmp_path, monkeypatch):
     shipped = Settings(data_dir=tmp_path / "data", logs_dir=tmp_path / "logs")
 
     assert shipped.moa_enabled is True
-    # The shipped default advises with Kimi only: Claude is opt-in (never in a
+    # The shipped default is a genuinely multi-model council with no Claude:
+    # Kimi + Copilot + a hosted OpenRouter model. Claude is opt-in (never in a
     # default), codex is the acting model so it must not advise itself.
     assert [s.address for s in CouncilEngine(_FakeLLM(), shipped).slots()] == [
-        "kimi_cli",
+        "kimi_cli", "copilot_cli", "openrouter",
     ]
     assert "claude" not in shipped.moa_advisors, "Claude is opt-in only"
     assert "codex" not in shipped.moa_advisors, "the actor must not advise itself"
-    assert "copilot" not in shipped.moa_advisors
 
     stub = _FakeLLM()
     stub.backend = "stub"

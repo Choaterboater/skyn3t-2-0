@@ -670,8 +670,10 @@ class Settings(BaseSettings):
     # config.toml already sets as the default, so bare "kimi_cli" is correct.
     # Pin a model only when you mean it, e.g. "claude_cli:sonnet".
     # Empty => the council is off even when moa_enabled.
-    # Defaults to Kimi only. Claude is deliberately NOT in the default: nothing
-    # Claude-powered runs unless the operator selects it — add it back with
+    # Defaults to Kimi + Copilot + one hosted OpenRouter model: a genuinely
+    # multi-model council with no Claude. Claude is deliberately NOT in the
+    # default: nothing Claude-powered runs unless the operator selects it —
+    # add it back with
     #   SKYN3T_MOA_ADVISORS="claude_cli,kimi_cli"
     # (codex_cli is left out because auto routes codegen to Codex first, so a
     # codex advisor would be the acting model reviewing itself). A slot whose
@@ -679,7 +681,7 @@ class Settings(BaseSettings):
     # proceeds on the survivors; if ALL fail the codegen prompt is
     # byte-identical to a council-off build, so this default costs nothing on a
     # machine without them. Set SKYN3T_MOA_ADVISORS="" to turn the council off.
-    moa_advisors: str = "kimi_cli"
+    moa_advisors: str = "kimi_cli,copilot_cli,openrouter"
     # Concurrent advisor calls. Matches the ceiling code_agent already uses for
     # nested CLI children; per-provider limits still apply underneath.
     moa_max_concurrency: int = Field(default=4, ge=1, le=8)

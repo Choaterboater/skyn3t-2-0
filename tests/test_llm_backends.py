@@ -250,9 +250,11 @@ def test_auto_uses_any_signed_in_cli_in_priority_order(monkeypatch):
         lambda b: "/usr/bin/claude" if b == "claude" else None,
     )
 
-    # Codex leads the default priority list but is absent, so auto falls to the
-    # next signed-in CLI rather than degrading to the offline stub.
-    assert _client("auto", openrouter_api_key="sk-or-present").backend == "claude_cli"
+    # Claude is NOT in the default chain any more (nothing Claude-powered runs
+    # unless selected), so a claude-only host now degrades to the offline stub
+    # under auto. Selecting Claude — via the backend or the chain — works.
+    assert _client("auto", openrouter_api_key="sk-or-present").backend == "stub"
+    assert _client("auto", auto_cli_priority="codex,kimi,claude").backend == "claude_cli"
     assert _client("claude_cli").backend == "claude_cli"
 
 

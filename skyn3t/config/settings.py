@@ -217,9 +217,10 @@ class Settings(BaseSettings):
     # special about it, and reordering this is the supported way to prefer a
     # different provider for unattended builds. Unknown entries are ignored.
     # ``copilot`` is deliberately absent from the default chain (add it here to
-    # opt in); it remains fully supported and explicitly addressable as
-    # ``copilot_cli`` for both ``llm_backend`` and MoA advisor slots.
-    auto_cli_priority: str = "codex,claude,kimi"
+    # opt in). ``claude`` is absent too: nothing Claude-powered runs unless the
+    # operator selects it (``llm_backend=claude_cli``, a slot, or an entry
+    # here). Both remain fully supported and explicitly addressable.
+    auto_cli_priority: str = "codex,kimi"
     # Explicit consent for ``auto`` to fall back to hosted OpenRouter when NO
     # local CLI is available. Off by default: without it, ``auto`` degrades to
     # the offline stub rather than silently spending.
@@ -227,7 +228,7 @@ class Settings(BaseSettings):
     # Used by manually selected CLI-adjacent features (for example vision
     # checks). Automatic build execution walks ``auto_cli_priority`` (any
     # available CLI in that chain satisfies the routing lock), never this field.
-    cli_llm_provider: str = "claude"
+    cli_llm_provider: str = "codex"
     # Route ONLY the codegen (code agent) stage to a coding-agent CLI's agentic
     # whole-app build, while every OTHER stage keeps the global backend (e.g. cheap
     # OpenRouter models). Empty = no override (codegen follows the global backend).
@@ -669,15 +670,16 @@ class Settings(BaseSettings):
     # config.toml already sets as the default, so bare "kimi_cli" is correct.
     # Pin a model only when you mean it, e.g. "claude_cli:sonnet".
     # Empty => the council is off even when moa_enabled.
-    # Defaults to the two CLIs that are NOT the usual acting model: auto routes
-    # codegen to Codex first (auto_cli_priority), so advising with Claude and
-    # Kimi makes the council genuinely multi-model instead of Codex reviewing
-    # itself. Copilot is deliberately excluded, matching auto_cli_priority.
-    # A slot whose CLI is not installed is recorded as a failed advisor and the
-    # build proceeds on the survivors; if BOTH fail the codegen prompt is
+    # Defaults to Kimi only. Claude is deliberately NOT in the default: nothing
+    # Claude-powered runs unless the operator selects it — add it back with
+    #   SKYN3T_MOA_ADVISORS="claude_cli,kimi_cli"
+    # (codex_cli is left out because auto routes codegen to Codex first, so a
+    # codex advisor would be the acting model reviewing itself). A slot whose
+    # CLI is not installed is recorded as a failed advisor and the build
+    # proceeds on the survivors; if ALL fail the codegen prompt is
     # byte-identical to a council-off build, so this default costs nothing on a
     # machine without them. Set SKYN3T_MOA_ADVISORS="" to turn the council off.
-    moa_advisors: str = "claude_cli,kimi_cli"
+    moa_advisors: str = "kimi_cli"
     # Concurrent advisor calls. Matches the ceiling code_agent already uses for
     # nested CLI children; per-provider limits still apply underneath.
     moa_max_concurrency: int = Field(default=4, ge=1, le=8)

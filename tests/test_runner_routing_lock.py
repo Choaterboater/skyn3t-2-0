@@ -183,7 +183,7 @@ async def test_runner_rejects_auto_without_codex_before_build_ledger(tmp_path, m
     monkeypatch.setattr(runner, "_start_build", forbidden)
     with pytest.raises(
         RoutingLockError,
-        match="Automatic builds require one of these CLIs on PATH: codex, claude, kimi",
+        match="Automatic builds require one of these CLIs on PATH: codex, kimi",
     ):
         await runner.start("build an offline tool")
 

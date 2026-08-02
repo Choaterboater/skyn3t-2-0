@@ -37,12 +37,12 @@ feel instead of N advisors' averaged defaults.
 
 ## Configuration
 
-The council is **on by default**, advised by `claude_cli` and `kimi_cli`. Those
-two are chosen because `auto` routes codegen to Codex first, so advising with
-the other two makes the council genuinely multi-model instead of Codex reviewing
-its own work. A slot whose CLI is not installed is recorded as a failed advisor
-and the build proceeds on the survivors, so the default costs nothing on a
-machine without them.
+The council is **on by default**, advised by `kimi_cli`. Claude is deliberately
+NOT in the default — nothing Claude-powered runs unless the operator selects
+it (`SKYN3T_MOA_ADVISORS="claude_cli,kimi_cli"`, `llm_backend=claude_cli`, or
+a `claude_cli` entry in `auto_cli_priority`). A slot whose CLI is not installed
+is recorded as a failed advisor and the build proceeds on the survivors, so the
+default costs nothing on a machine without them.
 
 To turn it off, clear the advisor list (`SKYN3T_MOA_ADVISORS=""`) or flip the
 master switch (`SKYN3T_MOA_ENABLED=0`). To change who advises:
@@ -78,7 +78,7 @@ on the survivors.
 | Setting | Default | Meaning |
 |---|---|---|
 | `moa_enabled` | `true` | Master switch. Set `SKYN3T_MOA_ENABLED=0` to force off. |
-| `moa_advisors` | `"claude_cli,kimi_cli"` | Comma-separated `provider:model` slots. Model optional. Empty ⇒ off even when enabled, and clearing it is the ordinary off-switch. Excludes the usual acting model on purpose. |
+| `moa_advisors` | `"kimi_cli"` | Comma-separated `provider:model` slots. Model optional. Empty ⇒ off even when enabled, and clearing it is the ordinary off-switch. Claude is opt-in only — add it explicitly (`claude_cli`) to use it; the acting model's own CLI is excluded on purpose. |
 | `moa_max_concurrency` | `4` | Concurrent advisor calls (per-provider limits still apply underneath). |
 | `moa_advisor_timeout` | `60` | Seconds per advisor, then **dropped**. Bounds — but does not eliminate — added build latency; see Cost. |
 | `moa_advisor_max_tokens` | `1200` | Output cap. Binds on OpenRouter only — `complete()` cannot pass `max_tokens` to a CLI. |

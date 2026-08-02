@@ -221,7 +221,8 @@ If you get disconnected, open these in order:
 - Web access is loopback-only unless `SKYN3T_AUTH_TOKEN` is set.
 - Gate posture is `lab`: only proof that the delivery is broken blocks a
   build. A gate that could not run never blocks in any posture.
-- The MoA advisory council is **on** (`claude_cli,kimi_cli`) and adds N
+- The MoA advisory council is **on** (default advisor `kimi_cli`; Claude is
+  opt-in only — nothing Claude-powered runs unless selected) and adds N
   completions per build, inline before codegen.
 
 ## Known gaps / follow-ups

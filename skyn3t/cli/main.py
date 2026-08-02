@@ -2476,14 +2476,19 @@ def deploy(
     write: bool = typer.Option(False, "--write", help="Write generated deploy artifacts (e.g. a Dockerfile) into the project."),
     now: bool = typer.Option(False, "--now", help="Actually deploy it live (token-gated). Default: just show the plan."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when using --now."),
+    execute: bool = typer.Option(False, "--execute", help="With --now: run the REAL provider CLI deploy using the operator's env-held token. Never the default."),
+    force: bool = typer.Option(False, "--force", help="Deploy even when the build proof gate has not passed."),
 ) -> None:
     """Show the keyless deploy plan for a build — the right hosts, the exact
     one-command deploy, and (for server stacks) a ready Dockerfile.
 
     By default nothing is deployed and no token is needed: this is the honest
     "…and here's how it ships" answer for a proven build. Use ``--write`` to drop
-    generated artifacts (like a Dockerfile) into the project, or ``--now`` to fire
-    a real, token-gated deploy (needs a provider token configured in Settings).
+    generated artifacts (like a Dockerfile) into the project, ``--now`` to fire
+    a real, token-gated deploy (needs a provider token configured in Settings),
+    or ``--now --execute`` to run the official provider CLI directly with the
+    operator's env-held token (CLOUDFLARE_API_TOKEN / VERCEL_TOKEN /
+    FLY_API_TOKEN / NETLIFY_AUTH_TOKEN).
     """
     from pathlib import Path as _Path
 
@@ -2546,15 +2551,25 @@ def deploy(
         console.print(f"deploy: {plan.command}")
     console.print(f"[dim]{plan.notes}[/dim]")
 
+    if execute and not now:
+        console.print("[red]--execute requires --now[/red] — printing the plan is "
+                      "always free and tokenless; execution never is.")
+        raise typer.Exit(code=1)
+
     if now:
         from skyn3t.studio.deploy import deployment_quality_gate
 
         quality = deployment_quality_gate(man)
         if not quality["passed"]:
+            if not force:
+                console.print(
+                    "[red]Deploy blocked[/red]: " + "; ".join(quality["blockers"])
+                )
+                raise typer.Exit(code=1)
             console.print(
-                "[red]Deploy blocked[/red]: " + "; ".join(quality["blockers"])
+                "[yellow]--force[/yellow] — deploying despite: "
+                + "; ".join(quality["blockers"])
             )
-            raise typer.Exit(code=1)
 
     if write and plan.artifacts:
         written = write_deploy_artifacts(plan, pdir)
@@ -2581,6 +2596,12 @@ def deploy(
     if not provider:
         console.print("[red]No deploy target[/red] to deploy to.")
         raise typer.Exit(code=1)
+    if execute:
+        # --now --execute: the direct, env-token-gated execution path. Handles
+        # its own preflight, consent, execution, verification and recording;
+        # never returns on failure (raises typer.Exit).
+        _execute_live_deploy(pdir, plan, provider, resolved_stack, yes=yes, settings=s)
+        return
     if not yes and not typer.confirm(f"Deploy {pdir.name} live to {provider}?", default=False):
         console.print("[dim]Aborted — nothing deployed.[/dim]")
         raise typer.Exit(code=0)
@@ -2655,6 +2676,102 @@ def deploy(
         raise typer.Exit(code=1)
     url = result["url"]
     console.print(f"[green]Deployed[/green] at [cyan]{url}[/cyan]")
+
+
+def _execute_live_deploy(pdir, plan, provider, stack, *, yes, settings) -> None:
+    """``skyn3t deploy --now --execute``: run the REAL provider deploy with the
+    operator's env-held token. Raises ``typer.Exit`` on every failure path.
+
+    Consent posture: an external side effect requires EITHER the lab autonomy
+    setting (``LabAutonomyPolicy``, same idiom as the runner) OR an interactive
+    confirmation (skippable with ``--yes``). Printing the plan stays free and
+    tokenless; this function is only reached behind explicit ``--execute``.
+    """
+    from skyn3t.security.secrets import mask_secrets
+    from skyn3t.studio.deploy import (
+        deploy_execution_blocker,
+        executable_provider,
+        execute_deploy,
+        record_deploy_outcome,
+        resolve_deploy_token,
+        write_deploy_artifacts,
+    )
+    from skyn3t.studio.lab_policy import LabAutonomyPolicy
+
+    console = _console()
+    # Deterministic preflight BEFORE any consent prompt or side effect: the
+    # target must be executable, the token present, and the CLI installed.
+    blocker = deploy_execution_blocker(pdir, plan, provider)
+    if blocker:
+        spec = executable_provider(provider)
+        if spec is not None:
+            token, env_name = resolve_deploy_token(provider)
+            if not token:
+                console.print(
+                    f"[red]Missing deploy token[/red] — set [cyan]{env_name}[/cyan] "
+                    f"to execute a {provider} deploy. Nothing was deployed."
+                )
+                raise typer.Exit(code=1)
+        console.print(f"[red]Cannot execute deploy[/red] — {blocker}. Nothing was deployed.")
+        raise typer.Exit(code=1)
+    cli = executable_provider(provider)[0]
+    if not yes and not LabAutonomyPolicy.from_settings(settings).enabled:
+        if not typer.confirm(
+            f"Execute a REAL deploy of {pdir.name} to {provider} via {cli}?",
+            default=False,
+        ):
+            console.print("[dim]Aborted — nothing deployed.[/dim]")
+            raise typer.Exit(code=0)
+    # A container needs its Dockerfile on disk to build the image.
+    if plan.artifacts:
+        write_deploy_artifacts(plan, pdir)
+
+    token, _ = resolve_deploy_token(provider)
+    console.print(
+        f"[yellow]Executing[/yellow] real deploy of {pdir.name} to "
+        f"[cyan]{provider}[/cyan] via {cli}…"
+    )
+    result = execute_deploy(pdir, plan, provider, token=token)
+    tail = mask_secrets(str(result.get("output_tail") or ""))
+    if tail:
+        console.print(f"[dim]{tail}[/dim]")
+    if not (result.get("ok") and result.get("url")):
+        console.print(
+            f"[red]Deploy failed[/red]: "
+            f"{mask_secrets(str(result.get('error') or 'unknown error'))}"
+        )
+        raise typer.Exit(code=1)
+
+    url = str(result["url"])
+    # Post-deploy verification: the same liveness gate, against the LIVE url.
+    try:
+        from skyn3t.studio.deploy_check import check_deploy
+
+        verdict = asyncio.run(check_deploy(url, stack))
+        deploy_check = verdict.to_dict()
+    except Exception as exc:  # noqa: BLE001 - persist an unverified attempt
+        deploy_check = {
+            "ok": False,
+            "skipped": True,
+            "issues": [],
+            "checked": {},
+            "reason": f"deploy check unavailable: {str(exc)[:160]}",
+            "gaps": [],
+        }
+    verified = bool(deploy_check.get("ok"))
+    record = record_deploy_outcome(pdir, kind=plan.kind, url=url, verified=verified)
+    if not record.get("persisted"):
+        console.print(
+            "[yellow]Deploy outcome was not persisted[/yellow]: "
+            f"{record.get('persistence_error') or 'unknown manifest error'}"
+        )
+    if verified:
+        console.print("[green]deploy check[/green] — live url verified ✓")
+        console.print(f"[green]Deployed + verified[/green] at [cyan]{url}[/cyan]")
+        return
+    reason = str(deploy_check.get("reason") or "unhealthy live URL")
+    console.print(f"[red]Deployed but not verified[/red] — {mask_secrets(reason)}")
+    raise typer.Exit(code=1)
 
 
 @domain_app.command("ingest")

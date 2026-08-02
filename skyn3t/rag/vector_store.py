@@ -2,19 +2,24 @@
 
 Uses ChromaDB when available (persistent or in-memory client), otherwise an
 in-memory cosine-similarity store so retrieval ALWAYS works offline with zero
-heavy dependencies. Import has zero side effects: no client is created and no
-disk is touched until a method is called.
+heavy dependencies. When the in-memory backend is active and a ``persist_path``
+is configured, docs are mirrored to a bounded JSONL file there (save on
+mutation, lazy-load on construction, atomic writes) so ingests survive process
+exit even without chromadb installed. Import has zero side effects: no client
+is created and no disk is touched until a method is called.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
 
+from skyn3t.atomic_io import atomic_write_text
 from skyn3t.rag.embeddings import cosine_similarity
 
 try:  # optional heavy dependency
@@ -32,6 +37,13 @@ log = structlog.get_logger(__name__)
 # backend drift (e.g. sentence-transformers 384 vs hashing fallback 256)
 # before chroma starts rejecting every upsert/query.
 _MARKER_NAME = "embedder.json"
+
+# Durable mirror for the in-memory backend: one JSON doc per line at
+# ``<persist_path>/<collection>.memory.jsonl``. chromadb is an optional dep
+# that is often absent; without this mirror every ingest evaporated at
+# process exit. Bounded by _MEMORY_STORE_MAX_DOCS (oldest-first eviction).
+_MEMORY_STORE_SUFFIX = ".memory.jsonl"
+_MEMORY_STORE_MAX_DOCS = 10_000
 
 
 def _is_dim_mismatch(exc: Exception) -> bool:
@@ -65,7 +77,8 @@ class VectorStore:
         Logical collection name.
     persist_path:
         If set and chromadb is available, use a persistent client there.
-        Ignored by the in-memory fallback.
+        With the in-memory backend, docs are mirrored to a bounded JSONL
+        file in this directory so they survive process exit.
     prefer_chroma:
         Set False to force the in-memory backend (handy for tests).
     """
@@ -84,6 +97,11 @@ class VectorStore:
         self._collection = None
         # in-memory fallback storage
         self._docs: dict[str, StoredDoc] = {}
+        self._memory_loaded = False
+        if not self._use_chroma:
+            # Memory backend from the start: recover any previously
+            # persisted docs (chromadb absent is the common case).
+            self._load_memory_store()
         # Dimensionality pinning: chroma fixes a collection's dim at first
         # add and raises on every mismatched upsert/query afterwards. When
         # the embedder backend drifts across processes (ST 384 vs hashing
@@ -127,7 +145,101 @@ class VectorStore:
             self.backend = "memory"
             self._collection = None
             self._client = None
+            # Recover docs persisted by earlier memory-backend processes.
+            self._load_memory_store()
             return False
+
+    # -- memory-backend durability ------------------------------------------
+    def _memory_store_path(self) -> Path | None:
+        if self.persist_path is None:
+            return None
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.collection_name) or "store"
+        return self.persist_path / f"{safe}{_MEMORY_STORE_SUFFIX}"
+
+    def _load_memory_store(self) -> None:
+        """Lazy-load persisted docs for the memory backend. Runs once per
+        instance; never raises — a corrupt line is skipped with a warning
+        (a wholly corrupt store simply starts empty) and live in-memory docs
+        are never clobbered by older disk state."""
+        if self._memory_loaded:
+            return
+        self._memory_loaded = True
+        path = self._memory_store_path()
+        if path is None or not path.exists():
+            return
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            log.warning(
+                "vector_store.memory_load_failed", path=str(path), exc_info=True
+            )
+            return
+        bad = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                doc = StoredDoc(
+                    id=str(rec["id"]),
+                    text=str(rec["text"]),
+                    embedding=[float(x) for x in rec["embedding"]],
+                    metadata=dict(rec.get("metadata") or {}),
+                )
+            except Exception:
+                bad += 1
+                continue
+            self._docs.setdefault(doc.id, doc)
+        if bad:
+            log.warning(
+                "vector_store.memory_store_corrupt", path=str(path), skipped=bad
+            )
+        self._enforce_memory_cap()
+
+    def _save_memory_store(self) -> None:
+        """Atomically mirror the memory backend's docs to disk. Never raises;
+        a failed save leaves retrieval working (memory is the live copy)."""
+        if self._use_chroma:
+            return
+        path = self._memory_store_path()
+        if path is None:
+            return
+        try:
+            payload = "".join(
+                json.dumps(
+                    {
+                        "id": d.id,
+                        "text": d.text,
+                        "embedding": d.embedding,
+                        "metadata": d.metadata,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+                for d in self._docs.values()
+            )
+            atomic_write_text(path, payload)
+        except Exception:
+            log.warning(
+                "vector_store.memory_save_failed", path=str(path), exc_info=True
+            )
+
+    def _enforce_memory_cap(self) -> int:
+        """Evict oldest-first (dict insertion order) so the durable memory
+        store stays bounded. Returns the number of docs evicted."""
+        overflow = len(self._docs) - _MEMORY_STORE_MAX_DOCS
+        if overflow <= 0:
+            return 0
+        for _id in list(self._docs)[:overflow]:
+            del self._docs[_id]
+        log.info(
+            "vector_store.memory_store_evicted",
+            evicted=overflow,
+            cap=_MEMORY_STORE_MAX_DOCS,
+        )
+        return overflow
 
     # -- dimensionality pinning -------------------------------------------
     def _marker_path(self) -> Path | None:
@@ -298,6 +410,9 @@ class VectorStore:
                 embedding=list(embeddings[i]),
                 metadata=metas[i] or {},
             )
+        if not self._use_chroma:
+            self._enforce_memory_cap()
+            self._save_memory_store()
         return len(ids)
 
     def delete_by_source(self, source: str) -> int:
@@ -331,6 +446,8 @@ class VectorStore:
         ]
         for _id in stale:
             del self._docs[_id]
+        if stale:
+            self._save_memory_store()
         return len(stale)
 
     # -- queries -----------------------------------------------------------
@@ -458,6 +575,14 @@ class VectorStore:
                 if data.get("collection") == self.collection_name:
                     marker.unlink()
             except Exception:
+                pass
+        mem = self._memory_store_path()
+        if mem is not None:
+            # Reset wipes the store; the durable memory mirror must not
+            # resurrect deleted docs in the next process.
+            try:
+                mem.unlink(missing_ok=True)
+            except OSError:
                 pass
 
     # -- lifecycle ---------------------------------------------------------

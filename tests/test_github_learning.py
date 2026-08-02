@@ -35,6 +35,33 @@ async def _fetch_none(url):  # noqa: ANN001
     return None
 
 
+_RICH_TEXT = (
+    "GitHub repo: pallets/flask\n\n"
+    "Description: The Python micro framework for building web applications.\n\n"
+    "Language: Python · Stars: 67000\n\n"
+    "Topics: flask, python, web\n\n"
+    "README:\n"
+    "# Flask\n\n"
+    "Flask is a lightweight WSGI web application framework designed to make\n"
+    "getting started quick and easy, with the ability to scale up to complex\n"
+    "applications. It began as a simple wrapper around Werkzeug and Jinja and\n"
+    "has become one of the most popular Python web frameworks.\n\n"
+    "## Installing\n\n"
+    "```bash\n"
+    "pip install Flask\n"
+    "python -m flask --app hello run\n"
+    "```\n\n"
+    "## Layout\n\n"
+    "- `src/flask/app.py` — the Flask application object and dispatch\n"
+    "- `src/flask/blueprints.py` — blueprint registration and nesting\n"
+    "- `tests/` — pytest suite mirroring the package structure\n"
+)
+
+
+async def _fetch_rich(url):  # noqa: ANN001
+    return _RICH_TEXT
+
+
 def test_handler_ingests_into_rag(monkeypatch):
     rag = _FakeRag(n=3)
     reg = HandlerRegistry(rag=rag)
@@ -90,9 +117,9 @@ class _FakeSkills:
     def __init__(self):
         self.added = []
 
-    def add(self, title, body, *, stack="generic", tags=None, source="manual", slug=None):
+    def add(self, title, body, *, stack="generic", tags=None, source="manual", slug=None, description=""):
         self.added.append(
-            {"title": title, "body": body, "stack": stack, "tags": tags, "source": source, "slug": slug}
+            {"title": title, "body": body, "stack": stack, "tags": tags, "source": source, "slug": slug, "description": description}
         )
         return None
 
@@ -101,7 +128,7 @@ def test_handler_distills_skill_on_ingest(monkeypatch):
     rag = _FakeRag(n=2)
     skills = _FakeSkills()
     reg = HandlerRegistry(rag=rag, skills=skills)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_rich)
     res = asyncio.run(reg.apply(_prop({
         "url": "https://github.com/pallets/flask",
         "description": "web framework",
@@ -111,17 +138,34 @@ def test_handler_distills_skill_on_ingest(monkeypatch):
     assert res.get("skill")  # slug returned
     assert skills.added, "a skill should be distilled from the ingested repo"
     sk = skills.added[0]
-    assert sk["source"] == "github-distilled"
+    assert sk["source"] == "https://github.com/pallets/flask"  # frontmatter source = repo URL
     assert "flask" in sk["slug"]
     assert sk["stack"] == "python"  # mapped from language 'Python'
     assert "github-distilled" in sk["tags"]
+
+
+def test_handler_refuses_thin_distill_and_reports_skill_error(monkeypatch):
+    # A junk/thin fetch ("README text") must NOT write a hollow skill file:
+    # the handler reports a failed distill instead of an applied skill.
+    rag = _FakeRag(n=2)
+    skills = _FakeSkills()
+    reg = HandlerRegistry(rag=rag, skills=skills)
+    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    res = asyncio.run(reg.apply(_prop({
+        "url": "https://github.com/pallets/flask",
+        "language": "Python",
+    })))
+    assert res["applied"] is True  # RAG ingest still applied
+    assert "skill" not in res
+    assert "too thin" in res["skill_error"]
+    assert not skills.added
 
 
 def test_handler_persists_unicode_github_skill_as_nonempty_utf8(tmp_path, monkeypatch):
     rag = _FakeRag(n=1)
     skills = SkillLibrary(tmp_path / "skills")
     reg = HandlerRegistry(rag=rag, skills=skills)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_rich)
 
     res = asyncio.run(reg.apply(_prop({
         "url": "https://github.com/pallets/flask",
@@ -132,7 +176,7 @@ def test_handler_persists_unicode_github_skill_as_nonempty_utf8(tmp_path, monkey
 
     path = tmp_path / "skills" / f"{res['skill']}.md"
     assert path.stat().st_size > 0
-    assert "123\u2605" in path.read_text(encoding="utf-8")
+    assert "123★" in path.read_text(encoding="utf-8")
     assert SkillLibrary(tmp_path / "skills").get(res["skill"]) is not None
 
 

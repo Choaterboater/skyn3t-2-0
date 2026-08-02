@@ -192,6 +192,29 @@ class AppState:
         self.builds: dict[str, BuildRecord] = {}
         self.proposals: dict[str, ProposalRecord] = {}
 
+        # Backfill open proposals from the cortex store: the registry above is
+        # otherwise fed only by PROPOSAL_CREATED events during this process'
+        # lifetime, so every restart showed 0 pending (and a "dead" scout)
+        # while dozens of gated proposals sat on disk.
+        if cortex is not None:
+            try:
+                store = getattr(cortex, "store", None)
+                if store is not None:
+                    for p in list(store.pending()) + list(store.gated()):
+                        if p.id not in self.proposals:
+                            kind = p.type.value if hasattr(p.type, "value") else str(p.type)
+                            status = p.status.value if hasattr(p.status, "value") else str(p.status)
+                            self.proposals[p.id] = ProposalRecord(
+                                proposal_id=p.id,
+                                kind=str(kind),
+                                summary=str(p.title or ""),
+                                payload=dict(p.to_dict()) if hasattr(p, "to_dict") else {},
+                                status=str(status),
+                                created_at=float(p.created_at or 0.0),
+                            )
+            except Exception:  # noqa: BLE001 - backfill is best-effort
+                pass
+
         # Live preview servers (Spec 3 two-pane workspace): slug -> RunningApp,
         # plus a shared Docker preview supervisor. Populated lazily by the
         # serve endpoints.

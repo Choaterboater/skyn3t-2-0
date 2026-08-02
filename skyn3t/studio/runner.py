@@ -5663,6 +5663,12 @@ class StudioRunner:
                     _prompts = result.output.get("prompts")
                     if _prompts:
                         manifest.extra["prompts"] = _prompts
+                    # Friction vents the codegen agent emitted (the VENT:
+                    # convention) — surfaced on the manifest so the dashboard
+                    # and the learning loop see the same evidence.
+                    _vents = result.output.get("vents")
+                    if _vents:
+                        manifest.extra["vents"] = _vents
                     _agentic = result.output.get("agentic")
                     if isinstance(_agentic, dict):
                         manifest.extra["agentic"] = {

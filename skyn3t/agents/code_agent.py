@@ -1289,6 +1289,8 @@ class CodeAgent(BaseAgent):
                     "fallback_model",
                     "stalled",
                     "stall_reason",
+                    "stall_kind",
+                    "stall_evidence",
                     "turn_timeouts",
                     "completed",
                     "complete",

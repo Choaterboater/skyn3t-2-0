@@ -3086,6 +3086,36 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - design persistence must not break delivery
             log.warning("runner.design_md_failed", error=str(exc)[:160])
 
+    async def _deliver_prerender(self, project_dir, stack: str, manifest) -> None:
+        """Delivery-time prerender for client-rendered SPAs (advisory).
+
+        A react_vite/static SPA ships an empty ``<div id="root">`` — crawlers and
+        social previewers never execute the JS, so the seo gate's meta tags are all
+        they see. Render each enumerated route in headless Chromium and write the
+        post-mount HTML into the delivery tree (over a route's own HTML file ONLY
+        when it is an empty app-shell or our own prior snapshot, else under
+        ``prerendered/``; authored content is never clobbered). Records
+        ``manifest.extra["prerender"]``. Best-effort, mirroring the asset-foundry /
+        DESIGN.md passes: a headless-render failure logs and delivery continues.
+        Offloaded to a thread — sync Playwright raises inside a running event loop
+        (the qa_playtest pattern)."""
+        try:
+            from skyn3t.studio.prerender import prerender_spa
+
+            result = await asyncio.to_thread(prerender_spa, project_dir, stack)
+            manifest.extra["prerender"] = result
+            if result.get("written"):
+                manifest.files = list_files(project_dir)
+            log.info(
+                "runner.prerender_done",
+                ok=result.get("ok"),
+                skipped=result.get("skipped"),
+                written=len(result.get("written") or []),
+                errors=len(result.get("errors") or []),
+            )
+        except Exception as exc:  # noqa: BLE001 - prerender must never break delivery
+            log.warning("runner.prerender_failed", error=str(exc)[:160])
+
     def _final_consistency_check(self, project_dir, plan, manifest, verdict: str) -> str:
         """Unconditional final pass, run ONCE after every post-proof stage
         (_headless_gate_pass, the game-visual loop, qa_playtest's repair,
@@ -5922,6 +5952,15 @@ class StudioRunner:
             # anti-drift anchor improve runs re-read. Best-effort; web design
             # stacks only, and a codegen-written DESIGN.md is never clobbered.
             self._deliver_design_md(project_dir, brief, plan.stack, prior, manifest)
+
+            # Delivery-time prerender (advisory, best-effort): client-rendered
+            # SPA shells ship an empty <div id="root"> to crawlers/social
+            # previewers — the seo gate lints meta tags but the rendered content
+            # is invisible without JS. Render each enumerated route in headless
+            # Chromium and write prerendered snapshots into the delivery tree
+            # (over app-shell files only; author content is never clobbered). A
+            # headless failure logs and delivery continues unchanged.
+            await self._deliver_prerender(project_dir, plan.stack, manifest)
 
             # A repair/code session can copy the signed acceptance module out of
             # tests/ into the project root. Pytest then aborts collection with an

@@ -30,7 +30,8 @@ from typing import Any
 
 import structlog
 
-from skyn3t.adapters.llm import LLMClient
+from skyn3t.adapters.llm import _BUILD_ROUTING, LLMClient
+from skyn3t.adapters.model_slot import ModelSlot
 from skyn3t.agents._common import (
     canonical_project_relpath,
     detect_stack,
@@ -51,7 +52,7 @@ from skyn3t.agents._scaffold import (
 )
 from skyn3t.core.agent import AgentCapability, AgentStatus, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus, EventType
-from skyn3t.core.model_router import Tier
+from skyn3t.core.model_router import Tier, parse_task_model_slot
 from skyn3t.studio.acceptance_contract import (
     restore_acceptance_contracts,
     snapshot_acceptance_contracts,
@@ -735,6 +736,62 @@ def variant_directive(stack: str, brief: str) -> str:
     return ""
 
 
+def _explicit_stub_fences_cli_slot(settings: Any, slot: ModelSlot) -> bool:
+    """Money fence, mirrored from ``llm.build_routing_snapshot``: an EXPLICITLY
+    selected stub backend means offline and free — no subscription CLI may be
+    launched on its behalf by a task slot. (A backend that merely DEGRADED to
+    stub keeps the pin: "stages offline, codegen on my signed-in CLI" is a
+    legitimate configuration.)"""
+    requested = str(getattr(settings, "llm_backend", "") or "").strip().lower()
+    return requested == "stub" and slot.provider.endswith("_cli")
+
+
+def _lock_agentic_route_to_slot(slot: ModelSlot, *, cli_available: bool) -> None:
+    """Reconcile the runner/improve locked routing snapshot with a task slot.
+
+    GUI submissions freeze ``_BUILD_ROUTING`` BEFORE the code stage runs, and
+    ``agentic_build`` enforces that snapshot over its provider/model kwargs.
+    The snapshot predates task slots (it is built from ``codegen_cli_provider``
+    & friends), so left alone it would silently strip a CLI slot's provider —
+    or worse, forward a CLI model alias to OpenRouter. Rewriting the codegen
+    entry to exactly what ``build_routing_snapshot`` WOULD have produced for
+    the slot keeps the lock, the manifest's routing snapshot, and the executed
+    route in agreement. Idempotent: every best-of-N trajectory writes the same
+    values into the shared per-build dict. No-op when no build locked routing
+    (direct CLI runs), where the kwargs flow through unmediated.
+    """
+    locked = _BUILD_ROUTING.get()
+    if not (isinstance(locked, dict) and isinstance(locked.get("codegen"), dict)):
+        return
+    codegen = locked["codegen"]
+    cli = slot.provider[:-4] if slot.provider.endswith("_cli") else ""
+    if cli:
+        locked["codegen"] = {
+            **codegen,
+            "source": "codegen_cli_pin",
+            "requested_backend": f"{cli}_cli",
+            "effective_backend": f"{cli}_cli" if cli_available else "stub",
+            "requested_model": slot.model,
+            "effective_model": (
+                (slot.model or f"{cli}-cli:default") if cli_available else "offline-stub"
+            ),
+        }
+        return
+    if slot.provider == "openrouter":
+        locked["codegen"] = {
+            **codegen,
+            "requested_model": slot.model,
+            "effective_model": slot.model or "router:auto",
+        }
+        return
+    # Bare model id: pinned on the active route (provider untouched).
+    locked["codegen"] = {
+        **codegen,
+        "requested_model": slot.model,
+        "effective_model": slot.model,
+    }
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
@@ -742,6 +799,7 @@ class CodeAgent(BaseAgent):
         "degraded", "degraded_reason", "codegen_override_unavailable",
         "prompts", "agentic", "prose_rejected", "index_html_repaired",
         "scene_registry_repaired", "agentic_untrusted_paths", "vents",
+        "model_used",
     )
 
     def __init__(self, name: str = "code", *, event_bus: EventBus,
@@ -988,10 +1046,16 @@ class CodeAgent(BaseAgent):
                         moa_guidance=_moa_guidance,
                         design_tokens_md=_design_tokens_md)
                     if attempt == 0
+                    # The resume shares the initial prompt's static head (SAME
+                    # per-build inputs threaded) so provider prompt caching hits
+                    # on every fix-loop iteration; only the volatile resume
+                    # context (issues / missing / existing) differs, at the tail.
                     else self._agentic_resume_prompt(
                         brief, stack, plan, disk, missing_planned,
                         agentic_error, contract_gap, design=design,
-                        design_tokens_md=_design_tokens_md)
+                        design_tokens_md=_design_tokens_md,
+                        knowledge=knowledge, art_plan=_art_plan,
+                        game_design=_game_design, asset_foundry=_asset_foundry)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
@@ -1206,6 +1270,13 @@ class CodeAgent(BaseAgent):
         # so a build that never vents is byte-identical downstream to before.
         if run_metadata.get("vents"):
             out["vents"] = list(run_metadata["vents"])
+        # Task-slot attribution (``codegen_model_slot``): which slot governed
+        # this build's greenfield routing. Absent unless a slot is set, so a
+        # slot-free build stays byte-identical; the golden bench / model
+        # tournament read this to attribute outcomes per slot.
+        model_used = run_metadata.get("model_used")
+        if isinstance(model_used, dict):
+            out["model_used"] = dict(model_used)
         agentic = run_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
@@ -1377,16 +1448,21 @@ class CodeAgent(BaseAgent):
             + f"{_CONFIG_DIRECTIVE}\n"
             + f"{_VENT_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
-            # Advisory-council guidance goes at the TAIL, after every directive.
-            # The directive block above is byte-identical across every build of a
-            # given stack; splicing brief-varying text into the middle would
-            # fragment the longest span shared across builds and across
-            # best-of-N trajectories. Appending keeps that span contiguous and
-            # gives the advice recency. (Hermes appends for the same reason at a
-            # different scale — agent/moa_loop.py:1303-1337.) Empty by default,
-            # so a council-off build's prompt is byte-identical to before.
-            + (f"\n{moa_guidance}\n" if moa_guidance else "")
             + "Do not ask questions — just build it."
+            # Advisory-council guidance is the VERY TAIL of the prompt, after
+            # every directive AND the closer. Everything above this line is
+            # STATIC for a given build (same brief/plan/stack/design inputs) —
+            # byte-identical across the initial prompt, every resume prompt,
+            # and every best-of-N trajectory, so provider prompt caching hits
+            # on the shared prefix each fix-loop iteration (hermes v0.19.0).
+            # Volatile text — this guidance, and the resume prompt's issue /
+            # missing-file / existing-file lists — only ever APPENDS at the
+            # tail; splicing it into the middle would fragment the cached
+            # span. (Hermes appends for the same reason at a different scale —
+            # agent/moa_loop.py:1303-1337.) Empty by default, so a council-off
+            # build's prompt is byte-identical to before. This ordering is a
+            # tested invariant (tests/test_prompt_prefix_stability.py).
+            + (f"\n{moa_guidance}\n" if moa_guidance else "")
         )
         return self.system_prompt(prompt)
 
@@ -1639,6 +1715,77 @@ class CodeAgent(BaseAgent):
             timeout = None
         runtime = {"timeout": timeout} if timeout else {}
         live_settings = getattr(self.llm, "settings", None)
+        # Task-specialized greenfield pin (``codegen_model_slot``). When set and
+        # parseable it is authoritative for the codegen path — ahead of BOTH the
+        # ``codegen_cli_provider`` override below and the payload model_override,
+        # mirroring the rule that an operator's settings pin wins the whole build.
+        # Empty/unparseable (warned in parse_task_model_slot) or unusable on this
+        # backend (warned below) falls through to today's chain unchanged.
+        codegen_slot = parse_task_model_slot(
+            str(getattr(live_settings, "codegen_model_slot", "") or ""),
+            path="codegen",
+        )
+        if codegen_slot is not None:
+            self._task_metadata["model_used"] = {"codegen": codegen_slot.address}
+            slot_provider = codegen_slot.provider
+            if slot_provider.endswith("_cli"):
+                cli = slot_provider[:-4]
+                if _explicit_stub_fences_cli_slot(live_settings, codegen_slot):
+                    # Explicit stub = offline+free: ignore the slot and keep
+                    # today's chain (which yields the offline scaffold anyway).
+                    self._task_metadata.pop("model_used", None)
+                    log.warning(
+                        "code_agent.codegen_slot_ignored",
+                        slot=codegen_slot.address,
+                        reason="explicit stub backend is offline+free; CLI slot refused",
+                    )
+                else:
+                    # Same routing-lock semantics as ``codegen_cli_provider``: an
+                    # explicit CLI pin never silently spends through OpenRouter —
+                    # unavailable means keep the offline scaffold, not fall back.
+                    cli_ok = self.llm._cli_available(cli)
+                    _lock_agentic_route_to_slot(codegen_slot, cli_available=cli_ok)
+                    slot_kwargs = {
+                        "provider": cli,
+                        "model": codegen_slot.model or None,
+                        "stack": stack,
+                        **runtime,
+                    }
+                    if cli_ok:
+                        return True, slot_kwargs, ""
+                    return False, slot_kwargs, cli
+            elif slot_provider == "openrouter":
+                # The openrouter agentic tool-loop is the only agentic path an
+                # openrouter slot can ride; on any other backend the pin is
+                # unusable, so warn and keep today's routing rather than send a
+                # hosted model id to a CLI (or vice versa).
+                if self.llm.backend == "openrouter":
+                    _lock_agentic_route_to_slot(codegen_slot, cli_available=False)
+                    return False, {
+                        "model": codegen_slot.model or None,
+                        "stack": stack,
+                        **runtime,
+                    }, ""
+                self._task_metadata.pop("model_used", None)
+                log.warning(
+                    "code_agent.codegen_slot_ignored",
+                    slot=codegen_slot.address,
+                    backend=self.llm.backend,
+                    reason="openrouter slot requires the openrouter backend",
+                )
+            elif slot_provider:
+                # "stub" — a no-op pin for codegen; warn and keep today's routing.
+                self._task_metadata.pop("model_used", None)
+                log.warning(
+                    "code_agent.codegen_slot_ignored",
+                    slot=codegen_slot.address,
+                    reason="provider cannot serve agentic codegen",
+                )
+            else:
+                # Bare model id: pin it on the active codegen route (the grammar's
+                # documented "no known provider prefix" semantics).
+                _lock_agentic_route_to_slot(codegen_slot, cli_available=False)
+                return False, {"model": codegen_slot.model, "stack": stack, **runtime}, ""
         codegen_provider = str(
             getattr(live_settings, "codegen_cli_provider", "") or "").strip().lower()
         codegen_model = (
@@ -1854,6 +2001,11 @@ class CodeAgent(BaseAgent):
         }
         if self._task_metadata.get("vents"):
             out["vents"] = list(self._task_metadata["vents"])
+        # Same task-slot attribution as the monolithic path — a slice is still
+        # greenfield codegen, so a set ``codegen_model_slot`` governs it too.
+        slice_model_used = self._task_metadata.get("model_used")
+        if isinstance(slice_model_used, dict):
+            out["model_used"] = dict(slice_model_used)
         agentic = self._task_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
@@ -2149,12 +2301,23 @@ class CodeAgent(BaseAgent):
         contract_gap: str,
         design: dict[str, Any] | None = None,
         design_tokens_md: str | None = None,
+        knowledge: str = "",
+        art_plan: dict[str, Any] | None = None,
+        game_design: dict[str, Any] | None = None,
+        asset_foundry: dict[str, Any] | None = None,
     ) -> str:
-        """Compact in-place continuation after an incomplete agentic session.
+        """In-place continuation after an incomplete agentic session.
 
-        Repeating the full ~14K initial prompt wastes the small recovery window
-        and encourages wholesale rewrites. The new session can inspect the shared
-        worktree, so give it the brief, exact remaining contract, and prior error.
+        Ordering invariant (tests/test_prompt_prefix_stability.py): the prompt
+        is the INITIAL prompt's static directive head — built by the SAME
+        ``_agentic_prompt`` call with the SAME per-build inputs, so it is
+        byte-identical and provider prompt caching hits on every fix-loop
+        iteration (hermes v0.19.0) — followed by the VOLATILE resume context
+        at the tail: prior completion issues, the missing-file list, and the
+        existing-file survey. The new session can inspect the shared worktree,
+        so the tail carries the exact remaining contract instead of a
+        rewrite-from-scratch brief; the static head keeps it on the same
+        stack/design/contracts the initial session built against.
         """
         purposes = {
             str(item.get("path", "")).replace("\\", "/"): str(item.get("purpose", ""))
@@ -2169,25 +2332,20 @@ class CodeAgent(BaseAgent):
         issues = "\n".join(
             f"- {issue}" for issue in (previous_error, contract_gap) if issue
         ) or "- The prior session ended without confirming completion."
-        variant = variant_directive(stack, brief)
+        head = self._agentic_prompt(
+            brief, stack, plan, knowledge,
+            art_plan=art_plan, game_design=game_design,
+            asset_foundry=asset_foundry, design=design,
+            design_tokens_md=design_tokens_md)
         return (
-            "RESUME IN PLACE. A previous codegen session ended before the complete "
+            head
+            + "\n\nRESUME IN PLACE. A previous codegen session ended before the complete "
             "architecture was confirmed. Preserve working files and do not restart or "
             "replace the product with a smaller demo.\n\n"
-            f"Brief: {brief}\nStack: {stack}\n"
-            f"Architecture: {plan.get('summary', '')}\n\n"
             f"Prior completion issues:\n{issues}\n\n"
             f"Files still required by the approved architecture:\n{remaining}\n\n"
             f"Files already present (inspect before editing):\n{existing}\n\n"
-            + (f"Variant contract: {variant}\n\n" if variant else "")
-            + (
-                f"{_DESIGN_DIRECTIVE}\n{design_tokens_md or design_md_block(brief)}\n"
-                f"Follow this design direction: {self._design_summary(design)}\n\n"
-                if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
-                else ""
-            )
-            + f"{_VENT_DIRECTIVE}\n\n"
-            + "Implement every missing file in full, repair imports and entrypoint wiring, "
+            "Implement every missing file in full, repair imports and entrypoint wiring, "
             "and validate the complete existing app. Do not omit features, TODO, or elide "
             "code. Finish successfully only after the whole planned application is present."
         )

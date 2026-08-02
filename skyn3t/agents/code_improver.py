@@ -18,6 +18,7 @@ from typing import Any
 import structlog
 
 from skyn3t.adapters.llm import LLMClient
+from skyn3t.adapters.model_slot import ModelSlot
 from skyn3t.agents._common import (
     canonical_project_relpath,
     detect_stack,
@@ -28,10 +29,12 @@ from skyn3t.agents.code_agent import (
     _DESIGN_DIRECTIVE,
     _FRONTEND_EXTENSIONS,
     _FULL_FILE_CONTRACT,
+    _explicit_stub_fences_cli_slot,
+    _lock_agentic_route_to_slot,
 )
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-from skyn3t.core.model_router import Tier
+from skyn3t.core.model_router import Tier, parse_task_model_slot
 from skyn3t.studio.layout_profiles import (
     LayoutProfile,
     is_valid_profile_payload,
@@ -249,6 +252,76 @@ class CodeImproverAgent(BaseAgent):
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
         gaps = p.get("gaps") or review.get("gaps") or []
+        # Task-specialized repair pin (``repair_model_slot``). When set it — and
+        # only it — decides the repair route: ahead of ImproveEngine's
+        # ``agentic_provider`` lock on the agentic path, and ahead of the
+        # Tier.UI/Tier.BACKEND mapping on the classic per-file path (via
+        # complete()'s provider/model overrides). Empty or junk (already warned
+        # by parse_task_model_slot) keeps today's routing byte-identical.
+        repair_slot = parse_task_model_slot(
+            str(getattr(getattr(self.llm, "settings", None), "repair_model_slot", "") or ""),
+            path="repair",
+        )
+        if repair_slot is not None and repair_slot.provider == "stub":
+            # A stub pin can serve no repair — warn and keep tier routing.
+            _log.warning("code_improver.repair_slot_ignored", slot=repair_slot.address,
+                         reason="stub provider cannot serve repair")
+            repair_slot = None
+        if repair_slot is not None and _explicit_stub_fences_cli_slot(
+            getattr(self.llm, "settings", None), repair_slot
+        ):
+            # Same money fence as codegen: explicit stub = offline+free, so a
+            # CLI slot must not launch a subscription CLI on either the agentic
+            # or the classic complete() path.
+            _log.warning("code_improver.repair_slot_ignored", slot=repair_slot.address,
+                         reason="explicit stub backend is offline+free; CLI slot refused")
+            repair_slot = None
+        # Whether the slot actually steered the agentic session (vs. only the
+        # classic fallback) — model_used never claims a route it didn't serve.
+        agentic_slot_applied = False
+        if repair_slot is not None and p.get("agentic"):
+            # Adjust a COPY: the caller's payload stays untouched, and every
+            # downstream reader (the routing lock below, _agentic_improve) sees
+            # the slot's route through the same keys ImproveEngine already uses.
+            p = dict(p)
+            if repair_slot.provider.endswith("_cli"):
+                # Same routing-lock semantics as an ImproveEngine CLI lock.
+                _lock_agentic_route_to_slot(
+                    repair_slot,
+                    cli_available=self.llm._cli_available(repair_slot.provider[:-4]),
+                )
+                p["agentic_provider"] = repair_slot.provider[:-4]
+                p["agentic_model"] = repair_slot.model
+                agentic_slot_applied = True
+            elif repair_slot.provider == "openrouter":
+                if self.llm.backend == "openrouter":
+                    _lock_agentic_route_to_slot(repair_slot, cli_available=False)
+                    p["agentic_provider"] = ""
+                    p["agentic_model"] = repair_slot.model
+                    agentic_slot_applied = True
+                else:
+                    # agentic_build cannot cross to a hosted provider from a
+                    # CLI/stub global backend; the classic fallback still pins
+                    # this slot via complete()'s provider_override.
+                    _log.warning(
+                        "code_improver.repair_slot_agentic_ignored",
+                        slot=repair_slot.address,
+                        backend=self.llm.backend,
+                        reason="openrouter slot needs the openrouter backend for agentic improve",
+                    )
+            else:
+                # Bare model id: pin it on whatever route the payload already had.
+                _lock_agentic_route_to_slot(repair_slot, cli_available=False)
+                p["agentic_model"] = repair_slot.model
+                agentic_slot_applied = True
+        model_used_out: dict[str, Any] = (
+            {"model_used": {"repair": repair_slot.address}}
+            if repair_slot is not None
+            else {}
+        )
+        agentic_model_used_out: dict[str, Any] = (
+            model_used_out if agentic_slot_applied else {}
+        )
         routing_provider = str(p.get("agentic_provider") or "").strip().lower()
         agentic_repo_map = _bounded_agentic_repo_map(p.get("repo_map"))
         context_detail = {
@@ -301,6 +374,7 @@ class CodeImproverAgent(BaseAgent):
                                           "skipped": agentic_skipped,
                                           "worktree_dir": str(worktree), "agentic": True,
                                           **context_detail,
+                                          **agentic_model_used_out,
                                           "backend": (
                                               f"{routing_provider}_cli"
                                               if routing_provider else self.llm.backend
@@ -352,7 +426,8 @@ class CodeImproverAgent(BaseAgent):
             if target.is_file():
                 original = target.read_text(encoding="utf-8")
                 new_content, skip_reason = await self._improve_one(
-                    rel, original, brief, gaps, stack, knowledge, profile=layout_profile)
+                    rel, original, brief, gaps, stack, knowledge, profile=layout_profile,
+                    repair_slot=repair_slot)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -363,6 +438,7 @@ class CodeImproverAgent(BaseAgent):
                 original = ""
                 new_content = await self._create_one(
                     rel, brief, gaps, stack, worktree, knowledge, profile=layout_profile,
+                    repair_slot=repair_slot,
                 )
             if new_content and new_content.strip() and new_content != original:
                 from skyn3t.agents.validate import validate_source
@@ -381,6 +457,7 @@ class CodeImproverAgent(BaseAgent):
         return TaskResult(task_id=task.task_id, success=True,
                           output={"files_improved": len(improved), "files": sorted(improved),
                                   "skipped": skipped,
+                                  **model_used_out,
                                   "worktree_dir": str(worktree), "backend": self.llm.backend})
 
     # Directories that are never part of an improve diff: build artifacts,
@@ -633,10 +710,31 @@ class CodeImproverAgent(BaseAgent):
                 skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
         return improved, skipped, True, ""
 
+    @staticmethod
+    def _repair_slot_overrides(repair_slot: ModelSlot | None) -> dict[str, str]:
+        """Map a repair slot onto complete()'s pin kwargs.
+
+        A provider slot pins THIS call's backend (``provider_override`` — the
+        same cross-provider mechanism the MoA council fans out with); the model
+        half pins that provider's model (empty = the provider's own default).
+        A bare model id pins the model on the active backend, mirroring the
+        slot grammar's "no known provider prefix" semantics. Empty dict when no
+        slot is set — the call is then byte-identical to today.
+        """
+        if repair_slot is None:
+            return {}
+        overrides: dict[str, str] = {}
+        if repair_slot.provider:
+            overrides["provider_override"] = repair_slot.provider
+        if repair_slot.model:
+            overrides["model_override"] = repair_slot.model
+        return overrides
+
     async def _improve_one(self, rel: str, original: str, brief: str,
                            gaps: list[Any], stack: str,
                            knowledge: str = "",
-                           profile: LayoutProfile | None = None) -> tuple[str, str]:
+                           profile: LayoutProfile | None = None,
+                           repair_slot: ModelSlot | None = None) -> tuple[str, str]:
         """Rewrite one file toward the gaps/goal. Returns (content, skip_reason):
         content == original with a reason means the file was deliberately left
         alone (e.g. "already_satisfied") — the caller records the reason instead
@@ -670,6 +768,9 @@ class CodeImproverAgent(BaseAgent):
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
+            # A set ``repair_model_slot`` outranks the tier mapping for THIS
+            # call; the tier still flows through for fallback chains/logging.
+            slot_overrides = self._repair_slot_overrides(repair_slot)
             # Retry one invalid response, but never impose an application-level
             # output ceiling. The provider's native context/output capacity is
             # authoritative and source validation rejects incomplete rewrites.
@@ -679,7 +780,8 @@ class CodeImproverAgent(BaseAgent):
                 try:
                     result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
                                                      file_hint=rel, max_tokens=None,
-                                                     task_type=self.agent_type)
+                                                     task_type=self.agent_type,
+                                                     **slot_overrides)
                 except Exception:  # noqa: BLE001 - fall through to deterministic touch-up
                     break
                 # Degraded-to-stub result must not clobber a working file.
@@ -702,7 +804,8 @@ class CodeImproverAgent(BaseAgent):
 
     async def _create_one(self, rel: str, brief: str, gaps: list[Any], stack: str,
                           worktree: Path, knowledge: str = "",
-                          profile: LayoutProfile | None = None) -> str:
+                          profile: LayoutProfile | None = None,
+                          repair_slot: ModelSlot | None = None) -> str:
         """Write a BRAND NEW file at `rel` that some existing file imports but that
         codegen never created. Unlike `_improve_one`, there is no deterministic
         offline fallback here — synthesizing a plausible NEW file (not just a
@@ -753,7 +856,8 @@ class CodeImproverAgent(BaseAgent):
         try:
             result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_CREATE_SYSTEM),
                                              file_hint=rel, max_tokens=None,
-                                             task_type=self.agent_type)
+                                             task_type=self.agent_type,
+                                             **self._repair_slot_overrides(repair_slot))
             if result.backend != "stub":
                 created = extract_code(result.text)
                 if created and created.strip():

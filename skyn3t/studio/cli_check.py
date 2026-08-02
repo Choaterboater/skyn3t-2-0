@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from skyn3t.security.secrets import filter_env
+from skyn3t.security.secrets import filter_env, mask_secrets
 from skyn3t.studio.gate_verdict import GateVerdict
 
 CliVerdict = GateVerdict
@@ -45,6 +45,41 @@ _NO_MODULE_RE = re.compile(r"No module named ['\"]([A-Za-z_][\w.]*)['\"]")
 _SUBCOMMANDS_RE = re.compile(r"\{([a-z0-9_,\- ]+)\}")
 
 _NONSENSE = "__definitely_not_a_real_command__"
+
+
+def _mask(text: str) -> str:
+    """Output-side secret masking for gate output. Never breaks a build."""
+    try:
+        return mask_secrets(text)
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _mask_value(value: Any) -> Any:
+    """Mask strings (and string items of lists) inside a ``checked`` dict."""
+    if isinstance(value, str):
+        return _mask(value)
+    if isinstance(value, list):
+        return [_mask(item) if isinstance(item, str) else item for item in value]
+    return value
+
+
+def _mask_verdict(verdict: CliVerdict) -> CliVerdict:
+    """Scrub registered host secrets from gate output BEFORE it is recorded.
+
+    The delivered CLI is untrusted: its stdout/stderr tails land in issues and
+    ``checked``, and from there in build manifests and the fix-loop's gaps.
+    ``filter_env`` keeps host keys out of the subprocess environment; this is
+    the output-side complement — a host credential that reaches that text by
+    ANY channel comes back masked.
+    """
+    try:
+        verdict.issues = [_mask(issue) for issue in verdict.issues]
+        verdict.reason = _mask(verdict.reason)
+        verdict.checked = {key: _mask_value(value) for key, value in verdict.checked.items()}
+    except Exception:  # noqa: BLE001 - masking must never break a build
+        pass
+    return verdict
 
 
 def _python_exec(explicit: str | None) -> str | None:
@@ -130,9 +165,9 @@ def check_cli(
         py = _python_exec(python_exec)
         if not py:
             return CliVerdict(skipped=True, reason="no python interpreter available")
-        return _probe_cli(root, py, cmd_timeout=cmd_timeout)
+        return _mask_verdict(_probe_cli(root, py, cmd_timeout=cmd_timeout))
     except Exception as exc:  # noqa: BLE001 - a gate must never break a build
-        return CliVerdict(skipped=True, reason=f"cli check error: {exc}")
+        return CliVerdict(skipped=True, reason=_mask(f"cli check error: {exc}"))
 
 
 def _probe_cli(root: Path, py: str, *, cmd_timeout: float) -> CliVerdict:

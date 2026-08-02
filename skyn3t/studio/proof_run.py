@@ -39,6 +39,7 @@ from skyn3t.persisted_write import (
     PERSISTED_WRITE_RECEIPT_MAX_BYTES,
     is_persisted_write_receipt_body,
 )
+from skyn3t.security.secrets import mask_secrets
 
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
 # NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
@@ -1128,6 +1129,19 @@ class _ProofCommandResult:
         # second one, in a directory that should never have existed.
         self.stdout = strip_ansi(self.stdout)
         self.stderr = strip_ansi(self.stderr)
+        # Mask HERE for the same "at capture" reason as the ANSI strip above:
+        # every proof summary (build_summary, test summaries, pip/boot tails)
+        # is carved out of these two strings, and from there lands in proof
+        # detail, durable manifests and the fix loop. filter_env keeps host
+        # keys out of the command's environment; mask_secrets is the
+        # output-side complement — a host credential echoed by a build tool
+        # (or parroted by untrusted delivered code) never persists. Guarded:
+        # masking must never break a build.
+        try:
+            self.stdout = mask_secrets(self.stdout)
+            self.stderr = mask_secrets(self.stderr)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @dataclass(slots=True)

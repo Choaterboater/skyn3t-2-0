@@ -47,12 +47,12 @@ def test_agentic_prompt_appends_guidance_at_the_tail():
     )
 
     assert "ZZZ marker" in prompt
-    # After the stack/full-file/config directives, not spliced into them: the
-    # directive block is byte-identical across builds of a stack, and splicing
-    # brief-varying text mid-prompt fragments that shared span.
-    assert prompt.index("ZZZ marker") > prompt.index("Do not ask questions") - len(prompt)
-    assert prompt.rindex("ZZZ marker") < prompt.rindex("Do not ask questions")
-    assert prompt.endswith("Do not ask questions — just build it.")
+    # After EVERY directive AND the closer — the very tail of the prompt: the
+    # directive block above is byte-identical across builds of a stack, and
+    # splicing brief-varying text mid-prompt fragments the shared (provider-
+    # cached) span. Volatile guidance only ever appends at the tail.
+    assert prompt.index("ZZZ marker") > prompt.index("Do not ask questions")
+    assert prompt.endswith(f"\n{guidance}\n")
 
 
 def test_guidance_is_the_only_difference():

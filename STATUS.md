@@ -1,8 +1,8 @@
 # SkyN3t 2.0 — Status
 
-_Last reviewed: 2026-08-01 (4,192 passed / 12 skipped; full suite green after
-the de-slop pass, the three-swarm wave, R1–R6, and the golden-design bench
-loop that ends 5/5 live with zero AI-look warnings)._
+_Last reviewed: 2026-08-01 (4,234 passed / 12 skipped; full suite green.
+Design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex, zero
+AI-look warnings with briefs threaded)._
 
 **2026-07-31 — de-slop pass (generated-app look):** deep-dived why builds had
 converged on the AI-default look and removed the same-look drivers. Design

@@ -1816,6 +1816,128 @@ def studio_serve(
         cleanup_serve(app)
 
 
+@studio_app.command("share")
+def studio_share(
+    project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
+    port: int = typer.Option(0, "--port", "-p", help="Preferred local port (0 = auto)."),
+    no_tunnel: bool = typer.Option(
+        False, "--no-tunnel", help="Local preview only — identical to `studio serve`."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Share even when the manifest marks the build failed/incomplete."
+    ),
+) -> None:
+    """Serve a project locally AND expose it at a public URL (cloudflared/localhost.run).
+
+    The preview boot is the same loopback-only one ``studio serve`` uses; this
+    command layers a public tunnel over it. Sharing is opt-in — this command IS
+    the asking. A tunnel failure never kills the local preview.
+    """
+    import time as _time
+    from pathlib import Path as _Path
+
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.app_runner import cleanup_serve
+    from skyn3t.studio.preview_supervisor import PreviewSupervisor
+    from skyn3t.studio.share import PublicTunnel, detect_provider, install_hint
+
+    console = _console()
+    s = get_settings()
+    cand = _Path(project)
+    pdir = cand if cand.is_absolute() else (s.projects_dir / project)
+    man = None
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+        man = BuildManifest.load(pdir)
+    except Exception:  # noqa: BLE001
+        man = None
+    # Sharing publishes generated code to the internet, so a build the manifest
+    # marks failed/incomplete (or verdicted no_go) is refused unless forced.
+    if man is not None and not force and (man.status != "completed" or man.verdict == "no_go"):
+        verdict = f" (verdict: {man.verdict})" if man.verdict else ""
+        console.print(
+            f"[red]Refusing to share[/red] {pdir.name}: the manifest marks this build "
+            f"[bold]{man.status or 'unknown'}[/bold]{verdict}. "
+            "Fix it first, or re-run with [cyan]--force[/cyan] to share it anyway."
+        )
+        raise typer.Exit(code=4)
+    stack = man.stack if man else ""
+    runner = PreviewSupervisor()
+    app = asyncio.run(runner.start(pdir, stack, port=port or None))
+    tunnel = None
+    try:
+        if app.status == "no_preview":
+            console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
+            raise typer.Exit(code=1)
+        if app.status != "running":
+            # Same failure reporting as `studio serve` (reason + log tail).
+            reason = str(app.detail.get("reason") or "").strip()
+            tail = str(app.detail.get("log_tail") or "")[-400:].strip()
+            message = " — ".join(p for p in (reason, tail) if p) or str(app.detail)[:400]
+            console.print(f"[red]Failed to start[/red]: {message}")
+            raise typer.Exit(code=2)
+        if no_tunnel:
+            console.print(
+                f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] "
+                "(Docker isolated). Press Ctrl+C to stop."
+            )
+        else:
+            provider = detect_provider(app.port)
+            if provider is None:
+                # No tunnel binary — the local URL is still the deliverable.
+                console.print(
+                    f"[green]Serving[/green] {pdir.name} locally at [cyan]{app.url}[/cyan]"
+                )
+                console.print(
+                    "[red]No tunnel provider found[/red] — the app stays loopback-only."
+                )
+                console.print(install_hint())
+                raise typer.Exit(code=3)
+            console.print(
+                "[yellow]Warning:[/yellow] this app will be [bold]PUBLIC[/bold] on the "
+                "internet until you stop sharing (Ctrl+C)."
+            )
+            tunnel = PublicTunnel(provider)
+            public_url = tunnel.start()
+            if public_url is None:
+                # Tunnel errors NEVER fail the underlying serve: keep local, report.
+                tunnel = None  # start() already killed the half-open tunnel
+                console.print(
+                    "[red]Tunnel failed to start[/red] — keeping the local preview only."
+                )
+                console.print(
+                    f"[green]Serving[/green] {pdir.name} locally at [cyan]{app.url}[/cyan]. "
+                    "Press Ctrl+C to stop."
+                )
+            else:
+                console.print(
+                    f"[bold green]Public URL:[/bold green] [cyan]{public_url}[/cyan] "
+                    f"[dim](via {provider.label})[/dim]"
+                )
+                console.print(f"[green]Local:[/green]      {app.url}")
+                console.print("Press Ctrl+C to stop sharing.")
+        try:
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            console.print("\n[dim]stopped.[/dim]")
+    finally:
+        # Teardown order: the tunnel first (stop being public), then the preview
+        # (mirrors `studio serve`'s cleanup).
+        if tunnel is not None:
+            try:
+                tunnel.stop()
+            except Exception:  # noqa: BLE001 - shutdown must not mask CLI result
+                pass
+        try:
+            stopped = runner.stop(app)
+            if inspect.isawaitable(stopped):
+                asyncio.run(stopped)
+        except Exception:  # noqa: BLE001 - shutdown must not mask CLI result
+            pass
+        cleanup_serve(app)
+
+
 @studio_app.command("shoot")
 def studio_shoot(
     url: str = typer.Argument(..., help="URL to screenshot (e.g. http://127.0.0.1:8088/)."),

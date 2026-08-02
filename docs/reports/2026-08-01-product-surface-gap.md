@@ -66,6 +66,7 @@ deploy target), so delivery produces a URL, not just a folder. This is the
 highest-leverage single gap for shareability and does not require becoming
 a SaaS. Cost: medium (tunnel infra or one blessed deploy target + token
 management). Risk: low-moderate (new operational surface).
+_Status: wedge shipped (cloudflared/localhost.run), see `skyn3t studio share`._
 
 **C. Guided product track.** Gaps 1+3+4: a one-click installer, a
 chat-first iteration loop in the dashboard, and the frontend-first fast

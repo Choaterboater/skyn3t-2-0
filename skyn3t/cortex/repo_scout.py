@@ -16,9 +16,13 @@ import asyncio
 from typing import Any
 from urllib.parse import quote
 
+import structlog
+
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
+
+log = structlog.get_logger(__name__)
 
 # Optional HTTP client — guarded so the module always imports.
 try:  # pragma: no cover - presence depends on environment
@@ -222,6 +226,15 @@ class RepoScout:
         """
         if not getattr(self.settings, "autonomous_learning", False):
             return
+        # Honest auth note, logged only when the scout actually runs (the
+        # cortex.start() path): a token is NOT required — the scout searches
+        # unauthenticated and can degrade to offline seeds; a token only
+        # raises the GitHub API rate limit.
+        if not self.github_token:
+            log.warning(
+                "cortex.scout_unauthenticated",
+                hint="scout works without a token; set SKYN3T_GITHUB_TOKEN to raise the GitHub rate limit",
+            )
         self._stop = False
         interval = float(getattr(self.settings, "scout_interval", 1800.0))
         # Eager first scout shortly after boot so the inbox isn't empty for a full

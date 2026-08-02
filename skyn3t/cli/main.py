@@ -169,8 +169,10 @@ _AGENT_MODULES: tuple[tuple[str, str], ...] = (
     ("skyn3t.agents.packaging_agent", "PackagingAgent"),
     ("skyn3t.agents.deploy_agent", "DeployAgent"),
     ("skyn3t.agents.browser_agent", "BrowserAgent"),
-    ("skyn3t.agents.github_explorer", "GithubExplorer"),
-    ("skyn3t.agents.github_ingestor", "GithubIngestor"),
+    # github_explorer / github_ingestor are deliberately NOT registered: no
+    # production code dispatches them (external-repo learning goes through the
+    # cortex RepoScout -> gated ingest path). The agent classes and their tests
+    # stay in skyn3t/agents/ for future use.
 )
 
 

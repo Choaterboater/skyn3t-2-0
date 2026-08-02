@@ -36,7 +36,8 @@ data/recovery/
 /skyn3t/model_router_paid_fallback.json
 /skyn3t/model_tournament.json
 /skyn3t/reference_images/
-/skyn3t/skills/
+/skyn3t/skills/*
+!/skyn3t/skills/README.md
 /skyn3t/snapshot.json
 /skyn3t/token_rollups.json
 /skyn3t/vector_db/

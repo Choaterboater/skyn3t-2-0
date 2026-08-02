@@ -590,12 +590,11 @@ def build_cortex(
             or getattr(settings, "github_token", "")
             or None
         )
-        # Make the silent failure visible: a stale process started before the token
-        # was loaded gets token=None and the scout no-ops. Log it so "scout stopped
-        # scanning" is diagnosable instead of a mystery (restart to reload .env).
-        if not token and _log is not None:
-            _log.warning("cortex.scout_disabled_no_token",
-                         hint="set SKYN3T_GITHUB_TOKEN or restart so .env is reloaded")
+        # No construction-time scout warning here: build_cortex also runs on
+        # paths that never call cortex.start() (e.g. CLI `studio build`), so a
+        # "scout disabled" warning would fire when the scout was never going
+        # to run — and it was wrong anyway (the scout works unauthenticated).
+        # The honest auth-mode note lives in RepoScout.run() instead.
         cortex.add_component(
             RepoScout(cortex, event_bus, settings, github_token=token)
         )

@@ -557,6 +557,33 @@ async def test_repo_scout_offline():
     assert all(p.safe is False for p in props)
 
 
+async def test_repo_scout_run_warns_honestly_when_unauthenticated():
+    # The token note fires only when the scout actually runs (cortex.start
+    # path), and says what the token really does: raise the rate limit.
+    from structlog.testing import capture_logs
+
+    scout = RepoScout(settings=_settings())  # autonomous_learning=True, no token
+    assert scout.github_token is None
+    with capture_logs() as logs:
+        task = asyncio.create_task(scout.run())
+        await asyncio.sleep(0.05)  # let run() reach its pre-loop warning
+        task.cancel()
+        await task  # run() swallows CancelledError and returns
+    warns = [e for e in logs if e.get("event") == "cortex.scout_unauthenticated"]
+    assert len(warns) == 1
+    assert "rate limit" in warns[0]["hint"]
+    assert "works without a token" in warns[0]["hint"]
+
+
+async def test_repo_scout_run_silent_when_learning_off():
+    from structlog.testing import capture_logs
+
+    scout = RepoScout(settings=_settings(autonomous_learning=False))
+    with capture_logs() as logs:
+        await scout.run()  # gated off -> returns before any scout logging
+    assert not [e for e in logs if "scout" in str(e.get("event", "")).lower()]
+
+
 # ---- P2 review watcher -----------------------------------------------------
 async def test_ci_failure_creates_gated_patch():
     bus = EventBus()

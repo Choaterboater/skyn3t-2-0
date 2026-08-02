@@ -77,7 +77,7 @@ from skyn3t.persisted_write import (
 from skyn3t.persisted_write import (
     is_persisted_write_receipt_body as _is_persisted_write_receipt_body,
 )
-from skyn3t.security.secrets import filter_env
+from skyn3t.security.secrets import filter_env, mask_secrets
 
 # Per-asyncio-task LLM route capture. The LLMClient is SHARED across agents, but
 # each agent's run() is its own task; task-local vars isolate "the completions
@@ -145,12 +145,28 @@ _AGENTIC_STREAM_EVIDENCE: contextvars.ContextVar = contextvars.ContextVar(
 _AGENTIC_OUTPUT_TEXT_LIMIT = 16_000
 
 
+def _mask_agentic_text(text: str) -> str:
+    """Output-side secret masking for text leaving the host trust boundary.
+
+    Tool observations (a read_file dump can echo a credential that reached the
+    worktree) and the bounded prose tail (vent channel / cli_execution
+    output_text) are returned to the agent loop and recorded in run metadata.
+    ``filter_env`` keeps host keys out of subprocess environments; this is the
+    output-side complement. Guarded: masking must never break a build.
+    """
+    try:
+        return mask_secrets(text)
+    except Exception:  # noqa: BLE001
+        return text
+
+
 def _capture_agentic_output_text(evt: dict, parts: list[str], budget: list[int]) -> None:
     """Accumulate assistant prose from one stream-json event, bounded by budget.
 
     Handles the claude/kimi ``assistant`` message shape (content blocks) and the
     terminal ``result`` event's final text. Best-effort: unrecognised shapes
-    contribute nothing."""
+    contribute nothing. Prose is masked on capture so the vent channel and the
+    returned ``output_text`` never carry a registered host secret."""
     if budget[0] <= 0:
         return
     text = ""
@@ -170,7 +186,7 @@ def _capture_agentic_output_text(evt: dict, parts: list[str], budget: list[int])
         raw = evt.get("result")
         text = raw if isinstance(raw, str) else ""
     if text:
-        parts.append(text[: budget[0]])
+        parts.append(_mask_agentic_text(text)[: budget[0]])
         budget[0] -= len(parts[-1])
 _BUDGET_LEDGER_LOCK = threading.RLock()
 _LEDGER_LOCK_TIMEOUT_S = 15.0
@@ -3664,6 +3680,12 @@ class LLMClient:
                                     write_tool_calls += 1
                                     batch_write_calls += 1
                                 result, changed_files = _run_tool(name, args)
+                                # Output-side secret masking: a read_file /
+                                # list_files observation can echo a credential
+                                # that reached the worktree; scrub it before the
+                                # text re-enters the message history sent back
+                                # to the provider (and any persisted context).
+                                result = _mask_agentic_text(result)
                                 if changed_files:
                                     wrote += changed_files
                                     changed_paths: list[str] = []
@@ -4333,9 +4355,13 @@ class LLMClient:
                     proc.communicate(), timeout=agentic_timeout,
                 )
                 ok = proc.returncode == 0
-                output_text = (out or b"").decode("utf-8", "replace")[
-                    -_AGENTIC_OUTPUT_TEXT_LIMIT:
-                ]
+                # Mask on the way out: the raw CLI stdout tail rides the
+                # returned output_text (vent channel / run metadata).
+                output_text = _mask_agentic_text(
+                    (out or b"").decode("utf-8", "replace")[
+                        -_AGENTIC_OUTPUT_TEXT_LIMIT:
+                    ]
+                )
                 returncode = getattr(proc, "returncode", None)
                 cli_execution["exit_code"] = (
                     returncode if isinstance(returncode, int) and not isinstance(returncode, bool)

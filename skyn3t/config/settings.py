@@ -249,6 +249,25 @@ class Settings(BaseSettings):
     # the router's backend tier pick. This is separate from ``codegen_cli_model``
     # because the CLI override and OpenRouter path are mutually exclusive.
     openrouter_codegen_model: str = ""
+    # Task-specialized model routing (evidence: OpenHands SDK paper, MLSys 2026,
+    # Table 5 — models diverge sharply by TASK TYPE: one model leads GREENFIELD
+    # codegen, another leads ISSUE-RESOLUTION/repair). SkyN3t's loop is exactly
+    # those two task types: ``codegen_model_slot`` pins the greenfield path
+    # (code_agent's agentic whole-app build), ``repair_model_slot`` pins the
+    # repair path (code_improver's fix-loop rewrites + agentic improve). Both
+    # use the SAME ``provider:model`` grammar as the MoA council
+    # (skyn3t/adapters/model_slot.py): "openrouter:deepseek/deepseek-v4-flash",
+    # "claude_cli:sonnet", a bare provider ("kimi_cli"), or a bare model id
+    # pinned on the active backend. Empty (default) = today's tier-routed
+    # behavior, byte-identical. When set, the slot is authoritative for its
+    # path ONLY: it outranks the tier pick, the per-tier pins, and (like
+    # ``codegen_cli_provider``) the payload ``model_override`` — operator pins
+    # stay authoritative for the whole build. A junk slot string never breaks
+    # a build: it logs a warning and falls back to tier routing. BILLING: a
+    # ``*_cli`` slot runs on that CLI's subscription — spend the USD ledger
+    # cannot see; an ``openrouter:`` slot bills the OpenRouter key like any pin.
+    codegen_model_slot: str = ""
+    repair_model_slot: str = ""
     # First-class per-tier model pins. These outrank persisted
     # data/model_tier_overrides.json so dashboard/env choices are visible and
     # predictable.
@@ -527,6 +546,16 @@ class Settings(BaseSettings):
     ai_native_gates_verdict: bool = True
     security_check_enabled: bool = True
     web_polish_gate_enabled: bool = True
+    # Advisory end-of-build WEB INTERACTION check (web stacks): serve the delivered
+    # app in the isolated preview and drive ONE LLM-authored Playwright script
+    # through ONE real user flow (click the nav, submit the main form), asserting
+    # BOTH the UI surface (success state visible) and the backend surface (the
+    # API/state endpoint reflects it) — the "renders but isn't wired" catch no
+    # static/route gate can make. ADVISORY only: recorded to
+    # manifest.extra["web_interact"], it NEVER flips the verdict; it soft-skips
+    # ($0, decided before anything is served) without Playwright or a real
+    # (non-stub) LLM backend.
+    web_interact_check_enabled: bool = True
     # Deterministic CLI gate (python_cli family, wave-2 §3.6 tier): drive the
     # delivered main.py's command surface with bounded subprocess calls —
     # --help must work, every advertised subcommand's --help must work, and

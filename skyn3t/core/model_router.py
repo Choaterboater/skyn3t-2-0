@@ -20,6 +20,7 @@ from pathlib import Path
 
 import structlog
 
+from skyn3t.adapters.model_slot import ModelSlot, parse_slot
 from skyn3t.config.settings import Settings, get_settings
 
 log = structlog.get_logger(__name__)
@@ -821,6 +822,48 @@ def newest_paid_model(family: str) -> str | None:
 
 
 _CLAUDE_MARKERS = ("claude", "anthropic")
+
+
+def _slot_model_plausible(model: str) -> bool:
+    """Whether a slot's model half could ever name a real model.
+
+    ``parse_slot`` deliberately keeps ANY unknown token as a model id (backward
+    compat with bare OpenRouter ids), so a junk setting like ``"not a slot"``
+    parses as a "valid" pin. Reject whitespace-bearing ids (no provider model
+    id contains a space) and pure punctuation — the typo shapes an operator
+    actually produces.
+    """
+    return (
+        bool(model)
+        and not any(c.isspace() for c in model)
+        and bool(model.strip(":/"))
+    )
+
+
+def parse_task_model_slot(raw: str, *, path: str = "") -> ModelSlot | None:
+    """Parse a task-specialized slot setting (``codegen_model_slot`` /
+    ``repair_model_slot``) into a concrete route.
+
+    Returns ``None`` — the caller keeps today's tier routing — when the setting
+    is unset OR unparseable. An unparseable-but-configured value logs a
+    warning: a junk pin is an operator mistake worth surfacing, but a model
+    pin must never take a build down with it (design rule #6), so the fallback
+    is silent tier behavior, not an error. Valid shapes mirror the MoA council
+    grammar: ``provider:model``, a bare provider (that provider's default), or
+    a bare model id pinned on the active backend.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    slot = parse_slot(text)
+    plausible = (
+        (bool(slot.provider) and (not slot.model or _slot_model_plausible(slot.model)))
+        or (not slot.provider and _slot_model_plausible(slot.model))
+    )
+    if slot.is_empty or not plausible:
+        log.warning("router.task_slot_invalid", path=path, slot=text[:80])
+        return None
+    return slot
 
 
 class ModelRouter:

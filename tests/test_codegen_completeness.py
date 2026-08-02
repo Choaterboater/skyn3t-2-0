@@ -94,7 +94,7 @@ async def test_large_seven_of_sixteen_delivery_is_preserved_but_no_go(tmp_path):
     assert "degraded" not in agent.metadata, "task state must not leak onto the singleton"
 
 
-async def test_resume_prompt_is_compact_and_can_complete_missing_architecture(tmp_path):
+async def test_resume_prompt_shares_static_prefix_and_can_complete_missing_architecture(tmp_path):
     plan = _plan(4)
 
     async def recover(attempt, root):
@@ -119,7 +119,11 @@ async def test_resume_prompt_is_compact_and_can_complete_missing_architecture(tm
     assert llm.kwargs[0]["planned_paths"] == sorted(
         item["path"] for item in plan["files"]
     )
-    assert len(llm.prompts[1]) < len(llm.prompts[0])
+    # The resume RE-SENDS the initial prompt's static directive head so provider
+    # prompt caching hits on the fix-loop iteration (byte-identical prefix);
+    # only the volatile resume context (issues / missing / existing) appends at
+    # the tail. See tests/test_prompt_prefix_stability.py.
+    assert llm.prompts[1].startswith(llm.prompts[0])
     assert "RESUME IN PLACE" in llm.prompts[1]
     assert plan["files"][1]["path"] in llm.prompts[1]
     assert "degraded" not in result.output

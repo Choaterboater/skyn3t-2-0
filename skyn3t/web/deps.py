@@ -467,8 +467,11 @@ class AppState:
             "events_published": self.event_bus.published_count,
             "agents": len(self.orchestrator.agents) if self.orchestrator else 0,
             "builds": len(self.builds),
+            # GATED is pending too (awaiting human approval) — counting only
+            # "pending" reported 0 while 65 proposals sat gated for weeks,
+            # which made the scout look dead on the dashboard.
             "proposals_pending": sum(
-                1 for p in self.proposals.values() if p.status == "pending"
+                1 for p in self.proposals.values() if p.status in ("pending", "gated")
             ),
             "backends": {
                 "orchestrator": self.orchestrator is not None,

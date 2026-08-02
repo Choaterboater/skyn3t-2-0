@@ -13,6 +13,15 @@ import {
   countWorkspaceActivity,
   workspaceEventMatches,
 } from "../workspaceSignals.js";
+import {
+  addPin,
+  canSubmit,
+  elementLabel,
+  pinsToPayload,
+  removePin,
+  updatePinComment,
+  MAX_PINS,
+} from "../annotations.js";
 
 // ---------------------------------------------------------------------------
 // Two-pane live workspace (Spec 3): a running app on the left, an improve chat
@@ -631,6 +640,105 @@ function VisualEditorPane({ slug, signature, onEdited }) {
   );
 }
 
+function AnnotatePane({ slug, pins, onPinsChange, onDispatched, onSubmitted }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function submit() {
+    if (!slug || !canSubmit(pins)) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await apiPost(
+        `/projects/${encodeURIComponent(slug)}/annotations/improve`,
+        pinsToPayload(pins),
+      );
+      if (result.accepted) {
+        if (result.correlation_id) onDispatched?.(slug, result.correlation_id);
+        onPinsChange?.([]);
+        // Hand off to the AI improve pane so the run's progress shows in the
+        // existing timeline.
+        onSubmitted?.(result);
+      } else {
+        setErr(result.reason || "improve unavailable");
+      }
+    } catch (error) {
+      setErr(String(error.message));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel className="flex h-full flex-col overflow-hidden">
+      <PanelHead
+        label="Annotate"
+        right={
+          <span className="font-mono text-[10px] text-plasma">
+            {busy ? "sending…" : `${pins.length}/${MAX_PINS} pins`}
+          </span>
+        }
+      />
+      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+        {!pins.length ? (
+          <Empty icon="✎">
+            Click elements in the live app to drop numbered pins, write one
+            comment per pin, then send them all as a single improve goal. Pins
+            create goals, never direct edits.
+          </Empty>
+        ) : (
+          <ol className="space-y-3">
+            {pins.map((pin, index) => (
+              <li
+                key={pin.id}
+                className="rounded border border-hairline bg-void/40 p-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs text-bone">
+                    <span className="text-ember">#{index + 1}</span>{" "}
+                    {elementLabel(pin.signature)}
+                  </span>
+                  <button
+                    className="btn-ghost"
+                    aria-label={`Delete pin ${index + 1}`}
+                    onClick={() => onPinsChange?.(removePin(pins, pin.id))}
+                  >
+                    Delete
+                  </button>
+                </div>
+                <textarea
+                  aria-label={`Comment for pin ${index + 1}`}
+                  className="field mt-2 min-h-14 w-full"
+                  placeholder="What should change here?"
+                  value={pin.comment}
+                  onChange={(event) =>
+                    onPinsChange?.(
+                      updatePinComment(pins, pin.id, event.target.value),
+                    )
+                  }
+                />
+              </li>
+            ))}
+          </ol>
+        )}
+        {err ? <p className="font-mono text-[11px] text-ember">{err}</p> : null}
+      </div>
+      <div className="flex items-center justify-between border-t border-hairline px-4 py-3">
+        <span className="font-mono text-[11px] text-ash/60">
+          one goal · per-element source evidence
+        </span>
+        <button
+          className="btn-ember disabled:opacity-50"
+          disabled={busy || !slug || !canSubmit(pins)}
+          onClick={submit}
+        >
+          {busy ? "Sending…" : "Send annotations"}
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
 function ProductPane({ slug, buildId }) {
   const qc = useQueryClient();
   const actionInFlightRef = useRef(false);
@@ -955,6 +1063,7 @@ export default function Workspace({ stream }) {
   const [rightMode, setRightMode] = useState("improve");
   const [selectedSignature, setSelectedSignature] = useState(null);
   const [previewRevision, setPreviewRevision] = useState(0);
+  const [annotationPins, setAnnotationPins] = useState([]);
 
   const { data } = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
   const projects = Array.isArray(data) ? data : data?.projects || [];
@@ -965,6 +1074,7 @@ export default function Workspace({ stream }) {
     else p.delete("slug");
     setParams(p, { replace: true });
     setSelectedSignature(null);
+    setAnnotationPins([]);
   }
 
   const current = projects.find((p) => p.slug === slug);
@@ -1038,8 +1148,12 @@ export default function Workspace({ stream }) {
         <ServePane
           slug={slug}
           stream={stream}
-          editorMode={rightMode === "visual"}
-          onElementSelected={setSelectedSignature}
+          editorMode={rightMode === "visual" || rightMode === "annotate"}
+          onElementSelected={
+            rightMode === "annotate"
+              ? (signature) => setAnnotationPins((prev) => addPin(prev, signature))
+              : setSelectedSignature
+          }
           refreshRevision={previewRevision}
         />
         <div className="flex min-h-0 flex-col gap-2">
@@ -1055,6 +1169,12 @@ export default function Workspace({ stream }) {
               onClick={() => setRightMode("visual")}
             >
               Visual edit
+            </button>
+            <button
+              className={rightMode === "annotate" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("annotate")}
+            >
+              Annotate
             </button>
             <button
               className={rightMode === "product" ? "btn-ember" : "btn-ghost"}
@@ -1074,6 +1194,14 @@ export default function Workspace({ stream }) {
                 slug={slug}
                 signature={selectedSignature}
                 onEdited={() => setPreviewRevision((value) => value + 1)}
+              />
+            ) : rightMode === "annotate" ? (
+              <AnnotatePane
+                slug={slug}
+                pins={annotationPins}
+                onPinsChange={setAnnotationPins}
+                onDispatched={rememberImproveCid}
+                onSubmitted={() => setRightMode("improve")}
               />
             ) : (
               <ImprovePane

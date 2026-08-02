@@ -21,6 +21,8 @@ Borrowed mechanisms and their sources:
 * bounded parallel fan-out with a worker cap — ``agent/moa_loop.py:154-160,
   732-830``
 * per-advisor cost at that advisor's OWN model rate — ``agent/moa_loop.py:163-214``
+* per-slot reasoning effort ("advisors think hard" presets, v0.19.0
+  "Quicksilver"), resolved through ONE chokepoint — ``hermes_cli/moa_config.py``
 * head-truncation of oversized advisory material — ``agent/moa_loop.py:216-224``
 * once-per-turn (``user_turn``) fan-out cadence as the default —
   ``agent/moa_loop.py:1764-1782``
@@ -58,7 +60,7 @@ from typing import Any
 
 import structlog
 
-from skyn3t.adapters.model_slot import ModelSlot, parse_slots
+from skyn3t.adapters.model_slot import EFFORT_LEVELS, ModelSlot, parse_slots
 from skyn3t.core.model_router import Tier, is_free_model_id
 
 log = structlog.get_logger(__name__)
@@ -235,6 +237,33 @@ def _is_punt(text: str) -> bool:
     return False
 
 
+_DEFAULT_ADVISOR_EFFORT = "medium"
+
+
+def resolve_advisor_effort(slot: ModelSlot, settings: Any) -> str:
+    """The ONE effort-resolution chokepoint for advisor calls.
+
+    Precedence: the slot's own ``@effort`` pin wins; otherwise the configured
+    ``moa_advisor_effort``; otherwise the default. Anything outside
+    low|medium|high — a junk env var, a programmatically-built slot — falls
+    back to the default with a logged warning, so a bad value can neither
+    reach the wire nor take a build down. Every advisor call resolves through
+    here and nowhere else.
+    """
+    raw = slot.effort or str(getattr(settings, "moa_advisor_effort", "") or "")
+    eff = raw.strip().lower()
+    if eff in EFFORT_LEVELS:
+        return eff
+    if raw.strip():
+        log.warning(
+            "moa.advisor_effort_invalid",
+            slot=slot.address,
+            value=raw.strip(),
+            using=_DEFAULT_ADVISOR_EFFORT,
+        )
+    return _DEFAULT_ADVISOR_EFFORT
+
+
 class CouncilEngine:
     """Runs one bounded, tool-free advisor fan-out and assembles guidance."""
 
@@ -296,6 +325,7 @@ class CouncilEngine:
                     system=_ADVISOR_SYSTEM,
                     max_tokens=int(getattr(self.settings, "moa_advisor_max_tokens", 1200)),
                     task_type="moa_advisor",
+                    effort=resolve_advisor_effort(slot, self.settings),
                     **kwargs,
                 ),
                 timeout=timeout,

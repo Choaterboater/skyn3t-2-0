@@ -692,6 +692,16 @@ class Settings(BaseSettings):
     # Output cap per advisor (binds on OpenRouter; CLI backends are governed by
     # the byte budget below, since complete() cannot pass max_tokens to a CLI).
     moa_advisor_max_tokens: int = Field(default=1200, ge=128)
+    # Default reasoning effort for advisor slots that don't pin their own with
+    # the "@effort" suffix (e.g. "claude_cli:sonnet@high" — see
+    # adapters/model_slot.py). One of low|medium|high; anything else falls back
+    # to "medium" with a logged warning at the council's single resolution
+    # chokepoint (resolve_advisor_effort). Mapping: an OpenRouter advisor call
+    # carries {"reasoning": {"effort": X}} on the request — the API ignores it
+    # for models without a reasoning mode, so it can never break a call — while
+    # the CLI invocation templates (_CLI_COMMANDS) carry no effort flag, so for
+    # CLI advisors effort is a deliberate no-op, logged once per provider.
+    moa_advisor_effort: str = "medium"
     # Hard per-advisor byte budget for the assembled guidance block. Prompt bloat
     # is the real hazard here: an oversized codegen prompt slows the agentic CLI
     # enough to blow agentic_build_timeout and ship a stub.

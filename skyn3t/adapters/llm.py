@@ -59,12 +59,18 @@ import structlog
 
 from skyn3t.adapters.provider_limits import provider_slot, resolve_provider_limit
 from skyn3t.adapters.reasoning_timeouts import apply_reasoning_floor, reasoning_timeout_floor
+from skyn3t.adapters.stall import (
+    STALL_PROMPT_ACCEPTANCE_TIMEOUT,
+    STALL_PROMPT_MISDELIVERY,
+    StallEvidence,
+    stall_report,
+)
 from skyn3t.agents._common import confined_path
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.config.settings import Settings, get_settings
-from skyn3t.exec_paths import executable_shim as _executable_shim
 from skyn3t.core.model_router import ModelRouter, Tier
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
+from skyn3t.exec_paths import executable_shim as _executable_shim
 from skyn3t.persisted_write import (
     PERSISTED_WRITE_RECEIPT_KEY as _PERSISTED_WRITE_RECEIPT_KEY,
 )
@@ -137,6 +143,14 @@ _BUILD_MODEL_POLICY_FIELDS = (
 # other's Codex/Claude/Kimi trace before the caller persists it.
 _AGENTIC_STREAM_EVIDENCE: contextvars.ContextVar = contextvars.ContextVar(
     "skyn3t_agentic_stream_evidence", default=None
+)
+# Heal-attempt counter for the streamed CLI execution, task-local for the same
+# reason as the receipt above. ``agentic_build`` sets it before each consume
+# so a stall bundle records which attempt stalled WITHOUT changing
+# ``_consume_agentic_stream``'s signature (older test/custom consumers call it
+# positionally and must keep working).
+_AGENTIC_STREAM_ATTEMPT: contextvars.ContextVar = contextvars.ContextVar(
+    "skyn3t_agentic_stream_attempt", default=0
 )
 # Bounded assistant-prose accumulator for the vent channel: friction reports
 # ride the session's plain text output, so the tail of it must survive the
@@ -348,6 +362,12 @@ SUPPORTED_LLM_BACKENDS = (
     *(f"{provider}_cli" for provider in KNOWN_CLI_PROVIDERS),
 )
 _KNOWN_CLI_PROVIDERS = KNOWN_CLI_PROVIDERS
+# Reasoning-effort levels accepted on ``complete(effort=...)`` and passed to
+# OpenRouter as ``{"reasoning": {"effort": X}}``. Duplicated from
+# ``adapters.model_slot.EFFORT_LEVELS`` on purpose — the two modules stay
+# independent by design (see KNOWN_CLI_PROVIDERS above), and the same drift
+# test that pins the provider lists pins these too.
+_REASONING_EFFORT_LEVELS: frozenset[str] = frozenset({"low", "medium", "high"})
 # The CLI an unattended build REQUIRES on PATH before it will run (the routing
 # lock at ``explicit_routing_lock_error``). This is a separate question from
 # which CLI ``auto`` then executes on — that is ``auto_cli_priority`` below.
@@ -911,6 +931,74 @@ _CLI_NO_MCP_ARGS: dict[str, list[str]] = {
 # StreamReader line-buffer for the agentic stream-json reader. One event line can
 # be a big tool result or the full final output, far past asyncio's 64KB default.
 _AGENTIC_STREAM_LIMIT = 64 * 1024 * 1024  # 64 MB (grows on demand)
+
+# Stall auto-heal (claw-code Phase 1.5 port): a prompt that never reached the
+# agent (misdelivery) or was accepted but never produced a first token is worth
+# exactly ONE silent resend inside the same agentic_build call — the classic
+# transient CLI hiccup. Every other stall kind escalates immediately with its
+# classified error. The resend's idle window is clamped to the build's
+# remaining budget so the heal can never double the wall-clock silently.
+_STALL_HEALABLE_KINDS = frozenset({
+    STALL_PROMPT_MISDELIVERY,
+    STALL_PROMPT_ACCEPTANCE_TIMEOUT,
+})
+_STALL_MAX_HEALS = 1
+# Below this much remaining budget a resend could not even deliver a first
+# token — escalate instead of spending the tail of the budget on a doomed heal.
+_STALL_HEAL_MIN_REMAINING_S = 30.0
+
+# Stream event types that prove the session was ACCEPTED but carry no agent
+# content (claude's system/init, codex's thread.started/turn.started). The
+# first event outside this set is the "first token" the acceptance stall kinds
+# wait for.
+_AGENTIC_LIFECYCLE_EVENT_TYPES = frozenset({
+    "system", "init", "thread.started", "turn.started", "session",
+    "session.started", "ready",
+})
+
+
+def _agentic_stall_report(
+    *,
+    provider: str,
+    lifecycle_state: str,
+    bytes_received: int,
+    events_received: int,
+    content_events: int,
+    seconds_since_last_output: float,
+    prompt_sent_at: float,
+    process_alive: bool,
+    exit_code,
+    idle_timeout: float,
+    output_tail: str,
+    stderr_tail: str,
+    attempt: int = 0,
+) -> dict:
+    """Classify one detected stall into ``{stall_kind, stall_evidence}``.
+
+    Thin defensive wrapper over :func:`skyn3t.adapters.stall.stall_report`:
+    tails are masked before they can touch a log line or run metadata, and any
+    failure degrades to ``unknown`` — classification must never break a build.
+    """
+    try:
+        evidence = StallEvidence(
+            provider=str(provider or "")[:32],
+            attempt=int(attempt),
+            lifecycle_state=str(lifecycle_state or "")[:64],
+            bytes_received=max(0, int(bytes_received or 0)),
+            events_received=max(0, int(events_received or 0)),
+            content_events=max(0, int(content_events or 0)),
+            seconds_since_last_output=float(seconds_since_last_output or 0.0),
+            prompt_sent_at=float(prompt_sent_at or 0.0),
+            process_alive=bool(process_alive),
+            exit_code=exit_code if isinstance(exit_code, int) else None,
+            idle_timeout=float(idle_timeout or 0.0),
+            output_tail=_mask_agentic_text(str(output_tail or "")[-600:]),
+            stderr_tail=_mask_agentic_text(str(stderr_tail or "")[-600:]),
+        )
+        return stall_report(evidence)
+    except Exception:  # noqa: BLE001
+        return {"stall_kind": "unknown", "stall_evidence": "classifier unavailable"}
+
 
 # CLI stream payloads can contain complete prompts, tool output, and source
 # files. Persist only compact operational evidence: safe identifiers that can
@@ -1617,6 +1705,9 @@ class LLMClient:
         self._g_last_route: tuple[str, str] | None = None
         self._g_routes: list[tuple[str, str, str]] = []
         self._unhealthy_models: dict[str, float] = {}
+        # CLI providers already told (once each) that a requested reasoning
+        # effort is a no-op for them — see _log_cli_effort_noop.
+        self._cli_effort_noop_logged: set[str] = set()
 
     # ---- per-run route capture (task-local + global fallback) ---------------
     def begin_run_capture(self, routing_profile: str = "") -> None:
@@ -2804,6 +2895,7 @@ class LLMClient:
         model_override: str | None = None,
         images: list[str] | None = None,
         provider_override: str | None = None,
+        effort: str | None = None,
     ) -> LLMResult:
         """Single completion.
 
@@ -2811,6 +2903,13 @@ class LLMClient:
         "openrouter", ...) independently of the globally active one, which is
         what lets an ensemble fan out across several providers at once. Omitted
         (the default) the call is byte-for-byte what it was before.
+
+        ``effort`` (low|medium|high) is an optional reasoning-effort request,
+        used by the MoA council's per-slot pins. On OpenRouter it becomes
+        ``{"reasoning": {"effort": X}}`` on the request body; the CLI
+        invocation templates carry no effort flag, so there it is a no-op
+        (logged once per provider, never an error). ``None`` — the default —
+        leaves every request exactly as before.
         """
         # Refuse before dispatch when a persisted/shared counter is already over
         # cap. The post-record check still catches the call that crosses a cap.
@@ -2853,17 +2952,23 @@ class LLMClient:
                 model, send_images = self._resolve_vision(model, vision_override)
                 if send_images:
                     result = await self._openrouter(
-                        model, prompt, system, max_tokens, json_mode, images, tier=tier
+                        model, prompt, system, max_tokens, json_mode, images, tier=tier,
+                        effort=effort,
                     )
                 else:
                     # free_only with no usable free vision model: stay text-only rather
                     # than silently billing a paid model (design rule #5 cheap-by-default).
                     result = await self._openrouter(
-                        model, prompt, system, max_tokens, json_mode, tier=tier
+                        model, prompt, system, max_tokens, json_mode, tier=tier,
+                        effort=effort,
                     )
             else:
-                result = await self._openrouter(model, prompt, system, max_tokens, json_mode, tier=tier)
+                result = await self._openrouter(
+                    model, prompt, system, max_tokens, json_mode, tier=tier, effort=effort
+                )
         elif backend.endswith("_cli"):
+            if effort:
+                self._log_cli_effort_noop(backend[:-4], effort)
             # A local CLI owns its model selection through the signed-in CLI
             # session. Consulting the hosted ModelRouter here neither affects
             # execution nor produces useful evidence; it only led Codex runs to
@@ -2893,6 +2998,25 @@ class LLMClient:
         # completion in total (with the pre-dispatch check above).
         await asyncio.to_thread(self.budget.record_and_check, result)
         return result
+
+    def _log_cli_effort_noop(self, provider: str, effort: str) -> None:
+        """Record that a requested reasoning effort cannot reach a CLI backend.
+
+        The headless invocation templates (_CLI_COMMANDS/_CLI_PROMPT_FLAG) have
+        no effort flag for ANY provider, so a pinned effort is silently
+        droppable only if we say so — log it ONCE per provider per client (an
+        MoA council fans the same slot out build after build) and proceed with
+        the CLI's own session default. Never an error: degrade, don't crash.
+        """
+        if provider in self._cli_effort_noop_logged:
+            return
+        self._cli_effort_noop_logged.add(provider)
+        log.warning(
+            "llm.cli_effort_noop",
+            provider=provider,
+            effort=effort,
+            note="this CLI's invocation has no reasoning-effort flag; using its session default",
+        )
 
     def _resolve_vision(self, resolved: str, model_override: str | None) -> tuple[str, bool]:
         """Choose the model for an image-bearing call AND whether to send images.
@@ -4302,46 +4426,116 @@ class LLMClient:
             or int(getattr(self.settings, "agentic_build_timeout", 0))
             or (self.settings.cli_llm_timeout * 3)
         )
+        build_started = time.monotonic()
+        stall_heals_used = 0
+        stall_healed_kind = ""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=workdir,
-                stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,  # own process group -> killable as a tree
-                env=_cli_subprocess_env(),
-                # A single stream-json event line (a big tool result, or the final
-                # `result` event carrying the whole output) routinely exceeds the
-                # 64KB asyncio StreamReader default, which makes readline() raise
-                # "Separator is found, but chunk is longer than limit" and degrades
-                # the whole build. Give it real headroom (grows on demand, not
-                # preallocated).
-                limit=_AGENTIC_STREAM_LIMIT,
-            )
-            cli_execution["exit_status"] = "running"
-            if stdin_prompt and proc.stdin is not None:
-                proc.stdin.write(prompt.encode("utf-8"))
-                await proc.stdin.drain()
-                proc.stdin.close()
-            # For streaming CLIs this is an INACTIVITY fallback, not a total
-            # duration ceiling. Every stream event proves the agent is alive and
-            # resets _consume_agentic_stream's idle wait, so productive full-app
-            # builds may continue until their terminal result event.
-            if stream:
-                idle_timeout = int(
-                    _resolved_agentic_idle_timeout(self.settings, agentic_timeout)
+            # Stall auto-heal loop. Normally one pass; a healable typed stall
+            # (prompt_misdelivery / prompt_acceptance_timeout) resends the SAME
+            # prompt as a fresh session ONCE within this call — code_agent's own
+            # retry layer still sees a single consumed attempt.
+            while True:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv, cwd=workdir,
+                    stdin=asyncio.subprocess.PIPE if stdin_prompt else None,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,  # own process group -> killable as a tree
+                    env=_cli_subprocess_env(),
+                    # A single stream-json event line (a big tool result, or the final
+                    # `result` event carrying the whole output) routinely exceeds the
+                    # 64KB asyncio StreamReader default, which makes readline() raise
+                    # "Separator is found, but chunk is longer than limit" and degrades
+                    # the whole build. Give it real headroom (grows on demand, not
+                    # preallocated).
+                    limit=_AGENTIC_STREAM_LIMIT,
                 )
-                ok = await self._consume_agentic_stream(proc, provider, idle_timeout)
-                observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
-                if isinstance(observed_execution, dict):
-                    cli_execution = observed_execution
-                    if cached_cli_version and not cli_execution.get("cli_version"):
-                        cli_execution["cli_version"] = cached_cli_version
-                # Lift the bounded prose tail OUT of the receipt before the
-                # receipt can be persisted (see the output_text comment above).
-                output_text = str(cli_execution.pop("output_text", "") or "")
-                # Keep older test/custom consumers that return only a bool
-                # compatible. The native consumer always supplies this detail.
-                if cli_execution.get("exit_status") == "running":
+                cli_execution["exit_status"] = "running"
+                if stdin_prompt and proc.stdin is not None:
+                    proc.stdin.write(prompt.encode("utf-8"))
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+                # For streaming CLIs this is an INACTIVITY fallback, not a total
+                # duration ceiling. Every stream event proves the agent is alive and
+                # resets _consume_agentic_stream's idle wait, so productive full-app
+                # builds may continue until their terminal result event.
+                if stream:
+                    idle_timeout = int(
+                        _resolved_agentic_idle_timeout(self.settings, agentic_timeout)
+                    )
+                    if stall_heals_used:
+                        # The heal reshare is clamped to the build's REMAINING
+                        # budget, so a healed build cannot silently double its
+                        # wall-clock (defaults: 600s idle inside an 1800s build
+                        # budget leaves a full second window).
+                        remaining_s = float(agentic_timeout) - (
+                            time.monotonic() - build_started
+                        )
+                        idle_timeout = int(max(1, min(idle_timeout, remaining_s)))
+                    # The attempt counter rides a task-local so this call keeps
+                    # its exact 3-argument contract for mocked consumers.
+                    _AGENTIC_STREAM_ATTEMPT.set(stall_heals_used)
+                    ok = await self._consume_agentic_stream(proc, provider, idle_timeout)
+                    observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
+                    if isinstance(observed_execution, dict):
+                        cli_execution = observed_execution
+                        if cached_cli_version and not cli_execution.get("cli_version"):
+                            cli_execution["cli_version"] = cached_cli_version
+                    # Lift the bounded prose tail OUT of the receipt before the
+                    # receipt can be persisted (see the output_text comment above).
+                    output_text = str(cli_execution.pop("output_text", "") or "")
+                    # Keep older test/custom consumers that return only a bool
+                    # compatible. The native consumer always supplies this detail.
+                    if cli_execution.get("exit_status") == "running":
+                        returncode = getattr(proc, "returncode", None)
+                        cli_execution["exit_code"] = (
+                            returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
+                            else None
+                        )
+                        cli_execution["exit_status"] = (
+                            "exited" if returncode is not None else "not_reaped"
+                        )
+                    if stall_healed_kind:
+                        # Forensic marker on the FINAL receipt: this build healed
+                        # a stall once before reaching its outcome.
+                        cli_execution["stall_heal_attempted"] = True
+                        cli_execution["stall_heal_kind"] = stall_healed_kind
+                    stall_kind = str(cli_execution.get("stall_kind") or "")
+                    if (
+                        not ok
+                        and stall_heals_used < _STALL_MAX_HEALS
+                        and stall_kind in _STALL_HEALABLE_KINDS
+                    ):
+                        remaining_s = float(agentic_timeout) - (
+                            time.monotonic() - build_started
+                        )
+                        if remaining_s >= _STALL_HEAL_MIN_REMAINING_S:
+                            stall_heals_used += 1
+                            stall_healed_kind = stall_kind
+                            log.warning(
+                                "llm.agentic_stall_heal", provider=provider,
+                                stall_kind=stall_kind, remaining_s=int(remaining_s),
+                            )
+                            # The stalled session is already terminated (idle
+                            # guard) or exited (EOF); resend as a fresh session
+                            # with a fresh receipt.
+                            cli_execution = _new_cli_execution_evidence(
+                                provider,
+                                streamed=True,
+                                cli_version=cached_cli_version,
+                            )
+                            continue
+                else:
+                    out, err = await asyncio.wait_for(
+                        proc.communicate(), timeout=agentic_timeout,
+                    )
+                    ok = proc.returncode == 0
+                    # Mask on the way out: the raw CLI stdout tail rides the
+                    # returned output_text (vent channel / run metadata).
+                    output_text = _mask_agentic_text(
+                        (out or b"").decode("utf-8", "replace")[
+                            -_AGENTIC_OUTPUT_TEXT_LIMIT:
+                        ]
+                    )
                     returncode = getattr(proc, "returncode", None)
                     cli_execution["exit_code"] = (
                         returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
@@ -4350,29 +4544,10 @@ class LLMClient:
                     cli_execution["exit_status"] = (
                         "exited" if returncode is not None else "not_reaped"
                     )
-            else:
-                out, err = await asyncio.wait_for(
-                    proc.communicate(), timeout=agentic_timeout,
-                )
-                ok = proc.returncode == 0
-                # Mask on the way out: the raw CLI stdout tail rides the
-                # returned output_text (vent channel / run metadata).
-                output_text = _mask_agentic_text(
-                    (out or b"").decode("utf-8", "replace")[
-                        -_AGENTIC_OUTPUT_TEXT_LIMIT:
-                    ]
-                )
-                returncode = getattr(proc, "returncode", None)
-                cli_execution["exit_code"] = (
-                    returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
-                    else None
-                )
-                cli_execution["exit_status"] = (
-                    "exited" if returncode is not None else "not_reaped"
-                )
-                if not ok:
-                    log.warning("llm.agentic_nonzero", provider=provider,
-                                err=(err or b"").decode("utf-8", "replace")[:160])
+                    if not ok:
+                        log.warning("llm.agentic_nonzero", provider=provider,
+                                    err=(err or b"").decode("utf-8", "replace")[:160])
+                break
         except TimeoutError:
             # Copilot uses the blocking path. Its watchdog is a total timeout;
             # streamed CLI watchdogs are recorded by the stream consumer as an
@@ -4476,7 +4651,7 @@ class LLMClient:
             status="cli_response" if ok else "failed_cli",
         ))
         self._record_completion(f"{provider}_cli", "codegen", effective_model)
-        return {
+        result = {
             "ok": ok,
             "completed": ok,
             "backend": f"{provider}_cli",
@@ -4489,6 +4664,15 @@ class LLMClient:
             "output_text": output_text,
             "error": "" if ok else "agentic CLI ended without a successful result",
         }
+        # Typed stall surfacing (additive): a classified stall rides the error
+        # result so code_agent / the dashboard can show "stalled: transport_dead"
+        # instead of a bare timeout. Absent on stall-free builds, keeping their
+        # result byte-identical to before.
+        stall_kind = str(cli_execution.get("stall_kind") or "")
+        if stall_kind:
+            result["stall_kind"] = stall_kind
+            result["stall_evidence"] = str(cli_execution.get("stall_evidence") or "")
+        return result
 
     async def _consume_agentic_stream(self, proc, provider: str, idle_timeout: int) -> bool:
         """Drive a stream-json agentic CLI to completion and report success.
@@ -4505,6 +4689,13 @@ class LLMClient:
         for ``agentic_build``. The method intentionally keeps its boolean return
         contract so existing integrations that mock or call it directly remain
         compatible.
+
+        When the stream fails in a way that looks like a stall (the idle guard
+        fires, or the transport dies mid-stream without a terminal result), a
+        typed stall classification (``stall_kind`` + ``stall_evidence``, see
+        :mod:`skyn3t.adapters.stall`) is attached to that receipt — additive
+        keys only, so receipt consumers that predate them are unaffected. The
+        heal-attempt counter rides the task-local ``_AGENTIC_STREAM_ATTEMPT``.
         """
         saw_result = False
         result_is_error = False
@@ -4516,6 +4707,12 @@ class LLMClient:
         evidence["exit_status"] = "streaming"
         output_parts: list[str] = []
         output_budget = [_AGENTIC_OUTPUT_TEXT_LIMIT]
+        # Stall-evidence tracking: bytes/timing/content counters + bounded raw
+        # tails (raw stdout lines that are not stream-json events are where a
+        # CLI's interactive trust/approval prompt shows up).
+        bytes_received = 0
+        content_events = 0
+        raw_tail: list[str] = []
 
         # Drain stderr concurrently (a full stderr pipe would block the agent);
         # keep only a short tail for diagnostics.
@@ -4541,6 +4738,7 @@ class LLMClient:
         heartbeat_every = float(getattr(self.settings, "agentic_heartbeat_seconds", 60) or 0)
         stream_started = time.monotonic()
         last_beat = stream_started
+        last_output_at = stream_started
 
         err_task = asyncio.create_task(_drain_err())
         try:
@@ -4554,7 +4752,36 @@ class LLMClient:
                         else:
                             line = await proc.stdout.readline()
                     except TimeoutError:
-                        log.warning("llm.agentic_stalled", provider=provider, idle_s=idle_timeout)
+                        # Stall detected. Classify BEFORE killing the tree: the
+                        # process is still alive here (a wait_for timeout means
+                        # no EOF arrived), which is what separates the live
+                        # kinds (trust/misdelivery/acceptance/heartbeat) from a
+                        # dead transport or a crash.
+                        quiet_s = max(
+                            time.monotonic() - last_output_at, float(idle_timeout)
+                        )
+                        report = _agentic_stall_report(
+                            provider=provider,
+                            lifecycle_state="streaming",
+                            bytes_received=bytes_received,
+                            events_received=events,
+                            content_events=content_events,
+                            seconds_since_last_output=quiet_s,
+                            prompt_sent_at=stream_started,
+                            process_alive=True,
+                            exit_code=None,
+                            idle_timeout=float(idle_timeout or 0),
+                            output_tail="\n".join([*err_tail, *raw_tail, *output_parts]),
+                            stderr_tail="".join(err_tail),
+                            attempt=_AGENTIC_STREAM_ATTEMPT.get(),
+                        )
+                        evidence["stall_kind"] = report["stall_kind"]
+                        evidence["stall_evidence"] = report["stall_evidence"]
+                        log.warning(
+                            "llm.agentic_stalled", provider=provider,
+                            idle_s=idle_timeout, stall_kind=report["stall_kind"],
+                            stall_evidence=report["stall_evidence"][:240],
+                        )
                         timed_out = True
                         terminated = True
                         evidence["timed_out"] = True
@@ -4577,8 +4804,10 @@ class LLMClient:
                         break  # EOF — the agent exited
                     events += 1
                     evidence["event_count"] = events
+                    bytes_received += len(line)
+                    _now = time.monotonic()
+                    last_output_at = _now
                     if heartbeat_every > 0:
-                        _now = time.monotonic()
                         if _now - last_beat >= heartbeat_every:
                             last_beat = _now
                             log.info(
@@ -4591,14 +4820,22 @@ class LLMClient:
                         evidence["invalid_line_count"] = (
                             int(evidence.get("invalid_line_count", 0)) + 1
                         )
+                        raw_tail.append(line.decode("utf-8", "replace")[:200])
+                        if len(raw_tail) > 10:
+                            del raw_tail[:-10]
                         continue  # stray non-JSON log line — ignore
                     if not isinstance(evt, dict):
                         evidence["invalid_line_count"] = (
                             int(evidence.get("invalid_line_count", 0)) + 1
                         )
+                        raw_tail.append(line.decode("utf-8", "replace")[:200])
+                        if len(raw_tail) > 10:
+                            del raw_tail[:-10]
                         continue
                     _record_cli_execution_event(evidence, evt)
                     _capture_agentic_output_text(evt, output_parts, output_budget)
+                    if str(evt.get("type") or "") not in _AGENTIC_LIFECYCLE_EVENT_TYPES:
+                        content_events += 1
                     if evt.get("type") == "result":
                         saw_result = True
                         result_is_error = bool(evt.get("is_error"))
@@ -4653,9 +4890,32 @@ class LLMClient:
                 (not result_is_error) if saw_result else (returncode == 0)
             )
             evidence["ok"] = ok
+            if not ok and not timed_out and not stream_overrun and not saw_result:
+                # The transport ended WITHOUT a terminal result event: the
+                # process exited on its own (crash / mid-stream death), or the
+                # channel closed before the prompt was ever accepted. Classify
+                # it — the idle-guard branch above already covered live stalls.
+                report = _agentic_stall_report(
+                    provider=provider,
+                    lifecycle_state=str(evidence.get("exit_status") or ""),
+                    bytes_received=bytes_received,
+                    events_received=events,
+                    content_events=content_events,
+                    seconds_since_last_output=time.monotonic() - last_output_at,
+                    prompt_sent_at=stream_started,
+                    process_alive=False,  # stdout hit EOF: channel is closed
+                    exit_code=returncode if isinstance(returncode, int) else None,
+                    idle_timeout=float(idle_timeout or 0),
+                    output_tail="\n".join([*err_tail, *raw_tail, *output_parts]),
+                    stderr_tail="".join(err_tail),
+                    attempt=_AGENTIC_STREAM_ATTEMPT.get(),
+                )
+                evidence["stall_kind"] = report["stall_kind"]
+                evidence["stall_evidence"] = report["stall_evidence"]
             if not ok:
                 log.warning("llm.agentic_nonzero", provider=provider,
-                            events=events, err="".join(err_tail)[-160:])
+                            events=events, err="".join(err_tail)[-160:],
+                            stall_kind=evidence.get("stall_kind") or "")
             return ok
         finally:
             # Always leave the caller a bounded receipt, including cancellation
@@ -4708,7 +4968,8 @@ class LLMClient:
     # ---- backends --------------------------------------------------------
     async def _openrouter(self, model, prompt, system, max_tokens, json_mode,
                           images: list[str] | None = None,
-                          tier: Tier = Tier.CHEAP) -> LLMResult:
+                          tier: Tier = Tier.CHEAP,
+                          effort: str | None = None) -> LLMResult:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -4737,6 +4998,14 @@ class LLMClient:
                 body["max_tokens"] = int(max_tokens)
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
+            # Reasoning-effort passthrough (the MoA council pins it per advisor
+            # slot). Safe by construction: the value is clamped to the three
+            # public levels, and OpenRouter IGNORES `reasoning` for models
+            # without a reasoning mode — so this can never break a call over an
+            # unsupported knob.
+            eff = (effort or "").strip().lower()
+            if eff in _REASONING_EFFORT_LEVELS:
+                body["reasoning"] = {"effort": eff}
             # A reasoning model can think silently for longer than the flat 120s
             # this used to hard-code, dying mid-think -> transport timeout ->
             # classified transient -> every retry burns the same way. The floor

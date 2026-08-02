@@ -19,7 +19,7 @@ from your words — you don't have to.
 | --- | --- |
 | **Web apps / SPAs** | `react` (Vite), `nextjs`, `astro`, `remix`, `static` (HTML/CSS/JS) |
 | **Backends / APIs** | `fastapi`, `flask`, `django`, `express` (Node) |
-| **Mobile** | `react_native` (Expo) |
+| **Mobile** | `react_native` (Expo), `swift_ios` (native iOS/SwiftUI — Xcode project) |
 | **Desktop** | `tauri`, `swift` (native macOS/SwiftUI) |
 | **Games** | `phaser` (a small corner — most of the factory is non-game) |
 | **AI-native** | `mcp` (Model Context Protocol servers), `rag` (retrieval apps), `workflow` (agent pipelines), `agent_pack` (persona/skill packs) |

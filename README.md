@@ -74,7 +74,22 @@ skyn3t deploy <build> --write    # also drop the generated Dockerfile
 skyn3t deploy <build> --now      # confirm, deploy, health-check, then activate
 ```
 
-Nothing is deployed without explicit confirmation. Live deploys require the
+For an instant shareable link without any provider account, `studio share`
+boots the same loopback preview as `studio serve` and layers a public tunnel
+over it — a Cloudflare quick tunnel when `cloudflared` is installed, else
+localhost.run over the `ssh` client every OS already ships. No account is
+created and nothing new is hosted; Ctrl+C tears the tunnel down first, then
+the preview:
+
+```bash
+skyn3t studio serve <build>              # loopback-only local preview
+skyn3t studio share <build>              # + a public URL (cloudflared/localhost.run)
+skyn3t studio share <build> --no-tunnel  # exactly `studio serve`
+```
+
+Nothing is deployed or shared without explicit confirmation — `studio share`
+IS the asking, and it refuses builds whose manifest marks them failed or
+incomplete unless you pass `--force`. Live deploys require the
 selected provider credential, stage only the files that provider needs, persist
 the provider response, and activate a new live URL only after its health check
 passes. A failed verification keeps the previous healthy URL active.
@@ -189,6 +204,8 @@ and a live preview.
 | `skyn3t start [--web] [--host H] [--port P]` | Boot the orchestrator, register agents, optionally serve the Foundry UI. |
 | `skyn3t doctor` | Readiness table: python, deps, db, llm backend, sandbox, projects-dir. |
 | `skyn3t studio build "<brief>" [--best-of N] [--no-critic] [--slug S]` | Run a build end to end; print result + artifact path. |
+| `skyn3t studio serve <slug-or-path> [--port P]` | Run a delivered project as a live loopback preview (Docker isolated). |
+| `skyn3t studio share <slug-or-path> [--port P] [--no-tunnel] [--force]` | Serve locally AND expose a public URL via `cloudflared` (or localhost.run over `ssh`) — no account needed. |
 | `skyn3t deploy <slug-or-path> [--target H] [--write] [--now]` | Show the deploy plan; optionally stage artifacts or confirm a live, health-gated deploy. |
 | `skyn3t studio approve <id>` / `reject <id>` | Decide a gated build. |
 | `skyn3t project list [--limit N]` | List recent builds from memory. |

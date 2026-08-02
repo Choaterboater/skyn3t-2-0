@@ -3832,6 +3832,204 @@ async def visual_editor_style(state: AppState, slug: str) -> dict[str, Any]:
     return {"slug": slug, "style": style.to_dict()}
 
 
+# ---- batched visual annotations (v0 Design Mode port) ----------------------
+# Click-to-comment pins collected in the preview arrive as ONE improve goal.
+# Resolution borrows the visual editor's click-to-source inspection, but
+# annotations never edit files: they only shape a goal for ImproveEngine.
+_ANNOTATION_MAX_COUNT = 20
+_ANNOTATION_COMMENT_MAX_CHARS = 2_000
+_ANNOTATION_SELECTOR_MAX_CHARS = 200
+_ANNOTATION_SOURCE_FILE_MAX_CHARS = 500
+_ANNOTATION_SOURCE_LINE_MAX = 10_000_000
+_ANNOTATION_SCREENSHOT_MAX_BYTES = 512 * 1024
+_ANNOTATION_SELECTOR_RE = re.compile(r"^[A-Za-z0-9#._:\-\[\]()=\"' >+~,]+$")
+_ANNOTATION_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_ANNOTATION_DATA_ID_RE = re.compile(r'^\[data-skyn3t-id="([A-Za-z0-9_.:-]{1,128})"\]$')
+
+
+def _validate_annotation(item: Any, index: int) -> dict[str, Any]:
+    """Normalize one raw annotation into a bounded internal shape (422 input)."""
+    label = f"annotation #{index + 1}"
+    if not isinstance(item, dict):
+        raise ValueError(f"{label} must be an object")
+    comment = " ".join(str(item.get("comment", "") or "").split())
+    if not 1 <= len(comment) <= _ANNOTATION_COMMENT_MAX_CHARS:
+        raise ValueError(
+            f"{label} comment must contain 1 to "
+            f"{_ANNOTATION_COMMENT_MAX_CHARS} characters"
+        )
+    selector = str(item.get("selector", "") or "").strip()
+    if len(selector) > _ANNOTATION_SELECTOR_MAX_CHARS or (
+        selector and not _ANNOTATION_SELECTOR_RE.fullmatch(selector)
+    ):
+        raise ValueError(f"{label} selector contains unsupported characters")
+    signature = item.get("signature")
+    if signature is not None and not isinstance(signature, dict):
+        raise ValueError(f"{label} signature must be an object")
+    if not selector and not signature:
+        raise ValueError(f"{label} requires a selector or element signature")
+    source_file = str(item.get("source_file", "") or "").strip().replace("\\", "/")
+    if source_file:
+        parts = source_file.split("/")
+        if (
+            len(source_file) > _ANNOTATION_SOURCE_FILE_MAX_CHARS
+            or source_file.startswith("/")
+            or _ANNOTATION_DRIVE_RE.match(source_file)
+            or "\x00" in source_file
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise ValueError(f"{label} source_file must be a safe relative path")
+    raw_line = item.get("source_line")
+    source_line: int | None = None
+    if raw_line is not None and raw_line != "":
+        if isinstance(raw_line, bool) or not isinstance(raw_line, int):
+            raise ValueError(f"{label} source_line must be an integer")
+        if not 1 <= raw_line <= _ANNOTATION_SOURCE_LINE_MAX:
+            raise ValueError(f"{label} source_line is out of range")
+        source_line = raw_line
+    screenshot = item.get("screenshot_b64")
+    has_screenshot = False
+    if screenshot is not None and screenshot != "":
+        if not isinstance(screenshot, str) or len(screenshot) > 4 * (
+            _ANNOTATION_SCREENSHOT_MAX_BYTES // 3 + 2
+        ):
+            raise ValueError(f"{label} screenshot exceeds the size cap")
+        try:
+            decoded = base64.b64decode(screenshot, validate=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} screenshot must be base64") from exc
+        if len(decoded) > _ANNOTATION_SCREENSHOT_MAX_BYTES:
+            raise ValueError(f"{label} screenshot exceeds the size cap")
+        has_screenshot = True
+    return {
+        "index": index + 1,
+        "selector": selector,
+        "comment": comment,
+        "signature": signature,
+        "source_file": source_file,
+        "source_line": source_line,
+        "screenshot": has_screenshot,
+    }
+
+
+def _annotation_selector_signature(selector: str) -> dict[str, Any] | None:
+    """Derive an inspect signature from a simple id/class/data selector."""
+    if not selector:
+        return None
+    data_match = _ANNOTATION_DATA_ID_RE.fullmatch(selector)
+    if data_match:
+        return {"element_id": data_match.group(1)}
+    if selector.startswith("#"):
+        return {"element_id": selector[1:]}
+    if selector.startswith("."):
+        classes = [part for part in selector.split(".") if part]
+        return {"classes": classes} if classes else None
+    return None
+
+
+def _annotation_element_label(item: dict[str, Any]) -> str:
+    """Human-readable element description for the shaped goal, e.g. h1.hero."""
+    signature = item.get("signature") or {}
+    tag = str(signature.get("tag", "") or "").strip()
+    element_id = str(
+        signature.get("element_id", signature.get("id", "")) or ""
+    ).strip()
+    raw_classes = signature.get("classes", ())
+    if isinstance(raw_classes, str):
+        raw_classes = raw_classes.split()
+    classes = [str(name).strip() for name in raw_classes if str(name).strip()][:3]
+    label = tag or "element"
+    if element_id:
+        label += f"#{element_id}"
+    label += "".join(f".{name}" for name in classes)
+    if label == "element" and item.get("selector"):
+        return str(item["selector"])
+    return label
+
+
+def shape_annotations_goal(report: list[dict[str, Any]]) -> str:
+    """Shape the batch into ONE numbered improve goal with per-element evidence."""
+    noun = "annotation" if len(report) == 1 else "annotations"
+    lines = [
+        f"Address these {len(report)} visual {noun} "
+        "(numbered pins dropped on elements in the live preview):"
+    ]
+    for entry in report:
+        source = entry.get("source")
+        hint = entry.get("hint")
+        if source:
+            label = entry.get("element") or entry.get("selector") or "element"
+            location = f"{source['file']}:{source['line']} · {label}"
+        elif hint:
+            hint_line = f":{hint['line']}" if hint.get("line") else ""
+            location = (
+                f"{entry.get('selector') or 'element'} — source unresolved; "
+                f"user-marked hint {hint['file']}{hint_line}"
+            )
+        else:
+            location = f"{entry.get('selector') or 'element'} — source unresolved"
+        lines.append(f"#{entry['index']} [{location}] {entry['comment']}")
+    return "\n".join(lines)
+
+
+async def annotations_improve(
+    state: AppState,
+    slug: str,
+    body: Any,
+) -> dict[str, Any]:
+    """Resolve a batch of preview pins and dispatch ONE improve goal for them.
+
+    Unresolvable pins are still accepted with ``source: null``; submission goes
+    through the exact :func:`improve_project` path the improve UI uses."""
+    if isinstance(body, list):
+        raw_items = body
+    elif isinstance(body, dict):
+        raw_items = body.get("annotations")
+    else:
+        raw_items = None
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("annotations must be a non-empty array")
+    if len(raw_items) > _ANNOTATION_MAX_COUNT:
+        raise ValueError(f"at most {_ANNOTATION_MAX_COUNT} annotations per batch")
+    items = [
+        _validate_annotation(item, index) for index, item in enumerate(raw_items)
+    ]
+    project, _manifest = _require_delivered_project(state, slug)
+    from skyn3t.studio.visual_editor import ElementSignature, VisualEditor
+
+    editor = VisualEditor(project)
+    report: list[dict[str, Any]] = []
+    for item in items:
+        source: dict[str, Any] | None = None
+        raw_signature = item["signature"] or _annotation_selector_signature(
+            item["selector"]
+        )
+        if raw_signature:
+            signature = ElementSignature.from_mapping(raw_signature)
+            occurrences = await asyncio.to_thread(editor.inspect, signature, limit=1)
+            if occurrences:
+                top = occurrences[0]
+                source = {"file": top.relative_path, "line": top.line}
+        hint = None
+        if item["source_file"]:
+            hint = {"file": item["source_file"], "line": item["source_line"]}
+        report.append(
+            {
+                "index": item["index"],
+                "selector": item["selector"],
+                "element": _annotation_element_label(item),
+                "comment": item["comment"],
+                "resolved": source is not None,
+                "source": source,
+                "hint": hint,
+                "screenshot": item["screenshot"],
+            }
+        )
+    goal = shape_annotations_goal(report)
+    result = await improve_project(state, slug, goal)
+    return {**result, "annotation_count": len(report), "annotations": report}
+
+
 def _visual_editor_lock(state: AppState, project: Path) -> asyncio.Lock:
     """Return the process-local transaction lock for one delivered project."""
 
@@ -6632,6 +6830,7 @@ def build_router(state: AppState) -> Any:
     auth = Depends(require_control_auth)
     project_auth = Depends(require_auth)
     empty_body: Any = Body(default_factory=dict)
+    any_body: Any = Body(default=None)
 
     @router.get("/auth/self-test", dependencies=[auth])
     async def _auth_self_test(request: Request) -> dict[str, Any]:
@@ -7007,6 +7206,20 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=404, detail="project not found") from None
         except (StaleSourceError, AmbiguousSourceError) as exc:
             raise HTTPException(status_code=409, detail=exc.to_dict()) from None
+        except (ValueError, VisualEditorError) as exc:
+            detail = exc.to_dict() if isinstance(exc, VisualEditorError) else str(exc)
+            raise HTTPException(status_code=422, detail=detail) from None
+
+    @router.post("/projects/{slug}/annotations/improve", dependencies=[auth])
+    async def _annotations_improve(slug: str, body: Any = any_body) -> dict[str, Any]:
+        from skyn3t.studio.visual_editor import VisualEditorError
+
+        try:
+            return await annotations_improve(state, slug, body)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
         except (ValueError, VisualEditorError) as exc:
             detail = exc.to_dict() if isinstance(exc, VisualEditorError) else str(exc)
             raise HTTPException(status_code=422, detail=detail) from None

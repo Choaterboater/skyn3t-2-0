@@ -866,6 +866,24 @@ class SkillLibrary:
             sk.quality_sum = (sk.quality_sum or 0.0) + q
         self._persist_scores()
 
+    def demote(self, slug: str, *, tag: str = "hygiene:quarantine") -> Skill | None:
+        """Pull a skill out of default injection by tagging it quarantined.
+
+        Outcome-based demotion (e.g. a promoted repair skill whose uses keep
+        ending in losing builds) reuses the taxonomy-hygiene quarantine tag:
+        ``_skill_tags_compatible`` already excludes quarantined skills from
+        ``relevant``/``inject``, while the markdown stays on disk for
+        inspection. Idempotent; returns the demoted skill, or ``None`` when the
+        slug is unknown.
+        """
+        sk = self._skills.get(slug)
+        if sk is None:
+            return None
+        if tag not in sk.tags:
+            sk.tags.append(tag)
+            self._persist(sk)
+        return sk
+
     # ---- auto-promotion from build patterns ---------------------------
     def maybe_promote_pattern(
         self,

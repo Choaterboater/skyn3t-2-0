@@ -4661,6 +4661,42 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.distill_failed", error=str(exc))
 
+    async def _mine_repair_knowledge(self, manifest: BuildManifest, plan: BuildPlan) -> None:
+        """Mine stuck->resolved deterministic repairs into lessons and skills.
+
+        LSO-style self-learning edge: a build that proof-gated, was unblocked
+        by a DETERMINISTIC repair (never an LLM retry — those aren't
+        distillable), and then passed teaches "what we should have known up
+        front". Findings persist as deduped lessons; a (stack, repair) pair
+        recurring on 'go' builds promotes to an advisory skill so the NEXT
+        build gets the knowledge before it gets stuck; promoted repairs that
+        keep losing builds are demoted by outcome. Best-effort at every step:
+        a miner failure logs and is skipped, never breaks the build.
+        """
+        try:
+            from skyn3t.intelligence import repair_miner
+
+            findings = repair_miner.mine_repairs(manifest, stack=plan.stack)
+            store = self.memory if self.memory is not None else getattr(
+                self.learning, "store", None
+            )
+            if findings and store is not None:
+                await repair_miner.persist_findings_as_lessons(
+                    findings, store, stack=plan.stack,
+                    source_build=manifest.build_id or manifest.slug,
+                )
+            if findings and self.patterns is not None and self.skills is not None:
+                repair_miner.record_and_promote(
+                    findings, self.patterns, self.skills,
+                    score=float(manifest.score or 0.0),
+                    go=manifest.verdict == "go",
+                    example=manifest.slug,
+                )
+            if self.skills is not None:
+                repair_miner.demote_failing_repair_skills(self.skills)
+        except Exception as exc:  # noqa: BLE001 - mining must never break a build
+            log.warning("repair_miner.failed", error=str(exc))
+
     async def _record_learning(
         self,
         manifest: BuildManifest,
@@ -4676,6 +4712,7 @@ class StudioRunner:
         from skyn3t.intelligence.learning_loop import (
             proof_ladder_infrastructure_unavailable,
         )
+        from skyn3t.agents.code_agent import read_vents_log
 
         manifest_extra = getattr(manifest, "extra", None) or {}
         proof_errors = extract_error_gaps(
@@ -4714,6 +4751,13 @@ class StudioRunner:
             # durable avoid-rule for the NEXT build.
             "gate_findings": gate_findings,
             "infrastructure_failure": infrastructure_failure,
+            # Codegen friction vents (bounded, agent-reported PIPELINE blockers),
+            # read back from the build's vents.jsonl — capture_from_build mints
+            # them as low-severity "vent" lessons through the deduped path.
+            # read_vents_log never raises; absent log -> [].
+            "vents": read_vents_log(
+                getattr(self.settings, "logs_dir", "logs"), manifest.slug
+            ),
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:
@@ -4742,6 +4786,11 @@ class StudioRunner:
                 self.skills.record_use(skill_slugs, helpful=helpful, quality=quality)
             except Exception as exc:  # noqa: BLE001
                 log.warning("skills.record_use_failed", error=str(exc))
+        # 3b. Repair mining (LSO loop): stuck->resolved deterministic repairs
+        # become deduped lessons now and up-front advisory skills once they
+        # recur on 'go' builds. Runs AFTER skill grading so the demotion sweep
+        # sees this build's outcome too.
+        await self._mine_repair_knowledge(manifest, plan)
         # 4. GROW: distill a new skill from a genuine, non-stub win. A stub
         # build is just the canned scaffold, not a learned win — don't author
         # from it. This is what makes the factory "find new skills" over time.
@@ -5803,6 +5852,15 @@ class StudioRunner:
             if repairs.get("python_formatted"):
                 manifest.extra["python_formatted"] = repairs["python_formatted"]
                 log.info("runner.python_formatted", files=repairs["python_formatted"])
+            # Full changed-repair summary for the repair miner (the per-key
+            # recordings above are only a subset — e.g. astro_estree_pin and
+            # nextjs_metadata_added appear ONLY here when they resolve before
+            # the first proof, outside any fix-loop attempt record).
+            changed_repairs = {
+                k: v for k, v in repairs.items() if v and k != "contrast_issues"
+            }
+            if changed_repairs:
+                manifest.extra["deterministic_repairs"] = changed_repairs
             self._record_contrast_issues(manifest, repairs)
             if isinstance(manifest.extra.get("asset_foundry"), dict):
                 try:

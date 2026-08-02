@@ -138,6 +138,40 @@ _BUILD_MODEL_POLICY_FIELDS = (
 _AGENTIC_STREAM_EVIDENCE: contextvars.ContextVar = contextvars.ContextVar(
     "skyn3t_agentic_stream_evidence", default=None
 )
+# Bounded assistant-prose accumulator for the vent channel: friction reports
+# ride the session's plain text output, so the tail of it must survive the
+# session. Kept OUT of the cli_execution receipt (that receipt is persisted in
+# durable manifests and must not carry raw agent prose — see agentic_build).
+_AGENTIC_OUTPUT_TEXT_LIMIT = 16_000
+
+
+def _capture_agentic_output_text(evt: dict, parts: list[str], budget: list[int]) -> None:
+    """Accumulate assistant prose from one stream-json event, bounded by budget.
+
+    Handles the claude/kimi ``assistant`` message shape (content blocks) and the
+    terminal ``result`` event's final text. Best-effort: unrecognised shapes
+    contribute nothing."""
+    if budget[0] <= 0:
+        return
+    text = ""
+    evt_type = evt.get("type")
+    if evt_type == "assistant":
+        message = evt.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            text = "\n".join(
+                str(block.get("text") or "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        elif isinstance(content, str):
+            text = content
+    elif evt_type == "result":
+        raw = evt.get("result")
+        text = raw if isinstance(raw, str) else ""
+    if text:
+        parts.append(text[: budget[0]])
+        budget[0] -= len(parts[-1])
 _BUDGET_LEDGER_LOCK = threading.RLock()
 _LEDGER_LOCK_TIMEOUT_S = 15.0
 
@@ -3415,6 +3449,10 @@ class LLMClient:
         incomplete_finish_nudged = False
         plan_complete_nudged = False
         auto_converged = False
+        # Bounded tail of assistant prose (vent channel) — friction reports ride
+        # the message text, not tool calls, so keep just enough to parse them.
+        output_text_parts: list[str] = []
+        output_text_budget = [_AGENTIC_OUTPUT_TEXT_LIMIT]
         # The anti-stub nudge below is web-marketing-specific; only let it fire for those
         # stacks (an empty/unknown stack keeps the react_vite-default behaviour). Game,
         # mobile, desktop, API and CLI builds must never be nudged toward a web UI.
@@ -3601,6 +3639,11 @@ class LLMClient:
                         tcs.append(tc_copy)
                     messages.append({"role": "assistant", "content": msg.get("content") or "",
                                      "tool_calls": tcs})
+                    _capture_agentic_output_text(
+                        {"type": "assistant", "message": msg},
+                        output_text_parts,
+                        output_text_budget,
+                    )
                     wrote_before = wrote
                     if tcs:
                         for tc in tcs:
@@ -3979,6 +4022,7 @@ class LLMClient:
                  "cached_tokens": cached_tokens,
                  "cache_write_tokens": cache_write_tokens,
                  "session_id": session_id,
+                 "output_text": "\n".join(output_text_parts),
                  "error": error}
 
     @property
@@ -4227,6 +4271,10 @@ class LLMClient:
         )
         stream_evidence_token = _AGENTIC_STREAM_EVIDENCE.set(None)
         proc = None
+        # Bounded tail of the agent's prose output (vent channel). Never stored
+        # inside cli_execution — that receipt is persisted in durable manifests
+        # and must not carry raw agent prose.
+        output_text = ""
         agentic_timeout = (
             timeout
             or int(getattr(self.settings, "agentic_build_timeout", 0))
@@ -4266,6 +4314,9 @@ class LLMClient:
                     cli_execution = observed_execution
                     if cached_cli_version and not cli_execution.get("cli_version"):
                         cli_execution["cli_version"] = cached_cli_version
+                # Lift the bounded prose tail OUT of the receipt before the
+                # receipt can be persisted (see the output_text comment above).
+                output_text = str(cli_execution.pop("output_text", "") or "")
                 # Keep older test/custom consumers that return only a bool
                 # compatible. The native consumer always supplies this detail.
                 if cli_execution.get("exit_status") == "running":
@@ -4282,6 +4333,9 @@ class LLMClient:
                     proc.communicate(), timeout=agentic_timeout,
                 )
                 ok = proc.returncode == 0
+                output_text = (out or b"").decode("utf-8", "replace")[
+                    -_AGENTIC_OUTPUT_TEXT_LIMIT:
+                ]
                 returncode = getattr(proc, "returncode", None)
                 cli_execution["exit_code"] = (
                     returncode if isinstance(returncode, int) and not isinstance(returncode, bool)
@@ -4325,6 +4379,7 @@ class LLMClient:
                 "cost_source": "not_reported_by_cli",
                 "cost_usd": None,
                 "cli_execution": cli_execution,
+                "output_text": output_text,
                 "error": "agentic CLI timed out",
             }
         except asyncio.CancelledError:
@@ -4342,6 +4397,7 @@ class LLMClient:
                 cli_execution = observed_execution
                 if cached_cli_version and not cli_execution.get("cli_version"):
                     cli_execution["cli_version"] = cached_cli_version
+            output_text = str(cli_execution.pop("output_text", "") or output_text)
             self._record_failed_cli_attempt(
                 provider, prompt, status="failed_cli_exception"
             )
@@ -4369,6 +4425,7 @@ class LLMClient:
                 "cost_source": "not_reported_by_cli",
                 "cost_usd": None,
                 "cli_execution": cli_execution,
+                "output_text": output_text,
                 "error": str(exc)[:160],
             }
         finally:
@@ -4403,6 +4460,7 @@ class LLMClient:
             "cost_usd": None,
             "timed_out": bool(cli_execution.get("timed_out")),
             "cli_execution": cli_execution,
+            "output_text": output_text,
             "error": "" if ok else "agentic CLI ended without a successful result",
         }
 
@@ -4430,6 +4488,8 @@ class LLMClient:
         stream_overrun = False
         evidence = _new_cli_execution_evidence(provider, streamed=True)
         evidence["exit_status"] = "streaming"
+        output_parts: list[str] = []
+        output_budget = [_AGENTIC_OUTPUT_TEXT_LIMIT]
 
         # Drain stderr concurrently (a full stderr pipe would block the agent);
         # keep only a short tail for diagnostics.
@@ -4512,6 +4572,7 @@ class LLMClient:
                         )
                         continue
                     _record_cli_execution_event(evidence, evt)
+                    _capture_agentic_output_text(evt, output_parts, output_budget)
                     if evt.get("type") == "result":
                         saw_result = True
                         result_is_error = bool(evt.get("is_error"))
@@ -4572,7 +4633,11 @@ class LLMClient:
             return ok
         finally:
             # Always leave the caller a bounded receipt, including cancellation
-            # and unexpected reader errors. No raw event line is retained.
+            # and unexpected reader errors. No raw event line is retained. The
+            # bounded assistant-prose tail (vent channel) rides the receipt only
+            # as far as ``agentic_build``, which pops it before persisting.
+            if output_parts:
+                evidence["output_text"] = "\n".join(output_parts)
             _AGENTIC_STREAM_EVIDENCE.set(evidence)
 
     @staticmethod

@@ -63,6 +63,11 @@ class EventType(StrEnum):
     STAGE_DEBUG_ATTEMPT = "build.stage.debug.attempt"
     STAGE_DEBUG_RESOLVED = "build.stage.debug.resolved"
     STAGE_ARTIFACT_SNAPSHOT = "build.stage.artifact.snapshot"
+    # Codegen friction report (vent channel): the agent flagged a PIPELINE
+    # blocker — a missing tool, a contradictory directive, an undiagnosable
+    # error, an unsatisfiable gate. Feeds the operator log + the learning
+    # loop's vent-tagged lessons; never ships in code.
+    CODEGEN_VENT = "codegen.vent"
 
     # Operator mode: improve an already-built project
     IMPROVE_STARTED = "improve.started"

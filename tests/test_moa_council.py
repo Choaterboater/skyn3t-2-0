@@ -156,10 +156,11 @@ def test_advise_repair_is_inert_when_council_disabled(tmp_path):
 def test_the_shipped_default_is_on_but_inert(tmp_path, monkeypatch):
     """What actually ships, with conftest's suite-wide pins removed.
 
-    The council ships ON with two advisors, and they are deliberately NOT the
-    acting model: auto routes codegen to Codex, so advising with Claude and
-    Kimi is what makes the council multi-model rather than Codex reviewing
-    itself. Copilot stays out, matching auto_cli_priority.
+    The council ships ON with one advisor, and it is deliberately NOT the
+    acting model: auto routes codegen to Codex, so the default advisor is
+    Kimi. Claude is opt-in only — no default anywhere routes work to Claude
+    without the operator selecting it. Copilot stays out, matching
+    auto_cli_priority.
 
     Inert on the stub backend regardless — that short-circuit is now the fence
     keeping an offline run free, since neither the master switch nor the
@@ -171,9 +172,12 @@ def test_the_shipped_default_is_on_but_inert(tmp_path, monkeypatch):
     shipped = Settings(data_dir=tmp_path / "data", logs_dir=tmp_path / "logs")
 
     assert shipped.moa_enabled is True
+    # The shipped default advises with Kimi only: Claude is opt-in (never in a
+    # default), codex is the acting model so it must not advise itself.
     assert [s.address for s in CouncilEngine(_FakeLLM(), shipped).slots()] == [
-        "claude_cli", "kimi_cli",
+        "kimi_cli",
     ]
+    assert "claude" not in shipped.moa_advisors, "Claude is opt-in only"
     assert "codex" not in shipped.moa_advisors, "the actor must not advise itself"
     assert "copilot" not in shipped.moa_advisors
 

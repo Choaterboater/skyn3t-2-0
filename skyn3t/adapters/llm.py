@@ -13,7 +13,7 @@ the :class:`ModelRouter`, then dispatches to a backend:
   "brief -> runnable app" demonstrable out of the box.
 
 Backend selection (``settings.llm_backend``): ``auto`` is intentionally local
-only. It walks ``settings.auto_cli_priority`` (default ``codex,claude,kimi``)
+only. It walks ``settings.auto_cli_priority`` (default ``codex,kimi``)
 and resolves to the first signed-in CLI, otherwise staying offline on the stub.
 It never selects OpenRouter merely because a key happens to be configured — a
 key is configuration, not consent to spend; hosted routing requires either an
@@ -2448,7 +2448,7 @@ class LLMClient:
         preferred_cli = (
             (auto_priority[0] if auto_priority else _AUTO_EXECUTION_CLI_PROVIDER)
             if pref == "auto"
-            else (getattr(self.settings, "cli_llm_provider", "") or "claude").lower()
+            else (getattr(self.settings, "cli_llm_provider", "") or "codex").lower()
         )
         cli_details = {p: self._cli_detail(p) for p in _KNOWN_CLI_PROVIDERS}
         cli_available = {p: detail["available"] for p, detail in cli_details.items()}

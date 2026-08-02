@@ -97,6 +97,25 @@ stickers or a gallery/card grid no longer false-flags its own correct delivery
 (neutral/unknown briefs behave exactly as before); verified zero warnings on
 all five live builds with briefs threaded.
 
+**2026-08-01 — cortex diet (telemetry noise out, learning kept):** the
+autonomy heartbeat stopped re-reporting itself. `MetaTick` now logs
+`metatick.cycle` only when the hypothesis SET changes (digest of
+titles/actions) and fires INSIGHT_PUBLISHED once per suggestion
+target+action instead of every 300s, so the two permanent standing
+hypotheses no longer spam the control-plane log (`cortex/meta_tick.py`;
+SelfTuningEngine itself untouched). The repo scout's construction-time
+`scout_disabled_no_token` warning was both wrong — the scout works
+unauthenticated — and misplaced: it fired on CLI `studio build`, where the
+scout never runs. It now logs once from `RepoScout.run()` (the
+`cortex.start()` path) with the honest note that a token only raises the
+GitHub rate limit (`cortex/bootstrap.py`, `cortex/repo_scout.py`). The dead
+`github_explorer`/`github_ingestor` registrations were dropped from the CLI
+boot list (agent classes + their tests kept for future use; external-repo
+learning stays on the RepoScout -> gated ingest path), and the unloaded
+422-file frozen corpus in `skyn3t/skills/` was quarantined to a one-line
+README pointing at the live `data/skills/` library. Lessons, the skill
+library, and the scout -> ingest path are unchanged.
+
 **2026-07-09 review and hardening swarm:** the control plane and generated
 previews now have explicit origin, host, CSP, and capability-URL boundaries;
 WebSocket credentials no longer travel in URLs; preview file serving rejects

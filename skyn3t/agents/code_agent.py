@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import os
 import re
 import shutil
@@ -49,7 +50,7 @@ from skyn3t.agents._scaffold import (
     synthesize_python_entrypoint,
 )
 from skyn3t.core.agent import AgentCapability, AgentStatus, BaseAgent, TaskRequest, TaskResult
-from skyn3t.core.events import EventBus
+from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.model_router import Tier
 from skyn3t.studio.acceptance_contract import (
     restore_acceptance_contracts,
@@ -143,6 +144,113 @@ _CONFIG_DIRECTIVE = (
     "user-supplied values (e.g. an API key), expose them via a config module and "
     "a Settings screen the user can fill in, not literals in code."
 )
+# Friction-report channel (ported from Lovable's vent loop — measured there to
+# improve limit-explanation and cut futile retry loops; vent spikes double as
+# incident detection). When the PIPELINE blocks codegen — not the app — the
+# agent reports it on a bounded VENT: line instead of silently working around
+# it or faking compliance. CodeAgent parses these out of the session output
+# into run_metadata + the build's vents.jsonl; the learning loop turns a
+# recurring vent into a lesson. Vents never ship in code, commits, or READMEs.
+_VENT_DIRECTIVE = (
+    "VENT CHANNEL: if something in this pipeline blocks you — a tool you do not "
+    "have, a contradictory directive, an error you cannot diagnose, or a "
+    "requirement you cannot satisfy honestly — do NOT work around it silently "
+    "or fake it. Emit one line per issue starting with `VENT: ` (max 3) "
+    "explaining it plainly. Vents go to the operator and the self-improvement "
+    "loop, never into code, commits, or the README."
+)
+_VENT_PREFIX = "VENT:"
+_VENT_MAX = 3
+_VENT_MAX_CHARS = 300
+
+
+def parse_vents(text: str, *, max_vents: int = _VENT_MAX,
+                max_chars: int = _VENT_MAX_CHARS) -> list[str]:
+    """Extract bounded ``VENT:`` friction reports from agentic session output.
+
+    First ``max_vents`` lines win; each is whitespace-flattened and trimmed to
+    ``max_chars``. Deterministic and side-effect free."""
+    vents: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(_VENT_PREFIX):
+            continue
+        vent = " ".join(stripped[len(_VENT_PREFIX):].split())[:max_chars].strip()
+        if vent:
+            vents.append(vent)
+        if len(vents) >= max_vents:
+            break
+    return vents
+
+
+def strip_vent_lines(content: str) -> str:
+    """Remove any ``VENT:`` lines from text about to be written to disk.
+
+    A vent is a pipeline signal, not source — it must never land in a written
+    file even when the agent ignores the convention and inlines one. Content
+    without the prefix is returned untouched (zero behavior change)."""
+    if _VENT_PREFIX not in content:
+        return content
+    return "\n".join(
+        line for line in content.split("\n")
+        if not line.strip().startswith(_VENT_PREFIX)
+    )
+
+
+def _vents_log_path(logs_dir: Any, slug: str) -> Path:
+    safe = "".join(
+        ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(slug or "app")
+    ) or "app"
+    return Path(logs_dir or "logs") / safe / "vents.jsonl"
+
+
+def _append_vents_log(slug: str, records: list[dict[str, Any]]) -> Path | None:
+    """Append vent records to ``logs/<slug>/vents.jsonl``; never raises.
+
+    One JSON line per vent (``{slug, vent, attempt}``) — the operator trail a
+    vent-spike incident check reads. Mirrors council_trace's per-build JSONL
+    (logs_dir, disposable) rather than the durable manifest."""
+    try:
+        from skyn3t.config.settings import get_settings
+
+        path = _vents_log_path(getattr(get_settings(), "logs_dir", "logs"), slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for record in records:
+                fh.write(json.dumps(record, default=str) + "\n")
+        return path
+    except Exception as exc:  # noqa: BLE001 - vent logging may never fail a build
+        log.warning("code_agent.vents_log_failed", error=str(exc)[:160])
+        return None
+
+
+def read_vents_log(logs_dir: Any, slug: str, *, max_vents: int = _VENT_MAX) -> list[str]:
+    """Read back the bounded, de-duplicated vent texts for a build.
+
+    Best-effort: a missing/corrupt log yields ``[]`` — the learning capture
+    degrades to zero vent lessons, never a failed build."""
+    try:
+        path = _vents_log_path(logs_dir, slug)
+        if not path.exists():
+            return []
+        vents: list[str] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            vent = (
+                str(record.get("vent") or "").strip()
+                if isinstance(record, dict) else ""
+            )
+            if vent and vent not in vents:
+                vents.append(vent)
+            if len(vents) >= max_vents:
+                break
+        return vents
+    except Exception as exc:  # noqa: BLE001
+        log.warning("code_agent.vents_log_read_failed", error=str(exc)[:160])
+        return []
 # Cheap, broadly-available default for generated apps. Overridable per-app via the
 # OPENROUTER_MODEL env var; intentionally NOT a Claude model (cost) or a :free id
 # (those get retired and 404 — see the OpenRouter cascade debugging).
@@ -633,7 +741,7 @@ class CodeAgent(BaseAgent):
     _run_metadata_keys = (
         "degraded", "degraded_reason", "codegen_override_unavailable",
         "prompts", "agentic", "prose_rejected", "index_html_repaired",
-        "scene_registry_repaired", "agentic_untrusted_paths",
+        "scene_registry_repaired", "agentic_untrusted_paths", "vents",
     )
 
     def __init__(self, name: str = "code", *, event_bus: EventBus,
@@ -915,6 +1023,9 @@ class CodeAgent(BaseAgent):
                     res.get("completed", agentic_ok)
                 )
                 agentic_error = res.get("error", "")
+                # Vent channel: harvest friction reports from the session output
+                # BEFORE any degradation handling — best-effort, never raises.
+                await self._capture_vents(res, app_name, attempt)
                 disk = self._read_files(worktree)
                 # The CLI writes files directly (bypassing extract/validate). Guard
                 # against it writing chat prose instead of code: reject prose source
@@ -1091,6 +1202,10 @@ class CodeAgent(BaseAgent):
             # scaffold path). The runner lifts these into manifest.extra["prompts"].
             "prompts": run_metadata.get("prompts", []),
         }
+        # Agent-reported pipeline friction (bounded); absent on vent-free builds,
+        # so a build that never vents is byte-identical downstream to before.
+        if run_metadata.get("vents"):
+            out["vents"] = list(run_metadata["vents"])
         agentic = run_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
@@ -1260,6 +1375,7 @@ class CodeAgent(BaseAgent):
             + (f"{_AGENT_APP_DIRECTIVE}\n" if _implies_agent_app(brief) else "")
             + f"{_FULL_FILE_CONTRACT}\n"
             + f"{_CONFIG_DIRECTIVE}\n"
+            + f"{_VENT_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             # Advisory-council guidance goes at the TAIL, after every directive.
             # The directive block above is byte-identical across every build of a
@@ -1639,6 +1755,7 @@ class CodeAgent(BaseAgent):
                 agentic_ok = bool(res.get("ok", True))
                 confirmed = agentic_ok and bool(res.get("completed", agentic_ok))
                 agentic_error = str(res.get("error", "") or "")
+                await self._capture_vents(res, app_name, attempt)
                 out_of_scope_seen.update(
                     self._prune_slice_out_of_scope(worktree, expected, slice_baseline)
                 )
@@ -1735,6 +1852,8 @@ class CodeAgent(BaseAgent):
             "slice": name,
             "prompts": self._task_metadata.get("prompts", []),
         }
+        if self._task_metadata.get("vents"):
+            out["vents"] = list(self._task_metadata["vents"])
         agentic = self._task_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
@@ -1794,6 +1913,7 @@ class CodeAgent(BaseAgent):
             "Implement real logic and error handling for your files only. Match the import "
             "paths above exactly. Do not ask questions — just write your files."
             f"{design_block}"
+            f"\n\n{_VENT_DIRECTIVE}"
         )
         return self.system_prompt(prompt)
 
@@ -1838,6 +1958,7 @@ class CodeAgent(BaseAgent):
             "Implement every missing owned file in full, repair wiring among the owned "
             "files, and finish successfully only when the entire slice is complete."
             + design_block
+            + f"\n\n{_VENT_DIRECTIVE}"
         )
 
     @staticmethod
@@ -2065,6 +2186,7 @@ class CodeAgent(BaseAgent):
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
                 else ""
             )
+            + f"{_VENT_DIRECTIVE}\n\n"
             + "Implement every missing file in full, repair imports and entrypoint wiring, "
             "and validate the complete existing app. Do not omit features, TODO, or elide "
             "code. Finish successfully only after the whole planned application is present."
@@ -2712,6 +2834,42 @@ class CodeAgent(BaseAgent):
         return files
 
 
+    async def _capture_vents(self, res: dict[str, Any], slug: str, attempt: int) -> None:
+        """Harvest ``VENT:`` lines from one agentic session's output text.
+
+        Best-effort by design — the vent channel must never fail a build.
+        Bounded (first 3 across the whole build, ≤300 chars each) and recorded
+        three ways: ``run_metadata["vents"]`` (surfaces with the build record),
+        one CODEGEN_VENT event per vent (dashboard/incident signal), and an
+        append to ``logs/<slug>/vents.jsonl`` (the operator trail the learning
+        capture reads back at build end)."""
+        try:
+            text = res.get("output_text") if isinstance(res, dict) else ""
+            vents = parse_vents(str(text or ""))
+            if not vents:
+                return
+            run_metadata = self._task_metadata
+            captured = run_metadata.setdefault("vents", [])
+            new_records: list[dict[str, Any]] = []
+            for vent in vents:
+                if len(captured) >= _VENT_MAX:
+                    break
+                captured.append(vent)
+                new_records.append({"slug": slug, "vent": vent, "attempt": attempt})
+                try:
+                    await self.event_bus.emit(
+                        EventType.CODEGEN_VENT, self.name,
+                        {"slug": slug, "vent": vent, "attempt": attempt},
+                    )
+                except Exception:  # noqa: BLE001 - a bus failure must not stop capture
+                    pass
+            if new_records:
+                _append_vents_log(slug, new_records)
+                log.info("code_agent.vents_captured", slug=slug,
+                         attempt=attempt, count=len(new_records))
+        except Exception as exc:  # noqa: BLE001 - the vent channel never fails a build
+            log.warning("code_agent.vent_capture_failed", error=str(exc)[:160])
+
     @staticmethod
     def _clean_agentic_files(
         disk: dict[str, str], scaffold: dict[str, str]
@@ -2743,6 +2901,10 @@ class CodeAgent(BaseAgent):
         for path, content in disk.items():
             p = path.lower()
             is_code = p.endswith(_CODE_EXTS)
+            # A vent is a pipeline signal, never source: strip VENT: lines from
+            # everything about to ship (code AND prose-check below see the
+            # scrubbed text) so the channel can't leak into a written file.
+            content = strip_vent_lines(content)
             # (a) the agent chatted instead of coding, or (b) it elided the file
             # body with an edit-style "/* ... unchanged ... */" placeholder (a
             # non-functional stub — there is no original to be unchanged from).

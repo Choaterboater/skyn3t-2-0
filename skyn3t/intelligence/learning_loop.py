@@ -218,6 +218,30 @@ def _flat_finding(text: Any, limit: int = 160) -> str:
     return " ".join(str(text).split())[:limit]
 
 
+def vent_lesson_texts(stack: str, vents: Any, *, max_vents: int = 3,
+                      max_chars: int = 300) -> list[str]:
+    """Turn codegen friction vents into low-severity, vent-tagged lesson texts.
+
+    The vent channel (code_agent's ``VENT:`` convention) reports PIPELINE
+    friction — a missing tool, a contradictory directive, an undiagnosable
+    error, an unsatisfiable gate. Texts are stored through the normal
+    ``add_lesson`` path (capture-side dedupe applies, so a recurring vent
+    reinforces one row instead of minting duplicates), tagged by the
+    ``vent —`` prefix so the class is greppable in the lesson store."""
+    out: list[str] = []
+    if not isinstance(vents, (list, tuple)):
+        return out
+    for vent in vents:
+        flat = " ".join(str(vent).split())[:max_chars].strip()
+        if flat:
+            text = f"{stack}: vent — {flat}"
+            if text not in out:
+                out.append(text)
+        if len(out) >= max_vents:
+            break
+    return out
+
+
 def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
     """Flatten advisory-gate findings out of a build manifest's ``extra`` into
     short ``"<gate>: <issue>"`` strings for lesson capture.
@@ -362,7 +386,12 @@ class LearningLoop:
         stack = str(build.get("stack") or "generic")
         stage = str(build.get("stage") or "")
         source_build = build.get("build_id") or build.get("slug")
-        texts = await self._drop_known(stack, _summarize_outcome(build))
+        texts = _summarize_outcome(build)
+        # Codegen friction vents become low-severity "vent" lessons through the
+        # same deduped add_lesson path — a vent that keeps recurring surfaces
+        # exactly like any recurring finding. No parallel store.
+        texts.extend(vent_lesson_texts(stack, build.get("vents")))
+        texts = await self._drop_known(stack, texts)
         ids: list[int] = []
         stored: list[str] = []
         for text in texts:

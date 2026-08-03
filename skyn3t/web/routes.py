@@ -5008,11 +5008,13 @@ async def agent_catalog_preview(
 
 
 async def import_agent_catalog(
-    state: AppState, path: str, limit: int = 100
+    state: AppState, path: str, limit: int = 100, activate: bool = False
 ) -> dict[str, Any]:
-    """Import a local external agent catalog as compact advisory skills."""
+    """Import local catalog roles as candidates or explicitly activate them."""
     if state.skills is None or not hasattr(state.skills, "add"):
         raise ValueError("a writable skill library is required to import catalogs")
+    if not isinstance(activate, bool):
+        raise ValueError("catalog activate must be a boolean")
     preview = await agent_catalog_preview(state, path, limit=limit)
     from skyn3t.intelligence.agent_catalog import import_catalog_as_skills
 
@@ -5020,13 +5022,19 @@ async def import_agent_catalog(
         preview["path"],
         state.skills,
         limit=max(1, min(int(limit or 100), 500)),
+        activate=activate,
     )
     return {
         "path": preview["path"],
         "imported": imported,
         "summary": preview["summary"],
+        "activation": {
+            "requested": activate,
+            "status": "activated" if activate else "quarantined",
+            "activated": imported if activate else 0,
+            "quarantined": 0 if activate else imported,
+        },
     }
-
 
 async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str, Any]:
     knowledge = state.knowledge
@@ -7808,10 +7816,14 @@ def build_router(state: AppState) -> Any:
     @router.post("/agent-catalog/import", dependencies=[auth])
     async def _agent_catalog_import(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
+            activate = body.get("activate", False)
+            if not isinstance(activate, bool):
+                raise ValueError("catalog activate must be a boolean")
             return await import_agent_catalog(
                 state,
                 str(body.get("path", "")),
                 limit=int(body.get("limit", 100) or 100),
+                activate=activate,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

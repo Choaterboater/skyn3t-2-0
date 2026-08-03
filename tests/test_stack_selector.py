@@ -64,9 +64,11 @@ def test_stub_backend_falls_back_to_keyword():
     class StubResult:
         backend = "stub"
         text = '{"stack": "fastapi", "confidence": 0.9, "rationale": "x"}'
+
     class StubLLM:
         async def complete(self, *a, **k):
             return StubResult()
+
     c = asyncio.run(select_stack("a react dashboard", llm=StubLLM()))
     assert c.method == "keyword" and c.stack == "react"
 
@@ -117,6 +119,19 @@ def test_classify_build_respects_overrides_without_changing_stack():
     assert c.engine == "browser_native"
     assert c.method == "override"
     assert c.layout_profile == "workspace"
+
+
+def test_classify_build_rejects_control_text_in_overrides():
+    c = classify_build(
+        "a React dashboard for metrics",
+        "react",
+        app_type_override="dashboard" + chr(10) + "untrusted_control_text",
+        engine_override="dom" + chr(10) + "untrusted_control_text",
+    )
+
+    assert c.method == "inferred"
+    assert c.app_type == "dashboard"
+    assert c.engine == "dom"
 
 
 def test_classify_build_infers_dashboard_dom():

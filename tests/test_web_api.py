@@ -2552,9 +2552,79 @@ async def test_agent_catalog_preview_and_import(tmp_path):
 
     imported = await routes.import_agent_catalog(st, str(catalog), limit=20)
     assert imported["imported"] == 1
+    assert imported["activation"] == {
+        "requested": False,
+        "status": "quarantined",
+        "activated": 0,
+        "quarantined": 1,
+    }
+    [candidate] = skills.all()
+    assert "catalog-candidate" in candidate.tags
+    assert "hygiene:quarantine" in candidate.tags
+    assert skills.relevant("react") == []
+
+    activated = await routes.import_agent_catalog(st, str(catalog), limit=20, activate=True)
+    assert activated["activation"] == {
+        "requested": True,
+        "status": "activated",
+        "activated": 1,
+        "quarantined": 0,
+    }
+    [active] = skills.relevant("react")
+    assert active.slug == candidate.slug
+    assert "catalog-promoted" in active.tags
     skills_payload = await routes.list_skills(st)
     assert skills_payload["skills"][0]["title"] == "Frontend Builder"
 
+@pytest.mark.filterwarnings(
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated"
+)
+def test_agent_catalog_import_route_honors_explicit_boolean_activation(tmp_path):
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "role.md").write_text(
+        "---\nname: Route Role\ndescription: Helps with MCP workflow automation.\n---\nbody\n",
+        encoding="utf-8",
+    )
+    skills = SkillLibrary(tmp_path / "skills")
+    st = _state(skills=skills)
+    st.settings.auth_token = "secret"
+    app = FastAPI()
+    app.include_router(routes.build_router(st))
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer secret"}
+
+    default_import = client.post(
+        "/api/agent-catalog/import", json={"path": str(catalog)}, headers=headers
+    )
+    assert default_import.status_code == 200
+    assert default_import.json()["activation"]["status"] == "quarantined"
+    assert skills.relevant("mcp") == []
+
+    activated = client.post(
+        "/api/agent-catalog/import",
+        json={"path": str(catalog), "activate": True},
+        headers=headers,
+    )
+    assert activated.status_code == 200
+    assert activated.json()["activation"]["status"] == "activated"
+    assert len(skills.relevant("mcp")) == 1
+
+    invalid = client.post(
+        "/api/agent-catalog/import",
+        json={"path": str(catalog), "activate": "yes"},
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+    assert "boolean" in invalid.json()["detail"]
 
 async def test_agent_catalog_import_degrades_without_skill_library(tmp_path):
     st = _state()

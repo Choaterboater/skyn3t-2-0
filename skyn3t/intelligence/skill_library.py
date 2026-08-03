@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -87,10 +88,17 @@ _CLI_TAGS = frozenset({"cli", "command-line", "commandline"})
 _QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
 _EXTERNAL_CANDIDATE_TAG = "external-candidate"
 _EXTERNAL_PROMOTED_TAG = "external-promoted"
+_CATALOG_CANDIDATE_TAG = "catalog-candidate"
+_CATALOG_PROMOTED_TAG = "catalog-promoted"
+_CATALOG_SOURCE = "agent_catalog"
 _FULL_GIT_REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 _SHA256_IDENTIFIER_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 _GITHUB_SOURCE_URL_RE = re.compile(
     r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", re.IGNORECASE
+)
+_LEGACY_GITHUB_REPO_SOURCE_RE = re.compile(
+    r"^https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?$",
+    re.IGNORECASE,
 )
 
 # Group equivalent stack vocabularies so a build's detected stack matches skills
@@ -142,6 +150,88 @@ def _stack_aliases(stack: str) -> frozenset[str]:
         if s in group:
             return group
     return frozenset({s}) if s else frozenset()
+
+
+def _tagged_stacks(tags: set[str]) -> frozenset[str]:
+    """Return explicit alternative stack IDs retained by catalog imports."""
+    alternatives: set[str] = set()
+    for tag in tags:
+        prefix, separator, value = tag.partition(":")
+        if prefix.lower() == "stack" and separator and value.strip():
+            alternatives.add(value.strip().lower())
+    return frozenset(alternatives)
+
+
+def _skill_matches_stack(skill_stack: str, skill_tags: set[str], stack: str) -> bool:
+    """Match a primary stack or a catalog-declared alternative safely.
+
+    Callers keep compatibility/quarantine checks separate so an alternative
+    stack tag cannot make an otherwise excluded skill injectable.
+    """
+    aliases = _stack_aliases(stack)
+    if not aliases:
+        return False
+    declared = {(skill_stack or "").strip().lower()}
+    declared.update(_tagged_stacks(skill_tags))
+    return any(candidate in aliases for candidate in declared if candidate)
+
+
+def _canonical_github_repo_origin(value: str | None) -> str | None:
+    """Normalize a repository-root GitHub URL for provenance comparison."""
+    source = (value or "").strip()
+    if not _LEGACY_GITHUB_REPO_SOURCE_RE.fullmatch(source):
+        return None
+    source = re.sub(r"^https?://(?:www\.)?", "https://", source, flags=re.IGNORECASE)
+    source = source.rstrip("/")
+    if source.lower().endswith(".git"):
+        source = source[:-4]
+    return source.lower()
+
+
+def _has_complete_github_provenance(
+    provenance: SkillProvenance | None,
+    *,
+    expected_origin: str | None = None,
+) -> bool:
+    """Validate the immutable evidence required for GitHub-derived guidance.
+
+    This is intentionally the same narrow evidence contract used by explicit
+    external promotion. A readable branch, release name, or status tag does
+    not identify immutable source content and therefore cannot make a legacy
+    GitHub-derived skill eligible for default prompt injection.
+    """
+    if provenance is None:
+        return False
+    source_url = (provenance.source_url or "").strip()
+    revision = (provenance.pinned_revision or "").strip()
+    content_hash = (provenance.content_hash or "").strip()
+    source_path = (provenance.source_path or "").strip()
+    if not (
+        _GITHUB_SOURCE_URL_RE.fullmatch(source_url)
+        and _FULL_GIT_REVISION_RE.fullmatch(revision)
+        and _SHA256_IDENTIFIER_RE.fullmatch(content_hash)
+        and source_path
+        and not any(char in source_path for char in "\r\n\x00")
+    ):
+        return False
+    if expected_origin is None:
+        return True
+    return _canonical_github_repo_origin(expected_origin) == source_url.lower()
+
+
+def _safe_catalog_source_path(value: str | None) -> str | None:
+    """Return a normalized, non-traversing catalog-relative source path."""
+    source_path = (value or "").strip().replace("\\", "/")
+    if not source_path or len(source_path) > 2048:
+        return None
+    if source_path.startswith("/") or ":" in source_path:
+        return None
+    if any(ord(char) < 32 for char in source_path):
+        return None
+    parts = source_path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    return "/".join(parts)
 
 
 def _skill_tags_compatible(stack: str, sk_tags: set[str]) -> bool:
@@ -529,6 +619,84 @@ def parse_skill(text: str, *, fallback_slug: str = "skill") -> Skill:
     )
 
 
+def _quarantine_unpinned_legacy_github_skill(skill: Skill) -> None:
+    """Keep old GitHub-distilled files out of default injection on load.
+
+    The historical format used a literal GitHub repository URL plus the
+    github-distilled tag without immutable source evidence. Mark only the
+    in-memory representation. An ``external-promoted`` tag, branch name, or
+    tag name is not evidence: legacy files become eligible only when their
+    canonical origin, full Git object ID, evidence hash, and source path meet
+    the same contract as explicit external promotion.
+    """
+    source = (skill.source or "").strip()
+    tags = {tag.strip().lower() for tag in skill.tags if tag.strip()}
+    if "github-distilled" not in tags:
+        return
+    if not _LEGACY_GITHUB_REPO_SOURCE_RE.fullmatch(source):
+        return
+    if _has_complete_github_provenance(skill.provenance, expected_origin=source):
+        return
+    if not tags & _QUARANTINE_TAGS:
+        skill.tags.append("hygiene:quarantine")
+
+
+def _catalog_tagset(skill: Skill) -> set[str]:
+    return {tag.strip().lower() for tag in skill.tags if tag.strip()}
+
+
+def _has_catalog_identity(tags: set[str]) -> bool:
+    return any(tag.startswith("catalog:") and len(tag) > len("catalog:") for tag in tags)
+
+
+def _is_catalog_skill(skill: Skill, tags: set[str] | None = None) -> bool:
+    tagset = tags if tags is not None else _catalog_tagset(skill)
+    return (
+        (skill.source or "").strip().lower() == _CATALOG_SOURCE
+        or _CATALOG_CANDIDATE_TAG in tagset
+        or _CATALOG_PROMOTED_TAG in tagset
+        or _has_catalog_identity(tagset)
+    )
+
+
+def _has_valid_catalog_activation_evidence(skill: Skill) -> bool:
+    provenance = skill.provenance
+    if provenance is None:
+        return False
+    source_path = _safe_catalog_source_path(provenance.source_path)
+    content_hash = (provenance.content_hash or "").strip()
+    return bool(
+        source_path
+        and _SHA256_IDENTIFIER_RE.fullmatch(content_hash)
+        and content_hash.lower() == content_sha256(skill.body)
+    )
+
+
+def _quarantine_unevidenced_agent_catalog_skill(skill: Skill) -> None:
+    """Keep catalog guidance inert unless an explicit activation receipt exists."""
+    tags = _catalog_tagset(skill)
+    if not _is_catalog_skill(skill, tags):
+        return
+    is_active = (
+        _CATALOG_PROMOTED_TAG in tags
+        and _CATALOG_CANDIDATE_TAG not in tags
+        and not (tags & _QUARANTINE_TAGS)
+        and _has_catalog_identity(tags)
+        and _has_valid_catalog_activation_evidence(skill)
+    )
+    if is_active:
+        return
+    if _CATALOG_PROMOTED_TAG in tags:
+        skill.tags = [
+            tag for tag in skill.tags if tag.strip().lower() != _CATALOG_PROMOTED_TAG
+        ]
+        tags = _catalog_tagset(skill)
+    if _CATALOG_CANDIDATE_TAG not in tags:
+        skill.tags.append(_CATALOG_CANDIDATE_TAG)
+    if not tags & _QUARANTINE_TAGS:
+        skill.tags.append("hygiene:quarantine")
+
+
 def _curated_provenance(
     imported: SkillProvenance | None,
     template: SkillProvenance | None,
@@ -573,6 +741,8 @@ class SkillLibrary:
                 sk = parse_skill(f.read_text(encoding="utf-8"), fallback_slug=f.stem)
                 if not sk.body.strip():
                     continue
+                _quarantine_unpinned_legacy_github_skill(sk)
+                _quarantine_unevidenced_agent_catalog_skill(sk)
                 self._skills[sk.slug] = sk
             except Exception as exc:  # noqa: BLE001
                 if _log:
@@ -662,6 +832,7 @@ class SkillLibrary:
             description=description.strip(),
             provenance=provenance,
         )
+        _quarantine_unevidenced_agent_catalog_skill(skill)
         self._skills[slug] = skill
         self._persist(skill)
         return skill
@@ -681,12 +852,11 @@ class SkillLibrary:
         crowding out stack-native guidance.
         """
         tagset = {t.lower() for t in (tags or [])}
-        aliases = _stack_aliases(stack)
         sk_stack = (skill.stack or "").strip().lower()
         sk_tags = {t.lower() for t in skill.tags}
         if not _skill_tags_compatible(stack, sk_tags):
             return False
-        if sk_stack in aliases or sk_stack == (stack or "").strip().lower():
+        if _skill_matches_stack(sk_stack, sk_tags, stack):
             return True
         if sk_stack != "generic":
             return False
@@ -784,14 +954,13 @@ class SkillLibrary:
     def relevant(self, stack: str, tags: list[str] | None = None, limit: int = 5) -> list[Skill]:
         """Most relevant skills for a stack/tags, ranked by score."""
         tagset = {t.lower() for t in (tags or [])}
-        aliases = _stack_aliases(stack)
 
         def _match(sk: Skill) -> tuple[int, int, float]:
             if not self.applies_to(sk, stack, tags=tags):
                 return (0, 0, sk.score)
-            sk_stack = (sk.stack or "").strip().lower()
-            stack_hit = 3 if (sk_stack in aliases or sk_stack == stack) else 1
-            tag_hit = len(tagset & {t.lower() for t in sk.tags})
+            sk_tags = {t.lower() for t in sk.tags}
+            stack_hit = 3 if _skill_matches_stack(sk.stack, sk_tags, stack) else 1
+            tag_hit = len(tagset & sk_tags)
             # When the caller asks for design/front-end tags, tag fit matters most.
             # Otherwise stack-native skills should beat generic process advice.
             return (tag_hit, stack_hit, sk.score) if tagset else (stack_hit, tag_hit, sk.score)
@@ -837,7 +1006,6 @@ class SkillLibrary:
         if not stage_tags:
             return []
         tagset = {t.lower() for t in (tags or [])}
-        aliases = _stack_aliases(stack)
 
         def _match(sk: Skill) -> tuple[int, int, int, float]:
             sk_tags = {t.lower() for t in sk.tags}
@@ -846,8 +1014,7 @@ class SkillLibrary:
                 return (0, 0, 0, sk.score)
             if not self.applies_to(sk, stack, tags=tags):
                 return (0, 0, 0, sk.score)
-            sk_stack = (sk.stack or "").strip().lower()
-            stack_hit = 3 if (sk_stack in aliases or sk_stack == stack) else 1
+            stack_hit = 3 if _skill_matches_stack(sk.stack, sk_tags, stack) else 1
             if not stack_hit:
                 return (0, 0, 0, sk.score)
             tag_hit = len(tagset & sk_tags)
@@ -879,7 +1046,14 @@ class SkillLibrary:
         if isinstance(slugs, str):
             slugs = [slugs]
         q = quality if quality is not None else (1.0 if helpful else 0.0)
-        q = max(0.0, min(1.0, q))
+        try:
+            q = float(q)
+        except (TypeError, ValueError):
+            q = 1.0 if helpful else 0.0
+        if not math.isfinite(q):
+            q = 1.0 if helpful else 0.0
+        else:
+            q = max(0.0, min(1.0, q))
         for slug in slugs:
             sk = self._skills.get(slug)
             if sk is None:
@@ -908,6 +1082,33 @@ class SkillLibrary:
             self._persist(sk)
         return sk
 
+    def activate_catalog_candidate(self, slug: str) -> Skill | None:
+        """Explicitly make one evidence-bound local catalog role injectable.
+
+        Catalog text remains non-binding advice. Activation requires a retained
+        candidate/quarantine state plus a compact-body hash and safe path receipt,
+        so a legacy catalog file or altered advisory body cannot become active
+        merely by carrying a status tag.
+        """
+        sk = self._skills.get(slug)
+        if sk is None:
+            return None
+        tags = _catalog_tagset(sk)
+        if not (
+            _is_catalog_skill(sk, tags)
+            and _has_catalog_identity(tags)
+            and _CATALOG_CANDIDATE_TAG in tags
+            and bool(tags & _QUARANTINE_TAGS)
+            and _has_valid_catalog_activation_evidence(sk)
+        ):
+            return None
+        remove_tags = _QUARANTINE_TAGS | {_CATALOG_CANDIDATE_TAG}
+        sk.tags = [tag for tag in sk.tags if tag.strip().lower() not in remove_tags]
+        if _CATALOG_PROMOTED_TAG not in _catalog_tagset(sk):
+            sk.tags.append(_CATALOG_PROMOTED_TAG)
+        self._persist(sk)
+        return sk
+
     def promote_external(self, slug: str) -> Skill | None:
         """Explicitly approve a quarantined GitHub-derived skill for injection.
 
@@ -925,20 +1126,7 @@ class SkillLibrary:
         tagset = {tag.strip().lower() for tag in sk.tags if tag.strip()}
         if _EXTERNAL_CANDIDATE_TAG not in tagset or not (tagset & _QUARANTINE_TAGS):
             return None
-        provenance = sk.provenance
-        if provenance is None:
-            return None
-        source_url = provenance.source_url or ""
-        revision = provenance.pinned_revision or ""
-        content_hash = provenance.content_hash or ""
-        source_path = provenance.source_path or ""
-        if not (
-            _GITHUB_SOURCE_URL_RE.fullmatch(source_url)
-            and _FULL_GIT_REVISION_RE.fullmatch(revision)
-            and _SHA256_IDENTIFIER_RE.fullmatch(content_hash)
-            and source_path.strip()
-            and not any(char in source_path for char in "\r\n\x00")
-        ):
+        if not _has_complete_github_provenance(sk.provenance):
             return None
 
         remove_tags = _QUARANTINE_TAGS | {_EXTERNAL_CANDIDATE_TAG}

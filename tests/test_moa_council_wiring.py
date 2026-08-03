@@ -132,6 +132,53 @@ async def test_council_threads_guidance_and_records_a_bounded_summary(tmp_path, 
     assert "guidance" not in record
 
 
+async def test_council_receives_compact_read_only_build_contract(tmp_path, monkeypatch):
+    from skyn3t.intelligence.council import CouncilAdvice
+    from skyn3t.studio.build_contract import BuildContract
+    from skyn3t.studio.layout_profiles import resolve_layout_profile
+    from skyn3t.studio.stack_selector import StackChoice, classify_build
+
+    runner = _runner(tmp_path, moa_enabled=True, moa_advisors="codex_cli")
+    captured: dict[str, str] = {}
+
+    class _FakeEngine:
+        def __init__(self, llm, settings, advisors=None):
+            pass
+
+        def enabled(self):
+            return True
+
+        async def advise(self, *, brief, stack="", plan=""):
+            captured["plan"] = plan
+            return CouncilAdvice()
+
+    choice = StackChoice("react", "keyword", 0.8, "dashboard")
+    classification = classify_build("an operations dashboard", "react")
+    contract = BuildContract.from_components(
+        choice,
+        classification,
+        resolve_layout_profile(
+            classification.app_type,
+            stack="react",
+            engine=classification.engine,
+        ),
+        build_profile="balanced",
+    ).to_dict()
+    monkeypatch.setattr("skyn3t.intelligence.council.CouncilEngine", _FakeEngine)
+    manifest = BuildManifest(slug="app", brief="b", stack="react")
+
+    await runner._run_moa_council(
+        "b",
+        manifest,
+        {"build_contract": contract},
+        SimpleNamespace(stack="react", checklist=["src/App.jsx"]),
+    )
+
+    assert "Read-only build contract" in captured["plan"]
+    assert contract["digest"] in captured["plan"]
+    assert "desktop_contract" not in captured["plan"]
+    assert manifest.extra["moa_contract_context"]["digest"] == contract["digest"]
+
 async def test_a_council_explosion_never_breaks_the_build(tmp_path, monkeypatch):
     runner = _runner(tmp_path, moa_enabled=True, moa_advisors="codex_cli")
 

@@ -127,6 +127,9 @@ passes. A failed verification keeps the previous healthy URL active.
   immutable `review_required` evidence—never auto-applied. GitHub-derived
   skills remain quarantined until their source, commit, path, and content hash
   are verified and explicitly promoted.
+- **Controlled catalog activation.** Local agent catalogs import as evidenced,
+  quarantined candidates; an explicit `activate=true` action validates the
+  retained body and path before a role can guide a build.
 - **Reliability as a number.** The default bench is app-factory focused; use
   `skyn3t bench run --suite all` or `--suite games` when you intentionally want
   game/full-stack coverage. Before/after gating keeps a change from lifting the
@@ -289,6 +292,7 @@ flowchart TD
 - [docs/START_HERE.md](docs/START_HERE.md) — reconnect after a disconnect
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — package map + build dataflow
 - [docs/EVIDENCE_LEARNING.md](docs/EVIDENCE_LEARNING.md) — build contracts, Golden evidence, and external-skill provenance
+- [docs/SWARM_SKILLS.md](docs/SWARM_SKILLS.md) — runtime swarm handoffs, stage/repair skills, receipts, and catalog boundaries
 - [docs/ADDING_A_STACK.md](docs/ADDING_A_STACK.md) — add a new build target
 - [docs/APP_TYPES.md](docs/APP_TYPES.md) — UI/style defaults by app type
 - [docs/WORKFLOW.md](docs/WORKFLOW.md) — operating playbook · [docs/FILE_MAP.md](docs/FILE_MAP.md) — where code lives

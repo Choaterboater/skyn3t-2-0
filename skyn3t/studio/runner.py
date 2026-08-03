@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -76,7 +77,7 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
-from skyn3t.studio.build_contract import BuildContract
+from skyn3t.studio.build_contract import BuildContract, compact_contract_context
 from skyn3t.studio.build_intelligence import prepare_build_intelligence
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
@@ -133,6 +134,23 @@ from skyn3t.worktree import (
 log = structlog.get_logger(__name__)
 
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _safe_sha256_digest(value: object) -> str:
+    """Return a canonical full SHA-256 digest, or an empty string."""
+    if not isinstance(value, str):
+        return ""
+    digest = value.strip()
+    return digest if _SHA256_HEX_RE.fullmatch(digest) else ""
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    """Accept only simple strings for durable stage provenance."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:limit]
+
 
 _REQUIREMENT_TRACE_SAFE_PROOF_IDS = frozenset(
     {
@@ -178,6 +196,26 @@ _SEO_SOURCE_RES = (
 
 def _web_design_tags(stack: str) -> list[str] | None:
     return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _DESIGN_STACKS else None
+
+
+def _contract_context_and_skill_tags(
+    extra: Mapping[str, Any] | None,
+) -> tuple[dict[str, str | int], list[str]]:
+    """Return verified compact contract context and optional selection tags.
+
+    The tags only help explicitly-labelled skills rank inside their normal
+    stack/stage compatibility fence. They never make incompatible or
+    quarantined skills eligible.
+    """
+    raw_contract = extra.get("build_contract") if isinstance(extra, Mapping) else None
+    context = compact_contract_context(raw_contract)
+    tags: list[str] = []
+    for prefix, key in (("app_type", "app_type"), ("layout", "layout_profile")):
+        raw = context.get(key)
+        value = str(raw or "").strip().lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value):
+            tags.append(f"{prefix}:{value}")
+    return context, tags
 
 
 def _resolve_stack_pin(extra: dict) -> str:
@@ -787,7 +825,9 @@ class StudioRunner:
         }
 
     # ---- skills (advisory injection) ------------------------------------
-    def _skill_advice(self, stack: str, brief: str = "") -> tuple[str, list[str]]:
+    def _skill_advice(
+        self, stack: str, brief: str = "", selection_tags: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
         """Return (advice_text, used_slugs) from the skill library, if wired.
 
         The keyword/tag match (by stack) is augmented with brief-aware SEMANTIC
@@ -796,17 +836,21 @@ class StudioRunner:
         if self.skills is None:
             return "", []
         try:
-            tags = _web_design_tags(stack)
-            limit = 4 if tags else 3
-            relevant = self.skills.relevant(stack, tags=tags, limit=limit)
+            base_tags = _web_design_tags(stack)
+            tags = list(base_tags or [])
+            for tag in selection_tags or []:
+                if tag not in tags:
+                    tags.append(tag)
+            limit = 4 if base_tags else 3
+            relevant = self.skills.relevant(stack, tags=tags or None, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
             renderer = getattr(self.skills, "render_selected", None)
             advice = (
                 renderer(relevant)
                 if callable(renderer)
-                else self.skills.inject(stack, tags=tags, limit=limit)
+                else self.skills.inject(stack, tags=tags or None, limit=limit)
             )
-            return self._augment_semantic_skills(advice, slugs, brief, stack, tags)
+            return self._augment_semantic_skills(advice, slugs, brief, stack, tags or None)
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
             return "", []
@@ -845,16 +889,26 @@ class StudioRunner:
             if emb is None:
                 return advice, slugs
             from skyn3t.intelligence.semantic_skills import relevant_skills
+            applies = getattr(skills, "applies_to", None)
+            # Eligibility is a retrieval boundary, not merely an injection
+            # boundary. Otherwise unreviewed/quarantined skills can fill the
+            # semantic top-k before they are discarded below, starving safe
+            # guidance from the bounded selection window.
+            candidates = list(skills.all())
+            if applies is not None:
+                candidates = [
+                    sk for sk in candidates
+                    if applies(sk, stack, tags=tags)
+                ]
             # Inject the top-6 (was 3): a rich app needs more than 3 skills — e.g. a
             # desktop editor wants frontend + theming + editor-layout + a11y together,
             # which 3 slots starved. The learning loop grades + down-ranks unhelpful ones.
-            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=6):
+            for sl in relevant_skills(candidates, brief, embedder=emb, k=6):
                 if sl in slugs:
                     continue
                 sk = skills.get(sl)
                 if sk is None:
                     continue
-                applies = getattr(skills, "applies_to", None)
                 if applies is not None and not applies(sk, stack, tags=tags):
                     continue
                 slugs.append(sl)
@@ -866,7 +920,11 @@ class StudioRunner:
         return advice, slugs
 
     def _stage_skill_advice(
-        self, stack: str, spec: StageSpec, brief: str = ""
+        self,
+        stack: str,
+        spec: StageSpec,
+        brief: str = "",
+        selection_tags: list[str] | None = None,
     ) -> tuple[str, list[str]]:
         """Stage-scoped role guidance from imported catalog skills."""
         if self.skills is None:
@@ -877,18 +935,159 @@ class StudioRunner:
             return "", []
         try:
             stage_names = [spec.name, spec.agent_type, spec.capability]
-            skills = relevant(stack, stage_names, limit=3)
+            # A repair needs the same implementation guidance as the code stage
+            # when a catalog has not authored a separate code-improver role.
+            if spec.agent_type == "code_improver":
+                stage_names.extend(("fix", "code", "codegen"))
+            stage_names = list(dict.fromkeys(stage_names))
+            tags = list(selection_tags or [])
+            skills = relevant(stack, stage_names, tags=tags or None, limit=3)
             renderer = getattr(self.skills, "render_selected", None)
             advice = (
                 renderer(skills, stage=True)
                 if callable(renderer)
-                else injector(stack, stage_names, limit=3)
+                else injector(stack, stage_names, tags=tags or None, limit=3)
             )
             slugs = [getattr(s, "slug", "") for s in skills if getattr(s, "slug", "")]
             return advice, slugs
         except Exception as exc:  # noqa: BLE001
             log.warning("stage_skills.inject_failed", stage=spec.name, error=str(exc))
             return "", []
+
+    def _record_skill_selection(
+        self,
+        manifest: BuildManifest,
+        slugs: list[str],
+        *,
+        stage: str,
+        extra: Mapping[str, Any] | None,
+    ) -> None:
+        """Persist bounded metadata for the exact skills selected for a handoff.
+
+        Skill bodies remain prompt-only. The receipt contains a digest of the
+        exact advisory body, bounded identity/score/tags, and provenance so a
+        later skill edit cannot rewrite build history.
+        """
+        manifest_extra = getattr(manifest, "extra", None)
+        if not isinstance(manifest_extra, dict):
+            return
+        context, selection_tags = _contract_context_and_skill_tags(extra)
+        if context:
+            manifest_extra["skill_selection_context"] = {
+                "schema_version": 1,
+                "contract": context,
+                "selection_tags": list(selection_tags),
+            }
+        slots = manifest_extra.setdefault("skill_selection_receipts", {})
+        if not isinstance(slots, dict):
+            return
+        getter = getattr(self.skills, "get", None) if self.skills is not None else None
+        seen: set[str] = set()
+        receipts: list[dict[str, Any]] = []
+        for raw_slug in slugs:
+            if not isinstance(raw_slug, str):
+                continue
+            slug = raw_slug.strip()
+            if not slug or slug in seen or len(slug) > 160:
+                continue
+            seen.add(slug)
+            receipt: dict[str, Any] = {
+                "slug": slug,
+                "score_at_selection": 0.0,
+                "advisory_body_sha256": hashlib.sha256(b"").hexdigest(),
+            }
+            try:
+                skill = getter(slug) if callable(getter) else None
+            except Exception:  # noqa: BLE001 - receipt capture is best-effort
+                skill = None
+            if skill is not None:
+                body = getattr(skill, "body", "")
+                if not isinstance(body, str):
+                    body = ""
+                receipt["advisory_body_sha256"] = hashlib.sha256(
+                    body.encode("utf-8")
+                ).hexdigest()
+                source = _bounded_text(getattr(skill, "source", ""), 160)
+                if source:
+                    receipt["source"] = source
+                try:
+                    score = float(getattr(skill, "score", 0.0) or 0.0)
+                except (TypeError, ValueError, OverflowError):
+                    score = 0.0
+                if not math.isfinite(score):
+                    score = 0.0
+                receipt["score_at_selection"] = round(
+                    max(0.0, min(1.0, score)), 4
+                )
+                skill_tags = [
+                    tag.strip()[:96]
+                    for tag in list(getattr(skill, "tags", []) or [])[:24]
+                    if isinstance(tag, str) and tag.strip()
+                ]
+                if skill_tags:
+                    receipt["tags"] = skill_tags
+                provenance = getattr(skill, "provenance", None)
+                if provenance is not None:
+                    for key in (
+                        "content_hash",
+                        "source_url",
+                        "pinned_revision",
+                        "source_path",
+                    ):
+                        value = _bounded_text(getattr(provenance, key, ""), 256)
+                        if value:
+                            receipt[key] = value
+            receipts.append(receipt)
+            if len(receipts) >= 12:
+                break
+        if receipts:
+            slots[_bounded_text(stage, 96) or "unknown"] = receipts
+
+    def _persist_stage_skill_selection(
+        self,
+        manifest: BuildManifest,
+        slugs: list[str],
+        *,
+        stage: str,
+        extra: Mapping[str, Any] | None,
+    ) -> None:
+        """Persist every stage-role selection before its repair/code handoff."""
+        manifest_extra = getattr(manifest, "extra", None)
+        if not isinstance(manifest_extra, dict):
+            return
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_slug in slugs:
+            if not isinstance(raw_slug, str):
+                continue
+            slug = raw_slug.strip()
+            if not slug or slug in seen or len(slug) > 160:
+                continue
+            seen.add(slug)
+            normalized.append(slug)
+        if not normalized:
+            return
+        stage_key = _bounded_text(stage, 96) or "unknown"
+        stage_used = manifest_extra.setdefault("stage_skills_used", {})
+        if isinstance(stage_used, dict):
+            stage_used[stage_key] = list(normalized)
+        existing: set[str] = set()
+        raw_existing = manifest_extra.get("skills_used")
+        if isinstance(raw_existing, (list, tuple, set)):
+            for raw_slug in raw_existing:
+                if not isinstance(raw_slug, str):
+                    continue
+                slug = raw_slug.strip()
+                if slug and len(slug) <= 160:
+                    existing.add(slug)
+        existing.update(normalized)
+        manifest_extra["skills_used"] = sorted(existing)
+        self._record_skill_selection(
+            manifest,
+            normalized,
+            stage=stage_key,
+            extra=extra,
+        )
 
     def _extra_with_stage_role_guidance(
         self,
@@ -898,17 +1097,174 @@ class StudioRunner:
         brief: str,
         manifest: BuildManifest,
     ) -> dict[str, Any]:
-        advice, slugs = self._stage_skill_advice(stack, spec, brief)
+        _, selection_tags = _contract_context_and_skill_tags(extra)
+        advice, slugs = self._stage_skill_advice(
+            stack, spec, brief, selection_tags=selection_tags
+        )
         if not advice:
             return extra
         out = {**extra, "role_guidance": advice}
-        stage_used = manifest.extra.setdefault("stage_skills_used", {})
-        if isinstance(stage_used, dict):
-            stage_used[spec.name] = list(slugs)
-        existing = set(manifest.extra.get("skills_used") or [])
-        existing.update(slugs)
-        manifest.extra["skills_used"] = sorted(existing)
+        self._persist_stage_skill_selection(
+            manifest,
+            slugs,
+            stage=spec.name,
+            extra=out,
+        )
         return out
+
+    def _recorded_code_role_skills(
+        self,
+        manifest: BuildManifest,
+        stack: str,
+        selection_tags: list[str],
+    ) -> list[Any]:
+        """Return still-eligible roles actually selected for the code stage."""
+        if self.skills is None or not isinstance(getattr(manifest, "extra", None), dict):
+            return []
+        stage_used = manifest.extra.get("stage_skills_used")
+        if not isinstance(stage_used, Mapping):
+            return []
+        raw_slugs = stage_used.get("code")
+        if not isinstance(raw_slugs, (list, tuple, set)):
+            return []
+        getter = getattr(self.skills, "get", None)
+        applies = getattr(self.skills, "applies_to", None)
+        if not callable(getter) or not callable(applies):
+            return []
+        selected: list[Any] = []
+        seen: set[str] = set()
+        for raw_slug in raw_slugs:
+            if not isinstance(raw_slug, str):
+                continue
+            slug = raw_slug.strip()
+            if not slug or slug in seen or len(slug) > 160:
+                continue
+            try:
+                skill = getter(slug)
+                eligible = skill is not None and bool(
+                    applies(skill, stack, tags=selection_tags or None)
+                )
+            except Exception:  # noqa: BLE001 - stale selection falls back normally
+                continue
+            if not eligible:
+                continue
+            skill_tags = {
+                tag.strip().lower()
+                for tag in list(getattr(skill, "tags", []) or [])
+                if isinstance(tag, str) and tag.strip()
+            }
+            if not ({"stage:code", "stage:codegen"} & skill_tags):
+                continue
+            seen.add(slug)
+            selected.append(skill)
+            if len(selected) >= 3:
+                break
+        return selected
+
+    def _repair_role_extra(
+        self,
+        plan: BuildPlan,
+        extra: Mapping[str, Any] | None,
+        *,
+        brief: str,
+        manifest: BuildManifest | None = None,
+        stage: str = "fix",
+    ) -> dict[str, Any]:
+        """Carry matching implementation-role guidance into every repair path."""
+        base = dict(extra) if isinstance(extra, Mapping) else {}
+        stage_name = _bounded_text(stage, 96) or "fix"
+        spec = StageSpec(
+            name=stage_name,
+            agent_type="code_improver",
+            capability="code_improve",
+        )
+        if manifest is not None:
+            _, selection_tags = _contract_context_and_skill_tags(base)
+            reused = self._recorded_code_role_skills(
+                manifest,
+                str(getattr(plan, "stack", "") or ""),
+                selection_tags,
+            )
+            renderer = (
+                getattr(self.skills, "render_selected", None)
+                if self.skills is not None
+                else None
+            )
+            advice = renderer(reused, stage=True) if callable(renderer) and reused else ""
+            if advice:
+                out = {**base, "role_guidance": advice}
+                self._persist_stage_skill_selection(
+                    manifest,
+                    [getattr(skill, "slug", "") for skill in reused],
+                    stage=stage_name,
+                    extra=out,
+                )
+                return out
+            return self._extra_with_stage_role_guidance(
+                base,
+                str(getattr(plan, "stack", "") or ""),
+                spec,
+                brief,
+                manifest,
+            )
+        _, selection_tags = _contract_context_and_skill_tags(base)
+        advice, _ = self._stage_skill_advice(
+            str(getattr(plan, "stack", "") or ""),
+            spec,
+            brief,
+            selection_tags=selection_tags,
+        )
+        return {**base, "role_guidance": advice} if advice else base
+
+    def _repair_task_metadata(
+        self,
+        manifest: BuildManifest | None,
+        *,
+        stage: str,
+        worktree_dir: str,
+        extra: Mapping[str, Any] | None,
+    ) -> dict[str, str]:
+        """Bind direct repair tasks like normal stages without broad metadata copy."""
+        metadata = {"stage": _bounded_text(stage, 96) or "fix"}
+        build_id = _bounded_text(getattr(manifest, "build_id", ""), 160)
+        if build_id:
+            metadata["build_id"] = build_id
+        worktree = _bounded_text(worktree_dir, 512)
+        if worktree:
+            metadata["worktree_dir"] = worktree
+            metadata["worktree_role"] = "main"
+        context, _ = _contract_context_and_skill_tags(extra)
+        digest = _safe_sha256_digest(context.get("digest"))
+        if digest:
+            metadata["contract_digest"] = digest
+        return metadata
+
+    def _bind_repair_task(
+        self,
+        task: TaskRequest,
+        manifest: BuildManifest,
+        plan: BuildPlan,
+        extra: Mapping[str, Any] | None,
+        *,
+        stage: str,
+        worktree_dir: str,
+    ) -> None:
+        """Attach selected repair guidance and runner-owned provenance in one place."""
+        repair_extra = self._repair_role_extra(
+            plan,
+            extra,
+            brief=str(getattr(manifest, "brief", "") or ""),
+            manifest=manifest,
+            stage=stage,
+        )
+        if repair_extra:
+            task.payload["extra"] = repair_extra
+        task.metadata = self._repair_task_metadata(
+            manifest,
+            stage=stage,
+            worktree_dir=worktree_dir,
+            extra=repair_extra,
+        )
 
     # ---- RAG recall (trusted local/build knowledge only) -----------------
     def _recall(self, brief: str, stack: str) -> list[dict[str, Any]]:
@@ -986,6 +1342,17 @@ class StudioRunner:
                 return extra
             files = (plan.checklist or []) if hasattr(plan, "checklist") else []
             plan_block = "\n".join(f"  {f}" for f in list(files)[:40])
+            contract_context, _ = _contract_context_and_skill_tags(extra)
+            if contract_context:
+                context_block = "\n".join(
+                    f"  {key}: {value}"
+                    for key, value in contract_context.items()
+                )
+                plan_block = (
+                    "Read-only build contract (do not override):\n"
+                    f"{context_block}\n\n{plan_block}"
+                )
+                manifest.extra["moa_contract_context"] = dict(contract_context)
             advice = await engine.advise(
                 brief=brief,
                 stack=str(getattr(plan, "stack", "") or ""),
@@ -3014,7 +3381,7 @@ class StudioRunner:
     async def _improve_once(
         self, *, work_dir: str, plan, gaps: list[str], correlation_id: str,
         extra: dict | None, label: str, brief: str = "", slug: str = "",
-        files: list[str] | None = None,
+        files: list[str] | None = None, manifest: BuildManifest | None = None,
     ) -> bool:
         """Run the code-improver once against ``work_dir`` for the flagged gaps.
 
@@ -3026,6 +3393,13 @@ class StudioRunner:
         """
         if not self._has_capability("code_improve"):
             return False
+        repair_extra = self._repair_role_extra(
+            plan,
+            extra,
+            brief=brief or str(getattr(plan, "brief", "") or ""),
+            manifest=manifest,
+            stage=label,
+        )
         payload = {
             "brief": brief, "slug": slug,
             "worktree_dir": work_dir, "project_dir": work_dir,
@@ -3034,12 +3408,19 @@ class StudioRunner:
         }
         if files:
             payload["files"] = list(files)
-        if extra:
-            payload["extra"] = extra
+        if repair_extra:
+            payload["extra"] = repair_extra
         task = TaskRequest(
-            type="code_improver", payload=payload,
+            type="code_improver",
+            payload=payload,
             capabilities_required=("code_improve",),
-            correlation_id=correlation_id, metadata={"stage": label},
+            correlation_id=correlation_id,
+            metadata=self._repair_task_metadata(
+                manifest,
+                stage=label,
+                worktree_dir=work_dir,
+                extra=repair_extra,
+            ),
         )
         try:
             result = await asyncio.wait_for(
@@ -3399,6 +3780,14 @@ class StudioRunner:
                 capabilities_required=("code_improve",),
                 correlation_id=correlation_id, metadata={"stage": f"headless_gate#{n}"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage=f"headless_gate#{n}",
+                worktree_dir=project_dir,
+            )
             try:
                 await asyncio.wait_for(
                     self.orchestrator.submit(task), timeout=self.stage_exec_timeout
@@ -3515,6 +3904,14 @@ class StudioRunner:
                         capabilities_required=("code_improve",),
                         correlation_id=correlation_id,
                         metadata={"stage": "qa_playtest"},
+                    )
+                    self._bind_repair_task(
+                        task,
+                        manifest,
+                        plan,
+                        extra,
+                        stage="qa_playtest",
+                        worktree_dir=project_dir,
                     )
                     try:
                         await asyncio.wait_for(
@@ -3687,6 +4084,14 @@ class StudioRunner:
                 capabilities_required=("code_improve",),
                 correlation_id=correlation_id,
                 metadata={"stage": "seo_check"},
+            )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="seo_check",
+                worktree_dir=project_dir,
             )
             dispatched_ok = True
             try:
@@ -3883,6 +4288,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "mcp_check"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="mcp_check",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -3986,6 +4399,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "rag_check"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="rag_check",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -4086,6 +4507,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "workflow_check"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="workflow_check",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -4183,6 +4612,14 @@ class StudioRunner:
                 capabilities_required=("code_improve",),
                 correlation_id=correlation_id,
                 metadata={"stage": "cli_check"},
+            )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="cli_check",
+                worktree_dir=project_dir,
             )
             dispatched_ok = True
             try:
@@ -4306,6 +4743,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "cli_playtest"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="cli_playtest",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -4404,6 +4849,15 @@ class StudioRunner:
         """
         import time as _t
         root = Path(project_dir).resolve()
+        repair_extra = dict(extra) if isinstance(extra, Mapping) else {}
+        if self._has_capability("code_improve"):
+            repair_extra = self._repair_role_extra(
+                plan,
+                repair_extra,
+                brief=str(getattr(manifest, "brief", "") or ""),
+                manifest=manifest,
+                stage="fix",
+            )
 
         # A repair agent may fix production code, but it must never make a red
         # build green by deleting or weakening TestAuthor's definition of success.
@@ -4515,7 +4969,7 @@ class StudioRunner:
                 # remaining improver pass. First attempt stays fast.
                 if attempt >= 2 and repair_guidance is None:
                     repair_guidance = await self._repair_council_guidance(
-                        manifest, plan, extra,
+                        manifest, plan, repair_extra,
                         "\n".join(str(g) for g in raw_gaps[:12]),
                     )
                 payload = {
@@ -4532,12 +4986,19 @@ class StudioRunner:
                 }
                 if repair_guidance:
                     payload["moa_guidance"] = repair_guidance
-                if extra:
-                    payload["extra"] = extra
+                if repair_extra:
+                    payload["extra"] = repair_extra
                 task = TaskRequest(
-                    type="code_improver", payload=payload,
+                    type="code_improver",
+                    payload=payload,
                     capabilities_required=("code_improve",),
-                    correlation_id=correlation_id, metadata={"stage": f"fix#{attempt}"},
+                    correlation_id=correlation_id,
+                    metadata=self._repair_task_metadata(
+                        manifest,
+                        stage=f"fix#{attempt}",
+                        worktree_dir=project_dir,
+                        extra=repair_extra,
+                    ),
                 )
                 try:
                     await asyncio.wait_for(
@@ -4805,7 +5266,9 @@ class StudioRunner:
             proof_ladder_infrastructure_unavailable,
         )
 
-        manifest_extra = getattr(manifest, "extra", None) or {}
+        manifest_extra = getattr(manifest, "extra", None)
+        if not isinstance(manifest_extra, dict):
+            manifest_extra = {}
         proof_errors = extract_error_gaps(
             (manifest_extra.get("proof") or {}).get("detail"),
             (manifest_extra.get("proof") or {}).get("syntax_errors"),
@@ -4868,15 +5331,85 @@ class StudioRunner:
                     self.skills.maybe_promote_pattern(rec)
             except Exception as exc:  # noqa: BLE001
                 log.warning("patterns.record_failed", error=str(exc))
-        # 3. Grade the skills that advised this build.
-        if self.skills is not None and skill_slugs:
+        # 3. Grade every skill that actually advised this build. Stage-role
+        # guidance is appended to the manifest during handoff, after the global
+        # list is captured; stable-dedupe here so it receives the same terminal
+        # evidence exactly once on normal and exceptional exits.
+        selected_skill_slugs: list[str] = []
+        seen_skill_slugs: set[str] = set()
+
+        def add_selected_skills(values: object) -> None:
+            if not isinstance(values, (list, tuple, set)):
+                return
+            for raw_slug in values:
+                if not isinstance(raw_slug, str):
+                    continue
+                slug = raw_slug.strip()
+                if not slug or slug in seen_skill_slugs or len(slug) > 160:
+                    continue
+                seen_skill_slugs.add(slug)
+                selected_skill_slugs.append(slug)
+                if len(selected_skill_slugs) >= 128:
+                    return
+
+        add_selected_skills(skill_slugs)
+        add_selected_skills(manifest_extra.get("skills_used"))
+        stage_skills = manifest_extra.get("stage_skills_used")
+        if isinstance(stage_skills, Mapping):
+            for values in stage_skills.values():
+                add_selected_skills(values)
+        if self.skills is not None and selected_skill_slugs:
+            # Terminal grading may be reached through normal completion and
+            # recovery/error paths. Persist the manifest-side idempotency record
+            # before the side effect so the same outcome cannot reward a skill
+            # twice after a retry.
+            state = manifest_extra.get("skill_terminal_grading")
+            if not isinstance(state, dict):
+                state = {"schema_version": 1, "slugs": []}
+                manifest_extra["skill_terminal_grading"] = state
+            graded: set[str] = set()
+            raw_graded = state.get("slugs")
+            if isinstance(raw_graded, (list, tuple, set)):
+                graded = {
+                    slug.strip()
+                    for slug in raw_graded
+                    if isinstance(slug, str)
+                    and slug.strip()
+                    and len(slug.strip()) <= 160
+                }
             try:
-                # Continuous reward (Phase B): grade advisory skills by HOW MUCH
-                # this build scored (0..1), not just go/no_go — sharper signal.
-                quality = max(0.0, min(1.0, float(manifest.score or 0.0) / 100.0))
-                self.skills.record_use(skill_slugs, helpful=helpful, quality=quality)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("skills.record_use_failed", error=str(exc))
+                current_quality = float(manifest.score or 0.0) / 100.0
+            except (TypeError, ValueError, OverflowError):
+                current_quality = 0.0
+            if not math.isfinite(current_quality):
+                current_quality = 0.0
+            current_quality = max(0.0, min(1.0, current_quality))
+            grade_helpful = state.get("helpful")
+            if not isinstance(grade_helpful, bool):
+                grade_helpful = bool(helpful)
+            grade_quality = state.get("quality")
+            if (
+                not isinstance(grade_quality, (int, float))
+                or isinstance(grade_quality, bool)
+                or not math.isfinite(float(grade_quality))
+            ):
+                grade_quality = current_quality
+            grade_quality = max(0.0, min(1.0, float(grade_quality)))
+            pending = [slug for slug in selected_skill_slugs if slug not in graded]
+            if pending:
+                graded.update(pending)
+                state["schema_version"] = 1
+                state["slugs"] = sorted(graded)
+                state["helpful"] = grade_helpful
+                state["quality"] = round(grade_quality, 4)
+                try:
+                    self.skills.record_use(
+                        pending,
+                        helpful=grade_helpful,
+                        quality=grade_quality,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("skills.record_use_failed", error=str(exc))
         # 3b. Repair mining (LSO loop): stuck->resolved deterministic repairs
         # become deduped lessons now and up-front advisory skills once they
         # recur on 'go' builds. Runs AFTER skill grading so the demotion sweep
@@ -4902,6 +5435,13 @@ class StudioRunner:
     ) -> TaskResult:
         slice_scope = payload.get("slice_scope")
         metadata = {"stage": spec.name}
+        payload_extra = payload.get("extra")
+        contract_context, _ = _contract_context_and_skill_tags(
+            payload_extra if isinstance(payload_extra, Mapping) else None
+        )
+        contract_digest = _safe_sha256_digest(contract_context.get("digest"))
+        if contract_digest:
+            metadata["contract_digest"] = contract_digest
         build_id = str(payload.get("build_id") or "").strip()
         if build_id:
             metadata["build_id"] = build_id
@@ -5515,7 +6055,12 @@ class StudioRunner:
 
         # Inject advisory skills for this stack (non-binding) and remember which
         # ones we used so we can grade them by the build's outcome.
-        skill_advice, skill_slugs = self._skill_advice(plan.stack, brief)
+        _, global_selection_tags = _contract_context_and_skill_tags(extra)
+        skill_advice, skill_slugs = self._skill_advice(
+            plan.stack,
+            brief,
+            selection_tags=global_selection_tags,
+        )
         recall = self._recall(brief, plan.stack)
         # design.md tokens are injected by code_agent itself, right beside the
         # DESIGN BAR (gated on _DESIGN_WEB_STACKS) — NOT here: this bucket is
@@ -5530,6 +6075,7 @@ class StudioRunner:
             for h in (recall or [])
         ]
         manifest.extra["skills_used"] = list(skill_slugs)
+        self._record_skill_selection(manifest, skill_slugs, stage="global", extra=extra)
 
         # Track the stage whose cost slice is currently open so a mid-stage
         # exception can still close it (else its base leaks). end_stage is
@@ -5852,8 +6398,17 @@ class StudioRunner:
 
                 # Per-stage autonomous debug + live preview snapshot (Phase A).
                 await self._debug_and_snapshot(
-                    build_id, spec, record, main_wt, project_dir, plan,
-                    correlation_id, extra, brief=brief, slug=slug,
+                    build_id,
+                    spec,
+                    record,
+                    main_wt,
+                    project_dir,
+                    plan,
+                    correlation_id,
+                    extra,
+                    manifest=manifest,
+                    brief=brief,
+                    slug=slug,
                 )
 
                 # Approval gate (after stage completes).
@@ -6340,7 +6895,9 @@ class StudioRunner:
                                 files=list(files),
                                 correlation_id=correlation_id, extra=extra,
                                 label="game_visual",
-                                brief=manifest.brief, slug=manifest.slug,
+                                brief=manifest.brief,
+                                slug=manifest.slug,
+                                manifest=manifest,
                             )
                             if not ok:
                                 return False
@@ -7125,6 +7682,8 @@ class StudioRunner:
         no separate consistency pass is needed here."""
         from time import monotonic
         started = monotonic()
+        contract_context, _ = _contract_context_and_skill_tags(extra)
+        contract_digest = _safe_sha256_digest(contract_context.get("digest"))
         # The full manifest is the read-only cross-slice contract every sub-agent
         # sees so its imports target the right paths.
         all_files = self._architect_files(prior) or [
@@ -7168,6 +7727,8 @@ class StudioRunner:
                 "files": [f["path"] for f in files if isinstance(f, dict) and f.get("path")],
                 "manifest": manifest,
             }
+            if contract_digest:
+                payload["slice_scope"]["contract_digest"] = contract_digest
             if agentic_backend and not payload.get("model_override"):
                 model = self._slice_model(
                     slice_tier(name),
@@ -7233,7 +7794,18 @@ class StudioRunner:
             total_written += len(merged)
             sl_out = (getattr(r, "output", None) or {}) if r else {}
             ok = bool(r and r.success) and len(merged) > 0
-            summaries[name] = {"files": len(merged), "ok": ok}
+            summary: dict[str, Any] = {"files": len(merged), "ok": ok}
+            owned_paths = [
+                str(item.get("path") or "")[:240]
+                for item in slices.get(name, [])[:64]
+                if isinstance(item, dict) and str(item.get("path") or "")
+            ]
+            if owned_paths:
+                summary["owned_paths"] = owned_paths
+            model = str(getattr(r, "model_id", "") or "").strip()
+            if model:
+                summary["model"] = model[:160]
+            summaries[name] = summary
             unavailable = sl_out.get("codegen_override_unavailable")
             if isinstance(unavailable, str):
                 unavailable = [unavailable]
@@ -7244,6 +7816,9 @@ class StudioRunner:
                         unavailable_overrides.add(value)
             if sl_out.get("degraded") or not ok:
                 failure = sl_out.get("degraded_reason") or getattr(r, "error", None)
+                summary["degraded_reason"] = str(
+                    failure or "slice produced no files"
+                )[:240]
                 degraded_reasons.append(
                     f"{name}: {failure or 'slice produced no files'}")
 
@@ -7263,7 +7838,13 @@ class StudioRunner:
             success=total_written > 0,
             output=out,
         )
-        result.metadata = {"parallel_slices": {"count": len(slices), "slices": summaries}}
+        parallel_metadata: dict[str, Any] = {
+            "count": len(slices),
+            "slices": summaries,
+        }
+        if contract_digest:
+            parallel_metadata["contract_digest"] = contract_digest
+        result.metadata = {"parallel_slices": parallel_metadata}
         # Record the real fan-out wall-clock so the manifest/GatedTuner don't read
         # the code stage as instant (a fresh TaskResult defaults duration_ms to 0).
         result.duration_ms = (monotonic() - started) * 1000
@@ -7316,7 +7897,8 @@ class StudioRunner:
     def _summarize(output: dict[str, Any]) -> dict[str, Any]:
         keep = (
             "score", "verdict", "files_written", "gaps", "worktree_dir",
-            "codegen_override_unavailable", "best_of_n",
+            "codegen_override_unavailable", "best_of_n", "slices", "degraded",
+            "degraded_reason", "backend",
         )
         summary = {k: output[k] for k in keep if k in output}
         if not summary:
@@ -7326,42 +7908,108 @@ class StudioRunner:
 
     @staticmethod
     def _stage_execution_truth(result: TaskResult) -> dict[str, Any]:
-        """Compact execution provenance retained with a stage record.
+        """Compact, JSON-safe execution provenance retained with a stage record.
 
-        Agent output is intentionally heterogeneous, so take only the stable
-        backend/model/route/task binding fields rather than persisting every
-        provider payload. Cost truth is appended later by `_emit_stage_done`,
-        after the ledger has closed the stage boundary.
+        Stage results may contain provider-specific or malformed metadata. Keep
+        only bounded scalar fields and the runner-owned full SHA-256 build
+        contract digest; never persist arbitrary nested result structures.
         """
         output = result.output if isinstance(result.output, dict) else {}
         raw_agentic = output.get("agentic")
-        agentic = raw_agentic if isinstance(raw_agentic, dict) else {}
-        metadata = result.metadata if isinstance(result.metadata, dict) else {}
-        backend = str(agentic.get("backend") or output.get("backend") or "").strip()
-        model = str(agentic.get("model") or result.model_id or "").strip()
+        agentic = raw_agentic if isinstance(raw_agentic, Mapping) else {}
+        metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+        backend = _bounded_text(agentic.get("backend"), 160) or _bounded_text(
+            output.get("backend"), 160
+        )
+        model = _bounded_text(agentic.get("model"), 160) or _bounded_text(
+            result.model_id, 160
+        )
         execution: dict[str, Any] = {}
         if backend:
             execution["backend"] = backend
         if model:
             execution["model"] = model
+
         routes = metadata.get("routes")
         if isinstance(routes, (list, tuple)):
-            normalized_routes = [
-                [str(part) for part in route[:3]]
-                for route in routes[:32]
-                if isinstance(route, (list, tuple)) and len(route) >= 3
-            ]
+            normalized_routes: list[list[str]] = []
+            for route in routes[:32]:
+                if not isinstance(route, (list, tuple)) or len(route) < 3:
+                    continue
+                parts = [_bounded_text(part, 160) for part in route[:3]]
+                if all(parts):
+                    normalized_routes.append(parts)
             if normalized_routes:
                 execution["routes"] = normalized_routes
+
         task_context = metadata.get("task_context")
-        if isinstance(task_context, dict):
-            binding = {
-                key: str(task_context[key])
-                for key in ("build_id", "stage", "worktree_dir", "worktree_role")
-                if task_context.get(key) not in (None, "")
-            }
+        if isinstance(task_context, Mapping):
+            binding: dict[str, str] = {}
+            for key, limit in (
+                ("build_id", 160),
+                ("stage", 96),
+                ("worktree_dir", 512),
+                ("worktree_role", 128),
+            ):
+                value = _bounded_text(task_context.get(key), limit)
+                if value:
+                    binding[key] = value
+            digest = _safe_sha256_digest(task_context.get("contract_digest"))
+            if digest:
+                binding["contract_digest"] = digest
             if binding:
                 execution["task"] = binding
+
+        parallel = metadata.get("parallel_slices")
+        if isinstance(parallel, Mapping):
+            raw_slices = parallel.get("slices")
+            slices: dict[str, dict[str, Any]] = {}
+            if isinstance(raw_slices, Mapping):
+                for raw_name, raw_summary in list(raw_slices.items())[:16]:
+                    name = _bounded_text(raw_name, 96)
+                    if not name or not isinstance(raw_summary, Mapping):
+                        continue
+                    summary: dict[str, Any] = {}
+                    files = raw_summary.get("files")
+                    if isinstance(files, int) and not isinstance(files, bool):
+                        summary["files"] = min(max(0, files), 1_000_000)
+                    ok = raw_summary.get("ok")
+                    if isinstance(ok, bool):
+                        summary["ok"] = ok
+                    owned_paths = raw_summary.get("owned_paths")
+                    if isinstance(owned_paths, (list, tuple)):
+                        paths = [
+                            path
+                            for raw_path in owned_paths[:64]
+                            if (path := _bounded_text(raw_path, 240))
+                        ]
+                        if paths:
+                            summary["owned_paths"] = paths
+                    slice_model = _bounded_text(raw_summary.get("model"), 160)
+                    if slice_model:
+                        summary["model"] = slice_model
+                    degraded_reason = _bounded_text(
+                        raw_summary.get("degraded_reason"), 240
+                    )
+                    if degraded_reason:
+                        summary["degraded_reason"] = degraded_reason
+                    if summary:
+                        slices[name] = summary
+
+            count = len(slices)
+            raw_count = parallel.get("count")
+            if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+                count = raw_count
+            elif isinstance(raw_count, str) and re.fullmatch(r"\d{1,3}", raw_count.strip()):
+                count = int(raw_count.strip())
+            parallel_truth: dict[str, Any] = {
+                "count": min(max(0, count), 16),
+                "slices": slices,
+            }
+            digest = _safe_sha256_digest(parallel.get("contract_digest"))
+            if digest:
+                parallel_truth["contract_digest"] = digest
+            execution["parallel_slices"] = parallel_truth
         return execution
 
     async def _with_live_snapshots(
@@ -7404,8 +8052,19 @@ class StudioRunner:
                 pass
 
     async def _debug_and_snapshot(
-        self, build_id: str, spec, record, main_wt, project_dir: str,
-        plan, correlation_id: str, extra: dict, *, brief: str = "", slug: str = "",
+        self,
+        build_id: str,
+        spec,
+        record,
+        main_wt,
+        project_dir: str,
+        plan,
+        correlation_id: str,
+        extra: dict,
+        *,
+        manifest: BuildManifest | None = None,
+        brief: str = "",
+        slug: str = "",
     ) -> None:
         """Per-stage: debug the just-run stage (autonomous), then snapshot the
         worktree into ``.preview`` so the cockpit can show files-so-far. Only
@@ -7421,8 +8080,12 @@ class StudioRunner:
             async def improve(gaps):  # noqa: E306 - closure over loop vars is intended
                 return await self._improve_once(
                     work_dir=main_wt.dir, plan=plan, gaps=gaps,
-                    correlation_id=correlation_id, extra=extra,
-                    label=f"debug:{spec.name}", brief=brief, slug=slug,
+                    correlation_id=correlation_id,
+                    extra=extra,
+                    label=f"debug:{spec.name}",
+                    brief=brief,
+                    slug=slug,
+                    manifest=manifest,
                 )
 
         result = await debug_stage(

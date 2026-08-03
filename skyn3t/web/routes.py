@@ -4949,6 +4949,97 @@ async def run_cortex_candidate_payload(
     return await asyncio.to_thread(run_cortex_candidate, state.settings, goal)
 
 
+def _cortex_graph_run_row(run: Any, comparison: dict[str, Any] | None) -> dict[str, Any]:
+    """Reduce a durable graph run to dashboard-safe experiment metadata."""
+    raw_rerun = run.inputs.get("_graph_rerun")
+    rerun = raw_rerun if isinstance(raw_rerun, dict) else {}
+    raw_build = {
+        name: run.inputs.get(name)
+        for name in ("build_id", "slug", "stack")
+        if run.inputs.get(name) not in (None, "")
+    }
+    statuses = {node.id: run.node_statuses[node.id].value for node in run.graph.nodes}
+    rerunnable = [
+        node_id for node_id, status in statuses.items() if status in {"succeeded", "cached"}
+    ]
+    comparison_payload = None
+    if comparison is not None:
+        comparison_payload = {
+            name: comparison.get(name)
+            for name in (
+                "comparison_id",
+                "source_run_id",
+                "rerun_run_id",
+                "from_node_id",
+                "rerun_nodes",
+                "baseline_digest",
+                "candidate_digest",
+                "outcome",
+                "promotion_status",
+                "created_at",
+                "baseline_evidence",
+                "candidate_evidence",
+            )
+        }
+    return {
+        "run_id": run.run_id,
+        "graph_id": run.graph.graph_id,
+        "graph_version": run.graph.version,
+        "status": run.status.value,
+        "created_at": run.created_at,
+        "build": raw_build,
+        "nodes": statuses,
+        "rerunnable_nodes": rerunnable,
+        "rerun": {
+            "source_run_id": rerun.get("source_run_id"),
+            "from_node_id": rerun.get("from_node_id"),
+            "rerun_nodes": rerun.get("rerun_nodes", []),
+        }
+        if rerun
+        else None,
+        "comparison": comparison_payload,
+    }
+
+
+async def cortex_graph_runs_payload(
+    state: AppState,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """List bounded preflight graph evidence for review in the Cortex dashboard."""
+    from skyn3t.studio.graph_runtime import GraphStore
+
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        runs = await store.list_runs(limit=max(1, min(int(limit), 100)))
+        rows = []
+        for run in runs:
+            comparison = await store.load_rerun_comparison(run.run_id)
+            rows.append(_cortex_graph_run_row(run, comparison))
+        return {"available": True, "review_only": True, "runs": rows}
+    except Exception:  # noqa: BLE001 - history must not break Cortex control plane
+        log.warning("cortex.graph_history_unavailable")
+        return {"available": False, "review_only": True, "runs": []}
+    finally:
+        await store.close()
+
+
+async def rerun_cortex_graph_payload(
+    state: AppState,
+    *,
+    source_run_id: str,
+    from_node_id: str,
+) -> dict[str, Any]:
+    """Execute only a human-selected completed preflight branch for review."""
+    from skyn3t.studio.build_intelligence import rerun_build_intelligence
+
+    return await rerun_build_intelligence(
+        settings=state.settings,
+        source_run_id=source_run_id,
+        from_node_id=from_node_id,
+    )
+
+
 async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:
     rec = state.proposals.get(proposal_id)
     if rec is None:
@@ -7555,6 +7646,28 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
+
+    @router.get("/cortex/graphs", dependencies=[auth])
+    async def _cortex_graphs(
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> dict[str, Any]:
+        return await cortex_graph_runs_payload(state, limit=limit)
+
+    @router.post("/cortex/graphs/{run_id}/rerun", dependencies=[auth])
+    async def _cortex_graph_rerun(
+        run_id: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await rerun_cortex_graph_payload(
+                state,
+                source_run_id=run_id,
+                from_node_id=str(body.get("from_node_id") or ""),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="graph run not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
     @router.get("/stacks", dependencies=[auth])
     async def _stacks() -> dict[str, Any]:

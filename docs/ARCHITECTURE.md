@@ -110,7 +110,11 @@ one-level fan-out/fan-in plan with a maximum of four children, explicit
 workspace ownership for writers, per-plan concurrency, no nesting, and the
 parent run's frozen routing snapshot. These runtime contracts define the boundary
 for controlled Cortex graph experiments; no graph result changes code,
-configuration, or policy by itself.
+configuration, or policy by itself. The authenticated local `/api/cortex/graphs`
+endpoint exposes bounded preflight-run metadata plus immutable comparison evidence;
+the Cortex dashboard lets a human select one completed node and invoke
+`/api/cortex/graphs/{run_id}/rerun`. That action produces a new review-only run,
+never a promotion or a build-file mutation.
 
 ## The 7 design rules
 

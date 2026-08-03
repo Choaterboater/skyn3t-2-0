@@ -1341,6 +1341,25 @@ class GraphStore:
 
         return await self._read(operation)
 
+    async def list_runs(self, *, limit: int = 25) -> tuple[GraphRun, ...]:
+        """Return recent durable runs without exposing raw database state."""
+        selected_limit = max(1, min(int(limit), 100))
+
+        def operation(connection: sqlite3.Connection) -> tuple[str, ...]:
+            rows = connection.execute(
+                "SELECT run_id FROM graph_runs ORDER BY updated_at DESC LIMIT ?",
+                (selected_limit,),
+            ).fetchall()
+            return tuple(str(row["run_id"]) for row in rows)
+
+        run_ids = await self._read(operation)
+        runs: list[GraphRun] = []
+        for run_id in run_ids:
+            run = await self.load_run(run_id)
+            if run is not None:
+                runs.append(run)
+        return tuple(runs)
+
     async def save_rerun_comparison(self, comparison: GraphRerunComparison) -> None:
         """Persist a comparison once; never overwrite immutable evidence."""
         def operation(connection: sqlite3.Connection) -> None:

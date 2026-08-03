@@ -390,7 +390,12 @@ class Settings(BaseSettings):
 
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
-    no_claude: bool = False
+    # Claude is opt-in and defaults to UNCHECKED (the operator does not pay for
+    # it): nothing resolves to Claude while this is true — not a claude_cli
+    # backend, not a chain entry, not a codegen pin, not a council slot. It is a
+    # hard fence, not a ranking tweak. Uncheck it in Settings (set false) only
+    # when Claude is actually available and paid for.
+    no_claude: bool = True
     model_evolution: bool = False  # opt-in: with auto_route, route via the learned ModelTournament router
     # Shared stage admission. Eight lets several full-app candidate/slice agents
     # progress together; provider-side retry/backoff still absorbs rate pressure.

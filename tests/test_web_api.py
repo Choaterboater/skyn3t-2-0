@@ -845,6 +845,7 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
             llm_backend="stub",
             free_only=False,
             codegen_cli_provider="claude",
+            no_claude=False,
             codegen_cli_model="sonnet",
             openrouter_codegen_model="openrouter/codegen",
             preferred_model="openrouter/preferred",
@@ -883,6 +884,7 @@ async def test_studio_runner_codegen_model_trace_matches_cli_routing_precedence(
         logs_dir=root / "logs",
         llm_backend="stub",
         codegen_cli_provider="claude",
+        no_claude=False,
     )
     bus = EventBus()
     runner = StudioRunner(bus, Orchestrator(bus), settings=settings, memory=None)
@@ -910,6 +912,7 @@ async def test_studio_runner_codegen_model_trace_reports_cli_default(
         logs_dir=tmp_path / "logs",
         llm_backend="stub",
         codegen_cli_provider="claude",
+        no_claude=False,
         codegen_cli_model="",
         critic_enabled=False,
         approval_gates=False,

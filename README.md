@@ -129,9 +129,10 @@ passes. A failed verification keeps the previous healthy URL active.
   Feedback never executes code or changes runtime settings by itself.
 - **Evidence-backed learning.** Prompt, skill-policy, and router-policy
   candidates can be compared against completed Golden ledgers and retained as
-  immutable `review_required` evidence—never auto-applied. GitHub-derived
-  skills remain quarantined until their source, commit, path, and content hash
-  are verified and explicitly promoted.
+  immutable `review_required` evidence—never auto-applied. A GitHub ingest may
+  distill separate candidates from a bounded set of commit-pinned Markdown
+  guides; every one remains quarantined until its source, commit, path, and
+  content hash are verified and explicitly promoted.
 - **Curated local skill hubs.** Explicitly configured local Markdown hubs load at
   normal startup, retain a byte-hash receipt, pass hygiene classification, and
   expose a per-path audit report; they never execute hub scripts.

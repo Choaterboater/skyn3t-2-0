@@ -39,6 +39,7 @@ def _evidence(
     *,
     pinned_revision: str | None = None,
     license: str | None = None,
+    markdown_files: tuple[gh.GitHubMarkdownEvidence, ...] = (),
 ) -> gh.GitHubRepoEvidence:
     return gh.GitHubRepoEvidence(
         source_url=url,
@@ -46,6 +47,7 @@ def _evidence(
         source_path="README.md",
         pinned_revision=pinned_revision,
         license=license,
+        markdown_files=markdown_files,
     )
 
 
@@ -82,6 +84,28 @@ _RICH_TEXT = (
 
 async def _fetch_rich(url):  # noqa: ANN001
     return _evidence(url, _RICH_TEXT, pinned_revision=_PINNED_SHA, license="MIT")
+
+
+_DOC_TEXT = _RICH_TEXT.replace(
+    "README:\n# Flask",
+    "Markdown:\n# Testing and delivery patterns",
+).replace(
+    "## Installing",
+    "## Repeatable verification",
+)
+
+
+async def _fetch_per_file(url):  # noqa: ANN001
+    return _evidence(
+        url,
+        _RICH_TEXT,
+        pinned_revision=_PINNED_SHA,
+        license="MIT",
+        markdown_files=(
+            gh.GitHubMarkdownEvidence(source_path="README.md", text=_RICH_TEXT),
+            gh.GitHubMarkdownEvidence(source_path="docs/testing.md", text=_DOC_TEXT),
+        ),
+    )
 
 
 def test_handler_ingests_into_rag(monkeypatch):
@@ -226,6 +250,34 @@ def test_handler_distills_skill_on_ingest(monkeypatch):
     assert sk["provenance"].license == "MIT"
 
 
+def test_handler_distills_one_quarantined_skill_per_markdown_file(tmp_path, monkeypatch):
+    rag = _FakeRag(n=2)
+    skills = SkillLibrary(tmp_path / "skills")
+    reg = HandlerRegistry(rag=rag, skills=skills)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_per_file)
+
+    res = asyncio.run(
+        reg.apply(_prop({"url": "https://github.com/pallets/flask", "language": "Python"}))
+    )
+
+    assert res["applied"] is True
+    assert res["ingested"] == 4  # README + one independently attributed document
+    assert res["skill_count"] == 2
+    assert len(res["skills"]) == 2
+    assert rag.calls[1][1] == (
+        f"https://github.com/pallets/flask/blob/{_PINNED_SHA}/docs/testing.md"
+    )
+    assert rag.calls[1][3]["source_kind"] == "github_markdown"
+    distilled = [skills.get(slug) for slug in res["skills"]]
+    assert {skill.provenance.source_path for skill in distilled if skill is not None} == {
+        "README.md",
+        "docs/testing.md",
+    }
+    assert all(skill is not None and "hygiene:quarantine" in skill.tags for skill in distilled)
+    assert res["skills"][0] == "gh-pallets-flask"
+    assert res["skills"][1].startswith("gh-pallets-flask-testing-")
+
+
 def test_handler_refuses_thin_distill_and_reports_skill_error(monkeypatch):
     # A junk/thin fetch ("README text") must NOT write a hollow skill file:
     # the handler reports a failed distill instead of an applied skill.
@@ -332,6 +384,7 @@ def test_fetch_evidence_records_only_github_supplied_commit_and_license(monkeypa
             200,
             {"path": "docs/README.md", "encoding": "base64", "content": encoded},
         ),
+        _FetchResponse(200, {"tree": []}),
     ]
     monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
 
@@ -344,7 +397,45 @@ def test_fetch_evidence_records_only_github_supplied_commit_and_license(monkeypa
     assert evidence.license == "MIT"
     assert "Revision: " + _PINNED_SHA in evidence.text
     assert "Source path: docs/README.md" in evidence.text
-    assert len(_FetchClient.calls) == 3
+    assert len(_FetchClient.calls) == 4
+
+
+def test_fetch_evidence_collects_only_bounded_safe_markdown_at_the_pinned_revision(monkeypatch):
+    readme = base64.b64encode(b"# Example\nUse a proof gate.\n").decode("ascii")
+    guide = base64.b64encode(
+        b"# Verification guide\n\nRun the proof suite before promotion.\n"
+    ).decode("ascii")
+    _FetchClient.calls = []
+    _FetchClient.responses = [
+        _FetchResponse(200, {"default_branch": "main"}),
+        _FetchResponse(200, {"sha": _PINNED_SHA}),
+        _FetchResponse(200, {"path": "README.md", "encoding": "base64", "content": readme}),
+        _FetchResponse(
+            200,
+            {
+                "tree": [
+                    {"path": "README.md", "type": "blob", "size": 20},
+                    {"path": "docs/guide.md", "type": "blob", "size": 100},
+                    {"path": "../outside.md", "type": "blob", "size": 100},
+                    {"path": "docs/large.md", "type": "blob", "size": 99_999},
+                    {"path": "src/main.py", "type": "blob", "size": 100},
+                ]
+            },
+        ),
+        _FetchResponse(
+            200,
+            {"path": "docs/guide.md", "encoding": "base64", "content": guide},
+        ),
+    ]
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
+
+    evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/acme/example"))
+
+    assert evidence is not None
+    assert [item.source_path for item in evidence.markdown_files] == ["README.md", "docs/guide.md"]
+    assert "Source path: docs/guide.md" in evidence.markdown_files[1].text
+    assert _FetchClient.calls[-1][0].endswith(f"contents/docs/guide.md?ref={_PINNED_SHA}")
+    assert len(_FetchClient.calls) == 5
 
 
 def test_fetch_evidence_never_uses_a_branch_name_as_a_pin(monkeypatch):

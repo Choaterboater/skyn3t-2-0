@@ -90,10 +90,12 @@ content-addressed evidence manifest; a passing comparison is still
 `review_required`, while every other outcome is `rejected`. The record cannot
 be `applied` or `promoted`.
 
-Remote GitHub README text is retained as unreviewed RAG data but excluded from
-automatic prompt recall. A distilled external skill remains quarantined until
-its canonical source URL, immutable commit SHA, source path, and retained
-content hash pass explicit local promotion. See
+Remote GitHub README text, plus a bounded set of small Markdown documents only
+when fetched at a GitHub-supplied immutable commit SHA, is retained as
+unreviewed RAG data and excluded from automatic prompt recall. Each distilled
+external document skill remains quarantined until its canonical source URL,
+immutable commit SHA, source path, and retained content hash pass explicit
+local promotion. See
 [Evidence-backed learning](EVIDENCE_LEARNING.md) for the CLI and exact
 boundaries.
 

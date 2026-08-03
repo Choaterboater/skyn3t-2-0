@@ -78,17 +78,29 @@ opt-in before/after tuning experiment that runs real builds.
 
 ## GitHub-derived skills
 
-GitHub README ingestion is read-only. Its text can be stored as an unreviewed
-RAG reference, but SkyN3t does not inject that remote text directly into build
-prompts. New GitHub RAG records carry `external_unreviewed`; older GitHub source
-URLs are also excluded from automatic recall.
+GitHub documentation ingestion is read-only. SkyN3t keeps the README as the
+repository-level RAG record and, only when GitHub supplies a full immutable
+commit SHA, may fetch up to 24 small `*.md` files (README included) at that
+exact revision. Each accepted Markdown document gets its own unreviewed RAG
+record and source path; a failed extra document never fails the README ingest.
 
-When a substantive advisory skill is distilled, it is written as:
+SkyN3t does not inject remote GitHub text directly into build prompts. New
+GitHub RAG records carry `external_unreviewed`; older GitHub source URLs are
+also excluded from automatic recall.
+
+A substantive document can produce one advisory skill candidate. Every such
+candidate is written as:
 
 - `source: github-distilled`
 - `external-candidate` and `hygiene:quarantine` tags
-- provenance for canonical GitHub URL, README path, retained-content SHA-256,
-  and, only when GitHub returned it, an immutable commit SHA and license
+- provenance for canonical GitHub URL, that document's relative path,
+  retained-content SHA-256, and, only when GitHub returned it, an immutable
+  commit SHA and license
+
+README keeps the repository's stable skill slug. Other Markdown documents use
+separate path-derived slugs, so no guide can overwrite a README candidate or a
+similarly named guide in another directory. Thin or non-actionable documents
+are reported as skipped instead of creating placeholder skills.
 
 Quarantined skills cannot be selected for normal build advice. A local operator
 can make an eligible one advisory with:

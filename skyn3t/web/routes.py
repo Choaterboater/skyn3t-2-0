@@ -5040,6 +5040,206 @@ async def rerun_cortex_graph_payload(
     )
 
 
+def _cortex_graph_review_row(
+    item: dict[str, Any],
+    source_run: Any | None,
+) -> dict[str, Any]:
+    """Reduce one immutable comparison/receipt set for the decision inbox."""
+
+    comparison = dict(item.get("comparison") or {})
+    decision = item.get("decision")
+    dispatch = item.get("build_dispatch")
+    source_inputs = getattr(source_run, "inputs", {}) if source_run is not None else {}
+    source_inputs = source_inputs if isinstance(source_inputs, dict) else {}
+    source_build = {
+        name: source_inputs.get(name)
+        for name in ("build_id", "slug", "stack")
+        if source_inputs.get(name) not in (None, "")
+    }
+    return {
+        "comparison": {
+            name: comparison.get(name)
+            for name in (
+                "comparison_id",
+                "source_run_id",
+                "rerun_run_id",
+                "from_node_id",
+                "rerun_nodes",
+                "baseline_digest",
+                "candidate_digest",
+                "outcome",
+                "promotion_status",
+                "created_at",
+            )
+        },
+        "source_build": source_build,
+        "decision": dict(decision) if isinstance(decision, dict) else None,
+        "build_dispatch": dict(dispatch) if isinstance(dispatch, dict) else None,
+        "state": "awaiting_human_decision" if decision is None else "decided",
+        "review_only": True,
+        "auto_promotion": False,
+    }
+
+
+async def cortex_graph_reviews_payload(
+    state: AppState,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """List durable rerun comparisons that do or do not have a human receipt."""
+
+    from skyn3t.studio.graph_runtime import GraphStore
+
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        items = await store.list_review_items(limit=max(1, min(int(limit), 100)))
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            comparison = dict(item.get("comparison") or {})
+            source_run = await store.load_run(str(comparison.get("source_run_id") or ""))
+            rows.append(_cortex_graph_review_row(item, source_run))
+        return {
+            "available": True,
+            "review_only": True,
+            "auto_promotion": False,
+            "pending_count": sum(row["decision"] is None for row in rows),
+            "reviews": rows,
+        }
+    except Exception:  # noqa: BLE001 - history must not break Cortex control plane
+        log.warning("cortex.graph_review_history_unavailable")
+        return {
+            "available": False,
+            "review_only": True,
+            "auto_promotion": False,
+            "pending_count": 0,
+            "reviews": [],
+        }
+    finally:
+        await store.close()
+
+
+async def decide_cortex_graph_review_payload(
+    state: AppState,
+    *,
+    comparison_id: str,
+    decision: str,
+    note: str = "",
+) -> dict[str, Any]:
+    """Append the only allowed human outcome for a graph comparison.
+
+    This does not promote a candidate or change code/configuration/policy. It
+    only records what a human decided about the exact source/candidate digests.
+    """
+
+    from skyn3t.studio.graph_runtime import GraphReviewDecision, GraphStore
+
+    selected_id = str(comparison_id).strip()
+    selected_decision = str(decision).strip().lower()
+    selected_note = str(note).strip()
+    if selected_decision not in {"keep", "reject"}:
+        raise ValueError("decision must be 'keep' or 'reject'")
+    if len(selected_note) > 2_000:
+        raise ValueError("review decision note must be at most 2000 characters")
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        comparison = await store.load_rerun_comparison_by_id(selected_id)
+        if comparison is None:
+            raise KeyError(selected_id)
+        if comparison.get("promotion_status") != "review_required":
+            raise ValueError("only completed review-required comparisons can be decided")
+        receipt = GraphReviewDecision(
+            decision_id=uuid.uuid4().hex,
+            comparison_id=selected_id,
+            source_run_id=str(comparison.get("source_run_id") or ""),
+            rerun_run_id=str(comparison.get("rerun_run_id") or ""),
+            decision=selected_decision,
+            note=selected_note,
+            decided_by="dashboard",
+            baseline_digest=str(comparison.get("baseline_digest") or ""),
+            candidate_digest=str(comparison.get("candidate_digest") or ""),
+            outcome=str(comparison.get("outcome") or ""),
+        )
+        await store.save_review_decision(receipt)
+        return {
+            "review_only": True,
+            "auto_promotion": False,
+            "decision": receipt.to_dict(),
+        }
+    finally:
+        await store.close()
+
+
+async def queue_cortex_graph_review_build_payload(
+    state: AppState,
+    *,
+    comparison_id: str,
+    brief: str,
+) -> dict[str, Any]:
+    """Start one normal Studio build from an explicitly kept experiment.
+
+    The review receipt stays immutable and this path delegates to the ordinary
+    build submission function, retaining its routing and admission safeguards.
+    It is an operator action, not a promotion of graph evidence.
+    """
+
+    from skyn3t.studio.graph_runtime import (
+        GraphReviewBuildDispatch,
+        GraphReviewBuildRequest,
+        GraphStore,
+    )
+
+    selected_id = str(comparison_id).strip()
+    selected_brief = str(brief).strip()
+    if not selected_brief:
+        raise ValueError("follow-up build brief is required")
+    if len(selected_brief) > 12_000:
+        raise ValueError("follow-up build brief must be at most 12000 characters")
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        comparison = await store.load_rerun_comparison_by_id(selected_id)
+        if comparison is None:
+            raise KeyError(selected_id)
+        decision = await store.load_review_decision(selected_id)
+        if decision is None or decision.get("decision") != "keep":
+            raise ValueError("keep the experiment evidence before queueing a follow-up build")
+        existing = await store.load_review_build_dispatch(selected_id)
+        if existing is not None:
+            raise ValueError("a follow-up build is already queued for this decision")
+        source_run = await store.load_run(str(comparison.get("source_run_id") or ""))
+        source_inputs = getattr(source_run, "inputs", {}) if source_run is not None else {}
+        stack = str(source_inputs.get("stack") or "") if isinstance(source_inputs, dict) else ""
+        request = GraphReviewBuildRequest(
+            request_id=uuid.uuid4().hex,
+            decision_id=str(decision.get("decision_id") or ""),
+            comparison_id=selected_id,
+            brief_sha256=hashlib.sha256(selected_brief.encode("utf-8")).hexdigest(),
+            stack=stack,
+            requested_by="dashboard",
+        )
+        await store.save_review_build_request(request)
+        queued = await submit_build(state, brief=selected_brief, stack=stack)
+        build_id = str(queued.get("build_id") or "")
+        if not build_id:
+            raise RuntimeError("normal Studio build did not return a build id")
+        dispatch = GraphReviewBuildDispatch(
+            dispatch_id=uuid.uuid4().hex,
+            request_id=request.request_id,
+            decision_id=request.decision_id,
+            comparison_id=selected_id,
+            build_id=build_id,
+        )
+        await store.save_review_build_dispatch(dispatch)
+        return {
+            "review_only": True,
+            "auto_promotion": False,
+            "request": request.to_dict(),
+            "build_dispatch": dispatch.to_dict(),
+            "build": {"build_id": build_id, "status": queued.get("status", "queued")},
+        }
+    finally:
+        await store.close()
+
+
 async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:
     rec = state.proposals.get(proposal_id)
     if rec is None:
@@ -7668,6 +7868,47 @@ def build_router(state: AppState) -> Any:
             raise HTTPException(status_code=404, detail="graph run not found") from None
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @router.get("/cortex/graph-reviews", dependencies=[auth])
+    async def _cortex_graph_reviews(
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> dict[str, Any]:
+        return await cortex_graph_reviews_payload(state, limit=limit)
+
+    @router.post("/cortex/graph-reviews/{comparison_id}/decide", dependencies=[auth])
+    async def _cortex_graph_review_decide(
+        comparison_id: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await decide_cortex_graph_review_payload(
+                state,
+                comparison_id=comparison_id,
+                decision=str(body.get("decision") or ""),
+                note=str(body.get("note") or ""),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="graph comparison not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @router.post("/cortex/graph-reviews/{comparison_id}/build", dependencies=[auth])
+    async def _cortex_graph_review_build(
+        comparison_id: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await queue_cortex_graph_review_build_payload(
+                state,
+                comparison_id=comparison_id,
+                brief=str(body.get("brief") or ""),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="graph comparison not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
 
     @router.get("/stacks", dependencies=[auth])
     async def _stacks() -> dict[str, Any]:

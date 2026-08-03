@@ -4,6 +4,8 @@ import { queryFn, apiPost } from "../api.js";
 import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/ui.jsx";
 
 export default function Cortex() {
+  const [reviewNotes, setReviewNotes] = useState({});
+  const [followUpBriefs, setFollowUpBriefs] = useState({});
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [candidateGoal, setCandidateGoal] = useState("");
@@ -63,6 +65,28 @@ export default function Cortex() {
         from_node_id: fromNodeId,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cortex-graphs"] }),
+  });
+
+  const { data: graphReviewData, isLoading: graphReviewLoading, error: graphReviewError } = useQuery({
+    queryKey: ["cortex-graph-reviews"],
+    queryFn: queryFn("/cortex/graph-reviews?limit=12"),
+  });
+  const graphReviews = graphReviewData?.reviews || [];
+  const decideGraphReview = useMutation({
+    mutationFn: ({ comparisonId, decision, note }) =>
+      apiPost(`/cortex/graph-reviews/${encodeURIComponent(comparisonId)}/decide`, {
+        decision,
+        note,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cortex-graph-reviews"] });
+      qc.invalidateQueries({ queryKey: ["cortex-graphs"] });
+    },
+  });
+  const queueGraphReviewBuild = useMutation({
+    mutationFn: ({ comparisonId, brief }) =>
+      apiPost(`/cortex/graph-reviews/${encodeURIComponent(comparisonId)}/build`, { brief }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["cortex-graph-reviews"] }),
   });
 
   // What cortex has actually changed — proof the self-improvement loops take
@@ -452,6 +476,179 @@ export default function Cortex() {
         {rerunGraph.data ? (
           <p className="border-t border-hairline px-4 py-3 font-mono text-[11px] text-plasma">
             Created {rerunGraph.data.graph?.run_id} · {rerunGraph.data.comparison?.outcome} · {rerunGraph.data.comparison?.promotion_status}
+          </p>
+        ) : null}
+      </Panel>
+
+      <Panel className="mb-6">
+        <PanelHead
+          label="Experiment review inbox"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              {graphReviewData?.pending_count || 0} awaiting human decision
+            </span>
+          }
+        />
+        <div className="border-b border-hairline bg-void/35 px-4 py-3 text-sm text-ash">
+          Each decision is append-only and tied to the exact proof digests shown below.
+          Keep does not promote code, policies, configuration, or skills. A follow-up is
+          only queued when you explicitly start a normal Studio build.
+        </div>
+        {graphReviewError ? (
+          <p className="px-4 py-3 font-mono text-[11px] text-ember">
+            Review inbox unavailable: {graphReviewError.message}
+          </p>
+        ) : graphReviewLoading ? (
+          <Empty icon="≋">Loading immutable experiment receipts…</Empty>
+        ) : graphReviewData?.available === false ? (
+          <Empty icon="◇">Experiment review history is unavailable right now.</Empty>
+        ) : graphReviews.length === 0 ? (
+          <Empty icon="◇">No rerun comparisons are ready for a human decision.</Empty>
+        ) : (
+          <div className="divide-y divide-hairline/60">
+            {graphReviews.map((review) => {
+              const comparison = review.comparison || {};
+              const decision = review.decision;
+              const dispatch = review.build_dispatch;
+              const comparisonId = comparison.comparison_id || "";
+              const note = reviewNotes[comparisonId] || "";
+              const followUpBrief = followUpBriefs[comparisonId] || "";
+              return (
+                <div key={comparisonId} className="px-4 py-4">
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Pill tone={comparison.outcome === "equivalent" ? "plasma" : "ember"}>
+                          {comparison.outcome || "comparison"}
+                        </Pill>
+                        <Pill tone={decision ? (decision.decision === "keep" ? "plasma" : "ember") : "ash"}>
+                          {decision ? decision.decision : "review required"}
+                        </Pill>
+                        <span className="font-mono text-[10px] text-ash">
+                          {comparison.rerun_nodes?.join(" → ")}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-bone">
+                        <span>{review.source_build?.slug || review.source_build?.build_id || "preflight"}</span>
+                        {review.source_build?.stack ? <span className="text-ash">{review.source_build.stack}</span> : null}
+                        <span className="text-ash">{comparison.comparison_id}</span>
+                      </div>
+                      <p className="mt-3 font-mono text-[10px] text-ash">
+                        immutable proof digests · {String(comparison.baseline_digest || "").slice(0, 12)} → {String(comparison.candidate_digest || "").slice(0, 12)}
+                      </p>
+                      {decision ? (
+                        <div className="mt-3 rounded border border-hairline bg-void/45 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Pill tone={decision.decision === "keep" ? "plasma" : "ember"}>{decision.decision}</Pill>
+                            <span className="font-mono text-[10px] text-ash">
+                              immutable receipt · {String(decision.decision_id || "").slice(0, 12)} · no promotion
+                            </span>
+                          </div>
+                          <p className="mt-2 text-xs text-ash">
+                            {decision.note || "No operator note recorded."}
+                          </p>
+                          {dispatch ? (
+                            <p className="mt-2 font-mono text-[10px] text-plasma">
+                              Normal Studio build queued · {dispatch.build_id}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="rounded border border-hairline bg-void/40 p-3">
+                      {!decision ? (
+                        <>
+                          <label className="block font-mono text-[10px] uppercase text-ash">
+                            Decision note
+                            <textarea
+                              className="field mt-2 min-h-24 w-full"
+                              aria-label={`Review note for ${comparisonId}`}
+                              maxLength={2000}
+                              value={note}
+                              disabled={decideGraphReview.isPending}
+                              onChange={(event) =>
+                                setReviewNotes((current) => ({
+                                  ...current,
+                                  [comparisonId]: event.target.value,
+                                }))
+                              }
+                              placeholder="Why should Cortex keep or reject this evidence?"
+                            />
+                          </label>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              className="btn-ember disabled:opacity-50"
+                              disabled={!comparisonId || decideGraphReview.isPending}
+                              onClick={() => decideGraphReview.mutate({ comparisonId, decision: "keep", note })}
+                            >
+                              {decideGraphReview.isPending ? "Recording…" : "Keep evidence"}
+                            </button>
+                            <button
+                              className="btn-ghost disabled:opacity-50"
+                              disabled={!comparisonId || decideGraphReview.isPending}
+                              onClick={() => decideGraphReview.mutate({ comparisonId, decision: "reject", note })}
+                            >
+                              Reject evidence
+                            </button>
+                          </div>
+                        </>
+                      ) : decision.decision === "keep" && !dispatch ? (
+                        <>
+                          <label className="block font-mono text-[10px] uppercase text-ash">
+                            Optional follow-up build brief
+                            <textarea
+                              className="field mt-2 min-h-24 w-full"
+                              aria-label={`Follow-up build brief for ${comparisonId}`}
+                              maxLength={12000}
+                              value={followUpBrief}
+                              disabled={queueGraphReviewBuild.isPending}
+                              onChange={(event) =>
+                                setFollowUpBriefs((current) => ({
+                                  ...current,
+                                  [comparisonId]: event.target.value,
+                                }))
+                              }
+                              placeholder="Describe the new normal Studio build you want to run."
+                            />
+                          </label>
+                          <button
+                            className="btn-ember mt-3 w-full disabled:opacity-50"
+                            disabled={!comparisonId || !followUpBrief.trim() || queueGraphReviewBuild.isPending}
+                            onClick={() => queueGraphReviewBuild.mutate({ comparisonId, brief: followUpBrief.trim() })}
+                          >
+                            {queueGraphReviewBuild.isPending ? "Queueing normal build…" : "Queue normal Studio build"}
+                          </button>
+                          <p className="mt-2 text-xs text-ash">
+                            This uses the standard Studio build route and its existing safeguards.
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-xs text-ash">
+                          {dispatch
+                            ? "The explicit follow-up was already handed to the normal Studio queue."
+                            : "Rejected evidence cannot queue a follow-up build."}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {decideGraphReview.error ? (
+          <p className="border-t border-hairline px-4 py-3 font-mono text-[11px] text-ember">
+            Decision was not recorded: {decideGraphReview.error.message}
+          </p>
+        ) : null}
+        {queueGraphReviewBuild.error ? (
+          <p className="border-t border-hairline px-4 py-3 font-mono text-[11px] text-ember">
+            Follow-up build was not queued: {queueGraphReviewBuild.error.message}
+          </p>
+        ) : null}
+        {queueGraphReviewBuild.data ? (
+          <p className="border-t border-hairline px-4 py-3 font-mono text-[11px] text-plasma">
+            Queued normal Studio build {queueGraphReviewBuild.data.build?.build_id}; the experiment remains review-only.
           </p>
         ) : null}
       </Panel>

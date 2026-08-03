@@ -543,6 +543,151 @@ class GraphRerunComparison:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphReviewDecision:
+    """An immutable human decision over one durable rerun comparison.
+
+    The receipt repeats the comparison digests it was made against. This keeps
+    a later dashboard view from silently detaching a human decision from the
+    exact proof evidence that informed it. A decision is deliberately not a
+    promotion mechanism: it cannot alter the comparison, graph, workspace, or
+    any Cortex policy.
+    """
+
+    decision_id: str
+    comparison_id: str
+    source_run_id: str
+    rerun_run_id: str
+    decision: str
+    note: str
+    decided_by: str
+    baseline_digest: str
+    candidate_digest: str
+    outcome: str
+    created_at: float = field(default_factory=time)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "decision_id",
+            "comparison_id",
+            "source_run_id",
+            "rerun_run_id",
+            "decided_by",
+            "baseline_digest",
+            "candidate_digest",
+            "outcome",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"review decision {name} must not be empty")
+            object.__setattr__(self, name, value)
+        selected = str(self.decision).strip().lower()
+        if selected not in {"keep", "reject"}:
+            raise ValueError("review decision must be 'keep' or 'reject'")
+        normalized_note = str(self.note).strip()
+        if len(normalized_note) > 2_000:
+            raise ValueError("review decision note must be at most 2000 characters")
+        object.__setattr__(self, "decision", selected)
+        object.__setattr__(self, "note", normalized_note)
+        object.__setattr__(self, "created_at", float(self.created_at))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "decision_id": self.decision_id,
+            "comparison_id": self.comparison_id,
+            "source_run_id": self.source_run_id,
+            "rerun_run_id": self.rerun_run_id,
+            "decision": self.decision,
+            "note": self.note,
+            "decided_by": self.decided_by,
+            "baseline_digest": self.baseline_digest,
+            "candidate_digest": self.candidate_digest,
+            "outcome": self.outcome,
+            "created_at": self.created_at,
+            "promotion": "none",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GraphReviewBuildRequest:
+    """A non-sensitive, immutable request to start a normal Studio build."""
+
+    request_id: str
+    decision_id: str
+    comparison_id: str
+    brief_sha256: str
+    stack: str
+    requested_by: str
+    created_at: float = field(default_factory=time)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "request_id",
+            "decision_id",
+            "comparison_id",
+            "brief_sha256",
+            "requested_by",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"review build request {name} must not be empty")
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "stack", str(self.stack).strip())
+        object.__setattr__(self, "created_at", float(self.created_at))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "request_id": self.request_id,
+            "decision_id": self.decision_id,
+            "comparison_id": self.comparison_id,
+            "brief_sha256": self.brief_sha256,
+            "stack": self.stack,
+            "requested_by": self.requested_by,
+            "created_at": self.created_at,
+            "kind": "normal_studio_build",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GraphReviewBuildDispatch:
+    """An immutable link from a reviewed experiment to one normal build."""
+
+    dispatch_id: str
+    request_id: str
+    decision_id: str
+    comparison_id: str
+    build_id: str
+    created_at: float = field(default_factory=time)
+
+    def __post_init__(self) -> None:
+        for name in (
+            "dispatch_id",
+            "request_id",
+            "decision_id",
+            "comparison_id",
+            "build_id",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"review build dispatch {name} must not be empty")
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "created_at", float(self.created_at))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "dispatch_id": self.dispatch_id,
+            "request_id": self.request_id,
+            "decision_id": self.decision_id,
+            "comparison_id": self.comparison_id,
+            "build_id": self.build_id,
+            "created_at": self.created_at,
+            "kind": "normal_studio_build",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class GraphRerunResult:
     source_run_id: str
     rerun: GraphRun
@@ -696,6 +841,46 @@ _SCHEMA_STATEMENTS = (
         created_at REAL NOT NULL,
         FOREIGN KEY (source_run_id) REFERENCES graph_runs(run_id) ON DELETE RESTRICT,
         FOREIGN KEY (rerun_run_id) REFERENCES graph_runs(run_id) ON DELETE RESTRICT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS graph_review_decisions (
+        decision_id TEXT PRIMARY KEY,
+        comparison_id TEXT NOT NULL UNIQUE,
+        decision_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        FOREIGN KEY (comparison_id)
+            REFERENCES graph_rerun_comparisons(comparison_id) ON DELETE RESTRICT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS graph_review_build_requests (
+        request_id TEXT PRIMARY KEY,
+        decision_id TEXT NOT NULL,
+        comparison_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        FOREIGN KEY (decision_id)
+            REFERENCES graph_review_decisions(decision_id) ON DELETE RESTRICT,
+        FOREIGN KEY (comparison_id)
+            REFERENCES graph_rerun_comparisons(comparison_id) ON DELETE RESTRICT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS graph_review_build_dispatches (
+        dispatch_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        decision_id TEXT NOT NULL UNIQUE,
+        comparison_id TEXT NOT NULL,
+        build_id TEXT NOT NULL UNIQUE,
+        dispatch_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        FOREIGN KEY (request_id)
+            REFERENCES graph_review_build_requests(request_id) ON DELETE RESTRICT,
+        FOREIGN KEY (decision_id)
+            REFERENCES graph_review_decisions(decision_id) ON DELETE RESTRICT,
+        FOREIGN KEY (comparison_id)
+            REFERENCES graph_rerun_comparisons(comparison_id) ON DELETE RESTRICT
     )
     """,
     """
@@ -1387,6 +1572,189 @@ class GraphStore:
                 (rerun_run_id,),
             ).fetchone()
             return None if row is None else dict(_json_load(row["comparison_json"], {}))
+
+        return await self._read(operation)
+
+
+    async def load_rerun_comparison_by_id(
+        self,
+        comparison_id: str,
+    ) -> dict[str, Any] | None:
+        """Load one immutable comparison by its public evidence identifier."""
+
+        selected_id = str(comparison_id).strip()
+        if not selected_id:
+            return None
+
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            row = connection.execute(
+                """
+                SELECT comparison_json FROM graph_rerun_comparisons
+                WHERE comparison_id = ?
+                """,
+                (selected_id,),
+            ).fetchone()
+            return None if row is None else dict(_json_load(row["comparison_json"], {}))
+
+        return await self._read(operation)
+
+    async def save_review_decision(self, decision: GraphReviewDecision) -> None:
+        """Append one human decision; a comparison can never be re-decided."""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO graph_review_decisions (
+                    decision_id, comparison_id, decision_json, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    decision.decision_id,
+                    decision.comparison_id,
+                    _json_dump(decision.to_dict()),
+                    decision.created_at,
+                ),
+            )
+
+        try:
+            await self._write(operation)
+        except sqlite3.IntegrityError as exc:
+            if "graph_review_decisions.comparison_id" in str(exc):
+                raise ValueError("a review decision is already recorded for this comparison") from None
+            raise
+
+    async def load_review_decision(
+        self,
+        comparison_id: str,
+    ) -> dict[str, Any] | None:
+        """Load the immutable human decision for a comparison, if any."""
+
+        selected_id = str(comparison_id).strip()
+        if not selected_id:
+            return None
+
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            row = connection.execute(
+                """
+                SELECT decision_json FROM graph_review_decisions
+                WHERE comparison_id = ?
+                """,
+                (selected_id,),
+            ).fetchone()
+            return None if row is None else dict(_json_load(row["decision_json"], {}))
+
+        return await self._read(operation)
+
+    async def save_review_build_request(self, request: GraphReviewBuildRequest) -> None:
+        """Append a request receipt without retaining the private build brief."""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO graph_review_build_requests (
+                    request_id, decision_id, comparison_id, request_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    request.request_id,
+                    request.decision_id,
+                    request.comparison_id,
+                    _json_dump(request.to_dict()),
+                    request.created_at,
+                ),
+            )
+
+        await self._write(operation)
+
+    async def save_review_build_dispatch(self, dispatch: GraphReviewBuildDispatch) -> None:
+        """Append the immutable normal-build link for a reviewed experiment."""
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO graph_review_build_dispatches (
+                    dispatch_id, request_id, decision_id, comparison_id,
+                    build_id, dispatch_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    dispatch.dispatch_id,
+                    dispatch.request_id,
+                    dispatch.decision_id,
+                    dispatch.comparison_id,
+                    dispatch.build_id,
+                    _json_dump(dispatch.to_dict()),
+                    dispatch.created_at,
+                ),
+            )
+
+        try:
+            await self._write(operation)
+        except sqlite3.IntegrityError as exc:
+            if "graph_review_build_dispatches.decision_id" in str(exc):
+                raise ValueError("a follow-up build is already queued for this decision") from None
+            raise
+
+    async def load_review_build_dispatch(
+        self,
+        comparison_id: str,
+    ) -> dict[str, Any] | None:
+        """Load an already queued normal-build link for one comparison."""
+
+        selected_id = str(comparison_id).strip()
+        if not selected_id:
+            return None
+
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            row = connection.execute(
+                """
+                SELECT dispatch_json FROM graph_review_build_dispatches
+                WHERE comparison_id = ?
+                """,
+                (selected_id,),
+            ).fetchone()
+            return None if row is None else dict(_json_load(row["dispatch_json"], {}))
+
+        return await self._read(operation)
+
+    async def list_review_items(self, *, limit: int = 25) -> tuple[dict[str, Any], ...]:
+        """Return immutable comparisons paired with any decision/build receipts."""
+
+        selected_limit = max(1, min(int(limit), 100))
+
+        def operation(connection: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+            rows = connection.execute(
+                """
+                SELECT
+                    comparisons.comparison_json AS comparison_json,
+                    decisions.decision_json AS decision_json,
+                    dispatches.dispatch_json AS dispatch_json
+                FROM graph_rerun_comparisons AS comparisons
+                LEFT JOIN graph_review_decisions AS decisions
+                    ON decisions.comparison_id = comparisons.comparison_id
+                LEFT JOIN graph_review_build_dispatches AS dispatches
+                    ON dispatches.comparison_id = comparisons.comparison_id
+                ORDER BY comparisons.created_at DESC
+                LIMIT ?
+                """,
+                (selected_limit,),
+            ).fetchall()
+            return tuple(
+                {
+                    "comparison": dict(_json_load(row["comparison_json"], {})),
+                    "decision": (
+                        None
+                        if row["decision_json"] is None
+                        else dict(_json_load(row["decision_json"], {}))
+                    ),
+                    "build_dispatch": (
+                        None
+                        if row["dispatch_json"] is None
+                        else dict(_json_load(row["dispatch_json"], {}))
+                    ),
+                }
+                for row in rows
+            )
 
         return await self._read(operation)
 

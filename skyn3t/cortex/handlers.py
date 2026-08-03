@@ -252,6 +252,15 @@ class HandlerRegistry:
         return self._stage(proposal, "ingest")
 
     async def _ingest_github(self, repo_or_url: str, proposal: Proposal) -> dict[str, Any] | None:
+        """Ingest a repository README plus bounded, pinned Markdown guidance.
+
+        README remains the repo-level RAG entry. Extra documents are optional:
+        each has its own immutable source receipt, RAG metadata, and quarantined
+        skill candidate, so a bad document cannot silently broaden a promoted
+        repository skill.
+        """
+        from urllib.parse import quote
+
         url = repo_or_url if "github.com/" in repo_or_url else f"https://github.com/{repo_or_url}"
         try:
             from skyn3t.agents.github_fetch import fetch_github_repo_evidence
@@ -264,70 +273,118 @@ class HandlerRegistry:
             staged["ingested"] = 0
             staged["degraded"] = True
             return staged
-        text = evidence.text
         rag = self.rag
         if rag is None:
             return self._stage(proposal, "ingest")
-        github_metadata: dict[str, object] = {
-            "external_unreviewed": True,
-            "source_kind": "github_readme",
-            "source_url": evidence.source_url,
-            "source_path": evidence.source_path,
-        }
-        if evidence.pinned_revision:
-            github_metadata["pinned_revision"] = evidence.pinned_revision
-        if evidence.license:
-            github_metadata["license"] = evidence.license
-        try:
+
+        def _metadata(source_path: str, source_kind: str) -> dict[str, object]:
+            result: dict[str, object] = {
+                "external_unreviewed": True,
+                "source_kind": source_kind,
+                "source_url": evidence.source_url,
+                "source_path": source_path,
+            }
+            if evidence.pinned_revision:
+                result["pinned_revision"] = evidence.pinned_revision
+            if evidence.license:
+                result["license"] = evidence.license
+            return result
+
+        def _rag_ingest(text: str, source: str, metadata: dict[str, object]) -> Any:
             try:
-                n = rag.ingest_text(
-                    text,
-                    source=url,
-                    kind="github",
-                    metadata=github_metadata,
-                )
+                return rag.ingest_text(text, source=source, kind="github", metadata=metadata)
             except TypeError as exc:
-                # Preserve compatibility with older pluggable RAG engines. The
-                # Runner also treats legacy ``kind=github`` sources as
-                # unreviewed, so this fallback cannot make them prompt-injectable.
+                # Preserve pluggable legacy RAG engines. The source remains a
+                # GitHub document and Runner treats legacy GitHub sources as
+                # unreviewed, so this cannot make remote content injectable.
                 if "metadata" not in str(exc):
                     raise
-                n = rag.ingest_text(text, source=url, kind="github")
-        except Exception as exc:  # noqa: BLE001 - transient RAG error -> degraded, retryable
+                return rag.ingest_text(text, source=source, kind="github")
+
+        try:
+            ingested = _rag_ingest(
+                evidence.text,
+                url,
+                _metadata(evidence.source_path, "github_readme"),
+            )
+        except Exception as exc:  # noqa: BLE001 - retryable primary RAG failure
             staged = self._stage(proposal, "ingest")
             staged["ingested"] = 0
             staged["degraded"] = True
             staged["error"] = f"rag ingest failed: {exc}"
             return staged
-        # Also distill a reusable, advisory skill so the approval surfaces on the
-        # Skills page (best-effort; never affects the ingest result). Remote text
-        # is kept quarantined until a later, explicit promotion checks its proof.
-        provenance = None
+
+        # ``markdown_files`` is additive for backward-compatible custom
+        # evidence providers. If it is absent/empty, preserve the historical
+        # README-only distillation behavior exactly.
+        documents = list(getattr(evidence, "markdown_files", ()) or ())
+        if not documents:
+            documents = [(evidence.source_path, evidence.text)]
+        else:
+            documents = [(item.source_path, item.text) for item in documents]
+
+        extra_ingest_errors: list[str] = []
+        for source_path, document in documents:
+            if source_path.casefold() == evidence.source_path.casefold():
+                continue
+            if not evidence.pinned_revision:
+                # Fetching only supplies extra files with a full pin; retain
+                # this check for custom providers too.
+                continue
+            document_url = (
+                f"{evidence.source_url}/blob/{evidence.pinned_revision}/"
+                f"{quote(source_path, safe='/')}"
+            )
+            try:
+                added = _rag_ingest(document, document_url, _metadata(source_path, "github_markdown"))
+                if isinstance(ingested, int) and isinstance(added, int):
+                    ingested += added
+            except Exception as exc:  # noqa: BLE001 - a single doc is optional
+                extra_ingest_errors.append(f"{source_path}: {exc}")
+
+        skill_slugs: list[str] = []
+        skill_errors: list[str] = []
         if self.skills is not None:
             from skyn3t.intelligence.skill_library import SkillProvenance
 
-            provenance = SkillProvenance(
-                source_url=evidence.source_url,
-                pinned_revision=evidence.pinned_revision,
-                license=evidence.license,
-                source_path=evidence.source_path,
-                metadata={"skyn3t-source-kind": "github-readme"},
-            ).with_content_hash(text)
-        skill_slug, skill_error = self._distill_repo_skill(
-            url,
-            text,
-            proposal.payload or {},
-            provenance=provenance,
-        )
-        result = {"applied": True, "ingested": n, "source": url}
-        if skill_slug:
-            result["skill"] = skill_slug
-        elif skill_error:
-            # A refused/failed distill is reported as data: the RAG ingest
-            # still applied, but no hollow skill file was written.
-            result["skill_error"] = skill_error
-        return result
+            for source_path, document in documents:
+                source_kind = (
+                    "github-readme"
+                    if source_path.casefold() == evidence.source_path.casefold()
+                    else "github-markdown"
+                )
+                provenance = SkillProvenance(
+                    source_url=evidence.source_url,
+                    pinned_revision=evidence.pinned_revision,
+                    license=evidence.license,
+                    source_path=source_path,
+                    metadata={"skyn3t-source-kind": source_kind},
+                ).with_content_hash(document)
+                skill_slug, skill_error = self._distill_repo_skill(
+                    url,
+                    document,
+                    proposal.payload or {},
+                    provenance=provenance,
+                )
+                if skill_slug:
+                    skill_slugs.append(skill_slug)
+                elif skill_error:
+                    skill_errors.append(f"{source_path}: {skill_error}")
 
+        result: dict[str, Any] = {"applied": True, "ingested": ingested, "source": url}
+        if len(skill_slugs) == 1:
+            result["skill"] = skill_slugs[0]
+        elif skill_slugs:
+            result["skills"] = skill_slugs
+            result["skill_count"] = len(skill_slugs)
+        if skill_errors:
+            if not skill_slugs:
+                result["skill_error"] = skill_errors[0]
+            else:
+                result["skill_errors"] = skill_errors
+        if extra_ingest_errors:
+            result["markdown_ingest_errors"] = extra_ingest_errors
+        return result
     # ---- skill distillation from an ingested repo ------------------------
     _LANG_STACK = {
         "python": "python",
@@ -491,8 +548,12 @@ class HandlerRegistry:
     ) -> str:
         """Compose the skill body: concrete commands + layout/convention
         sections extracted from the README, then a short cleaned excerpt."""
-        readme = text.split("README:", 1)[1].strip() if "README:" in text else ""
-        lines = cls._readme_clean_lines(readme)
+        # README was the original repository-level source. Per-file ingestion
+        # uses the same deterministic distiller with an independently labeled
+        # Markdown document, never pretending a guide is repository metadata.
+        marker = "README:" if "README:" in text else "Markdown:"
+        document = text.split(marker, 1)[1].strip() if marker in text else ""
+        lines = cls._readme_clean_lines(document)
         commands = cls._extract_commands(lines)
         sections = cls._extract_sections(lines)
         excerpt_lines: list[str] = []
@@ -572,7 +633,21 @@ class HandlerRegistry:
                 )
             from skyn3t.agents._common import slugify
 
+            source_path_hint = str(getattr(provenance, "source_path", "") or "README").replace("\\", "/")
+            source_name = source_path_hint.rsplit("/", 1)[-1].lower()
             slug = slugify(f"gh-{full}", "gh-repo")
+            # README keeps its historical stable slug. Every additional
+            # Markdown path receives a readable stem and deterministic path
+            # suffix, so docs/guide.md and docs-guide.md cannot overwrite one
+            # another or the repository-level candidate.
+            if source_name not in {"readme", "readme.md"}:
+                import hashlib
+
+                path_stem = source_name.removesuffix(".md") or "doc"
+                slug = (
+                    f"{slugify(f'gh-{full}-{path_stem}', 'gh-doc')}-"
+                    f"{hashlib.sha256(source_path_hint.encode('utf-8')).hexdigest()[:10]}"
+                )
             tags = ["github-distilled", "external-candidate", "hygiene:quarantine"]
             if lang:
                 tags.append(lang.lower())
@@ -603,7 +678,11 @@ class HandlerRegistry:
                 compatibility=base.compatibility,
             )
             self.skills.add(
-                title=f"Patterns: {full}",
+                title=(
+                    f"Patterns: {full}"
+                    if source_name in {"readme", "readme.md"}
+                    else f"Patterns: {full} — {source_path_hint}"
+                ),
                 body=body,
                 stack=stack,
                 tags=tags,

@@ -14,6 +14,8 @@ from skyn3t.core.model_router import _FREE_DEFAULTS, Tier
 
 
 def _client(backend: str, **kw) -> LLMClient:
+    if backend == "claude_cli":
+        kw.setdefault("no_claude", False)
     return LLMClient(Settings(llm_backend=backend, **kw))
 
 
@@ -252,9 +254,11 @@ def test_auto_uses_any_signed_in_cli_in_priority_order(monkeypatch):
 
     # Claude is NOT in the default chain any more (nothing Claude-powered runs
     # unless selected), so a claude-only host now degrades to the offline stub
-    # under auto. Selecting Claude — via the backend or the chain — works.
+    # under auto. Selecting and enabling Claude — via the backend or chain — works.
     assert _client("auto", openrouter_api_key="sk-or-present").backend == "stub"
-    assert _client("auto", auto_cli_priority="codex,kimi,claude").backend == "claude_cli"
+    assert _client(
+        "auto", auto_cli_priority="codex,kimi,claude", no_claude=False
+    ).backend == "claude_cli"
     assert _client("claude_cli").backend == "claude_cli"
 
 

@@ -229,6 +229,7 @@ async def test_explicit_codegen_cli_and_model_pin_own_codegen_trace(
         openrouter_codegen_model="openai/gpt-4.1",
         codegen_cli_provider="claude",
         codegen_cli_model="sonnet",
+        no_claude=False,
     )
     client = LLMClient(settings)
     monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "claude")

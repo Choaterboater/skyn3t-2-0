@@ -5258,10 +5258,13 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         "backend": backend,
         "routing": routing,
         "backend_pref": getattr(s, "llm_backend", "auto"),
-        "cli_provider": getattr(s, "cli_llm_provider", "claude"),
+        "cli_provider": getattr(s, "cli_llm_provider", "codex"),
         "codegen_cli_provider": getattr(s, "codegen_cli_provider", "") or "",
         "codegen_cli_model": getattr(s, "codegen_cli_model", "") or "",
         "openrouter_codegen_model": getattr(s, "openrouter_codegen_model", "") or "",
+        "vision_model": getattr(s, "vision_model", "") or "",
+        "codegen_model_slot": getattr(s, "codegen_model_slot", "") or "",
+        "repair_model_slot": getattr(s, "repair_model_slot", "") or "",
         "free_only": bool(getattr(s, "free_only", True)),
         "model_pins": {
             "cheap": getattr(s, "model_cheap", "") or "",
@@ -6488,6 +6491,9 @@ async def set_llm_routing(
     codegen_cli_model: str | None = None,
     openrouter_codegen_model: str | None = None,
     model_pins: dict[str, Any] | None = None,
+    vision_model: str | None = None,
+    codegen_model_slot: str | None = None,
+    repair_model_slot: str | None = None,
     free_only: bool | None = None,
     persist: bool = True,
 ) -> dict[str, Any]:
@@ -6512,6 +6518,12 @@ async def set_llm_routing(
         updates["codegen_cli_model"] = _normalize_model_id(codegen_cli_model)
     if openrouter_codegen_model is not None:
         updates["openrouter_codegen_model"] = _normalize_model_id(openrouter_codegen_model)
+    if vision_model is not None:
+        updates["vision_model"] = _normalize_model_id(vision_model)
+    if codegen_model_slot is not None:
+        updates["codegen_model_slot"] = (codegen_model_slot or "").strip()
+    if repair_model_slot is not None:
+        updates["repair_model_slot"] = (repair_model_slot or "").strip()
     if model_pins is not None:
         for tier, field in _MODEL_PIN_FIELDS.items():
             if tier in model_pins:
@@ -6662,6 +6674,7 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "daily_token_cap", "autonomous_daily_build_cap", "llm_backend",
             "codegen_cli_provider", "codegen_cli_model", "openrouter_codegen_model",
             "model_cheap", "model_ui", "model_backend", "model_strong", "model_docs",
+            "vision_model", "codegen_model_slot", "repair_model_slot",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
             "visual_self_heal", "visual_self_heal_max_rounds",
             "improve_agentic", "improve_agentic_timeout",
@@ -7321,6 +7334,9 @@ def build_router(state: AppState) -> Any:
                 codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
                 openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
                 model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
+                vision_model=str(body["vision_model"]) if "vision_model" in body else None,
+                codegen_model_slot=str(body["codegen_model_slot"]) if "codegen_model_slot" in body else None,
+                repair_model_slot=str(body["repair_model_slot"]) if "repair_model_slot" in body else None,
                 free_only=free_only,
             )
         except ValueError as exc:

@@ -787,6 +787,14 @@ def explicit_routing_lock_error(
     if codegen_provider:
         if codegen_provider not in KNOWN_CLI_PROVIDERS:
             return f"Unsupported codegen CLI provider {codegen_provider!r}."
+        if codegen_provider == "claude" and bool(
+            getattr(settings, "no_claude", False)
+        ):
+            return (
+                "codegen_cli_provider='claude' is explicitly selected but Claude "
+                "is disabled (no_claude — unchecked, not paid for). Pick another "
+                "provider or enable Claude in Settings."
+            )
         if not provider_available(codegen_provider):
             return (
                 f"codegen_cli_provider={codegen_provider!r} is explicitly selected "
@@ -2131,7 +2139,12 @@ class LLMClient:
 
     def _auto_cli_provider(self) -> str:
         """First signed-in CLI in priority order, or "" when none is available."""
+        # Unchecked means never: a claude entry (even a custom one the operator
+        # left in the chain) is skipped while no_claude holds.
+        no_claude = bool(getattr(self.settings, "no_claude", False))
         for provider in self._auto_cli_priority():
+            if no_claude and provider == "claude":
+                continue
             if self._cli_available(provider):
                 return provider
         return ""
@@ -2146,8 +2159,14 @@ class LLMClient:
         multi-provider fan-out's results uninterpretable).
         """
         pref = str(pref or "").strip().lower()
+        # no_claude is a hard fence, not a ranking tweak: with Claude unchecked
+        # (not paid for), NOTHING resolves to it — not even an explicit
+        # claude_cli selection. Degrade to the offline stub with a recorded
+        # reason, exactly like an unavailable provider.
         if pref not in SUPPORTED_LLM_BACKENDS:
             return self._degraded_to_stub(pref, "unsupported_backend")
+        if bool(getattr(self.settings, "no_claude", False)) and pref == "claude_cli":
+            return self._degraded_to_stub(pref, "no_claude")
         if pref == "stub":
             return "stub"
         if pref == "openrouter":

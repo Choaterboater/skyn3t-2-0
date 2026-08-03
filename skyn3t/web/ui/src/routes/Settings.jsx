@@ -127,6 +127,9 @@ export default function Settings() {
   const [codegenCliProvider, setCodegenCliProvider] = useState("");
   const [codegenCliModel, setCodegenCliModel] = useState("");
   const [openrouterCodegenModel, setOpenrouterCodegenModel] = useState("");
+  const [visionModel, setVisionModel] = useState("");
+  const [codegenModelSlot, setCodegenModelSlot] = useState("");
+  const [repairModelSlot, setRepairModelSlot] = useState("");
   const [modelPins, setModelPins] = useState({
     cheap: "",
     ui: "",
@@ -257,6 +260,9 @@ export default function Settings() {
     setCodegenCliProvider(d.codegen_cli_provider || "");
     setCodegenCliModel(d.codegen_cli_model || "");
     setOpenrouterCodegenModel(d.openrouter_codegen_model || "");
+    setVisionModel(d.vision_model || "");
+    setCodegenModelSlot(d.codegen_model_slot || "");
+    setRepairModelSlot(d.repair_model_slot || "");
     setModelPins({
       cheap: d.model_pins?.cheap || "",
       ui: d.model_pins?.ui || "",
@@ -594,6 +600,9 @@ export default function Settings() {
         codegen_cli_provider: codegenCliProvider,
         codegen_cli_model: codegenCliModel,
         openrouter_codegen_model: normalizeModelId(openrouterCodegenModel),
+        vision_model: normalizeModelId(visionModel),
+        codegen_model_slot: codegenModelSlot,
+        repair_model_slot: repairModelSlot,
         model_pins: {
           cheap: normalizeModelId(modelPins.cheap),
           ui: normalizeModelId(modelPins.ui),
@@ -1038,6 +1047,35 @@ export default function Settings() {
                     />
                   ))}
                 </datalist>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  className="field min-w-[12rem] flex-1"
+                  aria-label="Vision model"
+                  placeholder="Vision model (optional)"
+                  value={visionModel}
+                  onChange={(e) => setVisionModel(e.target.value)}
+                  title="Model used for visual checks; empty uses the default vision route"
+                />
+                <input
+                  type="text"
+                  className="field min-w-[12rem] flex-1"
+                  aria-label="Codegen model slot"
+                  placeholder="codegen slot e.g. claude_cli:sonnet"
+                  value={codegenModelSlot}
+                  onChange={(e) => setCodegenModelSlot(e.target.value)}
+                  title="provider:model slot for greenfield codegen; empty uses tier routing"
+                />
+                <input
+                  type="text"
+                  className="field min-w-[12rem] flex-1"
+                  aria-label="Repair model slot"
+                  placeholder="repair slot e.g. openrouter:deepseek/..."
+                  value={repairModelSlot}
+                  onChange={(e) => setRepairModelSlot(e.target.value)}
+                  title="provider:model slot for the repair/improve loop; empty uses tier routing"
+                />
               </div>
               </div>
             </div>

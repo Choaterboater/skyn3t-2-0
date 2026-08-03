@@ -67,6 +67,7 @@ def _settings(tmp_path, **kw):
         "moa_enabled": True,
         "moa_advisors": "claude_cli:sonnet,codex_cli,kimi_cli",
         "free_only": False,
+        "no_claude": False,
     }
     base.update(kw)
     return Settings(**base)

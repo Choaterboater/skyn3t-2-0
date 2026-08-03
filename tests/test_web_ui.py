@@ -558,6 +558,22 @@ def test_skills_wires_build_pattern_scoreboard() -> None:
     assert "previewed roles" in skills
 
 
+def test_skills_surfaces_safe_promotion_status_and_action() -> None:
+    skills = (ROUTES / "Skills.jsx").read_text(encoding="utf-8")
+
+    assert "data?.summary" in skills
+    assert "Quarantined" in skills
+    assert "Ready to promote" in skills
+    assert "passes promotion gate" in skills
+    assert "promotion_ready" in skills
+    assert "provenance_complete" in skills
+    assert "provenance complete" in skills
+    assert "did not pass the library's promotion gate" in skills
+    assert "/skills/${encodeURIComponent(slug)}/promote" in skills
+    assert "Promote reviewed skill" in skills
+    assert "immutable GitHub provenance is incomplete" in skills
+    assert "aria-live=\"polite\"" in skills
+
 def test_projects_surfaces_ai_guidance_evidence() -> None:
     projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
     metadata = (SRC / "projectMetadata.js").read_text(encoding="utf-8")
@@ -609,6 +625,26 @@ def test_projects_does_not_offer_completed_app_actions_for_live_builds() -> None
     assert "p.is_complete !== false ? (" in projects
     assert "internal .preview excluded" in projects
 
+
+def test_projects_wires_accessible_project_feedback() -> None:
+    projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
+
+    assert "function FeedbackInline" in projects
+    assert '"/projects/" + encodeURIComponent(slug) + "/feedback"' in projects
+    assert "{ feedback: text, ...(category ? { category } : {}) }" in projects
+    assert 'aria-label={"Feedback for " + slug}' in projects
+    assert 'aria-label={"Feedback category for " + slug}' in projects
+    assert 'role="status"' in projects
+    assert 'role="alert"' in projects
+    assert "setFeedbackSlug" in projects
+    assert 'aria-controls={"feedback-" + p.slug}' in projects
+    assert '"Save feedback"' in projects
+    assert "result.message" not in projects
+    assert "result.lessons" not in projects
+    assert "result.captured" in projects
+    assert "result.deduped" in projects
+    assert "reusable advisory lessons" in projects
+    assert "raw project history" in projects
 
 def test_projects_wires_bounded_local_reverify() -> None:
     projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")

@@ -63,6 +63,7 @@ from skyn3t.core.stacks import (
 from skyn3t.core.stacks import (
     gate_applies as _gate_applies,
 )
+from skyn3t.intelligence.human_feedback import HUMAN_DESIGN_LESSON_STACK
 from skyn3t.intelligence.learning_loop import (
     extract_gate_findings as _extract_gate_findings,
 )
@@ -648,6 +649,28 @@ class StudioRunner:
         )
 
     # ---- lessons (learning loop) ----------------------------------------
+    @staticmethod
+    def _merge_lessons(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Combine lesson groups without letting repeated advice crowd prompts.
+
+        Human design feedback is deliberately stored in a shared scope so it can
+        help a later Astro/React/etc. build. The same feedback can be returned
+        by both score-ranked and recent-lesson queries, so dedupe on the stable
+        lesson text before applying the normal five-lesson prompt budget.
+        """
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for group in groups:
+            for lesson in group or []:
+                if not isinstance(lesson, dict):
+                    continue
+                text = str(lesson.get("text") or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                merged.append(lesson)
+        return merged
+
     async def _inject_lessons(self, stack: str, stage: str,
                               brief: str = "") -> list[dict[str, Any]]:
         if self.memory is None:
@@ -665,29 +688,96 @@ class StudioRunner:
             recent_fn = getattr(self.memory, "recent_lessons", None)
             if callable(recent_fn):
                 recent = await recent_fn(stack, stage=stage, limit=3)
-                seen_texts = {c.get("text") for c in candidates}
-                candidates.extend(
-                    r for r in (recent or []) if r.get("text") not in seen_texts
-                )
-            if not brief or len(candidates) <= 5:
-                return candidates[:5]
+                candidates = self._merge_lessons(candidates, recent or [])
+
+            # A human review of one delivered web app should improve later UI
+            # work even when the next brief chooses a different frontend stack.
+            # These distilled rules remain advisory, receive the same outcome
+            # grading as ordinary lessons, and never cross into non-design work.
+            shared: list[dict[str, Any]] = []
+            if (stack or "").strip().lower() in _DESIGN_STACKS:
+                try:
+                    # Retrieve enough shared rules to choose against the new
+                    # brief. Truncating to the newest three before semantic
+                    # ranking hid feedback such as the real-photography rule
+                    # behind unrelated palette/layout observations.
+                    shared_ranked = await self.memory.relevant_lessons(
+                        HUMAN_DESIGN_LESSON_STACK, stage="design", limit=12
+                    )
+                    shared_recent: list[dict[str, Any]] = []
+                    if callable(recent_fn):
+                        shared_recent = await recent_fn(
+                            HUMAN_DESIGN_LESSON_STACK, stage="design", limit=3
+                        )
+                    shared_candidates = self._merge_lessons(
+                        shared_recent or [], shared_ranked or []
+                    )
+                    if brief and len(shared_candidates) > 3:
+                        shared_emb = self._skill_embedder()
+                        if shared_emb is not None:
+                            from skyn3t.intelligence.semantic_skills import rank_texts
+                            shared = rank_texts(
+                                shared_candidates,
+                                brief,
+                                get_text=lambda les: les.get("text", ""),
+                                embedder=shared_emb,
+                                k=3,
+                            ) or shared_candidates[:3]
+                        else:
+                            shared = shared_candidates[:3]
+                    else:
+                        shared = shared_candidates[:3]
+                except Exception as exc:  # noqa: BLE001 - shared recall is additive
+                    log.warning("human_feedback.inject_failed", error=str(exc))
+
+            combined = self._merge_lessons(shared, candidates)
+            if not brief or len(combined) <= 5:
+                return combined[:5]
             emb = self._skill_embedder()
             if emb is None:
-                return candidates[:5]
+                return combined[:5]
             from skyn3t.intelligence.semantic_skills import rank_texts
-            ranked = rank_texts(candidates, brief,
+            if shared:
+                # Reserve the brief-matched human review signal, then fill the
+                # rest of the bounded prompt budget with same-stack lessons.
+                # This prevents a familiar technical lesson from erasing the
+                # very visual preference a person explicitly asked us to retain.
+                remaining = max(0, 5 - len(shared))
+                if remaining == 0:
+                    return shared[:5]
+                ranked_current = rank_texts(
+                    candidates,
+                    brief,
+                    get_text=lambda les: les.get("text", ""),
+                    embedder=emb,
+                    k=remaining,
+                )
+                return self._merge_lessons(shared, ranked_current or candidates)[:5]
+            ranked = rank_texts(combined, brief,
                                 get_text=lambda les: les.get("text", ""),
                                 embedder=emb, k=5)
             # If nothing shares the brief's vocabulary, keep the score-ranked
             # top-5 rather than injecting fewer lessons than before.
-            return ranked or candidates[:5]
+            return ranked or combined[:5]
         except Exception as exc:  # noqa: BLE001
             log.warning("lessons.inject_failed", error=str(exc))
             return []
 
     async def _grade_lessons(
-        self, lessons: list[dict[str, Any]], helpful: bool, quality: float | None = None
+        self,
+        lessons: list[dict[str, Any]],
+        helpful: bool | None,
+        quality: float | None = None,
     ) -> None:
+        """Record an outcome for unique lessons used by one build.
+
+        ``helpful=None`` deliberately records *exposure only*. A terminal
+        ``no_go`` tells us the build failed, but does not identify which of up
+        to five advisory lessons caused it. Treating every one as harmful
+        polluted the learned ranking with correlated failure blame. Positive
+        delivered outcomes remain creditable; targeted negative evidence can
+        still be introduced when a verifier names a conflicting rule.
+        """
         if self.memory is None or not lessons:
             return
         graded: set[int] = set()
@@ -5249,6 +5339,47 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - mining must never break a build
             log.warning("repair_miner.failed", error=str(exc))
 
+    @staticmethod
+    def _build_pattern_shape(plan: BuildPlan) -> dict[str, Any]:
+        """Return a stable, useful, non-brief fingerprint for a build plan.
+
+        Stage count alone groups very different pipelines into the same advice.
+        This keeps only durable process choices: the ordered stage roles,
+        optional/gated semantics, test-first mode, and bounded candidate count.
+        It intentionally excludes file names, the brief, and arbitrary plan
+        notes so repeat evidence can still accumulate across builds.
+        """
+        pipeline: list[dict[str, Any]] = []
+        for spec in list(getattr(plan, "stages", []) or []):
+            name = _bounded_text(str(getattr(spec, "name", "") or ""), 64)
+            agent_type = _bounded_text(
+                str(getattr(spec, "agent_type", "") or ""), 64
+            )
+            capability = _bounded_text(
+                str(getattr(spec, "capability", "") or ""), 64
+            )
+            if not (name or agent_type or capability):
+                continue
+            pipeline.append(
+                {
+                    "name": name,
+                    "agent_type": agent_type,
+                    "capability": capability,
+                    "optional": bool(getattr(spec, "optional", False)),
+                    "gated": bool(getattr(spec, "gated", False)),
+                }
+            )
+        try:
+            best_of_n = max(1, min(int(getattr(plan, "best_of_n", 1) or 1), 16))
+        except (TypeError, ValueError, OverflowError):
+            best_of_n = 1
+        return {
+            "schema": 2,
+            "pipeline": pipeline,
+            "test_first": bool(getattr(plan, "test_first", False)),
+            "best_of_n": best_of_n,
+        }
+
     async def _record_learning(
         self,
         manifest: BuildManifest,
@@ -5322,10 +5453,12 @@ class StudioRunner:
         # 2. Record the build shape on the pattern scoreboard + maybe promote.
         if self.patterns is not None:
             try:
-                # Fingerprint the durable SHAPE (stage pipeline), not the volatile
-                # per-build file count — otherwise every build minted a fresh
-                # fingerprint and uses never accumulated toward promotion.
-                shape = {"stages": len(plan.stages)}
+                # Fingerprint the durable semantic pipeline rather than just a
+                # stage count. The old ``{"stages": N}`` grouped materially
+                # different workflows (for example test-first and direct-code
+                # builds) into one vague skill. Keep the shape free of brief/file
+                # names so repeat uses still accumulate toward promotion.
+                shape = self._build_pattern_shape(plan)
                 rec = self.patterns.record(plan.stack, shape, float(manifest.score or 0.0))
                 if self.skills is not None and rec is not None:
                     self.skills.maybe_promote_pattern(rec)
@@ -7234,17 +7367,22 @@ class StudioRunner:
             # build actually shipped.
             self._flush_tournament(build_id, won=manifest.verdict == "go")
 
-            # Grade the learning loop by the REAL outcome (a 'go'), not merely
-            # "files were written". Crediting every non-empty no_go as helpful is
-            # what trained the factory backwards.
-            helpful = manifest.verdict == "go"
-            # Continuous reward: grade lessons by HOW WELL this build scored, not
-            # just go/no_go — so a lesson reused by strong builds outranks one
-            # scraping a low 'go' (Phase B, extends B1's skill reward to lessons).
+            # A terminal ``go`` is positive evidence for the advisory lessons
+            # that were actually injected. A ``no_go`` is not enough to blame
+            # every one of them, so it records neutral exposure until a verifier
+            # can attribute a specific conflict. Skill/build grading remains
+            # binary because those records have a distinct selected-skill path.
+            build_helpful = manifest.verdict == "go"
+            lesson_helpful: bool | None = True if build_helpful else None
+            # Continuous reward still separates strong delivered builds from
+            # barely-passing ones without turning a whole failed build into a
+            # correlated negative grade for every lesson.
             lesson_quality = max(0.0, min(1.0, final_score / 100.0))
-            await self._grade_lessons(used_lessons, helpful=helpful, quality=lesson_quality)
+            await self._grade_lessons(
+                used_lessons, helpful=lesson_helpful, quality=lesson_quality
+            )
             await self._record_learning(
-                manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps,
+                manifest, plan, skill_slugs, helpful=build_helpful, gaps=review_gaps,
                 code_backend=code_backend, project_dir=project_dir,
             )
             # Settle before persistence so manifest, DB, API, and outcome report
@@ -7317,7 +7455,7 @@ class StudioRunner:
             self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
-                used_lessons, helpful=False,
+                used_lessons, helpful=None,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
             )
             await self._record_learning(manifest, plan, skill_slugs, helpful=False)
@@ -7348,7 +7486,7 @@ class StudioRunner:
             self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
-                used_lessons, helpful=False,
+                used_lessons, helpful=None,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
             )
             await self._record_learning(manifest, plan, skill_slugs, helpful=False)

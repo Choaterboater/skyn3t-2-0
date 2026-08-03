@@ -814,6 +814,122 @@ def cortex_promote_skill(
     )
 
 
+_LEGACY_SKILL_EVIDENCE_OPTION = typer.Option(
+    ..., "--evidence", help="Local regular file holding the exact source evidence."
+)
+
+@cortex_app.command("migrate-legacy-skill")
+def cortex_migrate_legacy_skill(
+    slug: str = typer.Argument(..., help="Legacy github-distilled skill slug to curate."),
+    source_url: str = typer.Option(
+        ..., "--source-url", help="Canonical https://github.com/<owner>/<repo> source."
+    ),
+    pinned_revision: str = typer.Option(
+        ..., "--revision", help="Full immutable 40- or 64-character Git object ID."
+    ),
+    source_path: str = typer.Option(
+        ..., "--source-path", help="Safe relative upstream evidence path, for example README.md."
+    ),
+    evidence: Path = _LEGACY_SKILL_EVIDENCE_OPTION,
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Create the new quarantined candidate after the default dry run has been reviewed.",
+    ),
+) -> None:
+    """Curate one legacy external skill into a new, still-quarantined candidate.
+
+    The default is a read-only preview. Even with ``--apply``, the old skill is
+    retained inert and the new candidate is not promoted; a separate explicit
+    ``cortex promote-skill`` action remains required after review.
+    """
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    console = _console()
+    try:
+        if evidence.is_symlink() or not evidence.is_file():
+            raise ValueError("evidence must be a regular local file")
+        raw_evidence = evidence.read_bytes()
+        library = SkillLibrary(get_settings().data_dir / "skills")
+        result = library.migrate_legacy_external(
+            slug,
+            source_url=source_url,
+            pinned_revision=pinned_revision,
+            source_path=source_path,
+            evidence=raw_evidence,
+            dry_run=not apply,
+        )
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Legacy migration not performed[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+
+    if not apply:
+        console.print(
+            f"[cyan]Dry run[/cyan] — [bold]{result['legacy_slug']}[/bold] stays inert; "
+            f"would create quarantined candidate [cyan]{result['candidate_slug']}[/cyan]."
+        )
+        console.print(
+            f"Evidence: {result['evidence_sha256']}  "
+            f"({result['evidence_bytes']} bytes; {result['source_path']})"
+        )
+        console.print(
+            "Review the receipt, then rerun with [cyan]--apply[/cyan]. Nothing was promoted."
+        )
+        return
+
+    if result["status"] == "existing":
+        console.print(
+            f"[yellow]Already present[/yellow] — quarantined candidate "
+            f"[cyan]{result['candidate_slug']}[/cyan] was left unchanged."
+        )
+        return
+
+    if result["status"] == "repaired":
+        console.print(
+            f"[green]Restored evidence[/green] for quarantined candidate "
+            f"[cyan]{result['candidate_slug']}[/cyan]. No skill was promoted."
+        )
+        return
+    console.print(
+        f"[green]Created[/green] quarantined candidate [cyan]{result['candidate_slug']}[/cyan]. "
+        "The legacy record remains inert; no skill was promoted."
+    )
+
+
+@cortex_app.command("skill-hubs")
+def cortex_skill_hubs() -> None:
+    """Show the most recent configured local skill-hub import report."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    console = _console()
+    report = SkillLibrary(get_settings().data_dir / "skills").hub_report()
+    reports = list(report.get("reports") or [])
+    if not reports:
+        console.print("[dim]No configured local skill hubs have been imported yet.[/dim]")
+        return
+    updated_at = float(report.get("updated_at") or 0.0)
+    if updated_at:
+        stamp = datetime.fromtimestamp(updated_at, tz=UTC).isoformat(timespec="seconds")
+        console.print(f"[dim]Last configured-hub import: {stamp}[/dim]")
+    table = _table(
+        "Configured local skill hubs",
+        ["path", "status", "imported", "active", "quarantined", "skipped", "reason"],
+    )
+    for item in reports:
+        table.add_row(
+            str(item.get("path") or item.get("configured_path") or ""),
+            str(item.get("status") or "unknown"),
+            str(item.get("imported", 0)),
+            str(item.get("active", 0)),
+            str(item.get("quarantined", 0)),
+            str(item.get("skipped", 0)),
+            str(item.get("reason") or ""),
+        )
+    console.print(table)
+
+
 _EVALUATION_KIND_OPTION = typer.Option(
     ..., "--kind", help="Candidate kind: prompt, skill_policy, or router_policy."
 )
@@ -1046,18 +1162,25 @@ def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any
     learning = patterns = skills = rag = None
     try:
         from skyn3t.intelligence.learning_loop import LearningLoop
+
         learning = LearningLoop(store=memory, event_bus=event_bus)
     except Exception:  # noqa: BLE001
         pass
     try:
         from skyn3t.intelligence.build_patterns import BuildPatternBoard
+
         patterns = BuildPatternBoard(settings.data_dir / "build_patterns.json")
     except Exception:  # noqa: BLE001
         pass
     try:
         from skyn3t.intelligence.skill_library import SkillLibrary, seed_default_skills
+
         skills = SkillLibrary(settings.data_dir / "skills")
         seed_default_skills(skills)  # starter skills so builds have advice from day 1
+        # Configured local hubs are an explicit operator trust boundary. The
+        # loader parses Markdown only, never executes hub content, records a
+        # byte-hash/evidence receipt, and keeps per-path status for inspection.
+        skills.import_configured_hubs(getattr(settings, "skills_hub_paths", ""))
     except Exception:  # noqa: BLE001
         pass
     # Shared persistent RAG + live experience ingestion. The ingestor subscribes

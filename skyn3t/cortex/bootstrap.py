@@ -19,8 +19,10 @@ awaited.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus, EventType
@@ -32,6 +34,7 @@ from skyn3t.cortex.proposal_store import (
     ProposalStore,
     ProposalType,
 )
+from skyn3t.studio.lab_policy import LabAutonomyPolicy
 
 try:
     import structlog
@@ -42,6 +45,14 @@ except Exception:  # pragma: no cover - logging is best-effort
 
 # Default confidence a safe proposal must reach to auto-apply.
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.75
+
+# GitHub's owner grammar is deliberately tighter than its repository grammar:
+# owners cannot contain dots or underscores, while repository names can. The
+# Lab-only auto-approval path uses these expressions as a source-identity
+# boundary, not as a best-effort URL parser. Anything less than an exact GitHub
+# repository identity stays behind the normal ingest gate.
+_GITHUB_OWNER_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+_GITHUB_REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
 def _proposal_tuning_overrides(prop: Proposal) -> dict[str, Any]:
@@ -297,7 +308,11 @@ class Cortex:
             await self._emit_decided(prop)
             return prop
         if decision == "apply":
-            self.store.set_status(prop.id, ProposalStatus.APPROVED, reason="auto-approved (safe)")
+            self.store.set_status(
+                prop.id,
+                ProposalStatus.APPROVED,
+                reason=self._auto_approval_reason(prop),
+            )
             await self._emit_decided(prop)
             if self._should_ratchet(prop):
                 return await self._apply_with_ratchet(prop.id) or prop
@@ -307,20 +322,110 @@ class Cortex:
 
     def _decide(self, prop: Proposal) -> str:
         """Return one of: 'apply', 'gate', 'hold'."""
-        gates_on = self.settings.approval_gates
+        lab_policy = LabAutonomyPolicy.from_settings(self.settings)
+        gates_on = bool(self.settings.approval_gates) and lab_policy.approval_gates_enabled
         is_gated_type = prop.type in GATED_TYPES
+        # Lab autonomy explicitly permits GitHub *research* without a repetitive
+        # approval click. Keep the exception narrow: only RepoScout proposals
+        # with a canonical GitHub repo identity clear this branch. The INGEST
+        # handler still writes its RAG record as external_unreviewed and distills
+        # any skill as quarantined/external-candidate, so this never makes remote
+        # README text prompt-injectable or auto-promoted.
+        if self._is_lab_github_research(prop, lab_policy):
+            return "apply"
+        # Any other external ingest keeps its explicit review boundary even in a
+        # lab. This includes target-less curiosity proposals and malformed or
+        # non-GitHub sources, which must not gain authority from the Lab toggle.
+        if lab_policy.enabled and prop.type is ProposalType.INGEST:
+            return "gate"
         if gates_on and is_gated_type and self._can_auto_ratchet_gated(prop):
             return "apply"
         if gates_on and (is_gated_type or not prop.safe):
             return "gate"
         if (
             prop.safe
-            and self.settings.cortex_auto_approve_safe
+            and (self.settings.cortex_auto_approve_safe or lab_policy.enabled)
             and prop.confidence >= self.auto_approve_threshold
         ):
             return "apply"
         # Safe but low-confidence, or gates off but still wants review.
         return "gate" if gates_on else "hold"
+
+    @staticmethod
+    def _is_safe_github_repo_identity(value: object) -> bool:
+        """Accept one exact, non-URL ``owner/repo`` GitHub identity.
+
+        This deliberately does not try to repair, decode, or normalize an
+        input. The Lab exception is an authorization boundary, so a value that
+        is not already a safe identity must stay gated rather than receiving a
+        best-effort interpretation.
+        """
+        if not isinstance(value, str) or value != value.strip():
+            return False
+        owner, separator, repo = value.partition("/")
+        if not separator or "/" in repo:
+            return False
+        return bool(
+            _GITHUB_OWNER_RE.fullmatch(owner)
+            and _GITHUB_REPO_RE.fullmatch(repo)
+            and not repo.lower().endswith(".git")
+        )
+
+    @classmethod
+    def _is_canonical_github_repo_url(cls, value: object) -> bool:
+        """Accept only ``https://github.com/owner/repo`` with no URL extras."""
+        if not isinstance(value, str) or value != value.strip():
+            return False
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            return False
+        # ``netloc`` rather than just ``hostname`` rejects credentials, ports,
+        # hostname tricks, and alternate GitHub endpoints. Exact reconstruction
+        # below then rejects query, fragment, encoded, and path variants.
+        if parsed.scheme != "https" or parsed.netloc != "github.com":
+            return False
+        path_parts = parsed.path.split("/")
+        if len(path_parts) != 3 or path_parts[0] != "":
+            return False
+        owner, repo = path_parts[1:]
+        if not cls._is_safe_github_repo_identity(f"{owner}/{repo}"):
+            return False
+        return value == f"https://github.com/{owner}/{repo}"
+
+    @classmethod
+    def _is_repo_scout_github_research(cls, prop: Proposal) -> bool:
+        """Whether ``prop`` is RepoScout's bounded GitHub research form.
+
+        A proposal label is not enough: Lab auto-approval requires either an
+        exact canonical ``https://github.com/owner/repo`` URL or a safe
+        ``owner/repo`` identity. When a URL is supplied, it is authoritative
+        because the ingest handler consumes it before ``repo``; an invalid URL
+        must therefore not fall back to a second, benign-looking payload field.
+        """
+        if prop.type is not ProposalType.INGEST:
+            return False
+        if str(prop.source or "").strip().lower() != "repo_scout":
+            return False
+        payload = prop.payload or {}
+        url = payload.get("url")
+        if url:
+            return cls._is_canonical_github_repo_url(url)
+        return cls._is_safe_github_repo_identity(payload.get("repo"))
+
+    def _is_lab_github_research(
+        self, prop: Proposal, lab_policy: LabAutonomyPolicy | None = None
+    ) -> bool:
+        policy = lab_policy or LabAutonomyPolicy.from_settings(self.settings)
+        return (
+            not policy.approval_required("github_research")
+            and self._is_repo_scout_github_research(prop)
+        )
+
+    def _auto_approval_reason(self, prop: Proposal) -> str:
+        if self._is_lab_github_research(prop):
+            return "auto-approved (lab autonomy GitHub research; external content quarantined)"
+        return "auto-approved (safe)"
 
     def _should_ratchet(self, prop: Proposal) -> bool:
         return (

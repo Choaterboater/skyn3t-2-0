@@ -2529,6 +2529,227 @@ async def test_skills_payload_surfaces_build_patterns():
     assert res["patterns"][0]["shape"] == {"stages": 5}
 
 
+async def test_skills_payload_reports_active_quarantined_and_promotion_ready(tmp_path):
+    from skyn3t.intelligence.skill_library import (
+        SkillLibrary,
+        SkillProvenance,
+        content_sha256,
+    )
+
+    skills = SkillLibrary(tmp_path / "skills")
+    skills.add(
+        title="Local Python verification",
+        body="Run focused verification before delivery.",
+        stack="python",
+        tags=["python", "verification"],
+        slug="local-python",
+    )
+    ready = skills.add(
+        title="Evidence-complete external skill",
+        body="Treat imported guidance as advisory.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        slug="gh-acme-ready",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/ready",
+            pinned_revision="a" * 40,
+            content_hash=content_sha256("# retained evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+    legacy = skills.add(
+        title="Legacy external skill",
+        body="Do not inject before evidence is complete.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        slug="gh-acme-legacy",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/legacy",
+            pinned_revision="main",
+            content_hash=content_sha256("# legacy evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+
+    payload = await routes.list_skills(_state(skills=skills))
+
+    assert payload["summary"] == {
+        "registered": 3,
+        "active": 1,
+        "quarantined": 2,
+        "promotion_ready": 1,
+    }
+    rows = {row["slug"]: row for row in payload["skills"]}
+    assert rows["local-python"]["active"] is True
+    assert rows["gh-acme-ready"]["quarantined"] is True
+    assert rows["gh-acme-ready"]["provenance_complete"] is True
+    assert rows["gh-acme-ready"]["promotion_ready"] is True
+    assert rows["gh-acme-legacy"]["provenance_complete"] is False
+    assert rows["gh-acme-legacy"]["promotion_ready"] is False
+    assert ready.slug == "gh-acme-ready"
+    assert legacy.slug == "gh-acme-legacy"
+
+
+async def test_skills_payload_uses_library_promotion_gate_for_readiness(tmp_path):
+    from skyn3t.intelligence.skill_library import Skill, SkillProvenance, content_sha256
+
+    candidate = Skill(
+        slug="gh-gate-controlled",
+        title="Gate-controlled candidate",
+        body="Keep this candidate quarantined until the library approves it.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/gate-controlled",
+            pinned_revision="d" * 40,
+            content_hash=content_sha256("# evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+
+    class _Skills:
+        def __init__(self):
+            self.checked: list[str] = []
+
+        def all(self):
+            return [candidate]
+
+        def can_promote_external(self, slug: str) -> bool:
+            self.checked.append(slug)
+            return False
+
+    skills = _Skills()
+    payload = await routes.list_skills(_state(skills=skills))
+
+    [row] = payload["skills"]
+    assert skills.checked == [candidate.slug]
+    assert row["provenance_complete"] is True
+    assert row["promotion_ready"] is False
+    assert payload["summary"]["promotion_ready"] == 0
+
+async def test_external_skill_promotion_returns_actionable_refusal_and_promotes_one(tmp_path):
+    from skyn3t.intelligence.skill_library import (
+        SkillLibrary,
+        SkillProvenance,
+        content_sha256,
+    )
+
+    skills = SkillLibrary(tmp_path / "skills")
+    unsafe = skills.add(
+        title="Unsafe external skill",
+        body="This must stay quarantined.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        slug="gh-acme-unsafe",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/unsafe",
+            pinned_revision="main",
+            content_hash=content_sha256("# unsafe evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+    ready = skills.add(
+        title="Ready external skill",
+        body="This can become advisory build context after review.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        slug="gh-acme-safe",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/safe",
+            pinned_revision="b" * 40,
+            content_hash=content_sha256("# ready evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+    state = _state(skills=skills)
+
+    refused = await routes.promote_external_skill(state, unsafe.slug)
+    assert refused["status"] == "refused"
+    assert refused["promoted"] is False
+    assert "immutable" in refused["message"]
+    assert "hygiene:quarantine" in unsafe.tags
+
+    promoted = await routes.promote_external_skill(state, ready.slug)
+    assert promoted["status"] == "promoted"
+    assert promoted["promoted"] is True
+    assert promoted["skill"]["active"] is True
+    assert promoted["skill"]["quarantined"] is False
+    assert promoted["skill"]["provenance_complete"] is True
+    assert promoted["skill"]["promotion_ready"] is False
+    assert "external-promoted" in ready.tags
+    assert "hygiene:quarantine" not in ready.tags
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated"
+)
+def test_external_skill_promotion_route_requires_auth_and_preserves_evidence_gate(tmp_path):
+    if not web_app.fastapi_available():
+        pytest.skip("fastapi not installed; cannot test route wrapper")
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from skyn3t.intelligence.skill_library import (
+        SkillLibrary,
+        SkillProvenance,
+        content_sha256,
+    )
+
+    skills = SkillLibrary(tmp_path / "skills")
+    unsafe = skills.add(
+        title="Unsafe route skill",
+        body="Do not promote without a full immutable pin.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        slug="gh-route-unsafe",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/route-unsafe",
+            pinned_revision="main",
+            content_hash=content_sha256("# unsafe route evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+    ready = skills.add(
+        title="Ready route skill",
+        body="Evidence-bound route promotion.",
+        stack="python",
+        tags=["github-distilled", "external-candidate", "hygiene:quarantine", "python"],
+        source="github-distilled",
+        slug="gh-route-ready",
+        provenance=SkillProvenance(
+            source_url="https://github.com/acme/route-ready",
+            pinned_revision="c" * 40,
+            content_hash=content_sha256("# ready route evidence\\n"),
+            source_path="README.md",
+        ),
+    )
+    state = _state(skills=skills)
+    state.settings.auth_token = "secret"
+    app = FastAPI()
+    app.include_router(routes.build_router(state))
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer secret"}
+
+    assert client.post(f"/api/skills/{ready.slug}/promote").status_code == 401
+
+    refused = client.post(f"/api/skills/{unsafe.slug}/promote", headers=headers)
+    assert refused.status_code == 200
+    assert refused.json()["status"] == "refused"
+    assert "hygiene:quarantine" in unsafe.tags
+
+    promoted = client.post(f"/api/skills/{ready.slug}/promote", headers=headers)
+    assert promoted.status_code == 200
+    assert promoted.json()["status"] == "promoted"
+    assert promoted.json()["skill"]["active"] is True
+    assert "external-promoted" in ready.tags
+
 async def test_agent_catalog_preview_and_import(tmp_path):
     from skyn3t.intelligence.skill_library import SkillLibrary
 

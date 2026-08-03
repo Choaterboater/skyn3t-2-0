@@ -3518,6 +3518,56 @@ async def get_project_product(state: AppState, slug: str) -> dict[str, Any]:
     }
 
 
+async def capture_project_human_feedback(
+    state: AppState,
+    slug: str,
+    *,
+    feedback: Any,
+    category: Any = None,
+    context: Any = None,
+    rating: Any = None,
+) -> dict[str, Any]:
+    """Distil a delivered project's human design feedback into shared lessons.
+
+    The raw reviewer text is validated by ``human_feedback`` but intentionally
+    is not echoed back or stored as a prompt. Only fixed, durable design rules
+    are persisted to MemoryStore for future web-design builds to retrieve.
+    """
+    from skyn3t.intelligence.human_feedback import (
+        HUMAN_DESIGN_LESSON_STACK,
+        HUMAN_DESIGN_LESSON_STAGE,
+        capture_human_design_feedback,
+    )
+
+    _project, manifest = _require_delivered_project(state, slug)
+    stack = str(manifest.stack or "").strip()
+    if not stack:
+        raise ValueError("project has no detected build stack")
+    result = await capture_human_design_feedback(
+        getattr(state, "memory", None),
+        feedback=feedback,
+        category=category,
+        context=context,
+        rating=rating,
+        source_build=manifest.build_id,
+        event_bus=getattr(state, "event_bus", None),
+    )
+    return {
+        "slug": slug,
+        "stack": stack,
+        "lesson_stack": HUMAN_DESIGN_LESSON_STACK,
+        "stage": HUMAN_DESIGN_LESSON_STAGE,
+        "feedback": {
+            "category": result.feedback.category,
+            "context": result.feedback.context,
+            "rating": result.feedback.rating,
+        },
+        "captured": result.captured,
+        "deduped": result.deduped,
+        "lessons": [lesson.to_dict() for lesson in result.lessons],
+    }
+
+
 async def patch_project_product(
     state: AppState,
     slug: str,
@@ -4927,6 +4977,164 @@ async def decide_proposal(state: AppState, proposal_id: str, approved: bool, rea
     return {"proposal_id": proposal_id, "status": rec.status}
 
 
+_SKILL_QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
+_EXTERNAL_CANDIDATE_SKILL_TAG = "external-candidate"
+_EXTERNAL_GITHUB_SKILL_SOURCE = "github-distilled"
+_EXTERNAL_PROMOTION_REFUSAL = (
+    "Not promoted. Only a quarantined GitHub-derived external candidate with a "
+    "canonical repository URL, immutable 40/64-character revision, SHA-256 "
+    "provenance hash, and source path can be promoted. Migrated candidates also "
+    "need retained source bytes that match that hash; repair the provenance or "
+    "receipt and try again."
+)
+
+
+def _skill_value(skill: Any, name: str, default: Any = None) -> Any:
+    if isinstance(skill, dict):
+        return skill.get(name, default)
+    return getattr(skill, name, default)
+
+
+def _skill_tags(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(tag) for tag in value if str(tag).strip()]
+
+
+def _external_provenance_complete(skill: Any) -> bool:
+    """Whether a GitHub-derived skill has complete immutable provenance fields.
+
+    This is intentionally distinct from promotion readiness: older candidates
+    are provenance-complete even when no retained-byte receipt exists, while
+    migrated candidates additionally need that local receipt to verify.
+    """
+    source = str(_skill_value(skill, "source", "") or "").strip().lower()
+    if source != _EXTERNAL_GITHUB_SKILL_SOURCE:
+        return False
+    try:
+        from skyn3t.intelligence.skill_library import _has_complete_github_provenance
+
+        return bool(_has_complete_github_provenance(_skill_value(skill, "provenance")))
+    except Exception:  # noqa: BLE001 - unavailable provenance is never complete
+        return False
+
+
+def _external_promotion_ready(
+    library: Any,
+    skill: Any,
+    *,
+    tags: list[str] | None = None,
+) -> bool:
+    """Whether the live SkillLibrary will allow this one candidate to promote.
+
+    The read-only library predicate is the sole readiness authority because a
+    migrated legacy candidate must also verify its retained source bytes. The
+    route keeps a narrow fallback of ``False`` rather than guessing from
+    metadata when a custom library does not expose that predicate.
+    """
+    tagset = {
+        tag.strip().lower()
+        for tag in (tags or _skill_tags(_skill_value(skill, "tags", [])))
+    }
+    source = str(_skill_value(skill, "source", "") or "").strip().lower()
+    slug = str(_skill_value(skill, "slug", "") or "").strip()
+    if not (
+        slug
+        and source == _EXTERNAL_GITHUB_SKILL_SOURCE
+        and _EXTERNAL_CANDIDATE_SKILL_TAG in tagset
+        and bool(tagset & _SKILL_QUARANTINE_TAGS)
+    ):
+        return False
+    checker = getattr(library, "can_promote_external", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(slug))
+    except Exception:  # noqa: BLE001 - failed checks must keep candidates inert
+        return False
+
+
+def _skill_payload(skill: Any, *, library: Any = None) -> dict[str, Any]:
+    """Serialize one skill plus its safe injection/promotion state."""
+    if isinstance(skill, dict):
+        out = dict(skill)
+        title = str(out.get("title") or out.get("name") or "")
+        body = str(out.get("body") or "")
+        out.setdefault("slug", str(out.get("id") or ""))
+        out.setdefault("title", title)
+        out.setdefault("name", title)
+        out.setdefault("stack", "")
+        if "description" not in out:
+            out["description"] = body[:160] + ("…" if len(body) > 160 else "")
+        out.setdefault("score", 0)
+        out.setdefault("source", "")
+    else:
+        title = str(getattr(skill, "title", "") or "")
+        body = str(getattr(skill, "body", "") or "")
+        out = {
+            "slug": getattr(skill, "slug", ""),
+            "title": title,
+            "name": title,  # SPA card reads s.name
+            "stack": getattr(skill, "stack", ""),
+            "description": body[:160] + ("…" if len(body) > 160 else ""),
+            "tags": list(getattr(skill, "tags", []) or []),
+            "score": getattr(skill, "score", 0),
+            "source": getattr(skill, "source", ""),
+        }
+
+    tags = _skill_tags(out.get("tags", []))
+    tagset = {tag.strip().lower() for tag in tags}
+    quarantined = bool(tagset & _SKILL_QUARANTINE_TAGS)
+    out["tags"] = tags
+    out["active"] = not quarantined
+    out["quarantined"] = quarantined
+    out["provenance_complete"] = _external_provenance_complete(skill)
+    out["promotion_ready"] = _external_promotion_ready(library, skill, tags=tags)
+    return out
+
+
+def _skills_summary(skills: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "registered": len(skills),
+        "active": sum(1 for skill in skills if skill.get("active") is True),
+        "quarantined": sum(1 for skill in skills if skill.get("quarantined") is True),
+        "promotion_ready": sum(1 for skill in skills if skill.get("promotion_ready") is True),
+    }
+
+
+async def promote_external_skill(state: AppState, slug: str) -> dict[str, Any]:
+    """Promote exactly one evidence-valid external candidate, never a batch.
+
+    ``SkillLibrary.promote_external`` owns the security contract. A refusal is
+    returned as structured data so the authenticated UI/API caller can explain
+    how to make a candidate eligible without treating a rejected action as a
+    server outage.
+    """
+    candidate_slug = str(slug or "").strip()
+    if not candidate_slug:
+        raise ValueError("skill slug is required")
+    promoter = getattr(getattr(state, "skills", None), "promote_external", None)
+    if not callable(promoter):
+        raise RuntimeError("the skills hub does not support reviewed external promotion")
+    promoted = promoter(candidate_slug)
+    if hasattr(promoted, "__await__"):
+        promoted = await promoted
+    if promoted is None:
+        return {
+            "status": "refused",
+            "promoted": False,
+            "slug": candidate_slug,
+            "message": _EXTERNAL_PROMOTION_REFUSAL,
+        }
+    return {
+        "status": "promoted",
+        "promoted": True,
+        "slug": candidate_slug,
+        "skill": _skill_payload(promoted, library=getattr(state, "skills", None)),
+        "message": f"Promoted {getattr(promoted, 'title', candidate_slug)} for future builds.",
+    }
+
+
 async def list_skills(state: AppState) -> dict[str, Any]:
     skills = state.skills
     patterns: list[dict[str, Any]] = []
@@ -4946,29 +5154,18 @@ async def list_skills(state: AppState) -> dict[str, Any]:
             res = getter()
             if hasattr(res, "__await__"):
                 res = await res
-            out = []
-            for s in res:
-                if isinstance(s, dict):
-                    out.append(s)
-                else:
-                    title = getattr(s, "title", "")
-                    body = str(getattr(s, "body", "") or "")
-                    out.append({
-                        "slug": getattr(s, "slug", ""),
-                        "title": title,
-                        "name": title,  # SPA card reads s.name
-                        "stack": getattr(s, "stack", ""),
-                        "description": body[:160] + ("…" if len(body) > 160 else ""),
-                        "tags": list(getattr(s, "tags", []) or []),
-                        "score": getattr(s, "score", 0),
-                        "source": getattr(s, "source", ""),
-                    })
-            return {"skills": out, "patterns": patterns}
+            out = [_skill_payload(skill, library=skills) for skill in res]
+            return {"skills": out, "patterns": patterns, "summary": _skills_summary(out)}
         except Exception:  # noqa: BLE001
             pass
     # Degraded: surface configured skill-hub paths from settings.
     paths = [p for p in state.settings.skills_hub_paths.split(",") if p.strip()]
-    return {"skills": [], "patterns": patterns, "hub_paths": paths}
+    return {
+        "skills": [],
+        "patterns": patterns,
+        "summary": _skills_summary([]),
+        "hub_paths": paths,
+    }
 
 
 def _catalog_entry_payload(entry: Any) -> dict[str, Any]:
@@ -7088,6 +7285,36 @@ def build_router(state: AppState) -> Any:
                 detail="product contract could not be read",
             ) from None
 
+    @router.post("/projects/{slug}/feedback", dependencies=[auth])
+    async def _project_feedback(
+        slug: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        from skyn3t.intelligence.human_feedback import (
+            HumanFeedbackPersistenceError,
+            HumanFeedbackValidationError,
+        )
+
+        try:
+            return await capture_project_human_feedback(
+                state,
+                slug,
+                feedback=body.get("feedback"),
+                category=body.get("category"),
+                context=body.get("context"),
+                rating=body.get("rating"),
+            )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except HumanFeedbackValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except HumanFeedbackPersistenceError:
+            raise HTTPException(status_code=503, detail="feedback learning store is unavailable") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
     @router.patch("/projects/{slug}/product", dependencies=[auth])
     async def _patch_project_product(
         slug: str,
@@ -7802,6 +8029,15 @@ def build_router(state: AppState) -> Any:
     @router.get("/skills", dependencies=[auth])
     async def _skills() -> dict[str, Any]:
         return await list_skills(state)
+
+    @router.post("/skills/{slug}/promote", dependencies=[auth])
+    async def _promote_external_skill(slug: str) -> dict[str, Any]:
+        try:
+            return await promote_external_skill(state, slug)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.get("/agent-catalog", dependencies=[auth])
     async def _agent_catalog(

@@ -122,11 +122,23 @@ passes. A failed verification keeps the previous healthy URL active.
 - **Adversarial critic gate.** A critic tries to break the result before delivery.
 - **Closed learning loop.** Lessons are injected into stage prompts and graded by
   build outcome, so the factory gets measurably better over time.
+- **Human design feedback, carried forward.** A local project review can be
+  distilled into bounded, advisory design lessons. Those lessons are reused by
+  later web and native UI builds, then credited by delivered outcomes; a failed
+  build records neutral exposure unless it can identify a specific conflict.
+  Feedback never executes code or changes runtime settings by itself.
 - **Evidence-backed learning.** Prompt, skill-policy, and router-policy
   candidates can be compared against completed Golden ledgers and retained as
   immutable `review_required` evidence—never auto-applied. GitHub-derived
   skills remain quarantined until their source, commit, path, and content hash
   are verified and explicitly promoted.
+- **Curated local skill hubs.** Explicitly configured local Markdown hubs load at
+  normal startup, retain a byte-hash receipt, pass hygiene classification, and
+  expose a per-path audit report; they never execute hub scripts.
+- **Lab research without blind activation.** The personal-lab profile removes
+  repeat approval for bounded Repo Scout GitHub research, while every
+  source-derived skill remains quarantined until its evidence is reviewed and
+  explicitly promoted.
 - **Controlled catalog activation.** Local agent catalogs import as evidenced,
   quarantined candidates; an explicit `activate=true` action validates the
   retained body and path before a role can guide a build.

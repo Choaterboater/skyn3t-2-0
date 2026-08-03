@@ -21,6 +21,26 @@ The `template` entry is intentionally `{ "id": "", "version": 0,
 agents, rather than selecting from a template catalog. The contract is evidence
 of the actual build decision, not an invented catalog claim.
 
+## Local human design feedback
+
+A review note submitted for a delivered project can become a short, reusable
+**advisory** design lesson. The Projects page sends the note to
+`POST /api/projects/{slug}/feedback`; the endpoint accepts the review text and
+an optional design category.
+
+SkyN3t stores only bounded, distilled guidance in the shared `human_design`
+lesson scope. The original comment is not treated as executable instructions,
+and it cannot change settings, invoke tools, or publish a project. During a
+later UI/design build, the runner retrieves matching human-design lessons
+alongside same-stack lessons. A delivered build gives used lessons positive,
+quality-weighted credit. A failed build records neutral exposure unless later
+verifier evidence can attribute a specific conflict, avoiding collective blame
+for every piece of advisory guidance in the prompt.
+
+This is intentionally local and opt-in: feedback is only captured when a user
+submits it. It is separate from remote GitHub/RAG material and does not train or
+modify the underlying model.
+
 ## Evidence-only configuration evaluation
 
 Use two completed, compatible Golden ledgers and a narrow JSON candidate:
@@ -90,6 +110,69 @@ Local agent catalogs are also evidence-bound: import creates quarantined
 An API caller must pass `activate: true` to validate and promote that exact
 local content to `catalog-promoted`. See [Swarm and skills](SWARM_SKILLS.md)
 for the runtime role and replay behavior.
+
+## Meaningful build-pattern evidence
+
+Pattern reuse now fingerprints the meaningful build shape: ordered stage names,
+agent types, declared capabilities, optional/gated roles, test-first choice,
+and bounded best-of-N setting. It deliberately excludes the brief, file names,
+and free-form notes. That lets the scoreboard distinguish a real test-first
+pipeline from a superficially similar pipeline without retaining project text.
+
+## Lab autonomy and Cortex triage
+
+With the personal-lab autonomy profile enabled, bounded Repo Scout proposals
+that identify a canonical GitHub repository can proceed without a repetitive
+human decision. Cortex records the Lab-specific reason in the proposal audit
+trail. This affects only the research/triage action: fetched source material is
+still marked `external_unreviewed`, and any resulting skill remains a
+quarantined candidate. Non-GitHub, malformed, deployment, credential, runtime,
+and other high-impact actions retain their normal gates.
+
+## Curated local skill hubs
+
+Set `SKYN3T_SKILLS_HUB_PATHS` to one or more comma-separated **local** skill
+folders. SkyN3t loads those Markdown files during normal CLI and web startup,
+after seed skills, without executing hub scripts. Every accepted file is
+namespaced, byte-hashed, retained below the local skill library, and passed
+through skill hygiene. A missing, unsupported, or symlinked hub is skipped and
+reported rather than silently becoming build guidance.
+
+```powershell
+$env:SKYN3T_SKILLS_HUB_PATHS = 'D:\Shared\skills,D:\Team\reviewed-skills'
+skyn3t cortex skill-hubs
+```
+
+The command shows the last per-path import report, including active,
+quarantined, skipped, and reason counts. An explicitly configured local folder
+is the trust boundary; remote repositories are not fetched by this loader.
+
+## Safe legacy-skill migration
+
+Older `github-distilled` records that lack a complete immutable receipt are
+never bulk-enabled. Curate one record at a time with a local copy of the exact
+reviewed source evidence. The first command is a dry run; it changes nothing:
+
+```powershell
+skyn3t cortex migrate-legacy-skill <legacy-slug> `
+  --source-url https://github.com/owner/repository `
+  --revision <full-40-or-64-character-git-sha> `
+  --source-path README.md `
+  --evidence .\reviewed-source.md
+```
+
+After checking the displayed hash and path, rerun the same command with
+`--apply`. SkyN3t retains the evidence bytes, creates a new quarantined
+successor, and leaves the original legacy record inert. A receipt is rechecked
+at promotion time; a missing or altered receipt cannot be promoted. Repeating
+an identical `--apply` safely repairs only that still-quarantined matching
+receipt; a mismatch or already-promoted record is refused. Promotion remains a
+separate, one-skill human action:
+
+```powershell
+skyn3t cortex promote-skill <new-candidate-slug>
+```
+
 ## Deliberate limits
 
 This first phase does not automatically mutate runtime settings, write code,

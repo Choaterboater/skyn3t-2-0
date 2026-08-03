@@ -923,25 +923,31 @@ class MemoryStore:
         }
 
     async def grade_lesson(
-        self, lesson_id: int, helpful: bool, quality: float | None = None
+        self, lesson_id: int, helpful: bool | None, quality: float | None = None
     ) -> None:
-        """Grade a lesson by the outcome of the build that reused it.
+        """Record a lesson's exposure or outcome after it was reused.
 
-        ``quality`` (0..1, e.g. the build's score/100) gives a CONTINUOUS reward
-        accumulated into ``score``: a lesson reused by strong builds rises faster
-        than one scraping a low 'go', and a near-miss penalizes less than a full
-        failure. Omitted -> the binary +1/-1 (score stays helpful - hurt).
+        ``quality`` (0..1, e.g. the build's score/100) gives a continuous reward
+        for attributable positive/negative outcomes. ``helpful=None`` is a
+        neutral exposure: it increments ``times_used`` without inventing a
+        helpful/hurt judgement when a whole failed build cannot identify which
+        advisory lesson mattered. Omitted quality retains binary +1/-1 grading.
         """
         async with self._session() as s:
             # SQL-side atomic increments so the database performs the arithmetic
             # under its own write lock — safe against concurrent grading
             # (no lost-update from a Python read-modify-write).
-            help_inc = 1 if helpful else 0
-            hurt_inc = 0 if helpful else 1
-            if quality is None:
-                reward = 1.0 if helpful else -1.0
+            if helpful is None:
+                help_inc = 0
+                hurt_inc = 0
+                reward = 0.0
             else:
-                reward = max(0.0, min(1.0, quality)) * 2.0 - 1.0
+                help_inc = 1 if helpful else 0
+                hurt_inc = 0 if helpful else 1
+                if quality is None:
+                    reward = 1.0 if helpful else -1.0
+                else:
+                    reward = max(0.0, min(1.0, quality)) * 2.0 - 1.0
             result = await s.execute(
                 update(LessonRow)
                 .where(LessonRow.id == lesson_id)

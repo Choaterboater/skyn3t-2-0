@@ -8,6 +8,7 @@ export default function Cortex() {
   const [search, setSearch] = useState("");
   const [candidateGoal, setCandidateGoal] = useState("");
   const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [rerunNodes, setRerunNodes] = useState({});
   const { data, isLoading, error } = useQuery({
     queryKey: ["proposals"],
     // Inbox = only proposals genuinely awaiting a decision (not already
@@ -49,6 +50,19 @@ export default function Cortex() {
       qc.invalidateQueries({ queryKey: ["cortex-candidates"] });
       qc.invalidateQueries({ queryKey: ["settings"] });
     },
+  });
+
+  const { data: graphData, isLoading: graphLoading, error: graphError } = useQuery({
+    queryKey: ["cortex-graphs"],
+    queryFn: queryFn("/cortex/graphs?limit=8"),
+  });
+  const graphRuns = graphData?.runs || [];
+  const rerunGraph = useMutation({
+    mutationFn: ({ runId, fromNodeId }) =>
+      apiPost(`/cortex/graphs/${encodeURIComponent(runId)}/rerun`, {
+        from_node_id: fromNodeId,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["cortex-graphs"] }),
   });
 
   // What cortex has actually changed — proof the self-improvement loops take
@@ -317,6 +331,129 @@ export default function Cortex() {
             <Empty icon="◇">No code candidates have run yet.</Empty>
           </div>
         )}
+      </Panel>
+
+      <Panel className="mb-6">
+        <PanelHead
+          label="Durable graph experiments"
+          right={
+            <span className="font-mono text-[11px] text-ash">
+              human-triggered · review only
+            </span>
+          }
+        />
+        <div className="border-b border-hairline bg-void/35 px-4 py-3 text-sm text-ash">
+          Select a completed preflight node to rerun only its downstream branch.
+          Existing build files, policies, and candidates are never changed; the result
+          remains evidence for review.
+        </div>
+        {graphError ? (
+          <p className="px-4 py-3 font-mono text-[11px] text-ember">
+            Graph history unavailable: {graphError.message}
+          </p>
+        ) : graphLoading ? (
+          <Empty icon="≋">Loading durable graph evidence…</Empty>
+        ) : graphData?.available === false ? (
+          <Empty icon="◇">Graph history is unavailable right now.</Empty>
+        ) : graphRuns.length === 0 ? (
+          <Empty icon="◇">
+            No completed build preflights yet. The next Studio build will appear here.
+          </Empty>
+        ) : (
+          <div className="divide-y divide-hairline/60">
+            {graphRuns.map((run) => {
+              const rerunnableNodes = run.rerunnable_nodes || [];
+              const selectedNode = rerunNodes[run.run_id] || rerunnableNodes[0] || "";
+              const comparison = run.comparison;
+              return (
+                <div key={run.run_id} className="px-4 py-4">
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Pill tone={run.status === "succeeded" ? "plasma" : "ash"}>
+                          {run.status}
+                        </Pill>
+                        {run.rerun ? <Pill tone="ash">forked evidence</Pill> : null}
+                        <span className="font-mono text-[10px] text-ash">
+                          {run.graph_id} · v{run.graph_version}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-bone">
+                        <span>{run.build?.slug || run.build?.build_id || "preflight"}</span>
+                        {run.build?.stack ? <span className="text-ash">{run.build.stack}</span> : null}
+                        <span className="text-ash">{run.run_id}</span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {Object.entries(run.nodes || {}).map(([node, status]) => (
+                          <span key={node} className="badge border-hairline text-ash">
+                            {node} · <span className="text-bone">{status}</span>
+                          </span>
+                        ))}
+                      </div>
+                      {comparison ? (
+                        <div className="mt-3 rounded border border-hairline bg-void/45 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Pill tone={comparison.outcome === "equivalent" ? "plasma" : "ember"}>
+                              {comparison.outcome}
+                            </Pill>
+                            <Pill tone="ash">{comparison.promotion_status}</Pill>
+                            <span className="font-mono text-[10px] text-ash">
+                              {comparison.rerun_nodes?.join(" → ")}
+                            </span>
+                          </div>
+                          <p className="mt-2 font-mono text-[10px] text-ash">
+                            immutable proof digests · {String(comparison.baseline_digest || "").slice(0, 12)} → {String(comparison.candidate_digest || "").slice(0, 12)}
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="rounded border border-hairline bg-void/40 p-3">
+                      <label className="block font-mono text-[10px] uppercase text-ash">
+                        Rerun from
+                        <select
+                          className="field mt-2 w-full"
+                          aria-label={`Rerun node for ${run.run_id}`}
+                          value={selectedNode}
+                          disabled={!rerunnableNodes.length || rerunGraph.isPending}
+                          onChange={(event) =>
+                            setRerunNodes((current) => ({
+                              ...current,
+                              [run.run_id]: event.target.value,
+                            }))
+                          }
+                        >
+                          {rerunnableNodes.map((node) => (
+                            <option key={node} value={node}>{node}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="btn-ember mt-3 w-full disabled:opacity-50"
+                        disabled={!selectedNode || rerunGraph.isPending}
+                        onClick={() => rerunGraph.mutate({ runId: run.run_id, fromNodeId: selectedNode })}
+                      >
+                        {rerunGraph.isPending ? "Rerunning evidence…" : "Rerun branch"}
+                      </button>
+                      <p className="mt-2 text-xs text-ash">
+                        A new immutable run is created. Promotion still needs review.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {rerunGraph.error ? (
+          <p className="border-t border-hairline px-4 py-3 font-mono text-[11px] text-ember">
+            Rerun failed: {rerunGraph.error.message}
+          </p>
+        ) : null}
+        {rerunGraph.data ? (
+          <p className="border-t border-hairline px-4 py-3 font-mono text-[11px] text-plasma">
+            Created {rerunGraph.data.graph?.run_id} · {rerunGraph.data.comparison?.outcome} · {rerunGraph.data.comparison?.promotion_status}
+          </p>
+        ) : null}
       </Panel>
 
       <Panel>

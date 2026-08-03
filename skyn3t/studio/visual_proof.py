@@ -15,7 +15,7 @@ import hashlib
 import json
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -23,6 +23,10 @@ from typing import Any, cast
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.stacks import GAME_STACKS
 from skyn3t.studio.visual_check import playwright_available
+from skyn3t.studio.visual_design_contract import (
+    CORE_DESIGN_TOKENS,
+    validate_visual_design_contract,
+)
 
 VISUAL_PROOF_SCHEMA_VERSION = 1
 _PIXEL_TOLERANCE = 2
@@ -312,6 +316,24 @@ _DOM_SNAPSHOT_SCRIPT = r"""() => {
       });
     }
   }
+  const rootStyle = getComputedStyle(document.documentElement);
+  const rootTokens = {};
+  for (const name of ['--bg', '--surface', '--text', '--accent', '--font-heading', '--font-body']) {
+    rootTokens[name] = rootStyle.getPropertyValue(name).trim();
+  }
+  const heading = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).find(isVisible);
+  const bodySample = document.body && isVisible(document.body) ? document.body : null;
+  const interactiveControls = Array.from(document.querySelectorAll(
+    'button, input, select, textarea, [role="button"], [role="tab"], [role="menuitem"]'
+  )).filter(isVisible).slice(0, 60).map((el) => {
+    const rect = el.getBoundingClientRect();
+    return {
+      tag: el.tagName.toLowerCase(),
+      label: cleanText(el.innerText || el.value || el.getAttribute('aria-label')).slice(0, 100),
+      width: Math.round(rect.width), height: Math.round(rect.height),
+    };
+  });
+
   return {
     ready_state: document.readyState,
     title: cleanText(document.title).slice(0, 200),
@@ -335,6 +357,13 @@ _DOM_SNAPSHOT_SCRIPT = r"""() => {
     html_overflow_x: getComputedStyle(document.documentElement).overflowX,
     body_overflow_x: document.body ? getComputedStyle(document.body).overflowX : '',
     overlaps,
+    root_tokens: rootTokens,
+    typography: {
+      has_heading: Boolean(heading),
+      heading_font_family: heading ? getComputedStyle(heading).fontFamily : "",
+      body_font_family: bodySample ? getComputedStyle(bodySample).fontFamily : "",
+    },
+    interactive_controls: interactiveControls,
   };
 }"""
 
@@ -449,7 +478,9 @@ def _high_confidence_overlap(pair: dict[str, Any], *, game_canvas: bool) -> bool
 
 
 def analyze_viewport_snapshot(
-    snapshot: dict[str, Any], *, stack: str = "",
+    snapshot: dict[str, Any], *,
+    stack: str = "",
+    design_contract: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[VisualProofIssue]]:
     """Turn browser measurements into deterministic, conservative findings.
 
@@ -494,6 +525,59 @@ def analyze_viewport_snapshot(
         "overlap_candidates": len(snapshot.get("overlaps") or []),
     }
     issues: list[VisualProofIssue] = []
+
+    contract = validate_visual_design_contract(design_contract)
+    if contract is not None:
+        root_tokens = snapshot.get("root_tokens")
+        observed_tokens = root_tokens if isinstance(root_tokens, Mapping) else {}
+        missing_tokens = [
+            token for token in CORE_DESIGN_TOKENS
+            if not str(observed_tokens.get(token) or "").strip()
+        ]
+        typography = snapshot.get("typography")
+        typography_row = typography if isinstance(typography, Mapping) else {}
+        expected_heading = str(contract["typography"]["heading"]).casefold()
+        heading_font = str(typography_row.get("heading_font_family") or "").casefold()
+        has_heading = bool(typography_row.get("has_heading"))
+        responsive = contract["responsive"]
+        max_width = int(responsive["mobile_max_width_px"])
+        min_target = int(responsive["min_control_size_px"])
+        raw_controls = snapshot.get("interactive_controls")
+        controls = raw_controls if isinstance(raw_controls, list) else []
+        undersized = [
+            item for item in controls if isinstance(item, Mapping)
+            and (int(item.get("width") or 0) < min_target
+                 or int(item.get("height") or 0) < min_target)
+        ][:12]
+        metrics["visual_design_contract"] = {
+            "checked": True,
+            "schema_version": contract["schema_version"],
+            "contract_id": contract["contract_id"],
+            "missing_root_tokens": missing_tokens,
+            "mobile_control_min_px": min_target,
+            "undersized_controls": len(undersized) if int(metrics["client_width"]) <= max_width else 0,
+        }
+        if missing_tokens:
+            issues.append(VisualProofIssue(
+                "design_contract_tokens_missing",
+                "visual design contract tokens are not defined on :root",
+                {"missing_tokens": missing_tokens, "contract_id": contract["contract_id"]},
+            ))
+        if has_heading and heading_font and expected_heading not in heading_font:
+            issues.append(VisualProofIssue(
+                "design_contract_heading_font_missing",
+                "a visible heading does not use the contract heading family",
+                {
+                    "expected_heading": contract["typography"]["heading"],
+                    "observed_font_family": typography_row.get("heading_font_family", ""),
+                },
+            ))
+        if int(metrics["client_width"]) <= max_width and undersized:
+            issues.append(VisualProofIssue(
+                "design_contract_small_controls",
+                f"{len(undersized)} interactive control(s) are below the {min_target}px mobile minimum",
+                {"minimum_px": min_target, "controls": undersized},
+            ))
 
     broken = snapshot.get("broken_images") or []
     if broken:
@@ -631,6 +715,7 @@ def _audit_viewport(
     route_dir: Path,
     stack: str,
     timeout_ms: int,
+    design_contract: Mapping[str, Any] | None = None,
 ) -> ViewportProof:
     result = ViewportProof(viewport.name, viewport.width, viewport.height)
     console_errors: list[str] = []
@@ -681,7 +766,9 @@ def _audit_viewport(
             snapshot = page.evaluate(_DOM_SNAPSHOT_SCRIPT)
             if not isinstance(snapshot, dict):
                 raise TypeError("DOM audit returned a non-object result")
-            result.metrics, result.issues = analyze_viewport_snapshot(snapshot, stack=stack)
+            result.metrics, result.issues = analyze_viewport_snapshot(
+                snapshot, stack=stack, design_contract=design_contract
+            )
         except Exception as exc:  # noqa: BLE001
             result.skipped = True
             result.reason = f"DOM audit unavailable: {_short_error(exc)}"
@@ -801,6 +888,7 @@ def audit_responsive_pages(
     stack: str = "",
     timeout_ms: int = 10_000,
     viewports: Sequence[ViewportSpec] = DEFAULT_VIEWPORTS,
+    design_contract: Mapping[str, Any] | None = None,
 ) -> list[ResponsiveVisualProof]:
     """Audit ``(route, url)`` pairs in one browser process and persist evidence.
 
@@ -859,6 +947,7 @@ def audit_responsive_pages(
                                 route_dir=route_dir,
                                 stack=stack_name,
                                 timeout_ms=max(1000, int(timeout_ms)),
+                                design_contract=design_contract,
                             ))
                         _finalize_route(proof)
                         proofs.append(proof)
@@ -886,6 +975,7 @@ def audit_responsive_page(
     stack: str = "",
     timeout_ms: int = 10_000,
     viewports: Sequence[ViewportSpec] = DEFAULT_VIEWPORTS,
+    design_contract: Mapping[str, Any] | None = None,
 ) -> ResponsiveVisualProof:
     """Single-page convenience wrapper around :func:`audit_responsive_pages`."""
     return audit_responsive_pages(
@@ -894,4 +984,5 @@ def audit_responsive_page(
         stack=stack,
         timeout_ms=timeout_ms,
         viewports=viewports,
+        design_contract=design_contract,
     )[0]

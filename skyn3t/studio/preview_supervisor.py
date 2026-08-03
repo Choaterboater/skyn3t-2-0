@@ -47,6 +47,7 @@ from skyn3t.studio.proof_reuse import (
     promote_reusable_web_proof,
 )
 from skyn3t.studio.visual_proof import audit_responsive_pages
+from skyn3t.studio.visual_design_contract import read_visual_design_contract
 
 PREVIEW_PROOF_SCHEMA_VERSION = 1
 _MOBILE_STACKS = frozenset({"react_native"})
@@ -1753,6 +1754,7 @@ class ProofLadderCoordinator:
                 pages,
                 visual_root,
                 stack=result.stack,
+                design_contract=read_visual_design_contract(pdir),
             )
             if not isinstance(proofs, Sequence) or isinstance(proofs, (str, bytes)):
                 proofs = [proofs]

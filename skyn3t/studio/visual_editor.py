@@ -30,6 +30,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from skyn3t.studio.visual_design_contract import read_visual_design_contract
+
 try:  # pragma: no cover - Windows import fallback.
     import fcntl
 except ImportError:  # pragma: no cover
@@ -390,6 +392,7 @@ class ManagedStylesheetState:
     exists: bool
     tokens: Mapping[str, str] = field(default_factory=dict)
     rules: Mapping[str, Mapping[str, Mapping[str, str]]] = field(default_factory=dict)
+    design_contract: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -403,6 +406,7 @@ class ManagedStylesheetState:
                 }
                 for breakpoint, selectors in self.rules.items()
             },
+            "design_contract": dict(self.design_contract) if self.design_contract else None,
         }
 
 
@@ -857,14 +861,37 @@ class VisualEditor:
 
     apply_image_edit = edit_image_src
 
+    def _visual_design_contract(self) -> dict[str, Any] | None:
+        return read_visual_design_contract(self.project_dir)
+
+    def _contract_tokens_for_editor(self) -> dict[str, str]:
+        contract = self._visual_design_contract()
+        raw_tokens = contract.get("tokens") if contract else None
+        if not isinstance(raw_tokens, Mapping):
+            return {}
+        tokens: dict[str, str] = {}
+        for token, value in raw_tokens.items():
+            if not isinstance(token, str) or not isinstance(value, str):
+                continue
+            try:
+                if _TOKEN_RE.fullmatch(token):
+                    tokens[token] = _validate_css_scalar(value)
+            except UnsafeEditError:
+                # Contract metadata may safely describe values the narrow visual
+                # editor cannot author (for example quoted font-family lists).
+                continue
+        return tokens
+
     def stylesheet_state(self) -> ManagedStylesheetState:
         """Return the current optimistic version and decoded managed overrides."""
         path = self._managed_stylesheet_path(must_exist=False)
+        contract = self._visual_design_contract()
         if not path.exists():
             return ManagedStylesheetState(
                 relative_path=MANAGED_STYLESHEET_RELATIVE_PATH.as_posix(),
                 current_sha=EMPTY_SHA256,
                 exists=False,
+                design_contract=contract,
             )
         try:
             text = path.read_text(encoding="utf-8")
@@ -882,6 +909,7 @@ class VisualEditor:
                 }
                 for breakpoint, selectors in state.rules.items()
             },
+            design_contract=contract,
         )
 
     managed_stylesheet_state = stylesheet_state
@@ -1386,7 +1414,7 @@ class VisualEditor:
                 state = self._decode_managed_state(before)
             else:
                 before = ""
-                state = _ManagedState()
+                state = _ManagedState(tokens=self._contract_tokens_for_editor())
             current_sha = _sha_text(before)
             if current_sha != normalized_sha:
                 raise StaleSourceError(

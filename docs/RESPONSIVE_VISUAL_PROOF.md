@@ -12,6 +12,13 @@ blank or near-empty main content, broken visible images, and conservative
 high-confidence element overlaps. A configured vision provider adds subjective
 review, but it cannot override a deterministic failure.
 
+When a delivered project contains `.skyn3t/visual-design-contract.json`, the same
+proof also verifies the shared visual baseline: required root design tokens,
+contract heading family when a visible heading exists, and a 40px minimum size
+for buttons and form controls on the mobile viewport. The contract records the
+photo policy too: prefer supplied or licensed real assets; generated imagery is
+only appropriate when the brief explicitly requests it.
+
 ## Run It
 
 Install the optional browser tooling once:

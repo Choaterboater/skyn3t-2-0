@@ -556,7 +556,14 @@ DESIGN_MD_HEADER = (
 def render_design_md(brief: str, design_summary: str = "") -> str:
     """The DESIGN.md content for a delivered web build: the deterministic token
     block verbatim, plus the designer stage's one-line direction when there is one."""
-    parts = [DESIGN_MD_HEADER, "", design_md_block(brief)]
+    parts = [
+        DESIGN_MD_HEADER,
+        "",
+        "Machine-readable companion: `.skyn3t/visual-design-contract.json` shares these "+
+        "design decisions with the visual editor and responsive proof.",
+        "",
+        design_md_block(brief),
+    ]
     if design_summary:
         parts += ["", "## Design direction", design_summary]
     return "\n".join(parts) + "\n"

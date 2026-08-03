@@ -115,8 +115,9 @@ passes. A failed verification keeps the previous healthy URL active.
   brief-derived design contract — AA-checked theme and accent (with an
   AA-fitted `--accent-text`), a curated font pair, a shape language, and a
   named layout archetype — injected beside the DESIGN BAR in codegen and
-  persisted as `DESIGN.md` in the delivered tree, so Improve runs re-read it
-  instead of drifting. Advisory AI-look detectors (indigo gradients,
+  persisted as `DESIGN.md` plus a versioned `.skyn3t/visual-design-contract.json`
+  in the delivered tree. The visual editor and responsive proof reuse that same
+  contract, so Improve runs do not drift and mobile/type regressions are visible. Advisory AI-look detectors (indigo gradients,
   Inter-first type, glassmorphism, placeholder copy, identical card grids)
   record on the manifest, brief-aware so invited playfulness never false-flags.
 - **Adversarial critic gate.** A critic tries to break the result before delivery.

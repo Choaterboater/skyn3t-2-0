@@ -341,6 +341,18 @@ def test_cli_doctor_reports_stack_aware_lab_readiness_and_stays_exit_zero(
     cli.doctor()
     assert inspected_stacks == ["react_native", ""]
 
+def test_check_sandbox_reports_cli_ready_docker_not_optional_sdk(monkeypatch) -> None:
+    from skyn3t.security.sandbox import SandboxRunner
+
+    monkeypatch.setattr(SandboxRunner, "docker_available", lambda _self: True)
+
+    assert cli._check_sandbox(SimpleNamespace(execution_backend="auto")) == (
+        "auto (docker daemon ready)"
+    )
+    assert cli._check_sandbox(SimpleNamespace(execution_backend="docker")) == (
+        "docker (daemon ready)"
+    )
+
 
 @pytest.mark.parametrize(
     ("inspector", "expected_reason"),

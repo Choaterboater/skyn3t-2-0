@@ -3240,11 +3240,18 @@ def _check_llm(settings: Any) -> tuple[str, bool]:
 
 def _check_sandbox(settings: Any) -> str:
     backend = getattr(settings, "execution_backend", "auto")
-    docker_present = _has_module("docker")
-    if backend == "docker" and not docker_present:
-        return "docker requested but SDK absent -> falls back to inline"
-    if backend == "auto":
-        return f"auto (docker SDK {'present' if docker_present else 'absent'} -> inline fallback)"
+    if backend in {"auto", "docker"}:
+        try:
+            from skyn3t.security.sandbox import SandboxRunner
+
+            docker_ready = SandboxRunner(settings).docker_available()
+        except Exception:  # noqa: BLE001 - doctor must remain diagnostic
+            docker_ready = False
+        if backend == "docker":
+            return "docker (daemon ready)" if docker_ready else "docker requested but unavailable"
+        if docker_ready:
+            return "auto (docker daemon ready)"
+        return "auto (docker unavailable -> hardened local fallback)"
     return backend
 
 

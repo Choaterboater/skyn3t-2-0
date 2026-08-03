@@ -1,1 +1,1 @@
-will-be-replaced-after-fetch
+DO-NOT-WRITE

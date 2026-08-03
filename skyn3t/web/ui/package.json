@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@react-three/fiber": "^9.7.0",
-    "@tanstack/react-query": "^5.51.1",
+    "@tanstack/react-query": "^5.101.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "^8.3.0",

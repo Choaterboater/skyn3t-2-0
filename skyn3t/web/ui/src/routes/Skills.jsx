@@ -20,11 +20,26 @@ function SummaryChips({ title, items }) {
   );
 }
 
+const QUARANTINE_TAGS = new Set(["hygiene:quarantine", "quarantine", "disabled"]);
+
+function tagsFor(skill) {
+  return Array.isArray(skill?.tags) ? skill.tags.map((tag) => String(tag).trim().toLowerCase()) : [];
+}
+
+function isQuarantined(skill) {
+  return skill?.quarantined === true || tagsFor(skill).some((tag) => QUARANTINE_TAGS.has(tag));
+}
+
+function countOrFallback(value, fallback) {
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : fallback;
+}
 export default function Skills() {
   const queryClient = useQueryClient();
   const [catalogPath, setCatalogPath] = useState("");
   const [catalogResult, setCatalogResult] = useState(null);
   const [catalogError, setCatalogError] = useState("");
+  const [promotionResult, setPromotionResult] = useState(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["skills"],
@@ -33,8 +48,17 @@ export default function Skills() {
 
   const skills = Array.isArray(data) ? data : data?.skills || [];
   const patterns = Array.isArray(data?.patterns) ? data.patterns : [];
-  const summary = catalogResult?.summary || {};
+  const skillSummary = data?.summary || {};
+  const catalogSummary = catalogResult?.summary || {};
   const catalogEntries = Array.isArray(catalogResult?.entries) ? catalogResult.entries : [];
+  const quarantinedFallback = skills.filter(isQuarantined).length;
+  const registeredCount = countOrFallback(skillSummary.registered, skills.length);
+  const activeCount = countOrFallback(skillSummary.active, skills.length - quarantinedFallback);
+  const quarantinedCount = countOrFallback(skillSummary.quarantined, quarantinedFallback);
+  const promotionReadyCount = countOrFallback(
+    skillSummary.promotion_ready,
+    skills.filter((skill) => skill?.promotion_ready === true).length,
+  );
 
   const previewCatalog = useMutation({
     mutationFn: async () => {
@@ -51,6 +75,21 @@ export default function Skills() {
     },
   });
 
+  const promoteExternal = useMutation({
+    mutationFn: (slug) => apiPost(`/skills/${encodeURIComponent(slug)}/promote`, {}),
+    onSuccess: async (res) => {
+      setPromotionResult({
+        promoted: Boolean(res?.promoted),
+        message: res?.message || "Promotion did not return a status.",
+      });
+      if (res?.promoted) {
+        await queryClient.invalidateQueries({ queryKey: ["skills"] });
+      }
+    },
+    onError: (err) => {
+      setPromotionResult({ promoted: false, message: String(err.message || err) });
+    },
+  });
   const importCatalog = useMutation({
     mutationFn: async () => {
       const path = catalogPath.trim();
@@ -72,10 +111,10 @@ export default function Skills() {
       <PageHeader
         eyebrow="Foundry · Capability Library"
         title="Skills"
-        sub="Reusable capabilities the swarm has learned and registered in the hub."
+        sub="Active skills can guide builds. Quarantined external references stay blocked until their immutable evidence is explicitly reviewed."
         actions={
           <span className="badge border-hairline text-ash">
-            learned · <span className="ml-1 text-plasma">{skills.length}</span>
+            learned · <span className="ml-1 text-plasma">{registeredCount}</span>
           </span>
         }
       />
@@ -86,17 +125,20 @@ export default function Skills() {
         </Panel>
       ) : null}
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
-        <Stat label="Registered" value={skills.length} tone="plasma" hint="capabilities" />
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <Stat label="Registered" value={registeredCount} tone="plasma" hint="all records" />
+        <Stat label="Active" value={activeCount} tone="plasma" hint="eligible to inject" />
         <Stat
-          label="Tagged"
-          value={skills.filter((s) => Array.isArray(s.tags) && s.tags.length).length}
-          hint="carry tags"
+          label="Quarantined"
+          value={quarantinedCount}
+          tone={quarantinedCount ? "ember" : "bone"}
+          hint="blocked pending review"
         />
         <Stat
-          label="Scored"
-          value={skills.filter((s) => s.score != null).length}
-          hint="have a score"
+          label="Ready to promote"
+          value={promotionReadyCount}
+          tone={promotionReadyCount ? "ember" : "bone"}
+          hint="passes promotion gate"
         />
         <Stat
           label="Patterns"
@@ -106,12 +148,19 @@ export default function Skills() {
         />
         <Stat
           label="Catalog"
-          value={summary.entries ?? 0}
-          tone={summary.entries ? "plasma" : "bone"}
+          value={catalogSummary.entries ?? 0}
+          tone={catalogSummary.entries ? "plasma" : "bone"}
           hint="previewed roles"
         />
       </div>
 
+      {promotionResult ? (
+        <Panel
+          className={`mb-6 p-4 text-sm ${promotionResult.promoted ? "border-plasma/40 text-plasma" : "border-ember/40 text-ember"}`}
+        >
+          <span aria-live="polite">{promotionResult.message}</span>
+        </Panel>
+      ) : null}
       <Panel className="mb-6">
         <PanelHead
           label="Agent catalog"
@@ -158,9 +207,9 @@ export default function Skills() {
                 </div>
               ) : null}
             </div>
-            <SummaryChips title="Stacks" items={summary.by_stack} />
-            <SummaryChips title="Stages" items={summary.by_stage} />
-            <SummaryChips title="Risk" items={summary.by_risk} />
+            <SummaryChips title="Stacks" items={catalogSummary.by_stack} />
+            <SummaryChips title="Stages" items={catalogSummary.by_stage} />
+            <SummaryChips title="Risk" items={catalogSummary.by_risk} />
           </div>
         ) : null}
         {catalogEntries.length ? (
@@ -205,35 +254,70 @@ export default function Skills() {
           <Empty icon="◇">No skills registered. The swarm has nothing learned yet.</Empty>
         ) : (
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-            {skills.map((s) => (
-              <div
-                key={s.name || s.id}
-                className="panel flex flex-col gap-3 border-hairline bg-void/40 p-4 transition-all duration-300 hover:border-plasma/40"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <h3 className="font-display text-base font-bold text-bone">
-                    {s.name}
-                  </h3>
-                  {s.score != null ? (
-                    <span className="font-mono text-sm text-plasma">{s.score}</span>
+            {skills.map((s) => {
+              const tags = tagsFor(s);
+              const quarantined = isQuarantined(s);
+              const externalCandidate = tags.includes("external-candidate");
+              const legacyMigrated = tags.includes("legacy-migrated");
+              const provenanceComplete = s.provenance_complete === true;
+              const skillName = s.name || s.title || s.slug || "Untitled skill";
+              return (
+                <div
+                  key={s.slug || s.name || s.id}
+                  className="panel flex flex-col gap-3 border-hairline bg-void/40 p-4 transition-all duration-300 hover:border-plasma/40"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-display text-base font-bold text-bone">
+                      {skillName}
+                    </h3>
+                    {s.score != null ? (
+                      <span className="font-mono text-sm text-plasma">{s.score}</span>
+                    ) : null}
+                  </div>
+
+                  {s.description ? (
+                    <p className="text-sm text-ash">{s.description}</p>
                   ) : null}
-                </div>
 
-                {s.description ? (
-                  <p className="text-sm text-ash">{s.description}</p>
-                ) : null}
+                  {externalCandidate && quarantined && !s.promotion_ready ? (
+                    <p className="text-xs text-ember">
+                      {provenanceComplete
+                        ? legacyMigrated
+                          ? "Quarantined: provenance is complete, but the retained source receipt did not verify."
+                          : "Quarantined: provenance is complete, but this candidate did not pass the library's promotion gate."
+                        : "Quarantined: immutable GitHub provenance is incomplete, so this reference cannot be promoted."}
+                    </p>
+                  ) : null}
 
-                {Array.isArray(s.tags) && s.tags.length ? (
                   <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
-                    {s.tags.map((t) => (
+                    {quarantined ? <Pill tone="ember">quarantined</Pill> : <Pill tone="plasma">active</Pill>}
+                    {externalCandidate && provenanceComplete ? (
+                      <Pill tone="plasma">provenance complete</Pill>
+                    ) : null}
+                    {tags.map((t) => (
                       <Pill key={t} tone="plasma">
                         {t}
                       </Pill>
                     ))}
                   </div>
-                ) : null}
-              </div>
-            ))}
+
+                  {s.promotion_ready ? (
+                    <button
+                      type="button"
+                      className="btn-ember mt-1 self-start"
+                      disabled={promoteExternal.isPending || !s.slug}
+                      aria-label={`Promote ${skillName} after evidence review`}
+                      onClick={() => {
+                        setPromotionResult(null);
+                        promoteExternal.mutate(s.slug);
+                      }}
+                    >
+                      {promoteExternal.isPending ? "Reviewing evidence…" : "Promote reviewed skill"}
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
       </Panel>

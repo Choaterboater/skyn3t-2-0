@@ -2730,7 +2730,7 @@ class LLMClient:
                         if deadline and time.monotonic() >= deadline:
                             log.warning("llm.call_deadline_spent",
                                         limit_s=limit, candidates_tried=ci + 1)
-                            raise first_exc
+                            raise first_exc from exc
                         log.info("llm.retry", model=model, attempt=attempt + 1,
                                  reason=_err_reason(exc))
                         await asyncio.sleep(self._retry_delay(attempt))

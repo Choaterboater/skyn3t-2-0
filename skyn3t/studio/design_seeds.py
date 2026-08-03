@@ -39,7 +39,9 @@ def _stable_index(text: str, modulo: int) -> int:
     """Local copy of design_tokens' stable-hash pick (md5 of the normalized
     text mod ``modulo``) — same algorithm, so salted picks here decorrelate
     from the base derives exactly the way the per-axis salts there do."""
-    digest = hashlib.md5(text.strip().lower().encode("utf-8")).hexdigest()
+    digest = hashlib.md5(
+        text.strip().lower().encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
     return int(digest, 16) % modulo
 
 

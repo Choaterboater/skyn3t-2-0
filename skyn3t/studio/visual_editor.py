@@ -1361,11 +1361,11 @@ class VisualEditor:
                 raise VisualEditorError(f"could not open visual-editor lock: {exc}") from exc
             try:
                 if fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
                 yield
             finally:
                 if fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
                 handle.close()
 
     def _edit_managed_stylesheet(

@@ -30,17 +30,17 @@ export default function GoldenBenchCard() {
             ? `${Math.round((ledger.passed / ledger.attempts) * 100)}%`
             : "—";
           return (
-            <li key={ledger.name} className="flex items-center gap-4 px-4 py-2 text-sm">
+            <li key={ledger.name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-2 text-sm sm:flex sm:gap-4">
               <span className="font-mono text-bone">{ledger.name}</span>
               {ledger.live ? (
-                <span className="badge border-ember/50 text-ember">LIVE · {ledger.llm_backend}</span>
+                <span className="badge border-ember/50 text-ember">provider · {ledger.llm_backend}</span>
               ) : (
                 <span className="badge border-hairline text-ash">floor · {ledger.llm_backend}</span>
               )}
-              <span className={running ? "text-ember-soft" : "text-ash"}>
+              <span className={`col-span-2 ${running ? "text-ember-soft" : "text-ash"}`}>
                 {running ? "running" : ledger.status}
               </span>
-              <span className="ml-auto font-mono text-[12px] text-ash">
+              <span className="col-span-2 font-mono text-[12px] text-ash sm:ml-auto">
                 {done} attempts · <span className="text-plasma">{ledger.passed} passed</span> · {rate}
               </span>
             </li>

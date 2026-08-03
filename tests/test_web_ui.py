@@ -85,7 +85,7 @@ def test_package_json_is_valid_and_has_required_deps() -> None:
     for dep in (
         "react",
         "react-dom",
-        "react-router-dom",
+        "react-router",
         "@tanstack/react-query",
         "three",
         "@react-three/fiber",
@@ -157,10 +157,10 @@ def test_dashboard_third_party_notices_cover_runtime_packages() -> None:
         encoding="utf-8"
     )
     for marker in (
-        "Packages: 22",
+        "Packages: 18",
         "@react-three/fiber",
         "@tanstack/react-query",
-        "react-router-dom",
+        "react-router",
         "three",
         "ieee754",
         "MIT License",
@@ -307,6 +307,26 @@ def test_dead_event_stream_is_labelled_stale_on_live_status_routes() -> None:
     studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
     assert "<ForgeStage s={p} stale={streamStale} />" in studio
 
+
+def test_dashboard_policy_and_mobile_loading_contracts_are_visible_in_source() -> None:
+    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
+    settings = (ROUTES / "Settings.jsx").read_text(encoding="utf-8")
+    projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
+    ladder = (COMPONENTS / "GateLadder.jsx").read_text(encoding="utf-8")
+    bench = (COMPONENTS / "GoldenBenchCard.jsx").read_text(encoding="utf-8")
+    app = (SRC / "App.jsx").read_text(encoding="utf-8")
+
+    assert 'routingNoClaude = routingSecrets.no_claude !== false' in studio
+    assert 'option.id !== "claude_cli"' in studio
+    assert 'option.id !== "claude_cli"' in settings
+    assert 'option.provider !== "claude"' in settings
+    assert 'loading projects…' in projects
+    assert 'items={visibleProjectSignals}' in projects
+    assert 'Swipe to inspect all gates' in ladder
+    assert 'w-24 shrink-0 snap-start' in ladder
+    assert 'provider · {ledger.llm_backend}' in bench
+    assert 'grid-cols-[minmax(0,1fr)_auto]' in bench
+    assert 'min-h-11' in app
 
 def test_build_terminal_settles_active_slice_rows() -> None:
     helper = SRC / "agentSignals.js"
@@ -783,7 +803,8 @@ def test_gate_ladder_hero_contains_mobile_overflow() -> None:
     assert "scripted terminal flows work" in ladder
     assert "overflow-x-auto" in ladder
     assert "overscroll-x-contain" in ladder
-    assert "min-w-[720px]" in ladder
+    assert "min-w-max" in ladder
+    assert "w-24 shrink-0 snap-start" in ladder
     assert "[scrollbar-gutter:stable]" in ladder
 
 

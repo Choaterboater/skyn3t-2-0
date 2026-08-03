@@ -9,6 +9,7 @@ import json
 import time
 from pathlib import Path
 
+from skyn3t.core.events import EventBus
 from skyn3t.cortex.proposal_store import (
     Proposal,
     ProposalStatus,
@@ -16,7 +17,6 @@ from skyn3t.cortex.proposal_store import (
     ProposalType,
 )
 from skyn3t.cortex.repo_scout import RepoScout
-from skyn3t.core.events import EventBus
 
 
 def _prop(title: str, status: ProposalStatus, age_s: float, key: str) -> Proposal:

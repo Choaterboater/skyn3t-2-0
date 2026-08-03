@@ -666,6 +666,7 @@ export default function Settings() {
       }
     : null;
 
+  const noClaude = data?.no_claude !== false;
   const active = secrets.data?.backend;
   const routing = secrets.data?.routing || {};
   const codegen = routing.codegen || {};
@@ -746,7 +747,7 @@ export default function Settings() {
             <p className="mb-4 text-sm text-ash">
               This choice is persisted for every future Foundry run. <span className="font-mono text-bone">auto</span>{" "}
               is local-CLI-only: it picks the first signed-in CLI in priority order
-              (Codex, then Claude, then Kimi) and never sends a request to OpenRouter
+              ({noClaude ? "Codex, then Kimi" : "Codex, then Claude, then Kimi"}) and never sends a request to OpenRouter
               or another paid API, even when a provider key is stored. CLI backends
               use the installed command and its signed-in provider account.
             </p>
@@ -756,7 +757,9 @@ export default function Settings() {
               and uses the offline stub.
             </p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {BACKEND_OPTIONS.map((option) => {
+              {BACKEND_OPTIONS.filter(
+                (option) => !noClaude || option.id !== "claude_cli",
+              ).map((option) => {
                 const sel = requestedBackend === option.id;
                 const status = cliBackendStatus(llmBackends.data, option.id);
                 const unavailable =
@@ -832,7 +835,7 @@ export default function Settings() {
             </div>
             {selectedBackendOption?.kind === "cli" ? (
               <div className="mt-3 border-l-2 border-hairline pl-3 text-[11px] text-ash">
-                <p className={selectedBackendStatus.available ? "text-plasma" : "text-ember"}>
+                <p className={`break-all ${selectedBackendStatus.available ? "text-plasma" : "text-ember"}`}>
                   {selectedBackendStatus.available
                     ? `${selectedBackendOption.label} command available${
                         selectedBackendStatus.detail?.path
@@ -993,7 +996,9 @@ export default function Settings() {
                 onChange={(e) => setCodegenCliProvider(e.target.value)}
                 className="field max-w-[16rem]"
               >
-                {CODEGEN_CLI_OPTIONS.map((option) => {
+                {CODEGEN_CLI_OPTIONS.filter(
+                  (option) => !noClaude || option.provider !== "claude",
+                ).map((option) => {
                   const status = cliProviderStatus(llmBackends.data, option.provider);
                   const unavailable = option.kind === "cli" && status.available !== true;
                   return (

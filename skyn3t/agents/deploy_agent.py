@@ -1265,12 +1265,14 @@ class DeployAgent(BaseAgent):
         root = Path(str(project))
         requested = str(task.payload.get("target") or "").strip()
         if requested.lower() == "static":
-            result = self.deploy(root, target="static", port=int(task.payload.get("port", 0)))
+            static_result = self.deploy(
+                root, target="static", port=int(task.payload.get("port", 0))
+            )
             return TaskResult(
                 task_id=task.task_id,
-                success=bool(result.get("ok")),
-                output=result,
-                error=result.get("error"),
+                success=bool(static_result.get("ok")),
+                output=static_result,
+                error=static_result.get("error"),
             )
 
         # Reconstruct the authoritative plan from the delivered project instead
@@ -1303,7 +1305,7 @@ class DeployAgent(BaseAgent):
         quality = deployment_quality_gate(delivery_manifest)
         if not quality["passed"]:
             error = "; ".join(quality["blockers"])
-            result = {
+            blocked_result: dict[str, Any] = {
                 "ok": False,
                 "url": None,
                 "provider": "",
@@ -1319,13 +1321,13 @@ class DeployAgent(BaseAgent):
             return TaskResult(
                 task_id=task.task_id,
                 success=False,
-                output=result,
+                output=blocked_result,
                 error=error,
             )
 
         plan = plan_deploy(root, stack, target=requested or None)
         if not (plan.deployable and plan.serves_url and plan.targets):
-            result = {
+            not_deployable_result: dict[str, Any] = {
                 "ok": False,
                 "url": None,
                 "provider": "",
@@ -1339,28 +1341,28 @@ class DeployAgent(BaseAgent):
             return TaskResult(
                 task_id=task.task_id,
                 success=False,
-                output=result,
-                error=result["error"],
+                output=not_deployable_result,
+                error=str(not_deployable_result["error"]),
             )
         selected = plan.targets[0]
         written = write_deploy_artifacts(plan, root) if plan.artifacts else []
-        result: dict[str, Any] | None = None
+        deploy_result: dict[str, Any] | None = None
         try:
-            result = await asyncio.to_thread(
+            deploy_result = await asyncio.to_thread(
                 self.deploy,
                 root,
                 target=selected,
                 plan=plan,
             )
-            result = await self._health_gated(result, stack)
+            deploy_result = await self._health_gated(deploy_result, stack)
         except asyncio.CancelledError:
             # The executor thread and its provider subprocess cannot be
             # interrupted, so the remote deploy may still complete after this
             # task dies. Persist the attempt (remote state unknown) instead of
             # silently losing a real remote execution; an already-finished
             # deploy cancelled before verification must never activate.
-            if result is None:
-                result = {
+            if deploy_result is None:
+                deploy_result = {
                     "ok": False,
                     "url": None,
                     "provider": "",
@@ -1373,7 +1375,7 @@ class DeployAgent(BaseAgent):
                     "error": "deploy was cancelled while the provider command was running",
                 }
             else:
-                result = apply_deploy_health_gate(result, {
+                deploy_result = apply_deploy_health_gate(deploy_result, {
                     "ok": False,
                     "skipped": True,
                     "issues": [],
@@ -1381,15 +1383,15 @@ class DeployAgent(BaseAgent):
                     "reason": "deploy check was cancelled before verification",
                     "gaps": [],
                 })
-            record_deployment(root, result=result, plan=plan, target=selected)
+            record_deployment(root, result=deploy_result, plan=plan, target=selected)
             raise
-        result["plan"] = plan.to_dict()
-        result["artifacts_written"] = written
-        result["deployment"] = record_deployment(
+        deploy_result["plan"] = plan.to_dict()
+        deploy_result["artifacts_written"] = written
+        deploy_result["deployment"] = record_deployment(
             root,
-            result=result,
+            result=deploy_result,
             plan=plan,
             target=selected,
         )
-        return TaskResult(task_id=task.task_id, success=result.get("ok", False),
-                          output=result, error=result.get("error"))
+        return TaskResult(task_id=task.task_id, success=bool(deploy_result.get("ok", False)),
+                          output=deploy_result, error=str(deploy_result.get("error") or "") or None)

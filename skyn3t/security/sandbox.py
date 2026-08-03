@@ -334,7 +334,7 @@ class SandboxRunner:
                     pass
             else:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # type: ignore[attr-defined]
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             try:

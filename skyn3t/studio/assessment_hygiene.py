@@ -33,7 +33,7 @@ def check_assessment_artifacts(root: str | Path) -> list[dict[str, Any]]:
         _contains(base, "skyn3t/studio/deploy.py", "rollback_deployment"),
         _contains(base, "skyn3t/studio/runner.py", "write_app_observability"),
         _exists(base, "skyn3t/studio/app_observability.py"),
-        _contains(base, "skyn3t/cortex/prompt_evolver.py", "evolve_from_manifest"),
+        _contains(base, "skyn3t/cortex/components.py", "class PromptReflectionLoop"),
         _exists(base, "skyn3t/studio/collaboration.py"),
         _exists(base, "skyn3t/studio/flow_canvas.py"),
         _contains(base, "skyn3t/studio/runner.py", "write_flow_canvas"),

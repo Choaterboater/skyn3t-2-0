@@ -598,9 +598,13 @@ def _verdict_explanation(outcome: dict[str, Any]) -> list[tuple[str, str]]:
             rv = str(summary.get("verdict") or "").strip().lower()
             if not rv:
                 break
-            try:
-                rs = float(summary.get("score"))
-            except (TypeError, ValueError):
+            raw_score = summary.get("score")
+            if isinstance(raw_score, (str, int, float)):
+                try:
+                    rs = float(raw_score)
+                except ValueError:
+                    rs = None
+            else:
                 rs = None
             gaps = summary.get("gaps")
             n_gaps = len(gaps) if isinstance(gaps, list) else 0
@@ -2714,7 +2718,14 @@ def _execute_live_deploy(pdir, plan, provider, stack, *, yes, settings) -> None:
                 raise typer.Exit(code=1)
         console.print(f"[red]Cannot execute deploy[/red] — {blocker}. Nothing was deployed.")
         raise typer.Exit(code=1)
-    cli = executable_provider(provider)[0]
+    spec = executable_provider(provider)
+    if spec is None:
+        console.print(
+            f"[red]Cannot execute deploy[/red] — unsupported provider {provider}. "
+            "Nothing was deployed."
+        )
+        raise typer.Exit(code=1)
+    cli = spec[0]
     if not yes and not LabAutonomyPolicy.from_settings(settings).enabled:
         if not typer.confirm(
             f"Execute a REAL deploy of {pdir.name} to {provider} via {cli}?",

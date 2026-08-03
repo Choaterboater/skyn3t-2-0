@@ -973,7 +973,7 @@ def _restore_submission_routing_trace(
     rec = state.builds.get(build_id)
     if rec is None:
         return
-    trace = dict(rec.model_trace or {})
+    trace = dict(rec.model_trace) if isinstance(rec.model_trace, dict) else {}
     existing_codegen = (
         dict(trace["codegen"]) if isinstance(trace.get("codegen"), dict) else {}
     )
@@ -994,9 +994,10 @@ def _restore_submission_routing_trace(
     submission.setdefault("requested_backend", routing.get("requested_backend", ""))
     submission.setdefault("effective_backend", routing.get("effective_backend", ""))
     submission.setdefault("requested_model", routing.get("requested_model", ""))
-    submission["codegen"] = dict(
-        submission.get("codegen")
-        if isinstance(submission.get("codegen"), dict)
+    submission_codegen = submission.get("codegen")
+    submission["codegen"] = (
+        dict(submission_codegen)
+        if isinstance(submission_codegen, dict)
         else routing_codegen
     )
     trace["submission"] = submission
@@ -1038,7 +1039,7 @@ def _restore_submission_routing_trace(
     rec.model_trace = trace
 
 
-def _normalize_moa_advisors(value: Any) -> str | None:
+def _normalize_moa_advisors(value: Any, *, no_claude: bool = False) -> str | None:
     """Coerce a dashboard advisor selection into a slot string.
 
     Accepts a list (checkbox selection) or a comma string. ``None``/absent means
@@ -1060,7 +1061,15 @@ def _normalize_moa_advisors(value: Any) -> str | None:
     # bare model id on the active backend, which is right for an operator's
     # settings string but wrong for request input: it would let a caller aim an
     # advisor at an arbitrary model instead of picking from the offered list.
-    return ",".join(slot.address for slot in parse_slots(raw) if slot.provider)
+    return ",".join(
+        slot.address
+        for slot in parse_slots(raw)
+        if slot.provider
+        and not (
+            no_claude
+            and (slot.provider == "claude" or "claude" in slot.address.lower())
+        )
+    )
 
 
 async def cli_providers_payload(state: AppState) -> dict[str, Any]:
@@ -1085,6 +1094,8 @@ async def cli_providers_payload(state: AppState) -> dict[str, Any]:
     selected = {s.address for s in parse_slots(getattr(settings, "moa_advisors", "") or "")}
     providers: list[dict[str, Any]] = []
     for name in KNOWN_CLI_PROVIDERS:
+        if bool(getattr(settings, "no_claude", False)) and name == "claude":
+            continue
         slot = f"{name}_cli"
         try:
             available = bool(LLMClient._cli_available(name))
@@ -1146,7 +1157,7 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     )
     model = requested_model
     full_app_requested = bool(full_app) or profile == "full_app"
-    routing_trace = {
+    routing_trace: dict[str, Any] = {
         key: deepcopy(routing[key])
         for key in (
             "requested_backend",
@@ -2434,7 +2445,7 @@ async def _fresh_reverify_review(
         verdict = "no_go"
         gaps.append("source tree snapshot was invalid")
     try:
-        score = float(output.get("score"))
+        score = float(output.get("score") or 0.0)
     except (TypeError, ValueError):
         score = 0.0
     return {
@@ -3981,6 +3992,7 @@ async def annotations_improve(
 
     Unresolvable pins are still accepted with ``source: null``; submission goes
     through the exact :func:`improve_project` path the improve UI uses."""
+    raw_items: Any
     if isinstance(body, list):
         raw_items = body
     elif isinstance(body, dict):
@@ -4037,7 +4049,7 @@ def _visual_editor_lock(state: AppState, project: Path) -> asyncio.Lock:
     if not isinstance(locks, dict):
         locks = {}
         try:
-            state._visual_editor_locks = locks
+            state._visual_editor_locks = locks  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - fail closed without lock storage
             raise RuntimeError("visual-editor project locking is unavailable") from exc
     key = str(project.resolve())
@@ -5266,6 +5278,7 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         "codegen_model_slot": getattr(s, "codegen_model_slot", "") or "",
         "repair_model_slot": getattr(s, "repair_model_slot", "") or "",
         "free_only": bool(getattr(s, "free_only", True)),
+        "no_claude": bool(getattr(s, "no_claude", False)),
         "model_pins": {
             "cheap": getattr(s, "model_cheap", "") or "",
             "ui": getattr(s, "model_ui", "") or "",
@@ -5416,11 +5429,13 @@ async def golden_bench_payload(state: AppState) -> dict[str, Any]:
             attempts = [a for a in raw.get("attempts") or [] if isinstance(a, dict)]
             cases = raw.get("case_ids") or []
             repeats = int(raw.get("repeats") or 0)
-            metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
-            profile = (
-                metadata.get("safety_profile")
-                if isinstance(metadata.get("safety_profile"), dict)
-                else {}
+            raw_metadata = raw.get("metadata")
+            metadata: dict[str, Any] = (
+                dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
+            raw_profile = metadata.get("safety_profile")
+            profile: dict[str, Any] = (
+                dict(raw_profile) if isinstance(raw_profile, dict) else {}
             )
             try:
                 updated_at = path.stat().st_mtime
@@ -6456,7 +6471,7 @@ async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -
     if backend not in SUPPORTED_LLM_BACKENDS:
         allowed = ", ".join(SUPPORTED_LLM_BACKENDS)
         raise ValueError(f"Unsupported LLM backend {backend!r}; use one of: {allowed}")
-    state.settings.llm_backend = backend
+    state.settings.llm_backend = backend  # type: ignore[assignment]
     os.environ["SKYN3T_LLM_BACKEND"] = backend
     if state.llm_client is not None:
         try:
@@ -6909,7 +6924,10 @@ def build_router(state: AppState) -> Any:
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=_coerce_bool(body.get("full_app", False)),
-                moa_advisors=_normalize_moa_advisors(body.get("moa_advisors")),
+                moa_advisors=_normalize_moa_advisors(
+                    body.get("moa_advisors"),
+                    no_claude=bool(getattr(state.settings, "no_claude", False)),
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -7074,11 +7092,20 @@ def build_router(state: AppState) -> Any:
         )
 
         try:
+            raw_base_version = body.get("base_version")
+            raw_patch = body.get("patch")
+            if isinstance(raw_base_version, bool) or not isinstance(raw_base_version, int):
+                raise ValueError("base_version must be an integer")
+            if not isinstance(raw_patch, dict) or not all(
+                isinstance(key, str) for key in raw_patch
+            ):
+                raise ValueError("patch must be an object with string keys")
+            patch: dict[str, Any] = dict(raw_patch)
             return await patch_project_product(
                 state,
                 slug,
-                base_version=body.get("base_version"),
-                patch=body.get("patch"),
+                base_version=raw_base_version,
+                patch=patch,
                 reason=str(body.get("reason") or ""),
             )
         except ProjectNotDeliveredError:
@@ -7116,10 +7143,13 @@ def build_router(state: AppState) -> Any:
         )
 
         try:
+            raw_base_version = body.get("base_version")
+            if isinstance(raw_base_version, bool) or not isinstance(raw_base_version, int):
+                raise ValueError("base_version must be an integer")
             return await research_project_product(
                 state,
                 slug,
-                base_version=body.get("base_version"),
+                base_version=raw_base_version,
                 force_refresh=bool(body.get("force_refresh", True)),
             )
         except ProjectNotDeliveredError:
@@ -7583,7 +7613,10 @@ def build_router(state: AppState) -> Any:
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=_coerce_bool(body.get("full_app", False)),
-                moa_advisors=_normalize_moa_advisors(body.get("moa_advisors")),
+                moa_advisors=_normalize_moa_advisors(
+                    body.get("moa_advisors"),
+                    no_claude=bool(getattr(state.settings, "no_claude", False)),
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

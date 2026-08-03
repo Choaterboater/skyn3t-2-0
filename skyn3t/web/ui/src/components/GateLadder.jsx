@@ -65,7 +65,7 @@ const STATE_STYLES = {
 function Column({ rung, proves, glyph, labelCls, nodeCls, tagCls, name, index }) {
   return (
     <li
-      className="relative flex min-w-0 flex-1 flex-col items-center gap-2 animate-risefade"
+      className="relative flex w-24 shrink-0 snap-start flex-col items-center gap-2 animate-risefade"
       style={{ animationDelay: `${index * 60}ms` }}
       title={proves ? `${rung} — ${proves}` : rung}
     >
@@ -76,7 +76,7 @@ function Column({ rung, proves, glyph, labelCls, nodeCls, tagCls, name, index })
       <span className={`relative z-10 grid h-10 w-10 place-items-center rounded-full border text-[15px] transition-all duration-300 ${nodeCls}`}>
         {glyph}
       </span>
-      <span className={`font-mono text-[10px] ${tagCls}`}>{name}</span>
+      <span className={`max-w-24 break-words text-center font-mono text-[10px] leading-tight ${tagCls}`}>{name}</span>
     </li>
   );
 }
@@ -143,11 +143,12 @@ export default function GateLadder({ stream }) {
         <Empty icon="▰">No gates registered. Submit a build to arm the ladder.</Empty>
       ) : (
         <div className="px-5 pb-6 pt-5">
-          <div className="overflow-x-auto overscroll-x-contain pb-2 [scrollbar-gutter:stable]">
-            <div className="relative min-w-[720px] sm:min-w-0">
+          <p className="mb-2 font-mono text-[10px] text-ash sm:hidden">Swipe to inspect all gates →</p>
+          <div className="snap-x snap-mandatory overflow-x-auto overscroll-x-contain pb-2 [scrollbar-gutter:stable]">
+            <div className="relative min-w-max">
               {/* the molten rail — threads the node centers at a fixed offset */}
               <div className={railCls} aria-hidden="true" />
-              <ol className="relative flex items-start justify-between gap-1.5">
+              <ol className="relative flex min-w-full items-start justify-between gap-1.5">
                 {gates.map((g, i) => {
                   const state = stationState(g.gate, g.enabled, heat);
                   const s = STATE_STYLES[state] || STATE_STYLES.armed;

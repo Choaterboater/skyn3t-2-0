@@ -127,7 +127,9 @@ def _is_app_shell(html: str) -> bool:
     """The shell-detection rule: the page HAS an app-mount root (``#root``/``#app``)
     and that mount is empty-ish. Only such a file may be overwritten in place."""
     m = _MOUNT_RE.search(html or "")
-    return bool(m) and _inner_empty(m.group("inner"))
+    if m is None:
+        return False
+    return _inner_empty(m.group("inner"))
 
 
 def _stamp(html: str) -> str:
@@ -210,7 +212,10 @@ def _run_maybe_async(value: Any) -> Any:
     """Drive an awaitable to completion from this (loop-free) worker thread; pass
     through plain values so sync fakes work unchanged."""
     if inspect.isawaitable(value):
-        return asyncio.run(value)
+        async def _await_value() -> Any:
+            return await value
+
+        return asyncio.run(_await_value())
     return value
 
 

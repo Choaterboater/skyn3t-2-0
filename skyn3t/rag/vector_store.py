@@ -302,7 +302,10 @@ class VectorStore:
         if col is not None:
             return col
         name = self._drift_name(dim)
-        col = self._client.get_or_create_collection(  # type: ignore[union-attr]
+        client = self._client
+        if client is None:
+            raise RuntimeError("Chroma client is unavailable")
+        col = client.get_or_create_collection(
             name=name,
             metadata={"hnsw:space": "cosine"},
         )
@@ -431,7 +434,7 @@ class VectorStore:
             cols = [self._collection, *self._drift_collections.values()]
             for col in cols:
                 try:
-                    col.delete(where={"source": source})  # type: ignore[union-attr]
+                    col.delete(where={"source": source})  # type: ignore[attr-defined]
                 except Exception:
                     log.warning(
                         "vector_store.chroma_delete_failed",

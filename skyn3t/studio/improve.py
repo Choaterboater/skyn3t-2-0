@@ -11,7 +11,6 @@ import hashlib
 import os
 import shutil
 import stat
-import tempfile
 import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -110,15 +109,15 @@ class _InterprocessProjectLock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             flags = os.O_RDWR | os.O_CREAT
             if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
+                flags |= getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self.path, flags, 0o600)
             self.handle = os.fdopen(descriptor, "a+b")
         if fcntl is None:
             return True
         try:
-            fcntl.flock(
+            fcntl.flock(  # type: ignore[attr-defined]
                 self.handle.fileno(),
-                fcntl.LOCK_EX | fcntl.LOCK_NB,
+                fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
             )
             return True
         except BlockingIOError:
@@ -129,7 +128,7 @@ class _InterprocessProjectLock:
             return
         try:
             if fcntl is not None:
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
         finally:
             self.handle.close()
             self.handle = None
@@ -343,9 +342,9 @@ def _directory_open_flags() -> int:
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+        flags |= getattr(os, "O_NOFOLLOW", 0)
     if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
+        flags |= getattr(os, "O_CLOEXEC", 0)
     return flags
 
 
@@ -401,7 +400,7 @@ def _ensure_confined_directory(
                     pass
                 child = os.open(part, flags, dir_fd=current)
                 if template_root is not None:
-                    os.fchmod(child, mode)
+                    os.fchmod(child, mode)  # type: ignore[attr-defined]
             os.close(current)
             current = child
         return current

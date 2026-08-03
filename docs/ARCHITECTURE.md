@@ -116,6 +116,8 @@ the Cortex dashboard lets a human select one completed node and invoke
 `/api/cortex/graphs/{run_id}/rerun`. That action produces a new review-only run,
 never a promotion or a build-file mutation.
 
+`/api/cortex/graph-reviews` is a separate human decision inbox over completed rerun comparisons. A decision is append-only, records `keep` or `reject` with the exact comparison digests and an optional note, and cannot be replaced or used as a promotion signal. A human may explicitly queue one follow-up through `/api/cortex/graph-reviews/{comparison_id}/build`, but only after `keep`; that request is recorded as its own immutable receipt and delegates to the normal Studio build route with its existing routing and admission checks. No graph review action automatically changes source files, policies, configuration, or skills.
+
 ## The 7 design rules
 
 1. **Delivered != empty.** Success requires substantive files on disk, proven

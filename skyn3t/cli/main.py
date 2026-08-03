@@ -785,6 +785,144 @@ def cortex_status() -> None:
     console.print(pt if prompts else "[dim]No prompt overrides applied.[/dim]")
 
 
+@cortex_app.command("promote-skill")
+def cortex_promote_skill(
+    slug: str = typer.Argument(..., help="Quarantined external skill slug to approve."),
+) -> None:
+    """Explicitly approve a provenance-pinned external skill for advisory use.
+
+    GitHub-derived skills are deliberately inert until an operator runs this
+    command. The library verifies its immutable revision, content hash, and
+    HTTPS source URL before removing the quarantine tag.
+    """
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    console = _console()
+    library = SkillLibrary(get_settings().data_dir / "skills")
+    skill = library.promote_external(slug)
+    if skill is None:
+        console.print(
+            "[red]Not promoted[/red] — the skill must be a quarantined GitHub "
+            "candidate with an HTTPS source URL, immutable revision, content hash, "
+            "and source path."
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"[green]Promoted[/green] [cyan]{skill.slug}[/cyan] for advisory use. "
+        "It remains non-binding build guidance."
+    )
+
+
+_EVALUATION_KIND_OPTION = typer.Option(
+    ..., "--kind", help="Candidate kind: prompt, skill_policy, or router_policy."
+)
+_EVALUATION_CANDIDATE_FILE_OPTION = typer.Option(
+    ..., "--candidate", help="JSON file containing only the candidate configuration mapping."
+)
+_EVALUATION_BASELINE_LEDGER_OPTION = typer.Option(
+    ..., "--baseline-ledger", help="Completed baseline Golden ledger JSON."
+)
+_EVALUATION_CANDIDATE_LEDGER_OPTION = typer.Option(
+    ..., "--candidate-ledger", help="Completed candidate Golden ledger JSON."
+)
+_EVALUATION_BASE_REVISION_OPTION = typer.Option(
+    "unknown", "--base-revision", help="Optional lowercase source Git revision for the candidate."
+)
+_EVALUATION_MAX_DROP_OPTION = typer.Option(
+    0.0, "--max-suite-pass-rate-drop", help="Allowed Golden suite pass-rate regression (0-1)."
+)
+_EVALUATION_MIN_CASE_OPTION = typer.Option(
+    1.0, "--min-case-pass-rate", help="Required minimum candidate pass rate per Golden case (0-1)."
+)
+
+
+@cortex_app.command("evaluate")
+def cortex_evaluate(
+    candidate_kind: str = _EVALUATION_KIND_OPTION,
+    candidate_file: Path = _EVALUATION_CANDIDATE_FILE_OPTION,
+    baseline_ledger: Path = _EVALUATION_BASELINE_LEDGER_OPTION,
+    candidate_ledger: Path = _EVALUATION_CANDIDATE_LEDGER_OPTION,
+    base_revision: str = _EVALUATION_BASE_REVISION_OPTION,
+    max_suite_pass_rate_drop: float = _EVALUATION_MAX_DROP_OPTION,
+    min_case_pass_rate: float = _EVALUATION_MIN_CASE_OPTION,
+) -> None:
+    """Record Golden evidence for a config candidate without changing runtime state.
+
+    The input can describe only a prompt, skill-selection policy, or router
+    policy. A passed comparison is saved as ``review_required``; this command
+    cannot apply or promote it.
+    """
+    from skyn3t.config.settings import get_settings
+    from skyn3t.cortex.evaluation import EvaluationError, evaluate_candidate
+
+    console = _console()
+    try:
+        if not candidate_file.is_file() or candidate_file.is_symlink():
+            raise ValueError("candidate must be a regular JSON file")
+        if candidate_file.stat().st_size > 256_000:
+            raise ValueError("candidate JSON exceeds 256 KB")
+        raw_candidate = json.loads(candidate_file.read_text(encoding="utf-8"))
+        if not isinstance(raw_candidate, dict):
+            raise ValueError("candidate JSON must be an object")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        console.print(f"[red]Invalid candidate[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+
+    try:
+        result = evaluate_candidate(
+            data_dir=get_settings().data_dir,
+            candidate_kind=candidate_kind,
+            candidate=raw_candidate,
+            baseline_ledger_path=baseline_ledger,
+            candidate_ledger_path=candidate_ledger,
+            base_revision=base_revision,
+            max_suite_pass_rate_drop=max_suite_pass_rate_drop,
+            min_case_pass_rate=min_case_pass_rate,
+        )
+    except EvaluationError as exc:
+        console.print(f"[red]Evaluation unavailable[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+
+    manifest = result.manifest
+    console.print(
+        f"[cyan]{manifest.evaluation_id}[/cyan]  "
+        f"[bold]{manifest.status}[/bold]  "
+        f"({manifest.candidate_kind}; evidence: {result.manifest_path})"
+    )
+    if manifest.status == "review_required":
+        console.print(
+            "[green]Evidence passed[/green] — retained for review only; nothing was applied or promoted."
+        )
+        return
+    reasons = "; ".join(manifest.reasons) or "Golden comparison rejected the candidate."
+    console.print(f"[yellow]Evidence rejected[/yellow] — {reasons}")
+    raise typer.Exit(code=1)
+
+
+@cortex_app.command("evaluations")
+def cortex_evaluations() -> None:
+    """List verified evidence-only configuration evaluation records."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.cortex.evaluation import EvaluationError, list_manifests
+
+    console = _console()
+    try:
+        manifests = list_manifests(get_settings().data_dir)
+    except EvaluationError as exc:
+        console.print(f"[red]Cannot read evaluations[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+    if not manifests:
+        console.print("[dim]No evidence evaluations recorded.[/dim]")
+        return
+    console.print("[bold]Evidence-only configuration evaluations[/bold]")
+    for manifest in sorted(manifests, key=lambda item: item.created_at, reverse=True):
+        console.print(
+            f"[cyan]{manifest.evaluation_id}[/cyan]  {manifest.status}  "
+            f"{manifest.candidate_kind}  {manifest.base_revision}  {manifest.created_at}"
+        )
+
+
 def _ratchet_coerce(v: str) -> Any:
     low = v.strip().lower()
     if low in ("true", "false"):
@@ -2821,14 +2959,19 @@ async def _ingest_source(source: str) -> int:
     except Exception:  # noqa: BLE001
         return -1
 
-    # Learn from a GitHub repo: pull README + metadata (redacted) into RAG so it
-    # informs future builds. Uses SKYN3T_GITHUB_TOKEN if configured (UI/​.env).
+    # Store a GitHub README + metadata as an unreviewed RAG reference. It is
+    # searchable for later audited promotion, never directly prompt-injected.
     if "github.com/" in source:
         text = await _fetch_github_repo(source)
         if not text:
             return 0
         try:
-            return engine.ingest_text(text, source=source, kind="github")
+            return engine.ingest_text(
+                text,
+                source=source,
+                kind="github",
+                metadata={"external_unreviewed": True, "source_kind": "github_readme"},
+            )
         except Exception:  # noqa: BLE001
             return 0
 

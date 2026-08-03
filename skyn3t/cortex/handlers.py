@@ -254,21 +254,45 @@ class HandlerRegistry:
     async def _ingest_github(self, repo_or_url: str, proposal: Proposal) -> dict[str, Any] | None:
         url = repo_or_url if "github.com/" in repo_or_url else f"https://github.com/{repo_or_url}"
         try:
-            from skyn3t.agents.github_fetch import fetch_github_repo_text
+            from skyn3t.agents.github_fetch import fetch_github_repo_evidence
 
-            text = await fetch_github_repo_text(url)
+            evidence = await fetch_github_repo_evidence(url)
         except Exception:  # noqa: BLE001
-            text = None
-        if not text:
+            evidence = None
+        if evidence is None:
             staged = self._stage(proposal, "ingest")  # offline -> keep intent, retryable
             staged["ingested"] = 0
             staged["degraded"] = True
             return staged
+        text = evidence.text
         rag = self.rag
         if rag is None:
             return self._stage(proposal, "ingest")
+        github_metadata: dict[str, object] = {
+            "external_unreviewed": True,
+            "source_kind": "github_readme",
+            "source_url": evidence.source_url,
+            "source_path": evidence.source_path,
+        }
+        if evidence.pinned_revision:
+            github_metadata["pinned_revision"] = evidence.pinned_revision
+        if evidence.license:
+            github_metadata["license"] = evidence.license
         try:
-            n = rag.ingest_text(text, source=url, kind="github")
+            try:
+                n = rag.ingest_text(
+                    text,
+                    source=url,
+                    kind="github",
+                    metadata=github_metadata,
+                )
+            except TypeError as exc:
+                # Preserve compatibility with older pluggable RAG engines. The
+                # Runner also treats legacy ``kind=github`` sources as
+                # unreviewed, so this fallback cannot make them prompt-injectable.
+                if "metadata" not in str(exc):
+                    raise
+                n = rag.ingest_text(text, source=url, kind="github")
         except Exception as exc:  # noqa: BLE001 - transient RAG error -> degraded, retryable
             staged = self._stage(proposal, "ingest")
             staged["ingested"] = 0
@@ -276,8 +300,25 @@ class HandlerRegistry:
             staged["error"] = f"rag ingest failed: {exc}"
             return staged
         # Also distill a reusable, advisory skill so the approval surfaces on the
-        # Skills page (best-effort; never affects the ingest result).
-        skill_slug, skill_error = self._distill_repo_skill(url, text, proposal.payload or {})
+        # Skills page (best-effort; never affects the ingest result). Remote text
+        # is kept quarantined until a later, explicit promotion checks its proof.
+        provenance = None
+        if self.skills is not None:
+            from skyn3t.intelligence.skill_library import SkillProvenance
+
+            provenance = SkillProvenance(
+                source_url=evidence.source_url,
+                pinned_revision=evidence.pinned_revision,
+                license=evidence.license,
+                source_path=evidence.source_path,
+                metadata={"skyn3t-source-kind": "github-readme"},
+            ).with_content_hash(text)
+        skill_slug, skill_error = self._distill_repo_skill(
+            url,
+            text,
+            proposal.payload or {},
+            provenance=provenance,
+        )
         result = {"applied": True, "ingested": n, "source": url}
         if skill_slug:
             result["skill"] = skill_slug
@@ -289,8 +330,13 @@ class HandlerRegistry:
 
     # ---- skill distillation from an ingested repo ------------------------
     _LANG_STACK = {
-        "python": "python", "javascript": "react", "typescript": "react",
-        "tsx": "react", "jsx": "react", "go": "go", "rust": "rust",
+        "python": "python",
+        "javascript": "react",
+        "typescript": "react",
+        "tsx": "react",
+        "jsx": "react",
+        "go": "go",
+        "rust": "rust",
     }
 
     # A distilled skill must carry enough real, concrete content to be worth
@@ -490,7 +536,12 @@ class HandlerRegistry:
         return body
 
     def _distill_repo_skill(
-        self, url: str, text: str, payload: dict[str, Any]
+        self,
+        url: str,
+        text: str,
+        payload: dict[str, Any],
+        *,
+        provenance: Any | None = None,
     ) -> tuple[str | None, str | None]:
         """Turn an ingested repo into an advisory Skill.
 
@@ -512,22 +563,17 @@ class HandlerRegistry:
             desc = str(payload.get("description") or meta.get("description") or "").strip()
             lang = str(payload.get("language") or meta.get("language") or "").strip()
             stars = payload.get("stars") or meta.get("stars") or ""
-            topics = [
-                t.strip() for t in str(meta.get("topics") or "").split(",") if t.strip()
-            ]
+            topics = [t.strip() for t in str(meta.get("topics") or "").split(",") if t.strip()]
             stack = self._LANG_STACK.get(lang.lower(), "generic")
-            body = self._distill_body(
-                full, text, desc=desc, lang=lang, stars=stars, topics=topics
-            )
+            body = self._distill_body(full, text, desc=desc, lang=lang, stars=stars, topics=topics)
             if len(body) < self._DISTILL_MIN_BODY_CHARS:
                 return None, (
-                    f"distilled body too thin "
-                    f"({len(body)} chars < {self._DISTILL_MIN_BODY_CHARS})"
+                    f"distilled body too thin ({len(body)} chars < {self._DISTILL_MIN_BODY_CHARS})"
                 )
             from skyn3t.agents._common import slugify
 
             slug = slugify(f"gh-{full}", "gh-repo")
-            tags = ["github-distilled"]
+            tags = ["github-distilled", "external-candidate", "hygiene:quarantine"]
             if lang:
                 tags.append(lang.lower())
             if stack != "generic" and stack.lower() not in {t.lower() for t in tags}:
@@ -536,17 +582,37 @@ class HandlerRegistry:
                 t = topic.lower()
                 if re.fullmatch(r"[a-z0-9][a-z0-9.+-]{0,39}", t) and t not in tags:
                     tags.append(t)
+
+            # Never trust mutable proposal text to identify its own provenance.
+            # The handler supplies facts from GitHub's API when available; direct
+            # callers still get a source URL, README endpoint path, and a hash of
+            # the retained evidence, but no invented revision or license.
+            from skyn3t.intelligence.skill_library import SkillProvenance, content_sha256
+
+            base = provenance if isinstance(provenance, SkillProvenance) else SkillProvenance()
+            metadata = dict(base.metadata)
+            metadata.setdefault("skyn3t-source-kind", "github-readme")
+            skill_provenance = SkillProvenance(
+                source_url=base.source_url or url,
+                pinned_revision=base.pinned_revision,
+                license=base.license,
+                content_hash=content_sha256(text),
+                source_path=base.source_path or "README",
+                tools=base.tools,
+                metadata=metadata,
+                compatibility=base.compatibility,
+            )
             self.skills.add(
                 title=f"Patterns: {full}",
                 body=body,
                 stack=stack,
                 tags=tags,
-                source=url,
+                source="github-distilled",
                 slug=slug,
                 description=(
-                    desc
-                    or f"Concrete build/run commands and layout patterns distilled from {full}"
+                    desc or f"Concrete build/run commands and layout patterns distilled from {full}"
                 ),
+                provenance=skill_provenance,
             )
             return slug, None
         except Exception as exc:  # noqa: BLE001 - distillation is best-effort

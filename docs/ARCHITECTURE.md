@@ -17,7 +17,7 @@ the system always imports and always runs.
 | `skyn3t.studio` | `runner` (brief->app pipeline), `planner`, `stages`, `best_of_n`, `proof_run`, `manifest`, `approval_gate`, `clarification`. |
 | `skyn3t.memory` | `store` (tasks/builds/lessons over SQLite), `models`, `ingestor`, plus consciousness/hygiene/tuner/meta-agent helpers. |
 | `skyn3t.rag` | Knowledge corpus: `rag_engine`, `document_processor`, `embeddings`, `vector_store`, `retrieval`, `repo_map`. |
-| `skyn3t.cortex` | Autonomous loop, proposal store, repo scout, prompt/tuning stores, and an isolated, verification-gated candidate engine. |
+| `skyn3t.cortex` | Autonomous loop, proposal store, repo scout, prompt/tuning stores, an isolated verification-gated code candidate engine, and evidence-only configuration evaluation records. |
 | `skyn3t.intelligence` | Debate, reflection, learning loop, model tournament, skill library, build patterns. |
 | `skyn3t.web` | FastAPI control plane (`app`, `routes`, `websockets`, `deps`) — optional, loopback-safe. |
 | `skyn3t.cli` | `main` — the Typer CLI (this package). |
@@ -37,6 +37,7 @@ sequenceDiagram
 
     U->>R: start(brief)
     R->>R: clarify + plan (stack, stages, checklist)
+    R->>R: freeze BuildContract (selection, classification, layout profile)
     R->>O: BUILD_STARTED (event)
     loop each stage
         R->>M: relevant_lessons() (inject)
@@ -73,6 +74,28 @@ parallel worktrees and merges the winner before delivery.
 
 Every command does its heavy imports lazily inside the command body, so the CLI
 starts fast and tolerates missing optional packages.
+
+## Evidence-first learning
+
+`BuildContract` makes each app-building decision durable: schema version 1
+captures the selected stack, classification, frozen layout profile, build
+profile, truthful template descriptor, and a stable content digest. The same
+record appears in the build manifest, the `BUILD_STARTED` event, and stage
+payload extras.
+
+`skyn3t.cortex.evaluation` is a separate non-mutating lane for `prompt`,
+`skill_policy`, and `router_policy` candidates. It accepts only narrow JSON
+configuration data plus two already-completed Golden ledgers. It writes a
+content-addressed evidence manifest; a passing comparison is still
+`review_required`, while every other outcome is `rejected`. The record cannot
+be `applied` or `promoted`.
+
+Remote GitHub README text is retained as unreviewed RAG data but excluded from
+automatic prompt recall. A distilled external skill remains quarantined until
+its canonical source URL, immutable commit SHA, source path, and retained
+content hash pass explicit local promotion. See
+[Evidence-backed learning](EVIDENCE_LEARNING.md) for the CLI and exact
+boundaries.
 
 ## The 7 design rules
 

@@ -76,6 +76,7 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.studio.build_contract import BuildContract
 from skyn3t.studio.build_intelligence import prepare_build_intelligence
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
@@ -909,20 +910,38 @@ class StudioRunner:
         manifest.extra["skills_used"] = sorted(existing)
         return out
 
-    # ---- RAG recall (past builds + ingested GitHub repos) ----------------
+    # ---- RAG recall (trusted local/build knowledge only) -----------------
     def _recall(self, brief: str, stack: str) -> list[dict[str, Any]]:
-        """Retrieve relevant prior knowledge to inject into stage prompts."""
+        """Retrieve prior knowledge that is eligible for prompt injection.
+
+        Remote GitHub README text remains searchable in RAG, but it is never
+        injected directly into a build prompt. It must first become a
+        provenance-pinned external skill and be explicitly promoted. The URL
+        fallback also protects previously persisted GitHub chunks created before
+        the ``external_unreviewed`` metadata flag existed.
+        """
         if self.rag is None:
             return []
         try:
             # Over-fetch, then drop experience-ledger stubs (marked
             # {"experience": True} at ingest): they are build metadata, not
-            # patterns, and were being injected as "relevant patterns".
+            # patterns, and were being injected as "relevant patterns". Also
+            # exclude unreviewed external repositories: their text is data, not
+            # instruction, until the explicit skill-promotion boundary is met.
             hits = self.rag.query(f"{stack} project: {brief}", top_k=10)
-            kept = [
-                h for h in (hits or [])
-                if not (getattr(h, "metadata", None) or {}).get("experience")
-            ][:5]
+
+            def eligible(hit: Any) -> bool:
+                metadata = getattr(hit, "metadata", None) or {}
+                if not isinstance(metadata, Mapping):
+                    return True
+                source = str(metadata.get("source") or "").lower()
+                return not (
+                    metadata.get("experience")
+                    or metadata.get("external_unreviewed")
+                    or "github.com/" in source
+                )
+
+            kept = [h for h in (hits or []) if eligible(h)][:5]
             return [
                 {"text": getattr(h, "text", str(h)), "score": getattr(h, "score", 0.0)}
                 for h in kept
@@ -5321,10 +5340,20 @@ class StudioRunner:
             classification.app_type, stack=plan.stack, engine=classification.engine,
         )
         frozen_profile = profile.to_dict()
+        build_contract = BuildContract.from_components(
+            choice,
+            classification,
+            profile,
+            build_profile=str(extra["build_profile"]),
+        ).to_dict()
         # The layout selection is a build-time classification decision. Persist and
         # reuse this serialized mapping for every later stage, even if settings
         # change while the build is queued or executing.
-        extra = {**extra, "layout_profile": frozen_profile}
+        extra = {
+            **extra,
+            "layout_profile": frozen_profile,
+            "build_contract": build_contract,
+        }
         manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
         # Honor a caller-supplied build_id (e.g. the web API) so its build
         # record reconciles via BUILD_* events instead of orphaning.
@@ -5434,6 +5463,7 @@ class StudioRunner:
         }
         manifest.extra["classification"] = classification.to_dict()
         manifest.extra["layout_profile"] = frozen_profile
+        manifest.extra["build_contract"] = build_contract
         build_id = manifest.build_id
         manifest.extra["preflight_run_id"] = f"{build_id}-preflight"
 
@@ -5452,7 +5482,9 @@ class StudioRunner:
              "app_type": classification.app_type, "engine": classification.engine,
              "stack_selection": manifest.extra["stack_selection"],
              "classification": manifest.extra["classification"],
-             "layout_profile": frozen_profile, "stages": plan.stage_names},
+             "layout_profile": frozen_profile,
+             "build_contract": build_contract,
+             "stages": plan.stage_names},
             correlation_id=correlation_id,
         )
 

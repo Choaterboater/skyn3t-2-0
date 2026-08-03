@@ -10,6 +10,7 @@ layout/convention sections with badges/HTML/boilerplate stripped, wrapped in
 frontmatter (name, description, stack-relevant tags, source = the GitHub URL)
 that SkillLibrary can load back.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,7 @@ import asyncio
 import skyn3t.agents.github_fetch as gh
 from skyn3t.cortex.handlers import HandlerRegistry
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
-from skyn3t.intelligence.skill_library import SkillLibrary, parse_skill
+from skyn3t.intelligence.skill_library import SkillLibrary, content_sha256, parse_skill
 
 _URL = "https://github.com/acme/coolcli"
 
@@ -104,13 +105,17 @@ def test_thin_content_is_refused_and_no_file_written(tmp_path):
 
 def test_handler_reports_thin_distill_as_skill_error_not_skill(tmp_path, monkeypatch):
     class _FakeRag:
-        def ingest_text(self, text, source="", kind=""):
+        def ingest_text(self, text, source="", kind="", metadata=None):
             return 3
 
     async def _fetch_thin(url):
-        return "README text"
+        return gh.GitHubRepoEvidence(
+            source_url=url,
+            text="README text",
+            source_path="README.md",
+        )
 
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_thin)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_thin)
     reg = HandlerRegistry(rag=_FakeRag(), skills=SkillLibrary(tmp_path / "skills"))
     res = asyncio.run(reg.apply(_prop({"url": _URL, "language": "Python"})))
     assert res["applied"] is True  # RAG ingest still applied
@@ -136,17 +141,24 @@ def test_rich_readme_produces_loadable_skill_with_frontmatter(tmp_path):
     path = skills_dir / f"{slug}.md"
     raw = path.read_text(encoding="utf-8")
     assert path.stat().st_size > 400
-    # Frontmatter: name, description, stack-relevant tags, source = GitHub URL.
+    # Frontmatter: name, description, stack-relevant tags, and a source kind.
     assert "name: gh-acme-coolcli" in raw
     assert "description:" in raw
-    assert f"source: {_URL}" in raw
+    assert "source: github-distilled" in raw
     assert "stack: python" in raw
 
     sk = parse_skill(raw, fallback_slug=path.stem)
     assert "github-distilled" in sk.tags
+    assert "external-candidate" in sk.tags
+    assert "hygiene:quarantine" in sk.tags
     assert "python" in sk.tags  # language-detected stack tag
     assert "cli" in sk.tags  # topic tag
-    assert sk.source == _URL
+    assert sk.source == "github-distilled"
+    assert sk.provenance is not None
+    assert sk.provenance.source_url == _URL
+    assert sk.provenance.source_path == "README"
+    assert sk.provenance.content_hash == content_sha256(_RICH_TEXT)
+    assert sk.provenance.pinned_revision is None  # direct helper never invents one
     # Concrete, deterministic body: real commands + layout sections.
     assert "pip install coolcli" in sk.body
     assert "python -m coolcli --help" in sk.body
@@ -159,8 +171,8 @@ def test_rich_readme_produces_loadable_skill_with_frontmatter(tmp_path):
     loaded = SkillLibrary(skills_dir).get(slug)
     assert loaded is not None
     assert loaded.body.strip()
-    # ...and is injectable for a matching stack.
-    assert skills.relevant("python", limit=5)
+    # External README text is retained for review but never default-injectable.
+    assert not skills.relevant("python", limit=5)
 
 
 def test_meta_falls_back_to_fetched_text_when_payload_is_sparse(tmp_path):

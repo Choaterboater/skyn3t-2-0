@@ -211,6 +211,56 @@ def test_run_parallel_slices_merges_every_slice(tmp_path):
     assert {event.payload["slice"] for event in snapshots} == set(slices)
 
 
+def test_parallel_slice_handoff_keeps_contract_digest_and_ownership(tmp_path):
+    from skyn3t.studio.build_contract import BuildContract
+    from skyn3t.studio.layout_profiles import resolve_layout_profile
+    from skyn3t.studio.stack_selector import StackChoice, classify_build
+
+    runner = _runner(tmp_path, parallel_code_slices=True)
+    main_wt = create_worktree(str(runner.settings.projects_dir), "demo")
+    plan = _plan()
+    prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
+    slices = runner._maybe_slices(plan, prior)
+    choice = StackChoice("react", "keyword", 0.8, "fullstack")
+    classification = classify_build("a fullstack operations dashboard", "react")
+    contract = BuildContract.from_components(
+        choice,
+        classification,
+        resolve_layout_profile(
+            classification.app_type,
+            stack="react",
+            engine=classification.engine,
+        ),
+        build_profile="balanced",
+    ).to_dict()
+
+    async def fake_submit(spec, payload, cid):
+        scope = payload["slice_scope"]
+        assert scope["contract_digest"] == contract["digest"]
+        target = Path(payload["worktree_dir"]) / scope["files"][0]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("// slice\n", encoding="utf-8")
+        return TaskResult(task_id="x", success=True, output={"files_written": 1})
+
+    runner._submit_stage = fake_submit  # type: ignore[assignment]
+    result = asyncio.run(runner._run_code_parallel_slices(
+        plan,
+        _CODE_SPEC,
+        str(runner.settings.projects_dir / "demo"),
+        prior,
+        [],
+        {"build_contract": contract},
+        "cid",
+        main_wt,
+        [main_wt],
+        slices,
+    ))
+
+    summary = StudioRunner._summarize(result.output)
+    assert summary["slices"]["frontend"]["owned_paths"]
+    execution = StudioRunner._stage_execution_truth(result)
+    assert execution["parallel_slices"]["slices"]["frontend"]["owned_paths"]
+
 def test_summarize_keeps_codegen_override_unavailable() -> None:
     summary = StudioRunner._summarize({
         "files_written": 3,

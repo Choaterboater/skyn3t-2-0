@@ -83,6 +83,13 @@ name is never treated as a pin. Promotion removes the quarantine/candidate tags
 and adds `external-promoted`; the skill remains non-binding advice rather than
 an executable instruction.
 
+## Local agent catalogs
+
+Local agent catalogs are also evidence-bound: import creates quarantined
+`catalog-candidate` skills with an advisory-body hash and source-path receipt.
+An API caller must pass `activate: true` to validate and promote that exact
+local content to `catalog-promoted`. See [Swarm and skills](SWARM_SKILLS.md)
+for the runtime role and replay behavior.
 ## Deliberate limits
 
 This first phase does not automatically mutate runtime settings, write code,

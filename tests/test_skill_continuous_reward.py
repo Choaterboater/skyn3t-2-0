@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from types import SimpleNamespace
 
 from skyn3t.config.settings import Settings
@@ -29,6 +30,21 @@ def test_binary_grading_backward_compatible(tmp_path):
     lib.record_use("s", helpful=False)  # no quality -> 0.0
     assert abs(lib.get("s").score - 0.5) < 1e-6  # same as the old helpful/uses rate
 
+
+def test_non_finite_quality_falls_back_to_the_binary_outcome(tmp_path):
+    lib = SkillLibrary(skills_dir=tmp_path)
+    lib.add("Finite", "body", slug="finite")
+
+    lib.record_use("finite", helpful=True, quality=float("nan"))
+    lib.record_use("finite", helpful=False, quality=float("inf"))
+
+    skill = lib.get("finite")
+    assert skill is not None
+    assert skill.uses == 2
+    assert skill.helpful == 1
+    assert skill.quality_sum == 1.0
+    assert math.isfinite(skill.score)
+    assert skill.score == 0.5
 
 def test_old_skill_without_quality_sum_keeps_score():
     md = (

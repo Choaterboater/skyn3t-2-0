@@ -9,13 +9,17 @@ the template descriptor truthfully says that no catalog template was selected.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from skyn3t.studio.layout_profiles import LayoutProfile
 from skyn3t.studio.stack_selector import BuildClassification, StackChoice
 
 _SCHEMA_VERSION = 1
+_CONTEXT_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,3 +158,79 @@ class BuildContract:
         payload = self._unsigned_dict()
         payload["digest"] = self.digest
         return payload
+
+
+def _context_identifier(value: object) -> str:
+    """Return one canonical identifier that is safe to include in a handoff."""
+    if not isinstance(value, str) or _CONTEXT_IDENTIFIER.fullmatch(value) is None:
+        return ""
+    return value
+
+
+def compact_contract_context(contract: object) -> dict[str, str | int]:
+    """Validate and project serialized Build Contract data for worker handoffs.
+
+    Callers commonly hold the serialized mapping persisted in ``extra`` rather
+    than a :class:`BuildContract` instance. Verify its digest before exposing a
+    small fixed projection so malformed caller input cannot steer a council,
+    role selector, or parallel slice differently from the frozen build record.
+    """
+    if not isinstance(contract, Mapping):
+        return {}
+    schema_version = contract.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != _SCHEMA_VERSION
+    ):
+        return {}
+    raw_digest = contract.get("digest")
+    if not isinstance(raw_digest, str) or len(raw_digest) != 64:
+        return {}
+    digest = raw_digest.lower()
+    if any(ch not in "0123456789abcdef" for ch in digest):
+        return {}
+    unsigned = {
+        key: contract.get(key)
+        for key in (
+            "schema_version",
+            "selection",
+            "classification",
+            "layout_profile",
+            "build_profile",
+            "template",
+        )
+    }
+    try:
+        expected = hashlib.sha256(
+            json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    except (TypeError, ValueError):
+        return {}
+    if not hmac.compare_digest(expected, digest):
+        return {}
+
+    selection = contract.get("selection")
+    classification = contract.get("classification")
+    layout = contract.get("layout_profile")
+    if not isinstance(selection, Mapping) or not isinstance(classification, Mapping):
+        return {}
+    layout_name = layout.get("name") if isinstance(layout, Mapping) else ""
+    projected = {
+        "stack": selection.get("stack"),
+        "app_type": classification.get("app_type"),
+        "engine": classification.get("engine"),
+        "layout_profile": layout_name,
+        "build_profile": contract.get("build_profile"),
+    }
+    identifiers = {key: _context_identifier(value) for key, value in projected.items()}
+    if not all(identifiers.values()):
+        return {}
+    context: dict[str, str | int] = {
+        "digest": digest,
+        "schema_version": schema_version,
+    }
+    context.update(identifiers)
+    return context

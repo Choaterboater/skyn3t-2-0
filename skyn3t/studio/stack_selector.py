@@ -2,9 +2,11 @@
 """Best-fit stack selection: explicit pin -> LLM best-fit -> keyword fallback.
 Works in PLANNER vocab, restricted to stacks that have a real builder. Never
 raises; degrades to keyword/default."""
+
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +42,7 @@ REAL_BUILDER_STACKS: dict[str, str] = {
 # "cli" MUST map to python (not the react default below) — a command-line brief
 # is a python_cli, never a React app. (nextjs/astro/remix are real builders now.)
 _COLLAPSE = {"flask": "fastapi", "django": "fastapi", "cli": "python"}
+_OVERRIDE_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 # ---- toolchain preflight (ADDING_A_STACK step 10) --------------------------
 # Stack -> the executable its REAL build/proof needs on THIS machine. Python-
@@ -49,10 +52,19 @@ _COLLAPSE = {"flask": "fastapi", "django": "fastapi", "cli": "python"}
 # among stacks it can actually BUILD here, instead of shipping a soft-skipped,
 # unverified delivery from a missing toolchain.
 _TOOLCHAIN_EXE = {
-    "react": "npm", "nextjs": "npm", "astro": "npm", "remix": "npm",
-    "vue": "npm", "sveltekit": "npm", "react_ts": "npm",
-    "express": "npm", "tauri": "npm", "phaser": "npm", "react_native": "npm",
-    "swift": "swift", "swift_ios": "xcodebuild",
+    "react": "npm",
+    "nextjs": "npm",
+    "astro": "npm",
+    "remix": "npm",
+    "vue": "npm",
+    "sveltekit": "npm",
+    "react_ts": "npm",
+    "express": "npm",
+    "tauri": "npm",
+    "phaser": "npm",
+    "react_native": "npm",
+    "swift": "swift",
+    "swift_ios": "xcodebuild",
 }
 
 # Where an unbuildable HEURISTIC/LLM choice degrades to (first AVAILABLE
@@ -61,10 +73,17 @@ _TOOLCHAIN_EXE = {
 # python API equivalent; swift keeps its desktop intent via tauri when npm
 # exists. Explicit PINS are never demoted — a pin is user intent.
 _TOOLCHAIN_FALLBACK = {
-    "react": ("static",), "nextjs": ("static",), "astro": ("static",),
-    "remix": ("static",), "vue": ("static",), "sveltekit": ("static",),
-    "react_ts": ("static",), "express": ("fastapi",), "tauri": ("static",),
-    "phaser": ("static",), "react_native": ("static",),
+    "react": ("static",),
+    "nextjs": ("static",),
+    "astro": ("static",),
+    "remix": ("static",),
+    "vue": ("static",),
+    "sveltekit": ("static",),
+    "react_ts": ("static",),
+    "express": ("fastapi",),
+    "tauri": ("static",),
+    "phaser": ("static",),
+    "react_native": ("static",),
     "swift": ("tauri", "python"),
     "swift_ios": ("react_native", "python"),
 }
@@ -86,9 +105,13 @@ def _demote_unbuildable(choice: StackChoice) -> StackChoice:
     for cand in (*_TOOLCHAIN_FALLBACK.get(choice.stack, ()), "python"):
         if cand in REAL_BUILDER_STACKS and toolchain_available(cand):
             return StackChoice(
-                cand, choice.method, min(choice.confidence, 0.5),
-                (f"{choice.stack} needs '{exe}' (not installed) — demoted to "
-                 f"{cand}. {choice.rationale}")[:300],
+                cand,
+                choice.method,
+                min(choice.confidence, 0.5),
+                (
+                    f"{choice.stack} needs '{exe}' (not installed) — demoted to "
+                    f"{cand}. {choice.rationale}"
+                )[:300],
             )
     return choice
 
@@ -172,8 +195,12 @@ def classify_build(
 
 
 def _normalize_override(value: str) -> str:
-    v = (value or "").strip().lower().replace(" ", "_")
-    return "" if v in ("", "auto", "none") else v
+    if not isinstance(value, str):
+        return ""
+    v = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if v in ("", "auto", "none"):
+        return ""
+    return v if _OVERRIDE_IDENTIFIER.fullmatch(v) is not None else ""
 
 
 def _infer_app_type(low: str, stack: str) -> str:
@@ -191,7 +218,9 @@ def _infer_app_type(low: str, stack: str) -> str:
         return "agent_workflow"
     if stack == "agent_pack":
         return "agent_pack"
-    if stack == "phaser" or any(k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")):
+    if stack == "phaser" or any(
+        k in low for k in ("game", "arcade", "platformer", "shooter", "rpg")
+    ):
         return "game"
     if stack == "python" or any(k in low for k in ("cli", "command line", "script", "terminal")):
         return "developer_tool"
@@ -290,7 +319,7 @@ def _extract_json(text: str) -> str:
         elif t[i] == "}":
             depth -= 1
             if depth == 0:
-                return t[start:i + 1]
+                return t[start : i + 1]
     return t[start:]  # unbalanced — let json.loads surface the error
 
 

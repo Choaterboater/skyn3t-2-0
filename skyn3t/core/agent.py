@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -22,6 +23,38 @@ import structlog
 from skyn3t.core.events import EventBus, EventType
 
 log = structlog.get_logger(__name__)
+
+
+_TASK_CONTEXT_TEXT_LIMITS = {
+    "build_id": 160,
+    "stage": 96,
+    "worktree_dir": 512,
+    "worktree_role": 128,
+}
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _authoritative_task_context(metadata: dict[str, Any]) -> dict[str, str]:
+    """Return the small, runner-owned task binding safe to retain on results.
+
+    The runner validates a Build Contract before placing its digest in task
+    metadata. The agent layer only accepts the resulting full SHA-256 token;
+    it never copies arbitrary caller metadata into a durable result.
+    """
+    context: dict[str, str] = {}
+    for key, limit in _TASK_CONTEXT_TEXT_LIMITS.items():
+        value = metadata.get(key)
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value:
+            context[key] = value[:limit]
+    digest = metadata.get("contract_digest")
+    if isinstance(digest, str):
+        digest = digest.strip()
+        if _SHA256_HEX_RE.fullmatch(digest):
+            context["contract_digest"] = digest
+    return context
 
 
 class AgentStatus(StrEnum):
@@ -175,6 +208,7 @@ class BaseAgent(ABC):
             },
             correlation_id=task.correlation_id,
         )
+        task_context = _authoritative_task_context(task.metadata)
         try:
             result = await self.execute(task)
             result.agent_name = self.name
@@ -182,14 +216,14 @@ class BaseAgent(ABC):
             # Preserve the build/worktree binding on the result as well as the
             # live task event. This lets the Studio manifest prove which
             # isolated tree a stage touched after the ephemeral event stream is
-            # gone. Keep it small and never copy arbitrary caller metadata.
-            task_context = {
-                key: task.metadata[key]
-                for key in ("build_id", "stage", "worktree_dir", "worktree_role")
-                if task.metadata.get(key) not in (None, "")
-            }
-            if task_context and "task_context" not in result.metadata:
+            # gone. Task metadata is authoritative: keep unrelated agent
+            # metadata, but never let it forge or extend this bounded context.
+            if not isinstance(result.metadata, dict):
+                result.metadata = {}
+            if task_context:
                 result.metadata["task_context"] = task_context
+            else:
+                result.metadata.pop("task_context", None)
             # Stamp the model the agent's LLM last used, so stage outcomes can
             # feed the ModelTournament. Single chokepoint: agents that hold a
             # ``self.llm`` get this for free without plumbing it through every
@@ -231,10 +265,13 @@ class BaseAgent(ABC):
                 },
                 correlation_id=task.correlation_id,
             )
-            return TaskResult(
+            result = TaskResult(
                 task_id=task.task_id, success=False, error=str(exc),
                 agent_name=self.name, duration_ms=(time() - started) * 1000,
             )
+            if task_context:
+                result.metadata["task_context"] = task_context
+            return result
 
     async def heartbeat(self) -> None:
         self._last_heartbeat = time()

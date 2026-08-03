@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -12,7 +14,7 @@ from skyn3t.config.settings import Settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.core.orchestrator import Orchestrator
-from skyn3t.studio.build_contract import BuildContract
+from skyn3t.studio.build_contract import BuildContract, compact_contract_context
 from skyn3t.studio.layout_profiles import resolve_layout_profile
 from skyn3t.studio.runner import StudioRunner
 from skyn3t.studio.stack_selector import StackChoice, classify_build
@@ -65,10 +67,67 @@ def test_build_contract_digest_is_stable_for_equivalent_components():
     assert first.to_dict()["digest"] == second.to_dict()["digest"]
 
 
+def test_compact_contract_context_is_digest_validated_and_bounded():
+    payload = _contract(build_profile="balanced").to_dict()
+
+    context = compact_contract_context(payload)
+
+    assert context["digest"] == payload["digest"]
+    assert context["stack"] == "react"
+    assert context["app_type"] == "dashboard"
+    assert context["layout_profile"] == "workspace"
+    assert context["build_profile"] == "balanced"
+    assert "desktop_contract" not in context
+
+    tampered = {**payload, "build_profile": "cheap_learned"}
+    assert compact_contract_context(tampered) == {}
+
+
+def _resign_contract(payload: dict[str, object]) -> None:
+    unsigned = {
+        key: payload[key]
+        for key in (
+            "schema_version",
+            "selection",
+            "classification",
+            "layout_profile",
+            "build_profile",
+            "template",
+        )
+    }
+    payload["digest"] = hashlib.sha256(
+        json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def test_compact_contract_context_requires_current_schema_and_exact_digest():
+    payload = _contract().to_dict()
+    payload["schema_version"] = 2
+    _resign_contract(payload)
+    assert compact_contract_context(payload) == {}
+
+    valid = _contract().to_dict()
+    valid["digest"] = str(valid["digest"]) + " trailing"
+    assert compact_contract_context(valid) == {}
+
+
+def test_compact_contract_context_rejects_resigned_control_text():
+    payload = _contract().to_dict()
+    classification = payload["classification"]
+    assert isinstance(classification, dict)
+    classification["app_type"] = "dashboard" + chr(10) + "untrusted_control_text"
+    _resign_contract(payload)
+
+    assert compact_contract_context(payload) == {}
+
+
 class _ContractCapturingCodeAgent(BaseAgent):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.payloads: list[dict] = []
+        self.task_metadata: list[dict] = []
 
     async def initialize(self) -> None:
         return None
@@ -78,6 +137,7 @@ class _ContractCapturingCodeAgent(BaseAgent):
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         self.payloads.append(task.payload)
+        self.task_metadata.append(dict(task.metadata))
         worktree = Path(task.payload["worktree_dir"])
         (worktree / "src").mkdir(parents=True, exist_ok=True)
         (worktree / "tests").mkdir(parents=True, exist_ok=True)
@@ -156,5 +216,8 @@ def test_runner_persists_emits_and_threads_the_build_contract(tmp_path):
         assert started.payload["build_contract"] == contract
         assert code.payloads
         assert all(payload["extra"]["build_contract"] == contract for payload in code.payloads)
+        assert all(
+            metadata["contract_digest"] == contract["digest"] for metadata in code.task_metadata
+        )
 
     asyncio.run(run())

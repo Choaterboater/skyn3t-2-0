@@ -51,6 +51,9 @@ class GraphNodeSpec:
     max_retries: int = 0
     cacheable: bool = True
     required: bool = True
+    concurrency_group: str = ""
+    concurrency_limit: int = 0
+    subgraph_depth: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", str(self.id).strip())
@@ -62,6 +65,9 @@ class GraphNodeSpec:
             tuple(str(path).strip() for path in self.write_set),
         )
         object.__setattr__(self, "max_retries", int(self.max_retries))
+        object.__setattr__(self, "concurrency_group", str(self.concurrency_group).strip())
+        object.__setattr__(self, "concurrency_limit", int(self.concurrency_limit))
+        object.__setattr__(self, "subgraph_depth", int(self.subgraph_depth))
         if not self.id:
             raise ValueError("node id must not be empty")
         if not self.kind:
@@ -74,6 +80,12 @@ class GraphNodeSpec:
             raise ValueError(f"node {self.id!r} has an empty write-set path")
         if self.max_retries < 0:
             raise ValueError(f"node {self.id!r} max_retries must be non-negative")
+        if self.concurrency_group and self.concurrency_limit < 1:
+            raise ValueError(f"node {self.id!r} concurrency group needs a positive limit")
+        if not self.concurrency_group and self.concurrency_limit:
+            raise ValueError(f"node {self.id!r} concurrency limit needs a group")
+        if self.subgraph_depth < 0:
+            raise ValueError(f"node {self.id!r} subgraph depth must be non-negative")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +99,9 @@ class GraphNodeSpec:
             "max_retries": self.max_retries,
             "cacheable": self.cacheable,
             "required": self.required,
+            "concurrency_group": self.concurrency_group,
+            "concurrency_limit": self.concurrency_limit,
+            "subgraph_depth": self.subgraph_depth,
         }
 
     @classmethod
@@ -102,6 +117,9 @@ class GraphNodeSpec:
             max_retries=int(raw.get("max_retries", 0)),
             cacheable=bool(raw.get("cacheable", True)),
             required=bool(raw.get("required", True)),
+            concurrency_group=str(raw.get("concurrency_group", "")),
+            concurrency_limit=int(raw.get("concurrency_limit", 0)),
+            subgraph_depth=int(raw.get("subgraph_depth", 0)),
         )
 
 
@@ -165,6 +183,23 @@ class GraphDefinition:
                 for dependencies in remaining.values():
                     dependencies.discard(node_id)
         return tuple(ordered)
+
+    def descendants(self, node_id: str, *, include_self: bool = True) -> tuple[str, ...]:
+        """Return a stable, topological set of nodes downstream of ``node_id``."""
+        self.node(node_id)
+        selected = {node_id}
+        changed = True
+        while changed:
+            changed = False
+            for node in self.topological_nodes():
+                if node.id not in selected and any(dep in selected for dep in node.deps):
+                    selected.add(node.id)
+                    changed = True
+        return tuple(
+            node.id
+            for node in self.topological_nodes()
+            if node.id in selected and (include_self or node.id != node_id)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -369,6 +404,151 @@ class GraphRun:
         self.artifacts = tuple(self.artifacts)
 
 
+_SPECIALIST_JOIN_KIND = "skyn3t.specialist_join"
+_MAX_DYNAMIC_SPECIALISTS = 4
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicSpecialistSubgraph:
+    """A one-level, durable specialist fan-out/fan-in plan.
+
+    Child count, depth, concurrency, write ownership, and inherited run routing
+    are all serialized before execution. Nested subgraphs are intentionally not
+    supported in this first bounded contract.
+    """
+
+    parent_node_id: str
+    specialists: tuple[GraphNodeSpec, ...]
+    max_concurrency: int = 2
+    depth: int = 1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parent_node_id", str(self.parent_node_id).strip())
+        object.__setattr__(self, "specialists", tuple(self.specialists))
+        object.__setattr__(self, "max_concurrency", int(self.max_concurrency))
+        object.__setattr__(self, "depth", int(self.depth))
+        if not self.parent_node_id:
+            raise ValueError("dynamic specialist subgraph needs a parent node")
+        if self.depth != 1:
+            raise ValueError("dynamic specialist subgraphs are limited to depth 1")
+        if not 1 <= len(self.specialists) <= _MAX_DYNAMIC_SPECIALISTS:
+            raise ValueError(f"dynamic specialist subgraphs allow 1 to {_MAX_DYNAMIC_SPECIALISTS} children")
+        if not 1 <= self.max_concurrency <= len(self.specialists):
+            raise ValueError("dynamic specialist concurrency must be within child count")
+        if any(node.deps for node in self.specialists):
+            raise ValueError("dynamic specialist children inherit the parent dependency")
+        child_ids = [node.id for node in self.specialists]
+        if len(set(child_ids)) != len(child_ids):
+            raise ValueError("dynamic specialist child ids must be unique")
+        if any(node.mutates_workspace and not node.write_set for node in self.specialists):
+            raise ValueError("mutating dynamic specialists need an explicit write set")
+        for index, left in enumerate(self.specialists):
+            for right in self.specialists[index + 1:]:
+                if write_sets_overlap(left, right):
+                    raise ValueError(
+                        f"dynamic specialist write sets overlap: {left.id} and {right.id}"
+                    )
+
+    @property
+    def subgraph_id(self) -> str:
+        payload = {
+            "parent": self.parent_node_id,
+            "children": [node.to_dict() for node in self.specialists],
+            "max_concurrency": self.max_concurrency,
+            "depth": self.depth,
+        }
+        return "specialists-" + hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+    @property
+    def join_node_id(self) -> str:
+        return f"{self.parent_node_id}--{self.subgraph_id}--join"
+
+    def expand(self, graph: GraphDefinition) -> GraphDefinition:
+        parent = graph.node(self.parent_node_id)
+        if parent.subgraph_depth:
+            raise ValueError("nested dynamic specialist subgraphs are not supported")
+        children = tuple(
+            replace(
+                node,
+                id=f"{self.parent_node_id}--{self.subgraph_id}--{node.id}",
+                deps=(self.parent_node_id,),
+                cacheable=False,
+                concurrency_group=self.subgraph_id,
+                concurrency_limit=self.max_concurrency,
+                subgraph_depth=self.depth,
+            )
+            for node in self.specialists
+        )
+        additions = (*children, GraphNodeSpec(
+            id=self.join_node_id,
+            kind=_SPECIALIST_JOIN_KIND,
+            deps=tuple(node.id for node in children),
+            cacheable=False,
+            subgraph_depth=self.depth,
+        ))
+        existing = {node.id for node in graph.nodes}
+        collision = next((node.id for node in additions if node.id in existing), None)
+        if collision is not None:
+            raise ValueError(f"dynamic specialist node already exists: {collision}")
+        return GraphDefinition(
+            graph_id=graph.graph_id,
+            version=f"{graph.version}+{self.subgraph_id}",
+            nodes=(*graph.nodes, *additions),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "subgraph_id": self.subgraph_id,
+            "parent_node_id": self.parent_node_id,
+            "children": [node.to_dict() for node in self.specialists],
+            "join_node_id": self.join_node_id,
+            "max_concurrency": self.max_concurrency,
+            "depth": self.depth,
+            "routing": "inherit-parent-run",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GraphRerunComparison:
+    comparison_id: str
+    source_run_id: str
+    rerun_run_id: str
+    from_node_id: str
+    rerun_nodes: tuple[str, ...]
+    baseline_evidence: Mapping[str, Any]
+    candidate_evidence: Mapping[str, Any]
+    baseline_digest: str
+    candidate_digest: str
+    outcome: str
+    promotion_status: str
+    created_at: float = field(default_factory=time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "comparison_id": self.comparison_id,
+            "source_run_id": self.source_run_id,
+            "rerun_run_id": self.rerun_run_id,
+            "from_node_id": self.from_node_id,
+            "rerun_nodes": list(self.rerun_nodes),
+            "baseline_evidence": dict(self.baseline_evidence),
+            "candidate_evidence": dict(self.candidate_evidence),
+            "baseline_digest": self.baseline_digest,
+            "candidate_digest": self.candidate_digest,
+            "outcome": self.outcome,
+            "promotion_status": self.promotion_status,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GraphRerunResult:
+    source_run_id: str
+    rerun: GraphRun
+    comparison: GraphRerunComparison
+
+
 def _optional_text(value: Any) -> str | None:
     return None if value is None else str(value)
 
@@ -505,6 +685,17 @@ _SCHEMA_STATEMENTS = (
         output_json TEXT,
         evidence_json TEXT NOT NULL,
         created_at REAL NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS graph_rerun_comparisons (
+        comparison_id TEXT PRIMARY KEY,
+        source_run_id TEXT NOT NULL,
+        rerun_run_id TEXT NOT NULL UNIQUE,
+        comparison_json TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        FOREIGN KEY (source_run_id) REFERENCES graph_runs(run_id) ON DELETE RESTRICT,
+        FOREIGN KEY (rerun_run_id) REFERENCES graph_runs(run_id) ON DELETE RESTRICT
     )
     """,
     """
@@ -1150,6 +1341,36 @@ class GraphStore:
 
         return await self._read(operation)
 
+    async def save_rerun_comparison(self, comparison: GraphRerunComparison) -> None:
+        """Persist a comparison once; never overwrite immutable evidence."""
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO graph_rerun_comparisons (
+                    comparison_id, source_run_id, rerun_run_id, comparison_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    comparison.comparison_id,
+                    comparison.source_run_id,
+                    comparison.rerun_run_id,
+                    _json_dump(comparison.to_dict()),
+                    comparison.created_at,
+                ),
+            )
+
+        await self._write(operation)
+
+    async def load_rerun_comparison(self, rerun_run_id: str) -> dict[str, Any] | None:
+        def operation(connection: sqlite3.Connection) -> dict[str, Any] | None:
+            row = connection.execute(
+                "SELECT comparison_json FROM graph_rerun_comparisons WHERE rerun_run_id = ?",
+                (rerun_run_id,),
+            ).fetchone()
+            return None if row is None else dict(_json_load(row["comparison_json"], {}))
+
+        return await self._read(operation)
+
 
 @dataclass(frozen=True, slots=True)
 class NodeContext:
@@ -1230,6 +1451,89 @@ def _bind_evidence(
     return EvidenceBundle(facts=dict(evidence.facts), artifacts=tuple(artifacts))
 
 
+def _proof_snapshot(run: GraphRun, node_ids: Sequence[str]) -> dict[str, Any]:
+    """Capture only durable proof facts/artifact digests, never mutable outputs."""
+    snapshot: dict[str, Any] = {}
+    for node_id in node_ids:
+        attempts = [
+            attempt for attempt in run.attempts
+            if attempt.node_id == node_id
+            and attempt.status in {NodeStatus.SUCCEEDED, NodeStatus.CACHED}
+        ]
+        attempt = attempts[-1] if attempts else None
+        evidence = attempt.evidence if attempt is not None else EvidenceBundle()
+        snapshot[node_id] = {
+            "status": run.node_statuses[node_id].value,
+            "attempt": attempt.attempt if attempt is not None else None,
+            "facts": dict(evidence.facts),
+            "artifacts": [
+                {
+                    "kind": artifact.kind,
+                    "uri": artifact.uri,
+                    "digest": artifact.digest,
+                    "metadata": dict(artifact.metadata),
+                }
+                for artifact in evidence.artifacts
+            ],
+        }
+    return snapshot
+
+
+def compare_rerun_evidence(
+    source: GraphRun,
+    rerun: GraphRun,
+    *,
+    from_node_id: str,
+    rerun_nodes: Sequence[str],
+) -> GraphRerunComparison:
+    """Make a durable, evidence-only comparison; promotion always needs review."""
+    nodes = tuple(str(node_id) for node_id in rerun_nodes)
+    baseline = _proof_snapshot(source, nodes)
+    candidate = _proof_snapshot(rerun, nodes)
+    baseline_digest = hashlib.sha256(canonical_json(baseline).encode("utf-8")).hexdigest()
+    candidate_digest = hashlib.sha256(canonical_json(candidate).encode("utf-8")).hexdigest()
+    complete = all(
+        rerun.node_statuses[node_id] in {NodeStatus.SUCCEEDED, NodeStatus.CACHED}
+        for node_id in nodes
+    )
+    outcome = "incomplete" if not complete else (
+        "equivalent" if baseline_digest == candidate_digest else "changed"
+    )
+    comparison_id = hashlib.sha256(
+        canonical_json({
+            "source": source.run_id,
+            "rerun": rerun.run_id,
+            "from": from_node_id,
+            "nodes": nodes,
+            "baseline": baseline_digest,
+            "candidate": candidate_digest,
+        }).encode("utf-8")
+    ).hexdigest()[:24]
+    return GraphRerunComparison(
+        comparison_id=comparison_id,
+        source_run_id=source.run_id,
+        rerun_run_id=rerun.run_id,
+        from_node_id=from_node_id,
+        rerun_nodes=nodes,
+        baseline_evidence=baseline,
+        candidate_evidence=candidate,
+        baseline_digest=baseline_digest,
+        candidate_digest=candidate_digest,
+        outcome=outcome,
+        promotion_status="review_required" if complete else "not_ready",
+    )
+
+
+def _rerun_nodes_from_inputs(inputs: Mapping[str, Any]) -> frozenset[str]:
+    raw = inputs.get("_graph_rerun")
+    if not isinstance(raw, Mapping):
+        return frozenset()
+    node_ids = raw.get("rerun_nodes")
+    if not isinstance(node_ids, Sequence) or isinstance(node_ids, (str, bytes)):
+        return frozenset()
+    return frozenset(str(node_id) for node_id in node_ids)
+
+
 @dataclass(frozen=True, slots=True)
 class _NodeCompletion:
     node_id: str
@@ -1263,6 +1567,7 @@ class GraphExecutor:
         routing: RoutingSnapshot | Mapping[str, Any] | None = None,
         toolchain: Mapping[str, Any] | None = None,
         prompt: Any = None,
+        dynamic_specialists: DynamicSpecialistSubgraph | None = None,
     ) -> GraphRun:
         """Create and execute a new durable graph run."""
 
@@ -1275,10 +1580,16 @@ class GraphExecutor:
             if isinstance(routing, RoutingSnapshot)
             else RoutingSnapshot.from_dict(routing)
         )
+        run_inputs = dict(inputs or {})
+        if dynamic_specialists is not None:
+            if dynamic_specialists.max_concurrency > self.max_concurrency:
+                raise ValueError("dynamic specialist concurrency exceeds executor capacity")
+            graph = dynamic_specialists.expand(graph)
+            run_inputs["_dynamic_specialist_subgraph"] = dynamic_specialists.to_dict()
         run = GraphRun(
             run_id=selected_run_id,
             graph=graph,
-            inputs=dict(inputs or {}),
+            inputs=run_inputs,
             routing=routing_snapshot,
         )
         await self.store.save_run(run)
@@ -1311,6 +1622,79 @@ class GraphExecutor:
             run_id,
             toolchain=dict(toolchain or {}),
             prompt=prompt,
+            force_nodes=_rerun_nodes_from_inputs(run.inputs),
+        )
+
+    async def rerun_descendants(
+        self,
+        source_run_id: str,
+        from_node_id: str,
+        *,
+        run_id: str | None = None,
+        toolchain: Mapping[str, Any] | None = None,
+        prompt: Any = None,
+    ) -> GraphRerunResult:
+        """Fork a completed run and execute only a selected node and descendants."""
+
+        await self.store.initialize()
+        source = await self.store.load_run(source_run_id)
+        if source is None:
+            raise KeyError(source_run_id)
+        if source.status not in {NodeStatus.SUCCEEDED, NodeStatus.CACHED}:
+            raise ValueError("only completed graph runs can be selectively rerun")
+        if source.node_statuses.get(from_node_id) not in {
+            NodeStatus.SUCCEEDED,
+            NodeStatus.CACHED,
+        }:
+            raise ValueError("the selected rerun node must have completed successfully")
+        rerun_nodes = source.graph.descendants(from_node_id)
+        selected_run_id = run_id or uuid.uuid4().hex
+        if await self.store.load_run(selected_run_id) is not None:
+            raise ValueError(f"graph run already exists: {selected_run_id}")
+        run_inputs = dict(source.inputs)
+        run_inputs["_graph_rerun"] = {
+            "schema_version": 1,
+            "source_run_id": source.run_id,
+            "from_node_id": from_node_id,
+            "rerun_nodes": list(rerun_nodes),
+        }
+        rerun = GraphRun(
+            run_id=selected_run_id,
+            graph=source.graph,
+            inputs=run_inputs,
+            routing=source.routing,
+            node_statuses={
+                node.id: (
+                    NodeStatus.PENDING if node.id in rerun_nodes
+                    else source.node_statuses[node.id]
+                )
+                for node in source.graph.nodes
+            },
+            node_outputs={
+                node_id: output
+                for node_id, output in source.node_outputs.items()
+                if node_id not in rerun_nodes
+            },
+        )
+        await self.store.save_run(rerun)
+        await self.store.set_run_status(rerun.run_id, NodeStatus.READY)
+        completed = await self._drive(
+            rerun.run_id,
+            toolchain=dict(toolchain or {}),
+            prompt=prompt,
+            force_nodes=frozenset(rerun_nodes),
+        )
+        comparison = compare_rerun_evidence(
+            source,
+            completed,
+            from_node_id=from_node_id,
+            rerun_nodes=rerun_nodes,
+        )
+        await self.store.save_rerun_comparison(comparison)
+        return GraphRerunResult(
+            source_run_id=source.run_id,
+            rerun=completed,
+            comparison=comparison,
         )
 
     async def cancel(self, run_id: str) -> None:
@@ -1327,6 +1711,7 @@ class GraphExecutor:
         *,
         toolchain: Mapping[str, Any],
         prompt: Any,
+        force_nodes: frozenset[str] = frozenset(),
     ) -> GraphRun:
         run = await self.store.load_run(run_id)
         if run is None:
@@ -1415,6 +1800,11 @@ class GraphExecutor:
                         break
                     if statuses[node.id] is not NodeStatus.READY:
                         continue
+                    if node.concurrency_group and sum(
+                        active.concurrency_group == node.concurrency_group
+                        for active in active_specs
+                    ) >= node.concurrency_limit:
+                        continue
                     if any(write_sets_overlap(node, active) for active in active_specs):
                         continue
                     upstream = {
@@ -1431,6 +1821,7 @@ class GraphExecutor:
                             toolchain=toolchain,
                             prompt=prompt,
                             cancel_event=cancel_event,
+                            force_run=node.id in force_nodes,
                         ),
                         name=f"graph-node-{run_id}-{node.id}",
                     )
@@ -1544,6 +1935,7 @@ class GraphExecutor:
         toolchain: Mapping[str, Any],
         prompt: Any,
         cancel_event: asyncio.Event,
+        force_run: bool = False,
     ) -> _NodeCompletion:
         cache_key = node_cache_key(
             graph=run.graph,
@@ -1554,7 +1946,7 @@ class GraphExecutor:
             routing=run.routing,
             inputs=run.inputs,
         )
-        if node.cacheable:
+        if node.cacheable and not force_run:
             cached = await self.store.get_cached_result(cache_key)
             if cached is not None:
                 evidence = _bind_evidence(
@@ -1618,9 +2010,19 @@ class GraphExecutor:
                 cancel_event=cancel_event,
             )
             try:
-                if handler is None:
+                if handler is None and node.kind == _SPECIALIST_JOIN_KIND:
+                    raw_result = NodeResult(
+                        output=dict(context.upstream_outputs),
+                        evidence=EvidenceBundle(
+                            facts={
+                                "specialist_children": sorted(context.upstream_outputs),
+                                "routing_inherited": True,
+                            }
+                        ),
+                    )
+                elif handler is None:
                     raise LookupError(f"no graph handler registered for kind {node.kind!r}")
-                if inspect.iscoroutinefunction(handler):
+                elif inspect.iscoroutinefunction(handler):
                     raw_result = handler(context)
                 else:
                     sync_handler = cast(Callable[[NodeContext], Any], handler)

@@ -99,6 +99,19 @@ local promotion. See
 [Evidence-backed learning](EVIDENCE_LEARNING.md) for the CLI and exact
 boundaries.
 
+### Durable graph experiments
+
+`GraphExecutor.rerun_descendants()` forks a completed graph from one selected
+node, preserves the successful ancestor state, and forces only that node plus
+its descendants to execute again. It persists an evidence-only snapshot and
+content digests for the source and candidate runs; even an equivalent rerun is
+`review_required`, never auto-promoted. `DynamicSpecialistSubgraph` is a
+one-level fan-out/fan-in plan with a maximum of four children, explicit
+workspace ownership for writers, per-plan concurrency, no nesting, and the
+parent run's frozen routing snapshot. These runtime contracts define the boundary
+for controlled Cortex graph experiments; no graph result changes code,
+configuration, or policy by itself.
+
 ## The 7 design rules
 
 1. **Delivered != empty.** Success requires substantive files on disk, proven

@@ -114,6 +114,7 @@ def test_agentic_prompt_injects_seed_tokens_md():
         brief, "react", {"files": []}, "", design=_DESIGN, design_tokens_md=None)
     assert default == none_kwarg  # byte-identical default path
     assert design_md_block(brief) in default
+    assert "VISUAL DESIGN CONTRACT v1" in default
 
     seed_md = design_seed_for(brief, 2)["tokens_md"]
     seeded = agent._agentic_prompt(

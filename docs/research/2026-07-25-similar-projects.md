@@ -151,8 +151,8 @@ considered. No third-party source code was copied into SkyN3t.
 
 ## Ranked continuation backlog
 
-1. Add a versioned visual-design contract consumed by code generation and the
-   visual editor, then lint it across responsive proof viewports.
+1. Completed: versioned visual-design contract consumed by code generation and
+   the visual editor, linted across responsive proof viewports.
 2. Allow Cortex to fork one completed graph at a selected node, rerun only its
    descendants, and compare immutable proof evidence before promotion.
 3. Consider bounded dynamic specialist subgraphs only after child count,

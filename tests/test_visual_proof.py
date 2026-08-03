@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from skyn3t.studio import visual_proof as vp
+from skyn3t.studio.visual_design_contract import derive_visual_design_contract
 from skyn3t.studio.visual_proof import (
     DEFAULT_VIEWPORTS,
     VISUAL_PROOF_SCHEMA_VERSION,
@@ -58,6 +59,41 @@ def test_clean_snapshot_passes_deterministic_analysis():
     assert issues == []
     assert metrics["horizontal_overflow_px"] == 0
     assert metrics["high_confidence_overlaps"] == 0
+
+
+def test_visual_design_contract_lints_root_tokens_heading_and_mobile_controls():
+    contract = derive_visual_design_contract("A calm bakery site")
+    clean_snapshot = _snapshot(
+        root_tokens=dict(contract["tokens"]),
+        typography={
+            "has_heading": True,
+            "heading_font_family": f"{contract['typography']['heading']}, serif",
+        },
+        interactive_controls=[{"tag": "button", "label": "Order", "width": 120, "height": 40}],
+    )
+
+    metrics, issues = analyze_viewport_snapshot(
+        clean_snapshot, stack="react", design_contract=contract
+    )
+
+    assert issues == []
+    assert metrics["visual_design_contract"]["checked"] is True
+    assert metrics["visual_design_contract"]["contract_id"] == contract["contract_id"]
+
+    invalid_snapshot = _snapshot(
+        root_tokens={"--bg": "#fff"},
+        typography={"has_heading": True, "heading_font_family": "Arial, sans-serif"},
+        interactive_controls=[{"tag": "button", "label": "Order", "width": 32, "height": 30}],
+    )
+    _, issues = analyze_viewport_snapshot(
+        invalid_snapshot, stack="react", design_contract=contract
+    )
+
+    assert {
+        "design_contract_tokens_missing",
+        "design_contract_heading_font_missing",
+        "design_contract_small_controls",
+    }.issubset(_codes(issues))
 
 
 def test_blank_broken_and_overflow_findings_are_independent():

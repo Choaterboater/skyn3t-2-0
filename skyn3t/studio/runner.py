@@ -3570,19 +3570,35 @@ class StudioRunner:
         try:
             from skyn3t.agents.code_agent import _DESIGN_WEB_STACKS, CodeAgent
             from skyn3t.studio.design_tokens import write_design_md
+            from skyn3t.studio.visual_design_contract import (
+                VISUAL_DESIGN_CONTRACT_RELATIVE_PATH,
+                write_visual_design_contract,
+            )
 
             if (stack or "").lower() not in _DESIGN_WEB_STACKS:
                 return
             design = CodeAgent._unwrap_design_payload(
                 prior.get("design") if isinstance(prior, dict) else None
             )
-            written = write_design_md(
-                project_dir, brief, CodeAgent._design_summary(design)
-            )
+            design_summary = CodeAgent._design_summary(design)
+            written = write_design_md(project_dir, brief, design_summary)
+            contract = write_visual_design_contract(project_dir, brief, design_summary)
             if written:
                 manifest.extra["design_md"] = "DESIGN.md"
-                manifest.files = list_files(project_dir)
                 log.info("runner.design_md_written", path="DESIGN.md")
+            if contract is not None:
+                manifest.extra["visual_design_contract"] = {
+                    "schema_version": contract["schema_version"],
+                    "path": VISUAL_DESIGN_CONTRACT_RELATIVE_PATH.as_posix(),
+                    "contract_id": contract["contract_id"],
+                }
+                log.info(
+                    "runner.visual_design_contract_written",
+                    path=VISUAL_DESIGN_CONTRACT_RELATIVE_PATH.as_posix(),
+                    contract_id=contract["contract_id"],
+                )
+            if written or contract is not None:
+                manifest.files = list_files(project_dir)
         except Exception as exc:  # noqa: BLE001 - design persistence must not break delivery
             log.warning("runner.design_md_failed", error=str(exc)[:160])
 

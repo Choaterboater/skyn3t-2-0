@@ -58,6 +58,7 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.design_tokens import design_md_block
+from skyn3t.studio.visual_design_contract import visual_design_contract_prompt_block
 from skyn3t.studio.layout_profiles import LayoutProfile, layout_contract_block, profile_from_payload
 from skyn3t.worktree import list_files
 
@@ -1430,7 +1431,7 @@ class CodeAgent(BaseAgent):
             # them to 0 bytes). Same stack gate as the bar: never phaser/mobile.
             # A threaded design seed (best-of-N divergence) overrides the
             # derived block; default (falsy) derives exactly as before.
-            + (f"{design_tokens_md or design_md_block(brief)}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
+            + (f"{design_tokens_md or design_md_block(brief)}\n{visual_design_contract_prompt_block()}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
             + (
                 f"Follow this design direction: {self._design_summary(design)}\n"
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
@@ -2051,7 +2052,10 @@ class CodeAgent(BaseAgent):
             (slice_name == "frontend" or slice_name.startswith("frontend_"))
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
+            design_block = (
+                f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
+                f"\n{visual_design_contract_prompt_block()}"
+            )
             summary = self._design_summary(design)
             if summary:
                 design_block += f"\nFollow this design direction: {summary}"
@@ -2099,6 +2103,7 @@ class CodeAgent(BaseAgent):
             if summary:
                 design_block = (
                     f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
+                    f"\n{visual_design_contract_prompt_block()}"
                     f"\nFollow this design direction: {summary}"
                 )
         return self.system_prompt(
@@ -3140,7 +3145,10 @@ class CodeAgent(BaseAgent):
             ext in _FRONTEND_EXTENSIONS
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n{_DESIGN_DIRECTIVE}\n{design_tokens_md or design_md_block(brief)}"
+            design_block = (
+                f"\n{_DESIGN_DIRECTIVE}\n{design_tokens_md or design_md_block(brief)}"
+                f"\n{visual_design_contract_prompt_block()}"
+            )
             if design_summary:
                 design_block += f"\nFollow this design direction: {design_summary}"
         prompt = (

@@ -20,6 +20,10 @@ from skyn3t.studio.design_tokens import (
     write_design_md,
 )
 from skyn3t.studio.runner import StudioRunner
+from skyn3t.studio.visual_design_contract import (
+    VISUAL_DESIGN_CONTRACT_RELATIVE_PATH,
+    read_visual_design_contract,
+)
 
 _DESIGN = {
     "theme": "dark minimal",
@@ -55,6 +59,10 @@ def test_design_md_written_for_web_stack_with_token_block(tmp_path):
     assert "## Design direction" in text
     assert "accent:#6750f2" in text
     assert manifest.extra["design_md"] == "DESIGN.md"
+    contract = read_visual_design_contract(tmp_path)
+    assert contract is not None
+    assert manifest.extra["visual_design_contract"]["contract_id"] == contract["contract_id"]
+    assert (tmp_path / VISUAL_DESIGN_CONTRACT_RELATIVE_PATH).is_file()
     assert "DESIGN.md" in manifest.files
 
 

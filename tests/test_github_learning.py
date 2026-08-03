@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import sys
+from types import SimpleNamespace
 
 import skyn3t.agents.github_fetch as gh
 from skyn3t.cortex.handlers import HandlerRegistry
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
-from skyn3t.intelligence.skill_library import SkillLibrary
+from skyn3t.intelligence.skill_library import SkillLibrary, content_sha256
 
 
 def _prop(payload: dict) -> Proposal:
@@ -20,15 +23,34 @@ class _FakeRag:
         self._n = n
         self._raises = raises
 
-    def ingest_text(self, text, source="", kind=""):
-        self.calls.append((text, source, kind))
+    def ingest_text(self, text, source="", kind="", metadata=None):
+        self.calls.append((text, source, kind, metadata))
         if self._raises:
             raise RuntimeError("boom")
         return self._n
 
 
+_PINNED_SHA = "a" * 40
+
+
+def _evidence(
+    url: str,
+    text: str,
+    *,
+    pinned_revision: str | None = None,
+    license: str | None = None,
+) -> gh.GitHubRepoEvidence:
+    return gh.GitHubRepoEvidence(
+        source_url=url,
+        text=text,
+        source_path="README.md",
+        pinned_revision=pinned_revision,
+        license=license,
+    )
+
+
 async def _fetch_ok(url):  # noqa: ANN001
-    return "README text"
+    return _evidence(url, "README text")
 
 
 async def _fetch_none(url):  # noqa: ANN001
@@ -59,24 +81,30 @@ _RICH_TEXT = (
 
 
 async def _fetch_rich(url):  # noqa: ANN001
-    return _RICH_TEXT
+    return _evidence(url, _RICH_TEXT, pinned_revision=_PINNED_SHA, license="MIT")
 
 
 def test_handler_ingests_into_rag(monkeypatch):
     rag = _FakeRag(n=3)
     reg = HandlerRegistry(rag=rag)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_ok)
     res = asyncio.run(reg.apply(_prop({"url": "https://github.com/pallets/flask"})))
     assert res["applied"] is True
     assert res["ingested"] == 3
     assert rag.calls and rag.calls[0][2] == "github"
     assert "github.com/pallets/flask" in rag.calls[0][1]
+    assert rag.calls[0][3] == {
+        "external_unreviewed": True,
+        "source_kind": "github_readme",
+        "source_url": "https://github.com/pallets/flask",
+        "source_path": "README.md",
+    }
 
 
 def test_handler_synthesizes_url_from_repo_field(monkeypatch):
     rag = _FakeRag()
     reg = HandlerRegistry(rag=rag)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_ok)
     res = asyncio.run(reg.apply(_prop({"repo": "pallets/flask"})))
     assert res["applied"] is True
     assert "github.com/pallets/flask" in rag.calls[0][1]
@@ -85,11 +113,31 @@ def test_handler_synthesizes_url_from_repo_field(monkeypatch):
 def test_handler_degrades_offline(monkeypatch):
     rag = _FakeRag()
     reg = HandlerRegistry(rag=rag)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_none)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_none)
     res = asyncio.run(reg.apply(_prop({"url": "https://github.com/x/y"})))
     assert res["degraded"] is True
     assert res["ingested"] == 0
     assert not rag.calls  # never reached ingest
+
+
+def test_handler_preserves_legacy_rag_ingest_signature(monkeypatch):
+    class _LegacyRag:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def ingest_text(self, text, source="", kind=""):
+            self.calls.append((text, source, kind))
+            return 2
+
+    rag = _LegacyRag()
+    reg = HandlerRegistry(rag=rag)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_ok)
+
+    res = asyncio.run(reg.apply(_prop({"url": "https://github.com/pallets/flask"})))
+
+    assert res["applied"] is True
+    assert res["ingested"] == 2
+    assert rag.calls and rag.calls[0][2] == "github"
 
 
 def test_handler_no_rag_is_unchanged():
@@ -104,7 +152,7 @@ def test_handler_no_rag_is_unchanged():
 def test_handler_rag_error_degrades_not_failed(monkeypatch):
     rag = _FakeRag(raises=True)
     reg = HandlerRegistry(rag=rag)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_ok)
     res = asyncio.run(reg.apply(_prop({"url": "https://github.com/x/y"})))
     # retryable-degraded, NOT applied:False (which would mark the proposal FAILED)
     assert res["applied"] is True
@@ -117,9 +165,29 @@ class _FakeSkills:
     def __init__(self):
         self.added = []
 
-    def add(self, title, body, *, stack="generic", tags=None, source="manual", slug=None, description=""):
+    def add(
+        self,
+        title,
+        body,
+        *,
+        stack="generic",
+        tags=None,
+        source="manual",
+        slug=None,
+        description="",
+        provenance=None,
+    ):
         self.added.append(
-            {"title": title, "body": body, "stack": stack, "tags": tags, "source": source, "slug": slug, "description": description}
+            {
+                "title": title,
+                "body": body,
+                "stack": stack,
+                "tags": tags,
+                "source": source,
+                "slug": slug,
+                "description": description,
+                "provenance": provenance,
+            }
         )
         return None
 
@@ -128,20 +196,34 @@ def test_handler_distills_skill_on_ingest(monkeypatch):
     rag = _FakeRag(n=2)
     skills = _FakeSkills()
     reg = HandlerRegistry(rag=rag, skills=skills)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_rich)
-    res = asyncio.run(reg.apply(_prop({
-        "url": "https://github.com/pallets/flask",
-        "description": "web framework",
-        "language": "Python",
-    })))
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_rich)
+    res = asyncio.run(
+        reg.apply(
+            _prop(
+                {
+                    "url": "https://github.com/pallets/flask",
+                    "description": "web framework",
+                    "language": "Python",
+                }
+            )
+        )
+    )
     assert res["applied"] is True
     assert res.get("skill")  # slug returned
     assert skills.added, "a skill should be distilled from the ingested repo"
     sk = skills.added[0]
-    assert sk["source"] == "https://github.com/pallets/flask"  # frontmatter source = repo URL
+    assert sk["source"] == "github-distilled"
     assert "flask" in sk["slug"]
     assert sk["stack"] == "python"  # mapped from language 'Python'
     assert "github-distilled" in sk["tags"]
+    assert "external-candidate" in sk["tags"]
+    assert "hygiene:quarantine" in sk["tags"]
+    assert sk["provenance"] is not None
+    assert sk["provenance"].source_url == "https://github.com/pallets/flask"
+    assert sk["provenance"].source_path == "README.md"
+    assert sk["provenance"].content_hash == content_sha256(_RICH_TEXT)
+    assert sk["provenance"].pinned_revision == _PINNED_SHA
+    assert sk["provenance"].license == "MIT"
 
 
 def test_handler_refuses_thin_distill_and_reports_skill_error(monkeypatch):
@@ -150,11 +232,17 @@ def test_handler_refuses_thin_distill_and_reports_skill_error(monkeypatch):
     rag = _FakeRag(n=2)
     skills = _FakeSkills()
     reg = HandlerRegistry(rag=rag, skills=skills)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
-    res = asyncio.run(reg.apply(_prop({
-        "url": "https://github.com/pallets/flask",
-        "language": "Python",
-    })))
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_ok)
+    res = asyncio.run(
+        reg.apply(
+            _prop(
+                {
+                    "url": "https://github.com/pallets/flask",
+                    "language": "Python",
+                }
+            )
+        )
+    )
     assert res["applied"] is True  # RAG ingest still applied
     assert "skill" not in res
     assert "too thin" in res["skill_error"]
@@ -165,14 +253,20 @@ def test_handler_persists_unicode_github_skill_as_nonempty_utf8(tmp_path, monkey
     rag = _FakeRag(n=1)
     skills = SkillLibrary(tmp_path / "skills")
     reg = HandlerRegistry(rag=rag, skills=skills)
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_rich)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_rich)
 
-    res = asyncio.run(reg.apply(_prop({
-        "url": "https://github.com/pallets/flask",
-        "description": "web framework",
-        "language": "Python",
-        "stars": 123,
-    })))
+    res = asyncio.run(
+        reg.apply(
+            _prop(
+                {
+                    "url": "https://github.com/pallets/flask",
+                    "description": "web framework",
+                    "language": "Python",
+                    "stars": 123,
+                }
+            )
+        )
+    )
 
     path = tmp_path / "skills" / f"{res['skill']}.md"
     assert path.stat().st_size > 0
@@ -184,10 +278,92 @@ def test_handler_no_skills_lib_still_ingests(monkeypatch):
     # Skills lib absent -> ingest still works, no skill, no error.
     rag = _FakeRag(n=1)
     reg = HandlerRegistry(rag=rag)  # no skills
-    monkeypatch.setattr(gh, "fetch_github_repo_text", _fetch_ok)
+    monkeypatch.setattr(gh, "fetch_github_repo_evidence", _fetch_ok)
     res = asyncio.run(reg.apply(_prop({"url": "https://github.com/x/y"})))
     assert res["applied"] is True
     assert "skill" not in res
+
+
+class _FetchResponse:
+    def __init__(self, status: int, payload=None, text: str = "") -> None:
+        self.status_code = status
+        self._payload = payload
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+class _FetchClient:
+    responses: list[_FetchResponse] = []
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def get(self, url: str, *, headers: dict[str, str]):
+        self.calls.append((url, headers))
+        return self.responses.pop(0)
+
+
+def test_fetch_evidence_records_only_github_supplied_commit_and_license(monkeypatch):
+    encoded = base64.b64encode(b"# Example\nUse a proof gate.\n").decode("ascii")
+    _FetchClient.calls = []
+    _FetchClient.responses = [
+        _FetchResponse(
+            200,
+            {
+                "description": "An example.",
+                "language": "Python",
+                "stargazers_count": 7,
+                "topics": ["quality"],
+                "default_branch": "main",
+                "license": {"spdx_id": "MIT"},
+            },
+        ),
+        _FetchResponse(200, {"sha": _PINNED_SHA}),
+        _FetchResponse(
+            200,
+            {"path": "docs/README.md", "encoding": "base64", "content": encoded},
+        ),
+    ]
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
+
+    evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/acme/example"))
+
+    assert evidence is not None
+    assert evidence.source_url == "https://github.com/acme/example"
+    assert evidence.source_path == "docs/README.md"
+    assert evidence.pinned_revision == _PINNED_SHA
+    assert evidence.license == "MIT"
+    assert "Revision: " + _PINNED_SHA in evidence.text
+    assert "Source path: docs/README.md" in evidence.text
+    assert len(_FetchClient.calls) == 3
+
+
+def test_fetch_evidence_never_uses_a_branch_name_as_a_pin(monkeypatch):
+    encoded = base64.b64encode(b"# Example\n").decode("ascii")
+    _FetchClient.calls = []
+    _FetchClient.responses = [
+        _FetchResponse(200, {"default_branch": "main", "license": {"spdx_id": "NOASSERTION"}}),
+        _FetchResponse(200, {"sha": "main"}),
+        _FetchResponse(200, {"path": "README.md", "encoding": "base64", "content": encoded}),
+    ]
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
+
+    evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/acme/example"))
+
+    assert evidence is not None
+    assert evidence.pinned_revision is None
+    assert evidence.license is None
+    assert "Default branch: main" in evidence.text
+    assert "Revision:" not in evidence.text
 
 
 def test_fetch_non_github_returns_none():

@@ -51,24 +51,47 @@ _PROVENANCE_SOURCE_URL = "skyn3t-source-url"
 _PROVENANCE_REVISION = "skyn3t-pinned-revision"
 _PROVENANCE_CONTENT_HASH = "skyn3t-content-sha256"
 _PROVENANCE_SOURCE_PATH = "skyn3t-source-path"
-_PROVENANCE_METADATA_KEYS = frozenset({
-    _PROVENANCE_SOURCE_URL,
-    _PROVENANCE_REVISION,
-    _PROVENANCE_CONTENT_HASH,
-    _PROVENANCE_SOURCE_PATH,
-})
+_PROVENANCE_METADATA_KEYS = frozenset(
+    {
+        _PROVENANCE_SOURCE_URL,
+        _PROVENANCE_REVISION,
+        _PROVENANCE_CONTENT_HASH,
+        _PROVENANCE_SOURCE_PATH,
+    }
+)
 
-_UNIVERSAL_GENERIC_TAGS = frozenset({
-    "quality", "verification", "testing", "ci", "delivery", "security",
-    "smoke-test", "healthcheck", "build-pattern", "reproducibility",
-    "dependencies", "secrets", "docs", "documentation", "packaging",
-})
+_UNIVERSAL_GENERIC_TAGS = frozenset(
+    {
+        "quality",
+        "verification",
+        "testing",
+        "ci",
+        "delivery",
+        "security",
+        "smoke-test",
+        "healthcheck",
+        "build-pattern",
+        "reproducibility",
+        "dependencies",
+        "secrets",
+        "docs",
+        "documentation",
+        "packaging",
+    }
+)
 
 _DESKTOP_TAGS = frozenset({"desktop", "tauri", "native"})
 _MOBILE_TAGS = frozenset({"mobile", "expo", "react-native", "react_native"})
 _GAME_TAGS = frozenset({"game", "gamedev", "phaser", "arcade", "shmup", "shooter"})
 _CLI_TAGS = frozenset({"cli", "command-line", "commandline"})
 _QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
+_EXTERNAL_CANDIDATE_TAG = "external-candidate"
+_EXTERNAL_PROMOTED_TAG = "external-promoted"
+_FULL_GIT_REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+_SHA256_IDENTIFIER_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+_GITHUB_SOURCE_URL_RE = re.compile(
+    r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", re.IGNORECASE
+)
 
 # Group equivalent stack vocabularies so a build's detected stack matches skills
 # tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
@@ -88,8 +111,18 @@ _STACK_GROUPS: tuple[frozenset[str], ...] = (
     # Keep native iOS knowledge separate from Expo guidance. A future skill tagged
     # `swift_ios`/`swiftui_ios` will now be recalled for this stack without
     # accidentally injecting React Native implementation advice.
-    frozenset({"swift_ios", "ios_swift", "swiftui_ios", "ios_swiftui",
-               "ios_native", "native_ios", "iphone_swift", "ipad_swift"}),
+    frozenset(
+        {
+            "swift_ios",
+            "ios_swift",
+            "swiftui_ios",
+            "ios_swiftui",
+            "ios_native",
+            "native_ios",
+            "iphone_swift",
+            "ipad_swift",
+        }
+    ),
     frozenset({"node", "node_express", "express"}),
     frozenset({"fastapi", "flask", "django", "python_api"}),
     frozenset({"static", "static_html", "html"}),
@@ -191,16 +224,18 @@ class SkillProvenance:
 
     @property
     def is_empty(self) -> bool:
-        return not any((
-            self.source_url,
-            self.pinned_revision,
-            self.license,
-            self.content_hash,
-            self.source_path,
-            self.tools,
-            self.metadata,
-            self.compatibility,
-        ))
+        return not any(
+            (
+                self.source_url,
+                self.pinned_revision,
+                self.license,
+                self.content_hash,
+                self.source_path,
+                self.tools,
+                self.metadata,
+                self.compatibility,
+            )
+        )
 
     def with_content_hash(self, content: str | bytes) -> SkillProvenance:
         """Return a copy pinned to ``content`` unless a hash was supplied."""
@@ -309,22 +344,19 @@ class Skill:
         # Preserve Agent Skills discovery metadata from a curated import. We
         # intentionally leave old manually-authored skill files unchanged.
         if self.description:
-            fm.extend([
-                f"name: {_frontmatter_scalar(self.slug)}",
-                f"description: {_frontmatter_scalar(self.description)}",
-            ])
+            fm.extend(
+                [
+                    f"name: {_frontmatter_scalar(self.slug)}",
+                    f"description: {_frontmatter_scalar(self.description)}",
+                ]
+            )
         if self.provenance is not None:
             if self.provenance.license:
                 fm.append(f"license: {_frontmatter_scalar(self.provenance.license)}")
             if self.provenance.compatibility:
-                fm.append(
-                    f"compatibility: {_frontmatter_scalar(self.provenance.compatibility)}"
-                )
+                fm.append(f"compatibility: {_frontmatter_scalar(self.provenance.compatibility)}")
             if self.provenance.tools:
-                fm.append(
-                    "allowed-tools: "
-                    f"{_frontmatter_scalar(' '.join(self.provenance.tools))}"
-                )
+                fm.append(f"allowed-tools: {_frontmatter_scalar(' '.join(self.provenance.tools))}")
             metadata = self.provenance.frontmatter_metadata()
             if metadata:
                 fm.append("metadata:")
@@ -489,9 +521,7 @@ def parse_skill(text: str, *, fallback_slug: str = "skill") -> Skill:
         uses=int(_meta_text(meta, "uses") or 0),
         helpful=int(_meta_text(meta, "helpful") or 0),
         quality_sum=(
-            float(_meta_text(meta, "quality_sum"))
-            if _meta_text(meta, "quality_sum")
-            else None
+            float(_meta_text(meta, "quality_sum")) if _meta_text(meta, "quality_sum") else None
         ),
         source=_meta_text(meta, "source") or "manual",
         description=description,
@@ -597,7 +627,9 @@ class SkillLibrary:
                 for slug, sk in sorted(self._skills.items())
                 if sk.uses or sk.helpful or (sk.quality_sum or 0.0)
             }
-            atomic_write_text(self.dir / _SCORES_FILENAME, json.dumps(data, indent=2, sort_keys=True))
+            atomic_write_text(
+                self.dir / _SCORES_FILENAME, json.dumps(data, indent=2, sort_keys=True)
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:
@@ -749,9 +781,7 @@ class SkillLibrary:
         )
 
     # ---- injection ----------------------------------------------------
-    def relevant(
-        self, stack: str, tags: list[str] | None = None, limit: int = 5
-    ) -> list[Skill]:
+    def relevant(self, stack: str, tags: list[str] | None = None, limit: int = 5) -> list[Skill]:
         """Most relevant skills for a stack/tags, ranked by score."""
         tagset = {t.lower() for t in (tags or [])}
         aliases = _stack_aliases(stack)
@@ -764,7 +794,7 @@ class SkillLibrary:
             tag_hit = len(tagset & {t.lower() for t in sk.tags})
             # When the caller asks for design/front-end tags, tag fit matters most.
             # Otherwise stack-native skills should beat generic process advice.
-            return ((tag_hit, stack_hit, sk.score) if tagset else (stack_hit, tag_hit, sk.score))
+            return (tag_hit, stack_hit, sk.score) if tagset else (stack_hit, tag_hit, sk.score)
 
         cands = [s for s in self._skills.values() if self.applies_to(s, stack, tags=tags)]
         cands.sort(key=_match, reverse=True)
@@ -783,9 +813,7 @@ class SkillLibrary:
         )
         return f"{heading}\n\n{blocks}"
 
-    def inject(
-        self, stack: str, tags: list[str] | None = None, limit: int = 5
-    ) -> str:
+    def inject(self, stack: str, tags: list[str] | None = None, limit: int = 5) -> str:
         """Rank and render relevant skills as non-binding prompt advice."""
         return self.render_selected(self.relevant(stack, tags=tags, limit=limit))
 
@@ -805,11 +833,7 @@ class SkillLibrary:
         matches.
         """
         raw_stages = [stages] if isinstance(stages, str) else list(stages or [])
-        stage_tags = {
-            f"stage:{str(s).strip().lower()}"
-            for s in raw_stages
-            if str(s).strip()
-        }
+        stage_tags = {f"stage:{str(s).strip().lower()}" for s in raw_stages if str(s).strip()}
         if not stage_tags:
             return []
         tagset = {t.lower() for t in (tags or [])}
@@ -884,6 +908,46 @@ class SkillLibrary:
             self._persist(sk)
         return sk
 
+    def promote_external(self, slug: str) -> Skill | None:
+        """Explicitly approve a quarantined GitHub-derived skill for injection.
+
+        Remote README text is an untrusted reference, not a default prompt
+        input. Promotion is therefore deliberately narrow: the candidate must
+        still be marked external, originate from ``github-distilled``, and carry
+        a canonical GitHub repository origin, a full immutable Git object ID, a SHA-256 of the
+        retained source evidence, and the README source path. Missing evidence
+        returns ``None`` and leaves the file quarantined; no branch name, tag,
+        or proposal payload can stand in for a pin.
+        """
+        sk = self._skills.get(slug)
+        if sk is None or (sk.source or "").strip().lower() != "github-distilled":
+            return None
+        tagset = {tag.strip().lower() for tag in sk.tags if tag.strip()}
+        if _EXTERNAL_CANDIDATE_TAG not in tagset or not (tagset & _QUARANTINE_TAGS):
+            return None
+        provenance = sk.provenance
+        if provenance is None:
+            return None
+        source_url = provenance.source_url or ""
+        revision = provenance.pinned_revision or ""
+        content_hash = provenance.content_hash or ""
+        source_path = provenance.source_path or ""
+        if not (
+            _GITHUB_SOURCE_URL_RE.fullmatch(source_url)
+            and _FULL_GIT_REVISION_RE.fullmatch(revision)
+            and _SHA256_IDENTIFIER_RE.fullmatch(content_hash)
+            and source_path.strip()
+            and not any(char in source_path for char in "\r\n\x00")
+        ):
+            return None
+
+        remove_tags = _QUARANTINE_TAGS | {_EXTERNAL_CANDIDATE_TAG}
+        sk.tags = [tag for tag in sk.tags if tag.strip().lower() not in remove_tags]
+        if _EXTERNAL_PROMOTED_TAG not in {tag.strip().lower() for tag in sk.tags}:
+            sk.tags.append(_EXTERNAL_PROMOTED_TAG)
+        self._persist(sk)
+        return sk
+
     # ---- auto-promotion from build patterns ---------------------------
     def maybe_promote_pattern(
         self,
@@ -917,7 +981,7 @@ class SkillLibrary:
             f"({float(rate):.0%} over {uses} builds). Reuse its structure:",
             "",
         ]
-        for k, v in (shape.items() if isinstance(shape, dict) else []):
+        for k, v in shape.items() if isinstance(shape, dict) else []:
             body_lines.append(f"- **{k}**: {v}")
         body = "\n".join(body_lines)
         return self.add(
@@ -933,67 +997,109 @@ class SkillLibrary:
 # Starter skills so the library is useful from build #1 (auto-promotion only
 # kicks in after many wins). Idempotent: existing slugs are left untouched.
 _SEED_SKILLS = [
-    ("Vite + React app shape", "react",
-     "Deliver a runnable Vite+React app: package.json with dev/build/preview "
-     "scripts and react/react-dom deps; index.html with <div id=\"root\">; "
-     "src/main.jsx mounting <App/>; src/App.jsx as a DEFAULT export. Keep state "
-     "local with hooks; no unused imports. Ensure `npm install && npm run build` "
-     "succeeds.", ["react", "vite", "frontend"]),
-    ("FastAPI service shape", "fastapi",
-     "Deliver a runnable FastAPI service: app = FastAPI(); a GET /health route; "
-     "pydantic models for request/response; uvicorn entrypoint; requirements.txt "
-     "pinning fastapi+uvicorn. Provide a Dockerfile + .env.example so a stranger "
-     "can `docker compose up`.", ["fastapi", "python", "backend"]),
-    ("Python CLI shape", "python",
-     "Deliver a runnable Python tool: a clear entrypoint (argparse or typer), "
-     "src/__init__.py, pyproject.toml with name+version, and at least one real "
-     "test under tests/. Code must import and `python -m` run without errors.",
-     ["python", "cli"]),
-    ("Static website shape", "static",
-     "Deliver a complete static site, not a placeholder: index.html with real "
-     "sections matching the brief, local CSS/JS assets, accessible headings, "
-     "responsive layout, favicon/metadata, and at least one real interaction or "
-     "form when the brief implies it. No external stock/CDN dependencies; use "
-     "generated /assets paths when provided.", ["static", "html", "frontend", "web"]),
-    ("Astro visual delivery", "astro",
-     "Deliver an Astro site that is visibly complete, not merely buildable. Import "
-     "the global stylesheet from the shared base layout, then run Astro check and "
-     "a production build. Serve the built output and verify that rendered HTML links "
-     "a CSS asset which responds successfully. Establish one specific brand/title and "
-     "use real imagery as product context. Avoid generic icon-card grids and nested "
-     "cards: use purposeful layout bands, editorial link rows, and cards only for "
-     "repeated content. Before delivery, inspect desktop and mobile output when a "
-     "browser is available.", ["astro", "frontend", "web", "design", "visual", "verification"]),
-    ("Phaser playable game shape", "phaser",
-     "Deliver a real Phaser game with src/sim.js pure game logic, src/main.js "
-     "renderer, preload for generated sprites, keyboard/touch controls, win/lose "
-     "state, scoring, restart/pause, and enough entities/levels to be playable. "
-     "Never ship only a counter, flat canvas, or landing page.", ["phaser", "game", "gamedev"]),
-    ("RAG app contract", "rag",
-     "Deliver a runnable retrieval app: ingest endpoint, query/chat endpoints, "
-     "persistent document store, chunking + retrieval, citations/source IDs in "
-     "answers, malformed-input handling, README curl examples, and a tiny UI or "
-     "API docs page. It must retrieve an ingested marker document in proof.",
-     ["rag", "retrieval", "vector", "fastapi"]),
-    ("MCP server contract", "mcp",
-     "Deliver an MCP stdio server with explicit tool schemas, initialize/list/call "
-     "support, read-only safety for inspection tools, structured errors for bad "
-     "arguments, README integration instructions, and tests that exercise each "
-     "tool without requiring network or secrets.", ["mcp", "tools", "stdio"]),
-    ("Agent workflow contract", "workflow",
-     "Deliver a real workflow runner: /trigger or CLI entrypoint, typed input, "
-     "multi-step execution state, retries/timeouts, dry-run mode, webhook/email "
-     "adapters behind env config, structured logs, and tests for success plus "
-     "malformed input. Do not ship a single no-op endpoint.", ["workflow", "automation", "orchestration"]),
-    ("Agent persona pack contract", "agent_pack",
-     "Deliver a structured agent pack: catalog.json plus role markdown files with "
-     "goals, tools, handoff rules, prompt templates, evaluation checklist, and "
-     "example tasks. The pack is an artifact, so completeness is the content "
-     "contract, not a web entrypoint.", ["agent_pack", "agents", "personas"]),
-    ("Delivered != empty", "generic",
-     "Every delivered project needs a real entrypoint, a README, and a manifest, "
-     "and must pass install + build + boot. Never ship a config-puzzle or an "
-     "empty scaffold; verify behavior, not vibes.", ["quality", "verification"]),
+    (
+        "Vite + React app shape",
+        "react",
+        "Deliver a runnable Vite+React app: package.json with dev/build/preview "
+        'scripts and react/react-dom deps; index.html with <div id="root">; '
+        "src/main.jsx mounting <App/>; src/App.jsx as a DEFAULT export. Keep state "
+        "local with hooks; no unused imports. Ensure `npm install && npm run build` "
+        "succeeds.",
+        ["react", "vite", "frontend"],
+    ),
+    (
+        "FastAPI service shape",
+        "fastapi",
+        "Deliver a runnable FastAPI service: app = FastAPI(); a GET /health route; "
+        "pydantic models for request/response; uvicorn entrypoint; requirements.txt "
+        "pinning fastapi+uvicorn. Provide a Dockerfile + .env.example so a stranger "
+        "can `docker compose up`.",
+        ["fastapi", "python", "backend"],
+    ),
+    (
+        "Python CLI shape",
+        "python",
+        "Deliver a runnable Python tool: a clear entrypoint (argparse or typer), "
+        "src/__init__.py, pyproject.toml with name+version, and at least one real "
+        "test under tests/. Code must import and `python -m` run without errors.",
+        ["python", "cli"],
+    ),
+    (
+        "Static website shape",
+        "static",
+        "Deliver a complete static site, not a placeholder: index.html with real "
+        "sections matching the brief, local CSS/JS assets, accessible headings, "
+        "responsive layout, favicon/metadata, and at least one real interaction or "
+        "form when the brief implies it. No external stock/CDN dependencies; use "
+        "generated /assets paths when provided.",
+        ["static", "html", "frontend", "web"],
+    ),
+    (
+        "Astro visual delivery",
+        "astro",
+        "Deliver an Astro site that is visibly complete, not merely buildable. Import "
+        "the global stylesheet from the shared base layout, then run Astro check and "
+        "a production build. Serve the built output and verify that rendered HTML links "
+        "a CSS asset which responds successfully. Establish one specific brand/title and "
+        "use real imagery as product context. Avoid generic icon-card grids and nested "
+        "cards: use purposeful layout bands, editorial link rows, and cards only for "
+        "repeated content. Before delivery, inspect desktop and mobile output when a "
+        "browser is available.",
+        ["astro", "frontend", "web", "design", "visual", "verification"],
+    ),
+    (
+        "Phaser playable game shape",
+        "phaser",
+        "Deliver a real Phaser game with src/sim.js pure game logic, src/main.js "
+        "renderer, preload for generated sprites, keyboard/touch controls, win/lose "
+        "state, scoring, restart/pause, and enough entities/levels to be playable. "
+        "Never ship only a counter, flat canvas, or landing page.",
+        ["phaser", "game", "gamedev"],
+    ),
+    (
+        "RAG app contract",
+        "rag",
+        "Deliver a runnable retrieval app: ingest endpoint, query/chat endpoints, "
+        "persistent document store, chunking + retrieval, citations/source IDs in "
+        "answers, malformed-input handling, README curl examples, and a tiny UI or "
+        "API docs page. It must retrieve an ingested marker document in proof.",
+        ["rag", "retrieval", "vector", "fastapi"],
+    ),
+    (
+        "MCP server contract",
+        "mcp",
+        "Deliver an MCP stdio server with explicit tool schemas, initialize/list/call "
+        "support, read-only safety for inspection tools, structured errors for bad "
+        "arguments, README integration instructions, and tests that exercise each "
+        "tool without requiring network or secrets.",
+        ["mcp", "tools", "stdio"],
+    ),
+    (
+        "Agent workflow contract",
+        "workflow",
+        "Deliver a real workflow runner: /trigger or CLI entrypoint, typed input, "
+        "multi-step execution state, retries/timeouts, dry-run mode, webhook/email "
+        "adapters behind env config, structured logs, and tests for success plus "
+        "malformed input. Do not ship a single no-op endpoint.",
+        ["workflow", "automation", "orchestration"],
+    ),
+    (
+        "Agent persona pack contract",
+        "agent_pack",
+        "Deliver a structured agent pack: catalog.json plus role markdown files with "
+        "goals, tools, handoff rules, prompt templates, evaluation checklist, and "
+        "example tasks. The pack is an artifact, so completeness is the content "
+        "contract, not a web entrypoint.",
+        ["agent_pack", "agents", "personas"],
+    ),
+    (
+        "Delivered != empty",
+        "generic",
+        "Every delivered project needs a real entrypoint, a README, and a manifest, "
+        "and must pass install + build + boot. Never ship a config-puzzle or an "
+        "empty scaffold; verify behavior, not vibes.",
+        ["quality", "verification"],
+    ),
 ]
 
 

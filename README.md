@@ -108,6 +108,9 @@ passes. A failed verification keeps the previous healthy URL active.
   editorial, game, native, and utility builds retain their appropriate layout
   profile. The stored contract is restored for Improve instead of being guessed
   again; see [app types and layout profiles](docs/APP_TYPES.md).
+- **Build decisions are reproducible.** Every build now carries a versioned
+  selection/classification/layout contract with a stable digest, so the
+  manifest and event stream show exactly how SkyN3t chose to build the app.
 - **Design as a deterministic input, not a vibe.** Every web build gets a
   brief-derived design contract — AA-checked theme and accent (with an
   AA-fitted `--accent-text`), a curated font pair, a shape language, and a
@@ -119,6 +122,11 @@ passes. A failed verification keeps the previous healthy URL active.
 - **Adversarial critic gate.** A critic tries to break the result before delivery.
 - **Closed learning loop.** Lessons are injected into stage prompts and graded by
   build outcome, so the factory gets measurably better over time.
+- **Evidence-backed learning.** Prompt, skill-policy, and router-policy
+  candidates can be compared against completed Golden ledgers and retained as
+  immutable `review_required` evidence—never auto-applied. GitHub-derived
+  skills remain quarantined until their source, commit, path, and content hash
+  are verified and explicitly promoted.
 - **Reliability as a number.** The default bench is app-factory focused; use
   `skyn3t bench run --suite all` or `--suite games` when you intentionally want
   game/full-stack coverage. Before/after gating keeps a change from lifting the
@@ -280,6 +288,7 @@ flowchart TD
 
 - [docs/START_HERE.md](docs/START_HERE.md) — reconnect after a disconnect
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — package map + build dataflow
+- [docs/EVIDENCE_LEARNING.md](docs/EVIDENCE_LEARNING.md) — build contracts, Golden evidence, and external-skill provenance
 - [docs/ADDING_A_STACK.md](docs/ADDING_A_STACK.md) — add a new build target
 - [docs/APP_TYPES.md](docs/APP_TYPES.md) — UI/style defaults by app type
 - [docs/WORKFLOW.md](docs/WORKFLOW.md) — operating playbook · [docs/FILE_MAP.md](docs/FILE_MAP.md) — where code lives

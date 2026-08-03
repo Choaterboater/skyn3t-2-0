@@ -19,7 +19,7 @@ def test_build_cortex_wires_heartbeat_components():
 
 
 async def test_meta_tick_runs_one_cycle():
-    calls = {"observe": 0, "sweep": 0}
+    calls = {"observe": 0, "sweep": []}
 
     class FakeMeta:
         async def observe_and_publish(self, **_kw):
@@ -27,15 +27,16 @@ async def test_meta_tick_runs_one_cycle():
             return [object(), object()]
 
     class FakeHygiene:
-        async def sweep(self, _stack, **_kw):
-            calls["sweep"] += 1
+        async def sweep(self, stack, **_kw):
+            calls["sweep"].append(stack)
 
     tick = MetaTick(None, EventBus(), get_settings(),
                     meta_agent=FakeMeta(), hygiene=FakeHygiene(), interval=0.01)
     res = await tick.tick_once()
     assert res["hypotheses"] == 2
-    assert res["swept"] >= 1
-    assert calls["observe"] == 1 and calls["sweep"] >= 1
+    assert res["swept"] == len(calls["sweep"])
+    assert calls["observe"] == 1
+    assert {"react_ts", "phaser", "swift_ios", "fastapi"} <= set(calls["sweep"] )
 
 
 async def test_meta_tick_degrades_without_collaborators():

@@ -2251,7 +2251,7 @@ class CodeAgent(BaseAgent):
             )
             looks_like_react_shell = bool(
                 re.search(
-                    r"react-router-dom|ReactDOM\.createRoot|createRoot\(|<Routes\b|"
+                    r"react-router(?:-dom)?|ReactDOM\.createRoot|createRoot\(|<Routes\b|"
                     r"src/App\.(jsx|tsx)|src/pages/",
                     "\n".join(f"{rel}\n{content}" for rel, content in files.items()),
                 )

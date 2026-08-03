@@ -30,13 +30,15 @@ from typing import Any
 
 import structlog
 
+from skyn3t.agents._common import KNOWN_STACKS
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus, EventType
 
 log = structlog.get_logger(__name__)
 
-# Stacks the planner can emit; hygiene sweeps each.
-_KNOWN_STACKS = ("react", "static_html", "python", "node", "fastapi", "generic")
+# Sweep every canonical stack the build agents can emit, plus the compatibility
+# fallback used by historical lessons.
+_KNOWN_STACKS = (*KNOWN_STACKS, "generic")
 
 
 def _hyp_identity(hyp: Any) -> tuple[str, str, str]:
@@ -113,9 +115,12 @@ class MetaTick:
         every tick. Duck-typed agents without ``analyze()`` fall back to
         ``observe_and_publish()`` (which publishes everything — legacy path).
         """
-        analyze = getattr(self.meta_agent, "analyze", None)
+        agent = self.meta_agent
+        if agent is None:
+            return []
+        analyze = getattr(agent, "analyze", None)
         if analyze is None:
-            return list(await self.meta_agent.observe_and_publish() or [])
+            return list(await agent.observe_and_publish() or [])
         hyps = list(await analyze() or [])
         for hyp in hyps:
             _title, target, action = _hyp_identity(hyp)

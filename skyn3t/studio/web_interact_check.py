@@ -15,10 +15,9 @@ localized to SkyN3t's advisory posture:
   2. HARVEST the app's interaction surface statically: links, forms and
      buttons from the built HTML (stdlib parser, zero deps), API/state
      endpoints via liveness' route enumerator.
-  3. Ask ONE LLM call for a SHORT Playwright-python script driving ONE real
-     user flow end to end (code-as-actions: loops/conditionals come free, no
-     tool-call loop needed).
-  4. RUN the script with sync Playwright in a worker thread (the sync API
+  3. Ask ONE LLM call for a SHORT declarative JSON action plan driving ONE
+     real user flow end to end through a closed action set.
+  4. RUN the validated plan with sync Playwright in a worker thread (the sync API
      raises inside a live event loop — the qa_playtest/liveness solution).
 
 DUAL-SURFACE assertions are the point: the script must assert BOTH the UI
@@ -36,8 +35,8 @@ ADVISORY-FIRST and NEVER-RAISES, mirroring ``qa_playtest``:
   * everything that prevents an honest run SOFT-SKIPS instead of failing:
     phaser (qa_playtest's turf) / non-web stacks, no Playwright, no non-stub
     LLM backend ($0: the skip is decided BEFORE anything is served), an
-    unservable preview, an uncompilable generated script (a harness fault,
-    not the app's), or a script that records no steps.
+    unservable preview, an invalid generated plan (a harness fault,
+    not the app's), or a plan that records no steps.
 
 Import has zero side effects; nothing is served and no LLM is called until
 ``check_web_interact`` runs.
@@ -48,7 +47,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -220,7 +218,7 @@ def harvest_action_surface(project_dir: str | Path, stack: str = "") -> dict[str
     }
 
 
-# ── the ONE LLM call: compact tool spec -> short Playwright-python script ────
+# ── the ONE LLM call: compact tool spec -> bounded JSON action plan ──────────
 
 def _build_script_prompt(base_url: str, surface: dict[str, Any]) -> str:
     links = "; ".join(
@@ -244,56 +242,55 @@ def _build_script_prompt(base_url: str, surface: dict[str, Any]) -> str:
     pages = "; ".join(surface["pages"]) or "(unknown)"
     return (
         "You are QA-ing a generated web app served at "
-        f"{base_url}. Write ONE short Playwright Python (sync API) script that "
-        "exercises ONE real user flow end to end — e.g. click the main nav "
-        "link, fill and submit the main form, then verify the resulting state.\n"
-        "\n"
-        "Harvested interaction surface (ground EVERY selector in this — never "
+        f"{base_url}. Describe ONE real user flow as a bounded JSON action plan.\n\n"
+        "Harvested interaction surface (ground EVERY locator in this — never "
         "invent ids, names, or texts):\n"
         f"Pages: {pages}\n"
         f"Nav links: {links}\n"
         f"Forms: {forms}\n"
         f"Buttons: {buttons}\n"
-        f"API endpoints (backend surface): {apis}\n"
-        "\n"
-        "Already in scope (do NOT import anything):\n"
-        "- page: sync Playwright Page, already loaded at the base URL\n"
-        "- base_url: str\n"
-        "- step(label): record what you are doing; call it before EACH action\n"
-        "- expect: playwright.sync_api.expect\n"
-        "- fetch(path, method=\"GET\", json_body=None) -> (status:int, body:str): "
-        "same-origin HTTP probe for the BACKEND surface\n"
-        "- json, re\n"
-        "\n"
+        f"API endpoints (backend surface): {apis}\n\n"
+        "Return exactly one JSON object with an actions array. Every action needs "
+        "a short label. Supported actions:\n"
+        '- click: {"op":"click","label":"...","by":"role",'
+        '"role":"link","name":"Guestbook"}\n'
+        '- fill: {"op":"fill","label":"...","by":"selector",'
+        '"selector":"#name","value":"Ada"}\n'
+        '- expect_visible: same locator fields as click\n'
+        '- expect_text: same locator fields plus "contains":"expected text"\n'
+        '- fetch_expect: {"op":"fetch_expect","label":"...",'
+        '"path":"/api/items","status":200,"contains":"Ada"}\n'
+        '- expect_url_contains: {"op":"expect_url_contains","label":"...",'
+        '"contains":"/done"}\n'
+        "Locator modes are role (role + name), selector (selector), label "
+        "(name), placeholder (name), and text (name).\n\n"
         "Rules:\n"
-        "1. Drive the flow a real user would: navigate, act, verify.\n"
-        "2. Assert the UI surface: after the main action a success text/element "
-        "is visible (expect(...).to_be_visible() or assert on page.content()).\n"
-        "3. Assert the BACKEND surface where API endpoints are listed above: "
-        "after the UI action, fetch() the relevant endpoint and assert the "
-        "created/updated record appears in its response body. With no API "
-        "endpoints (static-only app), assert the UI change AND the page URL "
-        "instead.\n"
-        "4. Prefer get_by_role/get_by_label/get_by_text with the EXACT texts "
-        "and names from the harvested surface; fill fields with realistic "
-        "values.\n"
-        "5. Under 40 lines. Respond with ONLY the Python code — no markdown "
-        "fences, no prose."
+        "1. Drive one end-to-end flow: navigate, act, verify.\n"
+        "2. Include a UI assertion after the main action.\n"
+        "3. If API endpoints exist, include fetch_expect for the resulting backend "
+        "state. Otherwise assert both UI state and URL.\n"
+        "4. Use exact harvested locators and realistic values.\n"
+        "5. At most 40 actions. JSON only — no markdown or code."
     )
 
 
-def _extract_script(text: str) -> str:
-    """Pull the python code out of an LLM reply (fenced or bare)."""
-    t = (text or "").strip()
-    if "```" in t:
-        parts = t.split("```")
+def _extract_script(text: str) -> dict[str, Any] | None:
+    """Parse an LLM reply as a declarative action plan; never execute code."""
+    value = (text or "").strip()
+    if "```" in value:
+        parts = value.split("```")
         if len(parts) > 1:
-            t = parts[1].removeprefix("python").removeprefix("py").strip()
-    return t
-
+            value = parts[1].strip()
+            if value.lower().startswith("json"):
+                value = value[4:].lstrip()
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 def _make_interact_llm(settings: Any) -> Callable[[str], Any] | None:
-    """Build the ONE-shot script author, or None when the resolved backend is
+    """Build the ONE-shot action-plan author, or None when the resolved backend is
     the offline stub — mirroring ``visual_check.make_vision_fn``'s posture: a
     missing/unconfigured LLM is a soft-skip, never a failure, and deciding it
     HERE (before anything is served) keeps the skip deterministic $0."""
@@ -317,24 +314,97 @@ def _make_interact_llm(settings: Any) -> Callable[[str], Any] | None:
 
 # ── the sync-Playwright driver (runs in a worker thread) ────────────────────
 
+_LOCATOR_KEYS = {
+    "role": {"by", "role", "name", "exact"},
+    "selector": {"by", "selector"},
+    "label": {"by", "name", "exact"},
+    "placeholder": {"by", "name", "exact"},
+    "text": {"by", "name", "exact"},
+}
+_ACTION_KEYS = {
+    "click": {"op", "label", "timeout_ms"},
+    "fill": {"op", "label", "timeout_ms", "value"},
+    "expect_visible": {"op", "label", "timeout_ms"},
+    "expect_text": {"op", "label", "timeout_ms", "contains"},
+    "fetch_expect": {"op", "label", "path", "status", "contains"},
+    "expect_url_contains": {"op", "label", "contains"},
+}
+_LOCATOR_ACTIONS = {"click", "fill", "expect_visible", "expect_text"}
+
+
+def _validated_actions(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """Validate the closed action schema before launching a browser."""
+    if set(plan) != {"actions"}:
+        return [], "plan must contain only an actions array"
+    actions = plan.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return [], "plan actions must be a non-empty array"
+    if len(actions) > _MAX_STEPS:
+        return [], f"plan has too many actions ({len(actions)} > {_MAX_STEPS})"
+    for index, action in enumerate(actions, start=1):
+        if not isinstance(action, dict):
+            return [], f"action {index} must be an object"
+        op = action.get("op")
+        if op not in _ACTION_KEYS:
+            return [], f"action {index} has unsupported op {op!r}"
+        label = action.get("label")
+        if not isinstance(label, str) or not label.strip() or len(label) > 160:
+            return [], f"action {index} needs a label of 1-160 characters"
+        allowed = set(_ACTION_KEYS[op])
+        if op in _LOCATOR_ACTIONS:
+            by = action.get("by")
+            if by not in _LOCATOR_KEYS:
+                return [], f"action {index} has unsupported locator mode {by!r}"
+            allowed.update(_LOCATOR_KEYS[by])
+            needed = "selector" if by == "selector" else "name"
+            value = action.get(needed)
+            if not isinstance(value, str) or not value or len(value) > 300:
+                return [], f"action {index} needs a valid {needed} locator"
+            if by == "role":
+                role = action.get("role")
+                if not isinstance(role, str) or not role or len(role) > 60:
+                    return [], f"action {index} needs a valid role"
+        unknown = set(action) - allowed
+        if unknown:
+            return [], f"action {index} has unsupported fields: {sorted(unknown)}"
+        for key in ("value", "contains", "path"):
+            if key in action and (
+                not isinstance(action[key], str) or len(action[key]) > 2000
+            ):
+                return [], f"action {index} has an invalid {key} value"
+        if op == "fill" and "value" not in action:
+            return [], f"action {index} needs a fill value"
+        if op in {"expect_text", "expect_url_contains"} and not action.get("contains"):
+            return [], f"action {index} needs non-empty expected text"
+        if op == "fetch_expect":
+            path = action.get("path")
+            if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+                return [], f"action {index} needs a same-origin absolute path"
+            status = action.get("status", 200)
+            if not isinstance(status, int) or not 100 <= status <= 599:
+                return [], f"action {index} has an invalid HTTP status"
+        if "timeout_ms" in action:
+            timeout = action["timeout_ms"]
+            if not isinstance(timeout, int) or not 100 <= timeout <= 30000:
+                return [], f"action {index} has an invalid timeout_ms"
+    return actions, ""
+
+
 def _drive_interaction(
     url: str,
-    script: str,
+    script: dict[str, Any],
     *,
     nav_timeout_ms: int = 15000,
     action_timeout_ms: int = 8000,
 ) -> dict[str, Any]:
-    """Execute the LLM-authored flow against the served app and report.
+    """Execute a validated declarative flow against the served app.
 
-    The script runs with a small fixed namespace: ``page`` (already loaded at
-    ``url``), ``base_url``, ``step`` (records human-readable flow steps),
-    ``expect`` (playwright's sync assertions), ``fetch`` (same-origin HTTP
-    probe for the backend surface), ``json``/``re``. A ``SyntaxError`` or an
-    over-long/unimportable harness is ``script_error=True`` — a HARNESS fault
-    the caller must soft-skip, never attribute to the app. An assertion
-    failure, a playwright timeout (failed selector), or an exception mid-flow
-    is REAL evidence against the app. Sync Playwright — call via
-    ``asyncio.to_thread``. Never raises."""
+    The LLM can select only the closed action set above; no model-authored code
+    is compiled or executed. Schema failures are harness faults and soft-skip.
+    Assertion, selector, navigation, and browser errors remain real evidence
+    against the app. Sync Playwright must run via ``asyncio.to_thread``.
+    Never raises.
+    """
     steps: list[str] = []
     raw_errors: list[str] = []
     probes = {"count": 0}
@@ -346,54 +416,55 @@ def _drive_interaction(
         "console_errors": [],
         "backend_probes": 0,
     }
-    if len(script) > _MAX_SCRIPT_CHARS:
+    try:
+        serialized = json.dumps(script)
+    except (TypeError, ValueError) as exc:
         out["script_error"] = True
-        out["error"] = f"generated script too large ({len(script)} chars)"
+        out["error"] = f"generated plan is not JSON-serializable: {exc}"
+        return out
+    if len(serialized) > _MAX_SCRIPT_CHARS:
+        out["script_error"] = True
+        out["error"] = f"generated plan too large ({len(serialized)} chars)"
+        return out
+    actions, validation_error = _validated_actions(script)
+    if validation_error:
+        out["script_error"] = True
+        out["error"] = validation_error
         return out
     try:
-        code = compile(script, "<web-interact>", "exec")
-    except SyntaxError as exc:
-        out["script_error"] = True
-        out["error"] = f"generated script does not compile: {exc}"
-        return out
-    try:
-        from playwright.sync_api import expect, sync_playwright
+        from playwright.sync_api import sync_playwright
     except Exception as exc:  # noqa: BLE001
         out["script_error"] = True
         out["error"] = f"playwright unavailable: {exc}"
         return out
     base_url = str(url).rstrip("/")
 
-    def _step(label: Any) -> None:
-        if len(steps) < _MAX_STEPS:
-            steps.append(str(label)[:160])
-
-    def _fetch(
-        path: Any,
-        method: str = "GET",
-        json_body: Any = None,
-        timeout: float = 8.0,
-    ) -> tuple[int, str]:
+    def _fetch(path: str, timeout: float = 8.0) -> tuple[int, str]:
         probes["count"] += 1
-        # Same-origin by construction: the path is always joined under base_url.
-        target = base_url + "/" + str(path).lstrip("/")
-        data = None
-        headers = {}
-        if json_body is not None:
-            data = json.dumps(json_body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(
-            target, data=data, headers=headers, method=str(method).upper()
-        )
+        target = base_url + "/" + path.lstrip("/")
+        req = urllib.request.Request(target, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - localhost preview only
                 return int(resp.status), resp.read().decode("utf-8", "ignore")
         except urllib.error.HTTPError as exc:
             return int(exc.code), exc.read().decode("utf-8", "ignore")
 
+    def _locator(page: Any, action: dict[str, Any]) -> Any:
+        by = action["by"]
+        exact = bool(action.get("exact", True))
+        if by == "selector":
+            return page.locator(action["selector"])
+        if by == "role":
+            return page.get_by_role(action["role"], name=action["name"], exact=exact)
+        if by == "label":
+            return page.get_by_label(action["name"], exact=exact)
+        if by == "placeholder":
+            return page.get_by_placeholder(action["name"], exact=exact)
+        return page.get_by_text(action["name"], exact=exact)
+
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 800})
                 page.set_default_timeout(action_timeout_ms)
@@ -409,19 +480,36 @@ def _drive_interaction(
                 page.on("console", _on_console)
                 page.goto(base_url + "/", timeout=nav_timeout_ms, wait_until="load")
                 page.wait_for_timeout(500)
-                env: dict[str, Any] = {
-                    "page": page,
-                    "base_url": base_url,
-                    "step": _step,
-                    "fetch": _fetch,
-                    "expect": expect,
-                    "json": json,
-                    "re": re,
-                }
-                # Lab-authored flow against the isolated localhost preview —
-                # same trust posture as qa_playtest's browser driver.
-                exec(code, env)  # noqa: S102
-                page.wait_for_timeout(300)  # let late async errors land
+                for action in actions:
+                    steps.append(action["label"].strip())
+                    op = action["op"]
+                    timeout = int(action.get("timeout_ms", action_timeout_ms))
+                    if op == "click":
+                        _locator(page, action).click(timeout=timeout)
+                    elif op == "fill":
+                        _locator(page, action).fill(action["value"], timeout=timeout)
+                    elif op == "expect_visible":
+                        _locator(page, action).wait_for(state="visible", timeout=timeout)
+                    elif op == "expect_text":
+                        locator = _locator(page, action)
+                        locator.wait_for(state="visible", timeout=timeout)
+                        actual = locator.inner_text(timeout=timeout)
+                        assert action["contains"] in actual, (
+                            f"expected {action['contains']!r} in visible text {actual[:300]!r}"
+                        )
+                    elif op == "fetch_expect":
+                        status, body = _fetch(action["path"])
+                        expected = int(action.get("status", 200))
+                        assert status == expected, f"api status {status}, expected {expected}"
+                        if "contains" in action:
+                            assert action["contains"] in body, (
+                                f"expected {action['contains']!r} in API response"
+                            )
+                    elif op == "expect_url_contains":
+                        assert action["contains"] in page.url, (
+                            f"expected {action['contains']!r} in URL {page.url!r}"
+                        )
+                page.wait_for_timeout(300)
             finally:
                 browser.close()
     except Exception as exc:  # noqa: BLE001 - assertion/timeout/nav = evidence
@@ -431,7 +519,6 @@ def _drive_interaction(
     if not out["error"]:
         out["passed"] = True
     return out
-
 
 def _score(
     surface: dict[str, Any],
@@ -454,7 +541,7 @@ def _score(
     if result.get("script_error"):
         # Our harness failed the app, not the other way round — degrade open.
         return _skip(
-            f"generated script unusable: {str(result.get('error', ''))[:200]}",
+            f"generated action plan unusable: {str(result.get('error', ''))[:200]}",
             checked=checked,
         )
     if not result.get("passed"):
@@ -473,7 +560,7 @@ def _score(
             "checked": checked,
         }
     if not steps:
-        # A trivially-"passing" script that did nothing proves nothing.
+        # A trivially-passing plan that did nothing proves nothing.
         return _skip("generated script recorded no interaction steps", checked=checked)
     if console:
         return {
@@ -507,11 +594,11 @@ async def check_web_interact(
     app_runner: Any | None = None,
     drive_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """Serve the delivered web app, drive ONE LLM-authored Playwright flow
+    """Serve the delivered web app, drive ONE LLM-authored declarative Playwright flow
     through it, and assert BOTH surfaces (UI + backend). ADVISORY and
     NEVER-RAISES: ``ok`` is False only for a REAL broken interaction; every
     environmental/harness gap soft-skips (``skipped=True`` with a reason).
-    ``llm`` (prompt -> script text, sync or async), ``app_runner`` and
+    ``llm`` (prompt -> JSON plan text, sync or async), ``app_runner`` and
     ``drive_fn`` are injectable so the logic is testable without a browser,
     a Docker daemon, or a paid model."""
     try:
@@ -552,10 +639,10 @@ async def check_web_interact(
                 if inspect.isawaitable(raw):
                     raw = await raw
             except Exception as exc:  # noqa: BLE001 - an LLM failure soft-skips
-                return _skip(f"script generation failed: {exc}"[:300], checked=checked)
+                return _skip(f"action-plan generation failed: {exc}"[:300], checked=checked)
             script = _extract_script(str(raw or ""))
             if not script:
-                return _skip("LLM returned no runnable script", checked=checked)
+                return _skip("LLM returned no valid action plan", checked=checked)
             drive = drive_fn or _drive_interaction
             try:
                 result = await asyncio.to_thread(drive, url, script)

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
 import {
@@ -918,6 +918,9 @@ export default function Projects({ stream }) {
         : "Recorded build cost for terminal projects with no shippable outcome; provider cost truth may still be estimated",
     },
   ];
+  const visibleProjectSignals = isLoading
+    ? projectSignals.map((item) => ({ ...item, value: "…" }))
+    : projectSignals;
 
   const sorted = useMemo(() => {
     const arr = [...projects];
@@ -953,7 +956,9 @@ export default function Projects({ stream }) {
               </span>
             ) : null}
             <span className="badge border-hairline text-ash">
-              {projects.length} project{projects.length !== 1 ? "s" : ""}
+              {isLoading
+                ? "loading projects…"
+                : projects.length + " project" + (projects.length !== 1 ? "s" : "")}
             </span>
           </div>
         }
@@ -966,7 +971,7 @@ export default function Projects({ stream }) {
       ) : null}
 
       <Panel className="mb-4 p-3">
-        <SignalGrid label="Projects cockpit" items={projectSignals} />
+        <SignalGrid label="Projects cockpit" items={visibleProjectSignals} />
       </Panel>
 
       <CleanupPanel qc={qc} />
@@ -979,7 +984,7 @@ export default function Projects({ stream }) {
           label="Project list"
           right={
             <span className="font-mono text-[11px] text-ash">
-              {projects.length} total
+              {isLoading ? "loading…" : projects.length + " total"}
             </span>
           }
         />

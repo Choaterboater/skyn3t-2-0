@@ -18,8 +18,6 @@ anything else still counts as missing so the resume still happens.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from skyn3t.agents.code_agent import CodeAgent
 
 _synth = CodeAgent._synthesize_trivial_assets

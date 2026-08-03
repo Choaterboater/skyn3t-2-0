@@ -199,7 +199,7 @@ def check_web_polish(project_dir: str | Path, stack: str = "", brief: str = "") 
                 )
                 break
         if any(p in _SCAFFOLD_UI_FILES for p in checked):
-            for rel, content in zip(checked, corpus):
+            for rel, content in zip(checked, corpus, strict=True):
                 if rel in _SCAFFOLD_UI_FILES:
                     continue
                 if rel.endswith((".jsx", ".tsx")) and _STYLED_BUTTON_RE.search(content):

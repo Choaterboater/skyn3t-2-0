@@ -4,7 +4,8 @@ from __future__ import annotations
 from skyn3t.agents._common import KNOWN_STACKS, _normalize_stack
 from skyn3t.agents._common import detect_stack as agent_detect_stack
 from skyn3t.agents._scaffold import scaffold_for
-from skyn3t.studio.planner import detect_stack as plan_detect_stack, file_checklist
+from skyn3t.studio.planner import detect_stack as plan_detect_stack
+from skyn3t.studio.planner import file_checklist
 from skyn3t.studio.proof_run import _NODE_STACKS, _SWIFT_IOS_STACKS, proof_run
 from skyn3t.studio.stack_selector import REAL_BUILDER_STACKS, classify_build
 

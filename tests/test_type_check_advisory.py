@@ -23,7 +23,6 @@ turning a broken app into a pass would be far worse than the bug being fixed.
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 

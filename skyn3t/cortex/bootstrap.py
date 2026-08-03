@@ -239,7 +239,7 @@ class Cortex:
         else:
             # Persist proposals to disk and reload them on boot so dedup survives
             # restarts: an already-APPLIED proposal's dedupe_key keeps a recurring
-            # generator (RepoScout / PromptEvolver re-propose the same keys every
+            # generator (RepoScout / PromptReflectionLoop re-propose the same keys every
             # tick) from re-surfacing it in the approval inbox after each restart
             # ("I approved those 5 twenty times"). Without this the in-memory store
             # forgot every prior decision the moment the process exited.

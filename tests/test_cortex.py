@@ -1,7 +1,7 @@
 """Offline tests for the cortex autonomy layer.
 
 No network, no heavy deps. Verifies proposal triage (auto-apply / gate /
-dedupe), tuning apply, GEPA prompt evolution, repo-scout offline degrade,
+dedupe), tuning apply, prompt reflection wiring, repo-scout offline degrade,
 the P2 CI/PR rework hooks, and the autonomous-loop guardrails (daily cap,
 budget, heartbeat stall abort).
 """
@@ -20,7 +20,6 @@ from skyn3t.cortex.autonomous_loop import AutonomousLoop, BuildHeartbeat, Guardr
 from skyn3t.cortex.bootstrap import Cortex, build_cortex
 from skyn3t.cortex.components import ReviewWatcher
 from skyn3t.cortex.handlers import HandlerRegistry
-from skyn3t.cortex.prompt_evolver import PromptEvolver
 from skyn3t.cortex.proposal_store import (
     Proposal,
     ProposalStatus,
@@ -345,27 +344,6 @@ async def test_apply_is_idempotent_no_double_apply():
     assert calls["n"] == 1  # NOT re-applied
 
 
-def test_prompt_text_hash_is_stable_across_processes():
-    import os
-    import subprocess
-    import sys
-
-    from skyn3t.cortex.prompt_evolver import _text_hash
-
-    h1 = _text_hash("evolve the planner prompt")
-    # A fresh interpreter with a different hash seed must produce the same key —
-    # builtin hash() would differ (PYTHONHASHSEED randomization).
-    env = {**os.environ, "PYTHONHASHSEED": "98765"}
-    out = subprocess.run(
-        [sys.executable, "-c",
-         "from skyn3t.cortex.prompt_evolver import _text_hash;"
-         "print(_text_hash('evolve the planner prompt'))"],
-        capture_output=True, text=True, env=env,
-    )
-    assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == h1
-
-
 async def test_feature_is_gated():
     bus = EventBus()
     cortex = Cortex(bus, settings=_settings())
@@ -484,68 +462,6 @@ async def test_handler_stage_memory():
     res = await reg.apply(Proposal(type=ProposalType.INGEST, title="t"))
     assert res["applied"] is True
     assert res["staged"] == "memory"
-
-
-# ---- prompt evolver --------------------------------------------------------
-async def test_prompt_evolver_improves_and_gates():
-    bus = EventBus()
-    cortex = Cortex(bus, settings=_settings())
-    ev = PromptEvolver(cortex=cortex)
-    best = await ev.evolve("Write code.", prompt_key="codegen")
-    assert best.score >= 0.0
-    # Evolved prompt should beat a bare baseline.
-    assert best.text != "Write code."
-    gated = cortex.store.gated()
-    assert any(p.type == ProposalType.TUNING for p in gated)
-
-
-async def test_prompt_evolver_uses_completed_build_manifest_prompts():
-    bus = EventBus()
-    cortex = Cortex(bus, settings=_settings())
-    ev = PromptEvolver(cortex=cortex)
-    manifest = {
-        "slug": "demo",
-        "brief": "Build a polished dashboard",
-        "stack": "react_vite",
-        "score": 58.0,
-        "verdict": "no_go",
-        "extra": {
-            "prompts": [{"stage": "codegen", "text": "Write code."}],
-        },
-        "stages": [
-            {
-                "name": "review",
-                "status": "completed",
-                "output_summary": {"gaps": ["missing empty states", "no tests"]},
-            }
-        ],
-    }
-
-    best = await ev.evolve_from_manifest(manifest)
-
-    assert best is not None
-    assert best.text != "Write code."
-    gated = cortex.store.gated()
-    prop = next(p for p in gated if p.source == "prompt_evolver")
-    assert prop.payload["prompt_key"] == "demo:codegen"
-    assert prop.payload["tasks"][0]["gaps"] == ["missing empty states", "no tests"]
-
-
-async def test_prompt_evolver_ignores_malformed_manifest_gaps_string():
-    bus = EventBus()
-    cortex = Cortex(bus, settings=_settings())
-    ev = PromptEvolver(cortex=cortex)
-    manifest = {
-        "slug": "demo",
-        "extra": {"prompts": [{"stage": "codegen", "text": "Write code."}]},
-        "stages": [{"output_summary": {"gaps": "missing tests"}}],
-    }
-
-    best = await ev.evolve_from_manifest(manifest)
-
-    assert best is not None
-    prop = next(p for p in cortex.store.gated() if p.source == "prompt_evolver")
-    assert prop.payload["tasks"][0]["gaps"] == []
 
 
 # ---- repo scout ------------------------------------------------------------

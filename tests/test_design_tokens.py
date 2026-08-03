@@ -244,7 +244,7 @@ def test_oklch_round_trip_within_one_lsb():
                  "#16a34a", "#f59e0b", "#7c3aed"):
         L, C, h = _hex_to_oklch(hexv)
         back = _oklch_to_hex(L, C, h)
-        diffs = [abs(a - b) for a, b in zip(_to_rgb(hexv), _to_rgb(back))]
+        diffs = [abs(a - b) for a, b in zip(_to_rgb(hexv), _to_rgb(back), strict=True)]
         assert max(diffs) <= 1, (hexv, back)
 
 
@@ -300,7 +300,7 @@ def test_accent_scale_is_monotonic_in_lightness():
               for s in (100, 300, 500, 700, 900)]
         # 100 lightest .. 900 darkest (non-strict: the 0.08/0.97 clamp can
         # merge neighbors for very light/dark accents)
-        assert all(a >= b - 0.01 for a, b in zip(Ls, Ls[1:]))
+        assert all(a >= b - 0.01 for a, b in zip(Ls, Ls[1:], strict=False))
         assert all(0.08 - 0.01 <= L <= 0.97 + 0.01 for L in Ls)
         # 500 is the brand accent's own lightness
         assert abs(Ls[2] - _hex_to_oklch(t["--accent"])[0]) < 0.01
@@ -309,7 +309,7 @@ def test_accent_scale_is_monotonic_in_lightness():
 def test_accent_scale_strictly_ordered_for_mid_lightness_accent():
     t = derive_tokens("an ocean weather app")  # #2563eb, L ~ 0.55
     Ls = [_hex_to_oklch(t[f"--accent-{s}"])[0] for s in (100, 300, 500, 700, 900)]
-    assert all(a > b for a, b in zip(Ls, Ls[1:]))
+    assert all(a > b for a, b in zip(Ls, Ls[1:], strict=False))
     assert t["--accent-500"] == "#2563eb"  # 500 round-trips to the accent
 
 

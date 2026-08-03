@@ -799,7 +799,12 @@ class StudioRunner:
             limit = 4 if tags else 3
             relevant = self.skills.relevant(stack, tags=tags, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
-            advice = self.skills.inject(stack, tags=tags, limit=limit)
+            renderer = getattr(self.skills, "render_selected", None)
+            advice = (
+                renderer(relevant)
+                if callable(renderer)
+                else self.skills.inject(stack, tags=tags, limit=limit)
+            )
             return self._augment_semantic_skills(advice, slugs, brief, stack, tags)
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
@@ -871,8 +876,13 @@ class StudioRunner:
             return "", []
         try:
             stage_names = [spec.name, spec.agent_type, spec.capability]
-            advice = injector(stack, stage_names, limit=3)
             skills = relevant(stack, stage_names, limit=3)
+            renderer = getattr(self.skills, "render_selected", None)
+            advice = (
+                renderer(skills, stage=True)
+                if callable(renderer)
+                else injector(stack, stage_names, limit=3)
+            )
             slugs = [getattr(s, "slug", "") for s in skills if getattr(s, "slug", "")]
             return advice, slugs
         except Exception as exc:  # noqa: BLE001
@@ -4771,10 +4781,10 @@ class StudioRunner:
         project_dir: str | None = None,
     ) -> None:
         """Close every learning edge (design rule #2). Best-effort; never raises."""
+        from skyn3t.agents.code_agent import read_vents_log
         from skyn3t.intelligence.learning_loop import (
             proof_ladder_infrastructure_unavailable,
         )
-        from skyn3t.agents.code_agent import read_vents_log
 
         manifest_extra = getattr(manifest, "extra", None) or {}
         proof_errors = extract_error_gaps(

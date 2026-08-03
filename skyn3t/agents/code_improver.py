@@ -13,7 +13,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import structlog
 
@@ -41,6 +41,12 @@ from skyn3t.studio.layout_profiles import (
     layout_contract_block,
     profile_from_payload,
 )
+
+
+class _RepairSlotOverrides(TypedDict, total=False):
+    provider_override: str
+    model_override: str
+
 
 _SYSTEM = (
     "You are a senior engineer improving code. Given a file and a list of issues "
@@ -711,7 +717,7 @@ class CodeImproverAgent(BaseAgent):
         return improved, skipped, True, ""
 
     @staticmethod
-    def _repair_slot_overrides(repair_slot: ModelSlot | None) -> dict[str, str]:
+    def _repair_slot_overrides(repair_slot: ModelSlot | None) -> _RepairSlotOverrides:
         """Map a repair slot onto complete()'s pin kwargs.
 
         A provider slot pins THIS call's backend (``provider_override`` — the
@@ -723,7 +729,7 @@ class CodeImproverAgent(BaseAgent):
         """
         if repair_slot is None:
             return {}
-        overrides: dict[str, str] = {}
+        overrides: _RepairSlotOverrides = {}
         if repair_slot.provider:
             overrides["provider_override"] = repair_slot.provider
         if repair_slot.model:

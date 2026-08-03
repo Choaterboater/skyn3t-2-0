@@ -95,11 +95,11 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
     """Open a source leaf without following any project-relative alias."""
     file_flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
-        file_flags |= os.O_NOFOLLOW
+        file_flags |= getattr(os, "O_NOFOLLOW", 0)
     if hasattr(os, "O_NONBLOCK"):
         file_flags |= os.O_NONBLOCK
     if hasattr(os, "O_CLOEXEC"):
-        file_flags |= os.O_CLOEXEC
+        file_flags |= getattr(os, "O_CLOEXEC", 0)
     if (
         hasattr(os, "O_DIRECTORY")
         and os.open in getattr(os, "supports_dir_fd", set())
@@ -109,9 +109,9 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
             raise OSError("unsafe source-relative path")
         directory_flags = os.O_RDONLY | os.O_DIRECTORY
         if hasattr(os, "O_NOFOLLOW"):
-            directory_flags |= os.O_NOFOLLOW
+            directory_flags |= getattr(os, "O_NOFOLLOW", 0)
         if hasattr(os, "O_CLOEXEC"):
-            directory_flags |= os.O_CLOEXEC
+            directory_flags |= getattr(os, "O_CLOEXEC", 0)
         opened_directories: list[int] = []
         try:
             current = os.open(root, directory_flags)
@@ -139,13 +139,14 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
         if path.resolve(strict=True) != resolved:
             raise OSError("source path re-resolved outside the opened target")
         opened = os.fstat(descriptor)
-        current = os.lstat(resolved)
+        current_stat = os.lstat(resolved)
         # st_dev/st_ino are 0 on filesystems without stable file ids
         # (FAT/exFAT, some network shares); a zeroed pair proves nothing.
         if (
             opened.st_ino
-            and current.st_ino
-            and (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            and current_stat.st_ino
+            and (opened.st_dev, opened.st_ino)
+            != (current_stat.st_dev, current_stat.st_ino)
         ):
             raise OSError("source file replaced during open")
     except OSError:

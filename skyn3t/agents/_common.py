@@ -14,6 +14,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from skyn3t.core.stacks import WEB_STACKS
+
 # Canonical stacks the CodeAgent can scaffold offline.
 KNOWN_STACKS = (
     "react_vite",
@@ -241,11 +243,6 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         return "sveltekit"
     if re.search(r"\bvue(?:\.js|js)?\b", text):
         return "vue"
-    if any(k in text for k in (
-        "react typescript", "typescript react", "vite typescript",
-        "typescript spa", "typescript web app", "tsx app",
-    )):
-        return "react_ts"
     # Whole-word only: "astrology"/"astronomy"/"gastro" must not route to astro,
     # nor "remixing" to remix.
     if re.search(r"\bastro\b", text):
@@ -522,10 +519,9 @@ def _full_app_contract(payload: dict[str, Any], extra: dict[str, Any]) -> str:
     """
     stack = str(payload.get("stack") or extra.get("stack") or "").lower()
     brief = str(payload.get("brief") or "").lower()
-    webish = stack in {
-        "react", "nextjs", "static", "astro", "remix", "express", "fastapi",
-        "rag", "workflow", "phaser",
-    } or any(k in brief for k in ("website", "web app", "site", "page", "dashboard"))
+    webish = stack in WEB_STACKS or any(
+        k in brief for k in ("website", "web app", "site", "page", "dashboard")
+    )
     contentish = any(
         k in brief
         for k in (

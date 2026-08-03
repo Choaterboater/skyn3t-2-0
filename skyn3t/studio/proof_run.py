@@ -1298,7 +1298,7 @@ def _run_proof_command(
             import signal
 
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # type: ignore[attr-defined]
             except OSError:
                 pass
         try:
@@ -2005,7 +2005,7 @@ _NODE_BUILTINS = frozenset({
 })
 # Friendly pinned versions for common packages; anything else gets "latest".
 _KNOWN_NPM_VERSIONS = {
-    "prop-types": "^15.8.1", "react-router-dom": "^6.21.0", "axios": "^1.6.2",
+    "prop-types": "^15.8.1", "react-router-dom": "^7.18.2", "axios": "^1.6.2",
     "zustand": "^4.4.7", "clsx": "^2.1.0", "classnames": "^2.5.1",
     "date-fns": "^3.0.0", "uuid": "^9.0.1", "lodash": "^4.17.21",
     "@testing-library/react": "^14.1.2", "@testing-library/jest-dom": "^6.1.5",

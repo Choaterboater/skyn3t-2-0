@@ -220,7 +220,9 @@ _ARCHETYPES: dict[str, dict] = {
 
 
 def _stable_index(text: str, modulo: int) -> int:
-    digest = hashlib.md5(text.strip().lower().encode("utf-8")).hexdigest()
+    digest = hashlib.md5(
+        text.strip().lower().encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
     return int(digest, 16) % modulo
 
 
@@ -250,7 +252,8 @@ def _darken(hex_color: str, factor: float = 0.82) -> str:
 
 def _lighten(hex_color: str, factor: float = 0.82) -> str:
     r, g, b = _to_rgb(hex_color)
-    return "#%02x%02x%02x" % tuple(int(c + (255 - c) * (1 - factor)) for c in (r, g, b))
+    red, green, blue = (int(c + (255 - c) * (1 - factor)) for c in (r, g, b))
+    return f"#{red:02x}{green:02x}{blue:02x}"
 
 
 def _on_accent_text(accent: str) -> str:
@@ -319,16 +322,17 @@ def _oklch_to_hex(L: float, C: float, h: float) -> str:
     lc = L + 0.3963377774 * a + 0.2158037573 * bb
     mc = L - 0.1055613458 * a - 0.0638541728 * bb
     sc = L - 0.0894841775 * a - 1.2914855480 * bb
-    l, m, s = lc ** 3, mc ** 3, sc ** 3
-    r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
-    g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
-    b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    linear_l, linear_m, linear_s = lc**3, mc**3, sc**3
+    r = +4.0767416621 * linear_l - 3.3077115913 * linear_m + 0.2309699292 * linear_s
+    g = -1.2684380046 * linear_l + 2.6097574011 * linear_m - 0.3413193965 * linear_s
+    b = -0.0041960863 * linear_l - 0.7034186147 * linear_m + 1.7076147010 * linear_s
 
     def encode(c: float) -> float:
         c = min(1.0, max(0.0, c))  # gamut clamp
         return 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
 
-    return "#%02x%02x%02x" % tuple(round(encode(c) * 255) for c in (r, g, b))
+    red, green, blue = (round(encode(c) * 255) for c in (r, g, b))
+    return f"#{red:02x}{green:02x}{blue:02x}"
 
 
 def _fit_on_bg(hex_color: str, bg: str, *, minimum: float = 4.5) -> str:

@@ -65,6 +65,16 @@ def test_knowledge_block_surfaces_full_app_contract():
     assert "beginner education" in kb
 
 
+def test_full_app_contract_recognizes_canonical_web_stacks_without_web_keywords():
+    for stack in ("react_vite", "react_ts", "static_html", "node_express", "vue"):
+        kb = knowledge_block({
+            "brief": "Inventory for a small workshop",
+            "stack": stack,
+            "extra": {"full_app_contract": True},
+        })
+        assert "For UI/web builds" in kb, stack
+
+
 def test_studio_injects_skills_and_recall_into_payload():
     # A runner with a fake skills library + fake rag should surface both into
     # the stage payload's extra, where knowledge_block reads them.
@@ -103,6 +113,33 @@ def test_studio_injects_skills_and_recall_into_payload():
     assert "SKILL QUALITY CONTRACT" in kb
     assert "vite" in kb.lower() and "main.jsx" in kb
 
+
+def test_studio_reuses_ranked_skill_selection(tmp_path):
+    from skyn3t.config.settings import Settings
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.studio.runner import StudioRunner
+
+    lib = SkillLibrary(tmp_path / "skills")
+    lib.add("React delivery", "Ship the complete UI.", stack="react")
+    original = lib.relevant
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    lib.relevant = counted
+    bus = EventBus()
+    runner = StudioRunner(
+        bus, Orchestrator(bus), settings=Settings(llm_backend="stub"), skills=lib,
+    )
+
+    advice, slugs = runner._skill_advice("react")
+
+    assert advice and slugs
+    assert calls == 1
 
 def test_studio_injects_stage_role_guidance_into_extra(tmp_path):
     from skyn3t.config.settings import Settings

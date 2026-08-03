@@ -1,5 +1,5 @@
 import React, { Suspense, lazy } from "react";
-import { Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn, useEventStream } from "./api.js";
 import PendingApprovalsBanner from "./components/PendingApprovalsBanner.jsx";
@@ -125,7 +125,7 @@ export default function App() {
               to={item.to}
               title={item.label}
               className={({ isActive }) =>
-                `nav-link relative justify-center lg:justify-start ${
+                `nav-link relative min-h-11 justify-center lg:justify-start ${
                   isActive ? "nav-link-active" : ""
                 }`
               }

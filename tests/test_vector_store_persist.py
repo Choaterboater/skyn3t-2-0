@@ -75,7 +75,11 @@ def test_cap_evicts_oldest_first(tmp_path, monkeypatch):
     assert "d0" not in vs._docs and "d1" not in vs._docs  # oldest evicted
     assert {"d2", "d3", "d4"} == set(vs._docs)
     # The persisted file is bounded too, and a restart sees the same docs.
-    lines = [l for l in _file(tmp_path).read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [
+        line
+        for line in _file(tmp_path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     assert len(lines) == 3
     assert set(_store(tmp_path)._docs) == {"d2", "d3", "d4"}
 

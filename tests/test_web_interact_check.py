@@ -92,22 +92,55 @@ def sign_guestbook():
     return {"ok": True}
 '''
 
-# What a good LLM answer looks like: ONE user flow, dual-surface assertions.
-_PASS_SCRIPT = """
-step("navigate to the guestbook page")
-page.get_by_role("link", name="Guestbook").click()
-step("fill and submit the sign form")
-page.fill("#name", "Ada Lovelace")
-page.fill("#message", "first post")
-page.get_by_role("button", name="Sign guestbook").click()
-step("verify the UI shows the success state")
-expect(page.locator("#success")).to_be_visible(timeout=5000)
-step("verify the backend recorded the row")
-status, body = fetch("/api/guestbook")
-assert status == 200, f"api status {status}"
-assert "Ada Lovelace" in body, "created row missing from /api/guestbook"
-"""
-
+# What a good LLM answer looks like: one bounded, dual-surface JSON flow.
+_PASS_SCRIPT = json.dumps(
+    {
+        "actions": [
+            {
+                "op": "click",
+                "label": "navigate to the guestbook page",
+                "by": "role",
+                "role": "link",
+                "name": "Guestbook",
+            },
+            {
+                "op": "fill",
+                "label": "fill the guest name",
+                "by": "selector",
+                "selector": "#name",
+                "value": "Ada Lovelace",
+            },
+            {
+                "op": "fill",
+                "label": "fill the guest message",
+                "by": "selector",
+                "selector": "#message",
+                "value": "first post",
+            },
+            {
+                "op": "click",
+                "label": "submit the sign form",
+                "by": "role",
+                "role": "button",
+                "name": "Sign guestbook",
+            },
+            {
+                "op": "expect_visible",
+                "label": "verify the UI shows the success state",
+                "by": "selector",
+                "selector": "#success",
+                "timeout_ms": 5000,
+            },
+            {
+                "op": "fetch_expect",
+                "label": "verify the backend recorded the row",
+                "path": "/api/guestbook",
+                "status": 200,
+                "contains": "Ada Lovelace",
+            },
+        ]
+    }
+)
 
 def _write_fixture_app(root, *, broken: bool = False) -> None:
     (root / "index.html").write_text(_INDEX_HTML, encoding="utf-8")
@@ -287,7 +320,7 @@ def test_passing_dual_surface_flow(tmp_path):
     assert res["ok"] is True, res
     assert res["issues"] == []
     # The compact tool spec carried the harvested surface to the LLM.
-    assert prompts, "the script-authoring LLM was never called"
+    assert prompts, "the action-plan LLM was never called"
     assert "Guestbook" in prompts[0]
     assert "/api/guestbook" in prompts[0]
     # Both assertion surfaces were exercised and recorded.
@@ -321,6 +354,59 @@ def test_broken_button_flagged_with_evidence_and_check_returns(tmp_path):
     # Steps up to the failure were recorded as the interaction trail.
     assert any("submit" in step for step in res["interactions"])
 
+
+def test_legacy_python_reply_soft_skips_without_execution(tmp_path):
+    """Model output is data only: legacy Python can never reach host execution."""
+    _write_fixture_app(tmp_path)
+    marker = tmp_path / "model-code-ran"
+    malicious = (
+        "__import__('pathlib').Path(" + repr(str(marker)) + ").write_text('owned')"
+    )
+
+    res = asyncio.run(
+        check_web_interact(
+            tmp_path,
+            "fastapi",
+            settings=SimpleNamespace(),
+            llm=lambda prompt: malicious,
+            app_runner=_FixtureRunner(),
+        )
+    )
+
+    assert res["ok"] is True
+    assert res["skipped"] is True
+    assert "valid action plan" in res["reason"]
+    assert not marker.exists()
+
+
+def test_unknown_action_is_rejected_before_browser_launch():
+    result = wic._drive_interaction(
+        "http://127.0.0.1:1",
+        {"actions": [{"op": "exec", "label": "run model code", "code": "pass"}]},
+    )
+
+    assert result["script_error"] is True
+    assert "unsupported op" in result["error"]
+    assert result["steps"] == []
+
+
+def test_cross_origin_fetch_action_is_rejected_before_browser_launch():
+    result = wic._drive_interaction(
+        "http://127.0.0.1:1",
+        {
+            "actions": [
+                {
+                    "op": "fetch_expect",
+                    "label": "probe foreign host",
+                    "path": "https://example.com/private",
+                    "status": 200,
+                }
+            ]
+        },
+    )
+
+    assert result["script_error"] is True
+    assert "same-origin" in result["error"]
 
 # ── runner seam: manifest.extra["web_interact"] ──────────────────────────────
 

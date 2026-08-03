@@ -284,7 +284,7 @@ def subprocess_command_runner(
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         if process is not None:
-            # os.killpg and signal.SIGKILL DO NOT EXIST on Windows, and
+            # getattr(os, "killpg") and getattr(signal, "SIGKILL") DO NOT EXIST on Windows, and
             # AttributeError is not an OSError — it escaped the handler below,
             # so a timed-out git command raised out of the TimeoutExpired
             # handler AND leaked the child. Mirrors the guarded siblings at
@@ -297,7 +297,7 @@ def subprocess_command_runner(
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     )
                 else:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    os.killpg(process.pid, signal.SIGKILL)  # type: ignore[attr-defined]
             except (ProcessLookupError, PermissionError, OSError, AttributeError):
                 pass
             try:

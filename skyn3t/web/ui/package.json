@@ -12,17 +12,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@react-three/fiber": "^8.16.8",
+    "@react-three/fiber": "^9.7.0",
     "@tanstack/react-query": "^5.51.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.24.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router": "^8.3.0",
     "three": "^0.166.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.3",
     "autoprefixer": "^10.5.2",
-    "postcss": "^8.4.39",
+    "postcss": "^8.5.25",
     "tailwindcss": "^3.4.6",
     "vite": "^8.1.4"
   }

@@ -770,18 +770,24 @@ class SkillLibrary:
         cands.sort(key=_match, reverse=True)
         return cands[:limit]
 
-    def inject(
-        self, stack: str, tags: list[str] | None = None, limit: int = 5
-    ) -> str:
-        """Render relevant skills as non-binding advice for a prompt."""
-        skills = self.relevant(stack, tags=tags, limit=limit)
+    @staticmethod
+    def render_selected(skills: list[Skill], *, stage: bool = False) -> str:
+        """Render an already-ranked selection without repeating retrieval."""
         if not skills:
             return ""
         blocks = "\n\n".join(s.as_advice() for s in skills)
-        return (
-            "Relevant skills (advisory — apply only where they fit the task):\n\n"
-            f"{blocks}"
+        heading = (
+            "Relevant stage role guidance (advisory — apply only to this stage):"
+            if stage
+            else "Relevant skills (advisory — apply only where they fit the task):"
         )
+        return f"{heading}\n\n{blocks}"
+
+    def inject(
+        self, stack: str, tags: list[str] | None = None, limit: int = 5
+    ) -> str:
+        """Rank and render relevant skills as non-binding prompt advice."""
+        return self.render_selected(self.relevant(stack, tags=tags, limit=limit))
 
     def relevant_for_stage(
         self,
@@ -837,13 +843,7 @@ class SkillLibrary:
     ) -> str:
         """Render stage-specific role guidance for a prompt."""
         skills = self.relevant_for_stage(stack, stages, tags=tags, limit=limit)
-        if not skills:
-            return ""
-        blocks = "\n\n".join(s.as_advice() for s in skills)
-        return (
-            "Relevant stage role guidance (advisory — apply only to this stage):\n\n"
-            f"{blocks}"
-        )
+        return self.render_selected(skills, stage=True)
 
     # ---- scoring (close the loop) -------------------------------------
     def record_use(

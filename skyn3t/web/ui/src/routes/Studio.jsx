@@ -755,6 +755,7 @@ export default function Studio({ stream }) {
     selectedFoundryOpenRouterMissing ||
     codegenCliUnavailable;
   const routingFreeOnly = routingSecrets.free_only !== false;
+  const routingNoClaude = routingSecrets.no_claude !== false;
   const routingModelPins =
     routingSecrets && typeof routingSecrets.model_pins === "object" && routingSecrets.model_pins
       ? routingSecrets.model_pins
@@ -1338,7 +1339,9 @@ export default function Studio({ stream }) {
                       disabled={foundryBackendMut.isPending}
                       className="field"
                     >
-                      {BACKEND_OPTIONS.map((option) => {
+                      {BACKEND_OPTIONS.filter(
+                        (option) => !routingNoClaude || option.id !== "claude_cli",
+                      ).map((option) => {
                         const status = cliBackendStatus(llmBackends.data, option.id);
                         const unavailable = option.kind === "cli" && status.available !== true;
                         return (
@@ -1385,9 +1388,9 @@ export default function Studio({ stream }) {
                     ) : null}
                     {selectedFoundryBackend === "auto" ? (
                       <p className="mt-1 text-ash/80">
-                        Auto uses the first signed-in local CLI in priority order
-                        (Codex, then Claude, then Kimi) and never falls back to
-                        hosted OpenRouter without explicit consent.
+                        Auto uses the first signed-in local CLI in priority order (
+                        {routingNoClaude ? "Codex, then Kimi" : "Codex, then Claude, then Kimi"}
+                        ) and never falls back to hosted OpenRouter without explicit consent.
                       </p>
                     ) : null}
                     {selectedFoundryOpenRouterMissing ? (

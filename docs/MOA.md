@@ -39,10 +39,10 @@ feel instead of N advisors' averaged defaults.
 
 The council is **on by default**, advised by `kimi_cli`, `copilot_cli`, and one
 hosted OpenRouter model — a genuinely multi-model ensemble with no Claude.
-Claude is deliberately NOT in the default — nothing Claude-powered runs unless
-the operator selects it (`SKYN3T_MOA_ADVISORS="claude_cli,kimi_cli"`,
-`llm_backend=claude_cli`, or a `claude` entry in `auto_cli_priority`). Codex is
-left out because codegen routes to Codex first, so a Codex advisor would be the
+Claude is deliberately NOT in the default. `no_claude=true` is also a hard fence:
+adding a Claude advisor, backend, codegen pin, or `auto` priority entry has no
+effect until the operator first sets `SKYN3T_NO_CLAUDE=0`. Codex is left out
+because codegen routes to Codex first, so a Codex advisor would be the
 acting model reviewing itself. A slot whose CLI is not installed is recorded as
 a failed advisor and the build proceeds on the survivors, so the default costs
 nothing on a machine without them.
@@ -51,6 +51,8 @@ To turn it off, clear the advisor list (`SKYN3T_MOA_ADVISORS=""`) or flip the
 master switch (`SKYN3T_MOA_ENABLED=0`). To change who advises:
 
 ```bash
+# Claude is explicitly opt-in: remove the hard fence before naming it.
+SKYN3T_NO_CLAUDE=0
 # Let every CLI use its own configured default model.
 SKYN3T_MOA_ADVISORS="codex_cli,claude_cli,kimi_cli"
 # Or pin explicitly (verified working):
@@ -81,7 +83,7 @@ on the survivors.
 | Setting | Default | Meaning |
 |---|---|---|
 | `moa_enabled` | `true` | Master switch. Set `SKYN3T_MOA_ENABLED=0` to force off. |
-| `moa_advisors` | `"kimi_cli,copilot_cli,openrouter"` | Comma-separated `provider:model` slots. Model optional. Empty ⇒ off even when enabled, and clearing it is the ordinary off-switch. Claude is opt-in only — add it explicitly (`claude_cli`) to use it; the acting model's own CLI is excluded on purpose. |
+| `moa_advisors` | `"kimi_cli,copilot_cli,openrouter"` | Comma-separated `provider:model` slots. Model optional. Empty ⇒ off even when enabled, and clearing it is the ordinary off-switch. Claude requires both `SKYN3T_NO_CLAUDE=0` and an explicit `claude_cli` slot; the acting model's own CLI is excluded on purpose. |
 | `moa_max_concurrency` | `4` | Concurrent advisor calls (per-provider limits still apply underneath). |
 | `moa_advisor_timeout` | `60` | Seconds per advisor, then **dropped**. Bounds — but does not eliminate — added build latency; see Cost. |
 | `moa_advisor_max_tokens` | `1200` | Output cap. Binds on OpenRouter only — `complete()` cannot pass `max_tokens` to a CLI. |

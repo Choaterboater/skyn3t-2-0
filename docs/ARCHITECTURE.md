@@ -12,12 +12,12 @@ the system always imports and always runs.
 | --- | --- |
 | `skyn3t.config` | `Settings`/`get_settings` — typed config anchored to the repo root; safe defaults; `.env` loading. |
 | `skyn3t.core` | The spine: `events` (EventBus/Event/EventType), `agent` (BaseAgent + task types), `orchestrator` (routing, concurrency, self-heal), `model_router` (tier -> model). |
-| `skyn3t.adapters` | `llm` — `LLMClient` (openrouter \| stub) with `BudgetTracker`/`BudgetExceeded`. |
+| `skyn3t.adapters` | `llm` — `LLMClient` (`auto`, `stub`, `openrouter`, `codex_cli`, `kimi_cli`, `copilot_cli`, and policy-allowed `claude_cli`) with `BudgetTracker`/`BudgetExceeded`. `auto` uses signed-in local CLIs first and reaches OpenRouter only with explicit consent. |
 | `skyn3t.agents` | One module per agent, registered by capability (brainstorm, research, architect, designer, code, code_improver, reviewer, critic, writer, verifiers, test_author, packaging, deploy, browser, github_*). |
 | `skyn3t.studio` | `runner` (brief->app pipeline), `planner`, `stages`, `best_of_n`, `proof_run`, `manifest`, `approval_gate`, `clarification`. |
 | `skyn3t.memory` | `store` (tasks/builds/lessons over SQLite), `models`, `ingestor`, plus consciousness/hygiene/tuner/meta-agent helpers. |
 | `skyn3t.rag` | Knowledge corpus: `rag_engine`, `document_processor`, `embeddings`, `vector_store`, `retrieval`, `repo_map`. |
-| `skyn3t.cortex` | Autonomous loop, proposal store, repo scout, prompt evolver. |
+| `skyn3t.cortex` | Autonomous loop, proposal store, repo scout, prompt/tuning stores, and an isolated, verification-gated candidate engine. |
 | `skyn3t.intelligence` | Debate, reflection, learning loop, model tournament, skill library, build patterns. |
 | `skyn3t.web` | FastAPI control plane (`app`, `routes`, `websockets`, `deps`) — optional, loopback-safe. |
 | `skyn3t.cli` | `main` — the Typer CLI (this package). |
@@ -82,8 +82,10 @@ starts fast and tolerates missing optional packages.
    graded by build outcome, so the corpus improves with use.
 3. **Verify behavior, not vibes.** Verifiers + proof-run check the artifact;
    the reviewer/critic scores are blended with objective proof results.
-4. **Safe by default.** Autonomy gated, free models on, hard USD/token caps,
-   loopback-only web access, sandbox hardening on.
+4. **Safe by default.** Higher-impact autonomy is gated; bounded safe Cortex
+   actions may auto-approve. `free_only` is on, optional USD/token caps are
+   available but disabled until configured, web access is loopback-only, and
+   sandbox hardening is on.
 5. **Cheap by default.** `free_only=true`; the router prefers free tiers; the
    `BudgetTracker` enforces per-build and daily caps.
 6. **Degrade, don't crash.** Every optional heavy dependency is import-guarded;
@@ -91,3 +93,16 @@ starts fast and tolerates missing optional packages.
 7. **Everything is an event.** Builds, stages, proposals, lessons, agent
    lifecycle, and health all flow through one `EventBus` — replayable and
    snapshot-able.
+
+## Gate and autonomy policy
+
+The default build posture is `lab`: objective delivery failures block, while
+heuristic, policy, and environment-dependent findings are recorded, scored, and
+fed into the repair loop. `release` makes applicable completed gate findings
+blocking. A missing local prerequisite produces a visible skipped probe in either
+posture, not a fabricated pass or failure.
+
+`lab_autonomy` is separately off by default. When enabled for a personal lab it
+removes routine local build approval and budget friction while retaining proof
+and delivery gates. Remote deploys, secret writes, destructive host actions,
+release publication, and protected-branch merges always require approval.

@@ -38,8 +38,9 @@ A build isn't "done" because a model said so. It climbs a ladder of
 this from prompt-to-code tools:
 
 - **`delivered != empty`** — an objective *proof-run* checks that real, substantive
-  files landed in `Projects/<slug>/` and (for the stack) that it actually builds,
-  boots, and its own tests pass. Not vibes; the artifact.
+  files landed in `Projects/<slug>/` and, where the local stack tooling is
+  available, collects build, boot, and test evidence. A missing optional tool is
+  recorded as a skipped probe, never mistaken for proof. Not vibes; the artifact.
 - **Stack-specific gates** fire only where they apply — `liveness`,
   `security_check`, `web_polish` + `seo_check` (web), `rag_check` (retrieval),
   `mcp_check` (MCP servers), `workflow_check` (agent pipelines), `cli_check`
@@ -89,7 +90,9 @@ skyn3t studio share <build> --no-tunnel  # exactly `studio serve`
 
 Nothing is deployed or shared without explicit confirmation — `studio share`
 IS the asking, and it refuses builds whose manifest marks them failed or
-incomplete unless you pass `--force`. Live deploys require the
+incomplete unless you pass `--force`. Personal-lab autonomy can remove routine
+local build and budget approvals, but never this external boundary. Live
+deploys require the
 selected provider credential, stage only the files that provider needs, persist
 the provider response, and activate a new live URL only after its health check
 passes. A failed verification keeps the previous healthy URL active.
@@ -122,9 +125,11 @@ passes. A failed verification keeps the previous healthy URL active.
   average while silently regressing one app type. A second packaged suite,
   `skyn3t/benchmarks/golden-design-v1.json`, exams design distinctiveness
   specifically (`skyn3t bench golden run --suite skyn3t/benchmarks/golden-design-v1.json`).
-- **Safe + observable by default.** Offline stub on, autonomy gated behind
-  approval, optional USD/token ceilings disabled unless you configure them,
-  exact provider cost evidence where available, and loopback-only web access.
+- **Safe + observable by default.** Offline stub on, loopback-only web access,
+  optional USD/token ceilings disabled unless you configure them, and exact
+  provider cost evidence where available. Bounded safe Cortex actions may
+  auto-approve; the personal-lab profile removes repetitive local build/budget
+  friction while keeping proof and higher-impact action gates.
 - **Degrade, don't crash.** Every optional dependency (FastAPI, Docker, ChromaDB,
   Playwright, embeddings, …) is guarded; missing deps degrade to a deterministic
   offline path.
@@ -162,9 +167,11 @@ From a source checkout, the build lands in `../Projects/<slug>/` (sibling of
 the repo). A wheel install keeps its writable data, logs, configuration, and
 projects under `~/.skyn3t/` instead of writing into `site-packages`. Add API
 keys to `.env` (see `.env.example`) only when you intentionally want a hosted
-provider. `auto` walks `SKYN3T_AUTO_CLI_PRIORITY` (default `codex,claude,kimi`)
+provider. `auto` walks `SKYN3T_AUTO_CLI_PRIORITY` (default `codex,kimi`)
 and uses the first CLI you are signed in to; Copilot is supported but stays out
-of that chain. It never switches to OpenRouter merely because a key exists —
+of that chain. Claude is supported but hard-fenced by default (`no_claude=true`):
+disable that policy and select Claude explicitly before it can run. `auto` never
+switches to OpenRouter merely because a key exists —
 that needs explicit consent via `SKYN3T_AUTO_ALLOW_OPENROUTER=1`, or selecting
 the OpenRouter backend in Foundry Settings (or `SKYN3T_LLM_BACKEND=openrouter`)
 to use hosted API billing. With no signed-in CLI and no explicitly selected
@@ -176,15 +183,20 @@ Two defaults worth knowing:
   build. Heuristics, taste rules and environment-dependent probes record a
   finding, dampen the score and feed the fix loop, then let the build finish. A
   gate that *could not run* — no Docker, no Playwright — never blocks in any
-  posture. Set `SKYN3T_BUILD_POSTURE=release` for the old all-gates-block
-  behaviour.
+  posture. Set `SKYN3T_BUILD_POSTURE=release` to make applicable completed gate
+  findings blocking.
 - **The Mixture-of-Agents council is on**, advised by `kimi_cli,copilot_cli,openrouter`
-  by default — Claude only when you select it — adding multi-model engineering
+  by default — Claude only after you disable the hard fence and select it —
+  adding multi-model engineering
   judgement deliberately not the acting model, so codegen is not reviewing its
   own work.
   It is inert unless those CLIs are signed in. See [docs/MOA.md](docs/MOA.md),
   including the honest cost note: a CLI advisor reports no price, so
   `per_build_usd_cap` cannot bound it.
+- **Personal-lab autonomy is off by default.** Set `SKYN3T_LAB_AUTONOMY=1` only
+  for a personal lab to remove routine local build approvals and budget guards.
+  Proof and delivery gates still run; remote deploys, secret writes, destructive
+  host actions, releases, and protected-branch merges stay explicitly gated.
 
 ### The Foundry — web control plane
 
@@ -206,7 +218,7 @@ and a live preview.
 | `skyn3t start [--web] [--host H] [--port P]` | Boot the orchestrator, register agents, optionally serve the Foundry UI. |
 | `skyn3t doctor` | Readiness table: python, deps, db, llm backend, sandbox, projects-dir. |
 | `skyn3t studio build "<brief>" [--best-of N] [--no-critic] [--slug S]` | Run a build end to end; print result + artifact path. |
-| `skyn3t studio serve <slug-or-path> [--port P]` | Run a delivered project as a live loopback preview (Docker isolated). |
+| `skyn3t studio serve <slug-or-path> [--port P]` | Run a delivered project as a live loopback preview (Docker-isolated when available; hardened local fallback otherwise). |
 | `skyn3t studio share <slug-or-path> [--port P] [--no-tunnel] [--force]` | Serve locally AND expose a public URL via `cloudflared` (or localhost.run over `ssh`) — no account needed. |
 | `skyn3t deploy <slug-or-path> [--target H] [--write] [--now]` | Show the deploy plan; optionally stage artifacts or confirm a live, health-gated deploy. |
 | `skyn3t studio approve <id>` / `reject <id>` | Decide a gated build. |

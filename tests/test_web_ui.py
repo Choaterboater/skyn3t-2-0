@@ -681,6 +681,15 @@ def test_workspace_surfaces_selected_project_signals() -> None:
     assert 'label: "activity"' in workspace
 
 
+def test_workspace_shows_durable_serve_launch_timeline() -> None:
+    workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
+    assert 'queryKey: ["serve-history", slug]' in workspace
+    assert "/studio/serve/history?slug=" in workspace
+    assert 'case "serve.starting":' in workspace
+    assert "Launch timeline" in workspace
+    assert "You can cancel it at any time." in workspace
+    assert "Retry Serve" in workspace
+
 def test_workspace_product_contract_rebuild_saves_before_dispatch() -> None:
     workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
     start = workspace.index("async function buildFromContract()")
@@ -1044,3 +1053,13 @@ def test_studio_rebuild_full_app_variant_only_preserves_source_profile_while_che
     assert "onChange={(e) => toggleFullApp(e.target.checked)}" in studio
     assert "setFullApp(fields.fullApp)" in studio
     assert '{ id: "full_app"' not in studio
+
+def test_workspace_wires_visual_quality_lab_and_skills_wires_bulk_accept() -> None:
+    workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")
+    skills = (ROUTES / "Skills.jsx").read_text(encoding="utf-8")
+
+    assert "/visual-quality" in workspace
+    assert "Visual quality" in workspace
+    assert "Run review" in workspace
+    assert "/skills/promote-ready" in skills
+    assert "Accept all" in skills

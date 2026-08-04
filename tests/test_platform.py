@@ -132,6 +132,33 @@ def test_sandbox_runs_offline():
     assert isinstance(runner.docker_available(), bool)
 
 
+def test_auto_sandbox_falls_back_when_docker_cannot_mount_project(monkeypatch, tmp_path):
+    from skyn3t.config.settings import Settings
+    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
+
+    runner = SandboxRunner(settings=Settings(execution_backend="auto"))
+    calls = []
+
+    async def docker(*_args, **_kwargs):
+        return SandboxResult(
+            125, "", "docker: Error response from daemon: CreateFile C:\\tmp: Access is denied.",
+            "docker", 1,
+        )
+
+    async def local(*_args, **kwargs):
+        calls.append(kwargs.get("fallback_reason"))
+        return SandboxResult(0, "ok", "", "subprocess", 1)
+
+    monkeypatch.setattr(runner, "_choose_backend_async", lambda: asyncio.sleep(0, result="docker"))
+    monkeypatch.setattr(runner, "_run_docker", docker)
+    monkeypatch.setattr(runner, "_run_subprocess", local)
+
+    result = asyncio.run(runner.run([sys.executable, "-c", "print('ok')"], cwd=tmp_path))
+
+    assert result.backend == "subprocess"
+    assert calls == ["Docker cannot mount this project directory"]
+
+
 def test_sandbox_subprocess_fallback_warns():
     from skyn3t.security.sandbox import SandboxRunner
 

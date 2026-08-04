@@ -741,6 +741,9 @@ class Settings(BaseSettings):
     # Personal-lab profile: remove repetitive approval and budget friction for
     # local generation/research while retaining every proof and quality gate.
     lab_autonomy: bool = False
+    # One plain-language control for the local recovery / learning queue. It
+    # never enables remote push or deployment; it only selects local work.
+    lab_autopilot: bool = False
     # Cortex can author narrowly scoped self-improvement candidates in an
     # isolated git worktree. The engine never pushes. Local main auto-merge is
     # a separate explicit consent and only occurs after all blocking gates pass.

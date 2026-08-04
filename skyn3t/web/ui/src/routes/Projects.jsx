@@ -111,13 +111,17 @@ function useServedMap(stream, seed) {
     for (const e of stream?.events || []) {
       const slug = e.payload?.slug;
       if (!slug) continue;
-      if (e.type === "serve.started") {
+      if (e.type === "serve.starting") {
+        map[slug] = { slug, status: "starting", detail: { phase: e.payload?.phase } };
+      } else if (e.type === "serve.started") {
         map[slug] = {
           slug,
           url: e.payload.url,
           port: e.payload.port,
           status: "running",
         };
+      } else if (e.type === "serve.failed") {
+        map[slug] = { slug, status: "failed", detail: { reason: e.payload?.reason } };
       } else if (e.type === "serve.stopped") {
         delete map[slug];
       }
@@ -554,28 +558,35 @@ function PromptsInline({ slug }) {
 
 function ServeCell({ slug, served, busy, err, canServe = true, serveReason = "", onServe, onStop }) {
   const running = !!served && (served.status === "running" || !!served.url);
+  const starting = served?.status === "starting";
+  const active = running || starting;
   const disabledReason = canServe ? "" : serveReason || "no web entrypoint";
+  const message = err || served?.detail?.reason || "";
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
-        {running ? (
+        {active ? (
           <>
-            <span className="h-1.5 w-1.5 rounded-full bg-plasma" />
-            <a
-              href={served.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-mono text-[11px] text-plasma underline hover:text-plasma/70"
-              title={served.url}
-            >
-              :{served.port} ↗
-            </a>
+            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-plasma" : "animate-pulse bg-ember"}`} />
+            {running ? (
+              <a
+                href={served.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-[11px] text-plasma underline hover:text-plasma/70"
+                title={served.url}
+              >
+                :{served.port} ↗
+              </a>
+            ) : (
+              <span className="font-mono text-[10px] text-ash/65">preparing Docker preview…</span>
+            )}
             <button
               onClick={() => onStop(slug)}
               disabled={busy === "stopping"}
               className="btn-ghost disabled:opacity-50"
             >
-              {busy === "stopping" ? "…" : "Stop"}
+              {busy === "stopping" ? "…" : starting ? "Cancel" : "Stop"}
             </button>
           </>
         ) : (
@@ -589,12 +600,12 @@ function ServeCell({ slug, served, busy, err, canServe = true, serveReason = "",
           </button>
         )}
       </div>
-      {err ? (
+      {message ? (
         <span
           className="max-w-[180px] truncate font-mono text-[10px] text-ember"
-          title={err}
+          title={message}
         >
-          {err}
+          {message}
         </span>
       ) : disabledReason ? (
         <span
@@ -976,7 +987,7 @@ export default function Projects({ stream }) {
     setServeErr((e) => ({ ...e, [slug]: null }));
     try {
       const r = await apiPost("/studio/serve", { slug });
-      if (r.status !== "running") {
+      if (r.status !== "running" && r.status !== "starting") {
         const reason =
           r.detail?.install_error?.error ||
           r.detail?.reason ||

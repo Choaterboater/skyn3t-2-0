@@ -79,7 +79,9 @@ class EventType(StrEnum):
     # settings UI generated, and its wiring verified (build + improve).
     CONFIG_CHECK = "improve.config_check"
     # Live app preview (two-pane cockpit): start/stop a delivered project as a server
+    SERVE_STARTING = "serve.starting"
     SERVE_STARTED = "serve.started"
+    SERVE_FAILED = "serve.failed"
     SERVE_STOPPED = "serve.stopped"
     # Fan-out exploration (Spec 4): build N divergent candidates, referee, pick winner
     FANOUT_STARTED = "fanout.started"

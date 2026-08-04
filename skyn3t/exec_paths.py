@@ -60,6 +60,61 @@ def executable_shim(resolved: str) -> str:
     return resolved
 
 
+def find_executable(name: str) -> str | None:
+    """Locate an executable without returning a non-existent fallback name.
+
+    Docker Desktop's per-user Windows installer can place its CLI outside
+    ``PATH``. A process launched before the installer refreshes PATH would
+    otherwise report Docker as missing while its daemon is already running.
+    """
+    text = str(name or "").strip()
+    if not text:
+        return None
+    if os.path.isabs(text) or ("/" in text) or ("\\" in text):
+        candidate = executable_shim(text)
+        try:
+            return candidate if Path(candidate).is_file() else None
+        except OSError:  # pragma: no cover - defensive lookup
+            return None
+    try:
+        found = shutil.which(text)
+    except Exception:  # noqa: BLE001 - command discovery must never raise
+        found = None
+    if found:
+        return executable_shim(found)
+    if os.name == "nt":
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            for suffix in WINDOWS_EXEC_SUFFIXES:
+                candidate = Path(directory) / f"{text}{suffix}"
+                try:
+                    if candidate.is_file():
+                        return str(candidate)
+                except OSError:  # pragma: no cover - defensive lookup
+                    continue
+        if text.lower() == "docker":
+            roots = (
+                os.environ.get("LOCALAPPDATA", ""),
+                os.environ.get("ProgramFiles", ""),
+            )
+            suffixes = (
+                ("Programs", "DockerDesktop", "resources", "bin", "docker.exe"),
+                ("Docker", "Docker", "resources", "bin", "docker.exe"),
+            )
+            for root in roots:
+                if not root:
+                    continue
+                for suffix in suffixes:
+                    candidate = Path(root).joinpath(*suffix)
+                    try:
+                        if candidate.is_file():
+                            return str(candidate)
+                    except OSError:  # pragma: no cover - defensive lookup
+                        continue
+    return None
+
+
 def resolve_executable(name: str) -> str:
     """Absolute path to an executable form of ``name``, or ``name`` unchanged.
 
@@ -67,32 +122,7 @@ def resolve_executable(name: str) -> str:
     failure handling for a genuinely missing command.
     """
     text = str(name or "").strip()
-    if not text:
-        return text
-    # An explicit path (absolute or containing a separator) is the caller's
-    # choice; only fix up its suffix if it needs it.
-    if os.path.isabs(text) or ("/" in text) or ("\\" in text):
-        return executable_shim(text)
-    try:
-        found = shutil.which(text)
-    except Exception:  # noqa: BLE001 - never let lookup break a command
-        found = None
-    if not found:
-        # On Windows shutil.which can miss a .cmd shim when PATHEXT is unusual;
-        # probe PATH directly for the executable suffixes before giving up.
-        if os.name == "nt":
-            for directory in os.environ.get("PATH", "").split(os.pathsep):
-                if not directory:
-                    continue
-                for suffix in WINDOWS_EXEC_SUFFIXES:
-                    candidate = Path(directory) / f"{text}{suffix}"
-                    try:
-                        if candidate.is_file():
-                            return str(candidate)
-                    except OSError:
-                        continue
-        return text
-    return executable_shim(found)
+    return find_executable(text) or text
 
 
-__all__ = ["WINDOWS_EXEC_SUFFIXES", "executable_shim", "resolve_executable"]
+__all__ = ["WINDOWS_EXEC_SUFFIXES", "executable_shim", "find_executable", "resolve_executable"]

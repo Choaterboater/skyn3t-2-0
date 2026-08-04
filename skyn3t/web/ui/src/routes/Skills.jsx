@@ -90,6 +90,20 @@ export default function Skills() {
       setPromotionResult({ promoted: false, message: String(err.message || err) });
     },
   });
+  const acceptAllReady = useMutation({
+    mutationFn: () => apiPost("/skills/promote-ready", {}),
+    onSuccess: async (res) => {
+      const accepted = Array.isArray(res?.promoted) ? res.promoted.length : 0;
+      setPromotionResult({
+        promoted: accepted > 0,
+        message: res?.message || `Accepted ${accepted} ready skills.`,
+      });
+      await queryClient.invalidateQueries({ queryKey: ["skills"] });
+    },
+    onError: (err) => {
+      setPromotionResult({ promoted: false, message: String(err.message || err) });
+    },
+  });
   const importCatalog = useMutation({
     mutationFn: async () => {
       const path = catalogPath.trim();
@@ -246,7 +260,23 @@ export default function Skills() {
       <Panel>
         <PanelHead
           label="Skill index"
-          right={<span className="font-mono text-[11px] text-ash">/skills</span>}
+          right={
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] text-ash">/skills</span>
+              <button
+                type="button"
+                className="btn-ember"
+                disabled={acceptAllReady.isPending || promotionReadyCount === 0}
+                aria-label={`Accept all ${promotionReadyCount} ready skills`}
+                onClick={() => {
+                  setPromotionResult(null);
+                  acceptAllReady.mutate();
+                }}
+              >
+                {acceptAllReady.isPending ? "Accepting…" : `Accept all${promotionReadyCount ? ` · ${promotionReadyCount}` : ""}`}
+              </button>
+            </div>
+          }
         />
         {isLoading ? (
           <Empty icon="≋">Loading the library…</Empty>

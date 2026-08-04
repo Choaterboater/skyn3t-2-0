@@ -3289,6 +3289,22 @@ class StudioRunner:
 
         data = outcome.to_dict()
         manifest.extra["visual_self_heal"] = data
+        try:
+            from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+            receipt = VisualQualityLab.record_build_result(
+                project_dir,
+                slug=manifest.slug,
+                brief=manifest.brief,
+                stack=stack,
+                visual_loop=data,
+            )
+            manifest.extra["visual_quality_lab"] = {
+                "run_id": receipt["run_id"],
+                "status": receipt["status"],
+            }
+        except Exception as exc:  # noqa: BLE001 - history must not disrupt delivery
+            log.warning("visual_quality_lab.record_failed", error=str(exc))
         changed = any(bool(r.get("improved")) for r in data.get("rounds", []))
         if changed:
             manifest.files = list_files(project_dir)

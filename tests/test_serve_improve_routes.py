@@ -5,6 +5,7 @@ async service functions are exercised directly with a SimpleNamespace state."""
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,6 +176,53 @@ def test_background_serve_reports_starting_then_running_without_blocking(tmp_pat
         await stop_serve(state, "queued")
 
     asyncio.run(run())
+
+
+def test_serve_history_marks_persisted_live_attempt_interrupted_after_restart(tmp_path):
+    state = _state(tmp_path)
+    _static_project(state, "recovered")
+    history_path = state.settings.data_dir / "serve_launch_history.json"
+    history_path.parent.mkdir(parents=True)
+    history_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "launches": {
+                    "recovered": [
+                        {
+                            "id": "old-live-launch",
+                            "status": "running",
+                            "phase": "ready",
+                            "message": "Preview is live",
+                            "started_at": "2026-08-04T00:00:00+00:00",
+                            "started_at_ms": 1,
+                            "updated_at": "2026-08-04T00:00:00+00:00",
+                            "elapsed_ms": 0,
+                            "timeline": [
+                                {
+                                    "phase": "ready",
+                                    "message": "Preview is live",
+                                    "at": "2026-08-04T00:00:00+00:00",
+                                    "elapsed_ms": 0,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    history = asyncio.run(serve_history(state, "recovered"))
+
+    launch = history["launches"][0]
+    assert launch["status"] == "interrupted"
+    assert launch["phase"] == "interrupted"
+    assert "restarted" in launch["message"].lower()
+    assert launch["timeline"][-1]["phase"] == "interrupted"
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    assert persisted["launches"]["recovered"][0]["status"] == "interrupted"
 
 
 def test_stop_reports_success_when_cancelling_pending_serve(tmp_path):

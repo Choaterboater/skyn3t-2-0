@@ -689,6 +689,10 @@ def test_workspace_shows_durable_serve_launch_timeline() -> None:
     assert "Launch timeline" in workspace
     assert "You can cancel it at any time." in workspace
     assert "Retry Serve" in workspace
+    assert "Previous attempts" in workspace
+    assert "priorLaunches" in workspace
+    assert "attempt.error" in workspace
+
 
 def test_workspace_product_contract_rebuild_saves_before_dispatch() -> None:
     workspace = (ROUTES / "Workspace.jsx").read_text(encoding="utf-8")

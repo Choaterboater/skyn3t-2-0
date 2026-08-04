@@ -175,6 +175,7 @@ function ServePane({
   const starting = served && served.status === "starting";
   const active = running || starting;
   const latestLaunch = historyQuery.data?.launches?.[0] || null;
+  const priorLaunches = (historyQuery.data?.launches || []).slice(1, 4);
   const currentMessage = served?.detail?.message || latestLaunch?.message || "Preparing an isolated Docker preview";
   const elapsedMs = starting
     ? Math.max(Number(latestLaunch?.elapsed_ms || served?.detail?.elapsed_ms || 0), nowMs - Number(latestLaunch?.started_at_ms || nowMs))
@@ -317,6 +318,32 @@ function ServePane({
             ))}
           </ol>
         </div>
+      ) : null}
+      {priorLaunches.length ? (
+        <details className="border-b border-hairline bg-void/20 px-4 py-2.5">
+          <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-wider text-ash/70 marker:text-ash/40">
+            Previous attempts ({priorLaunches.length})
+          </summary>
+          <ol className="mt-2 space-y-2">
+            {priorLaunches.map((attempt, index) => {
+              const failed = attempt.status === "failed";
+              const succeeded = attempt.status === "running";
+              return (
+                <li key={attempt.id || `${attempt.started_at || index}-${index}`} className="rounded border border-hairline/70 bg-ink/20 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wider">
+                    <span className={failed ? "text-ember" : succeeded ? "text-plasma" : "text-ash"}>
+                      {attempt.status || "unknown"}
+                    </span>
+                    <span className="text-ash/55">{formatElapsed(attempt.elapsed_ms)}</span>
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-ash">
+                    {attempt.error || attempt.message || attempt.phase || "No retained launch detail."}
+                  </p>
+                </li>
+              );
+            })}
+          </ol>
+        </details>
       ) : null}
       <div className="flex-1 bg-ink/40">
         {running ? (

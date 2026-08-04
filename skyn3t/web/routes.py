@@ -3805,12 +3805,16 @@ def _serve_history_cache(state: AppState) -> dict[str, list[dict[str, Any]]]:
                         ]
         except (OSError, ValueError, json.JSONDecodeError):
             pass
+    reconciled = _reconcile_unfinished_serve_launches(cache)
+    attached_to_state = False
     try:
         state.serve_launch_history = cache
+        attached_to_state = True
     except Exception:  # noqa: BLE001 - read-only test state still serves
         pass
+    if reconciled and attached_to_state:
+        _persist_serve_history(state)
     return cache
-
 
 def _persist_serve_history(state: AppState) -> None:
     path = _serve_history_path(state)
@@ -3840,6 +3844,46 @@ def _serve_elapsed_ms(entry: dict[str, Any]) -> int:
         started_at_ms = 0
     return max(0, int(time.time() * 1000) - started_at_ms) if started_at_ms else 0
 
+
+def _reconcile_unfinished_serve_launches(
+    cache: dict[str, list[dict[str, Any]]],
+) -> bool:
+    """Close persisted launches whose live process cannot survive a restart."""
+    now = datetime.now(UTC).isoformat()
+    message = "Dashboard restarted before preview state could be restored"
+    changed = False
+    for entries in cache.values():
+        for entry in entries:
+            if entry.get("status") not in {"starting", "running"}:
+                continue
+            elapsed_ms = _serve_elapsed_ms(entry)
+            timeline = entry.setdefault("timeline", [])
+            if not isinstance(timeline, list):
+                timeline = []
+                entry["timeline"] = timeline
+            if not timeline or (
+                timeline[-1].get("phase") != "interrupted"
+                or timeline[-1].get("message") != message
+            ):
+                timeline.append(
+                    {
+                        "phase": "interrupted",
+                        "message": message,
+                        "at": now,
+                        "elapsed_ms": elapsed_ms,
+                    }
+                )
+            entry.update(
+                {
+                    "status": "interrupted",
+                    "phase": "interrupted",
+                    "message": message,
+                    "updated_at": now,
+                    "elapsed_ms": elapsed_ms,
+                }
+            )
+            changed = True
+    return changed
 
 def _current_serve_launch(state: AppState, slug: str) -> dict[str, Any] | None:
     entries = _serve_history_cache(state).get(slug, [])

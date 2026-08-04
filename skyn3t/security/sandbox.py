@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import signal
 import subprocess
 import uuid
@@ -29,7 +28,7 @@ from time import time
 import structlog
 
 from skyn3t.config.settings import Settings, get_settings
-from skyn3t.exec_paths import resolve_executable
+from skyn3t.exec_paths import find_executable, resolve_executable
 from skyn3t.security.secrets import SecretsStore, filter_env, scrub_text
 
 log = structlog.get_logger(__name__)
@@ -83,6 +82,17 @@ class SandboxResult:
         return self.exit_code == 0 and not self.timed_out
 
 
+def _docker_mount_unavailable(result: SandboxResult, cwd: Path | None) -> bool:
+    """Whether Docker rejected the requested bind mount before execution."""
+    if cwd is None or result.timed_out or result.exit_code != 125:
+        return False
+    text = f"{result.stdout}\n{result.stderr}".lower()
+    return (
+        ("createfile" in text or "mount" in text)
+        and ("access is denied" in text or "mounts denied" in text)
+    )
+
+
 @dataclass
 class SandboxRunner:
     """Runs commands under the safest available backend."""
@@ -116,11 +126,12 @@ class SandboxRunner:
                         client.close()
                     except Exception:  # noqa: BLE001
                         pass
-        if not ok and shutil.which("docker"):
+        docker_path = find_executable("docker")
+        if not ok and docker_path:
             # SDK missing but CLI present — verify the daemon responds.
             try:
                 r = subprocess.run(
-                    ["docker", "info"], capture_output=True, timeout=5
+                    [docker_path, "info"], capture_output=True, timeout=5
                 )
                 ok = r.returncode == 0
             except Exception:  # noqa: BLE001
@@ -175,10 +186,24 @@ class SandboxRunner:
         backend = await self._choose_backend_async()
         clean_env = filter_env(env)
         if backend == "docker":
-            return await self._run_docker(
+            docker_result = await self._run_docker(
                 command, cwd=cwd, timeout=timeout, image=image,
                 stack=stack, env=clean_env, network=network,
             )
+            # ``auto`` promises a loud hardened-host fallback when Docker is
+            # unavailable. A Desktop daemon that rejects this specific source
+            # drive is unavailable for the requested command, even though it
+            # may work for another shared drive. Keep explicit docker mode
+            # strict so callers can require isolation.
+            if (
+                self.settings.execution_backend == "auto"
+                and _docker_mount_unavailable(docker_result, cwd)
+            ):
+                return await self._run_subprocess(
+                    command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
+                    fallback_reason="Docker cannot mount this project directory",
+                )
+            return docker_result
         return await self._run_subprocess(
             command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
         )
@@ -234,7 +259,10 @@ class SandboxRunner:
         return res
 
     # ---- subprocess (hardened local) ------------------------------------
-    async def _run_subprocess(self, command, *, cwd, timeout, env, network: bool = False) -> SandboxResult:
+    async def _run_subprocess(
+        self, command, *, cwd, timeout, env, network: bool = False,
+        fallback_reason: str | None = None,
+    ) -> SandboxResult:
         if isinstance(command, str):
             # A str here would run through HOST `sh -lc` — a shell-injection
             # footgun outside the container boundary. Only the docker backend
@@ -244,9 +272,15 @@ class SandboxRunner:
                 "pass an argv list (e.g. ['echo', 'hi'])."
             )
         warning = (
-            "SANDBOX FALLBACK: Docker unavailable; running command in a HARDENED "
-            "LOCAL SUBPROCESS on the host. This is NOT fully isolated. Install "
-            "Docker or set SKYN3T_EXECUTION_BACKEND=docker for true isolation."
+            "SANDBOX FALLBACK: "
+            + (
+                f"{fallback_reason}; "
+                if fallback_reason
+                else "Docker unavailable; "
+            )
+            + "running command in a HARDENED LOCAL SUBPROCESS on the host. "
+            "This is NOT fully isolated. Install Docker or set "
+            "SKYN3T_EXECUTION_BACKEND=docker for true isolation."
         )
         if not network:
             # The subprocess backend cannot enforce network isolation; say so
@@ -376,7 +410,7 @@ class SandboxRunner:
         dockerfile = self._render_dockerfile(tmpl)
         try:
             proc = subprocess.run(
-                ["docker", "build", "-t", tag, "-f", "-", "."],
+                [resolve_executable("docker"), "build", "-t", tag, "-f", "-", "."],
                 input=dockerfile.encode("utf-8"),
                 capture_output=True, timeout=600,
             )
@@ -393,7 +427,7 @@ class SandboxRunner:
     def _image_exists(self, tag: str) -> bool:
         try:
             r = subprocess.run(
-                ["docker", "image", "inspect", tag],
+                [resolve_executable("docker"), "image", "inspect", tag],
                 capture_output=True, timeout=10,
             )
             return r.returncode == 0

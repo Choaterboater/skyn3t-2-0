@@ -1940,6 +1940,12 @@ def detect_scaffold_stub(
     starter_stub = detect_offline_starter_stub(root, stack)
     if starter_stub:
         return starter_stub
+    # The scaffold comparison needs the original brief to reconstruct the
+    # expected app identity. Without it, name-dependent scaffolds can look
+    # pristine even when they are a legitimate structural delivery; decline
+    # this heuristic rather than issue a false no-go.
+    if not str(brief or "").strip():
+        return None
     try:
         from skyn3t.agents._common import slugify
         from skyn3t.agents._scaffold import scaffold_for

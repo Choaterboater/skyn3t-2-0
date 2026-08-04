@@ -7,6 +7,8 @@ tests stay fast, hermetic, and reproducible regardless of what's on the host.
 
 import os
 import socket
+import subprocess
+import tempfile
 from functools import cache, lru_cache
 
 import pytest
@@ -55,13 +57,41 @@ def _test_file_needs_loopback(path: str) -> bool:
 
 @lru_cache(maxsize=1)
 def _docker_available() -> bool:
-    """Reuse the product's own probe so the skip cannot drift from the need."""
+    """Whether Docker can run the same bind-mounted preview shape as these tests.
+
+    A running Desktop daemon is not enough on Windows: it can reject the
+    temporary drive used by pytest while SkyN3t's configured project drive is
+    shared. Do not pull images during collection; an absent image is simply an
+    unavailable offline test capability.
+    """
     try:
         from skyn3t.config.settings import Settings
+        from skyn3t.exec_paths import find_executable
         from skyn3t.security.sandbox import SandboxRunner
+        from skyn3t.studio.preview_supervisor import _DEFAULT_PYTHON_IMAGE
 
-        return bool(SandboxRunner(Settings()).docker_available())
-    except Exception:  # noqa: BLE001 - absent/unimportable docker == unavailable
+        if not SandboxRunner(Settings()).docker_available():
+            return False
+        docker = find_executable("docker")
+        if not docker:
+            return False
+        image = subprocess.run(
+            [docker, "image", "inspect", _DEFAULT_PYTHON_IMAGE],
+            capture_output=True, timeout=5,
+        )
+        if image.returncode != 0:
+            return False
+        with tempfile.TemporaryDirectory() as source:
+            probe = subprocess.run(
+                [
+                    docker, "run", "--rm", "--network", "none",
+                    "--mount", f"type=bind,source={source},target=/work,readonly",
+                    _DEFAULT_PYTHON_IMAGE, "true",
+                ],
+                capture_output=True, timeout=12,
+            )
+        return probe.returncode == 0
+    except Exception:  # noqa: BLE001 - unavailable test capability
         return False
 
 
@@ -104,7 +134,7 @@ def pytest_collection_modifyitems(config, items):
         ("requires_loopback", loopback_ok,
          "loopback socket bind is not available in this environment"),
         ("requires_docker", _docker_available(),
-         "Docker daemon is not available in this environment"),
+         "Docker preview bind mounts are not available for this test environment"),
         ("requires_posix_modes", _posix_modes_available(),
          "filesystem cannot represent POSIX permission bits (Windows)"),
     )

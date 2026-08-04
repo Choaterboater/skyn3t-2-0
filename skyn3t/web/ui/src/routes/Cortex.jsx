@@ -38,7 +38,17 @@ export default function Cortex() {
     queryKey: ["cortex-candidates"],
     queryFn: queryFn("/cortex/candidates"),
   });
-  const candidateReports = candidateData?.reports || [];
+  const { data: autopilotData, error: autopilotError } = useQuery({
+    queryKey: ["cortex-autopilot"],
+    queryFn: queryFn("/cortex/autopilot"),
+  });
+  const setAutopilot = useMutation({
+    mutationFn: (enabled) => apiPost("/cortex/autopilot", { enabled }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cortex-autopilot"] });
+      qc.invalidateQueries({ queryKey: ["cortex-candidates"] });
+    },
+  });  const candidateReports = candidateData?.reports || [];
   const runCandidate = useMutation({
     mutationFn: (goal) => apiPost("/cortex/candidates", { goal }),
     onSuccess: () => {
@@ -140,9 +150,9 @@ export default function Cortex() {
   return (
     <div>
       <PageHeader
-        eyebrow="Foundry · Autonomy Inbox"
+        eyebrow="Cortex · Local improvement"
         title="Cortex"
-        sub="Self-evolution proposals awaiting your decision. The swarm wants to reshape itself."
+        sub="See what SkyN3t is fixing, learning, and trying next. Technical pipeline details stay optional."
         actions={
           <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <input
@@ -211,6 +221,31 @@ export default function Cortex() {
         </Panel>
       ) : null}
 
+      <Panel className="mb-6">
+        <PanelHead
+          label="Autopilot"
+          right={<span className="font-mono text-[11px] text-ash">local only · no remote push</span>}
+        />
+        <div className="grid gap-4 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <div>
+            <p className="text-sm text-bone">
+              {autopilotData?.enabled ? "SkyN3t can automatically work through local repairs and learning experiments." : "Autopilot is off. Turn it on when you want SkyN3t to repair and learn locally without waiting for each click."}
+            </p>
+            <p className="mt-1 text-xs text-ash">
+              {autopilotData?.open_incidents?.length || 0} problems waiting · {autopilotData?.recent_runs?.length || 0} recent runs · generated apps and SkyN3t only
+            </p>
+            {autopilotData?.active ? <p className="mt-2 font-mono text-[11px] text-plasma">Working now: {autopilotData.active.summary}</p> : null}
+            {autopilotError ? <p className="mt-2 font-mono text-[11px] text-ember">Autopilot status unavailable: {autopilotError.message}</p> : null}
+          </div>
+          <button
+            className={autopilotData?.enabled ? "btn-ghost" : "btn-ember"}
+            disabled={setAutopilot.isPending}
+            onClick={() => setAutopilot.mutate(!autopilotData?.enabled)}
+          >
+            {setAutopilot.isPending ? "Updating…" : autopilotData?.enabled ? "Stop autopilot" : "Start autopilot"}
+          </button>
+        </div>
+      </Panel>
       <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3">
         <Stat
           label="Pending"
@@ -359,17 +394,15 @@ export default function Cortex() {
 
       <Panel className="mb-6">
         <PanelHead
-          label="Durable graph experiments"
+          label="Build preparation details"
           right={
             <span className="font-mono text-[11px] text-ash">
-              human-triggered · review only
+              technical history · local evidence
             </span>
           }
         />
         <div className="border-b border-hairline bg-void/35 px-4 py-3 text-sm text-ash">
-          Select a completed preflight node to rerun only its downstream branch.
-          Existing build files, policies, and candidates are never changed; the result
-          remains evidence for review.
+          SkyN3t first checks that it understands the app, that build tools are ready, and that useful examples were researched. These are technical details; a retry only rechecks the selected step.
         </div>
         {graphError ? (
           <p className="px-4 py-3 font-mono text-[11px] text-ember">
@@ -410,7 +443,7 @@ export default function Cortex() {
                       <div className="mt-3 flex flex-wrap gap-2">
                         {Object.entries(run.nodes || {}).map(([node, status]) => (
                           <span key={node} className="badge border-hairline text-ash">
-                            {node} · <span className="text-bone">{status}</span>
+                            {({ product_contract: "App requirements understood", toolchain: "Build tools ready", similarity_research: "Examples researched" }[node] || node)} · <span className="text-bone">{status}</span>
                           </span>
                         ))}
                       </div>
@@ -456,7 +489,7 @@ export default function Cortex() {
                         disabled={!selectedNode || rerunGraph.isPending}
                         onClick={() => rerunGraph.mutate({ runId: run.run_id, fromNodeId: selectedNode })}
                       >
-                        {rerunGraph.isPending ? "Rerunning evidence…" : "Rerun branch"}
+                        {rerunGraph.isPending ? "Trying again…" : "Try this step again"}
                       </button>
                       <p className="mt-2 text-xs text-ash">
                         A new immutable run is created. Promotion still needs review.
@@ -485,14 +518,14 @@ export default function Cortex() {
           label="Experiment review inbox"
           right={
             <span className="font-mono text-[11px] text-ash">
-              {graphReviewData?.pending_count || 0} awaiting human decision
+              {graphReviewData?.pending_count || 0} experiment receipts
             </span>
           }
         />
         <div className="border-b border-hairline bg-void/35 px-4 py-3 text-sm text-ash">
-          Each decision is append-only and tied to the exact proof digests shown below.
-          Keep does not promote code, policies, configuration, or skills. A follow-up is
-          only queued when you explicitly start a normal Studio build.
+          These receipts show whether repeating a build-preparation step changed the result.
+          They never directly change code, settings, policies, or skills; detailed actions stay
+          available only when you need to inspect an experiment.
         </div>
         {graphReviewError ? (
           <p className="px-4 py-3 font-mono text-[11px] text-ember">
@@ -503,7 +536,7 @@ export default function Cortex() {
         ) : graphReviewData?.available === false ? (
           <Empty icon="◇">Experiment review history is unavailable right now.</Empty>
         ) : graphReviews.length === 0 ? (
-          <Empty icon="◇">No rerun comparisons are ready for a human decision.</Empty>
+          <Empty icon="◇">No experiment receipts are waiting to be inspected.</Empty>
         ) : (
           <div className="divide-y divide-hairline/60">
             {graphReviews.map((review) => {

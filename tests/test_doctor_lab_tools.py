@@ -50,6 +50,27 @@ def _report(
     )
 
 
+def test_lab_toolchain_uses_discovered_docker_desktop_cli(monkeypatch) -> None:
+    from skyn3t.studio import lab_tools
+
+    docker = r"C:\\Users\\test\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe"
+    calls: list[list[str]] = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="29.6.2", stderr="")
+
+    monkeypatch.setattr(lab_tools, "find_executable", lambda name: docker if name == "docker" else None)
+    report = lab_tools.inspect_lab_toolchain(
+        stack="react", which=lambda _name: None, run=run,
+    )
+
+    check = report.checks["docker"]
+    assert check.installed is True
+    assert check.ready is True
+    assert calls == [[docker, "info", "--format", "{{.ServerVersion}}"]]
+
+
 def test_health_doctor_reports_effective_codex_backend_without_provider_key(
     monkeypatch,
     tmp_path,

@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from skyn3t.core.stacks import WEB_STACKS
+from skyn3t.exec_paths import find_executable
 
 _MOBILE_STACKS = frozenset({"react_native"})
 
@@ -80,7 +81,9 @@ def inspect_lab_toolchain(
     is_mobile = normalized in _MOBILE_STACKS
     checks: dict[str, ToolCheck] = {}
 
-    docker_path = which("docker")
+    # Preserve the injectable PATH lookup, then cover Docker Desktop's
+    # documented per-user location when this long-lived process has stale PATH.
+    docker_path = which("docker") or find_executable("docker")
     docker_ready = False
     docker_detail = "docker CLI not installed"
     if docker_path:

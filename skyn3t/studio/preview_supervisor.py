@@ -36,6 +36,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.stacks import WEB_STACKS
+from skyn3t.exec_paths import resolve_executable
 from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.app_runner import RunningApp, RunSpec, build_run_spec, free_port
 from skyn3t.studio.lab_tools import LabToolchainReport, inspect_lab_toolchain
@@ -46,8 +47,8 @@ from skyn3t.studio.proof_reuse import (
     preview_input_fingerprint,
     promote_reusable_web_proof,
 )
-from skyn3t.studio.visual_proof import audit_responsive_pages
 from skyn3t.studio.visual_design_contract import read_visual_design_contract
+from skyn3t.studio.visual_proof import audit_responsive_pages
 
 PREVIEW_PROOF_SCHEMA_VERSION = 1
 _MOBILE_STACKS = frozenset({"react_native"})
@@ -161,8 +162,11 @@ async def run_command(
 
     started = time.monotonic()
     try:
+        resolved = list(argv)
+        if resolved:
+            resolved[0] = resolve_executable(resolved[0])
         process = await asyncio.create_subprocess_exec(
-            *argv,
+            *resolved,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
@@ -321,6 +325,26 @@ async def _call_probe(
     except Exception:  # noqa: BLE001 - a probe failure is simply not-ready
         return False
 
+
+async def _report_preview_progress(
+    callback: Callable[[str, str], Any] | None,
+    phase: str,
+    message: str,
+) -> None:
+    """Send best-effort lifecycle progress to the dashboard.
+
+    A preview must never fail merely because its observer disconnected or a UI
+    event sink is unavailable. The callback is optional so the supervisor stays
+    usable from the CLI and focused tests.
+    """
+    if callback is None:
+        return
+    try:
+        value = callback(phase, message)
+        if inspect.isawaitable(value):
+            await value
+    except Exception:  # noqa: BLE001 - observability cannot break a preview
+        return
 
 async def _inspect_toolchain(
     inspector: Callable[..., LabToolchainReport | Awaitable[LabToolchainReport]],
@@ -828,8 +852,12 @@ class PreviewSupervisor:
         port: int | None = None,
         ready_timeout: float = 30.0,
         toolchain_report: LabToolchainReport | None = None,
+        progress_callback: Callable[[str, str], Any] | None = None,
     ) -> RunningApp:
         pdir = Path(project_dir).expanduser().resolve()
+        await _report_preview_progress(
+            progress_callback, "validating", "Validating the delivered project"
+        )
         normalized_stack = str(stack or "").strip().lower()
         if not pdir.is_dir():
             return self._failure(
@@ -890,6 +918,9 @@ class PreviewSupervisor:
         except Exception:  # noqa: BLE001 - fall through to the normal path below
             pass
 
+        await _report_preview_progress(
+            progress_callback, "checking_docker", "Checking Docker Desktop readiness"
+        )
         try:
             report = toolchain_report or await _inspect_toolchain(
                 self._toolchain_inspector,
@@ -1039,6 +1070,9 @@ class PreviewSupervisor:
             python_image=self._python_image,
         )
         try:
+            await _report_preview_progress(
+                progress_callback, "preparing", "Preparing the isolated workspace"
+            )
             volume_result = await _invoke_command(
                 self._command_runner,
                 ["docker", "volume", "create", volume_name],
@@ -1074,6 +1108,9 @@ class PreviewSupervisor:
                         command_result=dependency_volume_result,
                     )
 
+            await _report_preview_progress(
+                progress_callback, "dependencies", "Installing locked dependencies"
+            )
             prepare_result = await _invoke_command(
                 self._command_runner,
                 prepare_argv,
@@ -1095,6 +1132,9 @@ class PreviewSupervisor:
                 )
 
             if source_copy_argv is not None:
+                await _report_preview_progress(
+                    progress_callback, "staging", "Staging source without runtime network access"
+                )
                 source_copy_result = await _invoke_command(
                     self._command_runner,
                     source_copy_argv,
@@ -1113,6 +1153,9 @@ class PreviewSupervisor:
                     )
 
             self._resources[name]["network_name"] = network_name
+            await _report_preview_progress(
+                progress_callback, "isolating", "Creating the isolated Docker network"
+            )
             network_result = await _invoke_command(
                 self._command_runner,
                 [
@@ -1137,6 +1180,9 @@ class PreviewSupervisor:
                     container_name=name,
                     command_result=network_result,
                 )
+            await _report_preview_progress(
+                progress_callback, "launching", "Launching the app container"
+            )
             result = await _invoke_command(
                 self._command_runner,
                 argv,
@@ -1154,6 +1200,9 @@ class PreviewSupervisor:
                     command_result=result,
                 )
             container_id = (result.stdout.strip().splitlines() or [""])[-1]
+            await _report_preview_progress(
+                progress_callback, "gateway", "Starting the localhost-only gateway"
+            )
             gateway_result = await _invoke_command(
                 self._command_runner,
                 gateway_argv,
@@ -1210,6 +1259,9 @@ class PreviewSupervisor:
                         else {}
                     ),
                 },
+            )
+            await _report_preview_progress(
+                progress_callback, "readiness", "Waiting for the app to become ready"
             )
             deadline = time.monotonic() + max(0.0, float(ready_timeout))
             while time.monotonic() < deadline:
@@ -1276,6 +1328,9 @@ class PreviewSupervisor:
                         },
                     )
                     self._active[name] = app
+                    await _report_preview_progress(
+                        progress_callback, "ready", "Preview is live"
+                    )
                     return app
                 if self._poll_interval:
                     await asyncio.sleep(self._poll_interval)

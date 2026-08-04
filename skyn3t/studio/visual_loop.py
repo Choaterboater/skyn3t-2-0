@@ -44,12 +44,25 @@ class VisualLoopResult:
         return d
 
 
-def _fix_goal(verdict: Any) -> str:
+async def _repair_context(provider: Any, verdict: Any) -> str:
+    """Resolve optional repair context without letting it break a visual run."""
+
+    if not callable(provider):
+        return ""
+    try:
+        value = provider(verdict)
+        if inspect.isawaitable(value):
+            value = await value
+        return str(value or "").strip()
+    except Exception:  # noqa: BLE001 - asset lookup is advisory to the repair loop
+        return ""
+
+
+def _fix_goal(verdict: Any, repair_context: str = "") -> str:
     hint = getattr(verdict, "fix_hint", "") or ""
-    if hint:
-        return hint
     issues = getattr(verdict, "issues", None) or []
-    return "Fix these visual issues: " + "; ".join(str(i) for i in issues)
+    base = hint or "Fix these visual issues: " + "; ".join(str(i) for i in issues)
+    return f"{base}\n\n{repair_context}" if repair_context else base
 
 
 async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
@@ -57,7 +70,8 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
                               vision_fn: Any = None, stack: str = "",
                               max_rounds: int = 2,
                               correlation_id: str | None = None,
-                              layout_profile: object | None = None) -> VisualLoopResult:
+                              layout_profile: object | None = None,
+                              repair_context_provider: Any = None) -> VisualLoopResult:
     """Serve -> inspect -> improve -> re-check, up to max_rounds inspections.
 
     Returns passed when an inspection matches the goal; skipped when there is no
@@ -123,8 +137,9 @@ async def visual_self_improve(project_dir, goal: str, *, app_runner: Any,
         proof_passed = None
         if not last:
             try:
+                repair_context = await _repair_context(repair_context_provider, verdict)
                 out = await improve_engine.improve(
-                    project_dir, goal=_fix_goal(verdict),
+                    project_dir, goal=_fix_goal(verdict, repair_context),
                     correlation_id=correlation_id)
                 improved = getattr(out, "status", "") == "completed"
                 proof_passed = getattr(out, "proof_passed", None)

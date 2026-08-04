@@ -118,6 +118,38 @@ never a promotion or a build-file mutation.
 
 `/api/cortex/graph-reviews` is a separate human decision inbox over completed rerun comparisons. A decision is append-only, records `keep` or `reject` with the exact comparison digests and an optional note, and cannot be replaced or used as a promotion signal. A human may explicitly queue one follow-up through `/api/cortex/graph-reviews/{comparison_id}/build`, but only after `keep`; that request is recorded as its own immutable receipt and delegates to the normal Studio build route with its existing routing and admission checks. No graph review action automatically changes source files, policies, configuration, or skills.
 
+`LabAutopilot` is the separate local recovery queue. When enabled it turns failed local build events into durable, deduplicated repair receipts, prioritizes those repairs before skill experiments or research, and records each run for Cortex to display in plain language. Enabling it also enables local Cortex candidate auto-merge after the ordinary proof gates pass; it never grants remote push, deployment, credential, or external-publication authority.
+
+### Visual Quality Lab
+
+`VisualQualityLab` turns the existing rendered-UI repair loop into durable,
+per-project evidence. Its automatic build receipts preserve the normal visual
+self-heal result; Workspace can also start a local run that captures desktop
+and mobile proof before and after the repair loop. Missing Playwright, Chromium,
+or vision configuration is recorded as unavailable, never as a passing review.
+The Lab stays local and proof-backed; online asset-provider retrieval is a
+separate opt-in integration.
+
+### Docker preview lifecycle
+
+Dashboard Serve requests are asynchronous: the API returns `starting` while
+Docker prepares dependencies, `/api/studio/serve` reports that status, and
+`serve.starting`, `serve.started`, `serve.failed`, and `serve.stopped` keep the
+Projects and Workspace views current. `PreviewSupervisor` emits named stages
+(Docker readiness, dependencies, isolation, launch, gateway, and readiness),
+which are appended to a bounded restart-safe history at
+`data_dir/serve_launch_history.json` and exposed at
+`/api/studio/serve/history?slug=...`. Workspace displays the active phase and
+elapsed time, while redacting retained failure text. A pending launch can be
+cancelled without leaving a preview handle behind. Generated-app previews remain
+Docker-only and loopback-published; there is no host execution fallback for them.
+
+On Windows, executable discovery also checks Docker Desktop's documented
+per-user installation location when a long-lived dashboard has stale `PATH`.
+The general command sandbox has a narrower `auto` fallback: if Docker rejects a
+specific project bind mount before command execution, it emits a loud
+hardened-local warning. Explicit `execution_backend=docker` stays strict.
+
 ## The 7 design rules
 
 1. **Delivered != empty.** Success requires substantive files on disk, proven

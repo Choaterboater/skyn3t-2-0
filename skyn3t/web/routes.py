@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -36,6 +37,7 @@ from skyn3t.core.events import EventType
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 from skyn3t.core.model_router import prime_live_catalog
 from skyn3t.process_utils import is_process_alive
+from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME, BuildManifest
 from skyn3t.web.deps import (
@@ -3756,6 +3758,328 @@ def _serve_registry(state: AppState) -> dict[str, Any]:
     return reg
 
 
+def _serve_start_tasks(state: AppState) -> dict[str, asyncio.Task[Any]]:
+    """Background Docker-preview launches, keyed by project slug."""
+    tasks = getattr(state, "serve_start_tasks", None)
+    if tasks is None:
+        tasks = {}
+        try:
+            state.serve_start_tasks = tasks
+        except Exception:  # noqa: BLE001 - test doubles may be read-only
+            pass
+    return tasks
+
+
+_SERVE_HISTORY_SCHEMA_VERSION = 1
+_SERVE_HISTORY_LIMIT = 40
+
+
+def _serve_history_path(state: AppState) -> Path | None:
+    """Return the restart-safe preview-launch history file, when configured."""
+    data_dir = getattr(getattr(state, "settings", None), "data_dir", None)
+    if not data_dir:
+        return None
+    try:
+        return Path(data_dir).expanduser().resolve() / "serve_launch_history.json"
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _serve_history_cache(state: AppState) -> dict[str, list[dict[str, Any]]]:
+    """Load a bounded, defensive history cache once per dashboard process."""
+    cached = getattr(state, "serve_launch_history", None)
+    if isinstance(cached, dict):
+        return cached
+    cache: dict[str, list[dict[str, Any]]] = {}
+    path = _serve_history_path(state)
+    if path is not None:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            launches = raw.get("launches", {}) if isinstance(raw, dict) else {}
+            if isinstance(launches, dict):
+                for key, entries in launches.items():
+                    if isinstance(key, str) and isinstance(entries, list):
+                        cache[key] = [
+                            dict(entry) for entry in entries[:_SERVE_HISTORY_LIMIT]
+                            if isinstance(entry, dict)
+                        ]
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    try:
+        state.serve_launch_history = cache
+    except Exception:  # noqa: BLE001 - read-only test state still serves
+        pass
+    return cache
+
+
+def _persist_serve_history(state: AppState) -> None:
+    path = _serve_history_path(state)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            path,
+            json.dumps(
+                {
+                    "schema_version": _SERVE_HISTORY_SCHEMA_VERSION,
+                    "launches": _serve_history_cache(state),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+    except OSError as exc:
+        log.warning("web.serve_history_persist_failed", error=str(exc))
+
+
+def _serve_elapsed_ms(entry: dict[str, Any]) -> int:
+    try:
+        started_at_ms = int(entry.get("started_at_ms") or 0)
+    except (TypeError, ValueError):
+        started_at_ms = 0
+    return max(0, int(time.time() * 1000) - started_at_ms) if started_at_ms else 0
+
+
+def _current_serve_launch(state: AppState, slug: str) -> dict[str, Any] | None:
+    entries = _serve_history_cache(state).get(slug, [])
+    return dict(entries[0]) if entries else None
+
+
+def _record_serve_launch(
+    state: AppState,
+    slug: str,
+    *,
+    phase: str,
+    message: str,
+    status: str = "starting",
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    entry: dict[str, Any] = {
+        "id": uuid.uuid4().hex,
+        "status": status,
+        "phase": phase,
+        "message": message,
+        "started_at": now,
+        "started_at_ms": int(time.time() * 1000),
+        "updated_at": now,
+        "elapsed_ms": 0,
+        "timeline": [
+            {"phase": phase, "message": message, "at": now, "elapsed_ms": 0}
+        ],
+    }
+    cache = _serve_history_cache(state)
+    cache[slug] = [entry, *cache.get(slug, [])][:_SERVE_HISTORY_LIMIT]
+    _persist_serve_history(state)
+    return dict(entry)
+
+
+def _update_serve_launch(
+    state: AppState,
+    slug: str,
+    launch_id: str,
+    *,
+    phase: str,
+    message: str,
+    status: str = "starting",
+    **extra: Any,
+) -> dict[str, Any] | None:
+    entries = _serve_history_cache(state).get(slug, [])
+    entry = next((item for item in entries if item.get("id") == launch_id), None)
+    if entry is None:
+        return None
+    now = datetime.now(UTC).isoformat()
+    elapsed_ms = _serve_elapsed_ms(entry)
+    timeline = entry.setdefault("timeline", [])
+    if not isinstance(timeline, list):
+        timeline = []
+        entry["timeline"] = timeline
+    if not timeline or (
+        timeline[-1].get("phase") != phase
+        or timeline[-1].get("message") != message
+    ):
+        timeline.append(
+            {"phase": phase, "message": message, "at": now, "elapsed_ms": elapsed_ms}
+        )
+    entry.update(
+        {
+            "status": status,
+            "phase": phase,
+            "message": message,
+            "updated_at": now,
+            "elapsed_ms": elapsed_ms,
+            **extra,
+        }
+    )
+    _persist_serve_history(state)
+    return dict(entry)
+
+
+async def serve_history(state: AppState, slug: str) -> dict[str, Any]:
+    _require_delivered_project(state, slug)
+    return {"slug": slug, "launches": _serve_history_cache(state).get(slug, [])}
+
+def _serve_starting_payload(
+    slug: str,
+    stack: str,
+    launch: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    launch = launch or {}
+    return {
+        "slug": slug,
+        "url": "",
+        "port": 0,
+        "pid": None,
+        "kind": stack or "web",
+        "status": "starting",
+        "detail": {
+            "engine": "docker",
+            "phase": str(launch.get("phase") or "queued"),
+            "message": str(launch.get("message") or "Queued isolated preview"),
+            "elapsed_ms": int(launch.get("elapsed_ms") or 0),
+            "launch_id": str(launch.get("id") or ""),
+            "fallback_used": False,
+        },
+    }
+
+async def start_serve_project(state: AppState, slug: str) -> dict[str, Any]:
+    """Queue a Docker-only preview and return immediately for UI polling.
+
+    First-time dependency preparation can take several minutes. The launch
+    record is updated phase-by-phase and persisted under ``data_dir`` so a
+    restart does not erase the useful explanation of what Docker was doing.
+    """
+    _pdir, manifest = _require_delivered_project(state, slug)
+    registry = _serve_registry(state)
+    existing = registry.get(slug)
+    if existing is not None and getattr(existing, "status", "") == "running":
+        return {**existing.to_dict(), "slug": slug}
+    tasks = _serve_start_tasks(state)
+    existing_task = tasks.get(slug)
+    if existing_task is not None and not existing_task.done():
+        return _serve_starting_payload(
+            slug, manifest.stack, _current_serve_launch(state, slug)
+        )
+
+    launch = _record_serve_launch(
+        state,
+        slug,
+        phase="queued",
+        message="Queued isolated Docker preview",
+    )
+    launch_id = str(launch["id"])
+
+    async def _progress(phase: str, message: str) -> None:
+        snapshot = _update_serve_launch(
+            state,
+            slug,
+            launch_id,
+            phase=phase,
+            message=message,
+        )
+        await state.event_bus.emit(
+            EventType.SERVE_STARTING,
+            source="web.api",
+            payload={
+                "slug": slug,
+                "phase": phase,
+                "message": message,
+                "elapsed_ms": int((snapshot or {}).get("elapsed_ms") or 0),
+                "launch_id": launch_id,
+            },
+        )
+
+    async def _launch() -> None:
+        try:
+            result = await serve_project(
+                state, slug, progress_callback=_progress
+            )
+            if result.get("status") == "running":
+                _update_serve_launch(
+                    state,
+                    slug,
+                    launch_id,
+                    phase="ready",
+                    message="Preview is live",
+                    status="running",
+                    url=str(result.get("url") or ""),
+                    port=int(result.get("port") or 0),
+                )
+                return
+            reason = scrub_text(
+                str((result.get("detail") or {}).get("reason") or result.get("status") or "preview failed")
+            )[:1000]
+            _update_serve_launch(
+                state,
+                slug,
+                launch_id,
+                phase="failed",
+                message="Preview launch failed",
+                status="failed",
+                error=reason,
+            )
+            await state.event_bus.emit(
+                EventType.SERVE_FAILED,
+                source="web.api",
+                payload={"slug": slug, "reason": reason, "launch_id": launch_id},
+            )
+        except asyncio.CancelledError:
+            _update_serve_launch(
+                state,
+                slug,
+                launch_id,
+                phase="cancelled",
+                message="Preview launch cancelled",
+                status="cancelled",
+            )
+            await state.event_bus.emit(
+                EventType.SERVE_STOPPED,
+                source="web.api",
+                payload={"slug": slug, "cancelled": True, "launch_id": launch_id},
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - background errors become UI evidence
+            reason = scrub_text(f"preview launch error: {exc}")[:1000]
+            _update_serve_launch(
+                state,
+                slug,
+                launch_id,
+                phase="failed",
+                message="Preview launch failed",
+                status="failed",
+                error=reason,
+            )
+            await state.event_bus.emit(
+                EventType.SERVE_FAILED,
+                source="web.api",
+                payload={"slug": slug, "reason": reason, "launch_id": launch_id},
+            )
+        finally:
+            task = asyncio.current_task()
+            if tasks.get(slug) is task:
+                tasks.pop(slug, None)
+            # A cancellation can leave the synchronous serve claim in place;
+            # never let that placeholder make a later Serve look permanently busy.
+            current = registry.get(slug)
+            if current is not None and not hasattr(current, "status"):
+                registry.pop(slug, None)
+
+    task = asyncio.create_task(_launch(), name=f"skyn3t-serve-{slug}")
+    tasks[slug] = task
+    payload = _serve_starting_payload(slug, manifest.stack, launch)
+    await state.event_bus.emit(
+        EventType.SERVE_STARTING,
+        source="web.api",
+        payload={
+            "slug": slug,
+            "phase": payload["detail"]["phase"],
+            "message": payload["detail"]["message"],
+            "elapsed_ms": payload["detail"]["elapsed_ms"],
+            "launch_id": launch_id,
+        },
+    )
+    return payload
+
 def _app_runner(state: AppState) -> Any:
     runner = getattr(state, "app_runner", None)
     if runner is None:
@@ -3779,7 +4103,12 @@ def _pid_alive(pid: int) -> bool:
     return is_process_alive(pid)
 
 
-async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
+async def serve_project(
+    state: AppState,
+    slug: str,
+    *,
+    progress_callback: Any | None = None,
+) -> dict[str, Any]:
     """Start a delivered project as a live localhost server, registering the
     handle so a later stop can find it. Restarting a slug supersedes the prior
     run.
@@ -3803,7 +4132,9 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     registry[slug] = claim
 
     stack = man.stack
-    app = await runner.start(pdir, stack)
+    app = await runner.start(
+        pdir, stack, progress_callback=progress_callback
+    )
 
     if registry.get(slug) is not claim:
         # A concurrent serve superseded us, or a stop cancelled us, mid-start:
@@ -3830,16 +4161,35 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
     an in-flight start *claim* cancels that start — serve_project tears itself
     down when it finds the slot gone (review finding #2)."""
     from skyn3t.studio.app_runner import RunningApp, cleanup_serve
+    tasks = _serve_start_tasks(state)
+    task = tasks.pop(slug, None)
+    cancelled_start = task is not None and not task.done()
+    if cancelled_start:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
     registry = _serve_registry(state)
     app = registry.pop(slug, None)
     if app is None:
-        return {"slug": slug, "stopped": False}
+        return {"slug": slug, "stopped": cancelled_start}
     if not isinstance(app, RunningApp):
         # Popped an in-flight claim: the in-progress serve will self-cancel.
         return {"slug": slug, "stopped": True}
     runner = _app_runner(state)
     await _stop_running_app(runner, app)
     cleanup_serve(app)
+    latest = _current_serve_launch(state, slug)
+    if latest is not None and latest.get("status") == "running":
+        _update_serve_launch(
+            state,
+            slug,
+            str(latest.get("id") or ""),
+            phase="stopped",
+            message="Preview stopped",
+            status="stopped",
+        )
     await state.event_bus.emit(
         EventType.SERVE_STOPPED, source="web.api",
         payload={"slug": slug, "port": app.port},
@@ -3861,6 +4211,19 @@ async def serve_status(state: AppState) -> dict[str, Any]:
             registry.pop(slug, None)
             continue
         running.append({**app.to_dict(), "slug": slug})
+    for slug, task in list(_serve_start_tasks(state).items()):
+        if task.done():
+            continue
+        if not isinstance(registry.get(slug), RunningApp):
+            try:
+                _pdir, manifest = _require_delivered_project(state, slug)
+            except (FileNotFoundError, ProjectNotDeliveredError, ValueError):
+                continue
+            running.append(
+                _serve_starting_payload(
+                    slug, manifest.stack, _current_serve_launch(state, slug)
+                )
+            )
     return {"running": running}
 
 
@@ -4091,6 +4454,75 @@ async def annotations_improve(
     result = await improve_project(state, slug, goal)
     return {**result, "annotation_count": len(report), "annotations": report}
 
+
+def _visual_quality_tasks(state: AppState) -> dict[str, Any]:
+    tasks = getattr(state, "_visual_quality_tasks", None)
+    if not isinstance(tasks, dict):
+        tasks = {}
+        state._visual_quality_tasks = tasks  # type: ignore[attr-defined]
+    return tasks
+
+
+async def get_visual_quality(state: AppState, slug: str) -> dict[str, Any]:
+    """Return persisted Visual Quality Lab receipts for one delivered project."""
+    from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+    project, _manifest = _require_delivered_project(state, slug)
+    tasks = _visual_quality_tasks(state)
+    active = tasks.get(slug)
+    return {
+        "slug": slug,
+        "running": bool(active is not None and not active.done()),
+        "runs": await asyncio.to_thread(VisualQualityLab.list_runs, project),
+    }
+
+
+async def start_visual_quality(state: AppState, slug: str) -> dict[str, Any]:
+    """Queue one local visual review and auto-repair run for a delivered project."""
+    from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+    project, manifest = _require_delivered_project(state, slug)
+    tasks = _visual_quality_tasks(state)
+    active = tasks.get(slug)
+    if active is not None and not active.done():
+        return {"accepted": False, "slug": slug, "reason": "visual quality run already in progress"}
+    run_id = uuid.uuid4().hex
+    lab = VisualQualityLab(
+        project,
+        slug=slug,
+        brief=manifest.brief,
+        stack=manifest.stack,
+        settings=state.settings,
+        event_bus=state.event_bus,
+        orchestrator=state.orchestrator,
+        memory=state.memory,
+        skills=state.skills,
+        rag=getattr(getattr(state, "studio", None), "rag", None),
+    )
+
+    async def worker() -> None:
+        try:
+            await lab.run(run_id=run_id)
+        except Exception as exc:  # noqa: BLE001 - the durable receipt records this too
+            log.warning("visual_quality_lab.worker_failed", slug=slug, error=str(exc))
+        finally:
+            if tasks.get(slug) is task:
+                tasks.pop(slug, None)
+
+    task = asyncio.create_task(worker(), name=f"visual-quality:{slug}:{run_id[:8]}")
+    tasks[slug] = task
+    return {"accepted": True, "slug": slug, "run_id": run_id, "status": "queued"}
+
+
+def visual_quality_artifact(state: AppState, slug: str, run_id: str, path: str) -> Path:
+    """Resolve one stored lab artifact without exposing arbitrary project files."""
+    from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+    project, _manifest = _require_delivered_project(state, slug)
+    candidate = VisualQualityLab.artifact_path(project, run_id, path)
+    if candidate is None:
+        raise FileNotFoundError(path)
+    return candidate
 
 def _visual_editor_lock(state: AppState, project: Path) -> asyncio.Lock:
     """Return the process-local transaction lock for one delivered project."""
@@ -4949,6 +5381,64 @@ async def run_cortex_candidate_payload(
     return await asyncio.to_thread(run_cortex_candidate, state.settings, goal)
 
 
+def _lab_autopilot(state: AppState) -> Any:
+    """Return the process-local controller backed by durable lab receipts."""
+    controller = getattr(state, "_lab_autopilot_controller", None)
+    if controller is None:
+        from skyn3t.cortex.lab_autopilot import LabAutopilot
+
+        controller = LabAutopilot(
+            state.settings.data_dir,
+            enabled=bool(getattr(state.settings, "lab_autopilot", False)),
+        )
+        state._lab_autopilot_controller = controller
+    return controller
+
+
+async def cortex_autopilot_payload(state: AppState) -> dict[str, Any]:
+    """Plain-language local autonomy status for the Cortex dashboard."""
+    return _lab_autopilot(state).payload()
+
+
+async def set_cortex_autopilot(
+    state: AppState, *, enabled: bool, persist: bool = True
+) -> dict[str, Any]:
+    """Enable or stop local Cortex autopilot without remote authority."""
+    enabled = _coerce_bool(enabled)
+    controller = _lab_autopilot(state)
+    controller.set_enabled(enabled)
+    try:
+        state.settings.lab_autopilot = enabled
+    except Exception:  # noqa: BLE001 - immutable test settings remain readable
+        pass
+    os.environ["SKYN3T_LAB_AUTOPILOT"] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var("SKYN3T_LAB_AUTOPILOT", "true" if enabled else "false")
+    if enabled:
+        await set_lab_autonomy(state, True, persist=persist)
+        await set_cortex_candidate_policy(
+            state, enabled=True, auto_merge=True, persist=persist
+        )
+    return await cortex_autopilot_payload(state)
+
+
+async def report_cortex_autopilot_incident(
+    state: AppState, *, scope: str, category: str, summary: str, evidence: str = ""
+) -> dict[str, Any]:
+    """Record a deduplicated local repair signal for the next autopilot tick."""
+    controller = _lab_autopilot(state)
+    incident = controller.report_incident(
+        scope=scope, category=category, summary=summary, evidence=evidence
+    )
+    return {"incident": asdict(incident), **controller.payload()}
+
+
+async def tick_cortex_autopilot(state: AppState) -> dict[str, Any]:
+    """Advance the durable queue by one local work item."""
+    controller = _lab_autopilot(state)
+    run = controller.next_run()
+    return {"run": asdict(run) if run is not None else None, **controller.payload()}
+
 def _cortex_graph_run_row(run: Any, comparison: dict[str, Any] | None) -> dict[str, Any]:
     """Reduce a durable graph run to dashboard-safe experiment metadata."""
     raw_rerun = run.inputs.get("_graph_rerun")
@@ -5425,6 +5915,43 @@ async def promote_external_skill(state: AppState, slug: str) -> dict[str, Any]:
         "message": f"Promoted {getattr(promoted, 'title', candidate_slug)} for future builds.",
     }
 
+
+async def promote_all_ready_skills(state: AppState) -> dict[str, Any]:
+    """Promote every currently evidence-ready external skill in one local action.
+
+    Candidates that do not pass the existing immutable-evidence predicate are
+    deliberately left untouched. This is a convenience bulk action, not a
+    bypass of SkillLibrary's promotion contract.
+    """
+    library = getattr(state, "skills", None)
+    getter = getattr(library, "all", None) or getattr(library, "list_skills", None)
+    if not callable(getter):
+        raise RuntimeError("the skills hub does not support reviewed external promotion")
+    records = getter()
+    if hasattr(records, "__await__"):
+        records = await records
+    ready = [
+        skill for skill in list(records or [])
+        if _external_promotion_ready(library, skill)
+    ]
+    promoted: list[dict[str, Any]] = []
+    refused: list[str] = []
+    for skill in ready:
+        slug = str(_skill_value(skill, "slug", "") or "").strip()
+        if not slug:
+            continue
+        result = await promote_external_skill(state, slug)
+        if result.get("promoted"):
+            promoted.append(result["skill"])
+        else:
+            refused.append(slug)
+    return {
+        "status": "completed",
+        "attempted": len(ready),
+        "promoted": promoted,
+        "refused": refused,
+        "message": f"Accepted {len(promoted)} ready skill{'s' if len(promoted) != 1 else ''}.",
+    }
 
 async def list_skills(state: AppState) -> dict[str, Any]:
     skills = state.skills
@@ -7717,6 +8244,44 @@ def build_router(state: AppState) -> Any:
                 detail="failed to persist local re-verification",
             ) from exc
 
+    @router.get("/projects/{slug}/visual-quality", dependencies=[auth])
+    async def _visual_quality(slug: str) -> dict[str, Any]:
+        try:
+            return await get_visual_quality(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
+
+    @router.post("/projects/{slug}/visual-quality/run", dependencies=[auth])
+    async def _start_visual_quality(slug: str) -> dict[str, Any]:
+        try:
+            return await start_visual_quality(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
+
+    @router.get(
+        "/projects/{slug}/visual-quality/runs/{run_id}/artifacts/{artifact_path:path}",
+        dependencies=[auth],
+    )
+    async def _visual_quality_artifact(
+        slug: str,
+        run_id: str,
+        artifact_path: str,
+    ) -> Any:
+        try:
+            artifact = visual_quality_artifact(state, slug, run_id, artifact_path)
+            return FileResponse(str(artifact), headers={"Cache-Control": "no-store"})
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(status_code=404, detail="visual quality artifact not found") from None
     @router.post("/projects/{slug}/visual-editor/inspect", dependencies=[auth])
     async def _visual_editor_inspect(
         slug: str,
@@ -7847,6 +8412,38 @@ def build_router(state: AppState) -> Any:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
 
+    @router.get("/cortex/autopilot", dependencies=[auth])
+    async def _cortex_autopilot() -> dict[str, Any]:
+        return await cortex_autopilot_payload(state)
+
+    @router.post("/cortex/autopilot", dependencies=[auth])
+    async def _set_cortex_autopilot(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            enabled = _coerce_bool(body.get("enabled", body.get("on", False)))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await set_cortex_autopilot(state, enabled=enabled)
+
+    @router.post("/cortex/autopilot/incidents", dependencies=[auth])
+    async def _cortex_autopilot_incident(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        summary = str(body.get("summary") or "").strip()
+        if not summary:
+            raise HTTPException(status_code=422, detail="incident summary is required")
+        return await report_cortex_autopilot_incident(
+            state,
+            scope=str(body.get("scope") or "skyn3t"),
+            category=str(body.get("category") or "unknown"),
+            summary=summary,
+            evidence=str(body.get("evidence") or ""),
+        )
+
+    @router.post("/cortex/autopilot/tick", dependencies=[auth])
+    async def _cortex_autopilot_tick() -> dict[str, Any]:
+        return await tick_cortex_autopilot(state)
     @router.get("/cortex/graphs", dependencies=[auth])
     async def _cortex_graphs(
         limit: int = Query(default=25, ge=1, le=100),
@@ -8267,7 +8864,7 @@ def build_router(state: AppState) -> Any:
     @router.post("/studio/serve", dependencies=[auth])
     async def _serve(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
-            return await serve_project(state, str(body.get("slug", "")))
+            return await start_serve_project(state, str(body.get("slug", "")))
         except ProjectNotDeliveredError:
             raise HTTPException(status_code=409, detail="project build is not complete") from None
         except ValueError:
@@ -8283,6 +8880,16 @@ def build_router(state: AppState) -> Any:
     async def _serve_status() -> dict[str, Any]:
         return await serve_status(state)
 
+    @router.get("/studio/serve/history", dependencies=[auth])
+    async def _serve_history(slug: str) -> dict[str, Any]:
+        try:
+            return await serve_history(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid slug") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
     @router.get("/studio/deploy/plan", dependencies=[auth])
     async def _deploy_plan(slug: str, target: str = "") -> dict[str, Any]:
         try:
@@ -8393,6 +9000,12 @@ def build_router(state: AppState) -> Any:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @router.post("/skills/promote-ready", dependencies=[auth])
+    async def _promote_all_ready_skills() -> dict[str, Any]:
+        try:
+            return await promote_all_ready_skills(state)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     @router.get("/agent-catalog", dependencies=[auth])
     async def _agent_catalog(
         path: str = Query(default=""),

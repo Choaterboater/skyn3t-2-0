@@ -140,7 +140,10 @@ Projects and Workspace views current. `PreviewSupervisor` emits named stages
 which are appended to a bounded restart-safe history at
 `data_dir/serve_launch_history.json` and exposed at
 `/api/studio/serve/history?slug=...`. Workspace displays the active phase and
-elapsed time, while redacting retained failure text. A pending launch can be
+elapsed time, and can expand the three most recent earlier attempts with their
+outcome, duration, and redacted failure text. Any persisted pending or live
+launch is reconciled to `interrupted` after a dashboard restart, because its
+original preview handle cannot be restored. A pending launch can be
 cancelled without leaving a preview handle behind. Generated-app previews remain
 Docker-only and loopback-published; there is no host execution fallback for them.
 

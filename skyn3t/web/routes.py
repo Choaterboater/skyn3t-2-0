@@ -4219,8 +4219,9 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
     tasks = _serve_start_tasks(state)
     task = tasks.pop(slug, None)
     cancelled_start = task is not None and not task.done()
-    if cancelled_start:
-        task.cancel()
+    if task is not None:
+        if cancelled_start:
+            task.cancel()
         try:
             await task
         except (asyncio.CancelledError, Exception):

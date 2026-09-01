@@ -58,8 +58,8 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.design_tokens import design_md_block
-from skyn3t.studio.visual_design_contract import visual_design_contract_prompt_block
 from skyn3t.studio.layout_profiles import LayoutProfile, layout_contract_block, profile_from_payload
+from skyn3t.studio.visual_design_contract import visual_design_contract_prompt_block
 from skyn3t.worktree import list_files
 
 log = structlog.get_logger(__name__)

@@ -41,7 +41,7 @@ WEB_STACKS = frozenset({
 # Stacks that warrant design-skill injection but are NOT HTTP-served (so they
 # must not trigger the web liveness GET-/ probe). react_native renders UI but
 # boots in a simulator, not a localhost server.
-DESIGN_STACKS = WEB_STACKS | frozenset({"react_native"})
+DESIGN_STACKS = WEB_STACKS | frozenset({"react_native", "swift_ios"})
 
 # UI web stacks whose root '/' MUST render a page — used for the always-on
 # runtime gate. Excludes API-only stacks (fastapi/express) whose '/' may
@@ -86,6 +86,13 @@ SWIFT_MACOS_STACKS = frozenset({
     "swift", "swiftui", "swiftpm", "spm", "swift_package",
     "macos_native", "swift_macos", "swift_native",
 })
+# Native iOS projects are driven by Xcode rather than SwiftPM and have no
+# terminal companion. They get design guidance but deliberately no HTTP or CLI
+# gate; their real proof is the Xcode simulator build path in proof_run.
+SWIFT_IOS_STACKS = frozenset({
+    "swift_ios", "ios_swift", "swiftui_ios", "ios_swiftui",
+    "ios_native", "native_ios", "iphone_swift", "ipad_swift",
+})
 CLI_PLAYTEST_STACKS = CLI_STACKS | SWIFT_MACOS_STACKS
 
 # Stacks whose deploy serves a LIVE HTTP URL (static / node_ssr / container deploy
@@ -109,6 +116,7 @@ GROUPS: dict[str, frozenset[str]] = {
     "workflow": WORKFLOW_STACKS,
     "content": CONTENT_STACKS,
     "cli": CLI_STACKS,
+    "swift_ios": SWIFT_IOS_STACKS,
     "cli_playtest": CLI_PLAYTEST_STACKS,
     "deployable_url": DEPLOYABLE_URL_STACKS,
 }

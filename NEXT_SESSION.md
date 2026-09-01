@@ -1,5 +1,61 @@
 # Next session — handoff
 
+_Updated 2026-08-01. Branch: `main` @ `f485e33` + a large uncommitted working
+tree (~45 files). Suite: **4,192 passed / 12 skipped** (full run green)._
+
+## TL;DR (2026-08-01 — de-slop + three-swarm wave + golden-design loop)
+
+Everything below is **uncommitted** — commit it (one batch or split by theme)
+before starting new work.
+
+- **The generated apps no longer get the "Claude look" — and the fix is real,
+  not prompt theater.** The de-slop pass removed the same-look drivers (fixed
+  indigo-on-dark token set injected as "use EXACTLY", pasted hero banners,
+  Inter-first scaffolds), then a debug swarm proved the centerpiece never
+  reached the model anyway (tokens truncated to 0 bytes by the skill-advice
+  cap; DesignerAgent output dropped on a nested-dict bug). Both fixed with
+  regression tests: tokens travel beside the DESIGN BAR in every codegen
+  prompt variant, designer output is unwrapped.
+- **The design pipeline is now five deterministic axes** in
+  `skyn3t/studio/design_tokens.py`: theme (paper/slate/sand/ink), accent
+  (keyword else rotation, indigo family excluded; `--accent-text` AA-fitted),
+  font pair (curated Google-Fonts catalog, Inter absent), style personality
+  (6 shape languages → `--radius-*`), layout archetype (8 named shapes).
+  Plus `--text-on-accent` and `--chart-1..5`; the DESIGN BAR carries v0's
+  micro-discipline rules and a compose-from-primitives clause (scaffold ships
+  8 primitives).
+- **DESIGN.md persistence:** every web build writes its design direction into
+  the delivered tree (`runner._deliver_design_md`); Improve re-reads it
+  (`improve.py:859`) so iterations stop drifting the palette.
+- **Golden design bench:** `skyn3t/benchmarks/golden-design-v1.json` (5
+  aesthetic contracts). The loop stub 0/5 → 2/5, live codex 3/5 → **5/5**
+  with **zero AI-look warnings** on all 5 delivered apps. It exposed and we
+  fixed: missing meta descriptions (all scaffolds), astro 4→5 + the
+  `estree-walker@^3` override (Node 24 CJS interop), seo gate's Astro
+  `content={description}` idiom, two new `apply_deterministic_repairs`
+  entries (`pin_astro_estree_walker_override`, `drop_dangling_node_script_files`),
+  the verify_build stale-veto override for skipped builds, and the
+  `min_intent_score` schema floor (now 60; brutalist case at 70).
+- **Advisory AI-look detectors** in `web_polish_check.py` (gradients, Inter,
+  glassmorphism, viewport heroes, card grids, placeholder copy, bounce
+  easing, hand-rolled buttons) — never blocking, and the two
+  invitation-dependent ones (emoji, card grid) are brief-aware.
+- **Dashboard:** live preview refetches after delivery (was stuck on 409);
+  GateLadder heat works for all repair-dispatched gates.
+- **MoA council stays ON** (user decision — hermes features wanted) but
+  advisors are scoped to engineering judgement only, not visual taste.
+
+**Next up:** (1) commit this arc. (2) Run the design bench with `--repeats 3`
+for a trend line; codex is non-deterministic. (3) Deferred-with-reasons:
+OKLCH ramps, divergence-seeded best-of-N, REPL web-test agent, prerender
+pass. (4) Watch item: the richer scaffold raised the under-delivery retry
+threshold to ~11KB of agent-written code — genuinely tiny React apps will
+earn one corrective retry by design.
+
+---
+
+# Next session — handoff (2026-07-02)
+
 _Updated 2026-07-02 afternoon. Branch: `main` @ `7cfce2b`. Suite: **2048
 passed / 3 skipped** (full run on the final merged tree)._
 

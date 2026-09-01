@@ -151,6 +151,7 @@ def test_every_builder_stack_covers_all_vocabularies():
         families = (
             (stack in proof_run._NODE_STACKS)
             + (stack in proof_run._SWIFT_STACKS)
+            + (stack in proof_run._SWIFT_IOS_STACKS)
             + (stack in _PY_PROOF_FAMILY)
         )
         assert families == 1, f"{stack}: in {families} proof families, expected exactly 1"

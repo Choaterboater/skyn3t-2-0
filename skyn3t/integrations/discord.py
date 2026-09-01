@@ -84,6 +84,10 @@ class DiscordChannel(Channel):
         if self.webhook_url:
             # Offload the blocking urllib call so it can't freeze the loop.
             return await asyncio.to_thread(self._send_webhook, text)
+        # is_available() advertises token-only configs, so a bot token must be
+        # able to deliver on its own: REST channel send, no gateway/SDK needed.
+        if self.bot_token and target:
+            return await asyncio.to_thread(self._send_bot_api, target, text)
         return False
 
     def _send_webhook(self, text: str) -> bool:
@@ -93,6 +97,22 @@ class DiscordChannel(Channel):
                 self.webhook_url,
                 data=data,
                 headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+                return 200 <= resp.status < 300
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _send_bot_api(self, channel_id: str, text: str) -> bool:
+        try:
+            data = json.dumps({"content": text[:2000]}).encode()
+            req = urllib.request.Request(
+                f"https://discord.com/api/v10/channels/{channel_id}/messages",
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bot {self.bot_token}",
+                },
             )
             with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
                 return 200 <= resp.status < 300

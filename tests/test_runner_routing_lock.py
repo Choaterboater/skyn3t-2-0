@@ -84,10 +84,17 @@ async def test_runner_rejects_invalid_explicit_backend_before_build_ledger(
             self.starts += 1
 
     tracker = Tracker()
-    runner = _runner(
-        _settings(tmp_path, llm_backend=backend, openrouter_api_key=""),
-        cost_tracker=tracker,
-    )
+    if backend == "made_up_backend":
+        # An unsupported backend can no longer enter Settings at construction
+        # (llm_backend is Literal-typed now); runtime assignment — which skips
+        # validation because validate_assignment is off — is how a bad value
+        # can still reach the runner, and the runner must still reject it
+        # before the ledger records a start.
+        settings = _settings(tmp_path, llm_backend="stub", openrouter_api_key="")
+        settings.llm_backend = backend
+    else:
+        settings = _settings(tmp_path, llm_backend=backend, openrouter_api_key="")
+    runner = _runner(settings, cost_tracker=tracker)
 
     called = False
 
@@ -174,7 +181,72 @@ async def test_runner_rejects_auto_without_codex_before_build_ledger(tmp_path, m
         raise AssertionError("automatic build reached stack selection")
 
     monkeypatch.setattr(runner, "_start_build", forbidden)
-    with pytest.raises(RoutingLockError, match="Automatic builds require Codex CLI"):
+    with pytest.raises(
+        RoutingLockError,
+        match="Automatic builds require one of these CLIs on PATH: codex, kimi",
+    ):
         await runner.start("build an offline tool")
 
     assert tracker.starts == 0
+
+
+def test_auto_lock_accepts_any_cli_in_priority_order():
+    # A claude/kimi-only host has a fully resolvable automatic route, so the
+    # preflight must not demand Codex specifically.
+    settings = SimpleNamespace(
+        llm_backend="auto",
+        openrouter_api_key="",
+        codegen_cli_provider="",
+        auto_cli_priority="codex,claude,kimi",
+    )
+    assert explicit_routing_lock_error(
+        settings,
+        cli_available=lambda provider: provider == "kimi",
+        require_codex_for_auto=True,
+    ) == ""
+
+
+def test_auto_lock_honors_custom_priority_order():
+    # A CLI outside the operator's chain cannot satisfy the lock: resolution
+    # would never execute on it, so preflight must not pass on its account.
+    settings = SimpleNamespace(
+        llm_backend="auto",
+        openrouter_api_key="",
+        codegen_cli_provider="",
+        auto_cli_priority="kimi",
+    )
+    reason = explicit_routing_lock_error(
+        settings,
+        cli_available=lambda provider: provider == "claude",
+        require_codex_for_auto=True,
+    )
+    assert "Automatic builds require one of these CLIs on PATH: kimi" in reason
+
+
+def test_auto_lock_allows_openrouter_only_with_explicit_optin(monkeypatch):
+    monkeypatch.delenv("SKYN3T_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    base = dict(
+        llm_backend="auto",
+        openrouter_api_key="sk-or-present",
+        codegen_cli_provider="",
+        auto_cli_priority="codex,claude,kimi",
+    )
+    # A configured key alone stays configuration, never consent to spend.
+    assert "auto_allow_openrouter opt-in" in explicit_routing_lock_error(
+        SimpleNamespace(**base),
+        cli_available=lambda _provider: False,
+        require_codex_for_auto=True,
+    )
+    assert explicit_routing_lock_error(
+        SimpleNamespace(**base, auto_allow_openrouter=True),
+        cli_available=lambda _provider: False,
+        require_codex_for_auto=True,
+    ) == ""
+    # The opt-in without a usable key still fails closed: auto would otherwise
+    # deliver a fake offline scaffold from the stub.
+    assert "Automatic builds require" in explicit_routing_lock_error(
+        SimpleNamespace(**{**base, "openrouter_api_key": ""}, auto_allow_openrouter=True),
+        cli_available=lambda _provider: False,
+        require_codex_for_auto=True,
+    )

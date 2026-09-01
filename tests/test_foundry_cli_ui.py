@@ -50,7 +50,12 @@ def test_settings_keeps_paid_providers_manual_and_disconnectable() -> None:
     settings = (UI_SRC / "routes" / "Settings.jsx").read_text(encoding="utf-8")
     routes = (ROOT / "skyn3t" / "web" / "routes.py").read_text(encoding="utf-8")
 
-    assert "is Codex CLI-only" in settings
+    # The guarantee is that `auto` never reaches a paid provider on its own —
+    # not that it is Codex specifically. `auto` now walks auto_cli_priority
+    # (codex, then claude, then kimi), so asserting the old "Codex CLI-only"
+    # wording would pin the UI to a claim the router stopped honouring.
+    assert "is local-CLI-only" in settings
+    assert "never sends a request to OpenRouter" in settings
     assert "Manual OpenRouter route" in settings
     assert "Use OpenRouter manually" in settings
     assert "Disconnect OpenRouter" in settings

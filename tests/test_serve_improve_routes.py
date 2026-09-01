@@ -5,6 +5,7 @@ async service functions are exercised directly with a SimpleNamespace state."""
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from skyn3t.web import routes
 from skyn3t.web.routes import (
     fanout_project,
     improve_project,
+    serve_history,
     serve_project,
     serve_status,
     stop_serve,
@@ -28,7 +30,7 @@ def _state(tmp_path, *, orchestrator=None):
     projects = tmp_path / "Projects"
     projects.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
-        settings=SimpleNamespace(projects_dir=projects),
+        settings=SimpleNamespace(projects_dir=projects, data_dir=tmp_path / "data"),
         event_bus=EventBus(),
         orchestrator=orchestrator,
         memory=None,
@@ -84,11 +86,36 @@ class _AsyncStopRunner:
         self.stopped.append(app)
 
 
+class _SlowStartRunner:
+    """A controllable preview launch proving the web request need not wait."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def start(self, pdir, stack="", **kwargs):
+        callback = kwargs.get("progress_callback")
+        if callback is not None:
+            update = callback("dependencies", "Installing locked test dependencies")
+            if hasattr(update, "__await__"):
+                await update
+        self.started.set()
+        await self.release.wait()
+        return RunningApp(
+            url="http://127.0.0.1:43210", port=43210, pid=None,
+            kind="static", project_dir=str(pdir), status="running", detail={},
+        )
+
+    async def stop(self, _app):
+        return None
+
+
 # --------------------------------------------------------------------------
 # serve
 # --------------------------------------------------------------------------
 
 @pytest.mark.requires_loopback
+@pytest.mark.requires_docker
 def test_serve_static_then_stop_registers_and_cleans_up(tmp_path):
     state = _state(tmp_path)
     _static_project(state, "alpha")
@@ -112,6 +139,111 @@ def test_serve_static_then_stop_registers_and_cleans_up(tmp_path):
     # a SERVE_STARTED and SERVE_STOPPED event were emitted for the cockpit
     kinds = [e.type for e in state.event_bus.history()]
     assert EventType.SERVE_STARTED in kinds and EventType.SERVE_STOPPED in kinds
+
+
+def test_background_serve_reports_starting_then_running_without_blocking(tmp_path):
+    async def run() -> None:
+        state = _state(tmp_path)
+        _static_project(state, "queued")
+        runner = _SlowStartRunner()
+        state.app_runner = runner
+
+        accepted = await routes.start_serve_project(state, "queued")
+        assert accepted["status"] == "starting"
+        assert accepted["detail"]["engine"] == "docker"
+        await runner.started.wait()
+
+        pending = await serve_status(state)
+        assert pending["running"][0]["status"] == "starting"
+        assert pending["running"][0]["detail"]["phase"] == "dependencies"
+        task = state.serve_start_tasks["queued"]
+        pending_history = await serve_history(state, "queued")
+        assert pending_history["launches"][0]["phase"] == "dependencies"
+        assert [step["phase"] for step in pending_history["launches"][0]["timeline"]] == [
+            "queued", "dependencies"
+        ]
+
+        runner.release.set()
+        await task
+        live = await serve_status(state)
+        assert live["running"][0]["status"] == "running"
+        assert live["running"][0]["url"] == "http://127.0.0.1:43210"
+        complete_history = await serve_history(state, "queued")
+        assert complete_history["launches"][0]["status"] == "running"
+        assert complete_history["launches"][0]["phase"] == "ready"
+        assert (state.settings.data_dir / "serve_launch_history.json").is_file()
+        assert EventType.SERVE_STARTING in [event.type for event in state.event_bus.history()]
+        await stop_serve(state, "queued")
+
+    asyncio.run(run())
+
+
+def test_serve_history_marks_persisted_live_attempt_interrupted_after_restart(tmp_path):
+    state = _state(tmp_path)
+    _static_project(state, "recovered")
+    history_path = state.settings.data_dir / "serve_launch_history.json"
+    history_path.parent.mkdir(parents=True)
+    history_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "launches": {
+                    "recovered": [
+                        {
+                            "id": "old-live-launch",
+                            "status": "running",
+                            "phase": "ready",
+                            "message": "Preview is live",
+                            "started_at": "2026-08-04T00:00:00+00:00",
+                            "started_at_ms": 1,
+                            "updated_at": "2026-08-04T00:00:00+00:00",
+                            "elapsed_ms": 0,
+                            "timeline": [
+                                {
+                                    "phase": "ready",
+                                    "message": "Preview is live",
+                                    "at": "2026-08-04T00:00:00+00:00",
+                                    "elapsed_ms": 0,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    history = asyncio.run(serve_history(state, "recovered"))
+
+    launch = history["launches"][0]
+    assert launch["status"] == "interrupted"
+    assert launch["phase"] == "interrupted"
+    assert "restarted" in launch["message"].lower()
+    assert launch["timeline"][-1]["phase"] == "interrupted"
+    persisted = json.loads(history_path.read_text(encoding="utf-8"))
+    assert persisted["launches"]["recovered"][0]["status"] == "interrupted"
+
+
+def test_stop_reports_success_when_cancelling_pending_serve(tmp_path):
+    async def run() -> None:
+        state = _state(tmp_path)
+        _static_project(state, "cancelled")
+        runner = _SlowStartRunner()
+        state.app_runner = runner
+
+        await routes.start_serve_project(state, "cancelled")
+        await runner.started.wait()
+        result = await stop_serve(state, "cancelled")
+
+        assert result == {"slug": "cancelled", "stopped": True}
+        assert "cancelled" not in state.serve_start_tasks
+        assert "cancelled" not in getattr(state, "running_apps", {})
+        history = await serve_history(state, "cancelled")
+        assert history["launches"][0]["status"] == "cancelled"
+        assert history["launches"][0]["phase"] == "cancelled"
+
+    asyncio.run(run())
 
 
 def test_serve_no_preview_not_registered(tmp_path):
@@ -167,6 +299,7 @@ def test_serve_rejects_traversal(tmp_path):
 
 
 @pytest.mark.requires_loopback
+@pytest.mark.requires_docker
 def test_serve_status_lists_running(tmp_path):
     state = _state(tmp_path)
     _static_project(state, "beta")
@@ -180,6 +313,7 @@ def test_serve_status_lists_running(tmp_path):
 
 
 @pytest.mark.requires_loopback
+@pytest.mark.requires_docker
 def test_serve_same_slug_replaces_previous(tmp_path):
     state = _state(tmp_path)
     _static_project(state, "gamma")
@@ -200,6 +334,7 @@ def test_stop_unknown_slug_is_noop(tmp_path):
 
 
 @pytest.mark.requires_loopback
+@pytest.mark.requires_docker
 def test_concurrent_serves_same_slug_no_leak(tmp_path):
     # Two serves of one slug racing across the `await start` suspension must not
     # leak a started process: exactly one survivor registered, the loser's port
@@ -224,6 +359,7 @@ def test_concurrent_serves_same_slug_no_leak(tmp_path):
 
 
 @pytest.mark.requires_loopback
+@pytest.mark.requires_docker
 def test_serve_then_concurrent_stop_is_consistent(tmp_path):
     # A stop racing an in-flight start must not be silently lost: the end state
     # is either cleanly stopped or cleanly running — never an orphan port that

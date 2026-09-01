@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from skyn3t.studio.visual_design_contract import write_visual_design_contract
+
 from skyn3t.studio.visual_editor import (
     EMPTY_SHA256,
     AmbiguousSourceError,
@@ -248,6 +250,28 @@ def test_inspection_ignores_and_direct_edits_reject_symlinks(tmp_path: Path) -> 
             value="Changed",
         )
     assert "Private" in outside.read_text(encoding="utf-8")
+
+
+def test_visual_editor_bootstraps_safe_tokens_from_delivered_contract(tmp_path: Path) -> None:
+    contract = write_visual_design_contract(tmp_path, "A calm bakery site")
+    assert contract is not None
+    editor = VisualEditor(tmp_path)
+
+    pristine = editor.stylesheet_state()
+    assert pristine.design_contract is not None
+    assert pristine.design_contract["contract_id"] == contract["contract_id"]
+
+    result = editor.set_design_token(
+        base_sha=EMPTY_SHA256,
+        token="--accent",
+        value="#7c3aed",
+    )
+    state = editor.stylesheet_state()
+
+    assert state.current_sha == result.after_sha
+    assert state.tokens["--accent"] == "#7c3aed"
+    assert state.tokens["--bg"] == contract["tokens"]["--bg"]
+    assert "--font-heading" not in state.tokens
 
 
 def test_managed_stylesheet_supports_tokens_layout_and_responsive_rules(

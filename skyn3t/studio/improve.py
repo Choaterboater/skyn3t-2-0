@@ -11,7 +11,6 @@ import hashlib
 import os
 import shutil
 import stat
-import tempfile
 import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -32,6 +31,8 @@ from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.rag.repo_map import build_repo_context_pack
+from skyn3t.studio.design_tokens import read_design_md
+from skyn3t.studio.grounding_check import check_grounding
 from skyn3t.studio.layout_profiles import (
     is_valid_profile_payload,
     layout_contract_block,
@@ -48,6 +49,7 @@ from skyn3t.worktree import (
     cleanup_worktree,
     create_worktree,
     deliverable_tree_snapshot,
+    delivery_staging_dir,
     list_files,
     merge_back,
     source_tree_snapshot,
@@ -67,6 +69,18 @@ _CONTROL_RELATIVE_PATHS = (
     _MANIFEST_RELATIVE_PATH,
     _OBSERVABILITY_RELATIVE_PATH,
 )
+
+
+def _grounding_fix_hints(project_dir: Path, stack: str) -> list[str]:
+    """Advisory grounding-lint warnings for the delivered project, phrased
+    as fix hints for the improver. Never raises — a lint failure must not
+    break an improve run."""
+    try:
+        result = check_grounding(project_dir, stack)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("improve.grounding_check_failed", error=str(exc))
+        return []
+    return [str(w) for w in (result.get("warnings") or [])][:10]
 
 
 def _project_lock(project_dir: Path) -> Lock:
@@ -95,15 +109,15 @@ class _InterprocessProjectLock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             flags = os.O_RDWR | os.O_CREAT
             if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
+                flags |= getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self.path, flags, 0o600)
             self.handle = os.fdopen(descriptor, "a+b")
         if fcntl is None:
             return True
         try:
-            fcntl.flock(
+            fcntl.flock(  # type: ignore[attr-defined]
                 self.handle.fileno(),
-                fcntl.LOCK_EX | fcntl.LOCK_NB,
+                fcntl.LOCK_EX | fcntl.LOCK_NB,  # type: ignore[attr-defined]
             )
             return True
         except BlockingIOError:
@@ -114,7 +128,7 @@ class _InterprocessProjectLock:
             return
         try:
             if fcntl is not None:
-                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
         finally:
             self.handle.close()
             self.handle = None
@@ -328,9 +342,9 @@ def _directory_open_flags() -> int:
     if hasattr(os, "O_DIRECTORY"):
         flags |= os.O_DIRECTORY
     if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+        flags |= getattr(os, "O_NOFOLLOW", 0)
     if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
+        flags |= getattr(os, "O_CLOEXEC", 0)
     return flags
 
 
@@ -386,7 +400,7 @@ def _ensure_confined_directory(
                     pass
                 child = os.open(part, flags, dir_fd=current)
                 if template_root is not None:
-                    os.fchmod(child, mode)
+                    os.fchmod(child, mode)  # type: ignore[attr-defined]
             os.close(current)
             current = child
         return current
@@ -855,6 +869,31 @@ class ImproveEngine:
                 max_tokens=2000,
             )
             repo_ctx = context_pack.context
+            # Anti-drift: the delivered DESIGN.md (from the project dir — the
+            # source of truth, not a manifest copy) locks the build's design
+            # direction into the improver's context, so styling stays
+            # consistent unless the goal explicitly restyles.
+            design_md = read_design_md(project_dir)
+            if design_md:
+                repo_ctx = (
+                    "The project's locked design direction (DESIGN.md) — keep "
+                    "styling consistent with it unless the goal explicitly "
+                    "restyles:\n"
+                    f"{design_md}\n\n{repo_ctx}"
+                )
+            # Semantic grounding lint: undefined design tokens and phantom
+            # local imports in the DELIVERED project (the source of truth,
+            # not the worktree copy) are deterministic facts the improver
+            # can act on. Advisory hints only — they inform the fix, they
+            # never block the run.
+            grounding_hints = _grounding_fix_hints(project_dir, stack)
+            if grounding_hints:
+                repo_ctx = (
+                    "Advisory grounding-lint findings in the current project "
+                    "(fix when relevant to the goal; these are hints, not "
+                    "failures):\n- " + "\n- ".join(grounding_hints)
+                    + f"\n\n{repo_ctx}"
+                )
             context_pack_summary = context_pack.summary()
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "localize",
@@ -1247,11 +1286,11 @@ class ImproveEngine:
             # will not match the exact tree that passed proof.
             source_files = list_files(wt.dir)
             expected_files = set(source_files)
-            delivery_stage_root = Path(
-                tempfile.mkdtemp(
-                    prefix=f".improve-stage-{slug}-",
-                    dir=project_dir.parent,
-                )
+            # delivery_staging_dir, not raw mkdtemp: mkdtemp's owner-only
+            # Windows ACL rode the same-volume swap into delivered projects
+            # and made every file unreadable to Docker preview/proof mounts.
+            delivery_stage_root = delivery_staging_dir(
+                f".improve-stage-{slug}-", project_dir.parent
             )
             staged_project = delivery_stage_root / "candidate"
             staged_project.mkdir()
@@ -1322,11 +1361,8 @@ class ImproveEngine:
                 await _emit_failed_outcome(outcome)
                 return outcome
 
-            backup_root = Path(
-                tempfile.mkdtemp(
-                    prefix=f".improve-backup-{slug}-",
-                    dir=project_dir.parent,
-                )
+            backup_root = delivery_staging_dir(
+                f".improve-backup-{slug}-", project_dir.parent
             )
             backup_project = backup_root / "project"
             backup_project.mkdir()

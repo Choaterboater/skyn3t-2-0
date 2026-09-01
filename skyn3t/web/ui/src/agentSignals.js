@@ -24,6 +24,29 @@ export function settleSliceRowsOnBuildTerminal(rows, event) {
   }
 }
 
+// Stage rows (non-slice) left "running" when a build dies mid-stage — an
+// operator Cancel, a stage coroutine exception, an approval-gate rejection —
+// never receive a build.stage.completed frame, so the cockpit pulsed
+// "forging" forever on a dead build. Settle them on the terminal build event.
+// Deliberately distinct from the slice helper above: "pending" rows are left
+// alone (a planned stage that never ran did not fail), and slice rows keep
+// their own settlement semantics.
+export function settleStageRowsOnBuildTerminal(rows, event) {
+  const type = String(event?.type || "").toLowerCase();
+  if (type !== "build.completed" && type !== "build.failed") return;
+
+  const failed = type === "build.failed";
+  const payload = event?.payload || {};
+  const gap = String(payload.error || payload.reason || "").trim();
+
+  for (const row of rows || []) {
+    if (!row || row.capability === "slice" || row.state !== "running") continue;
+    row.state = failed ? "failed" : "done";
+    if (payload.status) row.status = String(payload.status);
+    if (failed && gap && !row.gaps) row.gaps = [gap];
+  }
+}
+
 function eventAgentKeys(event) {
   const payload = event?.payload || {};
   const metadata = payload.metadata || {};

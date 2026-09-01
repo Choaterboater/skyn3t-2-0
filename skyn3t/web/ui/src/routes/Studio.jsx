@@ -19,6 +19,9 @@ import {
   StageLedger,
   pipelineFromEvents,
 } from "../components/cockpit.jsx";
+import GoldenBenchCard from "../components/GoldenBenchCard.jsx";
+import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
+import { streamStaleness } from "../streamSignals.js";
 import {
   describeExampleWorkload,
   describeModelValue,
@@ -28,6 +31,7 @@ import {
 } from "../modelValue.js";
 import { projectBuildMetadata } from "../projectMetadata.js";
 import { buildOutcome } from "../buildOutcome.js";
+import { isActiveBuild, isTerminalBuild } from "../buildStatus.js";
 import {
   BACKEND_OPTIONS,
   backendOption,
@@ -285,36 +289,6 @@ const BUILD_PROFILES = [
   },
 ];
 
-const BUILD_ACTIVE_STATUSES = new Set([
-  "running",
-  "queued",
-  "queued_no_studio",
-  "pending",
-  "awaiting_approval",
-]);
-
-const BUILD_TERMINAL_STATUSES = new Set([
-  "completed",
-  "completed_no_go",
-  "cancelled",
-  "failed",
-  "approved",
-  "rejected",
-  "interrupted",
-]);
-
-function normalizeBuildStatus(status) {
-  return String(status || "").trim().toLowerCase();
-}
-
-function isActiveBuild(status) {
-  return BUILD_ACTIVE_STATUSES.has(normalizeBuildStatus(status));
-}
-
-function isTerminalBuild(status) {
-  return BUILD_TERMINAL_STATUSES.has(normalizeBuildStatus(status));
-}
-
 function studioBuildRefetchInterval(query) {
   const data = query?.state?.data;
   const rows = Array.isArray(data) ? data : data?.builds || [];
@@ -325,15 +299,17 @@ function studioBuildRefetchInterval(query) {
 // while running, cools to PLASMA when done, sits ASH while pending, flares the
 // hot ember on failure. It also shows WHICH agent ran the stage and its score —
 // data the backend already emits — so the line is legible, not just decorative.
-function ForgeStage({ s }) {
+function ForgeStage({ s, stale = false }) {
   const state = s.state;
   const hot = state === "running";
   const done = state === "done";
   const failed = state === "failed";
   const agent = s.agentName || s.agentType;
 
+  // `stale`: the event stream is down, so a "running" stage is a frozen
+  // snapshot — keep the state visible but stop the live pulse animations.
   const nodeCls = hot
-    ? "border-ember/60 bg-ember/10 ring-heat animate-emberflare"
+    ? `border-ember/60 bg-ember/10 ring-heat${stale ? "" : " animate-emberflare"}`
     : done
     ? "border-plasma/40 bg-plasma/5"
     : failed
@@ -341,7 +317,7 @@ function ForgeStage({ s }) {
     : "border-hairline bg-void/60";
 
   const dotCls = hot
-    ? "bg-ember animate-forgepulse"
+    ? `bg-ember${stale ? "" : " animate-forgepulse"}`
     : done
     ? "bg-plasma"
     : failed
@@ -479,6 +455,22 @@ function buildDiagnostics(build) {
     ? build.recall_used.length
     : scorecard.recall_count || 0;
   const issues = [];
+  // The gate_findings ledger names WHICH gate blocked (or advised on) the
+  // verdict — mirror the CLI's _verdict_explanation semantics: blocked
+  // entries first, with their reason; everything non-blocked as advisory.
+  const gateFindings = Array.isArray(scorecard.gate_findings)
+    ? scorecard.gate_findings.filter((f) => f && typeof f === "object")
+    : [];
+  for (const finding of gateFindings) {
+    if (finding.blocked !== true) continue;
+    const gate = String(finding.gate || "gate");
+    const reason = String(finding.reason || "").trim();
+    issues.push(reason ? `blocked: ${gate} — ${reason}` : `blocked: ${gate}`);
+  }
+  for (const finding of gateFindings) {
+    if (finding.blocked === true) continue;
+    issues.push(`advisory: ${String(finding.gate || "gate")}`);
+  }
   if (scorecard.proof_passed === false) issues.push("proof failed");
   if (scorecard.build && scorecard.build !== "passed") {
     issues.push(`build ${scorecard.build}`);
@@ -606,6 +598,10 @@ export default function Studio({ stream }) {
   const fileInputRef = useRef(null);
   const [buildProfile, setBuildProfile] = useState("cheap_learned");
   const [fullApp, setFullApp] = useState(false);
+  // Advisory-council picker. `null` = use the server's configured default;
+  // a Set (even an empty one) = an explicit per-build choice, so unchecking
+  // everything means "no advisors for this build" rather than falling back.
+  const [advisorSel, setAdvisorSel] = useState(null);
   const [modelOverride, setModelOverride] = useState("");
   const [foundryBackend, setFoundryBackend] = useState("");
   const [variantSource, setVariantSource] = useState(null);
@@ -615,7 +611,12 @@ export default function Studio({ stream }) {
   const [modelCatalogSort, setModelCatalogSort] = useState("created");
   const [modelCatalogOrder, setModelCatalogOrder] = useState("desc");
   const [modelCatalogPage, setModelCatalogPage] = useState(0);
-  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
+  // Force-refresh flag for the catalog, as a REF consumed inside the queryFn
+  // at fetch time. As state it never worked: the refresh button's refetch()
+  // ran the queryFn closure from the previous render (where the flag was
+  // still false), so the request always carried refresh=false and the server
+  // kept serving its 300s cache — including a cached failure.
+  const catalogForceRefreshRef = useRef(false);
 
   const onPickImage = (file) => {
     if (!file || !file.type?.startsWith("image/")) return;
@@ -640,6 +641,26 @@ export default function Studio({ stream }) {
     queryKey: ["stacks"],
     queryFn: queryFn("/stacks"),
   });
+
+  // Selectable Mixture-of-Agents advisors (registry-driven, with live PATH
+  // availability) so the council can be chosen per build instead of only
+  // through settings.
+  const { data: cliProviders } = useQuery({
+    queryKey: ["cli-providers"],
+    queryFn: queryFn("/cli-providers"),
+  });
+  const advisorOptions = cliProviders?.providers || [];
+  const defaultAdvisors = useMemo(
+    () => new Set(advisorOptions.filter((p) => p.selected).map((p) => p.slot)),
+    [advisorOptions],
+  );
+  const effectiveAdvisors = advisorSel ?? defaultAdvisors;
+  const toggleAdvisor = (slot) => {
+    const next = new Set(effectiveAdvisors);
+    if (next.has(slot)) next.delete(slot);
+    else next.add(slot);
+    setAdvisorSel(next);
+  };
   const stackOptions = useMemo(() => {
     const opts = stacksData?.stacks;
     return Array.isArray(opts) && opts.length > 0 ? opts : FALLBACK_STACKS;
@@ -660,11 +681,17 @@ export default function Studio({ stream }) {
       modelCatalogPage,
     ],
     queryFn: () => {
+      // Consume the force flag when the fetch actually runs — a ref is read
+      // at execution time, so closure staleness cannot drop it. `refresh` is
+      // a cache-control directive, not resource identity, so it deliberately
+      // stays out of the queryKey (the cache entry updates in place).
+      const force = catalogForceRefreshRef.current;
+      catalogForceRefreshRef.current = false;
       const params = new URLSearchParams({
         limit: String((modelCatalogPage + 1) * MODEL_CATALOG_PAGE_SIZE),
         sort: modelCatalogSort,
         order: modelCatalogOrder,
-        refresh: catalogRefreshing,
+        refresh: String(force),
       });
       const q = modelCatalogQuery.trim();
       if (q) {
@@ -728,6 +755,7 @@ export default function Studio({ stream }) {
     selectedFoundryOpenRouterMissing ||
     codegenCliUnavailable;
   const routingFreeOnly = routingSecrets.free_only !== false;
+  const routingNoClaude = routingSecrets.no_claude !== false;
   const routingModelPins =
     routingSecrets && typeof routingSecrets.model_pins === "object" && routingSecrets.model_pins
       ? routingSecrets.model_pins
@@ -987,6 +1015,9 @@ export default function Studio({ stream }) {
   });
 
   const events = stream?.events || [];
+  // A dead stream keeps the frozen event buffer; the cockpit must label the
+  // data stale and stop its live animations instead of pulsing forever.
+  const streamStale = streamStaleness(stream?.status, stream?.lastFrameAt).stale;
   // Driven off the REAL emitted plan (build.started.stages) + the per-stage
   // agent/score/cost/gaps the backend already streams — not a hardcoded list.
   const pipeline = useMemo(() => pipelineFromEvents(events, STAGES), [events]);
@@ -1060,7 +1091,7 @@ export default function Studio({ stream }) {
       : "auto stack",
   };
   const routingPolicy = usesCliBackend
-    ? "Codex CLI is the execution route; hosted model routing is inactive."
+    ? "A local CLI is the execution route; hosted model routing is inactive."
     : routingPolicyHint(routingPreview.data?.build_profile || effectiveBuildProfile);
   const routingRows = routingTiers.map((tier) => {
     const costRows = ROUTING_PREVIEW_ESTIMATES.map(({ key, label, promptTokens, completionTokens }) => {
@@ -1173,6 +1204,9 @@ export default function Studio({ stream }) {
                   payload.model_override = normalizedModelOverride;
                 }
                 if (refImage?.url) payload.reference_image = refImage.url;
+                // Only send an explicit choice. Omitting the key entirely lets
+                // the server use its configured default.
+                if (advisorSel) payload.moa_advisors = [...advisorSel];
                 submit.mutate(payload);
               }}
             >
@@ -1237,6 +1271,54 @@ export default function Studio({ stream }) {
                 {submit.isPending ? "Forging…" : "Forge build"}
               </button>
             </form>
+            {/* Mixture-of-Agents advisors for THIS build. Tool-free models that
+                read the brief and advise the coding agent — they never write
+                files and never gate the verdict. An unavailable CLI stays
+                selectable: it is recorded as a failed advisor, never a failed
+                build. */}
+            {advisorOptions.length > 0 ? (
+              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline pt-3">
+                <span className="font-mono text-[11px] uppercase tracking-wide text-ash">
+                  Advisors
+                </span>
+                {advisorOptions.map((p) => (
+                  <label
+                    key={p.slot}
+                    title={
+                      p.available
+                        ? `${p.label} — advises the coding agent, never writes files`
+                        : `${p.label} — not detected on PATH; it would be recorded as a failed advisor`
+                    }
+                    className="flex cursor-pointer items-center gap-1.5 text-[12px]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={effectiveAdvisors.has(p.slot)}
+                      onChange={() => toggleAdvisor(p.slot)}
+                      aria-label={`Use ${p.label} as an advisor`}
+                    />
+                    <span className={p.available ? "" : "text-ash"}>{p.label}</span>
+                    {p.available ? null : (
+                      <span className="font-mono text-[10px] text-ash">(not found)</span>
+                    )}
+                  </label>
+                ))}
+                <span className="font-mono text-[11px] text-ash">
+                  {effectiveAdvisors.size === 0
+                    ? "none — council off for this build"
+                    : `${effectiveAdvisors.size} selected`}
+                </span>
+                {advisorSel ? (
+                  <button
+                    type="button"
+                    onClick={() => setAdvisorSel(null)}
+                    className="font-mono text-[11px] text-ash underline hover:text-ember"
+                  >
+                    reset to default
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {submit.isError ? (
               <ErrorText className="mt-3 max-h-28">
                 {String(submit.error.message)}
@@ -1257,7 +1339,9 @@ export default function Studio({ stream }) {
                       disabled={foundryBackendMut.isPending}
                       className="field"
                     >
-                      {BACKEND_OPTIONS.map((option) => {
+                      {BACKEND_OPTIONS.filter(
+                        (option) => !routingNoClaude || option.id !== "claude_cli",
+                      ).map((option) => {
                         const status = cliBackendStatus(llmBackends.data, option.id);
                         const unavailable = option.kind === "cli" && status.available !== true;
                         return (
@@ -1304,7 +1388,9 @@ export default function Studio({ stream }) {
                     ) : null}
                     {selectedFoundryBackend === "auto" ? (
                       <p className="mt-1 text-ash/80">
-                        Auto uses Codex CLI locally and never falls back to OpenRouter.
+                        Auto uses the first signed-in local CLI in priority order (
+                        {routingNoClaude ? "Codex, then Kimi" : "Codex, then Claude, then Kimi"}
+                        ) and never falls back to hosted OpenRouter without explicit consent.
                       </p>
                     ) : null}
                     {selectedFoundryOpenRouterMissing ? (
@@ -1449,16 +1535,18 @@ export default function Studio({ stream }) {
                       type="button"
                           className="btn-ghost py-0.5 text-[10px]"
                           onClick={() => {
-                            setModelCatalogPage(0);
-                            setCatalogRefreshing(true);
-                            catalog.refetch().finally(() => {
-                              setCatalogRefreshing(false);
-                            });
+                            catalogForceRefreshRef.current = true;
+                            // Page > 0: resetting the page changes the
+                            // queryKey and THAT fetch consumes the force flag
+                            // — also calling refetch() would race it with an
+                            // unforced request for the old key.
+                            if (modelCatalogPage === 0) catalog.refetch();
+                            else setModelCatalogPage(0);
                           }}
-                          disabled={catalog.isLoading}
+                          disabled={catalog.isFetching}
                           title="Refresh model catalog with latest OpenRouter data"
                         >
-                          {catalog.isLoading ? "refreshing…" : "refresh"}
+                          {catalog.isFetching ? "refreshing…" : "refresh"}
                         </button>
                       </div>
                       <div className="mt-1 text-[10px] text-ash/70">
@@ -1509,10 +1597,10 @@ export default function Studio({ stream }) {
                           <button
                             type="button"
                             onClick={() => setModelCatalogPage((page) => page + 1)}
-                            disabled={catalog.isLoading}
+                            disabled={catalog.isFetching}
                             className="w-full border-t border-hairline/60 bg-void/35 py-2 text-[10px] font-mono text-plasma hover:bg-void/55 disabled:opacity-50"
                           >
-                            {catalog.isLoading ? "loading…" : "load more"}
+                            {catalog.isFetching ? "loading…" : "load more"}
                           </button>
                         ) : null}
                       </div>
@@ -1846,6 +1934,12 @@ export default function Studio({ stream }) {
         </Panel>
       ) : null}
 
+      {/* dead stream: the forge line + ledgers below render a frozen buffer */}
+      <StreamStaleBanner stream={stream} />
+
+      {/* bench runs execute in isolated state — surface them on the build console */}
+      <GoldenBenchCard />
+
       <Panel className="mb-6 overflow-hidden">
         <PanelHead
           label="Forge line"
@@ -1862,7 +1956,7 @@ export default function Studio({ stream }) {
         <div className="flex items-stretch gap-1 overflow-x-auto p-4">
           {pipeline.map((p, i) => (
             <React.Fragment key={p.stage}>
-              <ForgeStage s={p} />
+              <ForgeStage s={p} stale={streamStale} />
               {i < pipeline.length - 1 ? (
                 <span
                   className={`mx-0.5 flex-shrink-0 self-center font-mono text-sm ${

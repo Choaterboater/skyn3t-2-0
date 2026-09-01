@@ -5,7 +5,10 @@ from datetime import UTC, datetime
 import pytest
 
 from skyn3t.config.settings import Settings
-from skyn3t.studio.build_intelligence import prepare_build_intelligence
+from skyn3t.studio.build_intelligence import (
+    prepare_build_intelligence,
+    rerun_build_intelligence,
+)
 from skyn3t.studio.graph_runtime import (
     GraphDefinition,
     GraphNodeSpec,
@@ -300,3 +303,45 @@ async def test_build_intelligence_rejects_existing_run_with_different_graph(
             stack="python_cli",
             toolchain_inspector=_toolchain,
         )
+
+
+async def test_build_intelligence_rerun_reexecutes_only_human_selected_branch(
+    tmp_path,
+) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        github_similarity_research=False,
+    )
+    source = await prepare_build_intelligence(
+        settings=settings,
+        build_id="build-rerun",
+        slug="rerun-tool",
+        brief="Build a reviewable Python tool",
+        stack="python_cli",
+        toolchain_inspector=_toolchain,
+        clock=lambda: datetime(2026, 8, 3, tzinfo=UTC),
+    )
+
+    def must_not_rerun_toolchain(*, stack: str = "") -> LabToolchainReport:
+        raise AssertionError(f"toolchain ancestor reran for {stack}")
+
+    result = await rerun_build_intelligence(
+        settings=settings,
+        source_run_id=source.graph["run_id"],
+        from_node_id="similarity_research",
+        toolchain_inspector=must_not_rerun_toolchain,
+        clock=lambda: datetime(2026, 8, 3, tzinfo=UTC),
+    )
+
+    assert result["review_only"] is True
+    assert result["graph"]["status"] == "succeeded"
+    assert result["graph"]["nodes"] == {
+        "product_contract": "succeeded",
+        "toolchain": "succeeded",
+        "similarity_research": "succeeded",
+    }
+    assert [row["node"] for row in result["graph"]["attempts"]] == ["similarity_research"]
+    assert result["comparison"]["source_run_id"] == source.graph["run_id"]
+    assert result["comparison"]["rerun_nodes"] == ["similarity_research"]
+    assert result["comparison"]["outcome"] == "equivalent"
+    assert result["comparison"]["promotion_status"] == "review_required"

@@ -37,6 +37,23 @@ function positiveFileCount(value) {
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 }
 
+// First gate_findings entry that actually blocked the verdict, when the row
+// carries the ledger (quality_scorecard.gate_findings). Defensive: any
+// missing/odd shape yields null rather than breaking an outcome pill.
+function firstBlockedGateFinding(build) {
+  const scorecard = build?.quality_scorecard;
+  const findings = Array.isArray(scorecard?.gate_findings)
+    ? scorecard.gate_findings
+    : [];
+  for (const finding of findings) {
+    if (!finding || typeof finding !== "object" || finding.blocked !== true) continue;
+    const gate = String(finding.gate || "").trim();
+    if (!gate) continue;
+    return { gate, reason: String(finding.reason || "").trim() };
+  }
+  return null;
+}
+
 export function buildOutcome(build = {}) {
   const status = normalized(build.status);
   const buildStatus = normalized(build.build_status) || status;
@@ -101,6 +118,12 @@ export function buildOutcome(build = {}) {
     detail = "delivered · not shippable";
     tone = "ember";
     title = `Build status: ${rawLabel}. An artifact was delivered, but its release verdict is ${readable(verdict || "no_go").toUpperCase()}.`;
+    // Name the blocking gate when the ledger is on the row — a bare NO GO
+    // gives the operator nothing to fix before the rebuild.
+    const blocking = firstBlockedGateFinding(build);
+    if (blocking) {
+      title += ` Blocked by ${blocking.gate}${blocking.reason ? `: ${blocking.reason}` : ""}.`;
+    }
   } else if (cancelled) {
     label = "cancelled";
     detail = delivered ? "delivered artifact · cancelled run" : `not delivered${partialDetail}`;

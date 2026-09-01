@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
 import {
@@ -24,6 +24,7 @@ import {
   canReverifyLocally,
   describeLocalReverify,
 } from "../projectReverify.js";
+import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -110,13 +111,17 @@ function useServedMap(stream, seed) {
     for (const e of stream?.events || []) {
       const slug = e.payload?.slug;
       if (!slug) continue;
-      if (e.type === "serve.started") {
+      if (e.type === "serve.starting") {
+        map[slug] = { slug, status: "starting", detail: { phase: e.payload?.phase } };
+      } else if (e.type === "serve.started") {
         map[slug] = {
           slug,
           url: e.payload.url,
           port: e.payload.port,
           status: "running",
         };
+      } else if (e.type === "serve.failed") {
+        map[slug] = { slug, status: "failed", detail: { reason: e.payload?.reason } };
       } else if (e.type === "serve.stopped") {
         delete map[slug];
       }
@@ -363,6 +368,147 @@ function ImproveInline({ slug, stream }) {
   );
 }
 
+// Project feedback is distilled into reusable advisory lessons; it never starts an Improve run.
+// It leaves the existing Serve/Stop controls untouched and is not raw project history.
+function FeedbackInline({ slug, onClose }) {
+  const [feedback, setFeedback] = useState("");
+  const [category, setCategory] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function submit(event) {
+    event.preventDefault();
+    const text = feedback.trim();
+    if (!text) {
+      setErr("Enter feedback before saving.");
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    setNotice("");
+    try {
+      const result = await apiPost(
+        "/projects/" + encodeURIComponent(slug) + "/feedback",
+        { feedback: text, ...(category ? { category } : {}) },
+      );
+      setFeedback("");
+      setCategory("");
+      const captured = Number(result.captured) || 0;
+      const deduped = Number(result.deduped) || 0;
+      if (captured || deduped) {
+        const parts = [];
+        if (captured) {
+          parts.push(
+            String(captured) +
+            " distilled lesson" +
+            (captured === 1 ? "" : "s") +
+            " captured"
+          );
+        }
+        if (deduped) {
+          parts.push(
+            String(deduped) +
+            " duplicate lesson" +
+            (deduped === 1 ? "" : "s") +
+            " already known"
+          );
+        }
+        setNotice(parts.join(" · ") + ".");
+      } else {
+        setNotice("Feedback distilled into reusable advisory lessons.");
+      }
+    } catch (error) {
+      setErr(String(error.message || error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form
+      className="bg-ink/30 px-4 py-3"
+      aria-label={"Feedback for " + slug}
+      onSubmit={submit}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="eyebrow text-[9px]">Project feedback · {slug}</div>
+          <p className="mt-1 font-mono text-[11px] text-ash/70">
+            Share what worked, what failed, or what should change. It is distilled into reusable advisory lessons.
+          </p>
+        </div>
+        <button type="button" onClick={onClose} className="btn-ghost">
+          Close
+        </button>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(11rem,0.4fr)_minmax(20rem,1fr)]">
+        <div>
+          <label
+            className="block font-mono text-[10px] text-ash"
+            htmlFor={"feedback-category-" + slug}
+          >
+            Category <span className="text-ash/60">(optional)</span>
+          </label>
+          <select
+            id={"feedback-category-" + slug}
+            aria-label={"Feedback category for " + slug}
+            className="field mt-2"
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">General (default)</option>
+            <option value="visual">Visual</option>
+            <option value="content">Content</option>
+            <option value="usability">Usability</option>
+            <option value="accessibility">Accessibility</option>
+            <option value="performance">Performance</option>
+          </select>
+        </div>
+        <div>
+          <label
+            className="block font-mono text-[10px] text-ash"
+            htmlFor={"feedback-text-" + slug}
+          >
+            Feedback
+          </label>
+          <textarea
+            id={"feedback-text-" + slug}
+            aria-label={"Feedback for " + slug}
+            className="field mt-2 min-h-24 resize-y"
+            value={feedback}
+            onChange={(event) => setFeedback(event.target.value)}
+            placeholder="What worked, what failed, or what should change?"
+            disabled={busy}
+            maxLength={4000}
+            required
+          />
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <div aria-live="polite" className="font-mono text-[11px]">
+          {err ? (
+            <span role="alert" className="text-ember">{err}</span>
+          ) : notice ? (
+            <span role="status" className="text-plasma">{notice}</span>
+          ) : (
+            <span className="text-ash/60">Distilled into reusable advisory lessons, not raw project history.</span>
+          )}
+        </div>
+        <button
+          type="submit"
+          disabled={busy || !feedback.trim()}
+          className="btn-ember disabled:opacity-50"
+        >
+          {busy ? "Saving…" : "Save feedback"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // Inline "the exact prompt(s) this build sent the model", shown as an expanded
 // sub-row. Loaded lazily (prompts run 10-50 KB each) from the manifest via
 // GET /projects/{slug}/prompts. Answers "what did skyn3t actually ask the model?"
@@ -412,28 +558,35 @@ function PromptsInline({ slug }) {
 
 function ServeCell({ slug, served, busy, err, canServe = true, serveReason = "", onServe, onStop }) {
   const running = !!served && (served.status === "running" || !!served.url);
+  const starting = served?.status === "starting";
+  const active = running || starting;
   const disabledReason = canServe ? "" : serveReason || "no web entrypoint";
+  const message = err || served?.detail?.reason || "";
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
-        {running ? (
+        {active ? (
           <>
-            <span className="h-1.5 w-1.5 rounded-full bg-plasma" />
-            <a
-              href={served.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-mono text-[11px] text-plasma underline hover:text-plasma/70"
-              title={served.url}
-            >
-              :{served.port} ↗
-            </a>
+            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-plasma" : "animate-pulse bg-ember"}`} />
+            {running ? (
+              <a
+                href={served.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-[11px] text-plasma underline hover:text-plasma/70"
+                title={served.url}
+              >
+                :{served.port} ↗
+              </a>
+            ) : (
+              <span className="font-mono text-[10px] text-ash/65">preparing Docker preview…</span>
+            )}
             <button
               onClick={() => onStop(slug)}
               disabled={busy === "stopping"}
               className="btn-ghost disabled:opacity-50"
             >
-              {busy === "stopping" ? "…" : "Stop"}
+              {busy === "stopping" ? "…" : starting ? "Cancel" : "Stop"}
             </button>
           </>
         ) : (
@@ -447,12 +600,12 @@ function ServeCell({ slug, served, busy, err, canServe = true, serveReason = "",
           </button>
         )}
       </div>
-      {err ? (
+      {message ? (
         <span
           className="max-w-[180px] truncate font-mono text-[10px] text-ember"
-          title={err}
+          title={message}
         >
-          {err}
+          {message}
         </span>
       ) : disabledReason ? (
         <span
@@ -803,6 +956,7 @@ export default function Projects({ stream }) {
   const [improveSlug, setImproveSlug] = useState(null);
   const [promptsSlug, setPromptsSlug] = useState(null);
   const [deploySlug, setDeploySlug] = useState(null);
+  const [feedbackSlug, setFeedbackSlug] = useState(null);
   const [busy, setBusy] = useState({}); // slug -> "serving" | "stopping"
   const [serveErr, setServeErr] = useState({}); // slug -> message
   const [reverifyState, setReverifyState] = useState({});
@@ -833,7 +987,7 @@ export default function Projects({ stream }) {
     setServeErr((e) => ({ ...e, [slug]: null }));
     try {
       const r = await apiPost("/studio/serve", { slug });
-      if (r.status !== "running") {
+      if (r.status !== "running" && r.status !== "starting") {
         const reason =
           r.detail?.install_error?.error ||
           r.detail?.reason ||
@@ -917,6 +1071,9 @@ export default function Projects({ stream }) {
         : "Recorded build cost for terminal projects with no shippable outcome; provider cost truth may still be estimated",
     },
   ];
+  const visibleProjectSignals = isLoading
+    ? projectSignals.map((item) => ({ ...item, value: "…" }))
+    : projectSignals;
 
   const sorted = useMemo(() => {
     const arr = [...projects];
@@ -952,7 +1109,9 @@ export default function Projects({ stream }) {
               </span>
             ) : null}
             <span className="badge border-hairline text-ash">
-              {projects.length} project{projects.length !== 1 ? "s" : ""}
+              {isLoading
+                ? "loading projects…"
+                : projects.length + " project" + (projects.length !== 1 ? "s" : "")}
             </span>
           </div>
         }
@@ -965,17 +1124,20 @@ export default function Projects({ stream }) {
       ) : null}
 
       <Panel className="mb-4 p-3">
-        <SignalGrid label="Projects cockpit" items={projectSignals} />
+        <SignalGrid label="Projects cockpit" items={visibleProjectSignals} />
       </Panel>
 
       <CleanupPanel qc={qc} />
+
+      {/* dead stream: the serve/improve columns replay a frozen event buffer */}
+      <StreamStaleBanner stream={stream} />
 
       <Panel className="overflow-hidden">
         <PanelHead
           label="Project list"
           right={
             <span className="font-mono text-[11px] text-ash">
-              {projects.length} total
+              {isLoading ? "loading…" : projects.length + " total"}
             </span>
           }
         />
@@ -1008,6 +1170,7 @@ export default function Projects({ stream }) {
                   const isImproving = improveSlug === p.slug;
                   const isShowingPrompts = promptsSlug === p.slug;
                   const isDeploying = deploySlug === p.slug;
+                  const isGivingFeedback = feedbackSlug === p.slug;
                   const ai = aiEvidence(p);
                   const costTruth = describeCostTruth(p);
                   const outcome = buildOutcome(p);
@@ -1212,6 +1375,22 @@ export default function Projects({ stream }) {
                                 </button>
                               ) : null}
                               <button
+                                type="button"
+                                onClick={() =>
+                                  setFeedbackSlug(isGivingFeedback ? null : p.slug)
+                                }
+                                className={
+                                  "btn-ghost " +
+                                  (isGivingFeedback
+                                    ? "text-ember"
+                                    : "text-plasma/80 hover:text-plasma")
+                                }
+                                aria-expanded={isGivingFeedback}
+                                aria-controls={"feedback-" + p.slug}
+                              >
+                                {isGivingFeedback ? "Close feedback" : "Feedback"}
+                              </button>
+                              <button
                                 onClick={() => setConfirmSlug(p.slug)}
                                 className="btn-ghost text-ember/70 hover:text-ember"
                               >
@@ -1239,6 +1418,16 @@ export default function Projects({ stream }) {
                         <tr>
                           <td colSpan={12} className="p-0">
                             <PromptsInline slug={p.slug} />
+                          </td>
+                        </tr>
+                      ) : null}
+                      {isGivingFeedback ? (
+                        <tr id={"feedback-" + p.slug}>
+                          <td colSpan={12} className="p-0">
+                            <FeedbackInline
+                              slug={p.slug}
+                              onClose={() => setFeedbackSlug(null)}
+                            />
                           </td>
                         </tr>
                       ) : null}

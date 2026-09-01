@@ -19,10 +19,10 @@ reason — it never crashes (design rule #6).
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from skyn3t.agents.github_fetch import resolve_github_token
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 
@@ -85,7 +85,9 @@ class LearningAssessment:
 def _auth_headers() -> dict[str, str]:
     headers = {"Accept": "application/vnd.github+json",
                "User-Agent": "skyn3t-github-explorer"}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    # Full chain (SKYN3T_GITHUB_TOKEN first): reading only the bare env names
+    # silently dropped the dashboard-managed token and rate-limited scouting.
+    token = resolve_github_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -173,7 +175,7 @@ def assess_metadata(repo: str, meta: dict[str, Any] | None,
 
 async def assess_github_learning_source(repo: str) -> LearningAssessment:
     """Top-level gate: fetch metadata and decide if learning is approved."""
-    have_token = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+    have_token = bool(resolve_github_token())
     meta = await fetch_repo_metadata(repo)
     return assess_metadata(repo, meta, have_token)
 
@@ -193,8 +195,7 @@ class GithubExplorer(BaseAgent):
 
     async def initialize(self) -> None:
         self.metadata["httpx_available"] = _HTTPX_AVAILABLE
-        self.metadata["has_token"] = bool(
-            os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+        self.metadata["has_token"] = bool(resolve_github_token())
         self.metadata["ready"] = True
 
     async def health_check(self) -> bool:

@@ -166,8 +166,10 @@ async def test_preview_runs_in_hardened_docker_on_localhost(tmp_path: Path) -> N
     assert app.detail["isolation"]["gateway_image_digest_pinned"] is True
 
     await supervisor.stop(app)
-    cleanup = [call[0][:3] for call in runner.calls[-4:]]
+    cleanup = [call[0][:3] for call in runner.calls[-6:]]
     assert cleanup == [
+        ["docker", "rm", "--force"],
+        ["docker", "rm", "--force"],
         ["docker", "rm", "--force"],
         ["docker", "rm", "--force"],
         ["docker", "network", "rm"],
@@ -453,6 +455,34 @@ async def test_dependency_prepare_failure_never_launches_runtime_and_cleans_reso
 
 
 @pytest.mark.asyncio
+async def test_prepare_failure_force_removes_auxiliary_containers(tmp_path: Path) -> None:
+    # A hung prepare keeps running daemon-side after its CLI client is killed
+    # (`--rm` only fires on in-container exit) and pins the app volume, so
+    # cleanup must force-remove the -prepare/-source-copy containers before
+    # attempting the volume removals.
+    _write_node_project(tmp_path)
+    runner = _FailPrepareRunner()
+    supervisor = PreviewSupervisor(
+        command_runner=runner,
+        toolchain_inspector=lambda **_: _tool_report(),
+    )
+
+    app = await supervisor.start(tmp_path, "react")
+
+    assert app.status == "failed"
+    name = app.detail["container_name"]
+    commands = [call[0] for call in runner.calls]
+    removed = [command[3] for command in commands if command[:3] == ["docker", "rm", "--force"]]
+    assert f"{name}-prepare" in removed
+    assert f"{name}-source-copy" in removed
+    volume_rm_index = next(
+        index for index, command in enumerate(commands) if command[:3] == ["docker", "volume", "rm"]
+    )
+    assert commands.index(["docker", "rm", "--force", f"{name}-prepare"]) < volume_rm_index
+    assert commands.index(["docker", "rm", "--force", f"{name}-source-copy"]) < volume_rm_index
+
+
+@pytest.mark.asyncio
 async def test_readiness_timeout_collects_logs_and_removes_container(tmp_path: Path) -> None:
     (tmp_path / "index.html").write_text("ok", encoding="utf-8")
     runner = _RecordingRunner()
@@ -476,6 +506,8 @@ async def test_readiness_timeout_collects_logs_and_removes_container(tmp_path: P
         ["docker", "run", "--detach"],
         ["docker", "network", "connect"],
         ["docker", "logs", "--tail"],
+        ["docker", "rm", "--force"],
+        ["docker", "rm", "--force"],
         ["docker", "rm", "--force"],
         ["docker", "rm", "--force"],
         ["docker", "network", "rm"],

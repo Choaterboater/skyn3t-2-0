@@ -715,6 +715,10 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "cost_usd": extra.get("build_cost_usd"),
         "cost_truth": cost_truth,
         "requirement_trace": requirement_trace,
+        # The gate ledger lives only in manifest.extra; this is the single
+        # propagation point to BUILD_COMPLETED payloads — without it the
+        # dashboard's gate ladder/diagnostics have nothing to render.
+        "gate_findings": list(_as_list(extra.get("gate_findings"))),
     }
     return {
         "build_profile": str(extra.get("build_profile") or ""),

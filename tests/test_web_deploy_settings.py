@@ -20,6 +20,7 @@ _DEPLOY_FIELDS = {
     "cloudflare": ("cloudflare_api_token", "CLOUDFLARE_API_TOKEN"),
     "netlify": ("netlify_auth_token", "NETLIFY_AUTH_TOKEN"),
     "railway": ("railway_token", "RAILWAY_TOKEN"),
+    "render": ("render_api_key", "RENDER_API_KEY"),
 }
 
 
@@ -51,7 +52,9 @@ async def test_deploy_payload_reports_only_presence() -> None:
     assert payload["allow_remote_deploy"] is True
     assert set(payload["provider_details"]) == set(_DEPLOY_FIELDS)
     assert set(payload["cli_available"]) == set(_DEPLOY_FIELDS)
-    assert "render" not in payload["selectable_providers"]
+    # Render is fully supported by Settings + DeployAgent; the GUI maps were
+    # the only layer missing it (audit finding M20).
+    assert "render" in payload["selectable_providers"]
     assert general_payload["deploy_providers"] == payload["providers"]
     assert general_payload["allow_remote_deploy"] is True
     for secret in secrets.values():
@@ -85,7 +88,7 @@ async def test_deploy_payload_combines_gate_credential_and_cli_readiness(monkeyp
         "ready": True,
     }
     assert payload["provider_details"]["fly"]["ready"] is False
-    assert "render" not in payload["providers"]
+    assert payload["providers"]["render"] is False  # selectable, unconfigured
 
 
 async def test_set_deploy_credential_updates_live_settings_without_env_when_not_persisting() -> None:
@@ -132,8 +135,6 @@ async def test_deploy_credential_rejects_unknown_provider_and_multiline_value() 
     state = _state()
     with pytest.raises(ValueError, match="unknown deploy provider"):
         await routes.set_deploy_credential(state, "unknown", "secret", persist=False)
-    with pytest.raises(ValueError, match="unknown deploy provider"):
-        await routes.set_deploy_credential(state, "render", "secret", persist=False)
     with pytest.raises(ValueError, match="single line"):
         await routes.set_deploy_credential(
             state,
@@ -202,7 +203,9 @@ def test_deploy_routes_require_auth_and_never_return_tokens(tmp_path, monkeypatc
     assert rejected.status_code == 422
     render = client.post(
         "/api/settings/deploy/credential",
-        json={"provider": "render", "token": "legacy-secret"},
+        json={"provider": "render", "token": "render-new-secret"},
         headers=headers,
     )
-    assert render.status_code == 422
+    assert render.status_code == 200
+    assert render.json() == {"provider": "render", "configured": True}
+    assert "render-new-secret" not in render.text

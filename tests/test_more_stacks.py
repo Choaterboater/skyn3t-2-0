@@ -132,6 +132,12 @@ def test_default_web_scaffolds_ship_design_system_primitives():
     assert "design-system starter" in nextjs["app/page.jsx"].lower()
 
 
+def test_react_vite_ui_jsx_ships_all_eight_primitives():
+    ui = scaffold_for("react_vite", "demo", "A product dashboard")["src/components/ui.jsx"]
+    for name in ("Button", "Panel", "StatCard", "TextInput", "Badge", "Modal", "Table", "FormField"):
+        assert f"export function {name}" in ui, f"react_vite ui.jsx missing {name}"
+
+
 def test_astro_scaffold_is_runnable_shape():
     files = scaffold_for("astro", "docs-site", "Documentation for a tool")
     for required in ("package.json", "src/pages/index.astro",
@@ -280,3 +286,17 @@ def test_new_stack_resolves_in_all_vocabularies(brief, stack, marker):
     # scaffold builder is registered (no fallback to react_vite)
     files = scaffold_for(stack, "demo", brief)
     assert marker in files, f"{stack} scaffold missing its marker {marker}"
+
+
+def test_astro_package_json_pins_astro5_and_esm_estree_walker():
+    """Regression: astro 4's CLI chain nests a CJS estree-walker@2 (via
+    @rollup/pluginutils) whose named exports Node 24's ESM loader rejects
+    ("'walk' not found") — the build fails before producing a page. Astro 5
+    plus an npm override forcing the ESM estree-walker@3 is the verified fix."""
+    files = scaffold_for("astro", "bakery-site", "a warm editorial bakery site")
+    pkg = json.loads(files["package.json"])
+
+    assert pkg["dependencies"]["astro"].startswith("^5")
+    assert pkg["overrides"]["estree-walker"].startswith("^3")
+    # The layout must ship a meta description (the seo gate's hard signal).
+    assert 'name="description"' in files["src/layouts/Layout.astro"]

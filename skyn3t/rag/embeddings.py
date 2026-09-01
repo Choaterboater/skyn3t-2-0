@@ -14,6 +14,8 @@ import math
 import re
 from collections.abc import Sequence
 
+import structlog
+
 try:  # optional heavy dependency
     from sentence_transformers import SentenceTransformer  # type: ignore
 
@@ -21,6 +23,8 @@ try:  # optional heavy dependency
 except Exception:  # pragma: no cover - exercised only when dep present
     SentenceTransformer = None  # type: ignore
     _ST_AVAILABLE = False
+
+log = structlog.get_logger(__name__)
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
@@ -63,6 +67,11 @@ class Embedder:
                 self._model = SentenceTransformer(self.model_name)  # type: ignore
             except Exception:
                 # Network/model load failure -> degrade to hashing.
+                log.warning(
+                    "embeddings.model_load_failed",
+                    model=self.model_name,
+                    exc_info=True,
+                )
                 self._use_st = False
                 self.backend = "hashing"
 
@@ -94,6 +103,14 @@ class Embedder:
                     )
                     return [list(map(float, v)) for v in vecs]
                 except Exception:
+                    # Encode failure -> degrade to hashing so callers always
+                    # get vectors (design rule #6), but never silently.
+                    log.warning(
+                        "embeddings.encode_failed",
+                        model=self.model_name,
+                        texts=len(texts),
+                        exc_info=True,
+                    )
                     self._use_st = False
                     self.backend = "hashing"
         return [self._hash_embed(t) for t in texts]

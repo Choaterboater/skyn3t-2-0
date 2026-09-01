@@ -132,7 +132,13 @@ def _regular_file(root: Path, relative: Path, label: str) -> tuple[Path, os.stat
 
 def _open_regular(root: Path, relative: Path, label: str) -> tuple[int, os.stat_result]:
     path, before = _regular_file(root, relative, label)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_BINARY for the same reason as the fingerprint walker below: on Windows
+    # the default is text mode, which rewrites CRLF -> LF on read. The bytes
+    # returned by _read_json are digested by the caller, so a promoted artifact
+    # written with Windows line endings hashed differently on read-back and was
+    # rejected as "promoted proof artifacts failed digest validation" — evidence
+    # reuse could never succeed on Windows. No-op (0) on POSIX.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -207,10 +213,23 @@ def preview_input_fingerprint(
         Path(".skyn3t/proof-ladder"),
         Path("skyn3t_manifest.json"),
         Path("skyn3t-observability.json"),
+        # Version-control metadata is not a RUNTIME input: nothing about how the
+        # delivered app boots or serves depends on it. Including it made the
+        # fingerprint fire on a file the build itself legitimately writes —
+        # `StudioRunner._stub_for` fills a missing checklist `.gitignore`
+        # mid-build — producing "runtime input .gitignore changed during
+        # validation", which failed the UI proof of an app whose objective proof
+        # had PASSED. Mirrors proof_run._TRIVIAL_FILES, which already treats
+        # these as carrying no delivery signal.
+        Path(".gitignore"),
+        Path(".gitattributes"),
     ]
-    if spec.kind == "node":
-        excluded.append(Path("node_modules"))
-    elif spec.kind == "python_web":
+    # node_modules is ALWAYS derived content (rebuilt from the lockfile), never
+    # a runtime input — and npm churns transient dirs (.tap/coverage) mid-walk,
+    # which used to kill the fingerprint with WinError 3 on static sites that
+    # merely HAPPEN to ship a node_modules tree. Exclude it for every kind.
+    excluded.append(Path("node_modules"))
+    if spec.kind == "python_web":
         excluded.extend((Path(".venv"), Path("venv")))
 
     digest = hashlib.sha256()
@@ -267,7 +286,15 @@ def preview_input_fingerprint(
                 raise _ReuseError(f"runtime input {relative.as_posix()} is aliased")
             _field(digest, f"file:{relative.as_posix()}:{stat.S_IMODE(metadata.st_mode)}")
             _field(digest, str(metadata.st_size))
-            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            # O_BINARY is REQUIRED on Windows. Without it os.open uses text
+            # mode, which translates CRLF -> LF on read, so os.read returns
+            # fewer bytes than st_size for any file with a Windows line ending.
+            # The read_bytes != opened.st_size guard below then reports the file
+            # as "changed during validation" — a tamper signal — when nothing
+            # touched it. That silently failed the UI proof of any project
+            # containing a single CRLF file, i.e. essentially all of them on
+            # Windows. It is a no-op (0) on POSIX.
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
             descriptor = os.open(path, flags)
             try:
                 opened = os.fstat(descriptor)

@@ -38,6 +38,7 @@ ALL_STACK_CASES_RAW = [
     ("shortener-express", "a Node Express URL shortener API with an in-memory store", "express"),
     ("habit-mobile", "an Expo mobile app: a habit tracker with daily streaks", "react_native"),
     ("timer-macos", "a native macOS SwiftUI menu-bar countdown timer app", "swift"),
+    ("cellar-ios", "an iOS SwiftUI app to catalog wine bottles in your cellar with barcode scanning and tasting notes", "swift_ios"),
     ("notes-desktop", "a Tauri desktop markdown notes app that saves to a local file", "tauri"),
     ("sqlite-mcp", "an MCP server exposing a tool to run read-only queries on a sqlite database", "mcp"),
     ("docs-rag", "a RAG app to ingest and chat with your uploaded text documents", "rag"),

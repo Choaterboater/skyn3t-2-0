@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from skyn3t.atomic_io import atomic_write_text
+from skyn3t.atomic_io import atomic_write_bytes, atomic_write_text
 
 try:
     import structlog
@@ -43,6 +44,13 @@ except Exception:  # pragma: no cover - defensive
 PROMOTE_MIN_USES = 4
 PROMOTE_MIN_RATE = 0.66
 _SCORES_FILENAME = ".skill_scores.json"
+_HUB_REPORT_FILENAME = ".skill_hub_imports.json"
+_EVIDENCE_DIRNAME = "evidence"
+_MAX_RETAINED_EVIDENCE_BYTES = 512_000
+_MAX_HUB_FILES = 300
+_LOCAL_HUB_SOURCE = "local-hub"
+_LOCAL_HUB_TAG = "local-hub"
+_LEGACY_MIGRATED_TAG = "legacy-migrated"
 
 # Agent Skills-compatible metadata keys. The standard reserves ``metadata`` for
 # client-defined values, so SkyN3t keeps its import record namespaced there
@@ -51,24 +59,59 @@ _PROVENANCE_SOURCE_URL = "skyn3t-source-url"
 _PROVENANCE_REVISION = "skyn3t-pinned-revision"
 _PROVENANCE_CONTENT_HASH = "skyn3t-content-sha256"
 _PROVENANCE_SOURCE_PATH = "skyn3t-source-path"
-_PROVENANCE_METADATA_KEYS = frozenset({
-    _PROVENANCE_SOURCE_URL,
-    _PROVENANCE_REVISION,
-    _PROVENANCE_CONTENT_HASH,
-    _PROVENANCE_SOURCE_PATH,
-})
+_PROVENANCE_EVIDENCE_PATH = "skyn3t-evidence-path"
+_PROVENANCE_METADATA_KEYS = frozenset(
+    {
+        _PROVENANCE_SOURCE_URL,
+        _PROVENANCE_REVISION,
+        _PROVENANCE_CONTENT_HASH,
+        _PROVENANCE_SOURCE_PATH,
+        _PROVENANCE_EVIDENCE_PATH,
+    }
+)
 
-_UNIVERSAL_GENERIC_TAGS = frozenset({
-    "quality", "verification", "testing", "ci", "delivery", "security",
-    "smoke-test", "healthcheck", "build-pattern", "reproducibility",
-    "dependencies", "secrets", "docs", "documentation", "packaging",
-})
+_UNIVERSAL_GENERIC_TAGS = frozenset(
+    {
+        "quality",
+        "verification",
+        "testing",
+        "ci",
+        "delivery",
+        "security",
+        "smoke-test",
+        "healthcheck",
+        "build-pattern",
+        "reproducibility",
+        "dependencies",
+        "secrets",
+        "docs",
+        "documentation",
+        "packaging",
+    }
+)
 
 _DESKTOP_TAGS = frozenset({"desktop", "tauri", "native"})
 _MOBILE_TAGS = frozenset({"mobile", "expo", "react-native", "react_native"})
 _GAME_TAGS = frozenset({"game", "gamedev", "phaser", "arcade", "shmup", "shooter"})
 _CLI_TAGS = frozenset({"cli", "command-line", "commandline"})
 _QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
+_EXTERNAL_CANDIDATE_TAG = "external-candidate"
+_EXTERNAL_PROMOTED_TAG = "external-promoted"
+_CATALOG_CANDIDATE_TAG = "catalog-candidate"
+_CATALOG_PROMOTED_TAG = "catalog-promoted"
+_CATALOG_SOURCE = "agent_catalog"
+_LEGACY_SOURCE_SLUG_METADATA = "skyn3t-legacy-source-slug"
+_LEGACY_BODY_HASH_METADATA = "skyn3t-legacy-body-sha256"
+_HUB_ID_METADATA = "skyn3t-hub-id"
+_FULL_GIT_REVISION_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+_SHA256_IDENTIFIER_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+_GITHUB_SOURCE_URL_RE = re.compile(
+    r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", re.IGNORECASE
+)
+_LEGACY_GITHUB_REPO_SOURCE_RE = re.compile(
+    r"^https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?/?$",
+    re.IGNORECASE,
+)
 
 # Group equivalent stack vocabularies so a build's detected stack matches skills
 # tagged with a sibling name (e.g. a 'cli' build should see 'python' skills).
@@ -85,6 +128,21 @@ _STACK_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"sveltekit", "svelte", "svelte-kit"}),
     frozenset({"react_ts", "react-typescript", "typescript", "ts", "tsx"}),
     frozenset({"react_native", "mobile", "expo"}),
+    # Keep native iOS knowledge separate from Expo guidance. A future skill tagged
+    # `swift_ios`/`swiftui_ios` will now be recalled for this stack without
+    # accidentally injecting React Native implementation advice.
+    frozenset(
+        {
+            "swift_ios",
+            "ios_swift",
+            "swiftui_ios",
+            "ios_swiftui",
+            "ios_native",
+            "native_ios",
+            "iphone_swift",
+            "ipad_swift",
+        }
+    ),
     frozenset({"node", "node_express", "express"}),
     frozenset({"fastapi", "flask", "django", "python_api"}),
     frozenset({"static", "static_html", "html"}),
@@ -104,6 +162,98 @@ def _stack_aliases(stack: str) -> frozenset[str]:
         if s in group:
             return group
     return frozenset({s}) if s else frozenset()
+
+
+def _tagged_stacks(tags: set[str]) -> frozenset[str]:
+    """Return explicit alternative stack IDs retained by catalog imports."""
+    alternatives: set[str] = set()
+    for tag in tags:
+        prefix, separator, value = tag.partition(":")
+        if prefix.lower() == "stack" and separator and value.strip():
+            alternatives.add(value.strip().lower())
+    return frozenset(alternatives)
+
+
+def _skill_matches_stack(skill_stack: str, skill_tags: set[str], stack: str) -> bool:
+    """Match a primary stack or a catalog-declared alternative safely.
+
+    Callers keep compatibility/quarantine checks separate so an alternative
+    stack tag cannot make an otherwise excluded skill injectable.
+    """
+    aliases = _stack_aliases(stack)
+    if not aliases:
+        return False
+    declared = {(skill_stack or "").strip().lower()}
+    declared.update(_tagged_stacks(skill_tags))
+    return any(candidate in aliases for candidate in declared if candidate)
+
+
+def _canonical_github_repo_origin(value: str | None) -> str | None:
+    """Normalize a repository-root GitHub URL for provenance comparison."""
+    source = (value or "").strip()
+    if not _LEGACY_GITHUB_REPO_SOURCE_RE.fullmatch(source):
+        return None
+    source = re.sub(r"^https?://(?:www\.)?", "https://", source, flags=re.IGNORECASE)
+    source = source.rstrip("/")
+    if source.lower().endswith(".git"):
+        source = source[:-4]
+    return source.lower()
+
+
+def _has_complete_github_provenance(
+    provenance: SkillProvenance | None,
+    *,
+    expected_origin: str | None = None,
+) -> bool:
+    """Validate the immutable evidence required for GitHub-derived guidance.
+
+    This is intentionally the same narrow evidence contract used by explicit
+    external promotion. A readable branch, release name, or status tag does
+    not identify immutable source content and therefore cannot make a legacy
+    GitHub-derived skill eligible for default prompt injection.
+    """
+    if provenance is None:
+        return False
+    source_url = (provenance.source_url or "").strip()
+    revision = (provenance.pinned_revision or "").strip()
+    content_hash = (provenance.content_hash or "").strip()
+    source_path = (provenance.source_path or "").strip()
+    if not (
+        _GITHUB_SOURCE_URL_RE.fullmatch(source_url)
+        and _FULL_GIT_REVISION_RE.fullmatch(revision)
+        and _SHA256_IDENTIFIER_RE.fullmatch(content_hash)
+        and source_path
+        and not any(char in source_path for char in "\r\n\x00")
+    ):
+        return False
+    if _safe_catalog_source_path(source_path) is None:
+        return False
+    if expected_origin is None:
+        return True
+    return _canonical_github_repo_origin(expected_origin) == source_url.lower()
+
+
+def _safe_catalog_source_path(value: str | None) -> str | None:
+    """Return a normalized, non-traversing catalog-relative source path."""
+    source_path = (value or "").strip().replace("\\", "/")
+    if not source_path or len(source_path) > 2048:
+        return None
+    if source_path.startswith("/") or ":" in source_path:
+        return None
+    if any(ord(char) < 32 for char in source_path):
+        return None
+    parts = source_path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def _safe_evidence_path(value: str | None) -> str | None:
+    """Return a skill-library-relative retained-evidence path, if safe."""
+    path = _safe_catalog_source_path(value)
+    if path is None or not path.startswith(f"{_EVIDENCE_DIRNAME}/"):
+        return None
+    return path
 
 
 def _skill_tags_compatible(stack: str, sk_tags: set[str]) -> bool:
@@ -159,6 +309,7 @@ class SkillProvenance:
     license: str | None = None
     content_hash: str | None = None
     source_path: str | None = None
+    evidence_path: str | None = None
     tools: tuple[str, ...] = ()
     metadata: dict[str, str] = field(default_factory=dict)
     compatibility: str | None = None
@@ -178,6 +329,9 @@ class SkillProvenance:
             self.content_hash or metadata.get(_PROVENANCE_CONTENT_HASH)
         )
         self.source_path = _optional_text(self.source_path or metadata.get(_PROVENANCE_SOURCE_PATH))
+        self.evidence_path = _optional_text(
+            self.evidence_path or metadata.get(_PROVENANCE_EVIDENCE_PATH)
+        )
         self.compatibility = _optional_text(self.compatibility)
         self.tools = _tool_list(self.tools)
         self.metadata = {
@@ -186,16 +340,19 @@ class SkillProvenance:
 
     @property
     def is_empty(self) -> bool:
-        return not any((
-            self.source_url,
-            self.pinned_revision,
-            self.license,
-            self.content_hash,
-            self.source_path,
-            self.tools,
-            self.metadata,
-            self.compatibility,
-        ))
+        return not any(
+            (
+                self.source_url,
+                self.pinned_revision,
+                self.license,
+                self.content_hash,
+                self.source_path,
+                self.evidence_path,
+                self.tools,
+                self.metadata,
+                self.compatibility,
+            )
+        )
 
     def with_content_hash(self, content: str | bytes) -> SkillProvenance:
         """Return a copy pinned to ``content`` unless a hash was supplied."""
@@ -205,6 +362,7 @@ class SkillProvenance:
             license=self.license,
             content_hash=self.content_hash or content_sha256(content),
             source_path=self.source_path,
+            evidence_path=self.evidence_path,
             tools=self.tools,
             metadata=dict(self.metadata),
             compatibility=self.compatibility,
@@ -218,6 +376,7 @@ class SkillProvenance:
             license=self.license,
             content_hash=self.content_hash,
             source_path=source_path.replace("\\", "/") if source_path else self.source_path,
+            evidence_path=self.evidence_path,
             tools=self.tools,
             metadata=dict(self.metadata),
             compatibility=self.compatibility,
@@ -231,6 +390,7 @@ class SkillProvenance:
             "license": self.license,
             "content_hash": self.content_hash,
             "source_path": self.source_path,
+            "evidence_path": self.evidence_path,
             "tools": list(self.tools),
             "metadata": dict(self.metadata),
             "compatibility": self.compatibility,
@@ -251,6 +411,8 @@ class SkillProvenance:
             metadata[_PROVENANCE_CONTENT_HASH] = self.content_hash
         if self.source_path:
             metadata[_PROVENANCE_SOURCE_PATH] = self.source_path
+        if self.evidence_path:
+            metadata[_PROVENANCE_EVIDENCE_PATH] = self.evidence_path
         return metadata
 
 
@@ -304,22 +466,19 @@ class Skill:
         # Preserve Agent Skills discovery metadata from a curated import. We
         # intentionally leave old manually-authored skill files unchanged.
         if self.description:
-            fm.extend([
-                f"name: {_frontmatter_scalar(self.slug)}",
-                f"description: {_frontmatter_scalar(self.description)}",
-            ])
+            fm.extend(
+                [
+                    f"name: {_frontmatter_scalar(self.slug)}",
+                    f"description: {_frontmatter_scalar(self.description)}",
+                ]
+            )
         if self.provenance is not None:
             if self.provenance.license:
                 fm.append(f"license: {_frontmatter_scalar(self.provenance.license)}")
             if self.provenance.compatibility:
-                fm.append(
-                    f"compatibility: {_frontmatter_scalar(self.provenance.compatibility)}"
-                )
+                fm.append(f"compatibility: {_frontmatter_scalar(self.provenance.compatibility)}")
             if self.provenance.tools:
-                fm.append(
-                    "allowed-tools: "
-                    f"{_frontmatter_scalar(' '.join(self.provenance.tools))}"
-                )
+                fm.append(f"allowed-tools: {_frontmatter_scalar(' '.join(self.provenance.tools))}")
             metadata = self.provenance.frontmatter_metadata()
             if metadata:
                 fm.append("metadata:")
@@ -452,6 +611,7 @@ def _provenance_from_frontmatter(meta: dict[str, object]) -> SkillProvenance | N
             or _meta_text(meta, "content-sha256")
         ),
         source_path=metadata.get(_PROVENANCE_SOURCE_PATH),
+        evidence_path=metadata.get(_PROVENANCE_EVIDENCE_PATH),
         tools=_tool_list(meta.get("allowed-tools")),
         metadata=metadata,
         compatibility=_meta_text(meta, "compatibility"),
@@ -484,14 +644,102 @@ def parse_skill(text: str, *, fallback_slug: str = "skill") -> Skill:
         uses=int(_meta_text(meta, "uses") or 0),
         helpful=int(_meta_text(meta, "helpful") or 0),
         quality_sum=(
-            float(_meta_text(meta, "quality_sum"))
-            if _meta_text(meta, "quality_sum")
-            else None
+            float(_meta_text(meta, "quality_sum")) if _meta_text(meta, "quality_sum") else None
         ),
         source=_meta_text(meta, "source") or "manual",
         description=description,
         provenance=_provenance_from_frontmatter(meta),
     )
+
+
+def _quarantine_unpinned_legacy_github_skill(skill: Skill) -> None:
+    """Keep old GitHub-distilled files out of default injection on load.
+
+    The historical format used a literal GitHub repository URL plus the
+    github-distilled tag without immutable source evidence. Mark only the
+    in-memory representation. An ``external-promoted`` tag, branch name, or
+    tag name is not evidence: legacy files become eligible only when their
+    canonical origin, full Git object ID, evidence hash, and source path meet
+    the same contract as explicit external promotion.
+    """
+    source = (skill.source or "").strip()
+    tags = {tag.strip().lower() for tag in skill.tags if tag.strip()}
+    if "github-distilled" not in tags:
+        return
+    if not _LEGACY_GITHUB_REPO_SOURCE_RE.fullmatch(source):
+        return
+    if _has_complete_github_provenance(skill.provenance, expected_origin=source):
+        return
+    if not tags & _QUARANTINE_TAGS:
+        skill.tags.append("hygiene:quarantine")
+
+
+def _catalog_tagset(skill: Skill) -> set[str]:
+    return {tag.strip().lower() for tag in skill.tags if tag.strip()}
+
+
+def _has_catalog_identity(tags: set[str]) -> bool:
+    return any(tag.startswith("catalog:") and len(tag) > len("catalog:") for tag in tags)
+
+
+def _is_catalog_skill(skill: Skill, tags: set[str] | None = None) -> bool:
+    tagset = tags if tags is not None else _catalog_tagset(skill)
+    return (
+        (skill.source or "").strip().lower() == _CATALOG_SOURCE
+        or _CATALOG_CANDIDATE_TAG in tagset
+        or _CATALOG_PROMOTED_TAG in tagset
+        or _has_catalog_identity(tagset)
+    )
+
+
+def _has_valid_catalog_activation_evidence(skill: Skill) -> bool:
+    provenance = skill.provenance
+    if provenance is None:
+        return False
+    source_path = _safe_catalog_source_path(provenance.source_path)
+    content_hash = (provenance.content_hash or "").strip()
+    return bool(
+        source_path
+        and _SHA256_IDENTIFIER_RE.fullmatch(content_hash)
+        and content_hash.lower() == content_sha256(skill.body)
+    )
+
+
+def _has_valid_legacy_migration_body(skill: Skill) -> bool:
+    """Validate that a migrated candidate’s advisory body was not altered."""
+    provenance = skill.provenance
+    if provenance is None:
+        return False
+    expected = ((provenance.metadata or {}).get(_LEGACY_BODY_HASH_METADATA) or "").strip().lower()
+    legacy_slug = ((provenance.metadata or {}).get(_LEGACY_SOURCE_SLUG_METADATA) or "").strip()
+    return bool(
+        legacy_slug
+        and _SHA256_IDENTIFIER_RE.fullmatch(expected)
+        and expected == content_sha256(skill.body).lower()
+    )
+
+
+def _quarantine_unevidenced_agent_catalog_skill(skill: Skill) -> None:
+    """Keep catalog guidance inert unless an explicit activation receipt exists."""
+    tags = _catalog_tagset(skill)
+    if not _is_catalog_skill(skill, tags):
+        return
+    is_active = (
+        _CATALOG_PROMOTED_TAG in tags
+        and _CATALOG_CANDIDATE_TAG not in tags
+        and not (tags & _QUARANTINE_TAGS)
+        and _has_catalog_identity(tags)
+        and _has_valid_catalog_activation_evidence(skill)
+    )
+    if is_active:
+        return
+    if _CATALOG_PROMOTED_TAG in tags:
+        skill.tags = [tag for tag in skill.tags if tag.strip().lower() != _CATALOG_PROMOTED_TAG]
+        tags = _catalog_tagset(skill)
+    if _CATALOG_CANDIDATE_TAG not in tags:
+        skill.tags.append(_CATALOG_CANDIDATE_TAG)
+    if not tags & _QUARANTINE_TAGS:
+        skill.tags.append("hygiene:quarantine")
 
 
 def _curated_provenance(
@@ -514,10 +762,53 @@ def _curated_provenance(
         pinned_revision=template.pinned_revision or existing.pinned_revision,
         license=template.license or existing.license,
         content_hash=content_sha256(content),
+        evidence_path=template.evidence_path or existing.evidence_path,
         tools=template.tools or existing.tools,
         metadata=metadata,
         compatibility=template.compatibility or existing.compatibility,
     ).with_source_path(source_path)
+
+
+def _dedupe_tags(tags: list[str]) -> list[str]:
+    """Keep the first spelling of each non-empty tag, case-insensitively."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        tag = str(raw).strip()
+        key = tag.lower()
+        if tag and key not in seen:
+            seen.add(key)
+            out.append(tag)
+    return out
+
+
+def _legacy_candidate_slug(
+    legacy: Skill,
+    *,
+    source_url: str,
+    pinned_revision: str,
+    source_path: str,
+    evidence_hash: str,
+) -> str:
+    """Make one stable, distinct candidate slug for a legacy evidence receipt."""
+    identity = "\n".join(
+        (
+            legacy.slug,
+            content_sha256(legacy.body),
+            source_url,
+            pinned_revision,
+            source_path,
+            evidence_hash,
+        )
+    )
+    suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"legacy-{_slugify(legacy.slug)[:48]}-{suffix}"
+
+
+def _hub_skill_slug(hub_id: str, skill: Skill, source_path: str) -> str:
+    """Namespace a local hub skill so it cannot overwrite a live skill."""
+    path_suffix = hashlib.sha256(source_path.encode("utf-8")).hexdigest()[:10]
+    return f"hub-{hub_id}-{_slugify(skill.slug)[:42]}-{path_suffix}"
 
 
 class SkillLibrary:
@@ -526,8 +817,10 @@ class SkillLibrary:
     def __init__(self, skills_dir: Path | str | None = None) -> None:
         self.dir = Path(skills_dir) if skills_dir else None
         self._skills: dict[str, Skill] = {}
+        self._hub_report: dict[str, Any] = {"schema_version": 1, "updated_at": 0.0, "reports": []}
         if self.dir is not None:
             self._load()
+            self._load_hub_report()
 
     # ---- persistence (best-effort) ------------------------------------
     def _load(self) -> None:
@@ -535,9 +828,11 @@ class SkillLibrary:
             return
         for f in sorted(self.dir.glob("*.md")):
             try:
-                sk = parse_skill(f.read_text(), fallback_slug=f.stem)
+                sk = parse_skill(f.read_text(encoding="utf-8"), fallback_slug=f.stem)
                 if not sk.body.strip():
                     continue
+                _quarantine_unpinned_legacy_github_skill(sk)
+                _quarantine_unevidenced_agent_catalog_skill(sk)
                 self._skills[sk.slug] = sk
             except Exception as exc:  # noqa: BLE001
                 if _log:
@@ -551,7 +846,7 @@ class SkillLibrary:
         if not path.exists():
             return
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
             for slug, raw in data.items():
@@ -564,6 +859,94 @@ class SkillLibrary:
         except Exception as exc:  # noqa: BLE001
             if _log:
                 _log.warning("skills.score_load_failed", error=str(exc))
+
+    def _load_hub_report(self) -> None:
+        if self.dir is None:
+            return
+        path = self.dir / _HUB_REPORT_FILENAME
+        if not path.exists() or path.is_symlink():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            reports = raw.get("reports") if isinstance(raw, dict) else None
+            if not isinstance(reports, list):
+                return
+            self._hub_report = {
+                "schema_version": int(raw.get("schema_version", 1) or 1),
+                "updated_at": float(raw.get("updated_at", 0.0) or 0.0),
+                "reports": [dict(item) for item in reports if isinstance(item, dict)],
+            }
+        except (OSError, UnicodeDecodeError, ValueError, TypeError):
+            return
+
+    def _persist_hub_report(self) -> bool:
+        if self.dir is None:
+            return False
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                self.dir / _HUB_REPORT_FILENAME,
+                json.dumps(self._hub_report, indent=2, sort_keys=True),
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if _log:
+                _log.warning("skills.hub_report_persist_failed", error=str(exc))
+            return False
+
+    def _evidence_target(self, relative_path: str | None) -> Path | None:
+        """Resolve a retained-evidence receipt only when it stays below the library."""
+        if self.dir is None:
+            return None
+        safe = _safe_evidence_path(relative_path)
+        if safe is None:
+            return None
+        try:
+            root = self.dir.resolve()
+            target = (self.dir / safe).resolve()
+            target.relative_to(root)
+            return target
+        except (OSError, ValueError):
+            return None
+
+    def _retain_evidence(self, relative_path: str, evidence: bytes) -> bool:
+        target = self._evidence_target(relative_path)
+        if target is None or len(evidence) == 0 or len(evidence) > _MAX_RETAINED_EVIDENCE_BYTES:
+            return False
+        try:
+            if target.exists() and target.is_symlink():
+                return False
+            atomic_write_bytes(target, evidence)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if _log:
+                _log.warning("skills.evidence_persist_failed", path=str(target), error=str(exc))
+            return False
+
+    def _retained_evidence_matches(self, skill: Skill) -> bool:
+        provenance = skill.provenance
+        if provenance is None:
+            return False
+        target = self._evidence_target(provenance.evidence_path)
+        expected = (provenance.content_hash or "").strip().lower()
+        if target is None or not _SHA256_IDENTIFIER_RE.fullmatch(expected):
+            return False
+        try:
+            if target.is_symlink() or not target.is_file():
+                return False
+            if target.stat().st_size > _MAX_RETAINED_EVIDENCE_BYTES:
+                return False
+            return content_sha256(target.read_bytes()).lower() == expected
+        except OSError:
+            return False
+
+    def hub_report(self) -> dict[str, Any]:
+        """Last configured-hub import report, suitable for CLI/API observability."""
+        return {
+            "schema_version": self._hub_report.get("schema_version", 1),
+            "updated_at": self._hub_report.get("updated_at", 0.0),
+            "reports": [dict(item) for item in self._hub_report.get("reports", [])],
+        }
 
     def _persist(self, skill: Skill) -> bool:
         if self.dir is None:
@@ -592,7 +975,9 @@ class SkillLibrary:
                 for slug, sk in sorted(self._skills.items())
                 if sk.uses or sk.helpful or (sk.quality_sum or 0.0)
             }
-            atomic_write_text(self.dir / _SCORES_FILENAME, json.dumps(data, indent=2, sort_keys=True))
+            atomic_write_text(
+                self.dir / _SCORES_FILENAME, json.dumps(data, indent=2, sort_keys=True)
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:
@@ -625,6 +1010,7 @@ class SkillLibrary:
             description=description.strip(),
             provenance=provenance,
         )
+        _quarantine_unevidenced_agent_catalog_skill(skill)
         self._skills[slug] = skill
         self._persist(skill)
         return skill
@@ -644,12 +1030,11 @@ class SkillLibrary:
         crowding out stack-native guidance.
         """
         tagset = {t.lower() for t in (tags or [])}
-        aliases = _stack_aliases(stack)
         sk_stack = (skill.stack or "").strip().lower()
         sk_tags = {t.lower() for t in skill.tags}
         if not _skill_tags_compatible(stack, sk_tags):
             return False
-        if sk_stack in aliases or sk_stack == (stack or "").strip().lower():
+        if _skill_matches_stack(sk_stack, sk_tags, stack):
             return True
         if sk_stack != "generic":
             return False
@@ -743,40 +1128,456 @@ class SkillLibrary:
             ),
         )
 
+    # ---- evidence-bound migration and local hubs ---------------------
+    def _legacy_migration_inputs(
+        self,
+        slug: str,
+        *,
+        source_url: str,
+        pinned_revision: str,
+        source_path: str,
+        evidence: str | bytes,
+    ) -> tuple[Skill, str, str, str, bytes, str, str, str]:
+        """Validate one legacy external skill without mutating it."""
+        if self.dir is None:
+            raise ValueError("legacy migration requires a file-backed skill library")
+        legacy = self.get(slug)
+        if legacy is None:
+            raise ValueError(f"legacy skill {slug!r} was not found")
+        legacy_tags = {tag.strip().lower() for tag in legacy.tags if tag.strip()}
+        if "github-distilled" not in legacy_tags:
+            raise ValueError("legacy migration only accepts github-distilled skills")
+        if _has_complete_github_provenance(legacy.provenance):
+            raise ValueError(
+                "skill already has complete immutable provenance; promote it explicitly"
+            )
+
+        supplied_origin = (source_url or "").strip()
+        origin = _canonical_github_repo_origin(supplied_origin)
+        if origin is None or supplied_origin != origin:
+            raise ValueError("source_url must be canonical https://github.com/<owner>/<repo>")
+        revision = (pinned_revision or "").strip().lower()
+        if not _FULL_GIT_REVISION_RE.fullmatch(revision):
+            raise ValueError("pinned_revision must be a full 40- or 64-character Git object ID")
+        safe_source_path = _safe_catalog_source_path(source_path)
+        if safe_source_path is None:
+            raise ValueError("source_path must be a safe, non-traversing relative path")
+        raw_evidence = evidence.encode("utf-8") if isinstance(evidence, str) else bytes(evidence)
+        if not raw_evidence or len(raw_evidence) > _MAX_RETAINED_EVIDENCE_BYTES:
+            raise ValueError(f"evidence must contain 1..{_MAX_RETAINED_EVIDENCE_BYTES} bytes")
+
+        evidence_hash = content_sha256(raw_evidence)
+        candidate_slug = _legacy_candidate_slug(
+            legacy,
+            source_url=origin,
+            pinned_revision=revision,
+            source_path=safe_source_path,
+            evidence_hash=evidence_hash,
+        )
+        evidence_path = (
+            f"{_EVIDENCE_DIRNAME}/legacy/{candidate_slug}-"
+            f"{evidence_hash.removeprefix('sha256:')}.source"
+        )
+        return (
+            legacy,
+            origin,
+            revision,
+            safe_source_path,
+            raw_evidence,
+            evidence_hash,
+            candidate_slug,
+            evidence_path,
+        )
+
+    def plan_legacy_external_migration(
+        self,
+        slug: str,
+        *,
+        source_url: str,
+        pinned_revision: str,
+        source_path: str,
+        evidence: str | bytes,
+    ) -> dict[str, Any]:
+        """Preview a one-skill legacy migration without writing any state."""
+        (
+            legacy,
+            origin,
+            revision,
+            safe_source_path,
+            raw_evidence,
+            evidence_hash,
+            candidate_slug,
+            evidence_path,
+        ) = self._legacy_migration_inputs(
+            slug,
+            source_url=source_url,
+            pinned_revision=pinned_revision,
+            source_path=source_path,
+            evidence=evidence,
+        )
+        return {
+            "legacy_slug": legacy.slug,
+            "candidate_slug": candidate_slug,
+            "source_url": origin,
+            "pinned_revision": revision,
+            "source_path": safe_source_path,
+            "evidence_sha256": evidence_hash,
+            "evidence_path": evidence_path,
+            "evidence_bytes": len(raw_evidence),
+            "legacy_will_remain_quarantined": True,
+            "candidate_will_be_quarantined": True,
+            "promotion": "not performed",
+        }
+
+    def migrate_legacy_external(
+        self,
+        slug: str,
+        *,
+        source_url: str,
+        pinned_revision: str,
+        source_path: str,
+        evidence: str | bytes,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """Create one evidence-bound, quarantined successor for a legacy skill.
+
+        This is intentionally single-skill and dry-run-first. It never promotes
+        a skill or erases the original legacy record. ``dry_run=False`` stores a
+        new external candidate only after its immutable evidence receipt is
+        retained below the local library.
+        """
+        plan = self.plan_legacy_external_migration(
+            slug,
+            source_url=source_url,
+            pinned_revision=pinned_revision,
+            source_path=source_path,
+            evidence=evidence,
+        )
+        plan["dry_run"] = bool(dry_run)
+        if dry_run:
+            plan["status"] = "dry_run"
+            return plan
+
+        (
+            legacy,
+            origin,
+            revision,
+            safe_source_path,
+            raw_evidence,
+            evidence_hash,
+            candidate_slug,
+            evidence_path,
+        ) = self._legacy_migration_inputs(
+            slug,
+            source_url=source_url,
+            pinned_revision=pinned_revision,
+            source_path=source_path,
+            evidence=evidence,
+        )
+        existing = self.get(candidate_slug)
+        if existing is not None:
+            existing_tags = {tag.strip().lower() for tag in existing.tags if tag.strip()}
+            provenance = existing.provenance
+            expected_tags = {
+                "github-distilled",
+                _EXTERNAL_CANDIDATE_TAG,
+                _LEGACY_MIGRATED_TAG,
+            }
+            exact_candidate = bool(
+                (existing.source or "").strip().lower() == "github-distilled"
+                and expected_tags <= existing_tags
+                and bool(existing_tags & _QUARANTINE_TAGS)
+                and existing.body == legacy.body
+                and provenance is not None
+                and provenance.source_url == origin
+                and provenance.pinned_revision == revision
+                and provenance.source_path == safe_source_path
+                and provenance.content_hash == evidence_hash
+                and provenance.evidence_path == evidence_path
+                and (provenance.metadata or {}).get(_LEGACY_SOURCE_SLUG_METADATA) == legacy.slug
+                and (provenance.metadata or {}).get(_LEGACY_BODY_HASH_METADATA)
+                == content_sha256(legacy.body)
+            )
+            if not exact_candidate:
+                raise ValueError(
+                    "existing migration candidate does not match this immutable receipt"
+                )
+            if not ({tag.strip().lower() for tag in legacy.tags if tag.strip()} & _QUARANTINE_TAGS):
+                legacy.tags = _dedupe_tags([*legacy.tags, "hygiene:quarantine"])
+                if not self._persist(legacy):
+                    raise OSError("could not retain the legacy skill in quarantine")
+            if self._retained_evidence_matches(existing):
+                plan["status"] = "existing"
+            else:
+                if not self._retain_evidence(evidence_path, raw_evidence):
+                    raise OSError("could not repair the immutable source evidence")
+                plan["status"] = "repaired"
+            plan["dry_run"] = False
+            return plan
+
+        # Persist the legacy record’s inert status before creating the successor.
+        # We do not remove its body, scores, or historical source fields.
+        if not ({tag.strip().lower() for tag in legacy.tags if tag.strip()} & _QUARANTINE_TAGS):
+            legacy.tags = _dedupe_tags([*legacy.tags, "hygiene:quarantine"])
+            if not self._persist(legacy):
+                raise OSError("could not retain the legacy skill in quarantine")
+        if not self._retain_evidence(evidence_path, raw_evidence):
+            raise OSError("could not retain the immutable source evidence")
+
+        status_tags = {
+            *_QUARANTINE_TAGS,
+            _EXTERNAL_CANDIDATE_TAG,
+            _EXTERNAL_PROMOTED_TAG,
+            _CATALOG_CANDIDATE_TAG,
+            _CATALOG_PROMOTED_TAG,
+            _LEGACY_MIGRATED_TAG,
+        }
+        candidate_tags = [tag for tag in legacy.tags if tag.strip().lower() not in status_tags]
+        candidate_tags.extend(
+            [
+                "github-distilled",
+                _EXTERNAL_CANDIDATE_TAG,
+                "hygiene:quarantine",
+                _LEGACY_MIGRATED_TAG,
+            ]
+        )
+        old_provenance = legacy.provenance or SkillProvenance()
+        candidate = Skill(
+            slug=candidate_slug,
+            title=f"Migrated candidate: {legacy.title}",
+            body=legacy.body,
+            tags=_dedupe_tags(candidate_tags),
+            stack=legacy.stack,
+            source="github-distilled",
+            description=legacy.description,
+            provenance=SkillProvenance(
+                source_url=origin,
+                pinned_revision=revision,
+                license=old_provenance.license,
+                content_hash=evidence_hash,
+                source_path=safe_source_path,
+                evidence_path=evidence_path,
+                metadata={
+                    _LEGACY_SOURCE_SLUG_METADATA: legacy.slug,
+                    _LEGACY_BODY_HASH_METADATA: content_sha256(legacy.body),
+                    "skyn3t-source-kind": "legacy-external-migration",
+                },
+                compatibility=old_provenance.compatibility,
+            ),
+        )
+        self._skills[candidate.slug] = candidate
+        if not self._persist(candidate):
+            self._skills.pop(candidate.slug, None)
+            raise OSError("could not persist the quarantined migration candidate")
+        plan.update({"status": "created", "dry_run": False})
+        return plan
+
+    @staticmethod
+    def _configured_hub_paths(paths: str | list[str] | tuple[str, ...] | None) -> list[str]:
+        raw_paths = paths.split(",") if isinstance(paths, str) else list(paths or [])
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_paths:
+            value = str(raw).strip()
+            key = value.casefold()
+            if value and key not in seen:
+                seen.add(key)
+                result.append(value)
+        return result
+
+    def _import_local_hub(self, configured_path: str) -> dict[str, Any]:
+        """Import one explicitly configured local hub without executing it."""
+        report: dict[str, Any] = {
+            "configured_path": configured_path,
+            "status": "skipped",
+            "imported": 0,
+            "added": 0,
+            "updated": 0,
+            "active": 0,
+            "quarantined": 0,
+            "skipped": 0,
+        }
+        if self.dir is None:
+            report["reason"] = "skill library is not file-backed"
+            return report
+        path = Path(configured_path).expanduser()
+        try:
+            if path.is_symlink():
+                report["reason"] = "configured hub path is a symlink"
+                return report
+            if not path.is_dir():
+                report["reason"] = "configured hub path is not a directory"
+                return report
+            root = path.resolve()
+        except OSError:
+            report["reason"] = "configured hub path could not be resolved"
+            return report
+
+        hub_id = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+        report["path"] = str(root)
+        report["hub_id"] = hub_id
+        ignored_parts = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+        files_seen = 0
+        try:
+            files = sorted(root.rglob("*.md"))
+        except OSError:
+            report["reason"] = "configured hub could not be enumerated"
+            return report
+        for source_file in files:
+            try:
+                relative = source_file.relative_to(root)
+            except ValueError:
+                report["skipped"] += 1
+                continue
+            if any(part in ignored_parts for part in relative.parts):
+                continue
+            if files_seen >= _MAX_HUB_FILES:
+                report["skipped"] += 1
+                report["reason"] = f"hub file limit reached ({_MAX_HUB_FILES})"
+                break
+            files_seen += 1
+            try:
+                if source_file.is_symlink() or not source_file.is_file():
+                    report["skipped"] += 1
+                    continue
+                raw = source_file.read_bytes()
+                if not raw or len(raw) > _MAX_RETAINED_EVIDENCE_BYTES:
+                    report["skipped"] += 1
+                    continue
+                parsed = parse_skill(
+                    raw.decode("utf-8"),
+                    fallback_slug=_slugify(
+                        source_file.parent.name
+                        if source_file.name.lower() == "skill.md"
+                        else source_file.stem
+                    ),
+                )
+            except (OSError, UnicodeDecodeError, ValueError):
+                report["skipped"] += 1
+                continue
+            if not parsed.body.strip():
+                report["skipped"] += 1
+                continue
+            source_path = _safe_catalog_source_path(relative.as_posix())
+            if source_path is None:
+                report["skipped"] += 1
+                continue
+            evidence_hash = content_sha256(raw)
+            evidence_path = f"{_EVIDENCE_DIRNAME}/local-hub/{hub_id}/{evidence_hash.removeprefix('sha256:')}.source"
+            candidate = Skill(
+                slug=_hub_skill_slug(hub_id, parsed, source_path),
+                title=parsed.title,
+                body=parsed.body,
+                tags=[
+                    tag
+                    for tag in parsed.tags
+                    if tag.strip().lower()
+                    not in {
+                        _EXTERNAL_CANDIDATE_TAG,
+                        _EXTERNAL_PROMOTED_TAG,
+                        _CATALOG_CANDIDATE_TAG,
+                        _CATALOG_PROMOTED_TAG,
+                        _LEGACY_MIGRATED_TAG,
+                    }
+                ],
+                stack=parsed.stack,
+                source=_LOCAL_HUB_SOURCE,
+                description=parsed.description,
+                provenance=SkillProvenance(
+                    license=parsed.provenance.license if parsed.provenance else None,
+                    content_hash=evidence_hash,
+                    source_path=source_path,
+                    evidence_path=evidence_path,
+                    metadata={
+                        _HUB_ID_METADATA: hub_id,
+                        "skyn3t-source-kind": "configured-local-skill-hub",
+                    },
+                    compatibility=parsed.provenance.compatibility if parsed.provenance else None,
+                ),
+            )
+            try:
+                from skyn3t.intelligence.skill_hygiene import classify_skill
+
+                decision = classify_skill(candidate)
+                candidate.tags = _dedupe_tags([*decision.tags, _LOCAL_HUB_TAG, f"hub:{hub_id}"])
+            except Exception:  # noqa: BLE001 - an import remains safely inert on hygiene failure
+                candidate.tags = _dedupe_tags(
+                    [*candidate.tags, _LOCAL_HUB_TAG, f"hub:{hub_id}", "hygiene:quarantine"]
+                )
+            if not self._retain_evidence(evidence_path, raw):
+                report["skipped"] += 1
+                continue
+            previous = self._skills.get(candidate.slug)
+            was_known = previous is not None
+            self._skills[candidate.slug] = candidate
+            if not self._persist(candidate):
+                if previous is None:
+                    self._skills.pop(candidate.slug, None)
+                else:
+                    self._skills[candidate.slug] = previous
+                report["skipped"] += 1
+                continue
+            report["imported"] += 1
+            report["updated" if was_known else "added"] += 1
+            tagset = {tag.strip().lower() for tag in candidate.tags if tag.strip()}
+            if tagset & _QUARANTINE_TAGS:
+                report["quarantined"] += 1
+            else:
+                report["active"] += 1
+        report["status"] = "loaded"
+        return report
+
+    def import_configured_hubs(
+        self, paths: str | list[str] | tuple[str, ...] | None
+    ) -> list[dict[str, Any]]:
+        """Load operator-configured local skill hubs and retain an audit report.
+
+        A configured path is a local trust boundary, not a remote fetch. Markdown
+        only is parsed; scripts are never run. Every accepted file is namespaced,
+        byte-hashed, retained as evidence, and filtered through taxonomy hygiene.
+        """
+        reports = [self._import_local_hub(path) for path in self._configured_hub_paths(paths)]
+        self._hub_report = {"schema_version": 1, "updated_at": time.time(), "reports": reports}
+        self._persist_hub_report()
+        if _log:
+            _log.info("skills.hubs_loaded", reports=reports)
+        return reports
+
     # ---- injection ----------------------------------------------------
-    def relevant(
-        self, stack: str, tags: list[str] | None = None, limit: int = 5
-    ) -> list[Skill]:
+    def relevant(self, stack: str, tags: list[str] | None = None, limit: int = 5) -> list[Skill]:
         """Most relevant skills for a stack/tags, ranked by score."""
         tagset = {t.lower() for t in (tags or [])}
-        aliases = _stack_aliases(stack)
 
         def _match(sk: Skill) -> tuple[int, int, float]:
             if not self.applies_to(sk, stack, tags=tags):
                 return (0, 0, sk.score)
-            sk_stack = (sk.stack or "").strip().lower()
-            stack_hit = 3 if (sk_stack in aliases or sk_stack == stack) else 1
-            tag_hit = len(tagset & {t.lower() for t in sk.tags})
+            sk_tags = {t.lower() for t in sk.tags}
+            stack_hit = 3 if _skill_matches_stack(sk.stack, sk_tags, stack) else 1
+            tag_hit = len(tagset & sk_tags)
             # When the caller asks for design/front-end tags, tag fit matters most.
             # Otherwise stack-native skills should beat generic process advice.
-            return ((tag_hit, stack_hit, sk.score) if tagset else (stack_hit, tag_hit, sk.score))
+            return (tag_hit, stack_hit, sk.score) if tagset else (stack_hit, tag_hit, sk.score)
 
         cands = [s for s in self._skills.values() if self.applies_to(s, stack, tags=tags)]
         cands.sort(key=_match, reverse=True)
         return cands[:limit]
 
-    def inject(
-        self, stack: str, tags: list[str] | None = None, limit: int = 5
-    ) -> str:
-        """Render relevant skills as non-binding advice for a prompt."""
-        skills = self.relevant(stack, tags=tags, limit=limit)
+    @staticmethod
+    def render_selected(skills: list[Skill], *, stage: bool = False) -> str:
+        """Render an already-ranked selection without repeating retrieval."""
         if not skills:
             return ""
         blocks = "\n\n".join(s.as_advice() for s in skills)
-        return (
-            "Relevant skills (advisory — apply only where they fit the task):\n\n"
-            f"{blocks}"
+        heading = (
+            "Relevant stage role guidance (advisory — apply only to this stage):"
+            if stage
+            else "Relevant skills (advisory — apply only where they fit the task):"
         )
+        return f"{heading}\n\n{blocks}"
+
+    def inject(self, stack: str, tags: list[str] | None = None, limit: int = 5) -> str:
+        """Rank and render relevant skills as non-binding prompt advice."""
+        return self.render_selected(self.relevant(stack, tags=tags, limit=limit))
 
     def relevant_for_stage(
         self,
@@ -794,15 +1595,10 @@ class SkillLibrary:
         matches.
         """
         raw_stages = [stages] if isinstance(stages, str) else list(stages or [])
-        stage_tags = {
-            f"stage:{str(s).strip().lower()}"
-            for s in raw_stages
-            if str(s).strip()
-        }
+        stage_tags = {f"stage:{str(s).strip().lower()}" for s in raw_stages if str(s).strip()}
         if not stage_tags:
             return []
         tagset = {t.lower() for t in (tags or [])}
-        aliases = _stack_aliases(stack)
 
         def _match(sk: Skill) -> tuple[int, int, int, float]:
             sk_tags = {t.lower() for t in sk.tags}
@@ -811,8 +1607,7 @@ class SkillLibrary:
                 return (0, 0, 0, sk.score)
             if not self.applies_to(sk, stack, tags=tags):
                 return (0, 0, 0, sk.score)
-            sk_stack = (sk.stack or "").strip().lower()
-            stack_hit = 3 if (sk_stack in aliases or sk_stack == stack) else 1
+            stack_hit = 3 if _skill_matches_stack(sk.stack, sk_tags, stack) else 1
             if not stack_hit:
                 return (0, 0, 0, sk.score)
             tag_hit = len(tagset & sk_tags)
@@ -832,13 +1627,7 @@ class SkillLibrary:
     ) -> str:
         """Render stage-specific role guidance for a prompt."""
         skills = self.relevant_for_stage(stack, stages, tags=tags, limit=limit)
-        if not skills:
-            return ""
-        blocks = "\n\n".join(s.as_advice() for s in skills)
-        return (
-            "Relevant stage role guidance (advisory — apply only to this stage):\n\n"
-            f"{blocks}"
-        )
+        return self.render_selected(skills, stage=True)
 
     # ---- scoring (close the loop) -------------------------------------
     def record_use(
@@ -850,7 +1639,14 @@ class SkillLibrary:
         if isinstance(slugs, str):
             slugs = [slugs]
         q = quality if quality is not None else (1.0 if helpful else 0.0)
-        q = max(0.0, min(1.0, q))
+        try:
+            q = float(q)
+        except (TypeError, ValueError):
+            q = 1.0 if helpful else 0.0
+        if not math.isfinite(q):
+            q = 1.0 if helpful else 0.0
+        else:
+            q = max(0.0, min(1.0, q))
         for slug in slugs:
             sk = self._skills.get(slug)
             if sk is None:
@@ -860,6 +1656,94 @@ class SkillLibrary:
                 sk.helpful += 1
             sk.quality_sum = (sk.quality_sum or 0.0) + q
         self._persist_scores()
+
+    def demote(self, slug: str, *, tag: str = "hygiene:quarantine") -> Skill | None:
+        """Pull a skill out of default injection by tagging it quarantined.
+
+        Outcome-based demotion (e.g. a promoted repair skill whose uses keep
+        ending in losing builds) reuses the taxonomy-hygiene quarantine tag:
+        ``_skill_tags_compatible`` already excludes quarantined skills from
+        ``relevant``/``inject``, while the markdown stays on disk for
+        inspection. Idempotent; returns the demoted skill, or ``None`` when the
+        slug is unknown.
+        """
+        sk = self._skills.get(slug)
+        if sk is None:
+            return None
+        if tag not in sk.tags:
+            sk.tags.append(tag)
+            self._persist(sk)
+        return sk
+
+    def activate_catalog_candidate(self, slug: str) -> Skill | None:
+        """Explicitly make one evidence-bound local catalog role injectable.
+
+        Catalog text remains non-binding advice. Activation requires a retained
+        candidate/quarantine state plus a compact-body hash and safe path receipt,
+        so a legacy catalog file or altered advisory body cannot become active
+        merely by carrying a status tag.
+        """
+        sk = self._skills.get(slug)
+        if sk is None:
+            return None
+        tags = _catalog_tagset(sk)
+        if not (
+            _is_catalog_skill(sk, tags)
+            and _has_catalog_identity(tags)
+            and _CATALOG_CANDIDATE_TAG in tags
+            and bool(tags & _QUARANTINE_TAGS)
+            and _has_valid_catalog_activation_evidence(sk)
+        ):
+            return None
+        remove_tags = _QUARANTINE_TAGS | {_CATALOG_CANDIDATE_TAG}
+        sk.tags = [tag for tag in sk.tags if tag.strip().lower() not in remove_tags]
+        if _CATALOG_PROMOTED_TAG not in _catalog_tagset(sk):
+            sk.tags.append(_CATALOG_PROMOTED_TAG)
+        self._persist(sk)
+        return sk
+
+    def can_promote_external(self, slug: str) -> bool:
+        """Whether this library would explicitly promote one external candidate.
+
+        This is the read-only counterpart to :meth:`promote_external`, intended
+        for API/UI readiness indicators. It includes the retained-byte receipt
+        check required for a migrated legacy candidate.
+        """
+        sk = self._skills.get(slug)
+        if sk is None or (sk.source or "").strip().lower() != "github-distilled":
+            return False
+        tagset = {tag.strip().lower() for tag in sk.tags if tag.strip()}
+        if _EXTERNAL_CANDIDATE_TAG not in tagset or not (tagset & _QUARANTINE_TAGS):
+            return False
+        if not _has_complete_github_provenance(sk.provenance):
+            return False
+        if _LEGACY_MIGRATED_TAG not in tagset:
+            return True
+        return self._retained_evidence_matches(sk) and _has_valid_legacy_migration_body(sk)
+
+    def promote_external(self, slug: str) -> Skill | None:
+        """Explicitly approve a quarantined GitHub-derived skill for injection.
+
+        Remote README text is an untrusted reference, not a default prompt
+        input. Promotion is therefore deliberately narrow: the candidate must
+        still be marked external, originate from ``github-distilled``, and carry
+        a canonical GitHub repository origin, a full immutable Git object ID, a SHA-256 of the
+        retained source evidence, and the README source path. Missing evidence
+        returns ``None`` and leaves the file quarantined; no branch name, tag,
+        or proposal payload can stand in for a pin.
+        """
+        if not self.can_promote_external(slug):
+            return None
+        sk = self._skills.get(slug)
+        if sk is None:  # defensive: the predicate read the same in-memory map
+            return None
+
+        remove_tags = _QUARANTINE_TAGS | {_EXTERNAL_CANDIDATE_TAG}
+        sk.tags = [tag for tag in sk.tags if tag.strip().lower() not in remove_tags]
+        if _EXTERNAL_PROMOTED_TAG not in {tag.strip().lower() for tag in sk.tags}:
+            sk.tags.append(_EXTERNAL_PROMOTED_TAG)
+        self._persist(sk)
+        return sk
 
     # ---- auto-promotion from build patterns ---------------------------
     def maybe_promote_pattern(
@@ -894,7 +1778,7 @@ class SkillLibrary:
             f"({float(rate):.0%} over {uses} builds). Reuse its structure:",
             "",
         ]
-        for k, v in (shape.items() if isinstance(shape, dict) else []):
+        for k, v in shape.items() if isinstance(shape, dict) else []:
             body_lines.append(f"- **{k}**: {v}")
         body = "\n".join(body_lines)
         return self.add(
@@ -910,67 +1794,109 @@ class SkillLibrary:
 # Starter skills so the library is useful from build #1 (auto-promotion only
 # kicks in after many wins). Idempotent: existing slugs are left untouched.
 _SEED_SKILLS = [
-    ("Vite + React app shape", "react",
-     "Deliver a runnable Vite+React app: package.json with dev/build/preview "
-     "scripts and react/react-dom deps; index.html with <div id=\"root\">; "
-     "src/main.jsx mounting <App/>; src/App.jsx as a DEFAULT export. Keep state "
-     "local with hooks; no unused imports. Ensure `npm install && npm run build` "
-     "succeeds.", ["react", "vite", "frontend"]),
-    ("FastAPI service shape", "fastapi",
-     "Deliver a runnable FastAPI service: app = FastAPI(); a GET /health route; "
-     "pydantic models for request/response; uvicorn entrypoint; requirements.txt "
-     "pinning fastapi+uvicorn. Provide a Dockerfile + .env.example so a stranger "
-     "can `docker compose up`.", ["fastapi", "python", "backend"]),
-    ("Python CLI shape", "python",
-     "Deliver a runnable Python tool: a clear entrypoint (argparse or typer), "
-     "src/__init__.py, pyproject.toml with name+version, and at least one real "
-     "test under tests/. Code must import and `python -m` run without errors.",
-     ["python", "cli"]),
-    ("Static website shape", "static",
-     "Deliver a complete static site, not a placeholder: index.html with real "
-     "sections matching the brief, local CSS/JS assets, accessible headings, "
-     "responsive layout, favicon/metadata, and at least one real interaction or "
-     "form when the brief implies it. No external stock/CDN dependencies; use "
-     "generated /assets paths when provided.", ["static", "html", "frontend", "web"]),
-    ("Astro visual delivery", "astro",
-     "Deliver an Astro site that is visibly complete, not merely buildable. Import "
-     "the global stylesheet from the shared base layout, then run Astro check and "
-     "a production build. Serve the built output and verify that rendered HTML links "
-     "a CSS asset which responds successfully. Establish one specific brand/title and "
-     "use real imagery as product context. Avoid generic icon-card grids and nested "
-     "cards: use purposeful layout bands, editorial link rows, and cards only for "
-     "repeated content. Before delivery, inspect desktop and mobile output when a "
-     "browser is available.", ["astro", "frontend", "web", "design", "visual", "verification"]),
-    ("Phaser playable game shape", "phaser",
-     "Deliver a real Phaser game with src/sim.js pure game logic, src/main.js "
-     "renderer, preload for generated sprites, keyboard/touch controls, win/lose "
-     "state, scoring, restart/pause, and enough entities/levels to be playable. "
-     "Never ship only a counter, flat canvas, or landing page.", ["phaser", "game", "gamedev"]),
-    ("RAG app contract", "rag",
-     "Deliver a runnable retrieval app: ingest endpoint, query/chat endpoints, "
-     "persistent document store, chunking + retrieval, citations/source IDs in "
-     "answers, malformed-input handling, README curl examples, and a tiny UI or "
-     "API docs page. It must retrieve an ingested marker document in proof.",
-     ["rag", "retrieval", "vector", "fastapi"]),
-    ("MCP server contract", "mcp",
-     "Deliver an MCP stdio server with explicit tool schemas, initialize/list/call "
-     "support, read-only safety for inspection tools, structured errors for bad "
-     "arguments, README integration instructions, and tests that exercise each "
-     "tool without requiring network or secrets.", ["mcp", "tools", "stdio"]),
-    ("Agent workflow contract", "workflow",
-     "Deliver a real workflow runner: /trigger or CLI entrypoint, typed input, "
-     "multi-step execution state, retries/timeouts, dry-run mode, webhook/email "
-     "adapters behind env config, structured logs, and tests for success plus "
-     "malformed input. Do not ship a single no-op endpoint.", ["workflow", "automation", "orchestration"]),
-    ("Agent persona pack contract", "agent_pack",
-     "Deliver a structured agent pack: catalog.json plus role markdown files with "
-     "goals, tools, handoff rules, prompt templates, evaluation checklist, and "
-     "example tasks. The pack is an artifact, so completeness is the content "
-     "contract, not a web entrypoint.", ["agent_pack", "agents", "personas"]),
-    ("Delivered != empty", "generic",
-     "Every delivered project needs a real entrypoint, a README, and a manifest, "
-     "and must pass install + build + boot. Never ship a config-puzzle or an "
-     "empty scaffold; verify behavior, not vibes.", ["quality", "verification"]),
+    (
+        "Vite + React app shape",
+        "react",
+        "Deliver a runnable Vite+React app: package.json with dev/build/preview "
+        'scripts and react/react-dom deps; index.html with <div id="root">; '
+        "src/main.jsx mounting <App/>; src/App.jsx as a DEFAULT export. Keep state "
+        "local with hooks; no unused imports. Ensure `npm install && npm run build` "
+        "succeeds.",
+        ["react", "vite", "frontend"],
+    ),
+    (
+        "FastAPI service shape",
+        "fastapi",
+        "Deliver a runnable FastAPI service: app = FastAPI(); a GET /health route; "
+        "pydantic models for request/response; uvicorn entrypoint; requirements.txt "
+        "pinning fastapi+uvicorn. Provide a Dockerfile + .env.example so a stranger "
+        "can `docker compose up`.",
+        ["fastapi", "python", "backend"],
+    ),
+    (
+        "Python CLI shape",
+        "python",
+        "Deliver a runnable Python tool: a clear entrypoint (argparse or typer), "
+        "src/__init__.py, pyproject.toml with name+version, and at least one real "
+        "test under tests/. Code must import and `python -m` run without errors.",
+        ["python", "cli"],
+    ),
+    (
+        "Static website shape",
+        "static",
+        "Deliver a complete static site, not a placeholder: index.html with real "
+        "sections matching the brief, local CSS/JS assets, accessible headings, "
+        "responsive layout, favicon/metadata, and at least one real interaction or "
+        "form when the brief implies it. No external stock/CDN dependencies; use "
+        "generated /assets paths when provided.",
+        ["static", "html", "frontend", "web"],
+    ),
+    (
+        "Astro visual delivery",
+        "astro",
+        "Deliver an Astro site that is visibly complete, not merely buildable. Import "
+        "the global stylesheet from the shared base layout, then run Astro check and "
+        "a production build. Serve the built output and verify that rendered HTML links "
+        "a CSS asset which responds successfully. Establish one specific brand/title and "
+        "use real imagery as product context. Avoid generic icon-card grids and nested "
+        "cards: use purposeful layout bands, editorial link rows, and cards only for "
+        "repeated content. Before delivery, inspect desktop and mobile output when a "
+        "browser is available.",
+        ["astro", "frontend", "web", "design", "visual", "verification"],
+    ),
+    (
+        "Phaser playable game shape",
+        "phaser",
+        "Deliver a real Phaser game with src/sim.js pure game logic, src/main.js "
+        "renderer, preload for generated sprites, keyboard/touch controls, win/lose "
+        "state, scoring, restart/pause, and enough entities/levels to be playable. "
+        "Never ship only a counter, flat canvas, or landing page.",
+        ["phaser", "game", "gamedev"],
+    ),
+    (
+        "RAG app contract",
+        "rag",
+        "Deliver a runnable retrieval app: ingest endpoint, query/chat endpoints, "
+        "persistent document store, chunking + retrieval, citations/source IDs in "
+        "answers, malformed-input handling, README curl examples, and a tiny UI or "
+        "API docs page. It must retrieve an ingested marker document in proof.",
+        ["rag", "retrieval", "vector", "fastapi"],
+    ),
+    (
+        "MCP server contract",
+        "mcp",
+        "Deliver an MCP stdio server with explicit tool schemas, initialize/list/call "
+        "support, read-only safety for inspection tools, structured errors for bad "
+        "arguments, README integration instructions, and tests that exercise each "
+        "tool without requiring network or secrets.",
+        ["mcp", "tools", "stdio"],
+    ),
+    (
+        "Agent workflow contract",
+        "workflow",
+        "Deliver a real workflow runner: /trigger or CLI entrypoint, typed input, "
+        "multi-step execution state, retries/timeouts, dry-run mode, webhook/email "
+        "adapters behind env config, structured logs, and tests for success plus "
+        "malformed input. Do not ship a single no-op endpoint.",
+        ["workflow", "automation", "orchestration"],
+    ),
+    (
+        "Agent persona pack contract",
+        "agent_pack",
+        "Deliver a structured agent pack: catalog.json plus role markdown files with "
+        "goals, tools, handoff rules, prompt templates, evaluation checklist, and "
+        "example tasks. The pack is an artifact, so completeness is the content "
+        "contract, not a web entrypoint.",
+        ["agent_pack", "agents", "personas"],
+    ),
+    (
+        "Delivered != empty",
+        "generic",
+        "Every delivered project needs a real entrypoint, a README, and a manifest, "
+        "and must pass install + build + boot. Never ship a config-puzzle or an "
+        "empty scaffold; verify behavior, not vibes.",
+        ["quality", "verification"],
+    ),
 ]
 
 

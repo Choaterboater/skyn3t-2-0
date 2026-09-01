@@ -1,7 +1,11 @@
 # tests/test_iter4_fixes.py
-"""Iteration-4 fixes: docker clients must be closed (FD leak); improve must not
-report delivered=0 when files exist on disk, and a failed history-record must not
-flip a successful delivery to 'failed'."""
+"""Iteration-4 fixes: improve must not report delivered=0 when files exist on
+disk, and a failed history-record must not flip a successful delivery to
+'failed'.
+
+The docker-client FD-leak test that lived here went with
+skyn3t/intelligence/docker_backend.py, which had no production callers.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -11,29 +15,6 @@ from types import SimpleNamespace
 from skyn3t.core.events import EventBus
 from skyn3t.studio import improve as improve_mod
 from skyn3t.studio.improve import ImproveEngine
-
-# --- docker client close (FD leak) -----------------------------------------
-
-class _FakeClient:
-    def __init__(self):
-        self.closed = 0
-
-    def ping(self):
-        return True
-
-    def close(self):
-        self.closed += 1
-
-
-def test_docker_available_closes_client(monkeypatch):
-    from skyn3t.intelligence import docker_backend as db
-
-    fake = _FakeClient()
-    monkeypatch.setattr(db, "_HAS_DOCKER_SDK", True)
-    monkeypatch.setattr(db, "_docker", SimpleNamespace(from_env=lambda: fake))
-    assert db.docker_available() is True
-    assert fake.closed == 1  # client released, not leaked
-
 
 # --- improve.py harness (mirrors test_improve_engine) ----------------------
 

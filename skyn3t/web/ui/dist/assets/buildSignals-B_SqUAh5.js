@@ -1,1 +1,0 @@
-function e(e){return e?.payload?.build_id||e?.correlation_id||null}function t(t=[]){let n=null,r=new Set;for(let i of t){if(i?.type!==`build.started`)continue;let t=e(i);!t||r.has(t)||(r.add(t),n=t)}if(!n)for(let r=t.length-1;r>=0&&(n=e(t[r]),!n);--r);return n}function n(n=[]){let r=t(n);return r?n.filter(t=>e(t)===r):n}export{n as t};

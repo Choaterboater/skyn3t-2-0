@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -62,11 +63,13 @@ from skyn3t.core.stacks import (
 from skyn3t.core.stacks import (
     gate_applies as _gate_applies,
 )
+from skyn3t.intelligence.human_feedback import HUMAN_DESIGN_LESSON_STACK
 from skyn3t.intelligence.learning_loop import (
     extract_gate_findings as _extract_gate_findings,
 )
 from skyn3t.security.audit import AuditLog
 from skyn3t.security.permissions import PermissionManager, auto_approve_safe_fn
+from skyn3t.security.secrets import SecretsStore
 from skyn3t.studio import best_of_n as bon
 from skyn3t.studio.acceptance_contract import (
     acceptance_contract_clones,
@@ -75,13 +78,17 @@ from skyn3t.studio.acceptance_contract import (
     snapshot_acceptance_contracts,
 )
 from skyn3t.studio.approval_gate import ApprovalGate, GateDecision
+from skyn3t.studio.build_contract import BuildContract, compact_contract_context
 from skyn3t.studio.build_intelligence import prepare_build_intelligence
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.clarification import clarify
 from skyn3t.studio.deploy import plan_deploy
+from skyn3t.studio.design_seeds import design_seed_for
 from skyn3t.studio.finance_sanity import check_finance_sanity
 from skyn3t.studio.fix_feedback import format_fix_feedback
+from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.studio.gate_verdict import GateVerdict
+from skyn3t.studio.grounding_check import check_grounding
 from skyn3t.studio.intent_score import intent_gate, llm_intent_score, score_intent
 from skyn3t.studio.lab_policy import LabAutonomyPolicy
 from skyn3t.studio.layout_profiles import resolve_layout_profile
@@ -106,11 +113,12 @@ from skyn3t.studio.requirement_trace import (
     compile_requirement_trace,
     requirement_evidence_binding,
 )
-from skyn3t.studio.security_check import check_security
+from skyn3t.studio.security_check import check_security, rewrite_secret_literals
 from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
 from skyn3t.studio.visual_loop import visual_self_improve
+from skyn3t.studio.web_interact_check import check_web_interact
 from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.workflow_depth import check_workflow_depth
 from skyn3t.worktree import (
@@ -127,6 +135,23 @@ from skyn3t.worktree import (
 log = structlog.get_logger(__name__)
 
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _safe_sha256_digest(value: object) -> str:
+    """Return a canonical full SHA-256 digest, or an empty string."""
+    if not isinstance(value, str):
+        return ""
+    digest = value.strip()
+    return digest if _SHA256_HEX_RE.fullmatch(digest) else ""
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    """Accept only simple strings for durable stage provenance."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:limit]
+
 
 _REQUIREMENT_TRACE_SAFE_PROOF_IDS = frozenset(
     {
@@ -172,6 +197,26 @@ _SEO_SOURCE_RES = (
 
 def _web_design_tags(stack: str) -> list[str] | None:
     return list(_WEB_DESIGN_TAGS) if (stack or "").strip().lower() in _DESIGN_STACKS else None
+
+
+def _contract_context_and_skill_tags(
+    extra: Mapping[str, Any] | None,
+) -> tuple[dict[str, str | int], list[str]]:
+    """Return verified compact contract context and optional selection tags.
+
+    The tags only help explicitly-labelled skills rank inside their normal
+    stack/stage compatibility fence. They never make incompatible or
+    quarantined skills eligible.
+    """
+    raw_contract = extra.get("build_contract") if isinstance(extra, Mapping) else None
+    context = compact_contract_context(raw_contract)
+    tags: list[str] = []
+    for prefix, key in (("app_type", "app_type"), ("layout", "layout_profile")):
+        raw = context.get(key)
+        value = str(raw or "").strip().lower()
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", value):
+            tags.append(f"{prefix}:{value}")
+    return context, tags
 
 
 def _resolve_stack_pin(extra: dict) -> str:
@@ -284,7 +329,13 @@ class StudioRunner:
         self.cost_tracker = cost_tracker  # observability.CostTracker | None
         self.budget_guard = budget_guard  # self_healing.BudgetGuard | None
         self.rag = rag                    # rag.RagEngine | None — recall into prompts
-        self.audit_log = AuditLog(path=self.settings.logs_dir / "audit.jsonl")
+        # Without a SecretsStore the audit trail only gets regex scrubbing, so
+        # non-pattern secrets (deploy tokens, channel tokens) land verbatim in
+        # logs/audit.jsonl.
+        self.audit_log = AuditLog(
+            path=self.settings.logs_dir / "audit.jsonl",
+            secrets=SecretsStore(settings=self.settings),
+        )
         initial_lab_policy = LabAutonomyPolicy.from_settings(self.settings)
         if bool(self.settings.cortex_auto_approve_safe):
             self.permission_manager = PermissionManager(
@@ -313,15 +364,26 @@ class StudioRunner:
         # so real build traffic — not only the rarely-run debate path — builds the
         # leaderboard (closes swarm #16). Lazily built; never breaks a build.
         self._tournament: Any | None = None
+        # Per-build buffer of deduped (bucket, model, task_type) solo tuples.
+        # Stages BUFFER here; nothing is recorded until the build's verdict
+        # settles, at which point _flush_tournament grades every tuple by the
+        # terminal outcome (won iff the build ended "go"). Insertion-ordered
+        # dict keys double as the dedup set.
+        self._tournament_pending: dict[str, dict[tuple[str, str, str], None]] = {}
 
     # ---- model tournament feed (closes swarm #16) -----------------------
-    def _feed_tournament(self, spec: StageSpec, result: TaskResult) -> None:
-        """Record a stage's model into the tournament the router reads.
+    def _feed_tournament(self, spec: StageSpec, result: TaskResult,
+                         build_id: str) -> None:
+        """Buffer a stage's model routes for the tournament the router reads.
 
         Best-effort and import-light: any failure is swallowed so feeding the
-        learning loop can never break a build (design rule #6). Records a solo
-        appearance (the model produced a successful stage) into the same
-        ``(tier, task_type)`` bucket the ``LearnedModelRouter`` later queries.
+        learning loop can never break a build (design rule #6). Nothing is
+        recorded here: a stage completing says nothing about whether the build
+        shipped, and recording every solo appearance as a win made the learned
+        router's confidence vacuous (win_rate pinned at 1.0 regardless of
+        verdict). Deduped ``(bucket, model, task_type)`` tuples are buffered
+        per build and flushed by :meth:`_flush_tournament` at the build's
+        settle points, graded by the terminal verdict.
         """
         model = getattr(result, "model_id", None)
         model_id = str(model) if model else ""
@@ -334,16 +396,12 @@ class StudioRunner:
         try:
             from skyn3t.intelligence.model_tournament import ModelTournament
 
-            if self._tournament is None:
-                self._tournament = ModelTournament(
-                    self.settings.data_dir / "model_tournament.json"
-                )
-            # Prefer the full set of routes this stage used (one record per
-            # distinct tier×task_type bucket) so per-file tiers like 'backend'
+            pending = self._tournament_pending.setdefault(build_id, {})
+            # Prefer the full set of routes this stage used (one tuple per
+            # distinct tier×task_type×model) so per-file tiers like 'backend'
             # actually populate — not just the last file's bucket. Fall back to
             # the single route / agent-type bucket for agents that report neither.
             routes = meta.get("routes")
-            seen: set[str] = set()
             if routes:
                 for r in routes:
                     if not (isinstance(r, (list, tuple)) and len(r) == 3):
@@ -352,26 +410,42 @@ class StudioRunner:
                     if not rmodel:
                         continue
                     bucket = ModelTournament.bucket_key(tier, task_type)
-                    if bucket in seen:
-                        continue
-                    # Record before marking seen: if record_win raised, the bucket
-                    # must not be counted as persisted (keeps the batched save
-                    # consistent with what actually got recorded).
-                    self._tournament.record_win(
-                        bucket, rmodel, losers=[], task_type=task_type, save=False)
-                    seen.add(bucket)
+                    pending[(bucket, rmodel, task_type)] = None
             else:
                 route = meta.get("route")
                 if route and len(route) == 2:
                     tier, task_type = str(route[0]), str(route[1])
                 else:
                     tier, task_type = "", spec.agent_type
-                self._tournament.record_win(
-                    ModelTournament.bucket_key(tier, task_type), model_id,
-                    losers=[], task_type=task_type, save=False)
-                seen.add("_")
-            if seen:
-                self._tournament.save()  # one batched write per stage
+                bucket = ModelTournament.bucket_key(tier, task_type)
+                pending[(bucket, model_id, task_type)] = None
+        except Exception:  # noqa: BLE001 - learning feed must never break a build
+            pass
+
+    def _flush_tournament(self, build_id: str, *, won: bool) -> None:
+        """Flush the build's buffered solo appearances, graded by its verdict.
+
+        Called at the build's settle points (verdict settled, build rejected,
+        build crashed) with ``won=True`` only when the build ended ``go`` — so
+        solo evidence demotes models whose builds keep ending no_go instead of
+        auto-winning on stage success alone (:meth:`ModelTournament.record_solo`
+        semantics). One batched disk write per build. Best-effort: any failure
+        is swallowed so the learning feed can never break a build (rule #6).
+        """
+        pending = self._tournament_pending.pop(build_id, None)
+        if not pending:
+            return
+        try:
+            from skyn3t.intelligence.model_tournament import ModelTournament
+
+            if self._tournament is None:
+                self._tournament = ModelTournament(
+                    self.settings.data_dir / "model_tournament.json"
+                )
+            for bucket, model, task_type in pending:
+                self._tournament.record_solo(
+                    bucket, model, won=won, task_type=task_type, save=False)
+            self._tournament.save()  # one batched write per build
         except Exception:  # noqa: BLE001 - learning feed must never break a build
             pass
 
@@ -575,6 +649,28 @@ class StudioRunner:
         )
 
     # ---- lessons (learning loop) ----------------------------------------
+    @staticmethod
+    def _merge_lessons(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Combine lesson groups without letting repeated advice crowd prompts.
+
+        Human design feedback is deliberately stored in a shared scope so it can
+        help a later Astro/React/etc. build. The same feedback can be returned
+        by both score-ranked and recent-lesson queries, so dedupe on the stable
+        lesson text before applying the normal five-lesson prompt budget.
+        """
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for group in groups:
+            for lesson in group or []:
+                if not isinstance(lesson, dict):
+                    continue
+                text = str(lesson.get("text") or "").strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                merged.append(lesson)
+        return merged
+
     async def _inject_lessons(self, stack: str, stage: str,
                               brief: str = "") -> list[dict[str, Any]]:
         if self.memory is None:
@@ -585,25 +681,103 @@ class StudioRunner:
             # this brief beats a higher-scored but off-topic one (Spec 2 semantic
             # retrieval, symmetric with _skill_advice). Degrades to score order.
             candidates = await self.memory.relevant_lessons(stack, stage=stage, limit=15)
-            if not brief or len(candidates) <= 5:
-                return candidates[:5]
+            # Exploration slots: blend in the newest never-injected lessons so
+            # a fresh actionable rule can enter injection -> grading -> score;
+            # the score-DESC fetch alone locks in entrenched incumbents
+            # (win-rate sweep, brain: brief-echo lessons dominate ranking).
+            recent_fn = getattr(self.memory, "recent_lessons", None)
+            if callable(recent_fn):
+                recent = await recent_fn(stack, stage=stage, limit=3)
+                candidates = self._merge_lessons(candidates, recent or [])
+
+            # A human review of one delivered web app should improve later UI
+            # work even when the next brief chooses a different frontend stack.
+            # These distilled rules remain advisory, receive the same outcome
+            # grading as ordinary lessons, and never cross into non-design work.
+            shared: list[dict[str, Any]] = []
+            if (stack or "").strip().lower() in _DESIGN_STACKS:
+                try:
+                    # Retrieve enough shared rules to choose against the new
+                    # brief. Truncating to the newest three before semantic
+                    # ranking hid feedback such as the real-photography rule
+                    # behind unrelated palette/layout observations.
+                    shared_ranked = await self.memory.relevant_lessons(
+                        HUMAN_DESIGN_LESSON_STACK, stage="design", limit=12
+                    )
+                    shared_recent: list[dict[str, Any]] = []
+                    if callable(recent_fn):
+                        shared_recent = await recent_fn(
+                            HUMAN_DESIGN_LESSON_STACK, stage="design", limit=3
+                        )
+                    shared_candidates = self._merge_lessons(
+                        shared_recent or [], shared_ranked or []
+                    )
+                    if brief and len(shared_candidates) > 3:
+                        shared_emb = self._skill_embedder()
+                        if shared_emb is not None:
+                            from skyn3t.intelligence.semantic_skills import rank_texts
+                            shared = rank_texts(
+                                shared_candidates,
+                                brief,
+                                get_text=lambda les: les.get("text", ""),
+                                embedder=shared_emb,
+                                k=3,
+                            ) or shared_candidates[:3]
+                        else:
+                            shared = shared_candidates[:3]
+                    else:
+                        shared = shared_candidates[:3]
+                except Exception as exc:  # noqa: BLE001 - shared recall is additive
+                    log.warning("human_feedback.inject_failed", error=str(exc))
+
+            combined = self._merge_lessons(shared, candidates)
+            if not brief or len(combined) <= 5:
+                return combined[:5]
             emb = self._skill_embedder()
             if emb is None:
-                return candidates[:5]
+                return combined[:5]
             from skyn3t.intelligence.semantic_skills import rank_texts
-            ranked = rank_texts(candidates, brief,
+            if shared:
+                # Reserve the brief-matched human review signal, then fill the
+                # rest of the bounded prompt budget with same-stack lessons.
+                # This prevents a familiar technical lesson from erasing the
+                # very visual preference a person explicitly asked us to retain.
+                remaining = max(0, 5 - len(shared))
+                if remaining == 0:
+                    return shared[:5]
+                ranked_current = rank_texts(
+                    candidates,
+                    brief,
+                    get_text=lambda les: les.get("text", ""),
+                    embedder=emb,
+                    k=remaining,
+                )
+                return self._merge_lessons(shared, ranked_current or candidates)[:5]
+            ranked = rank_texts(combined, brief,
                                 get_text=lambda les: les.get("text", ""),
                                 embedder=emb, k=5)
             # If nothing shares the brief's vocabulary, keep the score-ranked
             # top-5 rather than injecting fewer lessons than before.
-            return ranked or candidates[:5]
+            return ranked or combined[:5]
         except Exception as exc:  # noqa: BLE001
             log.warning("lessons.inject_failed", error=str(exc))
             return []
 
     async def _grade_lessons(
-        self, lessons: list[dict[str, Any]], helpful: bool, quality: float | None = None
+        self,
+        lessons: list[dict[str, Any]],
+        helpful: bool | None,
+        quality: float | None = None,
     ) -> None:
+        """Record an outcome for unique lessons used by one build.
+
+        ``helpful=None`` deliberately records *exposure only*. A terminal
+        ``no_go`` tells us the build failed, but does not identify which of up
+        to five advisory lessons caused it. Treating every one as harmful
+        polluted the learned ranking with correlated failure blame. Positive
+        delivered outcomes remain creditable; targeted negative evidence can
+        still be introduced when a verifier names a conflicting rule.
+        """
         if self.memory is None or not lessons:
             return
         graded: set[int] = set()
@@ -741,7 +915,9 @@ class StudioRunner:
         }
 
     # ---- skills (advisory injection) ------------------------------------
-    def _skill_advice(self, stack: str, brief: str = "") -> tuple[str, list[str]]:
+    def _skill_advice(
+        self, stack: str, brief: str = "", selection_tags: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
         """Return (advice_text, used_slugs) from the skill library, if wired.
 
         The keyword/tag match (by stack) is augmented with brief-aware SEMANTIC
@@ -750,12 +926,21 @@ class StudioRunner:
         if self.skills is None:
             return "", []
         try:
-            tags = _web_design_tags(stack)
-            limit = 4 if tags else 3
-            relevant = self.skills.relevant(stack, tags=tags, limit=limit)
+            base_tags = _web_design_tags(stack)
+            tags = list(base_tags or [])
+            for tag in selection_tags or []:
+                if tag not in tags:
+                    tags.append(tag)
+            limit = 4 if base_tags else 3
+            relevant = self.skills.relevant(stack, tags=tags or None, limit=limit)
             slugs = [getattr(s, "slug", "") for s in relevant if getattr(s, "slug", "")]
-            advice = self.skills.inject(stack, tags=tags, limit=limit)
-            return self._augment_semantic_skills(advice, slugs, brief, stack, tags)
+            renderer = getattr(self.skills, "render_selected", None)
+            advice = (
+                renderer(relevant)
+                if callable(renderer)
+                else self.skills.inject(stack, tags=tags or None, limit=limit)
+            )
+            return self._augment_semantic_skills(advice, slugs, brief, stack, tags or None)
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.inject_failed", error=str(exc))
             return "", []
@@ -794,16 +979,26 @@ class StudioRunner:
             if emb is None:
                 return advice, slugs
             from skyn3t.intelligence.semantic_skills import relevant_skills
+            applies = getattr(skills, "applies_to", None)
+            # Eligibility is a retrieval boundary, not merely an injection
+            # boundary. Otherwise unreviewed/quarantined skills can fill the
+            # semantic top-k before they are discarded below, starving safe
+            # guidance from the bounded selection window.
+            candidates = list(skills.all())
+            if applies is not None:
+                candidates = [
+                    sk for sk in candidates
+                    if applies(sk, stack, tags=tags)
+                ]
             # Inject the top-6 (was 3): a rich app needs more than 3 skills — e.g. a
             # desktop editor wants frontend + theming + editor-layout + a11y together,
             # which 3 slots starved. The learning loop grades + down-ranks unhelpful ones.
-            for sl in relevant_skills(skills.all(), brief, embedder=emb, k=6):
+            for sl in relevant_skills(candidates, brief, embedder=emb, k=6):
                 if sl in slugs:
                     continue
                 sk = skills.get(sl)
                 if sk is None:
                     continue
-                applies = getattr(skills, "applies_to", None)
                 if applies is not None and not applies(sk, stack, tags=tags):
                     continue
                 slugs.append(sl)
@@ -815,7 +1010,11 @@ class StudioRunner:
         return advice, slugs
 
     def _stage_skill_advice(
-        self, stack: str, spec: StageSpec, brief: str = ""
+        self,
+        stack: str,
+        spec: StageSpec,
+        brief: str = "",
+        selection_tags: list[str] | None = None,
     ) -> tuple[str, list[str]]:
         """Stage-scoped role guidance from imported catalog skills."""
         if self.skills is None:
@@ -826,13 +1025,159 @@ class StudioRunner:
             return "", []
         try:
             stage_names = [spec.name, spec.agent_type, spec.capability]
-            advice = injector(stack, stage_names, limit=3)
-            skills = relevant(stack, stage_names, limit=3)
+            # A repair needs the same implementation guidance as the code stage
+            # when a catalog has not authored a separate code-improver role.
+            if spec.agent_type == "code_improver":
+                stage_names.extend(("fix", "code", "codegen"))
+            stage_names = list(dict.fromkeys(stage_names))
+            tags = list(selection_tags or [])
+            skills = relevant(stack, stage_names, tags=tags or None, limit=3)
+            renderer = getattr(self.skills, "render_selected", None)
+            advice = (
+                renderer(skills, stage=True)
+                if callable(renderer)
+                else injector(stack, stage_names, tags=tags or None, limit=3)
+            )
             slugs = [getattr(s, "slug", "") for s in skills if getattr(s, "slug", "")]
             return advice, slugs
         except Exception as exc:  # noqa: BLE001
             log.warning("stage_skills.inject_failed", stage=spec.name, error=str(exc))
             return "", []
+
+    def _record_skill_selection(
+        self,
+        manifest: BuildManifest,
+        slugs: list[str],
+        *,
+        stage: str,
+        extra: Mapping[str, Any] | None,
+    ) -> None:
+        """Persist bounded metadata for the exact skills selected for a handoff.
+
+        Skill bodies remain prompt-only. The receipt contains a digest of the
+        exact advisory body, bounded identity/score/tags, and provenance so a
+        later skill edit cannot rewrite build history.
+        """
+        manifest_extra = getattr(manifest, "extra", None)
+        if not isinstance(manifest_extra, dict):
+            return
+        context, selection_tags = _contract_context_and_skill_tags(extra)
+        if context:
+            manifest_extra["skill_selection_context"] = {
+                "schema_version": 1,
+                "contract": context,
+                "selection_tags": list(selection_tags),
+            }
+        slots = manifest_extra.setdefault("skill_selection_receipts", {})
+        if not isinstance(slots, dict):
+            return
+        getter = getattr(self.skills, "get", None) if self.skills is not None else None
+        seen: set[str] = set()
+        receipts: list[dict[str, Any]] = []
+        for raw_slug in slugs:
+            if not isinstance(raw_slug, str):
+                continue
+            slug = raw_slug.strip()
+            if not slug or slug in seen or len(slug) > 160:
+                continue
+            seen.add(slug)
+            receipt: dict[str, Any] = {
+                "slug": slug,
+                "score_at_selection": 0.0,
+                "advisory_body_sha256": hashlib.sha256(b"").hexdigest(),
+            }
+            try:
+                skill = getter(slug) if callable(getter) else None
+            except Exception:  # noqa: BLE001 - receipt capture is best-effort
+                skill = None
+            if skill is not None:
+                body = getattr(skill, "body", "")
+                if not isinstance(body, str):
+                    body = ""
+                receipt["advisory_body_sha256"] = hashlib.sha256(
+                    body.encode("utf-8")
+                ).hexdigest()
+                source = _bounded_text(getattr(skill, "source", ""), 160)
+                if source:
+                    receipt["source"] = source
+                try:
+                    score = float(getattr(skill, "score", 0.0) or 0.0)
+                except (TypeError, ValueError, OverflowError):
+                    score = 0.0
+                if not math.isfinite(score):
+                    score = 0.0
+                receipt["score_at_selection"] = round(
+                    max(0.0, min(1.0, score)), 4
+                )
+                skill_tags = [
+                    tag.strip()[:96]
+                    for tag in list(getattr(skill, "tags", []) or [])[:24]
+                    if isinstance(tag, str) and tag.strip()
+                ]
+                if skill_tags:
+                    receipt["tags"] = skill_tags
+                provenance = getattr(skill, "provenance", None)
+                if provenance is not None:
+                    for key in (
+                        "content_hash",
+                        "source_url",
+                        "pinned_revision",
+                        "source_path",
+                    ):
+                        value = _bounded_text(getattr(provenance, key, ""), 256)
+                        if value:
+                            receipt[key] = value
+            receipts.append(receipt)
+            if len(receipts) >= 12:
+                break
+        if receipts:
+            slots[_bounded_text(stage, 96) or "unknown"] = receipts
+
+    def _persist_stage_skill_selection(
+        self,
+        manifest: BuildManifest,
+        slugs: list[str],
+        *,
+        stage: str,
+        extra: Mapping[str, Any] | None,
+    ) -> None:
+        """Persist every stage-role selection before its repair/code handoff."""
+        manifest_extra = getattr(manifest, "extra", None)
+        if not isinstance(manifest_extra, dict):
+            return
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_slug in slugs:
+            if not isinstance(raw_slug, str):
+                continue
+            slug = raw_slug.strip()
+            if not slug or slug in seen or len(slug) > 160:
+                continue
+            seen.add(slug)
+            normalized.append(slug)
+        if not normalized:
+            return
+        stage_key = _bounded_text(stage, 96) or "unknown"
+        stage_used = manifest_extra.setdefault("stage_skills_used", {})
+        if isinstance(stage_used, dict):
+            stage_used[stage_key] = list(normalized)
+        existing: set[str] = set()
+        raw_existing = manifest_extra.get("skills_used")
+        if isinstance(raw_existing, (list, tuple, set)):
+            for raw_slug in raw_existing:
+                if not isinstance(raw_slug, str):
+                    continue
+                slug = raw_slug.strip()
+                if slug and len(slug) <= 160:
+                    existing.add(slug)
+        existing.update(normalized)
+        manifest_extra["skills_used"] = sorted(existing)
+        self._record_skill_selection(
+            manifest,
+            normalized,
+            stage=stage_key,
+            extra=extra,
+        )
 
     def _extra_with_stage_role_guidance(
         self,
@@ -842,32 +1187,332 @@ class StudioRunner:
         brief: str,
         manifest: BuildManifest,
     ) -> dict[str, Any]:
-        advice, slugs = self._stage_skill_advice(stack, spec, brief)
+        _, selection_tags = _contract_context_and_skill_tags(extra)
+        advice, slugs = self._stage_skill_advice(
+            stack, spec, brief, selection_tags=selection_tags
+        )
         if not advice:
             return extra
         out = {**extra, "role_guidance": advice}
-        stage_used = manifest.extra.setdefault("stage_skills_used", {})
-        if isinstance(stage_used, dict):
-            stage_used[spec.name] = list(slugs)
-        existing = set(manifest.extra.get("skills_used") or [])
-        existing.update(slugs)
-        manifest.extra["skills_used"] = sorted(existing)
+        self._persist_stage_skill_selection(
+            manifest,
+            slugs,
+            stage=spec.name,
+            extra=out,
+        )
         return out
 
-    # ---- RAG recall (past builds + ingested GitHub repos) ----------------
+    def _recorded_code_role_skills(
+        self,
+        manifest: BuildManifest,
+        stack: str,
+        selection_tags: list[str],
+    ) -> list[Any]:
+        """Return still-eligible roles actually selected for the code stage."""
+        if self.skills is None or not isinstance(getattr(manifest, "extra", None), dict):
+            return []
+        stage_used = manifest.extra.get("stage_skills_used")
+        if not isinstance(stage_used, Mapping):
+            return []
+        raw_slugs = stage_used.get("code")
+        if not isinstance(raw_slugs, (list, tuple, set)):
+            return []
+        getter = getattr(self.skills, "get", None)
+        applies = getattr(self.skills, "applies_to", None)
+        if not callable(getter) or not callable(applies):
+            return []
+        selected: list[Any] = []
+        seen: set[str] = set()
+        for raw_slug in raw_slugs:
+            if not isinstance(raw_slug, str):
+                continue
+            slug = raw_slug.strip()
+            if not slug or slug in seen or len(slug) > 160:
+                continue
+            try:
+                skill = getter(slug)
+                eligible = skill is not None and bool(
+                    applies(skill, stack, tags=selection_tags or None)
+                )
+            except Exception:  # noqa: BLE001 - stale selection falls back normally
+                continue
+            if not eligible:
+                continue
+            skill_tags = {
+                tag.strip().lower()
+                for tag in list(getattr(skill, "tags", []) or [])
+                if isinstance(tag, str) and tag.strip()
+            }
+            if not ({"stage:code", "stage:codegen"} & skill_tags):
+                continue
+            seen.add(slug)
+            selected.append(skill)
+            if len(selected) >= 3:
+                break
+        return selected
+
+    def _repair_role_extra(
+        self,
+        plan: BuildPlan,
+        extra: Mapping[str, Any] | None,
+        *,
+        brief: str,
+        manifest: BuildManifest | None = None,
+        stage: str = "fix",
+    ) -> dict[str, Any]:
+        """Carry matching implementation-role guidance into every repair path."""
+        base = dict(extra) if isinstance(extra, Mapping) else {}
+        stage_name = _bounded_text(stage, 96) or "fix"
+        spec = StageSpec(
+            name=stage_name,
+            agent_type="code_improver",
+            capability="code_improve",
+        )
+        if manifest is not None:
+            _, selection_tags = _contract_context_and_skill_tags(base)
+            reused = self._recorded_code_role_skills(
+                manifest,
+                str(getattr(plan, "stack", "") or ""),
+                selection_tags,
+            )
+            renderer = (
+                getattr(self.skills, "render_selected", None)
+                if self.skills is not None
+                else None
+            )
+            advice = renderer(reused, stage=True) if callable(renderer) and reused else ""
+            if advice:
+                out = {**base, "role_guidance": advice}
+                self._persist_stage_skill_selection(
+                    manifest,
+                    [getattr(skill, "slug", "") for skill in reused],
+                    stage=stage_name,
+                    extra=out,
+                )
+                return out
+            return self._extra_with_stage_role_guidance(
+                base,
+                str(getattr(plan, "stack", "") or ""),
+                spec,
+                brief,
+                manifest,
+            )
+        _, selection_tags = _contract_context_and_skill_tags(base)
+        advice, _ = self._stage_skill_advice(
+            str(getattr(plan, "stack", "") or ""),
+            spec,
+            brief,
+            selection_tags=selection_tags,
+        )
+        return {**base, "role_guidance": advice} if advice else base
+
+    def _repair_task_metadata(
+        self,
+        manifest: BuildManifest | None,
+        *,
+        stage: str,
+        worktree_dir: str,
+        extra: Mapping[str, Any] | None,
+    ) -> dict[str, str]:
+        """Bind direct repair tasks like normal stages without broad metadata copy."""
+        metadata = {"stage": _bounded_text(stage, 96) or "fix"}
+        build_id = _bounded_text(getattr(manifest, "build_id", ""), 160)
+        if build_id:
+            metadata["build_id"] = build_id
+        worktree = _bounded_text(worktree_dir, 512)
+        if worktree:
+            metadata["worktree_dir"] = worktree
+            metadata["worktree_role"] = "main"
+        context, _ = _contract_context_and_skill_tags(extra)
+        digest = _safe_sha256_digest(context.get("digest"))
+        if digest:
+            metadata["contract_digest"] = digest
+        return metadata
+
+    def _bind_repair_task(
+        self,
+        task: TaskRequest,
+        manifest: BuildManifest,
+        plan: BuildPlan,
+        extra: Mapping[str, Any] | None,
+        *,
+        stage: str,
+        worktree_dir: str,
+    ) -> None:
+        """Attach selected repair guidance and runner-owned provenance in one place."""
+        repair_extra = self._repair_role_extra(
+            plan,
+            extra,
+            brief=str(getattr(manifest, "brief", "") or ""),
+            manifest=manifest,
+            stage=stage,
+        )
+        if repair_extra:
+            task.payload["extra"] = repair_extra
+        task.metadata = self._repair_task_metadata(
+            manifest,
+            stage=stage,
+            worktree_dir=worktree_dir,
+            extra=repair_extra,
+        )
+
+    # ---- RAG recall (trusted local/build knowledge only) -----------------
     def _recall(self, brief: str, stack: str) -> list[dict[str, Any]]:
-        """Retrieve relevant prior knowledge to inject into stage prompts."""
+        """Retrieve prior knowledge that is eligible for prompt injection.
+
+        Remote GitHub README text remains searchable in RAG, but it is never
+        injected directly into a build prompt. It must first become a
+        provenance-pinned external skill and be explicitly promoted. The URL
+        fallback also protects previously persisted GitHub chunks created before
+        the ``external_unreviewed`` metadata flag existed.
+        """
         if self.rag is None:
             return []
         try:
-            hits = self.rag.query(f"{stack} project: {brief}", top_k=5)
+            # Over-fetch, then drop experience-ledger stubs (marked
+            # {"experience": True} at ingest): they are build metadata, not
+            # patterns, and were being injected as "relevant patterns". Also
+            # exclude unreviewed external repositories: their text is data, not
+            # instruction, until the explicit skill-promotion boundary is met.
+            hits = self.rag.query(f"{stack} project: {brief}", top_k=10)
+
+            def eligible(hit: Any) -> bool:
+                metadata = getattr(hit, "metadata", None) or {}
+                if not isinstance(metadata, Mapping):
+                    return True
+                source = str(metadata.get("source") or "").lower()
+                return not (
+                    metadata.get("experience")
+                    or metadata.get("external_unreviewed")
+                    or "github.com/" in source
+                )
+
+            kept = [h for h in (hits or []) if eligible(h)][:5]
             return [
                 {"text": getattr(h, "text", str(h)), "score": getattr(h, "score", 0.0)}
-                for h in (hits or [])
+                for h in kept
             ]
         except Exception as exc:  # noqa: BLE001 - recall is best-effort
             log.warning("recall.failed", error=str(exc))
             return []
+
+    # ---- Mixture-of-Agents advisory council (opt-in) --------------------
+    async def _run_moa_council(
+        self, brief: str, manifest, extra: dict[str, Any], plan,
+    ) -> dict[str, Any]:
+        """Fan out to advisor models and thread their guidance into codegen.
+
+        Records a bounded summary in ``manifest.extra["moa"]``. Never raises and
+        never influences the verdict: with the council off, all advisors failed,
+        or any unexpected error, ``extra`` comes back untouched and the codegen
+        prompt is byte-identical to a council-off build.
+        """
+        try:
+            from skyn3t.intelligence.council import CouncilEngine
+
+            # Same client the intent judge uses, so advisors share the build's
+            # BudgetTracker contextvar. That does NOT mean per_build_usd_cap
+            # contains them: a CLI backend reports cost_usd=0.0 on every path
+            # (llm.py, cost_source="not_reported_by_cli"), so CLI advisors add
+            # $0.00 to spent_build however much subscription they burn. The cap
+            # binds OpenRouter slots only; CLI slots are bounded by
+            # moa_advisor_timeout and cli_max_concurrency instead. See docs/MOA.md.
+            llm = self._intent_llm()
+            if llm is None:
+                return extra
+            # A per-build advisor selection (dashboard picker) overrides the
+            # configured default. Absent key -> fall back to settings.
+            selected = extra.get("moa_advisors") if isinstance(extra, dict) else None
+            engine = CouncilEngine(
+                llm,
+                self.settings,
+                advisors=str(selected) if selected is not None else None,
+            )
+            if not engine.enabled():
+                return extra
+            files = (plan.checklist or []) if hasattr(plan, "checklist") else []
+            plan_block = "\n".join(f"  {f}" for f in list(files)[:40])
+            contract_context, _ = _contract_context_and_skill_tags(extra)
+            if contract_context:
+                context_block = "\n".join(
+                    f"  {key}: {value}"
+                    for key, value in contract_context.items()
+                )
+                plan_block = (
+                    "Read-only build contract (do not override):\n"
+                    f"{context_block}\n\n{plan_block}"
+                )
+                manifest.extra["moa_contract_context"] = dict(contract_context)
+            advice = await engine.advise(
+                brief=brief,
+                stack=str(getattr(plan, "stack", "") or ""),
+                plan=plan_block,
+            )
+            manifest.extra["moa"] = advice.to_dict()
+            from skyn3t.intelligence.council_trace import save_council_run
+
+            save_council_run(
+                self.settings,
+                build_id=str(getattr(manifest, "build_id", "") or manifest.slug),
+                slug=str(manifest.slug),
+                stack=str(getattr(plan, "stack", "") or ""),
+                task=plan_block,
+                advice=advice,
+            )
+            if advice.guidance:
+                extra = {**extra, "moa_guidance": advice.guidance}
+                log.info(
+                    "moa.council_ready",
+                    advisors=advice.ok_count,
+                    chars=len(advice.guidance),
+                    cost_usd=advice.cost_usd,
+                )
+        except Exception as exc:  # noqa: BLE001 - the council may never break a build
+            log.warning("moa.step_failed", error=str(exc)[:160])
+        return extra
+
+    async def _repair_council_guidance(
+        self, manifest, plan, extra: dict[str, Any] | None, failure: str,
+    ) -> str:
+        """One bounded advisor fan-out on a FAILING build's real proof errors.
+
+        Hermes-parity: the pre-codegen council never saw the stage where
+        builds actually die. Returns assembled guidance for the improver
+        prompt ("" when the council is off/failed — the repair prompt is then
+        byte-identical to a council-off repair). Records
+        ``manifest.extra["moa_repair"]``; never raises.
+        """
+        try:
+            from skyn3t.intelligence.council import CouncilEngine
+
+            llm = self._intent_llm()
+            if llm is None:
+                return ""
+            selected = extra.get("moa_advisors") if isinstance(extra, dict) else None
+            engine = CouncilEngine(
+                llm,
+                self.settings,
+                advisors=str(selected) if selected is not None else None,
+            )
+            if not engine.enabled():
+                return ""
+            advice = await engine.advise_repair(
+                brief=manifest.brief,
+                stack=str(getattr(plan, "stack", "") or ""),
+                failure=failure,
+            )
+            manifest.extra["moa_repair"] = advice.to_dict()
+            if advice.guidance:
+                log.info(
+                    "moa.repair_council_ready",
+                    advisors=advice.ok_count,
+                    chars=len(advice.guidance),
+                    cost_usd=advice.cost_usd,
+                )
+            return advice.guidance
+        except Exception as exc:  # noqa: BLE001 - the council may never break a repair
+            log.warning("moa.repair_step_failed", error=str(exc)[:160])
+            return ""
 
     # ---- asset generation (Replicate, opt-in) ---------------------------
     async def _generate_assets(
@@ -1142,6 +1787,21 @@ class StudioRunner:
         the learning loop (graded on score) isn't trained backward by failures."""
         return min(float(score), 49.0) if verdict != "go" else float(score)
 
+    def _score_after_finding(self, score: float, verdict: str) -> float:
+        """Score once a gate recorded a real (non-skipped) failed finding.
+
+        A blocked finding clamps to the failed-delivery band as before. A finding
+        that did NOT block (lab posture) still must not carry a success-looking
+        score: it caps at ``degraded_proof_score_cap``, the same honesty rule
+        already applied to a go earned under degraded proof evidence. Otherwise
+        the learning loop (graded on score) would be trained that a build with
+        six recorded findings is a 95.
+        """
+        if verdict != "go":
+            return self._clamp_score_to_verdict(score, verdict)
+        cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        return min(float(score), cap)
+
     @staticmethod
     def _game_quality_gate_ok(ok: bool | None, skipped: bool, gates: bool) -> bool:
         """Visual/QA verdict gate for game stacks. Blocks ONLY on a REAL, non-skipped
@@ -1174,7 +1834,9 @@ class StudioRunner:
           does NOT block. ``proof_build_passed`` overrides a build-failure: the
           verify_build STAGE runs on the pre-repair worktree (before
           reconcile_npm_deps / scaffold), so once the authoritative post-repair
-          proof_run build PASSES, a stale verify_build failure must not veto it.
+          proof_run build PASSES — or is SKIPPED with a passing proof (nothing
+          to build, e.g. a static site whose phantom build script was dropped)
+          — a stale verify_build failure must not veto it.
           (Reward-hacking still blocks — that's a separate, non-stale signal.)
         - verify_boot: a real Python import/boot smoke that ran and failed (web
           'structural' boot is advisory-only — proof_run already covers entries)."""
@@ -1241,29 +1903,74 @@ class StudioRunner:
 
     @staticmethod
     def _liveness_gate(verdict: str, stack: str, dead: int,
-                       dead_routes: list[str], broad_gate_on: bool,
-                       visual_failed_routes: list[str] | None = None) -> tuple[str, str | None]:
+                       dead_routes: list[str], broad_gate_on: bool) -> tuple[str, str | None]:
         """Decide the post-liveness verdict from real route health.
 
         Always-on (conservative): a UI web app whose ROOT '/' is dead after
         repair does not serve a homepage — an unambiguous failed delivery. This
         is scoped to UI stacks and the root only, so a 405/POST-only/SPA
         sub-route never falsely fails a working app. The broad "any dead route"
-        gate stays opt-in via ``liveness_gates_verdict``."""
+        gate stays opt-in via ``liveness_gates_verdict``. Visual-liveness
+        failures (viewport heuristics / vision judgements) are NOT decided
+        here: they are posture-routed through ``_gate_outcome`` at the
+        ``_run_liveness`` call site, so lab posture records them without
+        blocking."""
         routes = dead_routes or []
         if broad_gate_on and dead > 0:
             return "no_go", f"{dead} route(s) dead: {', '.join(routes[:5])}"
         if stack in _UI_WEB_STACKS and "/" in routes:
             return "no_go", "root route '/' dead after repair — app does not serve a homepage"
-        visual_routes = visual_failed_routes or []
-        if stack in _UI_WEB_STACKS and visual_routes:
-            return "no_go", (
-                "rendered page(s) failed visual liveness after repair: "
-                f"{', '.join(visual_routes[:5])}"
-            )
         return verdict, None
 
-    def _run_product_quality_gates(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+    def _gate_outcome(
+        self,
+        manifest,
+        gate: str,
+        ok: bool | None,
+        verdict: str,
+        reason: str = "",
+        *,
+        posture: GatePosture | None = None,
+    ) -> str:
+        """Record one gate finding and return the verdict the posture allows.
+
+        ``ok is None`` means the gate COULD NOT RUN: recorded, never blocking,
+        in every posture (``GateVerdict.skipped`` semantics generalised — see
+        :mod:`skyn3t.studio.gate_posture`).
+
+        This only writes the uniform ``gate_findings`` ledger; each gate keeps
+        writing its own legacy ``manifest.extra`` key with its own wording, so
+        every existing consumer and assertion is untouched.
+        """
+        if ok is True:
+            return verdict
+        resolved = posture if posture is not None else GatePosture.from_settings(self.settings)
+        if ok is None:
+            status, blocked = "skipped", False
+        else:
+            status, blocked = "failed", resolved.blocks(gate)
+        findings = manifest.extra.setdefault("gate_findings", [])
+        if isinstance(findings, list):
+            findings.append(
+                {
+                    "gate": str(gate),
+                    "status": status,
+                    "reason": str(reason)[:500],
+                    "blocked": blocked,
+                    "posture": resolved.posture,
+                }
+            )
+        log.info(
+            "gate.finding",
+            gate=str(gate),
+            status=status,
+            blocked=blocked,
+            posture=resolved.posture,
+        )
+        return "no_go" if blocked else verdict
+
+    def _run_product_quality_gates(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
+                                   *, posture: GatePosture | None = None):
         """Run brief-scoped product quality gates on the delivered tree."""
         brief = str(getattr(manifest, "brief", "") or getattr(plan, "brief", "") or "")
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
@@ -1288,18 +1995,28 @@ class StudioRunner:
             and workflow.get("ok") is False
         )
         if failed:
-            verdict = "no_go"
-            final_score = self._clamp_score_to_verdict(final_score, verdict)
-            manifest.score = final_score
             reasons: list[str] = []
             if finance.get("ok") is False:
                 reasons.extend(str(issue) for issue in finance.get("issues", [])[:3])
             if workflow.get("ok") is False:
                 reasons.extend(str(issue) for issue in workflow.get("issues", [])[:3])
-            manifest.extra["product_quality_gate"] = "; ".join(reasons)[:500]
+            reason = "; ".join(reasons)[:500]
+            manifest.extra["product_quality_gate"] = reason
+            verdict = self._gate_outcome(
+                manifest, "product_quality", False, verdict, reason, posture=posture
+            )
+            final_score = self._score_after_finding(final_score, verdict)
+            manifest.score = final_score
         return final_score, verdict
 
-    def _apply_ai_native_gates(self, manifest, verdict: str) -> str:
+    def _apply_ai_native_gates(
+        self, manifest, verdict: str, *, posture: GatePosture | None = None
+    ) -> str:
+        # ai_native_gates_verdict stays the does-the-aggregation-run switch;
+        # the POSTURE decides whether a real finding blocks (release, or an
+        # explicit blocking_gates="ai_native") or records + caps the score
+        # (lab). These checks are environment-dependent contract probes, so
+        # they are classified release-only in gate_posture.
         if verdict != "go" or not bool(getattr(self.settings, "ai_native_gates_verdict", True)):
             return verdict
         blocking: list[str] = []
@@ -1315,8 +2032,18 @@ class StudioRunner:
             blocking.append(f"{key}: {issues[0]}")
         if not blocking:
             return verdict
-        manifest.extra["ai_native_gate"] = "; ".join(blocking[:3])
-        return "no_go"
+        reason = "; ".join(blocking[:3])
+        manifest.extra["ai_native_gate"] = reason
+        return self._gate_outcome(
+            manifest, "ai_native", False, verdict, reason, posture=posture
+        )
+
+    # Degraded-proof reasons that describe ISOLATION rather than MEASUREMENT.
+    # The command still ran and produced a real pass/fail; only the sandbox was
+    # weaker. Every other reason ("build skipped", "tests skipped", "dependency
+    # install failed") means evidence is genuinely absent, which is what the
+    # score cap exists for. See proof_run._attach_proof_environment.
+    _ISOLATION_ONLY_DEGRADED: tuple[str, ...] = ("docker sandbox unavailable",)
 
     def _apply_degraded_proof_score(self, manifest, proof, final_score: float, verdict: str) -> float:
         if verdict != "go":
@@ -1326,11 +2053,27 @@ class StudioRunner:
         if not isinstance(env, dict) or env.get("degraded") is not True:
             return final_score
         cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        reasons = [str(r) for r in (env.get("degraded_reasons") or [])]
+        # A host without Docker degrades every build forever, so under lab
+        # posture an isolation-only degradation must not permanently cap an
+        # otherwise clean delivery at 74 — the app's evidence is real, the
+        # container is not. Release posture keeps 2.0's behaviour: there,
+        # weaker isolation IS a reason to withhold a top score.
+        isolation_only = bool(reasons) and all(
+            any(r.startswith(prefix) for prefix in self._ISOLATION_ONLY_DEGRADED)
+            for r in reasons
+        )
+        posture = GatePosture.from_settings(self.settings)
+        capped = not (isolation_only and posture.posture == "lab")
         manifest.extra["proof_environment_gate"] = {
             "degraded": True,
-            "score_cap": cap,
-            "reasons": list(env.get("degraded_reasons") or []),
+            "score_cap": cap if capped else None,
+            "reasons": reasons,
+            "isolation_only": isolation_only,
+            "capped": capped,
         }
+        if not capped:
+            return final_score
         return min(float(final_score), cap)
 
     @staticmethod
@@ -1384,9 +2127,16 @@ class StudioRunner:
             if env.get("degraded") is True:
                 # The degraded proof cap is a maximum, not a bucket. More degraded
                 # reasons shave the ceiling so these do not all land exactly on 74.
-                degraded_cap = float(extra.get("proof_environment_gate", {}).get("score_cap", 74.0))
-                cap(max(60.0, degraded_cap - max(2.0, min(10.0, 2.0 * len(degraded_reasons or [1])))),
-                    "degraded proof environment")
+                # score_cap None is MEANINGFUL, not missing: isolation-only
+                # degradation under lab posture is deliberately UNCAPPED (see
+                # the proof_environment_gate writer). float(None) here killed
+                # every lab-posture "go" on a Docker-less host at the finish
+                # line — the first live build after the win-rate campaign.
+                raw_cap = extra.get("proof_environment_gate", {}).get("score_cap", 74.0)
+                if raw_cap is not None:
+                    degraded_cap = float(raw_cap)
+                    cap(max(60.0, degraded_cap - max(2.0, min(10.0, 2.0 * len(degraded_reasons or [1])))),
+                        "degraded proof environment")
             if file_counts_known and files_substantive < 3:
                 cap(72.0 + files_substantive * 5.0, "thin substantive file count")
             elif file_counts_known and files_substantive < 8:
@@ -1443,8 +2193,6 @@ class StudioRunner:
                 cap(28.0 + files_substantive * 4.0, "thin substantive file count")
             if extra.get("scaffold_stub_gate") or proof_detail.get("scaffold_stub"):
                 cap(35.0, "scaffold/starter stub")
-            if extra.get("code_degraded") or extra.get("code_degraded_reason"):
-                cap(37.0, "code generation degraded")
             if extra.get("intent_gate"):
                 cap(42.0, "intent gate failed")
             if extra.get("liveness_gate"):
@@ -1466,13 +2214,16 @@ class StudioRunner:
             }
         return shaped
 
-    def _apply_scaffold_stub_proof_gate(self, manifest, proof, final_score: float, verdict: str):
+    def _apply_scaffold_stub_proof_gate(self, manifest, proof, final_score: float, verdict: str,
+                                        *, posture: GatePosture | None = None):
         detail = getattr(proof, "detail", None) or {}
         reason = detail.get("scaffold_stub") if isinstance(detail, dict) else None
         if not reason:
             return final_score, verdict
-        verdict = "no_go"
-        final_score = self._clamp_score_to_verdict(final_score, verdict)
+        verdict = self._gate_outcome(
+            manifest, "scaffold_stub", False, verdict, str(reason), posture=posture
+        )
+        final_score = self._score_after_finding(final_score, verdict)
         manifest.score = final_score
         manifest.extra["scaffold_stub_gate"] = {
             "triggered": True,
@@ -1482,7 +2233,8 @@ class StudioRunner:
         }
         return final_score, verdict
 
-    def _run_security_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+    def _run_security_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
+                           *, posture: GatePosture | None = None):
         if not bool(getattr(self.settings, "security_check_enabled", True)):
             return final_score, verdict
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
@@ -1491,30 +2243,112 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001
             log.warning("security_check.failed", error=str(exc))
             sec = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
+        if (
+            sec.get("skipped") is not True
+            and sec.get("ok") is False
+            and any("secret" in str(i).lower() for i in sec.get("issues", []))
+        ):
+            sec = self._rewrite_secret_findings(manifest, project_dir, stack, sec)
         manifest.extra["security_check"] = sec
         if sec.get("skipped") is not True and sec.get("ok") is False:
-            verdict = "no_go"
-            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            reason = "; ".join(str(i) for i in sec.get("issues", [])[:3])[:500]
+            manifest.extra["security_gate"] = reason
+            verdict = self._gate_outcome(
+                manifest, "security", False, verdict, reason, posture=posture
+            )
+            final_score = self._score_after_finding(final_score, verdict)
             manifest.score = final_score
-            manifest.extra["security_gate"] = "; ".join(str(i) for i in sec.get("issues", [])[:3])[:500]
         return final_score, verdict
 
-    def _run_web_polish_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str):
+    def _rewrite_secret_findings(self, manifest, project_dir: str, stack: str, sec: dict) -> dict:
+        """Deterministic repair for the bundled-secret finding: rewrite simple
+        secret assignments to env reads, then RE-RUN the same check — the gate
+        only passes when the rewritten tree is clean (eval/SQL findings, and
+        secrets the repair conservatively skipped, still fail it). Never
+        raises; a failed repair leaves the original finding untouched."""
+        try:
+            repair = rewrite_secret_literals(project_dir)
+        except Exception as exc:  # noqa: BLE001 - a repair must never break a build
+            log.warning("security_check.repair_failed", error=str(exc))
+            return sec
+        manifest.extra["security_secret_rewrite"] = {
+            "rewritten": list(repair.get("rewritten") or [])[:20],
+            "skipped": list(repair.get("skipped") or [])[:20],
+            "errors": list(repair.get("errors") or [])[:10],
+            "env_example": repair.get("env_example"),
+        }
+        rewritten = manifest.extra["security_secret_rewrite"]["rewritten"]
+        if not rewritten:
+            return sec
+        log.info("security_check.secrets_rewritten", count=len(rewritten))
+        try:
+            return check_security(project_dir, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("security_check.recheck_failed", error=str(exc))
+            return sec
+
+    def _run_web_polish_gate(self, manifest, project_dir: str, plan, final_score: float, verdict: str,
+                             *, posture: GatePosture | None = None):
         if not bool(getattr(self.settings, "web_polish_gate_enabled", True)):
             return final_score, verdict
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
         try:
-            polish = check_web_polish(project_dir, stack)
+            brief = str(getattr(manifest, "brief", "") or getattr(plan, "brief", "") or "")
+            polish = check_web_polish(project_dir, stack, brief)
         except Exception as exc:  # noqa: BLE001
             log.warning("web_polish.failed", error=str(exc))
             polish = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
         manifest.extra["web_polish"] = polish
+        # Semantic grounding lint: advisory-only (never gates), merged into
+        # the SAME polish record so the operator sees one warnings list.
+        try:
+            grounding = check_grounding(project_dir, stack)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("grounding_check.failed", error=str(exc))
+            grounding = {"ok": True, "skipped": True, "issues": [], "warnings": [str(exc)[:160]], "checked": []}
+        manifest.extra["grounding"] = grounding
+        if grounding.get("warnings"):
+            polish.setdefault("warnings", []).extend(str(w)[:300] for w in grounding["warnings"][:20])
         if polish.get("skipped") is not True and polish.get("ok") is False:
-            verdict = "no_go"
-            final_score = self._clamp_score_to_verdict(final_score, verdict)
+            reason = "; ".join(str(i) for i in polish.get("issues", [])[:3])[:500]
+            manifest.extra["web_polish_gate"] = reason
+            verdict = self._gate_outcome(
+                manifest, "web_polish", False, verdict, reason, posture=posture
+            )
+            final_score = self._score_after_finding(final_score, verdict)
             manifest.score = final_score
-            manifest.extra["web_polish_gate"] = "; ".join(str(i) for i in polish.get("issues", [])[:3])[:500]
         return final_score, verdict
+
+    async def _run_web_interact_gate(self, manifest, project_dir: str, plan) -> None:
+        """Advisory web interaction check (web stacks): serve the delivered app
+        and drive ONE LLM-authored Playwright script through ONE real user flow,
+        asserting BOTH the UI surface and the backend surface — the "renders but
+        isn't wired" catch no static/route gate can make. RECORDED ONLY to
+        ``manifest.extra["web_interact"]``: it never routes through
+        ``_gate_outcome`` and never dampens the score, and the check itself
+        soft-skips ($0, before serving) without Playwright or a non-stub LLM
+        backend. Never raises."""
+        if not bool(getattr(self.settings, "web_interact_check_enabled", True)):
+            return
+        stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
+        try:
+            result = await check_web_interact(
+                project_dir, stack, settings=self.settings
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("web_interact.failed", error=str(exc))
+            result = {
+                "ok": True, "skipped": True,
+                "reason": f"web interact error: {exc}"[:300],
+                "issues": [], "warnings": [], "interactions": [], "checked": [],
+            }
+        manifest.extra["web_interact"] = result
+        log.info(
+            "web_interact.done",
+            skipped=result.get("skipped"),
+            ok=result.get("ok"),
+            issues=len(result.get("issues") or []),
+        )
 
     async def _reproof_after_post_proof_repairs(self, manifest, plan, project_dir, proof):
         if not (isinstance(manifest.extra, dict)
@@ -1536,7 +2370,8 @@ class StudioRunner:
         return refreshed
 
     async def _run_liveness(self, manifest, project_dir, plan, proof,
-                            final_score: float, verdict: str):
+                            final_score: float, verdict: str,
+                            *, posture: GatePosture | None = None):
         """Serve the delivered web app, check every route/page, repair failures,
         and dampen the score by route health (opt-in: gate the verdict). Returns
         the possibly-adjusted (final_score, verdict). Never raises."""
@@ -1652,8 +2487,23 @@ class StudioRunner:
         verdict, gate_reason = self._liveness_gate(
             verdict, plan.stack, report.dead, report.dead_routes,
             bool(getattr(self.settings, "liveness_gates_verdict", False)),
-            list(getattr(report, "visual_failed_routes", []) or []),
         )
+        # Visual liveness is a viewport heuristic OR a vision-model judgement —
+        # not proof the delivery is broken — so it is posture-routed: recorded
+        # (with the score already dampened by health above) under lab, blocking
+        # under release or an explicit blocking_gates="liveness". The always-on
+        # dead-root and opt-in broad gates above rightly stay direct.
+        if gate_reason is None:
+            visual_routes = list(getattr(report, "visual_failed_routes", []) or [])
+            if plan.stack in _UI_WEB_STACKS and visual_routes:
+                gate_reason = (
+                    "rendered page(s) failed visual liveness after repair: "
+                    f"{', '.join(visual_routes[:5])}"
+                )
+                verdict = self._gate_outcome(
+                    manifest, "liveness", False, verdict, gate_reason,
+                    posture=posture,
+                )
         if (
             "visual_self_heal_gate" in manifest.extra
             and plan.stack in _UI_WEB_STACKS
@@ -1664,8 +2514,13 @@ class StudioRunner:
         ):
             manifest.extra.pop("visual_self_heal_gate", None)
             manifest.extra["visual_self_heal_reconciled_by_liveness"] = True
-            if verdict == "no_go":
-                verdict = "go"
+            # Restore ONLY the flip the visual_self_heal gate itself caused.
+            # A no_go from any other cause (reviewer/rescore, delivery signals,
+            # forced_blocking gates, ...) must survive reconciliation — a healthy
+            # render says nothing about those findings.
+            restored = manifest.extra.pop("visual_self_heal_gate_flipped_from", None)
+            if restored is not None and verdict == "no_go":
+                verdict = restored
         if gate_reason:
             manifest.extra["liveness_gate"] = gate_reason
         return final_score, verdict
@@ -1681,6 +2536,7 @@ class StudioRunner:
         blocking: bool = True,
         routes: list[str] | tuple[str, ...] | None = None,
         include_discovered_routes: bool = True,
+        posture: GatePosture | None = None,
     ) -> tuple[float, str]:
         """Run Docker+Playwright or Maestro evidence for UI builds.
 
@@ -1746,12 +2602,44 @@ class StudioRunner:
             and step.get("status") != "passed"
         ]
         status = str(payload.get("status") or "failed")
-        suffix = f" ({', '.join(failed_steps[:4])})" if failed_steps else ""
-        manifest.extra["proof_ladder_gate"] = (
-            f"required UI proof did not pass: {status}{suffix}"
-        )
-        verdict = "no_go"
         cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        if status == "skipped":
+            # The ladder COULD NOT RUN (no docker/playwright/maestro on this
+            # host), which is not evidence that the app is broken.
+            # ProofLadderResult.finalize() already distinguishes skipped from
+            # failed; only `result.passed` collapsed the two, so every web build
+            # on a tooling-less host was no_go regardless of quality. Record the
+            # gap and cap the score — exactly what degraded_proof_score_cap is
+            # documented for — but never flip the verdict, in ANY posture: a
+            # gate that cannot run must not fail a build.
+            skipped_steps = [
+                str(step.get("name") or "proof")
+                for step in payload.get("steps", [])
+                if isinstance(step, dict)
+                and step.get("required")
+                and step.get("status") == "skipped"
+            ]
+            suffix = f" ({', '.join(skipped_steps[:4])})" if skipped_steps else ""
+            manifest.extra.pop("proof_ladder_gate", None)
+            manifest.extra["proof_ladder_unavailable"] = (
+                f"required UI proof tooling unavailable{suffix}"
+            )[:500]
+            final_score = min(final_score, cap)
+            manifest.score = final_score
+            log.info(
+                "proof_ladder.unavailable",
+                slug=getattr(plan, "slug", ""),
+                steps=skipped_steps[:4],
+            )
+            return final_score, verdict
+
+        manifest.extra.pop("proof_ladder_unavailable", None)
+        suffix = f" ({', '.join(failed_steps[:4])})" if failed_steps else ""
+        reason = f"required UI proof did not pass: {status}{suffix}"
+        manifest.extra["proof_ladder_gate"] = reason
+        verdict = self._gate_outcome(
+            manifest, "proof_ladder", False, verdict, reason, posture=posture
+        )
         final_score = min(final_score, cap)
         manifest.score = final_score
         return final_score, verdict
@@ -1950,6 +2838,7 @@ class StudioRunner:
         proof: Any,
         final_score: float,
         verdict: str,
+        posture: GatePosture | None = None,
     ) -> tuple[float, str, Any]:
         selection = self._requirement_trace_selection(product_spec, plan.stack)
         if selection.fully_bound and selection.safe_proof_ids:
@@ -1978,10 +2867,15 @@ class StudioRunner:
                 "acceptance_ids": list(selection.safe_proof_ids),
             }
             if (ran and not passed) or summary == "invalid source tree":
-                verdict = "no_go"
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    f"dependency stabilization failed: {str(summary)[:160]}",
+                    posture=posture,
+                )
         verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
         return await self._run_final_requirement_evidence(
-            manifest, product_spec, project_dir, plan, proof, final_score, verdict, selection
+            manifest, product_spec, project_dir, plan, proof, final_score, verdict,
+            selection, posture=posture,
         )
 
     async def _run_final_requirement_evidence(
@@ -1994,6 +2888,7 @@ class StudioRunner:
         final_score: float,
         verdict: str,
         selection: _RequirementTraceSelection,
+        posture: GatePosture | None = None,
     ) -> tuple[float, str, Any]:
         source_before = source_tree_snapshot(project_dir)
         source_current = source_before
@@ -2020,14 +2915,24 @@ class StudioRunner:
                 manifest.extra["proof"] = proof_payload
                 proof = final_proof
                 if not final_proof.passed:
-                    verdict = "no_go"
+                    verdict = self._gate_outcome(
+                        manifest, "proof", False, verdict,
+                        "final re-proof did not pass", posture=posture,
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"final proof failed to execute: {exc}"[:500])
-                verdict = "no_go"
+                # Could not RUN, which is not evidence the app is broken.
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    f"final proof failed to execute: {exc}"[:200], posture=posture,
+                )
             source_current = source_tree_snapshot(project_dir)
             if not self._same_evidence_snapshot(source_before, source_current):
                 errors.append("authored source changed during final proof")
-                verdict = "no_go"
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    "authored source changed during final proof", posture=posture,
+                )
         global_ladder = bool(getattr(self.settings, "proof_ladder_required", True)) and (
             plan.stack in _UI_WEB_STACKS or plan.stack == "react_native"
         )
@@ -2056,7 +2961,10 @@ class StudioRunner:
                 after_ladder = source_tree_snapshot(project_dir)
                 if not self._same_evidence_snapshot(source_current, after_ladder):
                     errors.append("authored source changed during final UI proof")
-                    verdict = "no_go"
+                    verdict = self._gate_outcome(
+                        manifest, "requirement_trace", False, verdict,
+                        "authored source changed during final UI proof", posture=posture,
+                    )
                 source_current = after_ladder
                 if plan.stack in _WEB_STACKS:
                     try:
@@ -2075,10 +2983,23 @@ class StudioRunner:
                 }
                 if global_ladder:
                     manifest.extra["proof_ladder_gate"] = f"required UI proof did not run: {reason}"
-                verdict = "no_go"
+                # Routed through the recorder rather than assigning the verdict
+                # directly. "The UI proof could not RUN" is not evidence that the
+                # app is broken — the observed trigger was a preview fingerprint
+                # being unavailable because .gitignore changed mid-validation,
+                # which blocked a build whose objective proof had PASSED. The
+                # evidence is still recorded and the trace still fails closed;
+                # only the veto is now posture-governed.
+                verdict = self._gate_outcome(
+                    manifest, "proof_ladder", False, verdict,
+                    f"required UI proof did not run: {reason}", posture=posture,
+                )
         if errors:
             if selection.fully_bound or global_ladder:
-                verdict = "no_go"
+                verdict = self._gate_outcome(
+                    manifest, "requirement_trace", False, verdict,
+                    "; ".join(str(e) for e in errors[:3]), posture=posture,
+                )
             manifest.extra["requirement_trace_evidence_errors"] = list(dict.fromkeys(errors))
         else:
             manifest.extra.pop("requirement_trace_evidence_errors", None)
@@ -2155,7 +3076,12 @@ class StudioRunner:
             trace.get("mode") == "enforced" and trace.get("go_eligible") is not True
         ) or (trace.get("mode") == "invalid" and selection.fully_bound)
         if blocked:
-            verdict = "no_go"
+            verdict = self._gate_outcome(
+                manifest, "requirement_trace", False, verdict,
+                f"requirement trace mode={trace.get('mode')} "
+                f"go_eligible={trace.get('go_eligible')}",
+                posture=posture,
+            )
             final_score = min(
                 final_score,
                 float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
@@ -2363,6 +3289,22 @@ class StudioRunner:
 
         data = outcome.to_dict()
         manifest.extra["visual_self_heal"] = data
+        try:
+            from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+            receipt = VisualQualityLab.record_build_result(
+                project_dir,
+                slug=manifest.slug,
+                brief=manifest.brief,
+                stack=stack,
+                visual_loop=data,
+            )
+            manifest.extra["visual_quality_lab"] = {
+                "run_id": receipt["run_id"],
+                "status": receipt["status"],
+            }
+        except Exception as exc:  # noqa: BLE001 - history must not disrupt delivery
+            log.warning("visual_quality_lab.record_failed", error=str(exc))
         changed = any(bool(r.get("improved")) for r in data.get("rounds", []))
         if changed:
             manifest.files = list_files(project_dir)
@@ -2415,10 +3357,12 @@ class StudioRunner:
     ) -> tuple[str, float, list[str]]:
         """Run the reviewer heuristic against the delivered tree (post-fix).
 
-        Returns (verdict, score, gaps). Pure/offline — works even when no
-        reviewer agent is registered. Never raises. ``stack`` matters: the
-        heuristic scores content stacks (agent packs) by their content shape —
-        omitting it no_go'd a perfect pack on code-suffix counting.
+        Returns (verdict, score, gaps); verdict is "go"/"no_go", or the
+        "error" sentinel when the heuristic itself crashed (gate unavailable,
+        not a failed delivery). Pure/offline — works even when no reviewer
+        agent is registered. Never raises. ``stack`` matters: the heuristic
+        scores content stacks (agent packs) by their content shape — omitting
+        it no_go'd a perfect pack on code-suffix counting.
         """
         from pathlib import Path
 
@@ -2434,7 +3378,11 @@ class StudioRunner:
             return verdict, float(score), list(gaps)
         except Exception as exc:  # noqa: BLE001
             log.warning("rescore.failed", error=str(exc))
-            return "no_go", 0.0, []
+            # "error", not "no_go": the structural gate could not run, which is
+            # not evidence the delivery failed. The combine treats it as
+            # "structural gate unavailable" — a reviewer verdict is honoured
+            # alone; without a reviewer the fail-closed default no_go stands.
+            return "error", 0.0, []
 
     @staticmethod
     def _stub_for(rel: str, plan: BuildPlan, brief: str) -> str | None:
@@ -2539,7 +3487,7 @@ class StudioRunner:
     async def _improve_once(
         self, *, work_dir: str, plan, gaps: list[str], correlation_id: str,
         extra: dict | None, label: str, brief: str = "", slug: str = "",
-        files: list[str] | None = None,
+        files: list[str] | None = None, manifest: BuildManifest | None = None,
     ) -> bool:
         """Run the code-improver once against ``work_dir`` for the flagged gaps.
 
@@ -2551,6 +3499,13 @@ class StudioRunner:
         """
         if not self._has_capability("code_improve"):
             return False
+        repair_extra = self._repair_role_extra(
+            plan,
+            extra,
+            brief=brief or str(getattr(plan, "brief", "") or ""),
+            manifest=manifest,
+            stage=label,
+        )
         payload = {
             "brief": brief, "slug": slug,
             "worktree_dir": work_dir, "project_dir": work_dir,
@@ -2559,12 +3514,19 @@ class StudioRunner:
         }
         if files:
             payload["files"] = list(files)
-        if extra:
-            payload["extra"] = extra
+        if repair_extra:
+            payload["extra"] = repair_extra
         task = TaskRequest(
-            type="code_improver", payload=payload,
+            type="code_improver",
+            payload=payload,
             capabilities_required=("code_improve",),
-            correlation_id=correlation_id, metadata={"stage": label},
+            correlation_id=correlation_id,
+            metadata=self._repair_task_metadata(
+                manifest,
+                stage=label,
+                worktree_dir=work_dir,
+                extra=repair_extra,
+            ),
         )
         try:
             result = await asyncio.wait_for(
@@ -2613,6 +3575,78 @@ class StudioRunner:
             manifest.extra["contrast_issues"] = issues[:20]
             return
         manifest.extra.pop("contrast_issues", None)
+
+    def _deliver_design_md(self, project_dir, brief: str, stack: str,
+                           prior: dict[str, Any], manifest) -> None:
+        """Persist the build's design direction as DESIGN.md in the delivered
+        tree, so `skyn3t studio improve` re-reads the SAME tokens/direction
+        instead of drifting palette/fonts/layout across runs. Same stack gate
+        as the codegen design bar (_DESIGN_WEB_STACKS). Best-effort, mirroring
+        the asset foundry: a write failure logs and never breaks delivery."""
+        try:
+            from skyn3t.agents.code_agent import _DESIGN_WEB_STACKS, CodeAgent
+            from skyn3t.studio.design_tokens import write_design_md
+            from skyn3t.studio.visual_design_contract import (
+                VISUAL_DESIGN_CONTRACT_RELATIVE_PATH,
+                write_visual_design_contract,
+            )
+
+            if (stack or "").lower() not in _DESIGN_WEB_STACKS:
+                return
+            design = CodeAgent._unwrap_design_payload(
+                prior.get("design") if isinstance(prior, dict) else None
+            )
+            design_summary = CodeAgent._design_summary(design)
+            written = write_design_md(project_dir, brief, design_summary)
+            contract = write_visual_design_contract(project_dir, brief, design_summary)
+            if written:
+                manifest.extra["design_md"] = "DESIGN.md"
+                log.info("runner.design_md_written", path="DESIGN.md")
+            if contract is not None:
+                manifest.extra["visual_design_contract"] = {
+                    "schema_version": contract["schema_version"],
+                    "path": VISUAL_DESIGN_CONTRACT_RELATIVE_PATH.as_posix(),
+                    "contract_id": contract["contract_id"],
+                }
+                log.info(
+                    "runner.visual_design_contract_written",
+                    path=VISUAL_DESIGN_CONTRACT_RELATIVE_PATH.as_posix(),
+                    contract_id=contract["contract_id"],
+                )
+            if written or contract is not None:
+                manifest.files = list_files(project_dir)
+        except Exception as exc:  # noqa: BLE001 - design persistence must not break delivery
+            log.warning("runner.design_md_failed", error=str(exc)[:160])
+
+    async def _deliver_prerender(self, project_dir, stack: str, manifest) -> None:
+        """Delivery-time prerender for client-rendered SPAs (advisory).
+
+        A react_vite/static SPA ships an empty ``<div id="root">`` — crawlers and
+        social previewers never execute the JS, so the seo gate's meta tags are all
+        they see. Render each enumerated route in headless Chromium and write the
+        post-mount HTML into the delivery tree (over a route's own HTML file ONLY
+        when it is an empty app-shell or our own prior snapshot, else under
+        ``prerendered/``; authored content is never clobbered). Records
+        ``manifest.extra["prerender"]``. Best-effort, mirroring the asset-foundry /
+        DESIGN.md passes: a headless-render failure logs and delivery continues.
+        Offloaded to a thread — sync Playwright raises inside a running event loop
+        (the qa_playtest pattern)."""
+        try:
+            from skyn3t.studio.prerender import prerender_spa
+
+            result = await asyncio.to_thread(prerender_spa, project_dir, stack)
+            manifest.extra["prerender"] = result
+            if result.get("written"):
+                manifest.files = list_files(project_dir)
+            log.info(
+                "runner.prerender_done",
+                ok=result.get("ok"),
+                skipped=result.get("skipped"),
+                written=len(result.get("written") or []),
+                errors=len(result.get("errors") or []),
+            )
+        except Exception as exc:  # noqa: BLE001 - prerender must never break delivery
+            log.warning("runner.prerender_failed", error=str(exc)[:160])
 
     def _final_consistency_check(self, project_dir, plan, manifest, verdict: str) -> str:
         """Unconditional final pass, run ONCE after every post-proof stage
@@ -2676,7 +3710,11 @@ class StudioRunner:
                 "note": "a post-repair stage left the delivered tree unbootable",
             }
             log.warning("runner.final_consistency_no_go", unresolved=final_unresolved[:10])
-            return "no_go"
+            return self._gate_outcome(
+                manifest, "final_consistency", False, verdict,
+                "unresolved imports after post-proof repair: "
+                + ", ".join(str(u) for u in final_unresolved[:4]),
+            )
         try:
             final_export_mismatches = _esm_named_export_mismatches(Path(project_dir))
         except Exception as exc:  # noqa: BLE001
@@ -2691,7 +3729,18 @@ class StudioRunner:
                 "runner.final_consistency_no_go",
                 named_export_mismatches=final_export_mismatches[:10],
             )
-            return "no_go"
+            # Entries are dicts ({importer, specifier, module, missing}), not
+            # strings — render them rather than joining raw.
+            rendered = ", ".join(
+                f"{m.get('importer', '?')} -> {m.get('specifier', '?')}"
+                f" missing {','.join(m.get('missing') or [])}"
+                if isinstance(m, dict) else str(m)
+                for m in final_export_mismatches[:4]
+            )
+            return self._gate_outcome(
+                manifest, "final_consistency", False, verdict,
+                f"invalid ESM named import/export contract after post-proof repair: {rendered}",
+            )
         if contract_clones_remaining:
             manifest.extra["final_consistency_check"] = {
                 "acceptance_contract_clones": contract_clones_remaining[:10],
@@ -2701,7 +3750,11 @@ class StudioRunner:
                 "runner.final_consistency_no_go",
                 acceptance_contract_clones=contract_clones_remaining[:10],
             )
-            return "no_go"
+            return self._gate_outcome(
+                manifest, "final_consistency", False, verdict,
+                "pytest-conflicting signed acceptance-test clones remain: "
+                + ", ".join(str(c) for c in contract_clones_remaining[:4]),
+            )
         return verdict
 
     @staticmethod
@@ -2849,6 +3902,14 @@ class StudioRunner:
                 capabilities_required=("code_improve",),
                 correlation_id=correlation_id, metadata={"stage": f"headless_gate#{n}"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage=f"headless_gate#{n}",
+                worktree_dir=project_dir,
+            )
             try:
                 await asyncio.wait_for(
                     self.orchestrator.submit(task), timeout=self.stage_exec_timeout
@@ -2965,6 +4026,14 @@ class StudioRunner:
                         capabilities_required=("code_improve",),
                         correlation_id=correlation_id,
                         metadata={"stage": "qa_playtest"},
+                    )
+                    self._bind_repair_task(
+                        task,
+                        manifest,
+                        plan,
+                        extra,
+                        stage="qa_playtest",
+                        worktree_dir=project_dir,
                     )
                     try:
                         await asyncio.wait_for(
@@ -3137,6 +4206,14 @@ class StudioRunner:
                 capabilities_required=("code_improve",),
                 correlation_id=correlation_id,
                 metadata={"stage": "seo_check"},
+            )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="seo_check",
+                worktree_dir=project_dir,
             )
             dispatched_ok = True
             try:
@@ -3333,6 +4410,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "mcp_check"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="mcp_check",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -3436,6 +4521,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "rag_check"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="rag_check",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -3536,6 +4629,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "workflow_check"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="workflow_check",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -3633,6 +4734,14 @@ class StudioRunner:
                 capabilities_required=("code_improve",),
                 correlation_id=correlation_id,
                 metadata={"stage": "cli_check"},
+            )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="cli_check",
+                worktree_dir=project_dir,
             )
             dispatched_ok = True
             try:
@@ -3756,6 +4865,14 @@ class StudioRunner:
                 correlation_id=correlation_id,
                 metadata={"stage": "cli_playtest"},
             )
+            self._bind_repair_task(
+                task,
+                manifest,
+                plan,
+                extra,
+                stage="cli_playtest",
+                worktree_dir=project_dir,
+            )
             dispatched_ok = True
             try:
                 await asyncio.wait_for(
@@ -3854,6 +4971,15 @@ class StudioRunner:
         """
         import time as _t
         root = Path(project_dir).resolve()
+        repair_extra = dict(extra) if isinstance(extra, Mapping) else {}
+        if self._has_capability("code_improve"):
+            repair_extra = self._repair_role_extra(
+                plan,
+                repair_extra,
+                brief=str(getattr(manifest, "brief", "") or ""),
+                manifest=manifest,
+                stage="fix",
+            )
 
         # A repair agent may fix production code, but it must never make a red
         # build green by deleting or weakening TestAuthor's definition of success.
@@ -3914,6 +5040,7 @@ class StudioRunner:
         previous_proof_signature = proof_signature(proof)
         unchanged_rounds = 0
         stalled = False
+        repair_guidance: str | None = None  # council advises at most once per build
         runtime_self_heal = str(getattr(plan, "stack", "") or "") not in _GAME_STACKS
         if runtime_self_heal:
             manifest.extra["runtime_self_heal"] = {
@@ -3958,6 +5085,15 @@ class StudioRunner:
                 raw_gaps = list(proof.missing or []) + (
                     error_gaps or [f"proof failed: {proof.detail}"]
                 )
+                # Hermes-parity: from the second attempt on (a repeat attempt
+                # means the direct fix didn't take), fan the REAL proof errors
+                # to the advisory council ONCE and hand its guidance to every
+                # remaining improver pass. First attempt stays fast.
+                if attempt >= 2 and repair_guidance is None:
+                    repair_guidance = await self._repair_council_guidance(
+                        manifest, plan, repair_extra,
+                        "\n".join(str(g) for g in raw_gaps[:12]),
+                    )
                 payload = {
                     "brief": manifest.brief, "slug": manifest.slug,
                     "worktree_dir": project_dir, "project_dir": project_dir,
@@ -3970,12 +5106,21 @@ class StudioRunner:
                         raw_gaps, stage="proof", attempt=attempt,
                         max_attempts=max_attempts),
                 }
-                if extra:
-                    payload["extra"] = extra
+                if repair_guidance:
+                    payload["moa_guidance"] = repair_guidance
+                if repair_extra:
+                    payload["extra"] = repair_extra
                 task = TaskRequest(
-                    type="code_improver", payload=payload,
+                    type="code_improver",
+                    payload=payload,
                     capabilities_required=("code_improve",),
-                    correlation_id=correlation_id, metadata={"stage": f"fix#{attempt}"},
+                    correlation_id=correlation_id,
+                    metadata=self._repair_task_metadata(
+                        manifest,
+                        stage=f"fix#{attempt}",
+                        worktree_dir=project_dir,
+                        extra=repair_extra,
+                    ),
                 )
                 try:
                     await asyncio.wait_for(
@@ -4190,6 +5335,83 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001
             log.warning("skills.distill_failed", error=str(exc))
 
+    async def _mine_repair_knowledge(self, manifest: BuildManifest, plan: BuildPlan) -> None:
+        """Mine stuck->resolved deterministic repairs into lessons and skills.
+
+        LSO-style self-learning edge: a build that proof-gated, was unblocked
+        by a DETERMINISTIC repair (never an LLM retry — those aren't
+        distillable), and then passed teaches "what we should have known up
+        front". Findings persist as deduped lessons; a (stack, repair) pair
+        recurring on 'go' builds promotes to an advisory skill so the NEXT
+        build gets the knowledge before it gets stuck; promoted repairs that
+        keep losing builds are demoted by outcome. Best-effort at every step:
+        a miner failure logs and is skipped, never breaks the build.
+        """
+        try:
+            from skyn3t.intelligence import repair_miner
+
+            findings = repair_miner.mine_repairs(manifest, stack=plan.stack)
+            store = self.memory if self.memory is not None else getattr(
+                self.learning, "store", None
+            )
+            if findings and store is not None:
+                await repair_miner.persist_findings_as_lessons(
+                    findings, store, stack=plan.stack,
+                    source_build=manifest.build_id or manifest.slug,
+                )
+            if findings and self.patterns is not None and self.skills is not None:
+                repair_miner.record_and_promote(
+                    findings, self.patterns, self.skills,
+                    score=float(manifest.score or 0.0),
+                    go=manifest.verdict == "go",
+                    example=manifest.slug,
+                )
+            if self.skills is not None:
+                repair_miner.demote_failing_repair_skills(self.skills)
+        except Exception as exc:  # noqa: BLE001 - mining must never break a build
+            log.warning("repair_miner.failed", error=str(exc))
+
+    @staticmethod
+    def _build_pattern_shape(plan: BuildPlan) -> dict[str, Any]:
+        """Return a stable, useful, non-brief fingerprint for a build plan.
+
+        Stage count alone groups very different pipelines into the same advice.
+        This keeps only durable process choices: the ordered stage roles,
+        optional/gated semantics, test-first mode, and bounded candidate count.
+        It intentionally excludes file names, the brief, and arbitrary plan
+        notes so repeat evidence can still accumulate across builds.
+        """
+        pipeline: list[dict[str, Any]] = []
+        for spec in list(getattr(plan, "stages", []) or []):
+            name = _bounded_text(str(getattr(spec, "name", "") or ""), 64)
+            agent_type = _bounded_text(
+                str(getattr(spec, "agent_type", "") or ""), 64
+            )
+            capability = _bounded_text(
+                str(getattr(spec, "capability", "") or ""), 64
+            )
+            if not (name or agent_type or capability):
+                continue
+            pipeline.append(
+                {
+                    "name": name,
+                    "agent_type": agent_type,
+                    "capability": capability,
+                    "optional": bool(getattr(spec, "optional", False)),
+                    "gated": bool(getattr(spec, "gated", False)),
+                }
+            )
+        try:
+            best_of_n = max(1, min(int(getattr(plan, "best_of_n", 1) or 1), 16))
+        except (TypeError, ValueError, OverflowError):
+            best_of_n = 1
+        return {
+            "schema": 2,
+            "pipeline": pipeline,
+            "test_first": bool(getattr(plan, "test_first", False)),
+            "best_of_n": best_of_n,
+        }
+
     async def _record_learning(
         self,
         manifest: BuildManifest,
@@ -4202,11 +5424,14 @@ class StudioRunner:
         project_dir: str | None = None,
     ) -> None:
         """Close every learning edge (design rule #2). Best-effort; never raises."""
+        from skyn3t.agents.code_agent import read_vents_log
         from skyn3t.intelligence.learning_loop import (
             proof_ladder_infrastructure_unavailable,
         )
 
-        manifest_extra = getattr(manifest, "extra", None) or {}
+        manifest_extra = getattr(manifest, "extra", None)
+        if not isinstance(manifest_extra, dict):
+            manifest_extra = {}
         proof_errors = extract_error_gaps(
             (manifest_extra.get("proof") or {}).get("detail"),
             (manifest_extra.get("proof") or {}).get("syntax_errors"),
@@ -4243,6 +5468,13 @@ class StudioRunner:
             # durable avoid-rule for the NEXT build.
             "gate_findings": gate_findings,
             "infrastructure_failure": infrastructure_failure,
+            # Codegen friction vents (bounded, agent-reported PIPELINE blockers),
+            # read back from the build's vents.jsonl — capture_from_build mints
+            # them as low-severity "vent" lessons through the deduped path.
+            # read_vents_log never raises; absent log -> [].
+            "vents": read_vents_log(
+                getattr(self.settings, "logs_dir", "logs"), manifest.slug
+            ),
         }
         # 1. Capture lessons from the outcome.
         if self.learning is not None:
@@ -4253,24 +5485,101 @@ class StudioRunner:
         # 2. Record the build shape on the pattern scoreboard + maybe promote.
         if self.patterns is not None:
             try:
-                # Fingerprint the durable SHAPE (stage pipeline), not the volatile
-                # per-build file count — otherwise every build minted a fresh
-                # fingerprint and uses never accumulated toward promotion.
-                shape = {"stages": len(plan.stages)}
+                # Fingerprint the durable semantic pipeline rather than just a
+                # stage count. The old ``{"stages": N}`` grouped materially
+                # different workflows (for example test-first and direct-code
+                # builds) into one vague skill. Keep the shape free of brief/file
+                # names so repeat uses still accumulate toward promotion.
+                shape = self._build_pattern_shape(plan)
                 rec = self.patterns.record(plan.stack, shape, float(manifest.score or 0.0))
                 if self.skills is not None and rec is not None:
                     self.skills.maybe_promote_pattern(rec)
             except Exception as exc:  # noqa: BLE001
                 log.warning("patterns.record_failed", error=str(exc))
-        # 3. Grade the skills that advised this build.
-        if self.skills is not None and skill_slugs:
+        # 3. Grade every skill that actually advised this build. Stage-role
+        # guidance is appended to the manifest during handoff, after the global
+        # list is captured; stable-dedupe here so it receives the same terminal
+        # evidence exactly once on normal and exceptional exits.
+        selected_skill_slugs: list[str] = []
+        seen_skill_slugs: set[str] = set()
+
+        def add_selected_skills(values: object) -> None:
+            if not isinstance(values, (list, tuple, set)):
+                return
+            for raw_slug in values:
+                if not isinstance(raw_slug, str):
+                    continue
+                slug = raw_slug.strip()
+                if not slug or slug in seen_skill_slugs or len(slug) > 160:
+                    continue
+                seen_skill_slugs.add(slug)
+                selected_skill_slugs.append(slug)
+                if len(selected_skill_slugs) >= 128:
+                    return
+
+        add_selected_skills(skill_slugs)
+        add_selected_skills(manifest_extra.get("skills_used"))
+        stage_skills = manifest_extra.get("stage_skills_used")
+        if isinstance(stage_skills, Mapping):
+            for values in stage_skills.values():
+                add_selected_skills(values)
+        if self.skills is not None and selected_skill_slugs:
+            # Terminal grading may be reached through normal completion and
+            # recovery/error paths. Persist the manifest-side idempotency record
+            # before the side effect so the same outcome cannot reward a skill
+            # twice after a retry.
+            state = manifest_extra.get("skill_terminal_grading")
+            if not isinstance(state, dict):
+                state = {"schema_version": 1, "slugs": []}
+                manifest_extra["skill_terminal_grading"] = state
+            graded: set[str] = set()
+            raw_graded = state.get("slugs")
+            if isinstance(raw_graded, (list, tuple, set)):
+                graded = {
+                    slug.strip()
+                    for slug in raw_graded
+                    if isinstance(slug, str)
+                    and slug.strip()
+                    and len(slug.strip()) <= 160
+                }
             try:
-                # Continuous reward (Phase B): grade advisory skills by HOW MUCH
-                # this build scored (0..1), not just go/no_go — sharper signal.
-                quality = max(0.0, min(1.0, float(manifest.score or 0.0) / 100.0))
-                self.skills.record_use(skill_slugs, helpful=helpful, quality=quality)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("skills.record_use_failed", error=str(exc))
+                current_quality = float(manifest.score or 0.0) / 100.0
+            except (TypeError, ValueError, OverflowError):
+                current_quality = 0.0
+            if not math.isfinite(current_quality):
+                current_quality = 0.0
+            current_quality = max(0.0, min(1.0, current_quality))
+            grade_helpful = state.get("helpful")
+            if not isinstance(grade_helpful, bool):
+                grade_helpful = bool(helpful)
+            grade_quality = state.get("quality")
+            if (
+                not isinstance(grade_quality, (int, float))
+                or isinstance(grade_quality, bool)
+                or not math.isfinite(float(grade_quality))
+            ):
+                grade_quality = current_quality
+            grade_quality = max(0.0, min(1.0, float(grade_quality)))
+            pending = [slug for slug in selected_skill_slugs if slug not in graded]
+            if pending:
+                graded.update(pending)
+                state["schema_version"] = 1
+                state["slugs"] = sorted(graded)
+                state["helpful"] = grade_helpful
+                state["quality"] = round(grade_quality, 4)
+                try:
+                    self.skills.record_use(
+                        pending,
+                        helpful=grade_helpful,
+                        quality=grade_quality,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("skills.record_use_failed", error=str(exc))
+        # 3b. Repair mining (LSO loop): stuck->resolved deterministic repairs
+        # become deduped lessons now and up-front advisory skills once they
+        # recur on 'go' builds. Runs AFTER skill grading so the demotion sweep
+        # sees this build's outcome too.
+        await self._mine_repair_knowledge(manifest, plan)
         # 4. GROW: distill a new skill from a genuine, non-stub win. A stub
         # build is just the canned scaffold, not a learned win — don't author
         # from it. This is what makes the factory "find new skills" over time.
@@ -4291,6 +5600,13 @@ class StudioRunner:
     ) -> TaskResult:
         slice_scope = payload.get("slice_scope")
         metadata = {"stage": spec.name}
+        payload_extra = payload.get("extra")
+        contract_context, _ = _contract_context_and_skill_tags(
+            payload_extra if isinstance(payload_extra, Mapping) else None
+        )
+        contract_digest = _safe_sha256_digest(contract_context.get("digest"))
+        if contract_digest:
+            metadata["contract_digest"] = contract_digest
         build_id = str(payload.get("build_id") or "").strip()
         if build_id:
             metadata["build_id"] = build_id
@@ -4588,9 +5904,10 @@ class StudioRunner:
     ) -> BuildOutcome:
         # All entrypoints (web, CLI, Cortex, autonomy, and messaging) converge
         # here. Validate provider locks before stack selection can make an LLM
-        # call or any build ledger is opened. The automatic route is Codex-only:
-        # a missing local executor fails before it can silently emit a stub or
-        # spend through an ambient OpenRouter key.
+        # call or any build ledger is opened. The automatic route needs a local
+        # CLI from the operator's priority order (or the explicit OpenRouter
+        # opt-in): a missing executor fails before it can silently emit a stub
+        # or spend through an ambient OpenRouter key.
         from skyn3t.adapters.llm import enforce_explicit_routing_lock
 
         enforce_explicit_routing_lock(
@@ -4642,6 +5959,11 @@ class StudioRunner:
         # one immutable policy for this request so later builds see live
         # settings without concurrent builds changing each other's decisions.
         lab_policy = LabAutonomyPolicy.from_settings(self.settings)
+        # Resolved once and threaded, so a live settings edit mid-build cannot
+        # change which gates block underneath a build already in flight. Same
+        # rule as lab_policy above, different axis: this one governs the verdict,
+        # that one governs side effects.
+        posture = GatePosture.from_settings(self.settings)
         configured_approval_gates = (
             bool(self.settings.approval_gates)
             if self._approval_gate_uses_live_settings
@@ -4723,10 +6045,20 @@ class StudioRunner:
             classification.app_type, stack=plan.stack, engine=classification.engine,
         )
         frozen_profile = profile.to_dict()
+        build_contract = BuildContract.from_components(
+            choice,
+            classification,
+            profile,
+            build_profile=str(extra["build_profile"]),
+        ).to_dict()
         # The layout selection is a build-time classification decision. Persist and
         # reuse this serialized mapping for every later stage, even if settings
         # change while the build is queued or executing.
-        extra = {**extra, "layout_profile": frozen_profile}
+        extra = {
+            **extra,
+            "layout_profile": frozen_profile,
+            "build_contract": build_contract,
+        }
         manifest = BuildManifest(slug=slug, brief=brief, stack=plan.stack)
         # Honor a caller-supplied build_id (e.g. the web API) so its build
         # record reconciles via BUILD_* events instead of orphaning.
@@ -4740,6 +6072,7 @@ class StudioRunner:
         manifest.extra["owner_pid"] = _os.getpid()
         manifest.extra["owner_host"] = _socket.gethostname()
         manifest.extra["lab_autonomy"] = lab_policy.enabled
+        manifest.extra["build_posture"] = posture.posture
         build_profile = str(extra["build_profile"])
         model_override = str(extra.get("model_override") or "").strip()
         manifest.extra["build_profile"] = build_profile
@@ -4835,6 +6168,7 @@ class StudioRunner:
         }
         manifest.extra["classification"] = classification.to_dict()
         manifest.extra["layout_profile"] = frozen_profile
+        manifest.extra["build_contract"] = build_contract
         build_id = manifest.build_id
         manifest.extra["preflight_run_id"] = f"{build_id}-preflight"
 
@@ -4853,7 +6187,9 @@ class StudioRunner:
              "app_type": classification.app_type, "engine": classification.engine,
              "stack_selection": manifest.extra["stack_selection"],
              "classification": manifest.extra["classification"],
-             "layout_profile": frozen_profile, "stages": plan.stage_names},
+             "layout_profile": frozen_profile,
+             "build_contract": build_contract,
+             "stages": plan.stage_names},
             correlation_id=correlation_id,
         )
 
@@ -4874,18 +6210,27 @@ class StudioRunner:
         # no_go that stands in when the reviewer stage never ran (stale — the
         # structural rescore is then the legitimate recovery signal).
         reviewer_ran = False
+        # Captured so a reviewer no_go graded on the PRE-repair worktree can be
+        # refreshed against the DELIVERED tree once the fix loop changed it.
+        reviewer_spec: StageSpec | None = None
+        reviewer_stage_extra: dict[str, Any] | None = None
+        reviewed_tree_sha = ""
+        reviewed_tree_valid = False
         used_lessons: list[dict[str, Any]] = []
 
         # Inject advisory skills for this stack (non-binding) and remember which
         # ones we used so we can grade them by the build's outcome.
-        skill_advice, skill_slugs = self._skill_advice(plan.stack, brief)
+        _, global_selection_tags = _contract_context_and_skill_tags(extra)
+        skill_advice, skill_slugs = self._skill_advice(
+            plan.stack,
+            brief,
+            selection_tags=global_selection_tags,
+        )
         recall = self._recall(brief, plan.stack)
-        # design.md token contract: give UI builds a concrete, branded, AA-contrast
-        # token set to theme from (one source of truth) instead of ad-hoc hex. Only
-        # for design stacks so it never pollutes a CLI/API build.
-        if plan.stack in _DESIGN_STACKS:
-            from skyn3t.studio.design_tokens import design_md_block
-            skill_advice = f"{skill_advice}\n\n{design_md_block(brief)}".strip()
+        # design.md tokens are injected by code_agent itself, right beside the
+        # DESIGN BAR (gated on _DESIGN_WEB_STACKS) — NOT here: this bucket is
+        # head-capped (_MAX_SKILL_ADVICE) and tokens appended to the tail were
+        # measured to survive 0 bytes once the skill library matures.
         if skill_advice or recall:
             extra = {**extra, "skills_advice": skill_advice, "recall": recall}
         # Observable record of what RAG recall fed this build (so you can verify
@@ -4895,6 +6240,7 @@ class StudioRunner:
             for h in (recall or [])
         ]
         manifest.extra["skills_used"] = list(skill_slugs)
+        self._record_skill_selection(manifest, skill_slugs, stage="global", extra=extra)
 
         # Track the stage whose cost slice is currently open so a mid-stage
         # exception can still close it (else its base leaks). end_stage is
@@ -4954,6 +6300,16 @@ class StudioRunner:
                 main_wt.dir, brief, manifest, extra, stack=plan.stack
             )
 
+            # Mixture-of-Agents advisory council: N tool-free advisor models read
+            # the brief + stack + plan and hand private guidance to the coding
+            # agent (the aggregator). Computed ONCE and threaded — the same
+            # argument the art plan above makes: recomputing per best-of-N
+            # trajectory would multiply spend AND advise each candidate
+            # differently, destroying the premise that trajectories differ only
+            # by model. On by default but inert until advisors are named; this
+            # await is INLINE, so a slow council delays codegen. Never gates.
+            extra = await self._run_moa_council(brief, manifest, extra, plan)
+
             # Budget guard wiring for this build (all best-effort). Cost tracking
             # already began in start(), before selector/planner/asset delegation.
             self._obs_call(self.budget_guard, "reset")
@@ -5010,6 +6366,15 @@ class StudioRunner:
                             {"reason": "no_agent", "score": 0},
                             enabled=approval_gates_enabled,
                             auto_approve=approval_auto_approve,
+                        )
+                        # Event-driven banner discovery: the gate can
+                        # auto-reject before the dashboard's next poll lands.
+                        await self.event_bus.emit(
+                            EventType.APPROVAL_REQUESTED,
+                            "studio",
+                            {"build_id": build_id, "stage": spec.name,
+                             "approval_id": approval.approval_id},
+                            correlation_id=correlation_id,
                         )
                         decision = await self.approval_gate.wait(
                             approval.approval_id, timeout=self.stage_timeout)
@@ -5083,8 +6448,9 @@ class StudioRunner:
                         self._promote_architect_contract(
                             plan, prior, manifest, record
                         )
-                    # Feed the learned router from this real stage outcome.
-                    self._feed_tournament(spec, result)
+                    # Buffer the learned-router feed; it is recorded at verdict
+                    # settle time, graded by the build's terminal outcome.
+                    self._feed_tournament(spec, result, build_id)
                 else:
                     record.status = "failed"
                     record.error = result.error
@@ -5112,6 +6478,12 @@ class StudioRunner:
                     _prompts = result.output.get("prompts")
                     if _prompts:
                         manifest.extra["prompts"] = _prompts
+                    # Friction vents the codegen agent emitted (the VENT:
+                    # convention) — surfaced on the manifest so the dashboard
+                    # and the learning loop see the same evidence.
+                    _vents = result.output.get("vents")
+                    if _vents:
+                        manifest.extra["vents"] = _vents
                     _agentic = result.output.get("agentic")
                     if isinstance(_agentic, dict):
                         manifest.extra["agentic"] = {
@@ -5165,7 +6537,11 @@ class StudioRunner:
                     verdict = str(result.output.get("verdict", "no_go"))
                     reviewer_gaps = list(result.output.get("gaps") or [])
                     reviewer_ran = True
+                    reviewer_spec = spec
+                    reviewer_stage_extra = stage_extra
                     reviewed_tree = source_tree_snapshot(main_wt.dir)
+                    reviewed_tree_sha = str(reviewed_tree.get("sha256") or "")
+                    reviewed_tree_valid = bool(reviewed_tree.get("valid"))
                     record.output_summary["source_tree_snapshot_valid"] = bool(
                         reviewed_tree.get("valid")
                     )
@@ -5187,8 +6563,17 @@ class StudioRunner:
 
                 # Per-stage autonomous debug + live preview snapshot (Phase A).
                 await self._debug_and_snapshot(
-                    build_id, spec, record, main_wt, project_dir, plan,
-                    correlation_id, extra, brief=brief, slug=slug,
+                    build_id,
+                    spec,
+                    record,
+                    main_wt,
+                    project_dir,
+                    plan,
+                    correlation_id,
+                    extra,
+                    manifest=manifest,
+                    brief=brief,
+                    slug=slug,
                 )
 
                 # Approval gate (after stage completes).
@@ -5200,6 +6585,15 @@ class StudioRunner:
                         enabled=approval_gates_enabled,
                         auto_approve=approval_auto_approve,
                     )
+                    # Event-driven banner discovery: the gate can auto-reject
+                    # before the dashboard's next poll lands.
+                    await self.event_bus.emit(
+                        EventType.APPROVAL_REQUESTED,
+                        "studio",
+                        {"build_id": build_id, "stage": spec.name,
+                         "approval_id": approval.approval_id},
+                        correlation_id=correlation_id,
+                    )
                     decision = await self.approval_gate.wait(approval.approval_id, timeout=self.stage_timeout)
                     if decision is GateDecision.REJECTED:
                         manifest.status = "failed"
@@ -5210,6 +6604,25 @@ class StudioRunner:
             # clean=True so a re-build of the same slug delivers a fresh tree
             # instead of accumulating stale files from previous builds.
             copied = merge_back(main_wt.dir, project_dir, clean=True)
+            # merge_back is best-effort: with clean=True the previous app is
+            # already wiped before the copy, and a per-file failure (disk
+            # full, AV/file lock) is silently skipped. A shortfall means the
+            # project dir holds a partial app, so the build must fail rather
+            # than claim "delivered" — after snapshotting the still-intact
+            # worktree under data_dir/recovery (the finally block removes the
+            # worktree itself). An empty worktree yields no shortfall, so
+            # product_spec-only rebuilds keep their list_files fallback below.
+            undelivered = set(self._safe_list_files(main_wt.dir)) - set(copied)
+            if undelivered:
+                manifest.extra["delivery_shortfall"] = sorted(undelivered)[:100]
+                manifest.extra["delivery_recovery"] = [
+                    {key: entry[key] for key in ("candidate", "path", "file_count")}
+                    for entry in self._recover_cancelled_worktrees(build_id, [main_wt])
+                ]
+                raise RuntimeError(
+                    f"delivery incomplete: {len(undelivered)} generated file(s) "
+                    f"failed to copy into {project_dir}"
+                )
             manifest.files = copied or list_files(project_dir)
             self._set_main_worktree_status(manifest, main_wt, status="delivered")
             manifest.artifact_dir = project_dir
@@ -5269,6 +6682,15 @@ class StudioRunner:
             if repairs.get("python_formatted"):
                 manifest.extra["python_formatted"] = repairs["python_formatted"]
                 log.info("runner.python_formatted", files=repairs["python_formatted"])
+            # Full changed-repair summary for the repair miner (the per-key
+            # recordings above are only a subset — e.g. astro_estree_pin and
+            # nextjs_metadata_added appear ONLY here when they resolve before
+            # the first proof, outside any fix-loop attempt record).
+            changed_repairs = {
+                k: v for k, v in repairs.items() if v and k != "contrast_issues"
+            }
+            if changed_repairs:
+                manifest.extra["deterministic_repairs"] = changed_repairs
             self._record_contrast_issues(manifest, repairs)
             if isinstance(manifest.extra.get("asset_foundry"), dict):
                 try:
@@ -5286,6 +6708,21 @@ class StudioRunner:
                         )
                 except Exception as exc:  # noqa: BLE001 - visual asset wiring must not break builds
                     log.warning("runner.web_assets_apply_failed", error=str(exc)[:160])
+
+            # Persist the design direction (deterministic tokens + the designer
+            # stage's summary) as DESIGN.md in the delivered tree — the
+            # anti-drift anchor improve runs re-read. Best-effort; web design
+            # stacks only, and a codegen-written DESIGN.md is never clobbered.
+            self._deliver_design_md(project_dir, brief, plan.stack, prior, manifest)
+
+            # Delivery-time prerender (advisory, best-effort): client-rendered
+            # SPA shells ship an empty <div id="root"> to crawlers/social
+            # previewers — the seo gate lints meta tags but the rendered content
+            # is invisible without JS. Render each enumerated route in headless
+            # Chromium and write prerendered snapshots into the delivery tree
+            # (over app-shell files only; author content is never clobbered). A
+            # headless failure logs and delivery continues unchanged.
+            await self._deliver_prerender(project_dir, plan.stack, manifest)
 
             # A repair/code session can copy the signed acceptance module out of
             # tests/ into the project root. Pytest then aborts collection with an
@@ -5326,7 +6763,11 @@ class StudioRunner:
             # Bounded fix loop: if the objective proof failed, repair and
             # re-verify (fill missing files + code-improve) until it passes or
             # attempts run out. A no_go no longer just stops.
-            if not proof.passed:
+            # advisory_failures is included deliberately: under lab posture a
+            # failing generated test or ruff run no longer flips `passed`, and
+            # without this the repair it used to trigger would silently stop
+            # happening. Advisory means "does not block", never "not repaired".
+            if not proof.passed or getattr(proof, "advisory_failures", None):
                 proof = await self._fix_loop(
                     manifest, plan, project_dir, proof, correlation_id, extra
                 )
@@ -5378,7 +6819,58 @@ class StudioRunner:
             re_verdict, re_score, re_gaps = self._rescore_delivered(
                 project_dir, plan.stack)
             manifest.extra["rescore"] = {"verdict": re_verdict, "score": re_score, "gaps": re_gaps}
-            if reviewer_ran:
+            # A reviewer no_go was graded on the PRE-repair worktree. Once the
+            # deterministic repairs / fix loop changed what actually ships, that
+            # verdict is stale: re-dispatch the SAME registered reviewer agent
+            # (brief-aware, including its optional LLM blend) ONCE against the
+            # DELIVERED tree and honour its fresh verdict in the AND-combine
+            # below. A stale "go" is never refreshed — the AND with re_verdict
+            # already guards it, and a refresh could only downgrade. Any
+            # dispatch failure/timeout keeps the stale values.
+            if reviewer_ran and verdict == "no_go" and reviewer_spec is not None:
+                delivered_sha = ""
+                delivered_valid = False
+                try:
+                    _delivered_snap = source_tree_snapshot(project_dir)
+                    delivered_sha = str(_delivered_snap.get("sha256") or "")
+                    delivered_valid = bool(_delivered_snap.get("valid"))
+                except Exception:  # noqa: BLE001 - invalid snapshot counts as changed
+                    pass
+                tree_changed = (
+                    not reviewed_tree_valid
+                    or not delivered_valid
+                    or delivered_sha != reviewed_tree_sha
+                )
+                if tree_changed:
+                    refresh = None
+                    try:
+                        refresh_payload = self._base_payload(
+                            plan, project_dir, project_dir, prior, [],
+                            reviewer_stage_extra,
+                        )
+                        refresh_payload.update(reviewer_spec.extra)
+                        refresh = await self._submit_stage(
+                            reviewer_spec, refresh_payload, correlation_id
+                        )
+                    except Exception as exc:  # noqa: BLE001 - keep the stale verdict
+                        log.warning("review_refresh.failed", error=str(exc)[:200])
+                    if refresh is not None and refresh.success:
+                        fresh_verdict = str(refresh.output.get("verdict", "no_go"))
+                        manifest.extra["review_refreshed"] = {
+                            "stale_verdict": verdict,
+                            "verdict": fresh_verdict,
+                            "tree_changed": True,
+                        }
+                        verdict = fresh_verdict
+                        reviewer_score = self._extract_score(refresh.output) or 0.0
+                        reviewer_gaps = list(refresh.output.get("gaps") or [])
+            if reviewer_ran and re_verdict not in ("go", "no_go"):
+                # The structural rescore itself errored ("error" sentinel): the
+                # gate is UNAVAILABLE, not failed. Honour the brief-aware
+                # reviewer verdict alone rather than fail-closed no_go over a
+                # broken measuring stick.
+                review_gaps = reviewer_gaps
+            elif reviewer_ran:
                 # Honour the brief-aware verdict. AND-combine: a "go" needs BOTH
                 # the brief-aware reviewer AND the structural gate to agree; a
                 # brief-aware no_go stays no_go regardless of structure (the fix
@@ -5402,7 +6894,9 @@ class StudioRunner:
                 # — the structural rescore is the legitimate recovery signal.
                 reviewer_score = max(reviewer_score, re_score)
                 review_gaps = reviewer_gaps or re_gaps
-                verdict = re_verdict
+                # An errored rescore cannot recover anything: the fail-closed
+                # default no_go stands.
+                verdict = re_verdict if re_verdict in ("go", "no_go") else "no_go"
 
             # Final score: blend reviewer score with proof completeness.
             # When NO brief-aware reviewer ran, the score must be proof-based only:
@@ -5486,7 +6980,14 @@ class StudioRunner:
             # The verify_build STAGE runs pre-repair; the proof_run build is the
             # authoritative post-repair compile. If it really built, a stale
             # verify_build failure must not veto the verdict.
-            proof_build_passed = bool(proof.passed and proof.detail.get("build") == "passed")
+            proof_build_state = str(proof.detail.get("build") or "")
+            # "skipped" (no build script — nothing to build, e.g. a static site
+            # after a phantom `node missing.mjs` build script was dropped) with a
+            # passing proof satisfies the override too: the pre-repair
+            # verify_build failure ran a script that no longer exists.
+            proof_build_passed = bool(
+                proof.passed and proof_build_state in ("passed", "skipped")
+            )
             verifiers_ok, verifier_reason = self._verifiers_gate(prior, proof_build_passed=proof_build_passed)
             if not verifiers_ok:
                 manifest.extra["verifier_gate"] = verifier_reason
@@ -5559,7 +7060,9 @@ class StudioRunner:
                                 files=list(files),
                                 correlation_id=correlation_id, extra=extra,
                                 label="game_visual",
-                                brief=manifest.brief, slug=manifest.slug,
+                                brief=manifest.brief,
+                                slug=manifest.slug,
+                                manifest=manifest,
                             )
                             if not ok:
                                 return False
@@ -5633,15 +7136,34 @@ class StudioRunner:
             proof = await self._reproof_after_post_proof_repairs(
                 manifest, plan, project_dir, proof
             )
-            verdict = (
-                "go"
-                if (verdict == "go" and proof.passed and delivered_nonempty
-                    and substantive and has_entry and intent_ok and critic_gate
-                    and verifiers_ok and not scaffold_stub and not code_degraded
-                    and not native_llm_key and headless_gate_ok
-                    and game_visual_ok and qa_playtest_ok)
-                else "no_go"
+            # The reviewer "go" is necessary but NOT sufficient. Folded rather
+            # than ANDed so every failed signal lands in the gate_findings ledger
+            # with a name — an ANDed conjunct left no trace unless it happened to
+            # own a legacy *_gate key — and so the posture decides which of them
+            # actually block (see skyn3t/studio/gate_posture.py).
+            _signals: tuple[tuple[str, bool, str], ...] = (
+                ("proof", bool(proof.passed), "objective proof did not pass"),
+                ("delivery", delivered_nonempty, "delivered no substantive files"),
+                ("substance", substantive,
+                 f"largest source {biggest}B < {self._substance_floor}B floor"),
+                ("entrypoint", has_entry, "no runnable entrypoint on disk"),
+                ("intent", intent_ok, "delivered content does not match the brief"),
+                ("critic", critic_gate, str(manifest.extra.get("critic_gate", "critic blocked"))),
+                ("verify_build", verifiers_ok, str(manifest.extra.get("verifier_gate", ""))),
+                ("scaffold_stub", not scaffold_stub, "delivered the offline scaffold stub"),
+                ("code_degraded", not code_degraded, str(manifest.extra.get("degraded_gate", ""))),
+                ("native_llm", not native_llm_key, str(manifest.extra.get("native_llm_gate", ""))),
+                ("headless_gate", headless_gate_ok,
+                 str(manifest.extra.get("headless_gate_gate", "runtime invariant violation"))),
+                ("game_quality", game_visual_ok and qa_playtest_ok,
+                 "game visual/playtest gate failed"),
             )
+            if verdict != "go":
+                verdict = "no_go"
+            for _name, _ok, _reason in _signals:
+                verdict = self._gate_outcome(
+                    manifest, _name, bool(_ok), verdict, _reason, posture=posture
+                )
             # Don't let the learning loop reward an under-delivered build (only
             # dampen when proof PASSED — a proof-failed build is already halved by
             # _honest_score, so this would otherwise double-penalize).
@@ -5682,7 +7204,19 @@ class StudioRunner:
                     manifest, project_dir, plan, correlation_id)
                 visual_data = manifest.extra.get("visual_self_heal")
                 if self._visual_failure_should_gate(visual_data, plan.stack):
-                    verdict = "no_go"
+                    pre_gate_verdict = verdict
+                    verdict = self._gate_outcome(
+                        manifest, "visual_self_heal", False, verdict,
+                        "rendered UI still failing after visual self-heal",
+                        posture=posture,
+                    )
+                    if verdict != pre_gate_verdict:
+                        # Record that THIS gate caused the flip, so the liveness
+                        # reconciliation can restore exactly that flip (and only
+                        # that flip) when the rendered UI later proves healthy.
+                        manifest.extra["visual_self_heal_gate_flipped_from"] = (
+                            pre_gate_verdict
+                        )
                     manifest.extra["visual_self_heal_gate"] = (
                         "rendered UI still failed visual check after self-heal"
                     )
@@ -5703,7 +7237,11 @@ class StudioRunner:
                     manifest.extra["proof"] = proof.to_dict()
                     manifest.extra["proof_after_visual_self_heal"] = proof.to_dict()
                     if not proof.passed:
-                        verdict = "no_go"
+                        verdict = self._gate_outcome(
+                            manifest, "proof", False, verdict,
+                            "re-proof after visual self-heal did not pass",
+                            posture=posture,
+                        )
 
             # End-of-build liveness (web stacks): serve the delivered app, hit
             # every route/page, repair failures, and dampen the score by how many
@@ -5711,16 +7249,26 @@ class StudioRunner:
             if _gate_applies("liveness", plan.stack) and getattr(
                     self.settings, "liveness_check_enabled", True):
                 final_score, verdict = await self._run_liveness(
-                    manifest, project_dir, plan, proof, final_score, verdict)
+                    manifest, project_dir, plan, proof, final_score, verdict,
+                    posture=posture)
+
+            # Advisory web interaction check (web stacks): CLICK the served app
+            # the way a user does (ONE LLM-authored Playwright flow asserting
+            # BOTH the UI and the backend surface) — the "renders but isn't
+            # wired" catch liveness' GET probes cannot make. Recorded only; it
+            # never flips the verdict and soft-skips ($0) without Playwright or
+            # a non-stub LLM backend. Runs after liveness so it sees the
+            # repaired app. Never crashes the build.
+            await self._run_web_interact_gate(manifest, project_dir, plan)
 
             final_score, verdict = self._run_product_quality_gates(
-                manifest, project_dir, plan, final_score, verdict
+                manifest, project_dir, plan, final_score, verdict, posture=posture
             )
             final_score, verdict = self._run_security_gate(
-                manifest, project_dir, plan, final_score, verdict
+                manifest, project_dir, plan, final_score, verdict, posture=posture
             )
             final_score, verdict = self._run_web_polish_gate(
-                manifest, project_dir, plan, final_score, verdict
+                manifest, project_dir, plan, final_score, verdict, posture=posture
             )
 
             # End-of-build SEO check (web/HTML stacks, ADVISORY): a deterministic static
@@ -5789,7 +7337,14 @@ class StudioRunner:
                 await self._run_cli_playtest(
                     manifest, plan, project_dir, correlation_id, extra)
 
-            verdict = self._apply_ai_native_gates(manifest, verdict)
+            verdict = self._apply_ai_native_gates(manifest, verdict, posture=posture)
+            if "ai_native_gate" in manifest.extra:
+                # Same honesty rule as product_quality: even a NON-blocking
+                # (lab-posture) contract finding must not ship a 95-looking
+                # score — cap at degraded_proof_score_cap; a blocked finding
+                # clamps to the failed-delivery band via the verdict.
+                final_score = self._score_after_finding(final_score, verdict)
+                manifest.score = final_score
 
             # Final consistency owns the last repair opportunity. Only after it
             # settles do we run registry-v1's bounded proof replay and the one
@@ -5803,9 +7358,10 @@ class StudioRunner:
                 proof,
                 final_score,
                 verdict,
+                posture=posture,
             )
             final_score, verdict = self._apply_scaffold_stub_proof_gate(
-                manifest, proof, final_score, verdict
+                manifest, proof, final_score, verdict, posture=posture
             )
             final_score = self._apply_degraded_proof_score(
                 manifest, proof, final_score, verdict
@@ -5837,17 +7393,28 @@ class StudioRunner:
                 "verdict": verdict,
             }
 
-            # Grade the learning loop by the REAL outcome (a 'go'), not merely
-            # "files were written". Crediting every non-empty no_go as helpful is
-            # what trained the factory backwards.
-            helpful = manifest.verdict == "go"
-            # Continuous reward: grade lessons by HOW WELL this build scored, not
-            # just go/no_go — so a lesson reused by strong builds outranks one
-            # scraping a low 'go' (Phase B, extends B1's skill reward to lessons).
+            # Verdict is settled: flush the build's buffered solo tournament
+            # evidence graded by the terminal outcome. Same principle as the
+            # lesson grading below — a stage completing is not a win unless the
+            # build actually shipped.
+            self._flush_tournament(build_id, won=manifest.verdict == "go")
+
+            # A terminal ``go`` is positive evidence for the advisory lessons
+            # that were actually injected. A ``no_go`` is not enough to blame
+            # every one of them, so it records neutral exposure until a verifier
+            # can attribute a specific conflict. Skill/build grading remains
+            # binary because those records have a distinct selected-skill path.
+            build_helpful = manifest.verdict == "go"
+            lesson_helpful: bool | None = True if build_helpful else None
+            # Continuous reward still separates strong delivered builds from
+            # barely-passing ones without turning a whole failed build into a
+            # correlated negative grade for every lesson.
             lesson_quality = max(0.0, min(1.0, final_score / 100.0))
-            await self._grade_lessons(used_lessons, helpful=helpful, quality=lesson_quality)
+            await self._grade_lessons(
+                used_lessons, helpful=lesson_helpful, quality=lesson_quality
+            )
             await self._record_learning(
-                manifest, plan, skill_slugs, helpful=helpful, gaps=review_gaps,
+                manifest, plan, skill_slugs, helpful=build_helpful, gaps=review_gaps,
                 code_backend=code_backend, project_dir=project_dir,
             )
             # Settle before persistence so manifest, DB, API, and outcome report
@@ -5914,10 +7481,13 @@ class StudioRunner:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            # A rejected build is a settled negative outcome: flush buffered
+            # solo tournament evidence graded by it (won only on "go").
+            self._flush_tournament(build_id, won=manifest.verdict == "go")
             self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
-                used_lessons, helpful=False,
+                used_lessons, helpful=None,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
             )
             await self._record_learning(manifest, plan, skill_slugs, helpful=False)
@@ -5938,13 +7508,17 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - never crash the factory
             if open_stage is not None:
                 self._obs_call(self.cost_tracker, "end_stage", build_id, open_stage)
-            log.error("studio.build_failed", build_id=build_id, error=str(exc))
+            log.error("studio.build_failed", build_id=build_id, error=str(exc),
+                      exc_info=True)
             manifest.status = "failed"
             manifest.verdict = manifest.verdict or "no_go"  # never leave it ""
+            # A crashed build is a settled negative outcome: flush buffered
+            # solo tournament evidence graded by it (won only on "go").
+            self._flush_tournament(build_id, won=manifest.verdict == "go")
             self._set_main_worktree_status(manifest, main_wt, status="failed")
             self._settle_build_cost(manifest, build_id)
             await self._grade_lessons(
-                used_lessons, helpful=False,
+                used_lessons, helpful=None,
                 quality=max(0.0, min(1.0, (manifest.score or 0.0) / 100.0)),
             )
             await self._record_learning(manifest, plan, skill_slugs, helpful=False)
@@ -5969,6 +7543,10 @@ class StudioRunner:
                 pass
             return self._outcome(manifest)
         finally:
+            # Cancellation is operator intent, not model evidence: discard any
+            # unflushed tournament buffer instead of grading it. No-op on the
+            # settled paths above (their flush already popped the entry).
+            self._tournament_pending.pop(build_id, None)
             self._obs_call(self.budget_guard, "detach")
             flush_events = getattr(self.memory, "flush_events", None)
             if callable(flush_events):
@@ -6007,8 +7585,35 @@ class StudioRunner:
             requested=bool(extra.get("best_of_n_across_models")),
         )
 
+        # Divergence-seeded best-of-N (design web stacks only): each trajectory
+        # gets a DISTINCT design seed via extra["design_seed"] so candidates
+        # sample aesthetic diversity, not just implementation luck. Candidate 0
+        # is the control (today's derived tokens, byte-identical prompt). Seed
+        # and judge construction are best-effort — neither may break a build.
+        design_web = False
+        try:
+            from skyn3t.agents.code_agent import _DESIGN_WEB_STACKS
+
+            design_web = (plan.stack or "").lower() in _DESIGN_WEB_STACKS
+        except Exception:  # noqa: BLE001 - no seeding on resolution failure
+            design_web = False
+        bon_vision_fn = None
+        if design_web:
+            try:
+                from skyn3t.studio.visual_check import make_vision_fn
+
+                bon_vision_fn = make_vision_fn(self.settings)
+            except Exception:  # noqa: BLE001 - no judge -> rank-order ties
+                bon_vision_fn = None
+
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
-            payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
+            traj_extra = extra
+            if design_web:
+                try:
+                    traj_extra = {**extra, "design_seed": design_seed_for(plan.brief, index)}
+                except Exception as exc:  # noqa: BLE001 - seeding must never break a build
+                    log.warning("best_of_n.design_seed_failed", index=index, error=str(exc)[:120])
+            payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, traj_extra)
             payload.update(spec.extra)
             payload["worktree_role"] = f"candidate:{index}"
             payload["trajectory_index"] = index
@@ -6027,6 +7632,17 @@ class StudioRunner:
             seed_dir=main_wt.dir,
             worktree_registry=worktrees,
             preserve_on_cancel=True,
+            # Candidate selection must clear the same objective bar the
+            # delivered tree faces — a structurally-plausible winner that
+            # doesn't compile beat a working sibling here (win-rate sweep).
+            run_tests=bool(getattr(self.settings, "run_generated_tests", True)),
+            test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
+            run_build=bool(getattr(self.settings, "run_generated_build", True)),
+            build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+            brief=plan.brief,
+            # Proof-ties between the seeded candidates break toward this judge
+            # (None -> rank order, logged inside best_of_n).
+            vision_fn=bon_vision_fn,
         )
 
         if selection.winner is None:
@@ -6236,6 +7852,8 @@ class StudioRunner:
         no separate consistency pass is needed here."""
         from time import monotonic
         started = monotonic()
+        contract_context, _ = _contract_context_and_skill_tags(extra)
+        contract_digest = _safe_sha256_digest(contract_context.get("digest"))
         # The full manifest is the read-only cross-slice contract every sub-agent
         # sees so its imports target the right paths.
         all_files = self._architect_files(prior) or [
@@ -6279,6 +7897,8 @@ class StudioRunner:
                 "files": [f["path"] for f in files if isinstance(f, dict) and f.get("path")],
                 "manifest": manifest,
             }
+            if contract_digest:
+                payload["slice_scope"]["contract_digest"] = contract_digest
             if agentic_backend and not payload.get("model_override"):
                 model = self._slice_model(
                     slice_tier(name),
@@ -6344,7 +7964,18 @@ class StudioRunner:
             total_written += len(merged)
             sl_out = (getattr(r, "output", None) or {}) if r else {}
             ok = bool(r and r.success) and len(merged) > 0
-            summaries[name] = {"files": len(merged), "ok": ok}
+            summary: dict[str, Any] = {"files": len(merged), "ok": ok}
+            owned_paths = [
+                str(item.get("path") or "")[:240]
+                for item in slices.get(name, [])[:64]
+                if isinstance(item, dict) and str(item.get("path") or "")
+            ]
+            if owned_paths:
+                summary["owned_paths"] = owned_paths
+            model = str(getattr(r, "model_id", "") or "").strip()
+            if model:
+                summary["model"] = model[:160]
+            summaries[name] = summary
             unavailable = sl_out.get("codegen_override_unavailable")
             if isinstance(unavailable, str):
                 unavailable = [unavailable]
@@ -6355,6 +7986,9 @@ class StudioRunner:
                         unavailable_overrides.add(value)
             if sl_out.get("degraded") or not ok:
                 failure = sl_out.get("degraded_reason") or getattr(r, "error", None)
+                summary["degraded_reason"] = str(
+                    failure or "slice produced no files"
+                )[:240]
                 degraded_reasons.append(
                     f"{name}: {failure or 'slice produced no files'}")
 
@@ -6374,7 +8008,13 @@ class StudioRunner:
             success=total_written > 0,
             output=out,
         )
-        result.metadata = {"parallel_slices": {"count": len(slices), "slices": summaries}}
+        parallel_metadata: dict[str, Any] = {
+            "count": len(slices),
+            "slices": summaries,
+        }
+        if contract_digest:
+            parallel_metadata["contract_digest"] = contract_digest
+        result.metadata = {"parallel_slices": parallel_metadata}
         # Record the real fan-out wall-clock so the manifest/GatedTuner don't read
         # the code stage as instant (a fresh TaskResult defaults duration_ms to 0).
         result.duration_ms = (monotonic() - started) * 1000
@@ -6427,7 +8067,8 @@ class StudioRunner:
     def _summarize(output: dict[str, Any]) -> dict[str, Any]:
         keep = (
             "score", "verdict", "files_written", "gaps", "worktree_dir",
-            "codegen_override_unavailable", "best_of_n",
+            "codegen_override_unavailable", "best_of_n", "slices", "degraded",
+            "degraded_reason", "backend",
         )
         summary = {k: output[k] for k in keep if k in output}
         if not summary:
@@ -6437,42 +8078,108 @@ class StudioRunner:
 
     @staticmethod
     def _stage_execution_truth(result: TaskResult) -> dict[str, Any]:
-        """Compact execution provenance retained with a stage record.
+        """Compact, JSON-safe execution provenance retained with a stage record.
 
-        Agent output is intentionally heterogeneous, so take only the stable
-        backend/model/route/task binding fields rather than persisting every
-        provider payload. Cost truth is appended later by `_emit_stage_done`,
-        after the ledger has closed the stage boundary.
+        Stage results may contain provider-specific or malformed metadata. Keep
+        only bounded scalar fields and the runner-owned full SHA-256 build
+        contract digest; never persist arbitrary nested result structures.
         """
         output = result.output if isinstance(result.output, dict) else {}
         raw_agentic = output.get("agentic")
-        agentic = raw_agentic if isinstance(raw_agentic, dict) else {}
-        metadata = result.metadata if isinstance(result.metadata, dict) else {}
-        backend = str(agentic.get("backend") or output.get("backend") or "").strip()
-        model = str(agentic.get("model") or result.model_id or "").strip()
+        agentic = raw_agentic if isinstance(raw_agentic, Mapping) else {}
+        metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+        backend = _bounded_text(agentic.get("backend"), 160) or _bounded_text(
+            output.get("backend"), 160
+        )
+        model = _bounded_text(agentic.get("model"), 160) or _bounded_text(
+            result.model_id, 160
+        )
         execution: dict[str, Any] = {}
         if backend:
             execution["backend"] = backend
         if model:
             execution["model"] = model
+
         routes = metadata.get("routes")
         if isinstance(routes, (list, tuple)):
-            normalized_routes = [
-                [str(part) for part in route[:3]]
-                for route in routes[:32]
-                if isinstance(route, (list, tuple)) and len(route) >= 3
-            ]
+            normalized_routes: list[list[str]] = []
+            for route in routes[:32]:
+                if not isinstance(route, (list, tuple)) or len(route) < 3:
+                    continue
+                parts = [_bounded_text(part, 160) for part in route[:3]]
+                if all(parts):
+                    normalized_routes.append(parts)
             if normalized_routes:
                 execution["routes"] = normalized_routes
+
         task_context = metadata.get("task_context")
-        if isinstance(task_context, dict):
-            binding = {
-                key: str(task_context[key])
-                for key in ("build_id", "stage", "worktree_dir", "worktree_role")
-                if task_context.get(key) not in (None, "")
-            }
+        if isinstance(task_context, Mapping):
+            binding: dict[str, str] = {}
+            for key, limit in (
+                ("build_id", 160),
+                ("stage", 96),
+                ("worktree_dir", 512),
+                ("worktree_role", 128),
+            ):
+                value = _bounded_text(task_context.get(key), limit)
+                if value:
+                    binding[key] = value
+            digest = _safe_sha256_digest(task_context.get("contract_digest"))
+            if digest:
+                binding["contract_digest"] = digest
             if binding:
                 execution["task"] = binding
+
+        parallel = metadata.get("parallel_slices")
+        if isinstance(parallel, Mapping):
+            raw_slices = parallel.get("slices")
+            slices: dict[str, dict[str, Any]] = {}
+            if isinstance(raw_slices, Mapping):
+                for raw_name, raw_summary in list(raw_slices.items())[:16]:
+                    name = _bounded_text(raw_name, 96)
+                    if not name or not isinstance(raw_summary, Mapping):
+                        continue
+                    summary: dict[str, Any] = {}
+                    files = raw_summary.get("files")
+                    if isinstance(files, int) and not isinstance(files, bool):
+                        summary["files"] = min(max(0, files), 1_000_000)
+                    ok = raw_summary.get("ok")
+                    if isinstance(ok, bool):
+                        summary["ok"] = ok
+                    owned_paths = raw_summary.get("owned_paths")
+                    if isinstance(owned_paths, (list, tuple)):
+                        paths = [
+                            path
+                            for raw_path in owned_paths[:64]
+                            if (path := _bounded_text(raw_path, 240))
+                        ]
+                        if paths:
+                            summary["owned_paths"] = paths
+                    slice_model = _bounded_text(raw_summary.get("model"), 160)
+                    if slice_model:
+                        summary["model"] = slice_model
+                    degraded_reason = _bounded_text(
+                        raw_summary.get("degraded_reason"), 240
+                    )
+                    if degraded_reason:
+                        summary["degraded_reason"] = degraded_reason
+                    if summary:
+                        slices[name] = summary
+
+            count = len(slices)
+            raw_count = parallel.get("count")
+            if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+                count = raw_count
+            elif isinstance(raw_count, str) and re.fullmatch(r"\d{1,3}", raw_count.strip()):
+                count = int(raw_count.strip())
+            parallel_truth: dict[str, Any] = {
+                "count": min(max(0, count), 16),
+                "slices": slices,
+            }
+            digest = _safe_sha256_digest(parallel.get("contract_digest"))
+            if digest:
+                parallel_truth["contract_digest"] = digest
+            execution["parallel_slices"] = parallel_truth
         return execution
 
     async def _with_live_snapshots(
@@ -6515,8 +8222,19 @@ class StudioRunner:
                 pass
 
     async def _debug_and_snapshot(
-        self, build_id: str, spec, record, main_wt, project_dir: str,
-        plan, correlation_id: str, extra: dict, *, brief: str = "", slug: str = "",
+        self,
+        build_id: str,
+        spec,
+        record,
+        main_wt,
+        project_dir: str,
+        plan,
+        correlation_id: str,
+        extra: dict,
+        *,
+        manifest: BuildManifest | None = None,
+        brief: str = "",
+        slug: str = "",
     ) -> None:
         """Per-stage: debug the just-run stage (autonomous), then snapshot the
         worktree into ``.preview`` so the cockpit can show files-so-far. Only
@@ -6532,8 +8250,12 @@ class StudioRunner:
             async def improve(gaps):  # noqa: E306 - closure over loop vars is intended
                 return await self._improve_once(
                     work_dir=main_wt.dir, plan=plan, gaps=gaps,
-                    correlation_id=correlation_id, extra=extra,
-                    label=f"debug:{spec.name}", brief=brief, slug=slug,
+                    correlation_id=correlation_id,
+                    extra=extra,
+                    label=f"debug:{spec.name}",
+                    brief=brief,
+                    slug=slug,
+                    manifest=manifest,
                 )
 
         result = await debug_stage(

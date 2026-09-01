@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -43,23 +45,6 @@ except Exception as exc:  # noqa: BLE001
 
 # Directory that holds the built single-page app, if any.
 UI_DIST_DIR = Path(__file__).resolve().parent / "ui" / "dist"
-
-_CONTROL_PLANE_SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'self'; "
-        # React and react-three-fiber set a small number of runtime style props
-        # (including the WebGL canvas dimensions). Scripts remain self-only.
-        "frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; "
-        "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
-        "frame-src 'self' http://127.0.0.1:* http://localhost:*"
-    ),
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "SAMEORIGIN",
-    "X-Permitted-Cross-Domain-Policies": "none",
-}
 
 _MINIMAL_PAGE = """<!doctype html>
 <html lang="en">
@@ -102,6 +87,39 @@ _MINIMAL_PAGE = """<!doctype html>
 </body>
 </html>
 """
+
+
+def _minimal_page_style_hash() -> str:
+    """CSP sha256 source covering the fallback page's only inline ``<style>``.
+
+    The hash must match the exact text between the tags as served: ``format``
+    collapses the template's doubled braces, and ``version`` is interpolated
+    outside the style element, so the rendered style text is static.
+    """
+    rendered = _MINIMAL_PAGE.format(version="")
+    style = rendered[rendered.index("<style>") + len("<style>"): rendered.index("</style>")]
+    return base64.b64encode(hashlib.sha256(style.encode("utf-8")).digest()).decode("ascii")
+
+
+_CONTROL_PLANE_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'self'; "
+        # The SPA ships no inline <style>/style= markup; React and r3f apply
+        # runtime style props via CSSOM, which style-src does not govern. The
+        # one inline <style> is the no-dist fallback page, allowed by hash
+        # rather than 'unsafe-inline'.
+        "frame-ancestors 'self'; script-src 'self'; "
+        f"style-src 'self' 'sha256-{_minimal_page_style_hash()}'; "
+        "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; "
+        "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+        "frame-src 'self' http://127.0.0.1:* http://localhost:*"
+    ),
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "SAMEORIGIN",
+    "X-Permitted-Cross-Domain-Policies": "none",
+}
 
 
 def fastapi_available() -> bool:
@@ -214,7 +232,7 @@ def create_app(
             if full_path and candidate.is_file():
                 return FileResponse(str(candidate))
             return HTMLResponse(
-                index_html.read_text(),
+                index_html.read_text(encoding="utf-8"),
                 headers={"Cache-Control": "no-cache"},
             )
     else:

@@ -162,6 +162,32 @@ test("explicit incomplete state and non-GO verdicts cannot become shippable", ()
   assert.equal(rejected.label, "rejected");
 });
 
+test("a blocked gate finding is appended to the no-go title without changing the pill", () => {
+  const blocked = buildOutcome({
+    status: "completed_no_go",
+    verdict: "no_go",
+    delivery_state: "delivered",
+    is_complete: true,
+    quality_scorecard: {
+      gate_findings: [
+        { gate: "liveness", status: "failed", blocked: false, reason: "route /about dead" },
+        { gate: "security", status: "failed", blocked: true, reason: "secret committed" },
+      ],
+    },
+  });
+  const bare = buildOutcome({
+    status: "completed_no_go",
+    verdict: "no_go",
+    delivery_state: "delivered",
+    is_complete: true,
+  });
+
+  assert.equal(blocked.label, "NO GO");
+  assert.equal(blocked.detail, "delivered · not shippable");
+  assert.match(blocked.title, /Blocked by security: secret committed\./);
+  assert.doesNotMatch(bare.title, /Blocked by/);
+});
+
 test("negative delivery evidence wins when legacy fields conflict", () => {
   const outcome = buildOutcome({
     status: "completed",

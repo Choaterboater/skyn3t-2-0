@@ -79,7 +79,7 @@ class BuildPatternBoard:
         if self.path is None or not self.path.exists():
             return
         try:
-            raw = json.loads(self.path.read_text())
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
             for fp, d in raw.items():
                 self._records[fp] = PatternRecord(
                     fp=d["fp"],

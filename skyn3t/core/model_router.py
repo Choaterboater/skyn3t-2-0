@@ -13,12 +13,14 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from copy import deepcopy
 from enum import StrEnum
 from pathlib import Path
 
 import structlog
 
+from skyn3t.adapters.model_slot import ModelSlot, parse_slot
 from skyn3t.config.settings import Settings, get_settings
 
 log = structlog.get_logger(__name__)
@@ -129,38 +131,91 @@ _FREE_FAILOVER_EXCLUDE = (
 _LIVE_FREE_IDS: list[str] | None = None
 _LIVE_FREE_AT = 0.0
 _LIVE_TTL = 3600.0
+# A FAILED fetch must not overwrite a good snapshot with [] stamped now —
+# that used to disable live paid ranking and free self-heal for a full hour
+# after one transient network error. Failures keep the previous data and only
+# back off retries for this much shorter window.
+_LIVE_ERROR_TTL = 120.0
+_LIVE_FREE_ERROR_AT = 0.0
+_LIVE_CATALOG_ERROR_AT = 0.0
+
+# Single-flight guard for the (shared) live-endpoint fetch: concurrent off-loop
+# refreshes serialize here — the loser of the race finds a fresh cache inside
+# the lock instead of firing a duplicate 8s network call.
+_LIVE_FETCH_LOCK = threading.Lock()
+
+
+def _free_ids_from_catalog(records: list[dict]) -> list[str]:
+    """Filter full catalog records down to usable ``:free`` text-model ids.
+
+    The one filter shared by every free-id producer (`live_free_model_ids`,
+    `live_catalog`, `prime_live_catalog`) so a catalog fetched once can feed
+    both caches identically."""
+    free_ids: list[str] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if (
+            model_id
+            and is_free_model_id(model_id)
+            and _model_accepts_text(item)
+            and _model_supports_text(item)
+            and not any(marker in model_id.lower() for marker in _FREE_FAILOVER_EXCLUDE)
+            and model_id not in free_ids
+        ):
+            free_ids.append(model_id)
+    return free_ids
 
 
 def live_free_model_ids(timeout: float = 8.0) -> list[str]:
-    """Current OpenRouter ``:free`` model ids (cached). [] when unreachable so the
-    caller keeps the hardcoded fallback. Public endpoint — no API key needed."""
-    global _LIVE_FREE_AT, _LIVE_FREE_IDS
+    """Current OpenRouter ``:free`` model ids (cached). Serves the previous
+    snapshot (or []) when unreachable so the caller keeps a real fallback.
+    Public endpoint — no API key needed."""
+    global _LIVE_FREE_AT, _LIVE_FREE_IDS, _LIVE_FREE_ERROR_AT
     import time as _t
     now = _t.time()
     if _LIVE_FREE_IDS is not None and (now - _LIVE_FREE_AT) < _LIVE_TTL:
         return _LIVE_FREE_IDS
-    fresh: list[str] = []
-    try:
-        import json as _j
-        import urllib.request as _u
-        req = _u.Request("https://openrouter.ai/api/v1/models",
-                         headers={"User-Agent": "skyn3t"})
-        data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
-        for m in data:
-            model_id = str(m.get("id") or "").strip() if isinstance(m, dict) else ""
-            if not model_id or not is_free_model_id(model_id):
-                continue
-            if not _model_accepts_text(m) or not _model_supports_text(m):
-                continue
-            if any(marker in model_id.lower() for marker in _FREE_FAILOVER_EXCLUDE):
-                continue
-            if model_id not in fresh:
-                fresh.append(model_id)
-    except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
-        log.warning("router.live_models_unavailable", error=str(exc)[:120])
-    _LIVE_FREE_IDS = fresh
-    _LIVE_FREE_AT = now
-    return fresh
+    if now - _LIVE_FREE_ERROR_AT < _LIVE_ERROR_TTL:
+        return _LIVE_FREE_IDS or []
+    with _LIVE_FETCH_LOCK:
+        # Re-check under the lock: a concurrent refresh (or a live_catalog()
+        # fetch, which primes this cache too) may have landed while we waited.
+        now = _t.time()
+        if _LIVE_FREE_IDS is not None and (now - _LIVE_FREE_AT) < _LIVE_TTL:
+            return _LIVE_FREE_IDS
+        if now - _LIVE_FREE_ERROR_AT < _LIVE_ERROR_TTL:
+            return _LIVE_FREE_IDS or []
+        # A fresh full-catalog snapshot already lists every model — derive the
+        # free ids from it instead of fetching the same endpoint a second time.
+        if _LIVE_CATALOG and (now - _LIVE_CATALOG_AT) < _LIVE_TTL:
+            _LIVE_FREE_IDS = _free_ids_from_catalog(_LIVE_CATALOG)
+            _LIVE_FREE_AT = now
+            return _LIVE_FREE_IDS
+        fresh: list[str] = []
+        try:
+            import json as _j
+            import urllib.request as _u
+            req = _u.Request("https://openrouter.ai/api/v1/models",
+                             headers={"User-Agent": "skyn3t"})
+            data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
+            fresh = _free_ids_from_catalog(data)
+        except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
+            log.warning("router.live_models_unavailable", error=str(exc)[:120])
+            _LIVE_FREE_ERROR_AT = now
+            return _LIVE_FREE_IDS or []
+        if not fresh and _LIVE_FREE_IDS:
+            # A 200 carrying an empty model list is an anomaly (gateway hiccup,
+            # partial payload), not evidence the catalog emptied — keep the good
+            # snapshot and back off like a failure.
+            log.warning("router.live_models_empty_response")
+            _LIVE_FREE_ERROR_AT = now
+            return _LIVE_FREE_IDS
+        _LIVE_FREE_IDS = fresh
+        _LIVE_FREE_AT = now
+        _LIVE_FREE_ERROR_AT = 0.0
+        return fresh
 
 
 # Full live catalog cache (id + created epoch), for auto-picking the NEWEST model
@@ -175,31 +230,57 @@ def live_catalog(timeout: float = 8.0) -> list[dict]:
     Keep the full model records. OpenRouter now exposes benchmark, architecture,
     context, and pricing metadata in this endpoint; the router uses those fields
     to pick current high-signal models instead of only matching old family names.
-    Returns ``[]`` when unreachable so callers keep their static fallback.
+    Serves the previous snapshot (or ``[]``) when unreachable so callers keep
+    their static fallback.
     """
-    global _LIVE_CATALOG, _LIVE_CATALOG_AT
+    global _LIVE_CATALOG, _LIVE_CATALOG_AT, _LIVE_CATALOG_ERROR_AT
+    global _LIVE_FREE_AT, _LIVE_FREE_IDS
     import time as _t
     now = _t.time()
     if _LIVE_CATALOG is not None and (now - _LIVE_CATALOG_AT) < _LIVE_TTL:
         return _LIVE_CATALOG
-    fresh: list[dict] = []
-    try:
-        import json as _j
-        import urllib.request as _u
-        req = _u.Request("https://openrouter.ai/api/v1/models", headers={"User-Agent": "skyn3t"})
-        data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
-        fresh = []
-        for m in data:
-            if not isinstance(m, dict) or not isinstance(m.get("id"), str):
-                continue
-            item = dict(m)
-            item["created"] = int(item.get("created", 0) or 0)
-            fresh.append(item)
-    except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
-        log.warning("router.catalog_unavailable", error=str(exc)[:120])
-    _LIVE_CATALOG = fresh
-    _LIVE_CATALOG_AT = now
-    return fresh
+    if now - _LIVE_CATALOG_ERROR_AT < _LIVE_ERROR_TTL:
+        return _LIVE_CATALOG or []
+    with _LIVE_FETCH_LOCK:
+        # Re-check under the lock: a concurrent refresh may have landed while
+        # we waited (single-flight — never two fetches of the same endpoint).
+        now = _t.time()
+        if _LIVE_CATALOG is not None and (now - _LIVE_CATALOG_AT) < _LIVE_TTL:
+            return _LIVE_CATALOG
+        if now - _LIVE_CATALOG_ERROR_AT < _LIVE_ERROR_TTL:
+            return _LIVE_CATALOG or []
+        fresh: list[dict] = []
+        try:
+            import json as _j
+            import urllib.request as _u
+            req = _u.Request("https://openrouter.ai/api/v1/models", headers={"User-Agent": "skyn3t"})
+            data = _j.loads(_u.urlopen(req, timeout=timeout).read())["data"]
+            fresh = []
+            for m in data:
+                if not isinstance(m, dict) or not isinstance(m.get("id"), str):
+                    continue
+                item = dict(m)
+                item["created"] = int(item.get("created", 0) or 0)
+                fresh.append(item)
+        except Exception as exc:  # noqa: BLE001 - offline / API down -> keep fallback
+            log.warning("router.catalog_unavailable", error=str(exc)[:120])
+            _LIVE_CATALOG_ERROR_AT = now
+            return _LIVE_CATALOG or []
+        if not fresh and _LIVE_CATALOG:
+            log.warning("router.catalog_empty_response")
+            _LIVE_CATALOG_ERROR_AT = now
+            return _LIVE_CATALOG
+        _LIVE_CATALOG = fresh
+        _LIVE_CATALOG_AT = now
+        _LIVE_CATALOG_ERROR_AT = 0.0
+        # One fetch feeds BOTH caches: the full catalog already lists every
+        # ``:free`` model, so refresh the free-id snapshot too — otherwise
+        # live_free_model_ids() re-fetches the identical endpoint within the
+        # same TTL window (mirrors prime_live_catalog).
+        if fresh:
+            _LIVE_FREE_IDS = _free_ids_from_catalog(fresh)
+            _LIVE_FREE_AT = now
+        return fresh
 
 
 def prime_live_catalog(records: list[dict], fetched_at: float | None = None) -> None:
@@ -214,6 +295,12 @@ def prime_live_catalog(records: list[dict], fetched_at: float | None = None) -> 
     global _LIVE_CATALOG, _LIVE_CATALOG_AT, _LIVE_FREE_AT, _LIVE_FREE_IDS
     import time as _t
 
+    if not records:
+        # The web layer primes with its own (possibly cold, empty) cache after
+        # a FAILED fetch. An empty prime stamped fresh would clobber real data
+        # and block refetches for the TTL; there is nothing to share — ignore.
+        return
+
     try:
         stamp = float(fetched_at) if fetched_at is not None else _t.time()
     except (TypeError, ValueError):
@@ -224,27 +311,16 @@ def prime_live_catalog(records: list[dict], fetched_at: float | None = None) -> 
         return
 
     catalog: list[dict] = []
-    free_ids: list[str] = []
     for raw in records:
         if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
             continue
         item = deepcopy(raw)
         item["created"] = int(item.get("created", 0) or 0)
         catalog.append(item)
-        model_id = str(item.get("id") or "").strip()
-        if (
-            model_id
-            and is_free_model_id(model_id)
-            and _model_accepts_text(item)
-            and _model_supports_text(item)
-            and not any(marker in model_id.lower() for marker in _FREE_FAILOVER_EXCLUDE)
-            and model_id not in free_ids
-        ):
-            free_ids.append(model_id)
 
     _LIVE_CATALOG = catalog
     _LIVE_CATALOG_AT = stamp
-    _LIVE_FREE_IDS = free_ids
+    _LIVE_FREE_IDS = _free_ids_from_catalog(catalog)
     _LIVE_FREE_AT = stamp
 
 
@@ -651,7 +727,9 @@ def _catalog_model_score(model: dict, tier: Tier, profile: str, newest_created: 
     low = model_id.lower()
     if model_id.startswith("~") or any(x in low for x in _AUTO_ROUTE_EXCLUDE):
         return None
-    if not _model_supports_text(model):
+    # Text must be both an input and an output modality, mirroring the free
+    # path: an image-input-only model cannot serve text prompts.
+    if not _model_supports_text(model) or not _model_accepts_text(model):
         return None
     # A soft cost penalty can always be overwhelmed by a newly released model's
     # benchmark/recency score. Cheap routes instead have a hard price-class
@@ -746,6 +824,48 @@ def newest_paid_model(family: str) -> str | None:
 _CLAUDE_MARKERS = ("claude", "anthropic")
 
 
+def _slot_model_plausible(model: str) -> bool:
+    """Whether a slot's model half could ever name a real model.
+
+    ``parse_slot`` deliberately keeps ANY unknown token as a model id (backward
+    compat with bare OpenRouter ids), so a junk setting like ``"not a slot"``
+    parses as a "valid" pin. Reject whitespace-bearing ids (no provider model
+    id contains a space) and pure punctuation — the typo shapes an operator
+    actually produces.
+    """
+    return (
+        bool(model)
+        and not any(c.isspace() for c in model)
+        and bool(model.strip(":/"))
+    )
+
+
+def parse_task_model_slot(raw: str, *, path: str = "") -> ModelSlot | None:
+    """Parse a task-specialized slot setting (``codegen_model_slot`` /
+    ``repair_model_slot``) into a concrete route.
+
+    Returns ``None`` — the caller keeps today's tier routing — when the setting
+    is unset OR unparseable. An unparseable-but-configured value logs a
+    warning: a junk pin is an operator mistake worth surfacing, but a model
+    pin must never take a build down with it (design rule #6), so the fallback
+    is silent tier behavior, not an error. Valid shapes mirror the MoA council
+    grammar: ``provider:model``, a bare provider (that provider's default), or
+    a bare model id pinned on the active backend.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    slot = parse_slot(text)
+    plausible = (
+        (bool(slot.provider) and (not slot.model or _slot_model_plausible(slot.model)))
+        or (not slot.provider and _slot_model_plausible(slot.model))
+    )
+    if slot.is_empty or not plausible:
+        log.warning("router.task_slot_invalid", path=path, slot=text[:80])
+        return None
+    return slot
+
+
 class ModelRouter:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
@@ -757,7 +877,7 @@ class ModelRouter:
         try:
             if not path.exists():
                 return {}
-            raw = json.loads(path.read_text())
+            raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 return {}
             out: dict[str, str] = {}
@@ -786,14 +906,36 @@ class ModelRouter:
         norm = (model or "").strip()
         if not norm:
             return
+        if tier is Tier.CHEAP and not self.auto_model_allowed(norm, tier):
+            # Never persist a model that violates the cheap-tier price promise
+            # under the "cheap" key: this cache is consumed offline, where the
+            # price can no longer be checked. (Exactly how a premium model once
+            # got cached under "cheap" and served that route for days.)
+            log.info("router.paid_cache_skip_cheap_ineligible", model=norm)
+            return
         self._paid_fallback_cache[tier.value] = norm
         self._save_paid_fallback_cache()
 
     def _openrouter_catalog_allowed(self) -> bool:
-        """Whether this settings object explicitly permits live OpenRouter lookups."""
+        """Whether this settings object explicitly permits live OpenRouter lookups.
+
+        Keyed on the backends OpenRouter is actually REACHABLE from, matching
+        the dispatch layer's resolution (``LLMClient._resolve_backend``):
+        ``openrouter`` selected outright, or ``auto`` with the explicit
+        ``auto_allow_openrouter`` opt-in. Before the ``auto`` arm existed,
+        an auto+opt-in host resolved to backend "openrouter" yet the router
+        still refused catalog lookups, so the free-model self-heal never ran
+        and retired hardcoded ``:free`` defaults were sent to the API. A
+        dormant key under plain ``auto`` (no opt-in) still skips lookups —
+        a key is configuration, not consent.
+        """
+        backend = str(getattr(self.settings, "llm_backend", "auto") or "auto").strip().lower()
+        openrouter_reachable = backend == "openrouter" or (
+            backend == "auto"
+            and bool(getattr(self.settings, "auto_allow_openrouter", False))
+        )
         return (
-            str(getattr(self.settings, "llm_backend", "auto") or "auto").strip().lower()
-            == "openrouter"
+            openrouter_reachable
             and bool(getattr(self.settings, "openrouter_enabled", True))
             and bool(
                 str(getattr(self.settings, "openrouter_api_key", "") or "").strip()
@@ -808,6 +950,7 @@ class ModelRouter:
         model: str,
         *,
         allow_live_catalog: bool,
+        profile: str = "balanced",
     ) -> str:
         if not model.startswith("newest:"):
             return model
@@ -819,16 +962,36 @@ class ModelRouter:
             self._cache_paid_model(tier, live)
             return live
 
+        # The cache holds whatever this TIER last resolved live — possibly a
+        # premium balanced-profile pick, unrelated to the pinned family. On a
+        # cheap-price-promise route it must pass the same eligibility check as
+        # any other automatically learned model (auto_model_allowed is an
+        # unconditional True for non-cheap routes).
         cached = self._paid_fallback_cache.get(tier.value)
         if cached:
-            log.info("router.newest_cache_fallback", family=family, model=cached, tier=tier.value)
-            return cached
+            if self.auto_model_allowed(
+                cached, tier, profile, allow_live_catalog=allow_live_catalog
+            ):
+                log.info("router.newest_cache_fallback", family=family, model=cached,
+                         tier=tier.value)
+                return cached
+            log.info("router.newest_cache_rejected", family=family, model=cached,
+                     tier=tier.value, reason="cheap_price_promise")
+            # Evict it: a poisoned entry otherwise gets re-checked (and its
+            # rejection re-logged) on every offline resolve forever.
+            self._paid_fallback_cache.pop(tier.value, None)
+            self._save_paid_fallback_cache()
 
         # Offline last resort: a CONCRETE paid default, never a :free id. This branch
         # is only reachable in PAID mode (free_only rewrites happen later, in
         # _apply_policy), so dropping to :free here would silently downgrade a paying
         # user — the regression guarded by test_no_claude_paid_mode_uses_paid_default.
-        fallback = _PAID_OFFLINE_DEFAULTS[tier]
+        # A cheap-promise route keeps its price promise even offline.
+        fallback = (
+            _CHEAP_PAID_OFFLINE_DEFAULTS[tier]
+            if _requires_cheap_price(tier, profile)
+            else _PAID_OFFLINE_DEFAULTS[tier]
+        )
         log.info("router.newest_offline_fallback", family=family, model=fallback, tier=tier.value)
         return fallback
 
@@ -885,6 +1048,7 @@ class ModelRouter:
             tier,
             _PAID_DEFAULTS[tier],
             allow_live_catalog=allow_live_catalog,
+            profile=profile,
         )
 
     @staticmethod
@@ -967,7 +1131,7 @@ class ModelRouter:
         path = self.settings.data_dir / "model_tier_overrides.json"
         if path.exists():
             try:
-                return json.loads(path.read_text())
+                return json.loads(path.read_text(encoding="utf-8"))
             except Exception as exc:  # noqa: BLE001
                 log.warning("router.overrides_unreadable", error=str(exc))
         return {}
@@ -1029,6 +1193,7 @@ class ModelRouter:
                 tier,
                 model,
                 allow_live_catalog=allow_live_catalog,
+                profile=profile,
             )
 
         if explicit_source:

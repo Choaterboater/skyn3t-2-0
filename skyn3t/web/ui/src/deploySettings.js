@@ -4,6 +4,7 @@ export const DEPLOY_PROVIDERS = [
   "cloudflare",
   "netlify",
   "railway",
+  "render",
 ];
 
 export function deployProviderConfigured(status, provider) {

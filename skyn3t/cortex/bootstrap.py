@@ -19,8 +19,10 @@ awaited.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus, EventType
@@ -32,6 +34,7 @@ from skyn3t.cortex.proposal_store import (
     ProposalStore,
     ProposalType,
 )
+from skyn3t.studio.lab_policy import LabAutonomyPolicy
 
 try:
     import structlog
@@ -42,6 +45,14 @@ except Exception:  # pragma: no cover - logging is best-effort
 
 # Default confidence a safe proposal must reach to auto-apply.
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.75
+
+# GitHub's owner grammar is deliberately tighter than its repository grammar:
+# owners cannot contain dots or underscores, while repository names can. The
+# Lab-only auto-approval path uses these expressions as a source-identity
+# boundary, not as a best-effort URL parser. Anything less than an exact GitHub
+# repository identity stays behind the normal ingest gate.
+_GITHUB_OWNER_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+_GITHUB_REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
 def _proposal_tuning_overrides(prop: Proposal) -> dict[str, Any]:
@@ -75,6 +86,7 @@ def _make_default_ratchet_evaluator(
     memory: Any | None,
     rag: Any | None,
     skills: Any | None,
+    llm: Any | None = None,
 ) -> Callable[[Proposal], Awaitable[dict[str, Any]]] | None:
     if orchestrator is None:
         return None
@@ -87,10 +99,29 @@ def _make_default_ratchet_evaluator(
                 "reasons": ["tuning proposal had no persistable ratchet-safe settings"],
             }
 
+        # Preflight the shared budget: an already-exhausted day would produce
+        # two equally-dead bench runs (every case fails on BudgetExceeded) that
+        # gate_change could then accept on garbage evidence — skip the 2x bench
+        # instead. _apply_with_ratchet maps kept=False to FAILED (safe-by-default).
+        budget = getattr(llm, "budget", None)
+        if budget is not None and hasattr(budget, "check"):
+            try:
+                from skyn3t.adapters.llm import BudgetExceeded
+
+                try:
+                    budget.check()
+                except BudgetExceeded as exc:
+                    return {
+                        "kept": False,
+                        "reasons": [f"insufficient budget for ratchet bench: {exc}"],
+                    }
+            except ImportError:  # pragma: no cover - adapter always ships
+                pass
+
         from skyn3t.config.settings import get_settings
         from skyn3t.cortex.ratchet import evaluate_change, restore_overrides, snapshot_overrides
         from skyn3t.cortex.tuning_store import persist_overrides
-        from skyn3t.studio.bench import all_cases
+        from skyn3t.studio.bench import DEFAULT_CASES, load_regression_cases
 
         data_dir = settings.data_dir
         snapshot = snapshot_overrides(data_dir)
@@ -109,6 +140,39 @@ def _make_default_ratchet_evaluator(
             get_settings.cache_clear()
 
         def make_build_fn():
+            # Mirror the CLI bench build_fn (cli/main.py _make_ratchet_build_fn):
+            # wire cost tracking, budget guarding, and the learning layer so the
+            # ratchet benches the same pipeline production builds run — and so
+            # per-build spend is scoped per case (CostTracker.start_build zeroes
+            # it) instead of accumulating across the whole before+after bench.
+            # Each piece is guarded: a missing module degrades, never blocks.
+            cost_tracker = budget_guard = learning = patterns = None
+            try:
+                from skyn3t.observability.cost_tracker import CostTracker
+
+                if llm is not None:
+                    cost_tracker = CostTracker.from_llm(llm, settings)
+            except Exception:  # noqa: BLE001 - observability is best-effort
+                pass
+            try:
+                from skyn3t.self_healing.budget import BudgetGuard
+
+                budget_guard = BudgetGuard(settings=settings, budget=getattr(llm, "budget", None))
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from skyn3t.intelligence.learning_loop import LearningLoop
+
+                learning = LearningLoop(store=memory, event_bus=event_bus)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from skyn3t.intelligence.build_patterns import BuildPatternBoard
+
+                patterns = BuildPatternBoard(settings.data_dir / "build_patterns.json")
+            except Exception:  # noqa: BLE001
+                pass
+
             async def build_fn(case: Any) -> Any:
                 from skyn3t.studio.runner import StudioRunner
 
@@ -117,19 +181,43 @@ def _make_default_ratchet_evaluator(
                     orchestrator,
                     settings=settings,
                     memory=memory,
+                    learning=learning,
+                    patterns=patterns,
                     rag=rag,
                     skills=skills,
+                    cost_tracker=cost_tracker,
+                    budget_guard=budget_guard,
                 )
+                # Belt-and-braces per-case reset (like cli._reset_bench_budget)
+                # for the cost_tracker-construction-failed path. reset_build is
+                # a no-op inside an active tracked build, so a concurrent real
+                # build can never escape its own cap through this. Never touches
+                # spent_day — the daily ledger is the cross-process backstop.
+                case_budget = getattr(llm, "budget", None)
+                if case_budget is not None and hasattr(case_budget, "reset_build"):
+                    try:
+                        case_budget.reset_build()
+                    except Exception:  # noqa: BLE001
+                        pass
                 extra = {"stack": case.stack} if getattr(case, "stack", "") else {}
                 return await runner.start(case.brief, slug=None, extra=extra)
 
             return build_fn
 
+        # Bounded suite: the built-in app exam plus only the MOST RECENT app
+        # regressions. all_cases() pulls in up to 200 captured regressions —
+        # one auto-approved proposal would then trigger 2x(20+200) real builds.
+        regressions = [
+            c
+            for c in load_regression_cases(data_dir)
+            if str(getattr(c, "stack", "")).strip().lower() != "phaser"
+        ][-10:]
+
         return await evaluate_change(
             apply_change=apply_change,
             revert_change=revert_change,
             make_build_fn=make_build_fn,
-            cases=all_cases(data_dir),
+            cases=list(DEFAULT_CASES) + regressions,
             label=f"ratchet-{prop.id[:8]}",
         )
 
@@ -162,7 +250,7 @@ class Cortex:
         else:
             # Persist proposals to disk and reload them on boot so dedup survives
             # restarts: an already-APPLIED proposal's dedupe_key keeps a recurring
-            # generator (RepoScout / PromptEvolver re-propose the same keys every
+            # generator (RepoScout / PromptReflectionLoop re-propose the same keys every
             # tick) from re-surfacing it in the approval inbox after each restart
             # ("I approved those 5 twenty times"). Without this the in-memory store
             # forgot every prior decision the moment the process exited.
@@ -220,7 +308,11 @@ class Cortex:
             await self._emit_decided(prop)
             return prop
         if decision == "apply":
-            self.store.set_status(prop.id, ProposalStatus.APPROVED, reason="auto-approved (safe)")
+            self.store.set_status(
+                prop.id,
+                ProposalStatus.APPROVED,
+                reason=self._auto_approval_reason(prop),
+            )
             await self._emit_decided(prop)
             if self._should_ratchet(prop):
                 return await self._apply_with_ratchet(prop.id) or prop
@@ -230,20 +322,110 @@ class Cortex:
 
     def _decide(self, prop: Proposal) -> str:
         """Return one of: 'apply', 'gate', 'hold'."""
-        gates_on = self.settings.approval_gates
+        lab_policy = LabAutonomyPolicy.from_settings(self.settings)
+        gates_on = bool(self.settings.approval_gates) and lab_policy.approval_gates_enabled
         is_gated_type = prop.type in GATED_TYPES
+        # Lab autonomy explicitly permits GitHub *research* without a repetitive
+        # approval click. Keep the exception narrow: only RepoScout proposals
+        # with a canonical GitHub repo identity clear this branch. The INGEST
+        # handler still writes its RAG record as external_unreviewed and distills
+        # any skill as quarantined/external-candidate, so this never makes remote
+        # README text prompt-injectable or auto-promoted.
+        if self._is_lab_github_research(prop, lab_policy):
+            return "apply"
+        # Any other external ingest keeps its explicit review boundary even in a
+        # lab. This includes target-less curiosity proposals and malformed or
+        # non-GitHub sources, which must not gain authority from the Lab toggle.
+        if lab_policy.enabled and prop.type is ProposalType.INGEST:
+            return "gate"
         if gates_on and is_gated_type and self._can_auto_ratchet_gated(prop):
             return "apply"
         if gates_on and (is_gated_type or not prop.safe):
             return "gate"
         if (
             prop.safe
-            and self.settings.cortex_auto_approve_safe
+            and (self.settings.cortex_auto_approve_safe or lab_policy.enabled)
             and prop.confidence >= self.auto_approve_threshold
         ):
             return "apply"
         # Safe but low-confidence, or gates off but still wants review.
         return "gate" if gates_on else "hold"
+
+    @staticmethod
+    def _is_safe_github_repo_identity(value: object) -> bool:
+        """Accept one exact, non-URL ``owner/repo`` GitHub identity.
+
+        This deliberately does not try to repair, decode, or normalize an
+        input. The Lab exception is an authorization boundary, so a value that
+        is not already a safe identity must stay gated rather than receiving a
+        best-effort interpretation.
+        """
+        if not isinstance(value, str) or value != value.strip():
+            return False
+        owner, separator, repo = value.partition("/")
+        if not separator or "/" in repo:
+            return False
+        return bool(
+            _GITHUB_OWNER_RE.fullmatch(owner)
+            and _GITHUB_REPO_RE.fullmatch(repo)
+            and not repo.lower().endswith(".git")
+        )
+
+    @classmethod
+    def _is_canonical_github_repo_url(cls, value: object) -> bool:
+        """Accept only ``https://github.com/owner/repo`` with no URL extras."""
+        if not isinstance(value, str) or value != value.strip():
+            return False
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            return False
+        # ``netloc`` rather than just ``hostname`` rejects credentials, ports,
+        # hostname tricks, and alternate GitHub endpoints. Exact reconstruction
+        # below then rejects query, fragment, encoded, and path variants.
+        if parsed.scheme != "https" or parsed.netloc != "github.com":
+            return False
+        path_parts = parsed.path.split("/")
+        if len(path_parts) != 3 or path_parts[0] != "":
+            return False
+        owner, repo = path_parts[1:]
+        if not cls._is_safe_github_repo_identity(f"{owner}/{repo}"):
+            return False
+        return value == f"https://github.com/{owner}/{repo}"
+
+    @classmethod
+    def _is_repo_scout_github_research(cls, prop: Proposal) -> bool:
+        """Whether ``prop`` is RepoScout's bounded GitHub research form.
+
+        A proposal label is not enough: Lab auto-approval requires either an
+        exact canonical ``https://github.com/owner/repo`` URL or a safe
+        ``owner/repo`` identity. When a URL is supplied, it is authoritative
+        because the ingest handler consumes it before ``repo``; an invalid URL
+        must therefore not fall back to a second, benign-looking payload field.
+        """
+        if prop.type is not ProposalType.INGEST:
+            return False
+        if str(prop.source or "").strip().lower() != "repo_scout":
+            return False
+        payload = prop.payload or {}
+        url = payload.get("url")
+        if url:
+            return cls._is_canonical_github_repo_url(url)
+        return cls._is_safe_github_repo_identity(payload.get("repo"))
+
+    def _is_lab_github_research(
+        self, prop: Proposal, lab_policy: LabAutonomyPolicy | None = None
+    ) -> bool:
+        policy = lab_policy or LabAutonomyPolicy.from_settings(self.settings)
+        return (
+            not policy.approval_required("github_research")
+            and self._is_repo_scout_github_research(prop)
+        )
+
+    def _auto_approval_reason(self, prop: Proposal) -> str:
+        if self._is_lab_github_research(prop):
+            return "auto-approved (lab autonomy GitHub research; external content quarantined)"
+        return "auto-approved (safe)"
 
     def _should_ratchet(self, prop: Proposal) -> bool:
         return (
@@ -415,7 +597,7 @@ def build_cortex(
     settings = settings or get_settings()
     if ratchet_evaluator is None and getattr(settings, "reliability_ratchet_enabled", False):
         ratchet_evaluator = _make_default_ratchet_evaluator(
-            event_bus, settings, orchestrator, memory, rag, skills
+            event_bus, settings, orchestrator, memory, rag, skills, llm
         )
     # Pass the live orchestrator agents so approved PROMPT proposals can write
     # their evolved instruction onto the matching agent (closes the prompt loop).
@@ -513,12 +695,11 @@ def build_cortex(
             or getattr(settings, "github_token", "")
             or None
         )
-        # Make the silent failure visible: a stale process started before the token
-        # was loaded gets token=None and the scout no-ops. Log it so "scout stopped
-        # scanning" is diagnosable instead of a mystery (restart to reload .env).
-        if not token and _log is not None:
-            _log.warning("cortex.scout_disabled_no_token",
-                         hint="set SKYN3T_GITHUB_TOKEN or restart so .env is reloaded")
+        # No construction-time scout warning here: build_cortex also runs on
+        # paths that never call cortex.start() (e.g. CLI `studio build`), so a
+        # "scout disabled" warning would fire when the scout was never going
+        # to run — and it was wrong anyway (the scout works unauthenticated).
+        # The honest auth-mode note lives in RepoScout.run() instead.
         cortex.add_component(
             RepoScout(cortex, event_bus, settings, github_token=token)
         )

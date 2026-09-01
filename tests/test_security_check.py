@@ -7,7 +7,7 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.runner import StudioRunner
-from skyn3t.studio.security_check import check_security
+from skyn3t.studio.security_check import check_security, rewrite_secret_literals
 
 
 def test_security_check_flags_bundled_secret(tmp_path):
@@ -473,3 +473,175 @@ def test_security_check_ignores_join_of_pure_literals(tmp_path):
     verdict = check_security(tmp_path, "fastapi")
 
     assert verdict["issues"] == []
+
+
+def test_rewrite_secret_literals_rewrites_python_assignment(tmp_path):
+    (tmp_path / "config.py").write_text(
+        'api_key = "sk-live-1234567890abcdef"\n',
+        encoding="utf-8",
+    )
+
+    report = rewrite_secret_literals(tmp_path)
+
+    assert report["ok"] is True
+    assert report["errors"] == []
+    text = (tmp_path / "config.py").read_text(encoding="utf-8")
+    assert 'api_key = os.getenv("API_KEY", "")' in text
+    assert "sk-live-1234567890abcdef" not in text
+    assert "import os" in text
+    compile(text, "config.py", "exec")  # the rewrite stays valid Python
+    env_example = (tmp_path / ".env.example").read_text(encoding="utf-8")
+    assert "API_KEY=" in env_example
+    # The same gate must now pass on the rewritten tree.
+    verdict = check_security(tmp_path, "fastapi")
+    assert not any("secret" in issue.lower() for issue in verdict["issues"])
+    assert verdict["ok"] is True
+
+
+def test_rewrite_secret_literals_inserts_os_import_after_docstring(tmp_path):
+    (tmp_path / "config.py").write_text(
+        '"""App config."""\nfrom __future__ import annotations\n\n'
+        'api_key = "sk-live-1234567890abcdef"\n',
+        encoding="utf-8",
+    )
+
+    rewrite_secret_literals(tmp_path)
+
+    text = (tmp_path / "config.py").read_text(encoding="utf-8")
+    assert text.startswith(
+        '"""App config."""\nfrom __future__ import annotations\nimport os\n'
+    )
+    compile(text, "config.py", "exec")
+
+
+def test_rewrite_secret_literals_keeps_existing_os_import(tmp_path):
+    (tmp_path / "config.py").write_text(
+        '"""App config."""\nimport os\n\napi_key = "sk-live-1234567890abcdef"\n',
+        encoding="utf-8",
+    )
+
+    rewrite_secret_literals(tmp_path)
+
+    text = (tmp_path / "config.py").read_text(encoding="utf-8")
+    assert text.count("import os") == 1
+    assert text.startswith('"""App config."""\nimport os\n')
+
+
+def test_rewrite_secret_literals_rewrites_js_const(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "config.js").write_text(
+        "export const apiKey = 'sk-live-1234567890abcdef';\n",
+        encoding="utf-8",
+    )
+
+    report = rewrite_secret_literals(tmp_path)
+
+    text = (tmp_path / "src" / "config.js").read_text(encoding="utf-8")
+    assert 'export const apiKey = process.env.API_KEY || "";' in text
+    assert "sk-live-1234567890abcdef" not in text
+    assert report["rewritten"][0]["var"] == "API_KEY"
+    assert "API_KEY=" in (tmp_path / ".env.example").read_text(encoding="utf-8")
+    verdict = check_security(tmp_path, "react")
+    assert verdict["ok"] is True
+
+
+def test_rewrite_secret_literals_derives_camel_and_generic_names(tmp_path):
+    (tmp_path / "a.js").write_text(
+        "const stripeSecretKey = 'sk-live-aaaaaaaaaaaaaaaa';\n"
+        "const token = 'sk-live-bbbbbbbbbbbbbbbb';\n",
+        encoding="utf-8",
+    )
+
+    report = rewrite_secret_literals(tmp_path)
+
+    text = (tmp_path / "a.js").read_text(encoding="utf-8")
+    assert 'process.env.STRIPE_SECRET_KEY || ""' in text
+    assert 'process.env.TOKEN_1 || ""' in text
+    env_example = (tmp_path / ".env.example").read_text(encoding="utf-8")
+    assert "STRIPE_SECRET_KEY=" in env_example
+    assert "TOKEN_1=" in env_example
+    assert len(report["rewritten"]) == 2
+    verdict = check_security(tmp_path, "express")
+    assert not any("secret" in issue.lower() for issue in verdict["issues"])
+
+
+def test_rewrite_secret_literals_skips_non_assignment_occurrences(tmp_path):
+    (tmp_path / "server.js").write_text(
+        "console.log('sk-live-1234567890abcdef');\n"
+        "const url = `https://x.test/${'sk-live-1234567890abcdef'}`;\n"
+        "const data = { 'sk-live-1234567890abcdef': true };\n",
+        encoding="utf-8",
+    )
+
+    report = rewrite_secret_literals(tmp_path)
+
+    assert report["rewritten"] == []
+    assert len(report["skipped"]) == 3
+    assert not (tmp_path / ".env.example").exists()
+    # Untouched: the gate still (correctly) flags the file.
+    verdict = check_security(tmp_path, "express")
+    assert any("secret" in issue.lower() for issue in verdict["issues"])
+
+
+def test_rewrite_secret_literals_reports_unsupported_file_type(tmp_path):
+    (tmp_path / "App.vue").write_text(
+        "<script>const apiKey = 'sk-live-1234567890abcdef';</script>\n",
+        encoding="utf-8",
+    )
+
+    report = rewrite_secret_literals(tmp_path)
+
+    assert report["rewritten"] == []
+    assert any("not rewritten" in s["reason"] for s in report["skipped"])
+
+
+def test_security_gate_repairs_secret_then_passes(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "config.js").write_text(
+        "export const apiKey = 'sk-live-1234567890abcdef';\n",
+        encoding="utf-8",
+    )
+    runner = StudioRunner(
+        EventBus(),
+        Orchestrator(EventBus()),
+        settings=Settings(projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"),
+        memory=None,
+    )
+    man = BuildManifest(slug="x", brief="web", stack="react")
+
+    score, verdict = runner._run_security_gate(
+        man, str(tmp_path), SimpleNamespace(stack="react"), 91.0, "go"
+    )
+
+    assert verdict == "go"
+    assert score == 91.0
+    assert man.extra["security_check"]["ok"] is True
+    rewrite = man.extra["security_secret_rewrite"]
+    assert rewrite["rewritten"][0]["var"] == "API_KEY"
+    assert rewrite["env_example"] == ".env.example"
+    rewritten_src = (tmp_path / "src" / "config.js").read_text(encoding="utf-8")
+    assert "process.env.API_KEY" in rewritten_src
+
+
+def test_security_gate_stays_red_when_secret_not_rewritable(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "server.js").write_text(
+        "console.log('sk-live-1234567890abcdef');\n",
+        encoding="utf-8",
+    )
+    runner = StudioRunner(
+        EventBus(),
+        Orchestrator(EventBus()),
+        settings=Settings(projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data", logs_dir=tmp_path / "logs"),
+        memory=None,
+    )
+    man = BuildManifest(slug="x", brief="api", stack="express")
+
+    score, verdict = runner._run_security_gate(
+        man, str(tmp_path), SimpleNamespace(stack="express"), 91.0, "go"
+    )
+
+    assert verdict == "no_go"
+    assert score == 49.0
+    assert man.extra["security_secret_rewrite"]["rewritten"] == []
+    assert man.extra["security_secret_rewrite"]["skipped"]

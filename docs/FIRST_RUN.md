@@ -5,20 +5,49 @@ This guide is for the first time you run SkyN3t locally.
 ## Start The Foundry
 
 ```bash
+# From a source checkout, install the optional dashboard dependencies first.
+pip install -e ".[web]"
 python -m skyn3t.cli.main start --web
 ```
 
-Open the printed local URL. The dashboard works with the offline `stub` backend, so no API key is required for a smoke test.
+Open the printed local URL (normally `http://127.0.0.1:6660`). Confirm `/` loads
+the Foundry SPA — or the intentional fallback status page when `ui/dist` is absent
+— and confirm `/api/status` responds. The dashboard works with the offline `stub`
+backend, so no API key is required for a smoke test.
 
 ## Check Settings
 
 Go to **Settings** in the left navigation.
 
-- **Backend**: leave `auto` for normal use, or pick `stub` for fully offline dry runs.
-- **Keys**: add an OpenRouter key when you want real model generation.
+- **Backend**: leave `auto` for normal use; it tries signed-in local CLIs in the
+  default `codex,kimi` order. Pick `stub` for fully offline dry runs.
+- **Keys**: a signed-in local CLI is the keyless real-generation path. Add an
+  OpenRouter key only when you explicitly select OpenRouter or enable its
+  `auto` fallback; a key alone is not consent to spend.
+- **Claude**: `no_claude` is on by default. Disable it only when you intend to
+  select Claude in the backend, codegen route, priority chain, or MoA slots.
 - **Images**: add a Replicate token only if you want paid generated imagery; web and game builds have offline asset floors.
 - **Gates**: leave verification gates on while evaluating build quality.
 - **Runtime**: confirm project, data, and log directories match your local machine.
+
+## Lab, Gates, and Security Evidence
+
+The default `lab` build posture records and scores heuristic, policy, and
+environment-dependent findings without treating them as delivery blockers.
+`release` makes applicable completed gate findings blocking; a probe that cannot
+run because a local prerequisite is absent remains a recorded skip.
+
+`lab_autonomy` is off by default. When enabled for a personal lab it removes
+routine local build approvals and budget guards, but proof still runs and remote
+deploys, secret writes, destructive host actions, releases, and protected-branch
+merges remain explicitly gated.
+
+The web security check reports only `ok`, `skipped`, `issues`, `warnings`, and
+`checked`. It does not return or execute arbitrary actions. The runner may
+perform one conservative repair for simple literal secrets, rechecks afterward,
+and records the result under `manifest.extra.security_secret_rewrite`; `eval` /
+`Function` findings and SQL-interpolation findings remain findings for the build
+to fix rather than being rewritten automatically.
 
 ## Build One App
 
@@ -65,4 +94,4 @@ The liveness command writes desktop/mobile browser evidence as described in
 
 ## Offline Defaults
 
-SkyN3t is designed to start without cloud credentials. Missing keys degrade to deterministic local behavior rather than crashing. Add keys later when you want higher quality generations, live model routing, image generation, or remote deploys.
+SkyN3t is designed to start without cloud credentials. Missing keys degrade to deterministic local behavior rather than crashing. A signed-in local CLI enables real generation without an API key; add hosted keys later only when you explicitly want OpenRouter, paid imagery, or remote deploys.

@@ -1,0 +1,98 @@
+[
+ {
+  "title": "Three synchronous cross-process ledger transactions per completion; contention blocks the loop 15s",
+  "file": "skyn3t/adapters/llm.py",
+  "evidence": "llm.py:2651 (`self.budget.check()` pre-dispatch), 2714-2715 (`record()` then `check()` post) \u2014 each takes `_exclusive_ledger_lock` (llm.py:1196-1274) which opens/locks a lock file and, when contended, loops `time.sleep(0.02)` synchronously (llm.py:1226, 1245, 1258) for up to `_LEDGER_LOCK_TIMEOUT_S=15` (llm.py:142); `_load_ledger` reads and `_save_ledger` atomically rewrites JSON on every `record` (llm.py:1299-1317, 1415-1426). Each failed OpenRouter retry attempt adds another full transaction (llm.py:2453-2458). All on the asyncio thread.",
+  "win_rate_impact": "Every LLM call pays 3 file-lock + disk round-trips on the hot path; when a second SkyN3t process (dashboard/status or a concurrent build sharing data_dir) holds the lock, each transaction blocks the WHOLE event loop in a synchronous sleep-poll for up to 15s \u2014 three times per completion \u2014 stalling all parallel slices and stream watchdogs. Under fan-out this converts bookkeeping into serialized dead time that eats build windows.",
+  "fix": "Coalesce the pre-check with the post-record check (one guarded transaction per call), skip the disk read in `check()` when the ledger was loaded within the last few seconds, and run the ledger transaction in `asyncio.to_thread` (or make the poll `await asyncio.sleep`) so contention never blocks the loop.",
+  "effort": "medium"
+ },
+ {
+  "title": "_openrouter builds a fresh httpx.AsyncClient (new TCP+TLS handshake) for every attempt",
+  "file": "skyn3t/adapters/llm.py",
+  "evidence": "llm.py:4492-4495 \u2014 `async with (provider_slot(...), httpx.AsyncClient(timeout=request_timeout) as client:)` inside `_do`, which runs once per attempt per candidate. Dozens of small completions per build (brainstorm/critic/reviewer/intent/test_author call sites across skyn3t/agents and skyn3t/studio) each pay connection setup; retries and failover multiply it. The agentic loop already demonstrates the right pattern (one client for the whole session, llm.py:3301).",
+  "win_rate_impact": "Adds a TLS handshake (~100-300ms plus loop work) to every completion attempt and forfeits connection reuse across the build's many small scoring/review calls \u2014 seconds to minutes of aggregate wall clock per build under fan-out, spent on connection churn that buys zero success probability and widens the window in which stage deadlines expire.",
+  "fix": "Hold one shared `httpx.AsyncClient` per event loop (same keyed-by-loop pattern as provider_limits._ADMISSIONS), pass the per-request timeout via `client.post(..., timeout=...)`, and close it on loop teardown.",
+  "effort": "small"
+ },
+ {
+  "title": "Embedder backend drift silently makes the persisted vector store unreachable",
+  "file": "skyn3t/rag/embeddings.py",
+  "evidence": "Embedder picks sentence-transformers (dim 384) vs hashing fallback (dim 256) per-process at import/first-use, and degrades to hashing mid-run on any model-load or encode failure (embeddings.py:60, 69-76, 114-115) \u2014 e.g. a blocked HuggingFace download. A chroma collection persisted under one dimension then rejects queries/upserts of the other; vector_store.query catches the exception and scores only the in-memory _docs (vector_store.py:214-234), which are empty after restart \u2014 so recall returns [] with only a log warning. semantic_skills._cosine likewise returns 0.0 on length mismatch (semantic_skills.py:30-31).",
+  "win_rate_impact": "Everything the factory persisted across sessions (build experience, ingested GitHub repos via `domain ingest`) silently vanishes from recall whenever the embedding backend differs from the one that wrote the store \u2014 a one-time network hiccup at ST model load permanently orphans the entire knowledge base for that process with no operator-visible signal, degrading codegen context on every subsequent build.",
+  "fix": "Persist a {backend, dim} marker beside the collection (or encode it in the collection name, e.g. skyn3t_rag_st384 / skyn3t_rag_hash256) and have VectorStore/Embedder pin to the store's recorded backend at startup, logging loudly (or surfacing via info()) when the preferred backend is unavailable.",
+  "effort": "small"
+ },
+ {
+  "title": "Dead event stream freezes all live status; only a 2px sidebar dot changes",
+  "file": "skyn3t/web/ui/src/App.jsx",
+  "evidence": "Stream status is rendered solely as a small dot/label at the sidebar bottom (App.jsx:86-91, 139-154). No consumer of the stream inspects stream.status: GateLadder (GateLadder.jsx:131-134), Studio's pipeline/StageLedger (Studio.jsx:1013-1016), and Projects' useServedMap (Projects.jsx:104-126) keep rendering the last-received events unchanged when status is 'closed'/'error', with 'forging'/'running' animations still pulsing.",
+  "win_rate_impact": "When the server restarts or the socket drops mid-build, the operator watches a frozen cockpit that still claims stages are igniting and previews are live - they wait out builds that already finished or failed, and events emitted during the gap beyond the 50-frame prime are silently lost with no staleness cue.",
+  "fix": "Thread stream.status into the live panels: when status !== 'open', overlay a 'stream disconnected - data stale since <time of last frame>' banner on GateLadder/Forge line/Stage ledger and pause the running animations.",
+  "effort": "small"
+ },
+ {
+  "title": "Model-catalog 'refresh' button never sends refresh=true - routing pins use stale pricing",
+  "file": "skyn3t/web/ui/src/routes/Studio.jsx",
+  "evidence": "The catalog queryFn serializes `refresh: catalogRefreshing` (Studio.jsx:687-692) but catalogRefreshing is not in the queryKey (Studio.jsx:678-685), and the click handler calls setCatalogRefreshing(true) then catalog.refetch() synchronously (Studio.jsx:1528-1534) - refetch executes the closure from the current render where catalogRefreshing is still false, so the request always goes out as refresh=false (backend force_refresh gate at routes.py:7206). The button label also keys off catalog.isLoading, which stays false during a refetch, so no 'refreshing' feedback appears.",
+  "win_rate_impact": "The operator pins codegen/tier models and reads example costs from a cached OpenRouter catalog that the refresh control silently fails to update - stale prices and delisted/renamed models get pinned, producing routing failures or unexpected paid routes on subsequent builds.",
+  "fix": "Track a refresh nonce in state, include it in the queryKey, and have the queryFn send refresh=true when the nonce changed (resetting after success); switch the button label to catalog.isFetching.",
+  "effort": "small"
+ },
+ {
+  "title": "Studio vision fn bills the paid default model under free_only, outside the budget ledger",
+  "file": "skyn3t/studio/visual_check.py",
+  "evidence": "visual_check.py:477-502 (_make_openrouter_vision_fn) picks model = settings.vision_model or _DEFAULT_VISION_MODEL (\"openai/gpt-4o-mini\", visual_check.py:37 \u2014 paid) and POSTs directly via httpx, with no free_only check, no budget.record, and no openrouter_max_concurrency gate. The adapter's own vision path documents the opposite posture: llm.py:2757-2762 refuses to 'silently bill the paid default' under free_only when no vision_model is configured, and llm.py:2744-2756 treats an explicitly configured vision_model as the only spend opt-in.",
+  "win_rate_impact": "With llm_backend=openrouter + the default free_only=1 and the game checks default-on, every game build fires multiple unmetered paid vision calls (judge + up to 2 click-grounding rounds with retries) that per_build_usd_cap/daily_usd_cap never see \u2014 a cost-guard bypass that erodes exactly the budget the operator bounded builds with, and contradicts the free_only contract two settings docstrings promise.",
+  "fix": "In _make_openrouter_vision_fn, return None (soft-skip \u2014 the gates' skipped contract already handles it) when free_only is set and settings.vision_model is empty, mirroring llm.py:2757-2762; when it does run, record the spend to the budget ledger or at minimum log a per-call spend warning.",
+  "effort": "small"
+ },
+ {
+  "title": "has_any_llm ignores the openrouter_enabled kill-switch",
+  "file": "skyn3t/config/settings.py",
+  "evidence": "settings.py:741-751 returns bool(self.openrouter_api_key) \u2014 openrouter_enabled (settings.py:156-160, the documented dashboard-disconnect persistence, .env.example:76-78) is not consulted, even though every key-resolution site refuses the key when it is False (llm.py:303). With SKYN3T_OPENROUTER_ENABLED=0 and a key still in .env/env, /api/status policy.has_any_llm (deps.py:487) and the health fallback (health.py:252-257: 'provider key configured' \u2192 Status.OK) report a consumable LLM while generation resolves to the offline stub.",
+  "win_rate_impact": "The M6 bug class ('status claims LLM availability while generation stays on stub') reintroduced through the enable flag: an operator or the autonomy loop sees green health and launches builds that run on the stub, each one burning a build slot and failing at the scaffold_stub gate \u2014 wasted attempts that drag the measured win rate down until someone notices the disconnect flag.",
+  "fix": "Change has_any_llm to: return bool(self.openrouter_api_key) and bool(self.openrouter_enabled).",
+  "effort": "small"
+ },
+ {
+  "title": "STALE_BASE deletes a fully verified candidate's worktree and branch when main advances mid-verify",
+  "file": "skyn3t/cortex/candidate_engine.py",
+  "evidence": "candidate_engine.py:664-673 \u2014 after all verification gates pass, any advance of main since before_sha sets STALE_BASE, which is in _FAILED_CANDIDATE_STATUSES (:209-218). _finish (:797-821) then fails the preserve test (production policy sets preserve_failed_worktrees=False, candidate_service.py:465) and runs cleanup_candidate, which force-removes the worktree and deletes the candidate branch (:762-793), making the verified commit unreachable. This happens even when auto_merge is False and the candidate would only ever have been READY for later manual merge.",
+  "win_rate_impact": "In an actively developed repo (this one has frequent commits and a large in-flight fix pass), any candidate whose 30-60 minute verify window overlaps one user commit is destroyed after paying full authoring + verification cost \u2014 ruff, full pytest, npm ci/test/build all passed and the result is discarded with no retry. Improvements that would raise the build win rate never land, and the budget spent proving them is pure loss.",
+  "fix": "Treat STALE_BASE like READY for retention: remove it from the statuses that trigger cleanup (or preserve worktree+branch when status is STALE_BASE and all verification passed), so a verified-but-stale candidate can be rebased/merged instead of deleted.",
+  "effort": "small"
+ },
+ {
+  "title": "Liveness reconciliation blanket-upgrades any no_go to go without checking the no_go's cause",
+  "file": "skyn3t/studio/runner.py",
+  "evidence": "runner.py:1829-1840: when `visual_self_heal_gate` is in manifest.extra and liveness looks perfect (proof.passed, 0 dead routes, visual_health >= 1.0), the code pops the gate and runs `if verdict == 'no_go': verdict = 'go'` unconditionally. But under lab posture the visual_self_heal finding never blocked (release-only, gate_posture.py:85; recorded via _gate_outcome at runner.py:6006-6010), so a no_go at this point is from a DIFFERENT cause \u2014 the reviewer/rescore AND-combine (5695), or in release posture substance/intent/scaffold_stub/code_degraded findings \u2014 and all of them get silently overridden to 'go'. The gate_findings ledger still shows a blocked finding while the manifest ships verdict=go.",
+  "win_rate_impact": "Broken or brief-ignoring builds are counted as wins whenever visual self-heal is enabled and the rendered pages look healthy: a hollow-but-pretty scaffold that the reviewer or the substance/intent gates rejected ships as 'go'. This corrupts the win-rate signal itself and trains the lessons/learning loop on failures graded as successes (helpful = verdict=='go', runner.py:6173).",
+  "fix": "Capture the verdict value immediately before the visual_self_heal gate is applied (runner.py:6005) and, in the liveness reconciliation, restore that saved value instead of hard-coding 'go' \u2014 i.e. only undo the flip that visual_self_heal itself caused.",
+  "effort": "small"
+ },
+ {
+  "title": "stage_debug hands the improver no build/test error text, so early repair attempts no-op",
+  "file": "skyn3t/studio/stage_debug.py",
+  "evidence": "stage_debug.py:58: `gaps = list(proof.missing) + list(proof.syntax_errors)` \u2014 omits `proof.error_gaps()`, which the delivery fix loop deliberately feeds (runner.py:4219-4222, per commit 4c4f6fe 'Surface TypeScript build errors to the improver'). When the code stage's proof fails on a real npm build/test error with no missing-checklist or syntax entries, `improve([])` reaches CodeImproverAgent with empty gaps: `_targets_from_gaps([])` finds nothing and `_discover_targets_via_repo_map` gets no repo_map from `_improve_once`'s payload (runner.py:2797-2806), so files_improved=0, ran=False \u2014 after which debug_stage still runs one more full `proof_run` (install+build+tests, up to ~400s) before breaking (stage_debug.py:86-104). The gaps also skip the QA-FAIL contract every other repair path uses.",
+  "win_rate_impact": "The most common real failure class (compile/build errors) gets zero repair at the earliest, cheapest point \u2014 the per-stage debug pass that exists precisely so 'a broken early stage doesn't poison everything downstream' \u2014 and instead wastes a no-op improver dispatch plus a redundant multi-minute proof per code stage. Repair is deferred to the post-merge fix loop, consuming its bounded budget (6 attempts/720s) and wall-clock that times out long builds.",
+  "fix": "In `_run_check`, build gaps as `proof.error_gaps() or (list(proof.missing) + list(proof.syntax_errors))` (wrapped via `format_fix_feedback(..., stage='stage_debug', ...)`), and skip the re-proof when the improver reported no change (move the `if not ran: break` before the second `_run_check`).",
+  "effort": "small"
+ },
+ {
+  "title": "detect_reward_hacking flags legitimate pytest.mark.skipif/xfail as gamed tests and vetoes the build",
+  "file": "skyn3t/agents/build_verifier.py",
+  "evidence": "build_verifier.py:132-138: any test file containing the substring 'pytest.skip', '@pytest.mark.skip' (which also matches the common, legitimate `@pytest.mark.skipif(...)`), or 'xfail' ANYWHERE (even a comment) sets `suspicious=True`. build_verifier.py:221-224 then fails the stage verdict, and runner.py:1271-1275 blocks on `reward.get('suspicious')` explicitly WITHOUT the `proof_build_passed` override that stale build failures get \u2014 a passing authoritative proof cannot clear it.",
+  "win_rate_impact": "A working app whose generated tests include one platform/optional-dep `skipif` guard is branded 'reward-hacking suspected': no_go under release posture, and under lab the verifier verdict/details poison the manifest and learning signals. False accusation of correct work \u2014 the exact misgrading class the operator's gate_posture docstring calls out.",
+  "fix": "Only flag unconditional skips: match `pytest.skip(` / `@pytest.mark.skip` NOT followed by `if`, drop the bare 'xfail' substring (require `@pytest.mark.xfail` on a majority of tests), and require that flagged files be the MAJORITY of the suite before setting suspicious.",
+  "effort": "small"
+ },
+ {
+  "title": "web_polish fails any UI build containing a single emoji glyph",
+  "file": "skyn3t/studio/web_polish_check.py",
+  "evidence": "web_polish_check.py:33 `_DECORATIVE_EMOJI_RE` spans U+1F000-U+1FAFF and U+2600-U+26FF; lines 71-72 add the issue on the FIRST match anywhere in markup, making `ok=False`. runner.py:1681-1689 records the gate and calls `_score_after_finding` (1217-1230), capping the score at 74 even when lab posture leaves the verdict go; `_shape_final_score` (runner.py:1577-1578) further caps go builds at 86; release posture flips no_go at cap 44.",
+  "win_rate_impact": "Generated apps use emoji constantly (weather icons, todo checkmarks, game HUDs \u2014 often exactly what the brief asked for). One glyph turns a polished, working delivery into a 74-capped 'degraded' build (or a release no_go), systematically training the learning loop that correct deliveries are mediocre and consuming polish-repair attention on a non-defect.",
+  "fix": "Drop the emoji check from the blocking `issues` list (move it to `warnings`), or require emoji to be the dominant visual signal (e.g. >N distinct glyphs AND no _STYLE_RE hits) before it counts as an issue.",
+  "effort": "small"
+ }
+]

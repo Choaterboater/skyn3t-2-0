@@ -161,6 +161,97 @@ def test_detect_reward_hacking_allows_generated_pending_acceptance_contract(tmp_
     assert result["flags"] == []
 
 
+def test_detect_reward_hacking_allows_conditional_skipif_guards(tmp_path):
+    # A platform/optional-dep skipif guard is legitimate engineering, not a
+    # gamed test: `@pytest.mark.skipif(...)` must not string-match the
+    # unconditional `@pytest.mark.skip` heuristic.
+    root = _good_project(tmp_path)
+    (root / "test_app.py").write_text(
+        "import sys\n"
+        "import pytest\n\n"
+        "@pytest.mark.skipif(sys.platform == 'win32', reason='posix-only')\n"
+        "def test_posix_behavior():\n"
+        "    assert 1 + 1 == 2\n\n"
+        "def test_always():\n"
+        "    assert 2 + 2 == 4\n",
+        encoding="utf-8",
+    )
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+    assert not any("skipped/xfailed" in flag for flag in result["flags"])
+    assert not result["suspicious"]
+
+
+def test_detect_reward_hacking_ignores_xfail_in_comments(tmp_path):
+    # Bare "xfail" in prose/comments is not disabled coverage; only the
+    # decorator form counts.
+    root = _good_project(tmp_path)
+    (root / "test_app.py").write_text(
+        "# TODO: consider xfail for the flaky upstream service\n"
+        "def test_service():\n"
+        "    assert callable(len)\n",
+        encoding="utf-8",
+    )
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+    assert not result["suspicious"]
+
+
+def test_detect_reward_hacking_allows_conditional_runtime_skip(tmp_path):
+    # An indented, condition-guarded pytest.skip() inside a test body is a
+    # runtime availability guard, not an unconditional module-level disable.
+    root = _good_project(tmp_path)
+    (root / "test_app.py").write_text(
+        "import shutil\n"
+        "import pytest\n\n"
+        "def test_cli_available():\n"
+        "    if not shutil.which('docker'):\n"
+        "        pytest.skip('docker unavailable')\n"
+        "    assert shutil.which('docker')\n",
+        encoding="utf-8",
+    )
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+    assert not result["suspicious"]
+
+
+def test_detect_reward_hacking_flags_tautological_skipif(tmp_path):
+    # skipif(True, ...) is an unconditional disable wearing a guard's clothes —
+    # the loophole the skipif relaxation would otherwise open.
+    root = _good_project(tmp_path)
+    (root / "test_app.py").write_text(
+        "import pytest\n\n"
+        "@pytest.mark.skipif(True, reason='enable later')\n"
+        "def test_acceptance_behavior():\n"
+        "    assert 1 == 2\n",
+        encoding="utf-8",
+    )
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+    assert result["suspicious"]
+    assert any("skipped/xfailed" in flag for flag in result["flags"])
+
+
+def test_detect_reward_hacking_still_flags_unconditional_disables(tmp_path):
+    # Decorator xfail and unconditional module-level pytest.skip() remain
+    # flagged after the skipif/comment relaxation.
+    root = _good_project(tmp_path)
+    (root / "test_xfail.py").write_text(
+        "import pytest\n\n"
+        "@pytest.mark.xfail(reason='known broken')\n"
+        "def test_x():\n"
+        "    assert 1 == 2\n",
+        encoding="utf-8",
+    )
+    (root / "test_module_skip.py").write_text(
+        "import pytest\n\n"
+        "pytest.skip('skip whole module', allow_module_level=True)\n\n"
+        "def test_y():\n"
+        "    assert 1 == 2\n",
+        encoding="utf-8",
+    )
+    result = detect_reward_hacking(str(root), {"tests_passed": 1})
+    flagged = [flag for flag in result["flags"] if "skipped/xfailed" in flag]
+    assert any("test_xfail.py" in flag for flag in flagged)
+    assert any("test_module_skip.py" in flag for flag in flagged)
+
+
 def test_detect_reward_hacking_clean(tmp_path):
     root = _good_project(tmp_path)
     (root / "test_main.js").write_text("test('add', () => { expect(add(1,2)).toBe(3); });\n")
@@ -534,3 +625,20 @@ def test_modules_import_without_side_effects():
     import skyn3t.agents.critic  # noqa: F401
     import skyn3t.agents.reviewer  # noqa: F401
     assert True
+
+def test_test_author_accepts_native_ios_app_entrypoint(tmp_path):
+    root = tmp_path / "ios-app"
+    app = root / "App" / "CellarCompanionApp.swift"
+    app.parent.mkdir(parents=True)
+    app.write_text("import SwiftUI\n@main struct Demo: App { var body: some Scene { WindowGroup {} } }\n")
+
+    generated = render_test_file(
+        ["project produces a native iOS entrypoint"],
+        "A native SwiftUI iPhone app",
+        "ios-app",
+    )
+    namespace = {"__file__": str(root / "tests" / "test_acceptance_ios.py")}
+    exec(compile(generated, namespace["__file__"], "exec"), namespace)
+
+    namespace["test_project_has_source_content"]()
+    namespace["test_project_has_entrypoint"]()

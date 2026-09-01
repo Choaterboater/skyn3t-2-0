@@ -628,10 +628,12 @@ def generate_offline_web_assets(project_dir: str | Path, brief: str, *, stack: s
 def apply_web_asset_foundry(project_dir: str | Path, foundry: dict[str, Any]) -> dict[str, Any]:
     """Wire generated web assets into plain HTML entrypoints.
 
-    Codegen receives an instruction to use the assets, but models can ignore it.
+    Codegen receives an instruction to use the assets, but models can ignore the
+    mechanical <head> wiring.
     This deterministic pass is deliberately narrow: it only edits existing HTML
-    files, adds favicon/Open Graph metadata to <head>, and injects a visible hero
-    image after <body> when the page has no reference to the generated hero.
+    files and adds favicon/Open Graph metadata to <head>. The hero image is NOT
+    injected here: the page design decides where a large image belongs — a
+    pasted-on banner made every build look the same.
     """
     if not isinstance(foundry, dict) or foundry.get("type") != "web":
         return {"changed": False, "reason": "not_web_foundry", "files": []}
@@ -656,15 +658,8 @@ def apply_web_asset_foundry(project_dir: str | Path, foundry: dict[str, Any]) ->
         if p.is_file():
             candidates.append(p)
     changed_files: list[str] = []
-    hero_applied = favicon_applied = og_applied = False
+    favicon_applied = og_applied = False
 
-    style = (
-        '<style id="skyn3t-web-assets">'
-        ".skyn3t-asset-hero{margin:0;overflow:hidden;background:#111827}"
-        ".skyn3t-asset-hero img{display:block;width:100%;height:min(34vh,420px);"
-        "object-fit:cover}"
-        "</style>"
-    )
     for html_path in candidates:
         try:
             html = html_path.read_text(encoding="utf-8")
@@ -689,21 +684,6 @@ def apply_web_asset_foundry(project_dir: str | Path, foundry: dict[str, Any]) ->
                 flags=re.I,
             )
             og_applied = True
-        if hero and hero not in html and re.search(r"<body(?:\\s[^>]*)?>", html, flags=re.I):
-            if "skyn3t-web-assets" not in html and re.search(r"</head\s*>", html, flags=re.I):
-                html = re.sub(r"</head\s*>", f"  {style}\n</head>", html, count=1, flags=re.I)
-            hero_markup = (
-                f'\n<section class="skyn3t-asset-hero" aria-label="Generated visual">'
-                f'<img src="{hero}" alt="" loading="eager"></section>'
-            )
-            html = re.sub(
-                r"(<body(?:\s[^>]*)?>)",
-                r"\1" + hero_markup,
-                html,
-                count=1,
-                flags=re.I,
-            )
-            hero_applied = True
         if html != original:
             try:
                 html_path.write_text(html, encoding="utf-8")
@@ -714,7 +694,6 @@ def apply_web_asset_foundry(project_dir: str | Path, foundry: dict[str, Any]) ->
     return {
         "changed": bool(changed_files),
         "files": changed_files,
-        "hero_applied": hero_applied,
         "favicon_applied": favicon_applied,
         "og_applied": og_applied,
     }

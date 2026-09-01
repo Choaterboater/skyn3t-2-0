@@ -132,6 +132,33 @@ def test_sandbox_runs_offline():
     assert isinstance(runner.docker_available(), bool)
 
 
+def test_auto_sandbox_falls_back_when_docker_cannot_mount_project(monkeypatch, tmp_path):
+    from skyn3t.config.settings import Settings
+    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
+
+    runner = SandboxRunner(settings=Settings(execution_backend="auto"))
+    calls = []
+
+    async def docker(*_args, **_kwargs):
+        return SandboxResult(
+            125, "", "docker: Error response from daemon: CreateFile C:\\tmp: Access is denied.",
+            "docker", 1,
+        )
+
+    async def local(*_args, **kwargs):
+        calls.append(kwargs.get("fallback_reason"))
+        return SandboxResult(0, "ok", "", "subprocess", 1)
+
+    monkeypatch.setattr(runner, "_choose_backend_async", lambda: asyncio.sleep(0, result="docker"))
+    monkeypatch.setattr(runner, "_run_docker", docker)
+    monkeypatch.setattr(runner, "_run_subprocess", local)
+
+    result = asyncio.run(runner.run([sys.executable, "-c", "print('ok')"], cwd=tmp_path))
+
+    assert result.backend == "subprocess"
+    assert calls == ["Docker cannot mount this project directory"]
+
+
 def test_sandbox_subprocess_fallback_warns():
     from skyn3t.security.sandbox import SandboxRunner
 
@@ -144,6 +171,34 @@ def test_sandbox_subprocess_fallback_warns():
         )
     assert "hi" in result.stdout
     assert result.warning is not None
+
+
+def test_sandbox_fallback_warns_on_every_exec_but_logs_the_text_once():
+    """Compacting the log must not make a host exec silent.
+
+    On a permanently Docker-less host the full-text log line fired for every
+    proof command — a third of a real build log — burying the lines an operator
+    actually needs. Only the repeated LOG text is suppressed: the RuntimeWarning
+    still fires per exec, every exec still emits a log record, and every result
+    still carries the full warning.
+    """
+    import warnings
+
+    from skyn3t.security.sandbox import SandboxRunner
+
+    runner = SandboxRunner()
+    if runner.docker_available():
+        pytest.skip("docker present; fallback path not exercised")
+
+    raised = 0
+    for _ in range(3):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            res = asyncio.run(runner.run([sys.executable, "-c", "print(1)"], timeout=10))
+            raised += sum(1 for w in caught if issubclass(w.category, RuntimeWarning))
+        assert res.warning, "each result must still carry the full warning text"
+
+    assert raised == 3, "every host exec must still warn"
 
 
 # ---- observability: metrics ---------------------------------------------

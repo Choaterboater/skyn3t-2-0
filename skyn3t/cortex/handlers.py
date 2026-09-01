@@ -15,6 +15,7 @@ automatically.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from time import time
@@ -128,11 +129,25 @@ class HandlerRegistry:
                 observed[k] = v
             else:
                 unobserved.append(k)
+        # Make the change survive a restart: persist the allow-listed keys to
+        # settings_overrides.json (Settings reads it back on construction).
+        # ``durable`` is honest — True only when EVERY observed key persists;
+        # a non-durable APPLIED record must not dedupe-block a re-proposal
+        # forever (the enacted effect evaporates with the process).
+        durable = False
+        if observed and self.data_dir is not None:
+            from skyn3t.cortex.tuning_store import PERSISTABLE_TUNING, persist_overrides
+
+            to_persist = {k: v for k, v in observed.items() if k in PERSISTABLE_TUNING}
+            if to_persist:
+                persist_overrides(self.data_dir, to_persist)  # never raises; merge-writes
+            durable = set(observed) <= PERSISTABLE_TUNING
         result: dict[str, Any] = {
             "applied": True,
             "changed": applied,
             "previous": before,
             "observed": observed,
+            "durable": durable,
         }
         if unobserved:
             result["unobserved"] = unobserved
@@ -237,14 +252,23 @@ class HandlerRegistry:
         return self._stage(proposal, "ingest")
 
     async def _ingest_github(self, repo_or_url: str, proposal: Proposal) -> dict[str, Any] | None:
+        """Ingest a repository README plus bounded, pinned Markdown guidance.
+
+        README remains the repo-level RAG entry. Extra documents are optional:
+        each has its own immutable source receipt, RAG metadata, and quarantined
+        skill candidate, so a bad document cannot silently broaden a promoted
+        repository skill.
+        """
+        from urllib.parse import quote
+
         url = repo_or_url if "github.com/" in repo_or_url else f"https://github.com/{repo_or_url}"
         try:
-            from skyn3t.agents.github_fetch import fetch_github_repo_text
+            from skyn3t.agents.github_fetch import fetch_github_repo_evidence
 
-            text = await fetch_github_repo_text(url)
+            evidence = await fetch_github_repo_evidence(url)
         except Exception:  # noqa: BLE001
-            text = None
-        if not text:
+            evidence = None
+        if evidence is None:
             staged = self._stage(proposal, "ingest")  # offline -> keep intent, retryable
             staged["ingested"] = 0
             staged["degraded"] = True
@@ -252,72 +276,426 @@ class HandlerRegistry:
         rag = self.rag
         if rag is None:
             return self._stage(proposal, "ingest")
+
+        def _metadata(source_path: str, source_kind: str) -> dict[str, object]:
+            result: dict[str, object] = {
+                "external_unreviewed": True,
+                "source_kind": source_kind,
+                "source_url": evidence.source_url,
+                "source_path": source_path,
+            }
+            if evidence.pinned_revision:
+                result["pinned_revision"] = evidence.pinned_revision
+            if evidence.license:
+                result["license"] = evidence.license
+            return result
+
+        def _rag_ingest(text: str, source: str, metadata: dict[str, object]) -> Any:
+            try:
+                return rag.ingest_text(text, source=source, kind="github", metadata=metadata)
+            except TypeError as exc:
+                # Preserve pluggable legacy RAG engines. The source remains a
+                # GitHub document and Runner treats legacy GitHub sources as
+                # unreviewed, so this cannot make remote content injectable.
+                if "metadata" not in str(exc):
+                    raise
+                return rag.ingest_text(text, source=source, kind="github")
+
         try:
-            n = rag.ingest_text(text, source=url, kind="github")
-        except Exception as exc:  # noqa: BLE001 - transient RAG error -> degraded, retryable
+            ingested = _rag_ingest(
+                evidence.text,
+                url,
+                _metadata(evidence.source_path, "github_readme"),
+            )
+        except Exception as exc:  # noqa: BLE001 - retryable primary RAG failure
             staged = self._stage(proposal, "ingest")
             staged["ingested"] = 0
             staged["degraded"] = True
             staged["error"] = f"rag ingest failed: {exc}"
             return staged
-        # Also distill a reusable, advisory skill so the approval surfaces on the
-        # Skills page (best-effort; never affects the ingest result).
-        skill_slug = self._distill_repo_skill(url, text, proposal.payload or {})
-        result = {"applied": True, "ingested": n, "source": url}
-        if skill_slug:
-            result["skill"] = skill_slug
-        return result
 
+        # ``markdown_files`` is additive for backward-compatible custom
+        # evidence providers. If it is absent/empty, preserve the historical
+        # README-only distillation behavior exactly.
+        documents = list(getattr(evidence, "markdown_files", ()) or ())
+        if not documents:
+            documents = [(evidence.source_path, evidence.text)]
+        else:
+            documents = [(item.source_path, item.text) for item in documents]
+
+        extra_ingest_errors: list[str] = []
+        for source_path, document in documents:
+            if source_path.casefold() == evidence.source_path.casefold():
+                continue
+            if not evidence.pinned_revision:
+                # Fetching only supplies extra files with a full pin; retain
+                # this check for custom providers too.
+                continue
+            document_url = (
+                f"{evidence.source_url}/blob/{evidence.pinned_revision}/"
+                f"{quote(source_path, safe='/')}"
+            )
+            try:
+                added = _rag_ingest(document, document_url, _metadata(source_path, "github_markdown"))
+                if isinstance(ingested, int) and isinstance(added, int):
+                    ingested += added
+            except Exception as exc:  # noqa: BLE001 - a single doc is optional
+                extra_ingest_errors.append(f"{source_path}: {exc}")
+
+        skill_slugs: list[str] = []
+        skill_errors: list[str] = []
+        if self.skills is not None:
+            from skyn3t.intelligence.skill_library import SkillProvenance
+
+            for source_path, document in documents:
+                source_kind = (
+                    "github-readme"
+                    if source_path.casefold() == evidence.source_path.casefold()
+                    else "github-markdown"
+                )
+                provenance = SkillProvenance(
+                    source_url=evidence.source_url,
+                    pinned_revision=evidence.pinned_revision,
+                    license=evidence.license,
+                    source_path=source_path,
+                    metadata={"skyn3t-source-kind": source_kind},
+                ).with_content_hash(document)
+                skill_slug, skill_error = self._distill_repo_skill(
+                    url,
+                    document,
+                    proposal.payload or {},
+                    provenance=provenance,
+                )
+                if skill_slug:
+                    skill_slugs.append(skill_slug)
+                elif skill_error:
+                    skill_errors.append(f"{source_path}: {skill_error}")
+
+        result: dict[str, Any] = {"applied": True, "ingested": ingested, "source": url}
+        if len(skill_slugs) == 1:
+            result["skill"] = skill_slugs[0]
+        elif skill_slugs:
+            result["skills"] = skill_slugs
+            result["skill_count"] = len(skill_slugs)
+        if skill_errors:
+            if not skill_slugs:
+                result["skill_error"] = skill_errors[0]
+            else:
+                result["skill_errors"] = skill_errors
+        if extra_ingest_errors:
+            result["markdown_ingest_errors"] = extra_ingest_errors
+        return result
     # ---- skill distillation from an ingested repo ------------------------
     _LANG_STACK = {
-        "python": "python", "javascript": "react", "typescript": "react",
-        "tsx": "react", "jsx": "react", "go": "go", "rust": "rust",
+        "python": "python",
+        "javascript": "react",
+        "typescript": "react",
+        "tsx": "react",
+        "jsx": "react",
+        "go": "go",
+        "rust": "rust",
     }
 
-    def _distill_repo_skill(self, url: str, text: str, payload: dict[str, Any]) -> str | None:
-        """Turn an ingested repo into an advisory Skill. Returns the slug or None."""
-        if self.skills is None:
-            return None
-        try:
-            import re as _re
+    # A distilled skill must carry enough real, concrete content to be worth
+    # injecting later. Below this many body chars we refuse to write a file at
+    # all (the ingest is reported as a failed distill, not an applied skill) —
+    # anything thinner is the "consider this repo's structure" placeholder
+    # junk that produced hundreds of hollow gh-*.md husks.
+    _DISTILL_MIN_BODY_CHARS = 400
+    _DISTILL_MAX_BODY_CHARS = 4000
+    _DISTILL_MAX_COMMANDS = 8
+    _DISTILL_MAX_SECTIONS = 6
+    _DISTILL_MAX_EXCERPT_CHARS = 900
+    _DISTILL_MAX_TOPIC_TAGS = 4
 
-            m = _re.search(r"github\.com/([^/\s]+)/([^/\s#?]+)", url)
+    _CMD_LINE_RE = re.compile(
+        r"^\$?\s*(npm|npx|pnpm|yarn|bun|deno|node|pip|pip3|pipx|python|python3|"
+        r"uv|poetry|pdm|hatch|pytest|tox|nox|cargo|go|make|cmake|docker|"
+        r"docker-compose|git|curl|brew|apt|apt-get|mvn|gradle|composer|bundle|"
+        r"rails|rake|dotnet|swift|xcodebuild|flutter)\b"
+    )
+    _HEADING_RE = re.compile(r"^#{1,3}\s+(.+?)\s*#*\s*$")
+    _HTML_TAG_RE = re.compile(r"<[^>]+>")
+    _HTML_BLOCK_RE = re.compile(
+        r"^\s*</?(div|picture|source|img|p|a|br|table|thead|tbody|tr|td|th|"
+        r"span|details|summary|h[1-6]|ul|ol|li|blockquote|kbd|sup|sub|video|"
+        r"figure|figcaption|center|font|!--)\b",
+        re.IGNORECASE,
+    )
+    _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+    # Rows that carry zero prose: only links/badges/separators (e.g. language
+    # switchers "English | 中文", badge bars, "[Docs](...) [Demo](...)").
+    _LINK_ONLY_RE = re.compile(r"^(?:\[[^\]]*\]\([^)]*\)|[|·•*_\s\-–—]|<[^>]*>)+$")
+    _BOILERPLATE_HEADING_RE = re.compile(
+        r"licen[cs]e|contribut|sponsor|acknowledg|credit|changelog|conduct|"
+        r"disclaimer|translat|badge|star|donat|backer|author|thank|faq|"
+        r"support|community|contact|security|roadmap|related|see also",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _repo_meta_from_text(text: str) -> dict[str, str]:
+        """Parse the header lines fetch_github_repo_text prepends to the README
+        (Description / Language · Stars / Topics) as a fallback for payload."""
+        meta: dict[str, str] = {}
+        m = re.search(r"^Description:\s*(.+)$", text, re.MULTILINE)
+        if m:
+            meta["description"] = m.group(1).strip()
+        m = re.search(r"^Language:\s*([^·\n]+?)\s*·\s*Stars:\s*(\d+)", text, re.MULTILINE)
+        if m:
+            meta["language"] = m.group(1).strip()
+            meta["stars"] = m.group(2)
+        m = re.search(r"^Topics:\s*(.+)$", text, re.MULTILINE)
+        if m:
+            meta["topics"] = m.group(1).strip()
+        return meta
+
+    @classmethod
+    def _readme_clean_lines(cls, readme: str) -> list[str]:
+        """Keep meaningful README lines: drop raw HTML blocks, badge/image
+        rows, link-only rows, and comments; strip inline tags. Deterministic,
+        no LLM — fence markers survive so command blocks stay extractable."""
+        out: list[str] = []
+        in_fence = False
+        for raw in readme.splitlines():
+            s = raw.strip()
+            if not s:
+                continue
+            if s.startswith("```"):
+                in_fence = not in_fence
+                out.append(s)
+                continue
+            if in_fence:
+                out.append(s)
+                continue
+            if cls._HTML_BLOCK_RE.match(s):
+                continue
+            no_img = cls._MD_IMAGE_RE.sub("", s)
+            if not no_img.strip() or cls._LINK_ONLY_RE.match(no_img.strip()):
+                continue
+            cleaned = cls._HTML_TAG_RE.sub("", no_img)
+            cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" |·•").strip()
+            if cleaned:
+                out.append(cleaned)
+        return out
+
+    @classmethod
+    def _extract_commands(cls, lines: list[str]) -> list[str]:
+        """Build/run commands from fenced code blocks (``$ `` prompts stripped)."""
+        cmds: list[str] = []
+        in_fence = False
+        for line in lines:
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence:
+                continue
+            c = line.strip()
+            c = c[2:].strip() if c.startswith("$ ") else c
+            if cls._CMD_LINE_RE.match(c) and 3 <= len(c) <= 160 and c not in cmds:
+                cmds.append(c)
+            if len(cmds) >= cls._DISTILL_MAX_COMMANDS:
+                break
+        return cmds
+
+    @classmethod
+    def _extract_sections(cls, lines: list[str]) -> list[tuple[str, str]]:
+        """First N meaningful sections (heading + first prose lines), skipping
+        boilerplate like License/Contributing/Sponsors and code fences."""
+        sections: list[tuple[str, str]] = []
+        heading: str | None = None
+        buf: list[str] = []
+        in_fence = False
+
+        def _flush() -> None:
+            if heading and buf:
+                sections.append((heading, " ".join(buf)[:280].strip()))
+
+        for line in lines:
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            m = cls._HEADING_RE.match(line)
+            if m:
+                _flush()
+                heading = m.group(1).strip()
+                buf = []
+                continue
+            if heading is not None and len(buf) < 3:
+                buf.append(line)
+        _flush()
+        out: list[tuple[str, str]] = []
+        for head, summary in sections:
+            if cls._BOILERPLATE_HEADING_RE.search(head) or len(summary) < 24:
+                continue
+            out.append((head, summary))
+            if len(out) >= cls._DISTILL_MAX_SECTIONS:
+                break
+        return out
+
+    @classmethod
+    def _distill_body(
+        cls,
+        full: str,
+        text: str,
+        *,
+        desc: str,
+        lang: str,
+        stars: object,
+        topics: list[str],
+    ) -> str:
+        """Compose the skill body: concrete commands + layout/convention
+        sections extracted from the README, then a short cleaned excerpt."""
+        # README was the original repository-level source. Per-file ingestion
+        # uses the same deterministic distiller with an independently labeled
+        # Markdown document, never pretending a guide is repository metadata.
+        marker = "README:" if "README:" in text else "Markdown:"
+        document = text.split(marker, 1)[1].strip() if marker in text else ""
+        lines = cls._readme_clean_lines(document)
+        commands = cls._extract_commands(lines)
+        sections = cls._extract_sections(lines)
+        excerpt_lines: list[str] = []
+        in_fence = False
+        for line in lines:
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence or cls._HEADING_RE.match(line):
+                continue
+            excerpt_lines.append(line)
+            if len(excerpt_lines) >= 8:
+                break
+        excerpt = "\n".join(excerpt_lines)[: cls._DISTILL_MAX_EXCERPT_CHARS].strip()
+
+        parts = [
+            f"Reusable patterns distilled from **{full}**"
+            + (f" ({stars}★)" if stars else "")
+            + (f" — {desc.rstrip('.')}" if desc else "")
+            + "."
+        ]
+        if lang:
+            parts.append(f"Primary language/stack: {lang}.")
+        if topics:
+            parts.append("Topics: " + ", ".join(topics[:8]) + ".")
+        if commands:
+            parts.append(
+                "Build/run commands (from the repo's own docs):\n"
+                + "\n".join(f"- `{c}`" for c in commands)
+            )
+        if sections:
+            parts.append(
+                "Layout & conventions worth copying:\n"
+                + "\n".join(f"- **{h}**: {s}" for h, s in sections)
+            )
+        if excerpt:
+            parts.append(f"Reference notes:\n{excerpt}")
+        body = "\n\n".join(parts).strip()
+        if len(body) > cls._DISTILL_MAX_BODY_CHARS:
+            body = body[: cls._DISTILL_MAX_BODY_CHARS].rstrip() + "\n…"
+        return body
+
+    def _distill_repo_skill(
+        self,
+        url: str,
+        text: str,
+        payload: dict[str, Any],
+        *,
+        provenance: Any | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Turn an ingested repo into an advisory Skill.
+
+        Returns ``(slug, None)`` when a skill file was written, ``(None,
+        reason)`` when the distill was refused or failed — thin/empty content
+        must NOT produce a file (that is how hundreds of 0-byte / placeholder
+        gh-*.md husks accumulated), so the caller can report a failed distill
+        instead of an applied one. ``(None, None)`` when no library is wired.
+        """
+        if self.skills is None:
+            return None, None
+        try:
+            if not text or not text.strip():
+                return None, "empty repo text"
+            m = re.search(r"github\.com/([^/\s]+)/([^/\s#?]+)", url)
             owner, repo = (m.group(1), m.group(2)) if m else ("", url.rsplit("/", 1)[-1])
             full = f"{owner}/{repo}".strip("/") or repo
-            desc = str(payload.get("description") or "").strip()
-            lang = str(payload.get("language") or "").strip()
-            stars = payload.get("stars")
+            meta = self._repo_meta_from_text(text)
+            desc = str(payload.get("description") or meta.get("description") or "").strip()
+            lang = str(payload.get("language") or meta.get("language") or "").strip()
+            stars = payload.get("stars") or meta.get("stars") or ""
+            topics = [t.strip() for t in str(meta.get("topics") or "").split(",") if t.strip()]
             stack = self._LANG_STACK.get(lang.lower(), "generic")
-            # A short README excerpt as reference material.
-            excerpt = ""
-            if "README:" in text:
-                excerpt = text.split("README:", 1)[1].strip()[:600]
-            body = (
-                f"Reference patterns from **{full}**"
-                + (f" ({stars}★)" if stars else "")
-                + (f" — {desc}" if desc else "")
-                + ".\n\nWhen building similar "
-                + (f"{lang} " if lang else "")
-                + "projects, consider this repo's structure and approach."
-                + (f"\n\nREADME excerpt:\n{excerpt}" if excerpt else "")
-            )
+            body = self._distill_body(full, text, desc=desc, lang=lang, stars=stars, topics=topics)
+            if len(body) < self._DISTILL_MIN_BODY_CHARS:
+                return None, (
+                    f"distilled body too thin ({len(body)} chars < {self._DISTILL_MIN_BODY_CHARS})"
+                )
             from skyn3t.agents._common import slugify
 
+            source_path_hint = str(getattr(provenance, "source_path", "") or "README").replace("\\", "/")
+            source_name = source_path_hint.rsplit("/", 1)[-1].lower()
             slug = slugify(f"gh-{full}", "gh-repo")
-            tags = ["github-distilled"]
+            # README keeps its historical stable slug. Every additional
+            # Markdown path receives a readable stem and deterministic path
+            # suffix, so docs/guide.md and docs-guide.md cannot overwrite one
+            # another or the repository-level candidate.
+            if source_name not in {"readme", "readme.md"}:
+                import hashlib
+
+                path_stem = source_name.removesuffix(".md") or "doc"
+                slug = (
+                    f"{slugify(f'gh-{full}-{path_stem}', 'gh-doc')}-"
+                    f"{hashlib.sha256(source_path_hint.encode('utf-8')).hexdigest()[:10]}"
+                )
+            tags = ["github-distilled", "external-candidate", "hygiene:quarantine"]
             if lang:
                 tags.append(lang.lower())
+            if stack != "generic" and stack.lower() not in {t.lower() for t in tags}:
+                tags.append(stack)
+            for topic in topics[: self._DISTILL_MAX_TOPIC_TAGS]:
+                t = topic.lower()
+                if re.fullmatch(r"[a-z0-9][a-z0-9.+-]{0,39}", t) and t not in tags:
+                    tags.append(t)
+
+            # Never trust mutable proposal text to identify its own provenance.
+            # The handler supplies facts from GitHub's API when available; direct
+            # callers still get a source URL, README endpoint path, and a hash of
+            # the retained evidence, but no invented revision or license.
+            from skyn3t.intelligence.skill_library import SkillProvenance, content_sha256
+
+            base = provenance if isinstance(provenance, SkillProvenance) else SkillProvenance()
+            metadata = dict(base.metadata)
+            metadata.setdefault("skyn3t-source-kind", "github-readme")
+            skill_provenance = SkillProvenance(
+                source_url=base.source_url or url,
+                pinned_revision=base.pinned_revision,
+                license=base.license,
+                content_hash=content_sha256(text),
+                source_path=base.source_path or "README",
+                tools=base.tools,
+                metadata=metadata,
+                compatibility=base.compatibility,
+            )
             self.skills.add(
-                title=f"Patterns: {full}",
+                title=(
+                    f"Patterns: {full}"
+                    if source_name in {"readme", "readme.md"}
+                    else f"Patterns: {full} — {source_path_hint}"
+                ),
                 body=body,
                 stack=stack,
                 tags=tags,
                 source="github-distilled",
                 slug=slug,
+                description=(
+                    desc or f"Concrete build/run commands and layout patterns distilled from {full}"
+                ),
+                provenance=skill_provenance,
             )
-            return slug
-        except Exception:  # noqa: BLE001 - distillation is best-effort
-            return None
+            return slug, None
+        except Exception as exc:  # noqa: BLE001 - distillation is best-effort
+            return None, f"distillation failed: {exc}"
 
     async def _stage_code_patch(self, proposal: Proposal) -> dict[str, Any]:
         return self._stage(proposal, "code_patch")

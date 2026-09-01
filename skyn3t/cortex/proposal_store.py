@@ -129,6 +129,33 @@ class ProposalStore:
         self._mirror(proposal)
         return proposal, True
 
+    def expire_stale(self, *, max_age_seconds: float = 14 * 86400.0,
+                     now: float | None = None) -> int:
+        """Auto-reject OPEN proposals (PENDING/GATED) older than ``max_age``.
+
+        Dedupe blocks a topic while its proposal is open, so an ignored
+        backlog freezes discovery permanently — the store that sat on 65
+        gated ingest proposals for weeks while every new scout submission
+        was auto-rejected as duplicate. Expiry frees those topics for
+        re-scouting. APPROVED/APPLIED stay blocking (a decision was made);
+        REJECTED/FAILED are untouched. Returns the number expired."""
+        now = time() if now is None else now
+        expired = 0
+        for p in self._items.values():
+            if p.status not in (ProposalStatus.PENDING, ProposalStatus.GATED):
+                continue
+            try:
+                age = now - float(p.created_at or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if age >= max_age_seconds:
+                p.status = ProposalStatus.REJECTED
+                p.decision_reason = "stale (auto-expired)"
+                p.decided_at = now
+                self._mirror(p)
+                expired += 1
+        return expired
+
     def _is_duplicate(self, proposal: Proposal) -> bool:
         # Block while a same-key proposal is still open (PENDING/GATED/APPROVED)
         # AND once it has been APPLIED: re-proposing an already-enacted change is
@@ -144,8 +171,18 @@ class ProposalStore:
             ProposalStatus.APPLIED,
         }
         for existing in self._items.values():
-            if existing.dedupe_key == proposal.dedupe_key and existing.status in blocking:
-                return True
+            if existing.dedupe_key != proposal.dedupe_key or existing.status not in blocking:
+                continue
+            if (
+                existing.status is ProposalStatus.APPLIED
+                and (existing.result or {}).get("durable") is False
+            ):
+                # Effect could not be persisted (autonomy flags): it evaporates on
+                # restart, so an identical re-proposal is a genuine re-request.
+                # Strict ``is False``: legacy records without the marker (None)
+                # keep blocking exactly as before.
+                continue
+            return True
         return False
 
     def get(self, proposal_id: str) -> Proposal | None:

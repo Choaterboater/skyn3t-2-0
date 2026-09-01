@@ -1,7 +1,8 @@
 import React, { Suspense, lazy } from "react";
-import { Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, Navigate, useLocation } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn, useEventStream } from "./api.js";
+import PendingApprovalsBanner from "./components/PendingApprovalsBanner.jsx";
 
 // Lazy-load each route so its code (and heavy deps) ships in its own chunk and
 // loads on demand. In particular the Brain page pulls in three.js / r3f (~800KB)
@@ -124,7 +125,7 @@ export default function App() {
               to={item.to}
               title={item.label}
               className={({ isActive }) =>
-                `nav-link relative justify-center lg:justify-start ${
+                `nav-link relative min-h-11 justify-center lg:justify-start ${
                   isActive ? "nav-link-active" : ""
                 }`
               }
@@ -163,6 +164,7 @@ export default function App() {
             column; still capped so prose pages don't sprawl on ultrawide. */}
         <div className="mx-auto max-w-screen-2xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
           <StaleCodeBanner />
+          <PendingApprovalsBanner stream={stream} />
           <ViewErrorBoundary key={location.pathname}>
             <Suspense
             fallback={

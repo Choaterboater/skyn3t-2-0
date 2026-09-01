@@ -14,6 +14,10 @@ persists paths, secrets, autonomy flags, or budget caps.
 from __future__ import annotations
 
 import json
+import sys
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +38,85 @@ PERSISTABLE_TUNING = frozenset(
         "run_generated_build",
     }
 )
+
+
+# Writers are cross-process (the serve/cortex process persists on approval while
+# a CLI build persists post-build against the same data_dir), so the lock must be
+# an OS advisory lock, not a threading primitive. Bounded so a wedged holder can
+# only stall a synchronous caller briefly.
+_LOCK_TIMEOUT_S = 2.0
+_LOCK_POLL_S = 0.02
+
+
+@contextmanager
+def overrides_file_lock(target: Path) -> Iterator[None]:
+    """Best-effort exclusive advisory lock on a ``<target>.lock`` sidecar.
+
+    Serializes the load->merge->write cycle of :func:`persist_overrides` (and
+    the prompt store's twin) across processes: ``atomic_write_text`` only
+    prevents torn files, not lost updates, so two unlocked writers that read
+    the same baseline drop each other's keys (last replace wins). Degrade-
+    don't-crash: any failure to create or acquire the lock yields WITHOUT it —
+    the caller's write is then merely as racy as before locking, never blocked
+    or broken.
+    """
+    handle = None
+    locked = False
+    try:
+        lock_path = target.with_name(f"{target.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "a+b")  # create-if-missing, never truncate
+        if handle.tell() == 0:
+            # msvcrt.locking needs an existing byte at the locked offset.
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + _LOCK_TIMEOUT_S
+        if sys.platform == "win32":
+            import msvcrt
+
+            while not locked:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_LOCK_POLL_S)
+        else:
+            import fcntl
+
+            while not locked:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_LOCK_POLL_S)
+    except Exception:  # noqa: BLE001 - locking must never add a failure mode
+        pass
+    try:
+        yield
+    finally:
+        if handle is not None:
+            try:
+                if locked:
+                    if sys.platform == "win32":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except Exception:  # noqa: BLE001 - the OS releases locks on close
+                pass
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def overrides_path(data_dir: Any) -> Path:
@@ -61,12 +144,17 @@ def persist_overrides(data_dir: Any, applied: dict[str, Any]) -> dict[str, Any]:
     """
     try:
         safe = {k: v for k, v in dict(applied or {}).items() if k in PERSISTABLE_TUNING}
-        current = load_overrides(data_dir)
         if not safe:
-            return current
-        current.update(safe)
+            return load_overrides(data_dir)
         p = overrides_path(data_dir)
-        atomic_write_text(p, json.dumps(current, indent=2))
+        # The load must happen INSIDE the lock: a concurrent writer that also
+        # read the pre-lock baseline would have its keys overwritten by this
+        # merge. Lock acquired only once a write is certain, so an empty
+        # persist stays a no-file no-op.
+        with overrides_file_lock(p):
+            current = load_overrides(data_dir)
+            current.update(safe)
+            atomic_write_text(p, json.dumps(current, indent=2))
         return current
     except Exception:  # noqa: BLE001
         return {}

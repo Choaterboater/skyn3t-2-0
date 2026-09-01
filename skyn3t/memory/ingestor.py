@@ -1,10 +1,18 @@
-"""ExperienceIngestor — auto-ingest task/build outcomes into the RAG store.
+"""ExperienceIngestor — auto-ingest build outcomes into the RAG store.
 
-Subscribes to ``TASK_COMPLETED`` and ``BUILD_COMPLETED`` events and turns each
-outcome into a knowledge document that future agents can retrieve. The RAG
-engine is imported lazily and guarded: if it (or its heavy deps) is absent the
-ingestor falls back to an in-memory buffer so the system still records
-experience and never crashes (design rule #6).
+Subscribes to ``BUILD_COMPLETED`` events and turns each qualifying outcome into
+a knowledge document that future agents can retrieve. The RAG engine is
+imported lazily and guarded: if it (or its heavy deps) is absent the ingestor
+falls back to an in-memory buffer so the system still records experience and
+never crashes (design rule #6).
+
+``TASK_COMPLETED`` events are deliberately NOT ingested: the emitter carries no
+task type in its payload, so every successful agent task (one per pipeline
+stage) minted an identical "Task 'task' completed by <agent>, task_id=...,
+success=True" stub — pure metadata noise that outranked genuinely useful
+ingested-repo content in recall and was then injected into codegen prompts as
+"relevant patterns". Experience docs are also tagged ``experience`` in chunk
+metadata so recall callers can filter them out of pattern retrieval.
 
 Design rules: #2 close the learning edge (outcomes feed back into memory),
 #7 everything is an event (we only react to bus events), #6 degrade.
@@ -45,9 +53,6 @@ class ExperienceIngestor:
         if self._unsubs:
             return
         self._unsubs.append(
-            self.event_bus.subscribe(EventType.TASK_COMPLETED, self._on_task_completed)
-        )
-        self._unsubs.append(
             self.event_bus.subscribe(EventType.BUILD_COMPLETED, self._on_build_completed)
         )
 
@@ -73,13 +78,6 @@ class ExperienceIngestor:
         return self._rag
 
     # ---- event handlers --------------------------------------------------
-    async def _on_task_completed(self, event: Event) -> None:
-        payload = event.payload or {}
-        if not payload.get("success", True):
-            return
-        doc = self._task_doc(event, payload)
-        await self._ingest(doc)
-
     async def _on_build_completed(self, event: Event) -> None:
         payload = event.payload or {}
         # Never learn from a failed build, regardless of its numeric score — a
@@ -93,22 +91,6 @@ class ExperienceIngestor:
         await self._ingest(doc)
 
     # ---- document shaping ------------------------------------------------
-    def _task_doc(self, event: Event, payload: dict[str, Any]) -> dict[str, Any]:
-        ttype = payload.get("type", "task")
-        text = (
-            f"Task '{ttype}' completed by {event.source}.\n"
-            f"task_id={payload.get('task_id', '')}\n"
-            f"success={payload.get('success', True)}"
-        )
-        return {
-            "id": f"task::{payload.get('task_id', event.id)}",
-            "source": event.source,
-            "title": f"task:{ttype}",
-            "content": text,
-            "tags": {"kind": "task", "type": ttype, "correlation_id": event.correlation_id},
-            "ts": time.time(),
-        }
-
     def _build_doc(self, event: Event, payload: dict[str, Any]) -> dict[str, Any]:
         slug = payload.get("slug", "")
         text = (
@@ -149,7 +131,11 @@ class ExperienceIngestor:
         """Ingest the experience's text into the RAG engine.
 
         Experience docs carry their prose under ``content``; RagEngine ingests
-        raw text via ``ingest_text(text, source=...)``.
+        raw text via ``ingest_text(text, source=...)``. The doc's tags are
+        persisted as chunk metadata (with an ``experience`` marker) so recall
+        can tell experience stubs apart from real ingested content — without
+        this the tags dict was dead data and every recall hit looked like a
+        reusable pattern.
         """
         # Preferred: the real RagEngine ingests raw text (text, source=...).
         text_fn = getattr(engine, "ingest_text", None) or getattr(engine, "aingest_text", None)
@@ -158,7 +144,13 @@ class ExperienceIngestor:
             if not text:
                 return
             source = str(doc.get("source") or doc.get("id") or "experience")
-            res = text_fn(text, source=source)
+            metadata = {"experience": True, **(doc.get("tags") or {})}
+            try:
+                res = text_fn(text, source=source, metadata=metadata)
+            except TypeError:
+                # Duck-typed engines that only accept (text, source=...) — the
+                # experience tag is best-effort, the ingest is not.
+                res = text_fn(text, source=source)
             if hasattr(res, "__await__"):
                 await res
             return

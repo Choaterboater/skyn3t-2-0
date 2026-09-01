@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "suite_id": "golden-design-v1",
+  "name": "SkyN3t Golden Design Suite v1",
+  "description": "Five design-distinctiveness contracts: each brief demands a specific, non-default aesthetic so generic output (the AI-default indigo-gradient/Inter/glassmorphism look) is visible as a failure. Compare runs by score AND by the advisory AI-look warnings recorded in manifest.extra.web_polish.warnings. Run: skyn3t bench golden run --suite skyn3t/benchmarks/golden-design-v1.json. The brutalist and swiss cases floor intent at 60-70 (schema floor is 60): style-direction words ('grotesque', 'anti-corporate', 'tabular numerals', 'swiss') legitimately never appear as page copy or code on a CORRECT delivery. Verified across trend repeats: correct brutalist builds measure 66.7-70.8 (hard ceiling ~72 for this term set) while hollow stub placeholders measure under 50, so a 60 floor separates the two cleanly. Every other case keeps 80.",
+  "cases": [
+    {
+      "id": "brutalist-zine-static",
+      "brief": "Build a brutalist web zine homepage called GRIDLOCK: stark black-and-white palette, oversized grotesque headlines, hard 2px borders, zero rounded corners, visible grid lines, and deliberately anti-corporate attitude. Include a masthead, three article teasers with real headlines, and a manifesto section.",
+      "stack": "static",
+      "tags": ["web", "static", "design", "brutalist", "editorial"],
+      "expectations": {
+        "expected_stack": "static",
+        "min_score": 60,
+        "min_intent_score": 60,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["index.html", "styles.css", "main.js"]
+      }
+    },
+    {
+      "id": "bakery-editorial-astro",
+      "brief": "Build a warm editorial website for a small artisan bakery: cream and terracotta palette, serif display typography, generous whitespace, a story section about the founder, a daily menu with real items and prices, and market-day hours.",
+      "stack": "astro",
+      "tags": ["web", "content", "design", "editorial", "hospitality"],
+      "expectations": {
+        "expected_stack": "astro",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "astro.config.mjs", "src/pages/index.astro"]
+      }
+    },
+    {
+      "id": "swiss-dashboard-react",
+      "brief": "Build a minimal Swiss international-style analytics dashboard: strict grid discipline, black type on white with a single red accent, tabular numerals, no decorative imagery, and charts rendered as precise geometric SVG. Include four metric panels and one time-series chart with real sample data.",
+      "stack": "react",
+      "tags": ["web", "frontend", "design", "swiss", "dashboard"],
+      "expectations": {
+        "expected_stack": "react",
+        "min_score": 60,
+        "min_intent_score": 70,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "src/App.jsx", "src/styles.css"]
+      }
+    },
+    {
+      "id": "artdeco-hotel-nextjs",
+      "brief": "Build an art-deco boutique hotel site: deep emerald and brass palette, geometric deco borders, elegant letterspaced serif headings, a room showcase with nightly rates, and a reservation enquiry form.",
+      "stack": "nextjs",
+      "tags": ["web", "fullstack", "design", "artdeco", "hospitality"],
+      "expectations": {
+        "expected_stack": "nextjs",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["package.json", "app/layout.jsx", "app/page.jsx"]
+      }
+    },
+    {
+      "id": "y2k-portfolio-static",
+      "brief": "Build a playful Y2K-era personal portfolio for a digital artist: chrome-look headings, pastel sticker badges, a scrolling marquee ticker, a guestbook section, and a gallery grid of six works with titles.",
+      "stack": "static",
+      "tags": ["web", "static", "design", "y2k", "portfolio"],
+      "expectations": {
+        "expected_stack": "static",
+        "min_score": 60,
+        "min_intent_score": 80,
+        "required_gates": ["proof", "security_check", "seo"],
+        "required_artifacts": ["index.html", "styles.css", "main.js"]
+      }
+    }
+  ]
+}

@@ -108,11 +108,11 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
     """Open a source leaf without following any project-relative alias."""
     file_flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
-        file_flags |= os.O_NOFOLLOW
+        file_flags |= getattr(os, "O_NOFOLLOW", 0)
     if hasattr(os, "O_NONBLOCK"):
         file_flags |= os.O_NONBLOCK
     if hasattr(os, "O_CLOEXEC"):
-        file_flags |= os.O_CLOEXEC
+        file_flags |= getattr(os, "O_CLOEXEC", 0)
     if (
         hasattr(os, "O_DIRECTORY")
         and os.open in getattr(os, "supports_dir_fd", set())
@@ -122,9 +122,9 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
             raise OSError("unsafe source-relative path")
         directory_flags = os.O_RDONLY | os.O_DIRECTORY
         if hasattr(os, "O_NOFOLLOW"):
-            directory_flags |= os.O_NOFOLLOW
+            directory_flags |= getattr(os, "O_NOFOLLOW", 0)
         if hasattr(os, "O_CLOEXEC"):
-            directory_flags |= os.O_CLOEXEC
+            directory_flags |= getattr(os, "O_CLOEXEC", 0)
         opened_directories: list[int] = []
         try:
             current = os.open(root, directory_flags)
@@ -139,10 +139,33 @@ def _open_source_descriptor(root: Path, path: Path) -> int:
                     os.close(descriptor)
                 except OSError:
                     pass
+    # No dir_fd walk on this platform (Windows), so the open must target the
+    # RESOLVED path and then prove the descriptor still names that in-root
+    # file: opening the original path after the containment check would let a
+    # concurrently swapped intermediate junction bind out-of-root bytes into
+    # the source digest.
     resolved = path.resolve(strict=True)
     if not resolved.is_relative_to(root):
         raise OSError("source path escaped project root")
-    return os.open(path, file_flags)
+    descriptor = os.open(resolved, file_flags)
+    try:
+        if path.resolve(strict=True) != resolved:
+            raise OSError("source path re-resolved outside the opened target")
+        opened = os.fstat(descriptor)
+        current_stat = os.lstat(resolved)
+        # st_dev/st_ino are 0 on filesystems without stable file ids
+        # (FAT/exFAT, some network shares); a zeroed pair proves nothing.
+        if (
+            opened.st_ino
+            and current_stat.st_ino
+            and (opened.st_dev, opened.st_ino)
+            != (current_stat.st_dev, current_stat.st_ino)
+        ):
+            raise OSError("source file replaced during open")
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 @dataclass(slots=True)
@@ -173,6 +196,7 @@ def _is_git_repo(path: Path) -> bool:
             ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=10,
         )
         return out.returncode == 0 and out.stdout.strip() == "true"
@@ -212,6 +236,7 @@ def create_worktree(
                 ["git", "-C", str(base), "worktree", "add", "-b", branch, str(wt_path), "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8", errors="replace",
                 timeout=60,
                 check=True,
             )
@@ -309,6 +334,40 @@ def _iter_files(root: Path):
         if any(part.casefold() in _IGNORE_NAMES_CASEFOLD for part in rel_parts):
             continue
         yield p
+
+
+def delivery_staging_dir(prefix: str, parent: str | Path) -> Path:
+    """A staging dir for delivery swaps whose files must stay world-readable.
+
+    ``tempfile.mkdtemp`` hardens the new directory to an owner-only security
+    descriptor on Windows; every file staged inside inherits it, and a
+    same-volume swap then carries those ACLs into the delivered project —
+    where Docker's bind mount maps them to mode 000 and every preview/proof
+    container dies with ``cp: Permission denied``. Delivered trees must
+    inherit the projects root's ACL, so restore inheritance on the staging
+    dir the moment it exists (its future children then inherit normally).
+    """
+    import tempfile
+
+    created = Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent)))
+    if os.name == "nt":
+        try:
+            # /reset drops mkdtemp's explicit owner-only descriptor; the
+            # explicit inheritable read grant (S-1-5-11 = Authenticated
+            # Users, locale-independent) guarantees readability even when
+            # the PARENT chain itself is temp-rooted and would re-inherit
+            # owner-only ACEs.
+            subprocess.run(
+                ["icacls", str(created), "/reset", "/Q"],
+                check=False, capture_output=True, timeout=30,
+            )
+            subprocess.run(
+                ["icacls", str(created), "/grant", "*S-1-5-11:(OI)(CI)(RX)", "/Q"],
+                check=False, capture_output=True, timeout=30,
+            )
+        except OSError:
+            pass
+    return created
 
 
 def merge_back(
@@ -684,6 +743,7 @@ def cleanup_worktree(worktree: Worktree) -> None:
                  "--force", "--force", str(worktree.path)],
                 capture_output=True,
                 text=True,
+                encoding="utf-8", errors="replace",
                 timeout=60,
             )
             if worktree.branch:
@@ -691,6 +751,7 @@ def cleanup_worktree(worktree: Worktree) -> None:
                     ["git", "-C", str(worktree.base_repo), "branch", "-D", worktree.branch],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8", errors="replace",
                     timeout=30,
                 )
         if worktree.path.exists():
@@ -703,6 +764,7 @@ def cleanup_worktree(worktree: Worktree) -> None:
                 ["git", "-C", str(worktree.base_repo), "worktree", "prune"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8", errors="replace",
                 timeout=30,
             )
     except (OSError, subprocess.SubprocessError):

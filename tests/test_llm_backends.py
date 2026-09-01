@@ -14,6 +14,8 @@ from skyn3t.core.model_router import _FREE_DEFAULTS, Tier
 
 
 def _client(backend: str, **kw) -> LLMClient:
+    if backend == "claude_cli":
+        kw.setdefault("no_claude", False)
     return LLMClient(Settings(llm_backend=backend, **kw))
 
 
@@ -234,18 +236,66 @@ def test_auto_uses_codex_cli_when_available(monkeypatch):
     assert _client("kimi_cli").backend == "kimi_cli"
 
 
-def test_auto_falls_back_to_stub_without_codex_or_hosted_fallback(monkeypatch):
+def test_auto_uses_any_signed_in_cli_in_priority_order(monkeypatch):
+    """``auto`` is no longer Codex-only.
+
+    The property worth keeping is "never silently SPEND": a locally signed-in
+    coding CLI is a subscription the operator already holds, so preferring one is
+    the same class of action Codex always was. Pay-per-token OpenRouter still
+    needs explicit consent (see the next two tests).
+    """
     monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
     monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {}, raising=False)
-    # A signed-in Claude CLI and an OpenRouter key do not satisfy the automatic
-    # executor contract. Both require intentional manual selection.
     monkeypatch.setattr(
         llm_mod.shutil,
         "which",
         lambda b: "/usr/bin/claude" if b == "claude" else None,
     )
+
+    # Claude is NOT in the default chain any more (nothing Claude-powered runs
+    # unless selected), so a claude-only host now degrades to the offline stub
+    # under auto. Selecting and enabling Claude — via the backend or chain — works.
     assert _client("auto", openrouter_api_key="sk-or-present").backend == "stub"
+    assert _client(
+        "auto", auto_cli_priority="codex,kimi,claude", no_claude=False
+    ).backend == "claude_cli"
     assert _client("claude_cli").backend == "claude_cli"
+
+
+def test_auto_honours_a_custom_cli_priority_order(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {}, raising=False)
+    monkeypatch.setattr(
+        llm_mod.shutil,
+        "which",
+        lambda b: f"/usr/bin/{b}" if b in ("codex", "kimi") else None,
+    )
+
+    assert _client("auto", auto_cli_priority="kimi,codex").backend == "kimi_cli"
+    assert _client("auto", auto_cli_priority="codex,kimi").backend == "codex_cli"
+    # Unknown entries are ignored, never fatal.
+    assert _client("auto", auto_cli_priority="nope,,kimi").backend == "kimi_cli"
+
+
+def test_auto_never_spends_on_openrouter_without_consent(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {}, raising=False)
+    monkeypatch.setattr(llm_mod.shutil, "which", lambda _b: None)
+
+    # A configured key is configuration, not consent to spend.
+    assert _client("auto", openrouter_api_key="sk-or-present").backend == "stub"
+
+
+def test_auto_uses_openrouter_only_when_explicitly_permitted(monkeypatch):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {}, raising=False)
+    monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {}, raising=False)
+    monkeypatch.setattr(llm_mod.shutil, "which", lambda _b: None)
+
+    assert _client(
+        "auto", openrouter_api_key="sk-or-present", auto_allow_openrouter=True
+    ).backend == "openrouter"
+    # Consent without a key still degrades offline rather than failing.
+    assert _client("auto", auto_allow_openrouter=True).backend == "stub"
 
 
 def test_cli_availability_cache_refreshes_after_ttl(monkeypatch):
@@ -326,8 +376,16 @@ def test_unknown_backend_is_stubbed_without_executable_lookup(monkeypatch):
         raise AssertionError("unknown backend must not trigger a PATH lookup")
 
     monkeypatch.setattr(llm_mod.shutil, "which", _unexpected)
-    client = _client("arbitrary_cli", openrouter_api_key="sk-or-present", free_only=False)
-    assert client.backend == "stub"
+    # Settings now rejects an unknown llm_backend at construction (Literal),
+    # so an arbitrary preference can only arrive via provider_override — it
+    # resolves through _resolve_backend, which must stub WITHOUT a PATH probe.
+    import pytest as _pytest
+    from pydantic import ValidationError as _ValidationError
+
+    with _pytest.raises(_ValidationError):
+        _client("arbitrary_cli", openrouter_api_key="sk-or-present", free_only=False)
+    client = _client("stub", openrouter_api_key="sk-or-present", free_only=False)
+    assert client._resolve_backend("arbitrary_cli") == "stub"
     # Avoid probing allowlisted status rows; the routing assertion above is the
     # security contract under test.
     assert client._cli_available("arbitrary") is False
@@ -379,7 +437,7 @@ async def test_codex_completion_does_not_consult_hosted_model_router(monkeypatch
     client = _client("codex_cli")
     monkeypatch.setattr(client, "_cli_available", lambda provider: provider == "codex")
 
-    async def fake_cli(provider, prompt, system, json_mode, images=None):
+    async def fake_cli(provider, prompt, system, json_mode, images=None, *, model=""):
         assert provider == "codex"
         return LLMResult(
             text="done",
@@ -651,7 +709,7 @@ async def test_agentic_cli_total_timeout_records_execution_evidence(monkeypatch,
     class _Proc:
         returncode = None
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
             await asyncio.sleep(3600)
             return b"", b""
 
@@ -682,7 +740,7 @@ async def test_kimi_completion_uses_documented_print_mode(monkeypatch):
     class _Proc:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
             return b'{"ok": true}', b""
 
     async def _fake_exec(*argv, **kwargs):
@@ -693,15 +751,22 @@ async def test_kimi_completion_uses_documented_print_mode(monkeypatch):
     monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
     result = await _client("kimi_cli").complete("inspect this", tier=Tier.CHEAP)
 
-    assert captured["argv"] == (
-        "kimi",
-        "--print",
+    # The installed Kimi CLI exposes `-p/--prompt <text>` for noninteractive
+    # runs and has NO `--print` or `--final-message-only`; passing either exits
+    # nonzero with "unknown option". This test previously asserted those flags
+    # and passed only because it never invoked the CLI — the MoA council was
+    # what finally exercised a non-Codex provider for real.
+    assert captured["argv"][1:] == (
         "--output-format",
         "text",
-        "--final-message-only",
         "--prompt",
         "inspect this",
     )
+    # The prompt flag must be the LAST argv before the prompt, so nothing can be
+    # swallowed as its value.
+    assert captured["argv"][-2:] == ("--prompt", "inspect this")
+    assert captured["argv"][0].lower().endswith(("kimi", "kimi.exe", "kimi.cmd"))
+    assert "--print" not in captured["argv"]
     assert "--strict-mcp-config" not in captured["argv"]
     assert result.backend == "kimi_cli"
 
@@ -727,7 +792,9 @@ async def test_kimi_agentic_build_uses_print_stream_mode(monkeypatch, tmp_path):
     monkeypatch.setattr(client, "_consume_agentic_stream", _fake_consume)
     result = await client.agentic_build("build it", str(tmp_path))
 
-    assert captured["argv"][:4] == ("kimi", "--print", "--prompt", "build it")
+    assert captured["argv"][0].lower().endswith(("kimi", "kimi.exe", "kimi.cmd"))
+    assert captured["argv"][1:3] == ("--prompt", "build it")
+    assert "--print" not in captured["argv"]  # no such flag in the real CLI
     assert ("--output-format", "stream-json") == (
         captured["argv"][captured["argv"].index("--output-format")],
         captured["argv"][captured["argv"].index("--output-format") + 1],
@@ -753,7 +820,7 @@ async def test_copilot_agentic_build_grants_tools_without_all_paths(
     class _Proc:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
             return b"done", b""
 
     async def _fake_exec(*argv, **kwargs):
@@ -764,7 +831,10 @@ async def test_copilot_agentic_build_grants_tools_without_all_paths(
     monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
     result = await client.agentic_build("build it", str(tmp_path))
 
-    assert captured["argv"][:2] == ("copilot", "-p")
+    # argv[0] is a RESOLVED executable, not the bare name: on Windows a bare
+    # name can resolve to a .ps1 shim that CreateProcess cannot exec at all.
+    assert captured["argv"][0].lower().endswith(("copilot", "copilot.exe", "copilot.cmd"))
+    assert captured["argv"][1] == "-p"
     assert "--allow-all-tools" in captured["argv"]
     assert "--no-ask-user" in captured["argv"]
     assert "--no-auto-update" in captured["argv"]
@@ -821,7 +891,7 @@ async def test_cli_nonzero_stdout_is_failure_not_model_output(monkeypatch):
     class _Proc:
         returncode = 1
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
             return b"authentication failed", b"login required"
 
     async def _fake_exec(*_args, **_kwargs):
@@ -843,7 +913,7 @@ async def test_cancelled_cli_call_records_unknown_account_usage(monkeypatch):
     class _Proc:
         returncode = None
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
             entered.set()
             await asyncio.Future()
 
@@ -940,7 +1010,8 @@ def _install_fake_cli(monkeypatch, captured):
     class _Proc:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, _stdin=None):
+            captured["stdin"] = _stdin
             return (b'{"ok": true}', b"")
 
     async def _fake_exec(*argv, **kw):
@@ -948,6 +1019,21 @@ def _install_fake_cli(monkeypatch, captured):
         return _Proc()
 
     monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+
+def _cli_prompt(captured) -> str:
+    """The prompt the CLI actually received, whatever transport carried it.
+
+    Providers in ``_CLI_STDIN_PROMPT`` (codex, claude) take it over stdin —
+    on Windows a multi-KB argv element is truncated by the .CMD shim — while
+    the rest take it as the final argv element. Tests care about the prompt
+    content, not the transport, so resolve it here rather than hardcoding
+    ``argv[-1]`` and silently asserting against a flag.
+    """
+    stdin = captured.get("stdin")
+    if stdin:
+        return stdin.decode("utf-8") if isinstance(stdin, bytes) else str(stdin)
+    return captured["argv"][-1]
 
 
 async def test_cli_references_image_file_path(monkeypatch):
@@ -963,7 +1049,7 @@ async def test_cli_references_image_file_path(monkeypatch):
     os.close(fd)
     res = await _client("claude_cli").complete("design it", tier=Tier.UI, images=[path])
     assert res.backend == "claude_cli"
-    full = captured["argv"][-1]
+    full = _cli_prompt(captured)
     assert path in full and "image file" in full.lower()
 
 
@@ -976,9 +1062,11 @@ async def test_cli_writes_data_url_to_temp_file(monkeypatch):
     _install_fake_cli(monkeypatch, captured)
     data_url = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n").decode()
     await _client("claude_cli").complete("design", tier=Tier.UI, images=[data_url])
-    full = captured["argv"][-1]
+    full = _cli_prompt(captured)
     assert "data:" not in full
     assert ".png" in full and "image file" in full.lower()
+    # The prompt must not ALSO be on argv, or the .CMD truncation risk returns.
+    assert not any("image file" in str(a).lower() for a in captured["argv"])
 
 
 def test_supports_image_input():

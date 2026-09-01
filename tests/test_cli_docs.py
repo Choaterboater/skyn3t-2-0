@@ -69,7 +69,9 @@ def test_reset_bench_budget_preserves_daily_counters() -> None:
 # ---------------------------------------------------------------------------
 def test_build_agents_covers_stage_vocabulary() -> None:
     agents = build_agents(event_bus=EventBus())
-    assert len(agents) >= 23
+    # 21 registered (github_explorer/github_ingestor are intentionally not
+    # registered — never dispatched by production code).
+    assert len(agents) >= 21
     types = {a.agent_type for a in agents}
     # A representative slice of the canonical stage vocabulary.
     for expected in (

@@ -151,12 +151,15 @@ considered. No third-party source code was copied into SkyN3t.
 
 ## Ranked continuation backlog
 
-1. Add a versioned visual-design contract consumed by code generation and the
-   visual editor, then lint it across responsive proof viewports.
-2. Allow Cortex to fork one completed graph at a selected node, rerun only its
-   descendants, and compare immutable proof evidence before promotion.
-3. Consider bounded dynamic specialist subgraphs only after child count,
-   depth, concurrency, write sets, and routing inheritance are durable.
+1. Completed: versioned visual-design contract consumed by code generation and
+   the visual editor, linted across responsive proof viewports.
+2. Completed: the durable graph runtime can fork a completed run at a selected
+   node, rerun only that node and its descendants, and persist immutable
+   evidence-only comparison digests. Every completed comparison remains
+   `review_required`; none is auto-promoted.
+3. Completed: bounded dynamic specialist subgraphs are one level deep, allow at
+   most four children, enforce per-plan concurrency and explicit non-overlapping
+   write sets, and inherit the parent run's frozen routing snapshot.
 
 ## Deliberately deferred
 

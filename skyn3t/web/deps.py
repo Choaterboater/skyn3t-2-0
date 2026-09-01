@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import Event, EventBus, EventType
+from skyn3t.persistence.recovery import RecoveryResult
 
 # ---------------------------------------------------------------------------
 # Optional spine collaborators. Everything here is optional so the web layer
@@ -157,6 +158,7 @@ class AppState:
         skills: Any | None = None,
         patterns: Any | None = None,
         messaging: Any | None = None,
+        recovered_checkpoint: RecoveryResult | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.event_bus = event_bus or EventBus()
@@ -168,6 +170,7 @@ class AppState:
         self.skills = skills
         self.patterns = patterns
         self.messaging = messaging
+        self.recovered_checkpoint = recovered_checkpoint
         self.ingestors: list[Any] = []
         self.max_terminal_builds = 500
         self.max_terminal_proposals = 500

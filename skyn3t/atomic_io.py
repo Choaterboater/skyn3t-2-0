@@ -21,12 +21,18 @@ def _atomic_write(path: str | Path, content: str | bytes, *, binary: bool) -> Pa
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        mode = "wb" if binary else "w"
-        kwargs = {} if binary else {"encoding": "utf-8"}
-        with os.fdopen(fd, mode, **kwargs) as fh:
-            fh.write(content)
-            fh.flush()
-            os.fsync(fh.fileno())
+        if binary:
+            assert isinstance(content, bytes), "binary=True requires bytes content"
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
+        else:
+            assert isinstance(content, str), "binary=False requires str content"
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+                fh.flush()
+                os.fsync(fh.fileno())
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

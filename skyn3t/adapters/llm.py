@@ -578,6 +578,21 @@ _DOOM_LOOP_NUDGE = (
 )
 
 
+# Empty-response guard: a turn with NEITHER a tool call NOR text is not a
+# legitimate "finished" signal (unlike a real text-only answer, which the
+# planned-files / anti-stub / verify-on-stop gates below still re-validate on
+# their own merits) -- it is content-free, indistinguishable from a transient
+# provider glitch (safety filter, momentary hiccup). Left unguarded, a plan
+# whose files happen to already exist on disk could accept a genuine glitch
+# as "done" purely by coincidence. One retry costs a single turn.
+_EMPTY_RESPONSE_LIMIT = 2
+_EMPTY_RESPONSE_NUDGE = (
+    "Your last response had no tool call and no text — nothing happened. "
+    "If the app is truly complete call finish with a summary; otherwise call "
+    "write_file/write_files to continue, or read_file to re-orient."
+)
+
+
 def _agentic_verify_problems(root: Path) -> list[str]:
     """Cheap verify-on-stop scan (research item 19): unresolved local JS/Python
     imports (the workstream-1 dangling-import class) + Python syntax errors.
@@ -2888,6 +2903,7 @@ class LLMClient:
         verify_denials, _MAX_VERIFY_DENIALS = 0, 2
         doom_recent: list[tuple[str, str]] = []  # last 3 (tool, raw-args) signatures
         doom_warned = False
+        empty_response_streak = 0
         changed_path_window: list[str] = []
         churn_warned_paths: set[str] = set()
         auxiliary_churn_paths: set[str] = set()
@@ -3056,6 +3072,7 @@ class LLMClient:
                                      "tool_calls": tcs})
                     wrote_before = wrote
                     if tcs:
+                        empty_response_streak = 0
                         for tc in tcs:
                             tool_call_count += 1
                             fn = tc.get("function") or {}
@@ -3146,7 +3163,12 @@ class LLMClient:
                             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                                              "content": result})
                     else:
-                        finished = True  # final text answer -> done
+                        content = (msg.get("content") or "").strip()
+                        if content:
+                            finished = True  # final text answer -> done
+                            empty_response_streak = 0
+                        else:
+                            empty_response_streak += 1
                     if wrote > wrote_before:
                         progress_deadline = _t.monotonic() + budget
                         no_progress_turns = 0
@@ -3345,6 +3367,18 @@ class LLMClient:
                             wrote=wrote,
                         )
                         break
+                    if not finished and empty_response_streak:
+                        if empty_response_streak >= _EMPTY_RESPONSE_LIMIT:
+                            log.warning("llm.or_agentic_empty_response_abort",
+                                        wrote=wrote, turns=turn)
+                            loop_error = (
+                                "agentic provider returned an empty response "
+                                "(no tool call, no text) with no progress"
+                            )
+                            break
+                        messages.append({"role": "user", "content": _EMPTY_RESPONSE_NUDGE})
+                        log.info("llm.or_agentic_empty_response_nudge", wrote=wrote)
+                        continue
                     if finished:
                         if planned and planned_missing_count > 0:
                             missing_paths = sorted(

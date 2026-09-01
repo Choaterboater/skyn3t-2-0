@@ -39,6 +39,7 @@ from skyn3t.persisted_write import (
     PERSISTED_WRITE_RECEIPT_MAX_BYTES,
     is_persisted_write_receipt_body,
 )
+from skyn3t.security.secrets import mask_secrets
 
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
 # NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
@@ -913,11 +914,39 @@ def _has_path_aliases(root: Path) -> bool:
 
 
 def _reachable_files(root: Path) -> set[Path]:
-    """Resolved file paths reachable from the entry files via relative imports."""
+    """Resolved file paths reachable from the entry files via relative imports.
+
+    Entries come from two sources, and BOTH are needed. ``_ENTRY_NAMES`` covers
+    bundler conventions (main.jsx, App.tsx, Next.js page/layout). A plain static
+    site has none of those: its entry is whatever ``index.html`` loads via
+    ``<script src>``, commonly ``assets/js/main.js``. Without HTML seeding the
+    graph starts from nothing, so every component is unreachable and
+    :func:`_unwired_components` reports a correctly-wired static app as an
+    unwired stub. Additive — this can only widen reachability, never narrow it.
+    """
     entries = [
         f.resolve() for f in _iter_files(root)
         if f.name in _ENTRY_NAMES and f.suffix in _JS_SUFFIXES
     ]
+    for html in _iter_files(root):
+        if html.suffix.lower() not in (".html", ".htm"):
+            continue
+        try:
+            markup = html.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for ref in _HTML_LOCAL_REF_RE.findall(markup):
+            target = ref.strip()
+            if not target or target.startswith(
+                ("http://", "https://", "//", "data:", "mailto:")
+            ):
+                continue
+            candidate = (
+                (root / target.lstrip("/")) if target.startswith("/")
+                else (html.parent / target)
+            ).resolve()
+            if candidate.suffix in _JS_SUFFIXES and candidate.is_file():
+                entries.append(candidate)
     seen: set[Path] = set()
     stack = list(entries)
     while stack:
@@ -934,6 +963,51 @@ def _reachable_files(root: Path) -> set[Path]:
             if tgt is not None and tgt not in seen:
                 stack.append(tgt)
     return seen
+
+
+_HTML_LOCAL_REF_RE = re.compile(
+    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*["']([^"'#?]+)["']""",
+    re.IGNORECASE,
+)
+
+
+def _dangling_html_refs(root: Path) -> list[str]:
+    """Local ``<script src>`` / ``<link href>`` targets that do not exist.
+
+    A guaranteed runtime 404 on every page load, and — unlike the "unwired
+    components" heuristic below — an unambiguous, mechanically repairable
+    defect: either write the file or drop the tag. Kept separate precisely
+    because the two were previously conflated, and the resulting gap string
+    ("wire up your components") pointed the fix loop at the opposite repair
+    from the one needed.
+
+    Only same-project relative targets are considered; absolute URLs, protocol-
+    relative URLs, data: URIs and root-absolute paths (which a dev server may
+    map elsewhere) are all skipped. Pure and offline.
+    """
+    out: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix.lower() not in (".html", ".htm"):
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel_html = str(f.relative_to(root)).replace("\\", "/")
+        for ref in _HTML_LOCAL_REF_RE.findall(text):
+            target = ref.strip()
+            if not target or target.startswith(("http://", "https://", "//", "data:", "/", "mailto:")):
+                continue
+            candidate = (f.parent / target).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue  # escapes the project; not ours to judge
+            if not candidate.is_file():
+                out.append(f"{rel_html} -> {target}")
+            if len(out) >= 20:
+                return out
+    return out
 
 
 def _unwired_components(root: Path) -> str | None:
@@ -953,6 +1027,19 @@ def _unwired_components(root: Path) -> str | None:
     if not components:
         return None
     reachable = _reachable_files(root)
+    if not reachable:
+        # No entry was found AT ALL, so the analysis did not run — this is
+        # "could not determine", not "nothing is wired". Reporting it as the
+        # latter accused two real deliveries: a static site whose entry is
+        # `<script src>` in HTML, and a static-site GENERATOR whose graph root
+        # is `scripts/build.mjs`, referenced only from package.json "scripts".
+        # Neither matches a bundler entry name, so the walk started from an
+        # empty set and every component was trivially "orphaned".
+        # This is gate_posture rule 1 (a gate that could not run never blocks)
+        # applied inside the check, so it holds in release posture too. It
+        # cannot mask the defect this exists for: a stub ENTRY is still an
+        # entry, so `reachable` is non-empty whenever that defect is present.
+        return None
     orphaned = [c for c in components if c not in reachable]
     if orphaned and len(orphaned) == len(components):
         return (f"entry reaches none of the {len(components)} generated "
@@ -974,6 +1061,13 @@ class ProofResult:
     syntax_errors: list[str] = field(default_factory=list)
     score: float = 0.0  # 0..100 completeness signal
     detail: dict[str, Any] = field(default_factory=dict)
+    # Failures that would have flipped ``passed`` under release posture but were
+    # demoted to findings under lab posture (failing LLM-authored tests, a ruff
+    # style failure, thin checklist coverage). ``detail`` is populated
+    # identically either way, so ``error_gaps()`` still feeds the fix loop the
+    # same repair strings — advisory means "does not block", never "not
+    # repaired". Empty by default, so every existing consumer is unaffected.
+    advisory_failures: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -987,6 +1081,7 @@ class ProofResult:
             "syntax_errors": list(self.syntax_errors),
             "score": self.score,
             "detail": dict(self.detail),
+            "advisory_failures": list(self.advisory_failures),
         }
 
     def error_gaps(self) -> list[str]:
@@ -1003,6 +1098,17 @@ class ProofResult:
         return extract_error_gaps(self.detail, self.syntax_errors)
 
 
+# Terminal colour/cursor escapes emitted by build tools. Stripped at capture:
+# they carry no information SkyN3t needs, and leaving them in is actively
+# harmful — see _ProofCommandResult.__post_init__.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI colour/cursor escapes from captured tool output."""
+    return _ANSI_ESCAPE_RE.sub("", text or "")
+
+
 @dataclass(slots=True)
 class _ProofCommandResult:
     returncode: int
@@ -1010,6 +1116,32 @@ class _ProofCommandResult:
     stderr: str
     backend: str = "local"
     timed_out: bool = False
+
+    def __post_init__(self) -> None:
+        # Strip escapes HERE so no capture site can forget. Observed on a real
+        # build: `astro check` printed the offending file as
+        # "\x1b[96mtests/links.test.ts\x1b[0m". The escapes survived into
+        # build_summary, the repair loop read the path with the ESC byte lost
+        # and the "96m" still glued on, and wrote a source file at
+        # `96mtests/links.test.ts` whose body was the diagnostic's own excerpt
+        # (leading "* " bullet included). That file then failed type-checking
+        # with ts(1127) Invalid character — so one build error manufactured a
+        # second one, in a directory that should never have existed.
+        self.stdout = strip_ansi(self.stdout)
+        self.stderr = strip_ansi(self.stderr)
+        # Mask HERE for the same "at capture" reason as the ANSI strip above:
+        # every proof summary (build_summary, test summaries, pip/boot tails)
+        # is carved out of these two strings, and from there lands in proof
+        # detail, durable manifests and the fix loop. filter_env keeps host
+        # keys out of the command's environment; mask_secrets is the
+        # output-side complement — a host credential echoed by a build tool
+        # (or parroted by untrusted delivered code) never persists. Guarded:
+        # masking must never break a build.
+        try:
+            self.stdout = mask_secrets(self.stdout)
+            self.stderr = mask_secrets(self.stderr)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @dataclass(slots=True)
@@ -1147,25 +1279,65 @@ def _run_proof_command(
 
     import subprocess
 
+    def _kill_tree(proc: subprocess.Popen) -> None:
+        # proc.kill() reaps only the direct child; npm/build commands spawn
+        # grandchildren that inherit the output pipes and hold both the process
+        # tree and the pipe readers open past the timeout.
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+        else:
+            import signal
+
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # type: ignore[attr-defined]
+            except OSError:
+                pass
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    popen_kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        # Own process group so the timeout path can kill the whole tree.
+        popen_kwargs["start_new_session"] = True
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             cwd=str(cwd),
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=safe_env,
+            **popen_kwargs,
         )
-        return _ProofCommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-        return _ProofCommandResult(124, stdout, stderr, timed_out=True)
     except (OSError, ValueError) as exc:
         return _ProofCommandResult(127, "", f"exec failed: {exc}")
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            stdout, stderr = "", ""
+        return _ProofCommandResult(124, stdout or "", stderr or "", timed_out=True)
+    except BaseException:
+        _kill_tree(proc)
+        raise
+    return _ProofCommandResult(proc.returncode, stdout or "", stderr or "")
 
 
 def _use_container_command_names(ctx: _ProofCommandContext | None) -> bool:
@@ -1320,12 +1492,18 @@ def _attach_proof_environment(
         reasons.append("docker sandbox unavailable; used hardened local proof commands")
     if run_build and detail.get("build") == "skipped":
         summary = str(detail.get("build_summary") or "").strip()
-        reasons.append("build skipped" + (f": {summary}" if summary else ""))
+        # "There is no build step" is not degraded EVIDENCE — it is a complete
+        # answer. A static site legitimately has no build/typecheck script, so
+        # counting it as degraded capped every such delivery's score for
+        # producing exactly the artifact it was asked for. Only a build that
+        # could not RUN (missing toolchain, unavailable sandbox) is degradation.
+        if "no build" not in summary.lower():
+            reasons.append("build skipped" + (f": {summary}" if summary else ""))
     # Web and Swift projects can have a valid native test suite even when the
     # generic Python test probe has nothing to run.  Do not downgrade objective
     # Node/Swift test evidence simply because that unrelated probe soft-skipped.
     native_tests_passed = any(
-        detail.get(name) == "passed" for name in ("node_tests", "swift_tests")
+        detail.get(name) == "passed" for name in ("node_tests", "swift_tests", "swift_ios_tests")
     )
     if run_tests and detail.get("tests") == "skipped" and not native_tests_passed:
         summary = str(detail.get("test_summary") or "").strip()
@@ -1374,6 +1552,18 @@ def extract_error_gaps(
     # Unresolved relative imports — each entry is "<importer> -> <spec>".
     for imp in (d.get("unresolved_imports") or []):
         gaps.append(f"UNRESOLVED IMPORT — create the missing target or fix the path: {imp}")
+    # Dangling <script src>/<link href> — each entry is "<page> -> <target>".
+    # States BOTH valid repairs, because the wrong one is tempting: a model that
+    # only sees "missing file" tends to invent a stub module, when the delivered
+    # entry often already does the work via another script and the tag is simply
+    # dead. Naming both keeps the improver from guessing.
+    for ref in (d.get("dangling_html_refs") or []):
+        gaps.append(
+            "DANGLING HTML REFERENCE — this page references a file that does not "
+            f"exist, so it 404s on every load: {ref}. Either write that file with "
+            "real content, or delete the <script>/<link> tag if another already "
+            "loaded module provides the behaviour."
+        )
     # Definite ESM named-import/export contract violations.  Put the resolved
     # module first in a stable sentence shape consumed by CodeImproverAgent, so
     # repair targets never have to infer a relative specifier's true location.
@@ -1750,6 +1940,12 @@ def detect_scaffold_stub(
     starter_stub = detect_offline_starter_stub(root, stack)
     if starter_stub:
         return starter_stub
+    # The scaffold comparison needs the original brief to reconstruct the
+    # expected app identity. Without it, name-dependent scaffolds can look
+    # pristine even when they are a legitimate structural delivery; decline
+    # this heuristic rather than issue a false no-go.
+    if not str(brief or "").strip():
+        return None
     try:
         from skyn3t.agents._common import slugify
         from skyn3t.agents._scaffold import scaffold_for
@@ -1815,7 +2011,7 @@ _NODE_BUILTINS = frozenset({
 })
 # Friendly pinned versions for common packages; anything else gets "latest".
 _KNOWN_NPM_VERSIONS = {
-    "prop-types": "^15.8.1", "react-router-dom": "^6.21.0", "axios": "^1.6.2",
+    "prop-types": "^15.8.1", "react-router-dom": "^7.18.2", "axios": "^1.6.2",
     "zustand": "^4.4.7", "clsx": "^2.1.0", "classnames": "^2.5.1",
     "date-fns": "^3.0.0", "uuid": "^9.0.1", "lodash": "^4.17.21",
     "@testing-library/react": "^14.1.2", "@testing-library/jest-dom": "^6.1.5",
@@ -2119,6 +2315,78 @@ def reconcile_npm_deps(root: str | Path) -> list[str]:
     except OSError:
         return []
     return missing
+
+
+_NODE_BUILTIN_IMPORT_RE = re.compile(
+    r"""(?:from\s*|import\s*|require\s*\(\s*)['"]node:[a-zA-Z_][\w/]*['"]"""
+)
+# Sources a TypeScript project type-checks. .astro/.svelte/.vue carry <script>
+# blocks that `astro check` / `svelte-check` type-check the same way.
+_TYPED_SOURCE_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".astro", ".svelte", ".vue")
+
+
+def reconcile_node_types(root: str | Path) -> list[str]:
+    """Declare ``@types/node`` when typed sources import ``node:`` builtins.
+
+    reconcile_npm_deps deliberately skips ``node:`` specifiers because they need
+    no runtime package — correct for dependencies, and exactly why nothing ever
+    supplied their TYPES. A TypeScript project that imports ``node:fs`` without
+    ``@types/node`` fails its own type-check:
+
+        tests/links.test.ts:2:65 - error ts(2307):
+            Cannot find module 'node:fs' or its corresponding type declarations.
+
+    Measured on a delivered Astro site: 12 such errors failed `astro check`,
+    which failed the build step, which failed proof, which made an otherwise
+    complete 52-file delivery a no_go at 44. Every checklist item was present —
+    the app was fine apart from a missing types package.
+
+    Only acts when the project actually type-checks (a tsconfig or a declared
+    typescript), since @types/node is inert otherwise. Never raises."""
+    root = Path(root)
+    pkg_path = root / "package.json"
+    if not pkg_path.is_file():
+        return []
+    import json as _json
+
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared: set[str] = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        section = pkg.get(key)
+        if isinstance(section, dict):
+            declared |= set(section)
+    if "@types/node" in declared:
+        return []
+    type_checked = "typescript" in declared or any(
+        (root / name).is_file() for name in ("tsconfig.json", "jsconfig.json")
+    )
+    if not type_checked:
+        return []
+    for f in _iter_files(root):
+        if f.suffix not in _TYPED_SOURCE_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _NODE_BUILTIN_IMPORT_RE.search(text):
+            break
+    else:
+        return []
+    dev = pkg.setdefault("devDependencies", {})
+    if not isinstance(dev, dict):
+        return []
+    dev["@types/node"] = _KNOWN_NPM_VERSIONS.get("@types/node", "latest")
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return ["@types/node"]
 
 
 # Build-tool PEER deps implied by a next.config flag but never imported in source
@@ -2595,6 +2863,85 @@ _CODE_FENCE_LINE_RE = re.compile(r"^\s*```[A-Za-z0-9_+-]*\s*$")
 def _looks_like_source_path_header(line: str, rel: str) -> bool:
     clean = line.strip().replace("\\", "/")
     return clean in {rel, Path(rel).name}
+
+
+_BULLET_WRAPPER_RE = re.compile(r"^([•*+-])[ \t]+(?=\S)")
+
+
+def strip_markdown_bullet_wrapper_in_source_files(root: str | Path) -> list[str]:
+    """Unwrap a source file the agent wrote as a markdown BULLET instead of code.
+
+    Sibling of strip_markdown_fences_in_source_files — same defect (markdown
+    chrome persisted as file content), different shape, and it survives every
+    existing guard.
+
+    Observed shipping as a real Astro homepage (12,910 bytes)::
+
+        * ---
+          const lessons = [
+            {
+
+    The whole file is the agent's rendered bullet: a marker on line 1 and every
+    following line indented beneath it. It is not prose — `_looks_like_prose`
+    correctly returns False because the content genuinely is code — so
+    validate_source passes it and it ships.
+
+    CORRECTION, measured rather than assumed: this does NOT break the build.
+    `npm run build` on the delivered tree exits 0 and the page renders
+    correctly — its own ``title: 'The Grip'`` datum reaches the HTML, with no
+    bullet or raw source leaking. Astro tolerates the wrapper.
+
+    So this is source HYGIENE, not a build fix: a delivered file should be the
+    code an author would write, and a markdown wrapper left in the tree misleads
+    every later reader, diff and static-analysis pass. It is cheap, idempotent
+    and provably non-destructive, which is the bar for a deterministic repair —
+    but it is not load-bearing, and nothing should be built on the assumption
+    that it rescues a failing build.
+
+    Detection is deliberately narrow: a bullet marker on the first non-blank
+    line AND every other non-blank line indented by a common margin of >= 2.
+    Real source has top-level lines at column 0 (imports, declarations, a
+    closing brace), so a file where nothing else reaches column 0 is a wrapper,
+    not a program. Never raises."""
+    root = Path(root)
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in _SOURCE_FENCE_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        head_at = 0
+        while head_at < len(lines) and not lines[head_at].strip():
+            head_at += 1
+        if head_at >= len(lines):
+            continue
+        match = _BULLET_WRAPPER_RE.match(lines[head_at])
+        if not match:
+            continue
+        rest = lines[head_at + 1:]
+        body = [ln for ln in rest if ln.strip()]
+        if not body:
+            continue
+        common = min(len(ln) - len(ln.lstrip(" ")) for ln in body)
+        if common < 2:
+            continue
+        rebuilt = (
+            lines[:head_at]
+            + [lines[head_at][match.end():]]
+            + [(ln[common:] if ln.strip() else ln) for ln in rest]
+        )
+        new_text = "\n".join(rebuilt) + ("\n" if text.endswith("\n") else "")
+        if new_text == text:
+            continue
+        try:
+            f.write_text(new_text, encoding="utf-8")
+        except OSError:
+            continue
+        changed.append(str(f.relative_to(root)).replace("\\", "/"))
+    return changed
 
 
 def strip_markdown_fences_in_source_files(root: str | Path) -> list[str]:
@@ -3169,6 +3516,321 @@ def format_ruff_python_sources(project_dir: str | Path) -> list[str]:
     return sorted(changed)
 
 
+_NODE_TEST_EXTS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")
+# A leading import/export is the unambiguous ESM marker; `require(`/__dirname/
+# module.exports are the CommonJS ones. A file carrying BOTH is ambiguous and is
+# deliberately left for the fix loop rather than guessed at.
+_ESM_SYNTAX_RE = re.compile(r"^\s*(?:import[\s{(]|export[\s{*])", re.MULTILINE)
+_CJS_SYNTAX_RE = re.compile(r"\brequire\s*\(|\b__dirname\b|\b__filename\b|\bmodule\.exports\b")
+
+
+def repair_commonjs_test_extensions(project_dir: str | Path) -> list[str]:
+    """Rename ``*.test.js`` to ``*.test.cjs`` when the file is CommonJS but
+    package.json declares ``"type": "module"``.
+
+    Codegen routinely emits a module-type package.json and then writes tests in
+    CommonJS, which Node refuses outright::
+
+        ReferenceError: require is not defined in ES module scope
+
+    Renaming wins over rewriting to ESM because of ``__dirname``. Measured on a
+    real delivered suite, all seven test files called
+    ``path.resolve(__dirname, '..')`` — a binding an ES module does not have —
+    so converting would mean rewriting every require AND substituting
+    ``import.meta.dirname``. The rename fixes both and touches no code.
+
+    Do-no-harm boundaries: only ``*.test.js`` (never app source, whose importers
+    would break), never ``.mjs`` (explicitly ESM by extension), never a file
+    that already parses as ESM (the rename would break a working test), never a
+    mixed file, and never over an existing ``.cjs``. Runs BEFORE
+    ``repair_node_test_script`` so the emitted glob follows the new extension."""
+    import json as _json
+
+    root = Path(project_dir)
+    pkg_path = root / "package.json"
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict) or str(pkg.get("type") or "") != "module":
+        return []
+
+    renamed: list[str] = []
+    for path in sorted(root.rglob("*.test.js")):
+        if "node_modules" in path.parts:
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        if not _CJS_SYNTAX_RE.search(body) or _ESM_SYNTAX_RE.search(body):
+            continue
+        target = path.parent / (path.name[: -len(".js")] + ".cjs")
+        if target.exists():
+            continue
+        try:
+            path.rename(target)
+        except OSError:
+            continue
+        renamed.append(path.relative_to(root).as_posix())
+
+    scripts = pkg.get("scripts")
+    if renamed and isinstance(scripts, dict):
+        touched = False
+        for key, value in list(scripts.items()):
+            if not isinstance(value, str):
+                continue
+            updated = value
+            for rel in renamed:
+                new_rel = rel[: -len(".js")] + ".cjs"
+                updated = updated.replace(rel, new_rel).replace(
+                    rel.replace("/", "\\"), new_rel.replace("/", "\\"))
+            if updated != value:
+                scripts[key] = updated
+                touched = True
+        if touched:
+            try:
+                pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+            except OSError:
+                pass
+    return renamed
+
+
+def repair_node_test_script(project_dir: str | Path) -> list[str]:
+    """Rewrite ``node --test <dir>`` to the glob form that actually discovers.
+
+    Node 24 resolves a positional argument as a module entry point rather than
+    walking it, so ``node --test tests`` dies with MODULE_NOT_FOUND naming the
+    CommonJS loader and the runner reports exactly one failing "test". Measured
+    against a known-good ESM suite, isolating the argument form from the test
+    content:
+
+        node --test tests             -> MODULE_NOT_FOUND, pass 0, fail 1
+        node --test "tests/*.test.js" -> pass 1, fail 0
+
+    So every delivered app scripted that way reported a failing suite no matter
+    how good its tests were, and fed the repair loop an imaginary missing
+    module instead of the real defect.
+
+    Only a DIRECTORY positional is rewritten: a file path already works, and a
+    bare ``node --test`` discovers on its own. A directory that does not exist,
+    or holds no test files, is left alone — emitting a glob that matches
+    nothing would exit 0 and report a PASS with zero tests, turning a broken
+    suite into false green evidence. Idempotent: the rewritten positional is no
+    longer a directory, so a second pass is a no-op."""
+    import json as _json
+
+    root = Path(project_dir)
+    pkg_path = root / "package.json"
+    try:
+        pkg = _json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    scripts = pkg.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    script = str(scripts.get("test") or "").strip()
+    parts = script.split()
+    if len(parts) < 2 or parts[0] != "node" or "--test" not in parts:
+        return []
+    positionals = [p for p in parts[1:] if not p.startswith("-")]
+    if len(positionals) != 1:
+        # 0 = auto-discovery; >1 = an explicit list the author chose. Both work.
+        return []
+    target = positionals[0].strip("\"'").rstrip("/\\")
+    if not target or (root / target).is_dir() is False:
+        return []
+    tdir = root / target
+    exts = sorted({
+        p.suffix for p in tdir.rglob("*")
+        if p.is_file() and p.suffix in _NODE_TEST_EXTS and ".test." in p.name
+    })
+    if not exts:
+        return []
+    flags = [p for p in parts[1:] if p.startswith("-")]
+    globs = [f'"{target}/**/*.test{ext}"' for ext in exts]
+    rewritten = " ".join(["node", *flags, *globs])
+    if rewritten == script:
+        return []
+    scripts["test"] = rewritten
+    try:
+        pkg_path.write_text(_json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return [f"test: {script} -> {rewritten}"]
+
+
+def pin_astro_estree_walker_override(root: str | Path) -> list[str]:
+    """Force the ESM estree-walker@3 for Astro projects.
+
+    Astro's CLI chain (@rollup/pluginutils) resolves a nested CJS
+    estree-walker@2 whose named exports Node's ESM loader rejects
+    ("'walk' not found" — astro 4 AND 5 on Node 24), killing `astro build`
+    before a page exists. The scaffold pins this via package.json
+    ``overrides``; a model-written package.json has no such pin, so inject it
+    here — estree-walker@3 is API-compatible and the only version that builds.
+    Idempotent, merges with any existing overrides. Never raises."""
+    pkg_path = Path(root) / "package.json"
+    if not pkg_path.is_file():
+        return []
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    declared = {
+        **(pkg.get("dependencies") or {}),
+        **(pkg.get("devDependencies") or {}),
+    }
+    if "astro" not in declared:
+        return []
+    overrides = pkg.setdefault("overrides", {})
+    if not isinstance(overrides, dict):
+        return []
+    existing = str(overrides.get("estree-walker", ""))
+    if existing.lstrip("^~").startswith("3."):
+        return []
+    overrides["estree-walker"] = "^3.0.3"
+    try:
+        pkg_path.write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return ["package.json"]
+
+
+_SCRIPT_NODE_FILE_RE = re.compile(r"^node\s+(?:\./)?([\w./-]+\.(?:mjs|cjs|js))\s*$")
+
+
+def drop_dangling_node_script_files(root: str | Path) -> list[str]:
+    """Remove package.json scripts that invoke a Node file which does not exist.
+
+    A model that wires `"build": "node scripts/validate.mjs"` and never writes
+    the file fails its own build with MODULE_NOT_FOUND (the brutalist-zine
+    golden case): the page was complete, a phantom script killed it. Only
+    touches the simple `node <file>` form (no && chains, no args, no binaries)
+    — anything richer is the model's business. Idempotent. Never raises."""
+    pkg_path = Path(root) / "package.json"
+    if not pkg_path.is_file():
+        return []
+    try:
+        pkg = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    scripts = pkg.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    removed: list[str] = []
+    for name, command in list(scripts.items()):
+        if not isinstance(command, str):
+            continue
+        m = _SCRIPT_NODE_FILE_RE.match(command.strip())
+        if m and not (Path(root) / m.group(1)).is_file():
+            del scripts[name]
+            removed.append(f"scripts.{name}")
+    if not removed:
+        return []
+    try:
+        pkg_path.write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return []
+    return removed
+
+
+def ensure_nextjs_metadata(root: str | Path) -> list[str]:
+    """Ensure a Next.js App Router project exports page metadata somewhere.
+
+    Model-written layouts/pages regularly ship no metadata export and no
+    literal <title> (the artdeco golden case: a 'use client' layout with a
+    manual <head> and zero metadata — the seo gate hard-fails it, correctly).
+    The deterministic floor: prepend ``export const metadata = {...}`` to the
+    first SERVER component among app/layout.* / app/page.* — metadata exports
+    are only valid from server components, so a file carrying a "use client"
+    directive is never touched. Title/description come from package.json. If
+    a metadata export or generateMetadata already exists anywhere under app/,
+    the model handled it and this is a no-op. Never raises."""
+    root = Path(root)
+    app_dir = root / "app"
+    if not app_dir.is_dir():
+        return []
+    source_exts = {".jsx", ".tsx", ".js", ".ts"}
+    try:
+        app_files = [p for p in app_dir.rglob("*")
+                     if p.is_file() and p.suffix.lower() in source_exts]
+    except OSError:
+        return []
+    for path in app_files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "export const metadata" in text or "generateMetadata" in text:
+            return []
+    pkg_path = root / "package.json"
+    pkg: dict = {}
+    if pkg_path.is_file():
+        try:
+            loaded = json.loads(pkg_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                pkg = loaded
+        except (OSError, ValueError):
+            pkg = {}
+    title = str(pkg.get("name") or root.name or "App")
+    description = str(pkg.get("description") or f"{title} — generated with SkyN3t.")
+    export = (
+        "export const metadata = { title: "
+        + json.dumps(title)
+        + ", description: "
+        + json.dumps(description)
+        + " };\n\n"
+    )
+    for rel in ("layout.tsx", "layout.jsx", "layout.ts", "layout.js",
+                "page.tsx", "page.jsx", "page.ts", "page.js"):
+        path = app_dir / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        head = text[:300].lower()
+        if '"use client"' in head or "'use client'" in head:
+            continue  # metadata exports are invalid from client components
+        try:
+            path.write_text(export + text, encoding="utf-8")
+        except OSError:
+            return []
+        return [f"app/{rel}"]
+    # Every candidate is a client component (models love 'use client' root
+    # layouts): a metadata export would be invalid — but a literal <title> and
+    # meta description inside the layout's manual <head> is valid HTML and
+    # React hoists it. That is the last honest floor.
+    for rel in ("layout.tsx", "layout.jsx", "layout.ts", "layout.js"):
+        path = app_dir / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "<head>" not in text or re.search(r"<title[\s>]", text):
+            continue
+        snippet = (
+            "        <title>{" + json.dumps(title) + "}</title>\n"
+            '        <meta name="description" content={' + json.dumps(description) + "} />\n"
+        )
+        try:
+            path.write_text(text.replace("<head>", "<head>\n" + snippet, 1), encoding="utf-8")
+        except OSError:
+            return []
+        return [f"app/{rel}"]
+    return []
+
+
 def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dict[str, list[str]]:
     """Run every deterministic, idempotent, code-MUTATING build repair in one
     pass and return what changed. This is the single source of truth for the
@@ -3185,10 +3847,24 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     repeatedly (a complete tree is a no-op). Never raises on an individual
     repair's expected filesystem errors (each function is already defensive)."""
     source_fences = strip_markdown_fences_in_source_files(project_dir)
+    # Same defect as the fences above, different shape: the file is the agent's
+    # rendered markdown BULLET rather than code. Runs first so every later
+    # repair reads real source instead of an indented wrapper.
+    bullet_wrappers = strip_markdown_bullet_wrapper_in_source_files(project_dir)
     sanitized = sanitize_package_json_deps(project_dir)
     relinked = relink_unresolved_relative_imports(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
     added = reconcile_npm_deps(project_dir)
+    # Astro: force ESM estree-walker@3 or `astro build` dies on Node 24's CJS
+    # named-export analysis (a model-written package.json has no such pin).
+    astro_pin = pin_astro_estree_walker_override(project_dir)
+    # package.json scripts invoking a Node file that was never written
+    # (MODULE_NOT_FOUND at build time) — remove the phantom entry.
+    dangling_scripts = drop_dangling_node_script_files(project_dir)
+    # reconcile_npm_deps skips `node:` specifiers (they need no runtime package),
+    # which is why nothing ever supplied their TYPES. Runs after it so it sees
+    # the final declared set.
+    node_types = reconcile_node_types(project_dir)
     peers = reconcile_next_config_peers(project_dir)
     # Next.js App Router: prepend "use client" to interactive components so
     # `next build` doesn't fail static generation on event handlers/hooks.
@@ -3198,6 +3874,10 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # fail `next build` ("Can't resolve '@/...'" / "Expected '{', got 'type'").
     alias_cfg = ensure_path_alias_config(project_dir)
     vitest_alias_cfg = ensure_vitest_alias_config(project_dir)
+    # Next.js App Router: guarantee SOME metadata export exists (models ship
+    # 'use client' layouts with manual <head> and no metadata — the seo gate
+    # then has no title/description to find).
+    nextjs_metadata = ensure_nextjs_metadata(project_dir)
     ts_stripped = strip_ts_type_in_js(project_dir)
     react_entry = repair_react_vite_entrypoint_to_tsx(project_dir, stack=stack)
     # Replace hallucinated lucide-react icon imports (e.g. GeneratorIcon) with real
@@ -3229,14 +3909,28 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # they see the final generated Python source.
     python_imports = sort_ruff_imports(project_dir)
     python_formatted = format_ruff_python_sources(project_dir)
+    # CommonJS tests under `"type": "module"` are refused by Node outright.
+    # MUST precede repair_node_test_script: that one derives its glob from the
+    # extensions actually on disk, so renaming afterwards would leave the glob
+    # pointing at files that no longer exist.
+    cjs_tests = repair_commonjs_test_extensions(project_dir)
+    # `node --test <dir>` does not walk the directory on Node 24 — it resolves
+    # the positional as a module entry point and dies MODULE_NOT_FOUND, so the
+    # suite reports one failing "test" naming a CJS loader even for a pure-ESM
+    # app whose tests are perfect. Rewrite it to the glob form that works.
+    node_test_script = repair_node_test_script(project_dir)
     return {
+        "cjs_tests_renamed": cjs_tests,
+        "node_test_script": node_test_script,
         "npm_deps_added": added,
+        "node_types_added": node_types,
         "npm_deps_sanitized": sanitized,
         "next_config_peers": peers,
         "imports_relinked": relinked,
         "imports_scaffolded": stubbed,
         "use_client_added": use_client,
         "source_fences_stripped": source_fences,
+        "bullet_wrappers_stripped": bullet_wrappers,
         "path_alias_config": alias_cfg,
         "vitest_alias_config": vitest_alias_cfg,
         "ts_in_js_stripped": ts_stripped,
@@ -3251,6 +3945,9 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "texture_placeholders_created": textures.get("placeholders_created", []),
         "python_imports_sorted": python_imports,
         "python_formatted": python_formatted,
+        "astro_estree_pin": astro_pin,
+        "dangling_scripts_dropped": dangling_scripts,
+        "nextjs_metadata_added": nextjs_metadata,
     }
 
 
@@ -3328,6 +4025,21 @@ def _mock_llm_default_enabled() -> bool:
         return True
 
 
+def _proof_posture_default() -> str:
+    """The ``build_posture`` setting. Never raises.
+
+    Defaults to ``"release"`` on any failure so a proof can only ever become
+    *more* permissive through explicit configuration, never through an error.
+    """
+    try:
+        from skyn3t.config.settings import get_settings
+        raw = str(getattr(get_settings(), "build_posture", "release") or "release")
+    except Exception:  # noqa: BLE001
+        return "release"
+    normalized = raw.strip().lower()
+    return normalized if normalized in {"lab", "release"} else "release"
+
+
 def _start_proof_mock_llm(
     pdir: Path, cmd_ctx: _ProofCommandContext | None, *, enabled: bool,
 ) -> _MockLLMSeam | None:
@@ -3393,6 +4105,7 @@ def proof_run(
     install_python_deps: bool | None = None,
     python_deps_timeout: int | None = None,
     brief: str = "",
+    posture: str | None = None,
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
@@ -3404,9 +4117,22 @@ def proof_run(
     ``mock_llm_proof_enabled`` setting). When active for an LLM-calling project, a
     local deterministic OpenAI/Anthropic mock backs the project's OWN test step so
     it runs headlessly at $0 (build steps are never affected; degrade-open).
+
+    ``posture``: "lab" | "release" (None -> the ``build_posture`` setting). Under
+    "lab", failures that are about QUALITY rather than whether the app RUNS —
+    failing LLM-authored tests, a ruff style failure, thin checklist coverage —
+    are recorded in ``advisory_failures`` instead of flipping ``passed``.
+    ``detail`` is populated identically, so ``error_gaps()`` still feeds the fix
+    loop. Everything that proves the delivery is broken (syntax errors, no
+    substantive files, a dead entrypoint, unresolved imports, a failed native
+    build) blocks in BOTH postures.
     """
     pdir = Path(project_dir)
     checklist = checklist or []
+    lab_posture = (
+        _proof_posture_default() if posture is None else str(posture).strip().lower()
+    ) == "lab"
+    advisory_failures: list[str] = []
 
     mode = "local"
     cmd_ctx = _proof_command_context(execution_backend, stack)
@@ -3430,9 +4156,14 @@ def proof_run(
     # Never trust an empty scaffold: must have at least one substantive file and
     # no Python syntax errors to pass.
     passed = substantive > 0 and not syntax_errors
-    # If a checklist exists, require at least half of it present.
+    # If a checklist exists, require at least half of it present. The checklist
+    # is LLM-authored filenames, so codegen legitimately renaming a file reads as
+    # a coverage miss — advisory under lab posture.
     if checklist and present < max(1, len(checklist) // 2):
-        passed = False
+        if lab_posture:
+            advisory_failures.append("checklist")
+        else:
+            passed = False
 
     detail: dict[str, Any] = {
         "stack": stack,
@@ -3548,13 +4279,42 @@ def proof_run(
             if "<exports>" not in missing:
                 missing = [*missing, "<exports>"]
 
+    # A page that references a file nobody wrote 404s on every load. Checked
+    # BEFORE the unwired-components heuristic below because the two used to be
+    # conflated: a delivered site whose index.html pointed at four scripts that
+    # were never written was reported as "entry reaches none of the components",
+    # so the fix loop was told to wire up components that were already wired,
+    # and never repaired the actual dangling tags.
+    if total > 0:
+        dangling = _dangling_html_refs(pdir)
+        if dangling:
+            passed = False
+            detail["dangling_html_refs"] = dangling
+            detail.setdefault(
+                "reason",
+                f"{len(dangling)} HTML reference(s) point at files that do not exist",
+            )
+            if "<html-refs>" not in missing:
+                missing = [*missing, "<html-refs>"]
+
     # Behaviour, not vibes (rule #3): a delivered app that ships real components
     # but an entry which reaches NONE of them renders an unwired/stub entry, not
     # the app — it has NOT been proven.
     if passed and total > 0:
         stub_note = _unwired_components(pdir)
         if stub_note:
-            passed = False
+            # A reachability HEURISTIC, not delivery integrity: it depends on
+            # recognising an entry convention, and every unfamiliar project
+            # shape re-arms a false accusation. Advisory under lab posture —
+            # detail is populated identically, so extract_error_gaps still
+            # emits UNWIRED ENTRY and _fix_loop still runs. Advisory means
+            # "does not block", never "not repaired". The unambiguous,
+            # mechanically-repairable version of this defect is caught by
+            # _dangling_html_refs above, which blocks in both postures.
+            if lab_posture:
+                advisory_failures.append("unwired_components")
+            else:
+                passed = False
             detail["unwired_components"] = stub_note
             detail.setdefault("reason", stub_note)
             if "<wired-entry>" not in missing:
@@ -3572,24 +4332,6 @@ def proof_run(
     if mock_seam is not None:
         detail["mock_llm"] = "active"
     try:
-        # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
-        # A real failure fails the proof (and routes into the fix loop). Inability to
-        # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
-        if run_tests and passed:
-            ran, tests_passed, summary = _run_generated_tests(
-                pdir, stack, test_timeout, cmd_ctx, extra_env=mock_env)
-            if ran:
-                detail["tests"] = "passed" if tests_passed else "failed"
-                detail["test_summary"] = summary
-                if not tests_passed:
-                    passed = False
-                    if "<tests>" not in missing:
-                        missing = [*missing, "<tests>"]
-            else:
-                detail["tests"] = "skipped"
-                if summary:
-                    detail["test_summary"] = summary
-
         # Behaviour, not vibes: compile an emitted project through its native
         # package workflow. Node/web uses npm and Python packages build an isolated
         # wheel; a static manifest check alone can greenlight a tree that cannot be
@@ -3598,7 +4340,31 @@ def proof_run(
         if run_build and passed:
             # Swift takes its OWN branch (`swift build`); it is NOT a node stack, so it
             # must not go through the npm install/build path.
-            if (stack or "").lower() in _SWIFT_STACKS:
+            if (stack or "").lower() in _SWIFT_IOS_STACKS:
+                ran, build_ok, summary = _run_swift_ios_build(pdir, build_timeout, cmd_ctx)
+                if ran:
+                    detail["build"] = "passed" if build_ok else "failed"
+                    detail["build_summary"] = summary
+                    if not build_ok:
+                        passed = False
+                        if "<build>" not in missing:
+                            missing = [*missing, "<build>"]
+                    elif run_tests:
+                        t_ran, t_ok, t_sum = _run_swift_ios_tests(pdir, test_timeout, cmd_ctx)
+                        if t_ran:
+                            detail["swift_ios_tests"] = "passed" if t_ok else "failed"
+                            detail["swift_ios_tests_summary"] = t_sum
+                            if not t_ok:
+                                passed = False
+                                if "<swift-ios-tests>" not in missing:
+                                    missing = [*missing, "<swift-ios-tests>"]
+                        elif t_sum:
+                            detail["swift_ios_tests_summary"] = t_sum
+                else:
+                    detail.setdefault("build", "skipped")
+                    if summary:
+                        detail["build_summary"] = summary
+            elif (stack or "").lower() in _SWIFT_STACKS:
                 ran, build_ok, summary = _run_swift_build(pdir, build_timeout, cmd_ctx)
                 if ran:
                     detail["build"] = "passed" if build_ok else "failed"
@@ -3638,7 +4404,9 @@ def proof_run(
                     if summary:
                         detail["build_summary"] = summary
             else:
-                ran, build_ok, summary = _run_node_build(pdir, stack, build_timeout, cmd_ctx)
+                node_findings: dict[str, str] = {}
+                ran, build_ok, summary = _run_node_build(
+                    pdir, stack, build_timeout, cmd_ctx, findings=node_findings)
                 if ran:
                     detail["build"] = "passed" if build_ok else "failed"
                     detail["build_summary"] = summary
@@ -3646,10 +4414,61 @@ def proof_run(
                         passed = False
                         if "<build>" not in missing:
                             missing = [*missing, "<build>"]
+                    elif node_findings.get("type_check"):
+                        # The app COMPILES — `astro build` alone produced the
+                        # pages — but a chained type-checker objected. That is a
+                        # quality finding, not a broken delivery, so it is
+                        # treated exactly like ruff and the generated tests:
+                        # recorded, score-dampening, fed to the fix loop, and
+                        # blocking only under release posture.
+                        detail["type_check"] = "failed"
+                        detail["type_check_summary"] = node_findings["type_check"]
+                        if lab_posture:
+                            advisory_failures.append("type_check")
+                        else:
+                            passed = False
+                        if "<type-check>" not in missing:
+                            missing = [*missing, "<type-check>"]
                 else:
                     detail.setdefault("build", "skipped")
                     if summary:
                         detail["build_summary"] = summary
+
+        # Behaviour, not vibes: when it boots, actually RUN the project's own tests.
+        # A real failure fails the proof (and routes into the fix loop). Inability to
+        # run them (no runner / deps / no tests) is a soft skip, never a hard fail.
+        #
+        # AFTER the build, deliberately. Delivered apps declare build-then-test
+        # themselves — one measured here was literally
+        # `"test": "npm run build && python -m pytest"` — and running the probe
+        # first meant every assertion against build output failed on a missing
+        # dist/. On that build a YouTube-links test found 0 and read as an
+        # unimplemented brief requirement; the source had 22 such references and
+        # the built output has 29. Node tests were always post-build; this makes
+        # the generic probe agree. It also fails better: `passed` is already
+        # False when the build failed, so tests are skipped rather than
+        # producing a pile of downstream failures the build caused.
+        if run_tests and passed:
+            ran, tests_passed, summary = _run_generated_tests(
+                pdir, stack, test_timeout, cmd_ctx, extra_env=mock_env)
+            if ran:
+                detail["tests"] = "passed" if tests_passed else "failed"
+                detail["test_summary"] = summary
+                if not tests_passed:
+                    # LLM-authored tests are wrong far more often than the app
+                    # is. Under lab posture record and still feed the fix loop
+                    # (detail is unchanged, so error_gaps() is identical) rather
+                    # than failing a delivery over a bad generated assertion.
+                    if lab_posture:
+                        advisory_failures.append("tests")
+                    else:
+                        passed = False
+                    if "<tests>" not in missing:
+                        missing = [*missing, "<tests>"]
+            else:
+                detail["tests"] = "skipped"
+                if summary:
+                    detail["test_summary"] = summary
 
         # A delivered Python project that explicitly configures Ruff promises a
         # quality contract beyond syntax and package assembly. The deterministic
@@ -3666,7 +4485,12 @@ def proof_run(
                 detail["ruff"] = "passed" if ruff_ok else "failed"
                 detail["ruff_summary"] = summary
                 if not ruff_ok:
-                    passed = False
+                    # Lint style is not delivery integrity: a working app must
+                    # not be undeliverable because of import order.
+                    if lab_posture:
+                        advisory_failures.append("ruff")
+                    else:
+                        passed = False
                     if "<ruff>" not in missing:
                         missing = [*missing, "<ruff>"]
             else:
@@ -3690,7 +4514,12 @@ def proof_run(
                 detail["node_tests"] = "passed" if t_ok else "failed"
                 detail["node_tests_summary"] = t_sum
                 if not t_ok:
-                    passed = False
+                    # Same reasoning as the generated-test step above: a failing
+                    # LLM-authored test is a repair signal, not a failed delivery.
+                    if lab_posture:
+                        advisory_failures.append("node_tests")
+                    else:
+                        passed = False
                     if "<node-tests>" not in missing:
                         missing = [*missing, "<node-tests>"]
             elif t_sum:
@@ -3715,10 +4544,11 @@ def proof_run(
         run_build=run_build,
     )
 
-    # Anti-fake gap producers (advisory, wave-2 items 44/47/48): record
-    # incomplete-code placeholders, brief features with no trace in the delivery,
-    # and a shipped-scaffold-stub. NONE flips `passed` — they only add gaps the
-    # fix-loop consumes + observability. Each is defensive; never breaks the proof.
+    # Persisted-write receipts are DELIVERY CORRUPTION, not a quality opinion: a
+    # file whose body is codegen history metadata instead of the real contents is
+    # broken output, so this blocks in every posture. It used to sit inside the
+    # advisory block below whose comment promised "NONE flips `passed`" — the
+    # code and the comment contradicted each other. Split out so both are true.
     if total > 0:
         try:
             receipt_files = scan_persisted_write_receipts(pdir)
@@ -3727,6 +4557,12 @@ def proof_run(
                 passed = False
         except Exception:  # noqa: BLE001 - scanner failure must not break proof
             pass
+
+    # Anti-fake gap producers (advisory, wave-2 items 44/47/48): record
+    # incomplete-code placeholders, brief features with no trace in the delivery,
+    # and a shipped-scaffold-stub. NONE flips `passed` — they only add gaps the
+    # fix-loop consumes + observability. Each is defensive; never breaks the proof.
+    if total > 0:
         try:
             markers = scan_placeholder_markers(pdir)
             if markers:
@@ -3756,6 +4592,7 @@ def proof_run(
         checklist_present=present,
         missing=missing,
         syntax_errors=syntax_errors,
+        advisory_failures=advisory_failures,
         score=score,
         detail=detail,
     )
@@ -3836,6 +4673,29 @@ def _stack_artifact_check(pdir: Path, stack: str) -> tuple[bool, bool, str]:
                 except OSError:
                     pass
             return (True, False, f"{low} stack: no file imports/references {low}")
+
+        # ---- native iOS SwiftUI / Xcode -----------------------------------
+        if low in _SWIFT_IOS_STACKS:
+            project = pdir / "App.xcodeproj" / "project.pbxproj"
+            info = pdir / "App" / "Info.plist"
+            swift_srcs = [
+                f for f in _iter_files(pdir)
+                if f.suffix == ".swift" and "App" in f.relative_to(pdir).parts
+                and f.stat().st_size >= _NONEMPTY
+            ]
+            if not project.exists() or project.stat().st_size < _NONEMPTY:
+                return (True, False, "swift_ios stack: App.xcodeproj/project.pbxproj missing")
+            if not info.exists() or info.stat().st_size < _NONEMPTY:
+                return (True, False, "swift_ios stack: App/Info.plist missing")
+            if not swift_srcs:
+                return (True, False, "swift_ios stack: no App/**/*.swift sources found")
+            try:
+                pbx = project.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pbx = ""
+            if "PBXNativeTarget" not in pbx or "IPHONEOS_DEPLOYMENT_TARGET" not in pbx:
+                return (True, False, "swift_ios stack: project lacks an iOS app target")
+            return (True, True, "swift_ios stack: Xcode target + Info.plist + Swift sources present")
 
         # ---- swift (SwiftUI / Swift Package Manager) ---------------------
         if low == "swift":
@@ -4421,8 +5281,54 @@ _BUILD_DIAG_RE = re.compile(
     r"|Type error:"
     r"|Failed to collect page data for"
     r"|Error occurred prerendering page"
+    # `astro check`, vue-tsc and svelte-check emit
+    #   src/utils/lessons.ts:19:18 - error ts(2352): Conversion of type ...
+    # and raw tsc emits
+    #   src/utils/lessons.ts(19,18): error TS2352: Conversion of type ...
+    # Neither matched anything above, so type errors reached the improver only
+    # if they happened to survive the 700-char tail. Measured on a delivered
+    # Astro site: 12 such errors, of which the stored tail preserved 2 — the
+    # improver was asked to fix a build it could only see a sixth of.
+    r"|error ts\(\d+\)"
+    r"|error TS\d+"
     r"|^\s*\./[\w./\-@\[\]]+\.(?:jsx?|tsx?|mjs|cjs)\s*$"   # offending file path line
 )
+
+
+# Type-checkers codegen chains into `build` even though our own scaffold does
+# not (skyn3t/agents/_scaffold.py emits a plain `"build": "astro build"`).
+_TYPE_CHECK_COMMANDS: tuple[str, ...] = (
+    "astro check", "vue-tsc", "svelte-check", "tsc --noEmit", "tsc -b", "tsc --build",
+)
+# The diagnostics those tools emit. Same shapes _BUILD_DIAG_RE matches.
+_TYPE_DIAGNOSTIC_RE = re.compile(r"error ts\(\d+\)|error TS\d+")
+
+
+def compile_only_segment(build_script: str) -> str:
+    """Return the compile half of a `<type-check> && <build>` script, else "".
+
+    Measured on a delivered Astro site: codegen overwrote the scaffold's
+    ``"build": "astro build"`` with ``"astro check && astro build"``, so one
+    ts(2352) was reported as ``<build>`` — "the delivery is broken" — for an app
+    where ``astro build`` alone exits 0 and emits 14 pages. Both MoA advisors
+    had independently specified the plain script too; codegen was the only
+    party that disagreed.
+
+    Deliberately narrow: the FIRST segment must be a recognised type-checker
+    and exactly one command may follow. A three-part chain, or a leading
+    segment we do not recognise, returns "" and the failure stays a hard build
+    failure — this must never turn a genuine compile error into a pass."""
+    parts = [p.strip() for p in str(build_script or "").split("&&")]
+    if len(parts) != 2 or not all(parts):
+        return ""
+    first = parts[0]
+    # The stock Vite TS template ships `"build": "tsc && vite build"` — a bare
+    # `tsc` first segment is a type check too. Token-bounded so a lookalike
+    # binary ("tsc-watch") never qualifies.
+    bare_tsc = first == "tsc" or first.startswith("tsc ")
+    if not bare_tsc and not any(first.startswith(cmd) for cmd in _TYPE_CHECK_COMMANDS):
+        return ""
+    return parts[1]
 
 
 def _distill_build_errors(output: str, *, tail: int = 700, max_diag: int = 30) -> str:
@@ -4637,12 +5543,22 @@ def _run_node_build(
     stack: str,
     timeout: int,
     cmd_ctx: _ProofCommandContext | None = None,
+    *,
+    findings: dict[str, str] | None = None,
 ) -> tuple[bool, bool, str]:
     """Compile a node/web project for real: npm install + npm run build.
 
     Returns ``(ran, passed, summary)``. ``ran=False`` is a soft skip (no npm, no
     build script, or the install failed — e.g. offline) and must NOT fail the
     proof. A non-zero build IS a real failure. Never raises.
+
+    ``findings`` is an optional out-parameter. When a compound
+    ``<type-check> && <build>`` script fails on TYPE diagnostics but the compile
+    half alone succeeds — or a separately declared ``typecheck``/``check``
+    script fails on type diagnostics after the build itself passed — the app is
+    reported as BUILT and ``findings["type_check"]`` carries the diagnostics —
+    a quality finding, not a broken delivery. Omitting it preserves the
+    previous return values exactly.
     """
     import json as _json
     import shutil
@@ -4706,6 +5622,37 @@ def _run_node_build(
             return (False, False, "")
         out = ((bld.stdout or "") + (bld.stderr or "")).strip()
         if bld.returncode != 0:
+            # A `<type-check> && <build>` script reports a TYPE error as a build
+            # failure. Re-run the compile half alone: if the app builds, the
+            # delivery is not broken and the type error is a quality finding.
+            # Only ever attempted for a recognised two-part script whose output
+            # carries type diagnostics, so a genuine compile error still fails.
+            compile_only = compile_only_segment(str(scripts.get(build_cmd) or ""))
+            if compile_only and _TYPE_DIAGNOSTIC_RE.search(out):
+                retry = _run_proof_command(
+                    cmd_ctx,
+                    [npm_cmd, "exec", "--", *compile_only.split()],
+                    cwd=pdir,
+                    timeout=max(30, timeout - install_budget),
+                    env=env,
+                )
+                retry_out = ((retry.stdout or "") + (retry.stderr or "")).strip()
+                if not retry.timed_out and retry.returncode == 0:
+                    if findings is not None:
+                        findings["type_check"] = _distill_build_errors(out)
+                    mark_npm_build_current(pdir, build_cmd)
+                    summaries.append(
+                        retry_out[-300:] if retry_out else f"{compile_only} ok"
+                    )
+                    return (True, True, "; ".join(p for p in summaries if p))
+                # The compile half failed too, so the app genuinely does not
+                # build. Report THAT error rather than the type diagnostics:
+                # the chained checker aborts before compiling, so the real
+                # blocker appears only in this second run. Same reasoning as
+                # the npm stale-metadata retry — the retry's error is the one
+                # the fix loop needs.
+                if retry_out and not retry.timed_out:
+                    return (True, False, _distill_build_errors(retry_out))
             # Surface file/symbol diagnostics so the fix-loop targets the real
             # compiler cause instead of receiving an unhelpful output tail.
             return (True, False, _distill_build_errors(out))
@@ -4741,6 +5688,18 @@ def _run_node_build(
             or "Continue?" in validation_out
         )
         if validation.returncode != 0 or incomplete_prompt:
+            if not incomplete_prompt and _TYPE_DIAGNOSTIC_RE.search(validation_out):
+                # The app already BUILT; a separately declared typecheck/check
+                # script failing on TYPE diagnostics is the same quality
+                # finding as a chained `<check> && <build>` script — reported
+                # via ``findings["type_check"]`` (advisory under lab posture),
+                # not a broken delivery. A checker crash, misconfiguration, or
+                # incomplete-install prompt (no type diagnostics) still fails
+                # the build outright.
+                if findings is not None:
+                    findings["type_check"] = _distill_build_errors(validation_out)
+                summaries.append(f"npm run {validation_cmd}: type errors (advisory)")
+                return (True, True, "; ".join(part for part in summaries if part))
             return (True, False, _distill_build_errors(validation_out))
         summaries.append(
             validation_out[-300:]
@@ -4894,6 +5853,9 @@ def _run_ruff_check(
 # Manager (`swift build`), not npm. Its own proof branch keeps it out of the
 # node install/build path entirely.
 _SWIFT_STACKS = ("swift",)
+# Native iOS uses Xcode rather than SwiftPM. Keep a separate family so proof
+# never routes a simulator build through swift build or npm.
+_SWIFT_IOS_STACKS = ("swift_ios",)
 
 
 def _run_swift_build(
@@ -4946,6 +5908,76 @@ def _run_swift_build(
     if bld.returncode == 0:
         return (True, True, out[-300:])
     return (True, False, out[-700:])
+
+
+def _ios_xcode_project(pdir: Path) -> Path | None:
+    preferred = pdir / "App.xcodeproj"
+    if (preferred / "project.pbxproj").is_file():
+        return preferred
+    for candidate in pdir.glob("*.xcodeproj"):
+        if (candidate / "project.pbxproj").is_file():
+            return candidate
+    return None
+
+
+def _run_swift_ios_build(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Build a native iOS target with the simulator SDK when a Mac provides Xcode."""
+    import shutil
+
+    if _use_container_command_names(cmd_ctx):
+        return (False, False, "xcodebuild requires a macOS host — build skipped")
+    xcodebuild = shutil.which("xcodebuild")
+    project = _ios_xcode_project(pdir)
+    if xcodebuild is None:
+        return (False, False, "xcodebuild missing — native iOS build skipped")
+    if project is None:
+        return (False, False, "no .xcodeproj — native iOS build skipped")
+    result = _run_proof_command(
+        cmd_ctx,
+        [str(xcodebuild), "-project", project.name, "-scheme", "App", "-sdk",
+         "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build"],
+        cwd=pdir, timeout=timeout, env=dict(os.environ), network=False,
+    )
+    if result.timed_out:
+        return (True, False, f"xcodebuild timed out after {timeout}s")
+    if result.returncode == 127:
+        return (False, False, "xcodebuild could not be launched — build skipped")
+    out = ((result.stdout or "") + (result.stderr or "")).strip()
+    return (True, result.returncode == 0, out[-900:] or "xcodebuild build finished")
+
+
+def _run_swift_ios_tests(
+    pdir: Path,
+    timeout: int,
+    cmd_ctx: _ProofCommandContext | None = None,
+) -> tuple[bool, bool, str]:
+    """Run XCTest only when the Mac user selected an installed simulator destination."""
+    import shutil
+
+    if _use_container_command_names(cmd_ctx):
+        return (False, False, "xcodebuild XCTest requires a macOS host")
+    xcodebuild = shutil.which("xcodebuild")
+    project = _ios_xcode_project(pdir)
+    destination = os.getenv("SKYN3T_IOS_TEST_DESTINATION", "").strip()
+    if xcodebuild is None or project is None:
+        return (False, False, "")
+    if not destination:
+        return (False, False, "set SKYN3T_IOS_TEST_DESTINATION to run XCTest on an installed simulator")
+    result = _run_proof_command(
+        cmd_ctx,
+        [str(xcodebuild), "-project", project.name, "-scheme", "App", "-destination", destination, "test"],
+        cwd=pdir, timeout=timeout, env=dict(os.environ), network=False,
+    )
+    if result.timed_out:
+        return (True, False, "xcodebuild test timed out")
+    if result.returncode == 127:
+        return (False, False, "xcodebuild test could not launch")
+    out = ((result.stdout or "") + (result.stderr or "")).strip()
+    return (True, result.returncode == 0, out[-900:] or "xcodebuild test finished")
 
 
 def _run_swift_tests(

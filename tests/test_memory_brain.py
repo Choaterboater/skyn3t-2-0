@@ -122,10 +122,78 @@ def test_ingestor_uses_injected_rag():
     rag = _FakeRag()
     ing = ExperienceIngestor(bus, rag_engine=rag)
     ing.start()
+    ev = Event(type=EventType.BUILD_COMPLETED, source="studio",
+               payload={"build_id": "b1", "slug": "app", "score": 90.0, "verdict": "go"})
+    _run(bus.publish(ev))
+    assert len(rag.docs) == 1
+    assert ing.stats()["ingested"] == 1
+
+
+def test_ingestor_ignores_task_completed_stubs():
+    # Task outcomes carry no reusable content (the emitter sends no task type,
+    # so every doc read "Task 'task' completed by <agent>, task_id=...,
+    # success=True") yet minted ~one stub per pipeline stage, crowding recall's
+    # top-5 out of genuinely useful ingested content.
+    bus = EventBus()
+    rag = _FakeRag()
+    ing = ExperienceIngestor(bus, rag_engine=rag)
+    ing.start()
     ev = Event(type=EventType.TASK_COMPLETED, source="codegen",
                payload={"task_id": "t1", "type": "codegen", "success": True})
     _run(bus.publish(ev))
-    assert len(rag.docs) == 1
+    assert rag.docs == []
+    assert ing.stats()["ingested"] == 0
+
+
+class _MetadataRag:
+    """Engine exposing the real RagEngine's ingest_text(text, source, metadata)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def ingest_text(self, text, *, source="", metadata=None):
+        self.calls.append({"text": text, "source": source, "metadata": metadata})
+        return 1
+
+
+class _LegacyTextRag:
+    """Engine whose ingest_text predates the metadata kwarg."""
+
+    def __init__(self):
+        self.calls = []
+
+    def ingest_text(self, text, *, source=""):
+        self.calls.append({"text": text, "source": source})
+        return 1
+
+
+def test_ingestor_tags_experience_docs_in_chunk_metadata():
+    bus = EventBus()
+    rag = _MetadataRag()
+    ing = ExperienceIngestor(bus, rag_engine=rag)
+    ing.start()
+    ev = Event(type=EventType.BUILD_COMPLETED, source="studio",
+               payload={"build_id": "b1", "slug": "app", "stack": "react",
+                        "score": 90.0, "verdict": "go"})
+    _run(bus.publish(ev))
+    assert len(rag.calls) == 1
+    meta = rag.calls[0]["metadata"]
+    # The experience marker lets recall filter stubs out of pattern retrieval;
+    # the doc's own tags ride along instead of being dead data.
+    assert meta["experience"] is True
+    assert meta["kind"] == "build"
+    assert meta["stack"] == "react"
+
+
+def test_ingestor_degrades_to_legacy_ingest_text_signature():
+    bus = EventBus()
+    rag = _LegacyTextRag()
+    ing = ExperienceIngestor(bus, rag_engine=rag)
+    ing.start()
+    ev = Event(type=EventType.BUILD_COMPLETED, source="studio",
+               payload={"build_id": "b1", "slug": "app", "score": 90.0, "verdict": "go"})
+    _run(bus.publish(ev))
+    assert len(rag.calls) == 1  # TypeError fallback re-ingested without metadata
     assert ing.stats()["ingested"] == 1
 
 

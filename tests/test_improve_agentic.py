@@ -349,6 +349,25 @@ def test_agentic_improve_prompt_includes_stage_role_guidance(tmp_path):
     assert "imported React builder role" in llm.agentic_calls[0]["prompt"]
 
 
+def test_agentic_improve_prompt_includes_repair_council_guidance(tmp_path):
+    # The fix loop threads repair-stage council advice (payload["moa_guidance"])
+    # into the whole-app agentic repair prompt; per-file rewrite prompts stay
+    # tight and never carry it.
+    _seed(tmp_path)
+    llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})
+    _run(
+        tmp_path,
+        llm,
+        extra={"moa_guidance": (
+            "ADVISORY COUNCIL (Mixture of Agents) — repair guidance: check the "
+            "tsconfig paths alias before touching imports."
+        )},
+    )
+    prompt = llm.agentic_calls[0]["prompt"]
+    assert "ADVISORY COUNCIL" in prompt
+    assert "tsconfig paths alias" in prompt
+
+
 def test_workspace_profile_reaches_agentic_and_frontend_repair_prompts_only(tmp_path):
     _seed(tmp_path)
     llm = _AgenticLLM(writes={"app/page.jsx": _PAGE_IMPROVED})

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
+import signal
 import subprocess
 import uuid
 import warnings
@@ -28,9 +28,15 @@ from time import time
 import structlog
 
 from skyn3t.config.settings import Settings, get_settings
+from skyn3t.exec_paths import find_executable, resolve_executable
 from skyn3t.security.secrets import SecretsStore, filter_env, scrub_text
 
 log = structlog.get_logger(__name__)
+
+# Full-text fallback warnings already logged in this process, keyed by message
+# (the text differs with/without the network clause). This compacts the LOG
+# only — warnings.warn still fires per exec, and every exec still logs.
+_FALLBACK_LOGGED: set[str] = set()
 
 # Optional heavy dependency — guarded so the module always imports (rule #3).
 try:  # pragma: no cover - import guard
@@ -76,6 +82,17 @@ class SandboxResult:
         return self.exit_code == 0 and not self.timed_out
 
 
+def _docker_mount_unavailable(result: SandboxResult, cwd: Path | None) -> bool:
+    """Whether Docker rejected the requested bind mount before execution."""
+    if cwd is None or result.timed_out or result.exit_code != 125:
+        return False
+    text = f"{result.stdout}\n{result.stderr}".lower()
+    return (
+        ("createfile" in text or "mount" in text)
+        and ("access is denied" in text or "mounts denied" in text)
+    )
+
+
 @dataclass
 class SandboxRunner:
     """Runs commands under the safest available backend."""
@@ -109,11 +126,12 @@ class SandboxRunner:
                         client.close()
                     except Exception:  # noqa: BLE001
                         pass
-        if not ok and shutil.which("docker"):
+        docker_path = find_executable("docker")
+        if not ok and docker_path:
             # SDK missing but CLI present — verify the daemon responds.
             try:
                 r = subprocess.run(
-                    ["docker", "info"], capture_output=True, timeout=5
+                    [docker_path, "info"], capture_output=True, timeout=5
                 )
                 ok = r.returncode == 0
             except Exception:  # noqa: BLE001
@@ -168,10 +186,24 @@ class SandboxRunner:
         backend = await self._choose_backend_async()
         clean_env = filter_env(env)
         if backend == "docker":
-            return await self._run_docker(
+            docker_result = await self._run_docker(
                 command, cwd=cwd, timeout=timeout, image=image,
                 stack=stack, env=clean_env, network=network,
             )
+            # ``auto`` promises a loud hardened-host fallback when Docker is
+            # unavailable. A Desktop daemon that rejects this specific source
+            # drive is unavailable for the requested command, even though it
+            # may work for another shared drive. Keep explicit docker mode
+            # strict so callers can require isolation.
+            if (
+                self.settings.execution_backend == "auto"
+                and _docker_mount_unavailable(docker_result, cwd)
+            ):
+                return await self._run_subprocess(
+                    command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
+                    fallback_reason="Docker cannot mount this project directory",
+                )
+            return docker_result
         return await self._run_subprocess(
             command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
         )
@@ -227,11 +259,28 @@ class SandboxRunner:
         return res
 
     # ---- subprocess (hardened local) ------------------------------------
-    async def _run_subprocess(self, command, *, cwd, timeout, env, network: bool = False) -> SandboxResult:
+    async def _run_subprocess(
+        self, command, *, cwd, timeout, env, network: bool = False,
+        fallback_reason: str | None = None,
+    ) -> SandboxResult:
+        if isinstance(command, str):
+            # A str here would run through HOST `sh -lc` — a shell-injection
+            # footgun outside the container boundary. Only the docker backend
+            # may wrap strings in a shell; this backend requires argv lists.
+            raise TypeError(
+                "SandboxRunner subprocess backend does not accept str commands; "
+                "pass an argv list (e.g. ['echo', 'hi'])."
+            )
         warning = (
-            "SANDBOX FALLBACK: Docker unavailable; running command in a HARDENED "
-            "LOCAL SUBPROCESS on the host. This is NOT fully isolated. Install "
-            "Docker or set SKYN3T_EXECUTION_BACKEND=docker for true isolation."
+            "SANDBOX FALLBACK: "
+            + (
+                f"{fallback_reason}; "
+                if fallback_reason
+                else "Docker unavailable; "
+            )
+            + "running command in a HARDENED LOCAL SUBPROCESS on the host. "
+            "This is NOT fully isolated. Install Docker or set "
+            "SKYN3T_EXECUTION_BACKEND=docker for true isolation."
         )
         if not network:
             # The subprocess backend cannot enforce network isolation; say so
@@ -242,11 +291,17 @@ class SandboxRunner:
             )
         # LOUD warning — never a silent host exec (spec requirement).
         warnings.warn(warning, RuntimeWarning, stacklevel=2)
-        log.warning("sandbox.fallback.subprocess", message=warning)
-        if isinstance(command, str):
-            argv = ["sh", "-lc", command]
+        # Every exec is still recorded, so the "never silent" guarantee holds and
+        # res.warning below carries the full text on each result. Only the
+        # repeated full-text LOG line is compacted: on a host where Docker is
+        # permanently absent this fired for every proof command and made up a
+        # third of a real build log, burying the lines an operator needs.
+        if warning in _FALLBACK_LOGGED:
+            log.info("sandbox.fallback.subprocess", repeat=True)
         else:
-            argv = list(command)
+            _FALLBACK_LOGGED.add(warning)
+            log.warning("sandbox.fallback.subprocess", message=warning)
+        argv = list(command)
         # Minimal, scrubbed env. Force a temp HOME so commands can't read host dotfiles.
         safe_env = dict(env or {})
         safe_env.setdefault("PATH", os.environ.get("PATH", "/usr/bin:/bin"))
@@ -259,6 +314,16 @@ class SandboxRunner:
     # ---- shared exec -----------------------------------------------------
     async def _exec(self, argv, *, cwd, timeout, backend, env=None) -> SandboxResult:
         start = time()
+        argv = list(argv)
+        if argv:
+            # create_subprocess_exec bypasses the shell, so on Windows a .cmd
+            # shim (npm, npx, yarn) or a .ps1 launcher is not executable and
+            # raises WinError 2 — reported here as exit 127 "exec failed",
+            # indistinguishable from a genuinely missing tool. That is what made
+            # `npm install` fail on a host where npm works fine, which skipped
+            # the generated tests and native build and capped every build's
+            # score as a "degraded proof environment".
+            argv[0] = resolve_executable(argv[0])
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -266,6 +331,10 @@ class SandboxRunner:
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own process group on POSIX so the timeout tree-kill (killpg
+                # below) can't take skyn3t's own group down with it. The kwarg
+                # is accepted-and-ignored on Windows; the guard documents intent.
+                start_new_session=(os.name != "nt"),
             )
         except (FileNotFoundError, OSError) as exc:
             return SandboxResult(
@@ -277,12 +346,39 @@ class SandboxRunner:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
             timed_out = True
+            # Kill the WHOLE tree before the root. On Windows npm.cmd runs
+            # under cmd.exe: proc.kill() terminates only that shell while the
+            # node grandchildren inherit the stdout/stderr pipes, and an
+            # unbounded communicate() then blocks until every grandchild exits
+            # (a stalled install or a watcher = forever) — hanging the entire
+            # proof and leaving orphans that keep node_modules locked for the
+            # NEXT build. taskkill /T must enumerate the tree while the root
+            # is still alive, so it runs first; proc.kill() stays as backstop.
+            if os.name == "nt":
+                try:
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=10,
+                    )
+                except (OSError, subprocess.SubprocessError):  # pragma: no cover
+                    pass
+            else:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # type: ignore[attr-defined]
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             try:
-                out, err = await proc.communicate()
+                # Bound the drain: any survivor of the tree-kill still holding
+                # the pipes must not block the build forever.
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=10)
             except Exception:  # noqa: BLE001
                 out, err = b"", b"timeout"
         stdout = scrub_text((out or b"").decode("utf-8", "replace"), self.secrets)
@@ -314,7 +410,7 @@ class SandboxRunner:
         dockerfile = self._render_dockerfile(tmpl)
         try:
             proc = subprocess.run(
-                ["docker", "build", "-t", tag, "-f", "-", "."],
+                [resolve_executable("docker"), "build", "-t", tag, "-f", "-", "."],
                 input=dockerfile.encode("utf-8"),
                 capture_output=True, timeout=600,
             )
@@ -331,7 +427,7 @@ class SandboxRunner:
     def _image_exists(self, tag: str) -> bool:
         try:
             r = subprocess.run(
-                ["docker", "image", "inspect", tag],
+                [resolve_executable("docker"), "image", "inspect", tag],
                 capture_output=True, timeout=10,
             )
             return r.returncode == 0

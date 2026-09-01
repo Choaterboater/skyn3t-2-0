@@ -127,6 +127,9 @@ export default function Settings() {
   const [codegenCliProvider, setCodegenCliProvider] = useState("");
   const [codegenCliModel, setCodegenCliModel] = useState("");
   const [openrouterCodegenModel, setOpenrouterCodegenModel] = useState("");
+  const [visionModel, setVisionModel] = useState("");
+  const [codegenModelSlot, setCodegenModelSlot] = useState("");
+  const [repairModelSlot, setRepairModelSlot] = useState("");
   const [modelPins, setModelPins] = useState({
     cheap: "",
     ui: "",
@@ -257,6 +260,9 @@ export default function Settings() {
     setCodegenCliProvider(d.codegen_cli_provider || "");
     setCodegenCliModel(d.codegen_cli_model || "");
     setOpenrouterCodegenModel(d.openrouter_codegen_model || "");
+    setVisionModel(d.vision_model || "");
+    setCodegenModelSlot(d.codegen_model_slot || "");
+    setRepairModelSlot(d.repair_model_slot || "");
     setModelPins({
       cheap: d.model_pins?.cheap || "",
       ui: d.model_pins?.ui || "",
@@ -347,7 +353,7 @@ export default function Settings() {
       if (providerToClear === "openrouter" && returnToAuto) {
         const backend = await apiPost("/llm/backend", { backend: "auto" });
         updateBackendStatus(backend, "auto");
-        setBackendMsg("OpenRouter disconnected. Auto remains Codex CLI-only for future builds.");
+        setBackendMsg("OpenRouter disconnected. Auto remains local-CLI-only for future builds.");
       }
       setKey("");
       setKeyMsg(
@@ -594,6 +600,9 @@ export default function Settings() {
         codegen_cli_provider: codegenCliProvider,
         codegen_cli_model: codegenCliModel,
         openrouter_codegen_model: normalizeModelId(openrouterCodegenModel),
+        vision_model: normalizeModelId(visionModel),
+        codegen_model_slot: codegenModelSlot,
+        repair_model_slot: repairModelSlot,
         model_pins: {
           cheap: normalizeModelId(modelPins.cheap),
           ui: normalizeModelId(modelPins.ui),
@@ -657,6 +666,7 @@ export default function Settings() {
       }
     : null;
 
+  const noClaude = data?.no_claude !== false;
   const active = secrets.data?.backend;
   const routing = secrets.data?.routing || {};
   const codegen = routing.codegen || {};
@@ -736,9 +746,10 @@ export default function Settings() {
           <div className="p-4">
             <p className="mb-4 text-sm text-ash">
               This choice is persisted for every future Foundry run. <span className="font-mono text-bone">auto</span>{" "}
-              is Codex CLI-only: it never sends a request to OpenRouter or another paid
-              API, even when a provider key is stored. CLI backends use the installed
-              command and its signed-in provider account.
+              is local-CLI-only: it picks the first signed-in CLI in priority order
+              ({noClaude ? "Codex, then Kimi" : "Codex, then Claude, then Kimi"}) and never sends a request to OpenRouter
+              or another paid API, even when a provider key is stored. CLI backends
+              use the installed command and its signed-in provider account.
             </p>
             <p className="mb-4 text-[11px] text-ash/80">
               An explicitly selected CLI never falls back to OpenRouter. If its command
@@ -746,7 +757,9 @@ export default function Settings() {
               and uses the offline stub.
             </p>
             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              {BACKEND_OPTIONS.map((option) => {
+              {BACKEND_OPTIONS.filter(
+                (option) => !noClaude || option.id !== "claude_cli",
+              ).map((option) => {
                 const sel = requestedBackend === option.id;
                 const status = cliBackendStatus(llmBackends.data, option.id);
                 const unavailable =
@@ -790,7 +803,7 @@ export default function Settings() {
                 OpenRouter is never selected from <span className="font-mono text-bone">auto</span>.
                 Connect a key and choose this route intentionally when you want hosted
                 provider billing. Disconnecting disables this app&apos;s route and returns
-                future builds to Codex CLI-only auto mode.
+                future builds to local-CLI-only auto mode.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {openrouterConfigured ? (
@@ -822,7 +835,7 @@ export default function Settings() {
             </div>
             {selectedBackendOption?.kind === "cli" ? (
               <div className="mt-3 border-l-2 border-hairline pl-3 text-[11px] text-ash">
-                <p className={selectedBackendStatus.available ? "text-plasma" : "text-ember"}>
+                <p className={`break-all ${selectedBackendStatus.available ? "text-plasma" : "text-ember"}`}>
                   {selectedBackendStatus.available
                     ? `${selectedBackendOption.label} command available${
                         selectedBackendStatus.detail?.path
@@ -983,7 +996,9 @@ export default function Settings() {
                 onChange={(e) => setCodegenCliProvider(e.target.value)}
                 className="field max-w-[16rem]"
               >
-                {CODEGEN_CLI_OPTIONS.map((option) => {
+                {CODEGEN_CLI_OPTIONS.filter(
+                  (option) => !noClaude || option.provider !== "claude",
+                ).map((option) => {
                   const status = cliProviderStatus(llmBackends.data, option.provider);
                   const unavailable = option.kind === "cli" && status.available !== true;
                   return (
@@ -1037,6 +1052,35 @@ export default function Settings() {
                     />
                   ))}
                 </datalist>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  className="field min-w-[12rem] flex-1"
+                  aria-label="Vision model"
+                  placeholder="Vision model (optional)"
+                  value={visionModel}
+                  onChange={(e) => setVisionModel(e.target.value)}
+                  title="Model used for visual checks; empty uses the default vision route"
+                />
+                <input
+                  type="text"
+                  className="field min-w-[12rem] flex-1"
+                  aria-label="Codegen model slot"
+                  placeholder="codegen slot e.g. claude_cli:sonnet"
+                  value={codegenModelSlot}
+                  onChange={(e) => setCodegenModelSlot(e.target.value)}
+                  title="provider:model slot for greenfield codegen; empty uses tier routing"
+                />
+                <input
+                  type="text"
+                  className="field min-w-[12rem] flex-1"
+                  aria-label="Repair model slot"
+                  placeholder="repair slot e.g. openrouter:deepseek/..."
+                  value={repairModelSlot}
+                  onChange={(e) => setRepairModelSlot(e.target.value)}
+                  title="provider:model slot for the repair/improve loop; empty uses tier routing"
+                />
               </div>
               </div>
             </div>
@@ -1156,7 +1200,7 @@ export default function Settings() {
             <p className="mb-4 text-sm text-ash">
               Stored in the server&apos;s <code className="font-mono text-bone">.env</code>.
               A stored key does not activate a provider. <span className="font-mono text-bone">auto</span>{" "}
-              always remains Codex CLI-only. OpenRouter runs only after you explicitly
+              always remains local-CLI-only. OpenRouter runs only after you explicitly
               choose its manual route in the Backend panel.
             </p>
             <div className="mb-3">

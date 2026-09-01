@@ -84,7 +84,14 @@ _CLIENT_PREFIXES = ("VITE_", "NEXT_PUBLIC_", "REACT_APP_", "PUBLIC_")
 def _client_prefix_for(stack: str) -> str:
     """Browser env prefix preferred by the selected client stack."""
     stack_name = (stack or "").strip().lower()
-    return "NEXT_PUBLIC_" if stack_name in ("next", "nextjs") else "VITE_"
+    if stack_name in ("next", "nextjs"):
+        return "NEXT_PUBLIC_"
+    # Astro only exposes PUBLIC_-prefixed vars to the browser; a VITE_ name
+    # would silently be undefined client-side. (REACT_APP_ has no producing
+    # stack — the planner's react stacks are all Vite-based.)
+    if stack_name == "astro":
+        return "PUBLIC_"
+    return "VITE_"
 
 
 def _normalize_client_key_name(name: str, stack: str) -> str:
@@ -96,6 +103,36 @@ def _normalize_client_key_name(name: str, stack: str) -> str:
     return f"{prefix}{name}"
 
 
+def _strip_client_prefix(name: str) -> str:
+    """Drop any browser-exposure prefix from a key that must stay server-side.
+
+    Keeping e.g. a ``NEXT_PUBLIC_`` name on a server-scoped key is not
+    cosmetic: Next inlines every ``NEXT_PUBLIC_`` var into the browser bundle
+    regardless of what our spec says its scope is.
+    """
+    for existing in _CLIENT_PREFIXES:
+        if name.startswith(existing):
+            return name.removeprefix(existing)
+    return name
+
+
+def _must_stay_server(name: str, kind: str) -> bool:
+    """Names/kinds that must never ship in a browser bundle.
+
+    Webhook URLs are capability-bearing (posting to one IS the permission —
+    ``skyn3t.security.secrets`` lists ``webhook`` as a secret marker for the
+    same reason), so they stay server-side alongside secrets, DB DSNs, and
+    auth material.
+    """
+    up = (name or "").upper()
+    if kind == "secret" or up == "DATABASE_URL" or "WEBHOOK" in up:
+        return True
+    # Kind labels can lie (an LLM answering kind="api_key" for
+    # VITE_STRIPE_SECRET_KEY); the NAME's own secret markers rule regardless —
+    # same tokens config_spec.kind_for treats as secret-defining.
+    return any(token in up for token in ("SECRET", "PASSWORD", "PRIVATE"))
+
+
 def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
     low = (brief or "").lower()
     stack_name = (stack or "").strip().lower()
@@ -105,9 +142,10 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
     apis: list[str] = []
 
     def add(name: str, kind: str, label: str) -> None:
-        # Secrets/db/auth stay server-side even on a frontend stack; user-facing
-        # third-party API keys are client config when there's no backend.
-        if kind in ("secret",) or name in ("DATABASE_URL", "AUTH_SECRET"):
+        # Secrets/db/auth/webhooks stay server-side even on a frontend stack;
+        # user-facing third-party API keys are client config when there's no
+        # backend.
+        if _must_stay_server(name, kind):
             scope = "server"
         else:
             scope = "client" if client_stack else "server"
@@ -123,16 +161,27 @@ def _keyword_detect(brief: str, stack: str) -> ConfigSpec:
                 continue
             add(name, kind, label)
     if supabase_requested:
-        keys.setdefault("NEXT_PUBLIC_SUPABASE_URL", ConfigKey(
-            name="NEXT_PUBLIC_SUPABASE_URL",
+        # The URL + anon key are browser-safe by design, but their NAMES must
+        # follow the selected stack's exposure convention — a hardcoded
+        # NEXT_PUBLIC_ prefix is invisible to a Vite/Astro build, and on a
+        # backend stack they are plain server config.
+        supa_scope = "client" if client_stack else "server"
+
+        def _supa_name(base: str) -> str:
+            return _normalize_client_key_name(base, stack) if supa_scope == "client" else base
+
+        supa_url = _supa_name("SUPABASE_URL")
+        keys.setdefault(supa_url, ConfigKey(
+            name=supa_url,
             kind="url",
-            scope="client",
+            scope=supa_scope,
             description="Supabase project URL",
         ))
-        keys.setdefault("NEXT_PUBLIC_SUPABASE_ANON_KEY", ConfigKey(
-            name="NEXT_PUBLIC_SUPABASE_ANON_KEY",
+        supa_anon = _supa_name("SUPABASE_ANON_KEY")
+        keys.setdefault(supa_anon, ConfigKey(
+            name=supa_anon,
             kind="api_key",
-            scope="client",
+            scope=supa_scope,
             description="Supabase anon key",
         ))
         if "Supabase" not in apis:
@@ -189,7 +238,21 @@ def _parse_llm(raw: str) -> ConfigSpec | None:
 def _normalize_spec(spec: ConfigSpec, stack: str) -> ConfigSpec:
     by_name: dict[str, ConfigKey] = {}
     for k in spec.keys:
-        if k.scope == "client":
+        # Re-apply the kind/name-based server-forcing _keyword_detect enforces:
+        # an LLM answering {"name": "STRIPE_SECRET_KEY", "scope": "client"}
+        # must not be prefixed into the browser bundle just because the model
+        # said so. Any browser-exposure prefix is stripped from a forced key —
+        # the prefix itself is what makes build tooling ship it client-side.
+        if k.scope == "client" and _must_stay_server(k.name, k.kind):
+            normalized = ConfigKey(
+                name=_strip_client_prefix(k.name),
+                kind=k.kind,
+                description=k.description,
+                scope="server",
+                required=k.required,
+                default=k.default,
+            )
+        elif k.scope == "client":
             normalized = ConfigKey(
                 name=_normalize_client_key_name(k.name, stack),
                 kind=k.kind,

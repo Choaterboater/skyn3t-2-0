@@ -8,6 +8,7 @@ import pytest
 
 from skyn3t.studio.graph_runtime import (
     ArtifactRef,
+    DynamicSpecialistSubgraph,
     EvidenceBundle,
     GraphDefinition,
     GraphExecutor,
@@ -659,3 +660,188 @@ async def test_executor_resume_keeps_succeeded_output_and_restarts_interrupted_n
         NodeStatus.SUCCEEDED,
     ]
     await store.close()
+
+
+def test_graph_definition_returns_only_selected_descendants_in_topological_order() -> None:
+    graph = GraphDefinition(
+        graph_id="descendants",
+        nodes=(
+            GraphNodeSpec(id="source", kind="step"),
+            GraphNodeSpec(id="selected", kind="step", deps=("source",)),
+            GraphNodeSpec(id="descendant", kind="step", deps=("selected",)),
+            GraphNodeSpec(id="unrelated", kind="step"),
+        ),
+    )
+
+    assert graph.descendants("selected") == ("selected", "descendant")
+    assert graph.descendants("selected", include_self=False) == ("descendant",)
+
+
+@pytest.mark.asyncio
+async def test_executor_forks_completed_run_and_reruns_only_descendants_with_proof_comparison(
+    tmp_path,
+) -> None:
+    graph = GraphDefinition(
+        graph_id="selective-rerun",
+        nodes=(
+            GraphNodeSpec(id="source", kind="step", cacheable=False),
+            GraphNodeSpec(
+                id="selected",
+                kind="step",
+                deps=("source",),
+                cacheable=True,
+            ),
+            GraphNodeSpec(
+                id="verify",
+                kind="step",
+                deps=("selected",),
+                cacheable=True,
+            ),
+            GraphNodeSpec(id="unrelated", kind="step", cacheable=False),
+        ),
+    )
+    calls: dict[str, int] = {}
+
+    async def step(context: NodeContext) -> NodeResult:
+        calls[context.node.id] = calls.get(context.node.id, 0) + 1
+        revision = calls[context.node.id]
+        return NodeResult(
+            output={"node": context.node.id, "revision": revision},
+            evidence=EvidenceBundle(
+                facts={"node": context.node.id, "revision": revision}
+            ),
+        )
+
+    store = GraphStore(tmp_path / "selective-rerun.sqlite3")
+    executor = GraphExecutor(store, handlers={"step": step})
+    source = await executor.execute(graph, run_id="source-run")
+
+    result = await executor.rerun_descendants(
+        source.run_id,
+        "selected",
+        run_id="selected-rerun",
+    )
+
+    assert result.rerun.status is NodeStatus.SUCCEEDED
+    assert result.rerun.node_statuses == {
+        "source": NodeStatus.SUCCEEDED,
+        "selected": NodeStatus.SUCCEEDED,
+        "verify": NodeStatus.SUCCEEDED,
+        "unrelated": NodeStatus.SUCCEEDED,
+    }
+    assert calls == {"source": 1, "selected": 2, "verify": 2, "unrelated": 1}
+    assert [attempt.node_id for attempt in result.rerun.attempts] == [
+        "selected",
+        "verify",
+    ]
+    assert result.rerun.node_outputs["source"] == source.node_outputs["source"]
+    assert result.rerun.node_outputs["unrelated"] == source.node_outputs["unrelated"]
+    assert result.comparison.rerun_nodes == ("selected", "verify")
+    assert result.comparison.outcome == "changed"
+    assert result.comparison.promotion_status == "review_required"
+    persisted = await store.load_rerun_comparison(result.rerun.run_id)
+    assert persisted is not None
+    assert persisted["comparison_id"] == result.comparison.comparison_id
+    assert persisted["baseline_evidence"] == result.comparison.baseline_evidence
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_executor_runs_bounded_dynamic_specialists_with_inherited_routing(
+    tmp_path,
+) -> None:
+    graph = GraphDefinition(
+        graph_id="specialists",
+        nodes=(GraphNodeSpec(id="prepare", kind="prepare"),),
+    )
+    specialists = DynamicSpecialistSubgraph(
+        parent_node_id="prepare",
+        specialists=(
+            GraphNodeSpec(
+                id="accessibility",
+                kind="specialist",
+                mutates_workspace=True,
+                write_set=("src/a11y",),
+            ),
+            GraphNodeSpec(
+                id="performance",
+                kind="specialist",
+                mutates_workspace=True,
+                write_set=("src/perf",),
+            ),
+        ),
+        max_concurrency=1,
+    )
+    active = 0
+    max_active = 0
+    observed_routing: list[RoutingSnapshot] = []
+
+    async def prepare(_context: NodeContext) -> dict[str, bool]:
+        return {"prepared": True}
+
+    async def specialist(context: NodeContext) -> NodeResult:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        observed_routing.append(context.routing)
+        await asyncio.sleep(0.02)
+        active -= 1
+        return NodeResult(
+            output={"specialist": context.node.id},
+            evidence=EvidenceBundle(facts={"specialist": context.node.id}),
+        )
+
+    routing = RoutingSnapshot(
+        backend="codex_cli",
+        model="gpt-5.6",
+        profile="coding",
+    )
+    store = GraphStore(tmp_path / "specialists.sqlite3")
+    executor = GraphExecutor(
+        store,
+        handlers={"prepare": prepare, "specialist": specialist},
+        max_concurrency=2,
+    )
+
+    run = await executor.execute(
+        graph,
+        run_id="specialist-run",
+        routing=routing,
+        dynamic_specialists=specialists,
+    )
+
+    dynamic_children = tuple(
+        node.id for node in run.graph.nodes if node.concurrency_group == specialists.subgraph_id
+    )
+    assert run.status is NodeStatus.SUCCEEDED
+    assert len(run.graph.nodes) == 4
+    assert len(dynamic_children) == 2
+    assert max_active == 1
+    assert observed_routing == [routing, routing]
+    assert run.inputs["_dynamic_specialist_subgraph"]["routing"] == "inherit-parent-run"
+    assert set(run.node_outputs[specialists.join_node_id]) == set(dynamic_children)
+    loaded = await store.load_run(run.run_id)
+    assert loaded is not None
+    assert loaded.graph == run.graph
+    await store.close()
+
+
+def test_dynamic_specialist_subgraph_rejects_overlapping_workspace_ownership() -> None:
+    with pytest.raises(ValueError, match="overlap"):
+        DynamicSpecialistSubgraph(
+            parent_node_id="prepare",
+            specialists=(
+                GraphNodeSpec(
+                    id="one",
+                    kind="specialist",
+                    mutates_workspace=True,
+                    write_set=("src",),
+                ),
+                GraphNodeSpec(
+                    id="two",
+                    kind="specialist",
+                    mutates_workspace=True,
+                    write_set=("src/components",),
+                ),
+            ),
+        )

@@ -36,6 +36,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from skyn3t.atomic_io import atomic_write_text
 from skyn3t.core.stacks import WEB_STACKS
+from skyn3t.exec_paths import resolve_executable
 from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.app_runner import RunningApp, RunSpec, build_run_spec, free_port
 from skyn3t.studio.lab_tools import LabToolchainReport, inspect_lab_toolchain
@@ -46,6 +47,7 @@ from skyn3t.studio.proof_reuse import (
     preview_input_fingerprint,
     promote_reusable_web_proof,
 )
+from skyn3t.studio.visual_design_contract import read_visual_design_contract
 from skyn3t.studio.visual_proof import audit_responsive_pages
 
 PREVIEW_PROOF_SCHEMA_VERSION = 1
@@ -160,8 +162,11 @@ async def run_command(
 
     started = time.monotonic()
     try:
+        resolved = list(argv)
+        if resolved:
+            resolved[0] = resolve_executable(resolved[0])
         process = await asyncio.create_subprocess_exec(
-            *argv,
+            *resolved,
             cwd=str(cwd) if cwd is not None else None,
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
@@ -320,6 +325,26 @@ async def _call_probe(
     except Exception:  # noqa: BLE001 - a probe failure is simply not-ready
         return False
 
+
+async def _report_preview_progress(
+    callback: Callable[[str, str], Any] | None,
+    phase: str,
+    message: str,
+) -> None:
+    """Send best-effort lifecycle progress to the dashboard.
+
+    A preview must never fail merely because its observer disconnected or a UI
+    event sink is unavailable. The callback is optional so the supervisor stays
+    usable from the CLI and focused tests.
+    """
+    if callback is None:
+        return
+    try:
+        value = callback(phase, message)
+        if inspect.isawaitable(value):
+            await value
+    except Exception:  # noqa: BLE001 - observability cannot break a preview
+        return
 
 async def _inspect_toolchain(
     inspector: Callable[..., LabToolchainReport | Awaitable[LabToolchainReport]],
@@ -792,6 +817,11 @@ class PreviewSupervisor:
         ] = _default_readiness_probe,
         poll_interval: float = 0.25,
         launch_timeout: float = 120.0,
+        # Dependency preparation is a COLD npm ci/pip install inside the
+        # container — routinely 2-5 minutes for framework stacks on Docker
+        # Desktop's Windows filesystem. Sharing launch_timeout (meant for app
+        # STARTUP) made every first preview of a heavier stack "fail" at 120s.
+        prepare_timeout: float = 600.0,
         cleanup_timeout: float = 15.0,
         node_image: str = _DEFAULT_NODE_IMAGE,
         python_image: str = _DEFAULT_PYTHON_IMAGE,
@@ -802,6 +832,7 @@ class PreviewSupervisor:
         self._readiness_probe = readiness_probe
         self._poll_interval = max(0.0, float(poll_interval))
         self._launch_timeout = max(1.0, float(launch_timeout))
+        self._prepare_timeout = max(self._launch_timeout, float(prepare_timeout))
         self._cleanup_timeout = max(1.0, float(cleanup_timeout))
         self._node_image = str(node_image)
         self._python_image = str(python_image)
@@ -821,8 +852,12 @@ class PreviewSupervisor:
         port: int | None = None,
         ready_timeout: float = 30.0,
         toolchain_report: LabToolchainReport | None = None,
+        progress_callback: Callable[[str, str], Any] | None = None,
     ) -> RunningApp:
         pdir = Path(project_dir).expanduser().resolve()
+        await _report_preview_progress(
+            progress_callback, "validating", "Validating the delivered project"
+        )
         normalized_stack = str(stack or "").strip().lower()
         if not pdir.is_dir():
             return self._failure(
@@ -859,6 +894,33 @@ class PreviewSupervisor:
                     reason=str(exc),
                 )
 
+        # "This project has no preview" is a pure local fact, read off the
+        # delivered files by build_run_spec — it needs no daemon. Deciding it
+        # BEFORE the Docker gate means a Python CLI, a library, or a native app
+        # on a Docker-less host reports the benign `no_preview` instead of a
+        # scary "failed: Docker unavailable", which sent users chasing an infra
+        # problem for a project that was never going to have a browser preview.
+        # port=None is accepted here (app_runner.build_run_spec), so this costs
+        # no port allocation; the real spec is still built with the port below.
+        try:
+            if build_run_spec(
+                pdir, normalized_stack, port=None, allow_secret_passthrough=False,
+            ) is None:
+                return RunningApp(
+                    url="", port=0, pid=None, kind="none", project_dir=str(pdir),
+                    status="no_preview",
+                    detail={
+                        "engine": "docker",
+                        "fallback_used": False,
+                        "reason": "no web entrypoint",
+                    },
+                )
+        except Exception:  # noqa: BLE001 - fall through to the normal path below
+            pass
+
+        await _report_preview_progress(
+            progress_callback, "checking_docker", "Checking Docker Desktop readiness"
+        )
         try:
             report = toolchain_report or await _inspect_toolchain(
                 self._toolchain_inspector,
@@ -1008,6 +1070,9 @@ class PreviewSupervisor:
             python_image=self._python_image,
         )
         try:
+            await _report_preview_progress(
+                progress_callback, "preparing", "Preparing the isolated workspace"
+            )
             volume_result = await _invoke_command(
                 self._command_runner,
                 ["docker", "volume", "create", volume_name],
@@ -1043,11 +1108,14 @@ class PreviewSupervisor:
                         command_result=dependency_volume_result,
                     )
 
+            await _report_preview_progress(
+                progress_callback, "dependencies", "Installing locked dependencies"
+            )
             prepare_result = await _invoke_command(
                 self._command_runner,
                 prepare_argv,
                 cwd=pdir,
-                timeout=self._launch_timeout,
+                timeout=self._prepare_timeout,
             )
             if not prepare_result.passed:
                 await self._remove_container(name)
@@ -1064,11 +1132,14 @@ class PreviewSupervisor:
                 )
 
             if source_copy_argv is not None:
+                await _report_preview_progress(
+                    progress_callback, "staging", "Staging source without runtime network access"
+                )
                 source_copy_result = await _invoke_command(
                     self._command_runner,
                     source_copy_argv,
                     cwd=pdir,
-                    timeout=self._launch_timeout,
+                    timeout=self._prepare_timeout,
                 )
                 if not source_copy_result.passed:
                     await self._remove_container(name)
@@ -1082,6 +1153,9 @@ class PreviewSupervisor:
                     )
 
             self._resources[name]["network_name"] = network_name
+            await _report_preview_progress(
+                progress_callback, "isolating", "Creating the isolated Docker network"
+            )
             network_result = await _invoke_command(
                 self._command_runner,
                 [
@@ -1106,6 +1180,9 @@ class PreviewSupervisor:
                     container_name=name,
                     command_result=network_result,
                 )
+            await _report_preview_progress(
+                progress_callback, "launching", "Launching the app container"
+            )
             result = await _invoke_command(
                 self._command_runner,
                 argv,
@@ -1123,6 +1200,9 @@ class PreviewSupervisor:
                     command_result=result,
                 )
             container_id = (result.stdout.strip().splitlines() or [""])[-1]
+            await _report_preview_progress(
+                progress_callback, "gateway", "Starting the localhost-only gateway"
+            )
             gateway_result = await _invoke_command(
                 self._command_runner,
                 gateway_argv,
@@ -1179,6 +1259,9 @@ class PreviewSupervisor:
                         else {}
                     ),
                 },
+            )
+            await _report_preview_progress(
+                progress_callback, "readiness", "Waiting for the app to become ready"
             )
             deadline = time.monotonic() + max(0.0, float(ready_timeout))
             while time.monotonic() < deadline:
@@ -1245,6 +1328,9 @@ class PreviewSupervisor:
                         },
                     )
                     self._active[name] = app
+                    await _report_preview_progress(
+                        progress_callback, "ready", "Preview is live"
+                    )
                     return app
                 if self._poll_interval:
                     await asyncio.sleep(self._poll_interval)
@@ -1307,6 +1393,18 @@ class PreviewSupervisor:
             timeout=self._cleanup_timeout,
         )
         cleanup_results.append(container_result)
+        # `docker run --rm` auto-removes only on in-container exit: a hung
+        # prepare/source-copy keeps running daemon-side after its CLI client
+        # is killed and pins the app volume, so force-remove both (a no-op
+        # "no such container" counts as cleaned) before the volume removals.
+        for auxiliary_name in (f"{name}-prepare", f"{name}-source-copy"):
+            cleanup_results.append(
+                await _invoke_command(
+                    self._command_runner,
+                    ["docker", "rm", "--force", auxiliary_name],
+                    timeout=self._cleanup_timeout,
+                )
+            )
         network_name = str(resources.get("network_name") or "")
         volume_name = str(resources.get("volume_name") or "")
         dependency_volume_name = str(
@@ -1711,6 +1809,7 @@ class ProofLadderCoordinator:
                 pages,
                 visual_root,
                 stack=result.stack,
+                design_contract=read_visual_design_contract(pdir),
             )
             if not isinstance(proofs, Sequence) or isinstance(proofs, (str, bytes)):
                 proofs = [proofs]

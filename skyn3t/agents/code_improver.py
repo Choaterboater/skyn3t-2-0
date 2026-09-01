@@ -13,27 +13,40 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import structlog
 
 from skyn3t.adapters.llm import LLMClient
+from skyn3t.adapters.model_slot import ModelSlot
 from skyn3t.agents._common import (
     canonical_project_relpath,
     detect_stack,
     extract_code,
     knowledge_block,
 )
-from skyn3t.agents.code_agent import _FULL_FILE_CONTRACT
+from skyn3t.agents.code_agent import (
+    _DESIGN_DIRECTIVE,
+    _FRONTEND_EXTENSIONS,
+    _FULL_FILE_CONTRACT,
+    _explicit_stub_fences_cli_slot,
+    _lock_agentic_route_to_slot,
+)
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-from skyn3t.core.model_router import Tier
+from skyn3t.core.model_router import Tier, parse_task_model_slot
 from skyn3t.studio.layout_profiles import (
     LayoutProfile,
     is_valid_profile_payload,
     layout_contract_block,
     profile_from_payload,
 )
+
+
+class _RepairSlotOverrides(TypedDict, total=False):
+    provider_override: str
+    model_override: str
+
 
 _SYSTEM = (
     "You are a senior engineer improving code. Given a file and a list of issues "
@@ -227,19 +240,94 @@ class CodeImproverAgent(BaseAgent):
         stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
         knowledge = knowledge_block(p)
         payload_profile = p.get("layout_profile")
+        is_stored = p.get("layout_profile_is_stored") is True
+        if payload_profile is None and isinstance(p.get("extra"), dict):
+            # Build-time repair dispatches thread the frozen profile only inside
+            # extra (every runner dispatch site); ImproveEngine passes it
+            # top-level with the stored flag. Falling back here gives ALL repair
+            # paths the layout contract, not just the ImproveEngine one.
+            payload_profile = p["extra"].get("layout_profile")
+            is_stored = payload_profile is not None
         profile = profile_from_payload(payload_profile)
         layout_profile = (
             profile
-            if (
-                p.get("layout_profile_is_stored") is True
-                and is_valid_profile_payload(payload_profile)
-            )
+            if (is_stored and is_valid_profile_payload(payload_profile))
             else None
         )
 
         prior = p.get("prior", {}) if isinstance(p.get("prior"), dict) else {}
         review = prior.get("review", {}) if isinstance(prior.get("review"), dict) else {}
         gaps = p.get("gaps") or review.get("gaps") or []
+        # Task-specialized repair pin (``repair_model_slot``). When set it — and
+        # only it — decides the repair route: ahead of ImproveEngine's
+        # ``agentic_provider`` lock on the agentic path, and ahead of the
+        # Tier.UI/Tier.BACKEND mapping on the classic per-file path (via
+        # complete()'s provider/model overrides). Empty or junk (already warned
+        # by parse_task_model_slot) keeps today's routing byte-identical.
+        repair_slot = parse_task_model_slot(
+            str(getattr(getattr(self.llm, "settings", None), "repair_model_slot", "") or ""),
+            path="repair",
+        )
+        if repair_slot is not None and repair_slot.provider == "stub":
+            # A stub pin can serve no repair — warn and keep tier routing.
+            _log.warning("code_improver.repair_slot_ignored", slot=repair_slot.address,
+                         reason="stub provider cannot serve repair")
+            repair_slot = None
+        if repair_slot is not None and _explicit_stub_fences_cli_slot(
+            getattr(self.llm, "settings", None), repair_slot
+        ):
+            # Same money fence as codegen: explicit stub = offline+free, so a
+            # CLI slot must not launch a subscription CLI on either the agentic
+            # or the classic complete() path.
+            _log.warning("code_improver.repair_slot_ignored", slot=repair_slot.address,
+                         reason="explicit stub backend is offline+free; CLI slot refused")
+            repair_slot = None
+        # Whether the slot actually steered the agentic session (vs. only the
+        # classic fallback) — model_used never claims a route it didn't serve.
+        agentic_slot_applied = False
+        if repair_slot is not None and p.get("agentic"):
+            # Adjust a COPY: the caller's payload stays untouched, and every
+            # downstream reader (the routing lock below, _agentic_improve) sees
+            # the slot's route through the same keys ImproveEngine already uses.
+            p = dict(p)
+            if repair_slot.provider.endswith("_cli"):
+                # Same routing-lock semantics as an ImproveEngine CLI lock.
+                _lock_agentic_route_to_slot(
+                    repair_slot,
+                    cli_available=self.llm._cli_available(repair_slot.provider[:-4]),
+                )
+                p["agentic_provider"] = repair_slot.provider[:-4]
+                p["agentic_model"] = repair_slot.model
+                agentic_slot_applied = True
+            elif repair_slot.provider == "openrouter":
+                if self.llm.backend == "openrouter":
+                    _lock_agentic_route_to_slot(repair_slot, cli_available=False)
+                    p["agentic_provider"] = ""
+                    p["agentic_model"] = repair_slot.model
+                    agentic_slot_applied = True
+                else:
+                    # agentic_build cannot cross to a hosted provider from a
+                    # CLI/stub global backend; the classic fallback still pins
+                    # this slot via complete()'s provider_override.
+                    _log.warning(
+                        "code_improver.repair_slot_agentic_ignored",
+                        slot=repair_slot.address,
+                        backend=self.llm.backend,
+                        reason="openrouter slot needs the openrouter backend for agentic improve",
+                    )
+            else:
+                # Bare model id: pin it on whatever route the payload already had.
+                _lock_agentic_route_to_slot(repair_slot, cli_available=False)
+                p["agentic_model"] = repair_slot.model
+                agentic_slot_applied = True
+        model_used_out: dict[str, Any] = (
+            {"model_used": {"repair": repair_slot.address}}
+            if repair_slot is not None
+            else {}
+        )
+        agentic_model_used_out: dict[str, Any] = (
+            model_used_out if agentic_slot_applied else {}
+        )
         routing_provider = str(p.get("agentic_provider") or "").strip().lower()
         agentic_repo_map = _bounded_agentic_repo_map(p.get("repo_map"))
         context_detail = {
@@ -292,6 +380,7 @@ class CodeImproverAgent(BaseAgent):
                                           "skipped": agentic_skipped,
                                           "worktree_dir": str(worktree), "agentic": True,
                                           **context_detail,
+                                          **agentic_model_used_out,
                                           "backend": (
                                               f"{routing_provider}_cli"
                                               if routing_provider else self.llm.backend
@@ -343,7 +432,8 @@ class CodeImproverAgent(BaseAgent):
             if target.is_file():
                 original = target.read_text(encoding="utf-8")
                 new_content, skip_reason = await self._improve_one(
-                    rel, original, brief, gaps, stack, knowledge, profile=layout_profile)
+                    rel, original, brief, gaps, stack, knowledge, profile=layout_profile,
+                    repair_slot=repair_slot)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -354,6 +444,7 @@ class CodeImproverAgent(BaseAgent):
                 original = ""
                 new_content = await self._create_one(
                     rel, brief, gaps, stack, worktree, knowledge, profile=layout_profile,
+                    repair_slot=repair_slot,
                 )
             if new_content and new_content.strip() and new_content != original:
                 from skyn3t.agents.validate import validate_source
@@ -372,6 +463,7 @@ class CodeImproverAgent(BaseAgent):
         return TaskResult(task_id=task.task_id, success=True,
                           output={"files_improved": len(improved), "files": sorted(improved),
                                   "skipped": skipped,
+                                  **model_used_out,
                                   "worktree_dir": str(worktree), "backend": self.llm.backend})
 
     # Directories that are never part of an improve diff: build artifacts,
@@ -488,9 +580,15 @@ class CodeImproverAgent(BaseAgent):
         knowledge: str = "",
         repo_map: str = "",
         profile: LayoutProfile | None = None,
+        moa_guidance: str = "",
     ) -> str:
         goals = "\n".join(f"- {str(g).strip()}" for g in gaps if str(g).strip()) or f"- {brief}"
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
+        # Repair-stage council guidance (already carries its own header +
+        # never-mention rules from council._assemble). Whole-app agentic
+        # repairs only — the per-file rewrite prompts stay tight.
+        if moa_guidance.strip():
+            preamble += f"{moa_guidance.strip()}\n\n"
         bounded_map = _bounded_agentic_repo_map(repo_map)
         if bounded_map:
             navigation = (
@@ -554,6 +652,7 @@ class CodeImproverAgent(BaseAgent):
             knowledge,
             repo_map,
             profile,
+            moa_guidance=str(payload.get("moa_guidance") or ""),
         )
         try:
             res = await self.llm.agentic_build(
@@ -576,12 +675,28 @@ class CodeImproverAgent(BaseAgent):
         skipped: dict[str, str] = {
             rel: "untrusted_new_path" for rel in untrusted_paths
         }
+        from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose, looks_elided
+
         for rel, content in after.items():
             original = before.get(rel)
             if original is not None and content == original:
                 continue
             ok, _ = validate_source(rel, content)
-            if ok and self._preserves_html_entrypoints(rel, original or "", content):
+            # validate_source does NOT reject chat prose, so codegen runs a
+            # separate guard (CodeAgent._clean_agentic_files) and improve never
+            # did. Observed shipping as a real homepage:
+            #
+            #   • I'll check the actual file and try building to find the error.
+            #   • Rewrote `src/pages/index.astro` to clear the build failure.
+            #
+            # The agent narrated its work INTO the file it was asked to rewrite.
+            # An elided "// rest unchanged" stub is the same class of damage.
+            prose = False
+            if rel.lower().endswith(_CODE_EXTS):
+                prose = _looks_like_prose(content) or looks_elided(content)
+            if ok and not prose and self._preserves_html_entrypoints(
+                rel, original or "", content
+            ):
                 improved.append(rel)
                 continue
             # Do-no-harm: unwind a broken write — restore the original, or
@@ -594,20 +709,47 @@ class CodeImproverAgent(BaseAgent):
                     target.write_text(original, encoding="utf-8")
             except OSError:
                 pass
-            skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
+            if prose:
+                skipped[rel] = "prose_not_code"
+                _log.warning("code_improver.prose_rejected", file=rel)
+            else:
+                skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
         return improved, skipped, True, ""
+
+    @staticmethod
+    def _repair_slot_overrides(repair_slot: ModelSlot | None) -> _RepairSlotOverrides:
+        """Map a repair slot onto complete()'s pin kwargs.
+
+        A provider slot pins THIS call's backend (``provider_override`` — the
+        same cross-provider mechanism the MoA council fans out with); the model
+        half pins that provider's model (empty = the provider's own default).
+        A bare model id pins the model on the active backend, mirroring the
+        slot grammar's "no known provider prefix" semantics. Empty dict when no
+        slot is set — the call is then byte-identical to today.
+        """
+        if repair_slot is None:
+            return {}
+        overrides: _RepairSlotOverrides = {}
+        if repair_slot.provider:
+            overrides["provider_override"] = repair_slot.provider
+        if repair_slot.model:
+            overrides["model_override"] = repair_slot.model
+        return overrides
 
     async def _improve_one(self, rel: str, original: str, brief: str,
                            gaps: list[Any], stack: str,
                            knowledge: str = "",
-                           profile: LayoutProfile | None = None) -> tuple[str, str]:
+                           profile: LayoutProfile | None = None,
+                           repair_slot: ModelSlot | None = None) -> tuple[str, str]:
         """Rewrite one file toward the gaps/goal. Returns (content, skip_reason):
         content == original with a reason means the file was deliberately left
         alone (e.g. "already_satisfied") — the caller records the reason instead
         of silently dropping the write."""
         if self.llm.backend != "stub":
             ext = Path(rel).suffix.lower()
-            tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+            # Same frontend set as codegen (.astro/.scss/.less/.htm included):
+            # it drives both model tier and the design bar below.
+            tier = Tier.UI if ext in _FRONTEND_EXTENSIONS else Tier.BACKEND
             preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
             layout_prompt = ""
             if profile is not None:
@@ -616,12 +758,25 @@ class CodeImproverAgent(BaseAgent):
                     layout_prompt = (
                         f"\nLAYOUT PROFILE: {profile.name}\n{layout_context}\n"
                     )
+            # Full-file rewrites must not quietly regress the styling: re-assert
+            # the design bar for UI files (it is only in the initial codegen
+            # prompt otherwise, so every repair pass used to dilute it further).
+            # Phaser is excluded exactly like in codegen — a canvas game's
+            # index.html must not get the web design bar.
+            design_prompt = (
+                f"\n{_DESIGN_DIRECTIVE}\n"
+                if tier is Tier.UI and (stack or "").lower() != "phaser" else ""
+            )
             prompt = (
                 f"{preamble}Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
                 f"{layout_prompt}"
+                f"{design_prompt}"
                 f"Current contents:\n{original}\n\nRewrite the file. "
                 f"{_FULL_FILE_CONTRACT}"
             )
+            # A set ``repair_model_slot`` outranks the tier mapping for THIS
+            # call; the tier still flows through for fallback chains/logging.
+            slot_overrides = self._repair_slot_overrides(repair_slot)
             # Retry one invalid response, but never impose an application-level
             # output ceiling. The provider's native context/output capacity is
             # authoritative and source validation rejects incomplete rewrites.
@@ -631,7 +786,8 @@ class CodeImproverAgent(BaseAgent):
                 try:
                     result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_SYSTEM),
                                                      file_hint=rel, max_tokens=None,
-                                                     task_type=self.agent_type)
+                                                     task_type=self.agent_type,
+                                                     **slot_overrides)
                 except Exception:  # noqa: BLE001 - fall through to deterministic touch-up
                     break
                 # Degraded-to-stub result must not clobber a working file.
@@ -654,7 +810,8 @@ class CodeImproverAgent(BaseAgent):
 
     async def _create_one(self, rel: str, brief: str, gaps: list[Any], stack: str,
                           worktree: Path, knowledge: str = "",
-                          profile: LayoutProfile | None = None) -> str:
+                          profile: LayoutProfile | None = None,
+                          repair_slot: ModelSlot | None = None) -> str:
         """Write a BRAND NEW file at `rel` that some existing file imports but that
         codegen never created. Unlike `_improve_one`, there is no deterministic
         offline fallback here — synthesizing a plausible NEW file (not just a
@@ -678,7 +835,7 @@ class CodeImproverAgent(BaseAgent):
                 f"Full contents of {importer_rel} for context:\n{importer_src}\n"
             )
         ext = Path(rel).suffix.lower()
-        tier = Tier.UI if ext in {".jsx", ".tsx", ".css", ".html", ".vue", ".svelte"} else Tier.BACKEND
+        tier = Tier.UI if ext in _FRONTEND_EXTENSIONS else Tier.BACKEND
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
         layout_prompt = ""
         if profile is not None:
@@ -687,10 +844,16 @@ class CodeImproverAgent(BaseAgent):
                 layout_prompt = (
                     f"LAYOUT PROFILE: {profile.name}\n{layout_context}\n"
                 )
+        # A brand-new UI file must land on the same design bar as a rewritten one.
+        design_prompt = (
+            f"\n{_DESIGN_DIRECTIVE}\n"
+            if tier is Tier.UI and (stack or "").lower() != "phaser" else ""
+        )
         prompt = (
             f"{preamble}Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"
             f"Issues: {gaps}\n{importer_context}\n"
             f"{layout_prompt}"
+            f"{design_prompt}"
             f"This file does NOT exist yet — you are creating it, not editing it. "
             f"Write the COMPLETE, real contents of a new file at {rel} that the "
             f"importer above expects, matching the project's existing code style "
@@ -699,7 +862,8 @@ class CodeImproverAgent(BaseAgent):
         try:
             result = await self.llm.complete(prompt, tier=tier, system=self.system_prompt(_CREATE_SYSTEM),
                                              file_hint=rel, max_tokens=None,
-                                             task_type=self.agent_type)
+                                             task_type=self.agent_type,
+                                             **self._repair_slot_overrides(repair_slot))
             if result.backend != "stub":
                 created = extract_code(result.text)
                 if created and created.strip():

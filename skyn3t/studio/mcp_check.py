@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from skyn3t.security.secrets import filter_env
+from skyn3t.security.secrets import filter_env, mask_secrets
 
 # Default per-phase read budgets (seconds). Generous enough for a real SDK boot,
 # bounded so a wedged server can never hang a build. Overridable (the tests pass
@@ -322,6 +322,43 @@ def _tail(text: str, n: int = 300) -> str:
     return (text or "").strip()[-n:]
 
 
+def _mask(text: str) -> str:
+    """Output-side secret masking for gate output. Never breaks a build."""
+    try:
+        return mask_secrets(text)
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _mask_value(value: Any) -> Any:
+    """Mask strings (and string items of lists) inside a ``checked`` dict."""
+    if isinstance(value, str):
+        return _mask(value)
+    if isinstance(value, list):
+        return [_mask(item) if isinstance(item, str) else item for item in value]
+    return value
+
+
+def _mask_verdict(verdict: McpVerdict) -> McpVerdict:
+    """Scrub registered host secrets from gate output BEFORE it is recorded.
+
+    The delivered server is untrusted: anything it prints (boot-crash stderr
+    tails, tool error text, server/tool names) lands in issues/checked, and
+    from there in build manifests and the fix-loop's gaps. ``filter_env``
+    keeps host keys out of the server's environment; this is the output-side
+    complement — a host credential that reaches that text by ANY channel
+    comes back masked.
+    """
+    try:
+        verdict.issues = [_mask(issue) for issue in verdict.issues]
+        verdict.tools = [_mask(name) for name in verdict.tools]
+        verdict.reason = _mask(verdict.reason)
+        verdict.checked = {key: _mask_value(value) for key, value in verdict.checked.items()}
+    except Exception:  # noqa: BLE001 - masking must never break a build
+        pass
+    return verdict
+
+
 def check_mcp(
     project_dir: str | Path,
     stack: str = "",
@@ -348,14 +385,14 @@ def check_mcp(
         py = _python_exec(python_exec)
         if not py:
             return McpVerdict(skipped=True, reason="no python interpreter available")
-        return _probe_server(
+        return _mask_verdict(_probe_server(
             root, server.name, py,
             handshake_timeout=handshake_timeout,
             list_timeout=list_timeout,
             call_timeout=call_timeout,
-        )
+        ))
     except Exception as exc:  # noqa: BLE001 - a gate must never break a build
-        return McpVerdict(skipped=True, reason=f"mcp check error: {exc}")
+        return McpVerdict(skipped=True, reason=_mask(f"mcp check error: {exc}"))
 
 
 def _probe_server(

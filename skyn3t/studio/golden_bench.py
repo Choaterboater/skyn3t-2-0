@@ -91,9 +91,37 @@ _LLM_BACKENDS = frozenset(
     }
 )
 _EXECUTION_BACKENDS = frozenset({"auto", "docker", "inline"})
+
+
+def _is_secret_setting_name(name: str) -> bool:
+    """Whether a Settings field name must never be recorded into a profile."""
+    return name in _DEPLOY_TOKEN_FIELDS or bool(_SECRET_NAME_RE.search(name))
+
+#: The deploy-token Settings fields, mirroring the tuple in
+#: ``Settings.deploy_tokens``. Listed explicitly because the pattern below
+#: cannot catch them all: it matches ``<vendor>[_-]?token``, so
+#: ``fly_api_token`` / ``cloudflare_api_token`` / ``replicate_api_token`` slip
+#: through (vendor is followed by ``_api_token``, not ``_token``) and
+#: ``railway_token`` has no vendor entry at all. Those four were therefore
+#: written VERBATIM into artifacts/golden/run.json, violating this module's own
+#: "no secret is recordable" contract.
+_DEPLOY_TOKEN_FIELDS = (
+    "fly_api_token",
+    "vercel_token",
+    "cloudflare_api_token",
+    "netlify_auth_token",
+    "railway_token",
+    "render_api_key",
+)
 _SECRET_NAME_RE = re.compile(
     r"(?:secret|password|api[_-]?key|credential|"
-    r"(?:access|refresh|auth|github|replicate|vercel|cloudflare|fly)[_-]?token)",
+    # The optional `api` segment is load-bearing: without it the vendor
+    # alternation matched `<vendor>_token` but NOT `<vendor>_api_token`, so
+    # fly_api_token, cloudflare_api_token and replicate_api_token were recorded
+    # verbatim. Deliberately NOT a bare `token` substring rule — that would also
+    # swallow `daily_token_cap`, a real control the fingerprint must keep.
+    r"(?:access|refresh|auth|github|replicate|vercel|cloudflare|fly)"
+    r"(?:[_-]?api)?[_-]?token)",
     re.I,
 )
 _REQUIRED_SAFETY_PROFILE: dict[str, bool | int | float | str] = {
@@ -138,6 +166,25 @@ _REQUIRED_SAFETY_PROFILE: dict[str, bool | int | float | str] = {
     "isolated_state": True,
     "shared_daily_budget": True,
     "skills_hub_paths": "",
+    # The bench measures the blocking posture. Under "lab" a heuristic finding
+    # records instead of flipping the verdict, so a lab-posture bench would
+    # silently score a different contract than the one it claims to gate.
+    "build_posture": "release",
+    "blocking_gates": "",
+    # The council ships ON. A bench inherits the operator's Settings, so without
+    # this an operator who has named advisors would fan out extra models on
+    # every case — non-deterministic input to a measurement whose whole point is
+    # comparability, and billed silently. Same reasoning as best_of_n=1 above.
+    "moa_enabled": False,
+    "moa_advisors": "",
+    # The operator's codegen CLI override routes codegen to a REAL agentic CLI
+    # regardless of the pinned global backend — observed live: a
+    # ``--llm-backend stub`` golden run silently executing codex agentic
+    # builds (subscription-billed, non-deterministic, 62 of them). Codegen
+    # must follow the backend the bench CHOSE; same reasoning as moa above.
+    "codegen_cli_provider": "",
+    "codegen_cli_model": "",
+    "openrouter_codegen_model": "",
 }
 _NON_RESULT_SETTING_NAMES = frozenset(
     {
@@ -199,7 +246,12 @@ def _safe_artifact_path(value: str) -> str:
 class GoldenExpectations(_StrictModel):
     expected_stack: str
     min_score: float = Field(ge=60.0, le=100.0)
-    min_intent_score: float = Field(ge=80.0, le=100.0)
+    # ge=60, not 80: the intent heuristic is keyword coverage of brief terms in
+    # delivered source, and style-direction vocabulary ("grotesque",
+    # "anti-corporate") legitimately never appears as page copy on a CORRECT
+    # delivery (verified on a live golden-design build). 60 still stops a
+    # meaningless near-zero threshold; individual cases set their own floor.
+    min_intent_score: float = Field(ge=60.0, le=100.0)
     required_gates: list[str] = Field(min_length=1, max_length=16)
     required_artifacts: list[str] = Field(min_length=1, max_length=64)
 
@@ -539,10 +591,15 @@ class RunMetadata(_StrictModel):
     @field_validator("safety_profile")
     @classmethod
     def _valid_safety_profile(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # _LIVE_OVERRIDE_KEYS must still be PRESENT (a live ledger records its
+        # lifted pins) but may deviate from the pinned values — mirroring
+        # _normalize_profile; the deviation is what fingerprints a run as live.
         if any(
             key not in value
-            or type(value[key]) is not type(expected)
-            or value[key] != expected
+            or (
+                key not in _LIVE_OVERRIDE_KEYS
+                and (type(value[key]) is not type(expected) or value[key] != expected)
+            )
             for key, expected in _REQUIRED_SAFETY_PROFILE.items()
         ):
             raise ValueError("safety_profile is missing or weakens a required control")
@@ -805,7 +862,12 @@ def _normalize_profile(profile: Mapping[str, Any] | None) -> dict[str, Any]:
     weakened = [
         key
         for key, value in required.items()
-        if type(source.get(key)) is not type(value) or source.get(key) != value
+        # _LIVE_OVERRIDE_KEYS may deviate: those pins are liftable by the
+        # explicit --moa/--codegen-cli opt-ins, and the deviation is exactly
+        # what marks a live ledger as live (it changes the fingerprint, so a
+        # live run can never be compared against the deterministic floor).
+        if key not in _LIVE_OVERRIDE_KEYS
+        and (type(source.get(key)) is not type(value) or source.get(key) != value)
     ]
     if weakened:
         raise GoldenBenchError(
@@ -815,7 +877,7 @@ def _normalize_profile(profile: Mapping[str, Any] | None) -> dict[str, Any]:
     for key in sorted(source):
         if not isinstance(key, str) or not key or len(key) > 80:
             raise GoldenBenchError("safety profile keys must be short non-empty strings")
-        if _SECRET_NAME_RE.search(key):
+        if _is_secret_setting_name(key):
             raise GoldenBenchError(f"secret-like safety profile key is not recordable: {key!r}")
         out[key] = _profile_value(source[key], label=key)
     if len(canonical_json_bytes(out)) > _MAX_PROFILE_BYTES:
@@ -827,9 +889,15 @@ def benchmark_settings_profile(
     settings: Any,
     *,
     llm_backend: str | None = None,
+    live_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record every non-secret Settings input copied into benchmark attempts."""
     profile: dict[str, Any] = dict(_REQUIRED_SAFETY_PROFILE)
+    # Lifted pins must be RECORDED as lifted, or the ledger would claim the
+    # deterministic floor while measuring a live run.
+    for key, value in dict(live_overrides or {}).items():
+        if key in _LIVE_OVERRIDE_KEYS:
+            profile[key] = _profile_value(value, label=key)
     dumper = getattr(settings, "model_dump", None)
     if callable(dumper):
         raw_settings = dumper(mode="python")
@@ -839,7 +907,7 @@ def benchmark_settings_profile(
         if (
             name in _NON_RESULT_SETTING_NAMES
             or name in _REQUIRED_SAFETY_PROFILE
-            or _SECRET_NAME_RE.search(name)
+            or _is_secret_setting_name(name)
         ):
             continue
         profile[name] = _profile_value(value, label=name)
@@ -1016,18 +1084,37 @@ def build_run_metadata(
         raise GoldenBenchError(f"invalid run metadata: {_validation_summary(exc)}") from exc
 
 
+# The ONLY safety-profile pins an operator may lift, per explicit CLI opt-in
+# (bench golden run --moa / --codegen-cli). Everything else in the profile
+# stays non-negotiable; the recorded profile and metadata fingerprint reflect
+# lifted pins so a live ledger can never masquerade as the deterministic floor.
+_LIVE_OVERRIDE_KEYS = frozenset({
+    "moa_enabled",
+    "moa_advisors",
+    "codegen_cli_provider",
+    "codegen_cli_model",
+})
+
+
 def isolated_settings(
     base_settings: Any,
     workspace_dir: str | Path,
     *,
     llm_backend: str,
     execution_backend: str,
+    live_overrides: Mapping[str, Any] | None = None,
 ) -> Any:
     """Clone Settings into a case-local state/project root with safe side effects."""
     if llm_backend not in _LLM_BACKENDS:
         raise GoldenBenchError(f"unsupported LLM backend: {llm_backend!r}")
     if execution_backend not in _EXECUTION_BACKENDS:
         raise GoldenBenchError(f"unsupported execution backend: {execution_backend!r}")
+    live_overrides = dict(live_overrides or {})
+    unknown = set(live_overrides) - _LIVE_OVERRIDE_KEYS
+    if unknown:
+        raise GoldenBenchError(
+            f"live overrides not permitted for: {', '.join(sorted(unknown))}"
+        )
     root = Path(workspace_dir).resolve()
     data_dir = root / "state"
     projects_dir = root / "projects"
@@ -1057,12 +1144,14 @@ def isolated_settings(
         "model_evolution": False,
         "auto_route": False,
         "auth_token": "",
-        "cloudflare_api_token": "",
-        "fly_api_token": "",
         "github_token": "",
         "replicate_api_token": "",
         "skills_hub_paths": "",
-        "vercel_token": "",
+        # Driven from the shared tuple rather than hand-listed: the hand-listed
+        # version blanked only 3 of the 6 deploy tokens, so live Netlify,
+        # Railway and Render credentials were carried into every bench build
+        # subprocess with allow_remote_deploy=False as the only defence.
+        **{name: "" for name in _DEPLOY_TOKEN_FIELDS},
     }
     if llm_backend == "stub":
         updates.update(
@@ -1074,6 +1163,10 @@ def isolated_settings(
             }
         )
     for key, value in _REQUIRED_SAFETY_PROFILE.items():
+        if hasattr(base_settings, key):
+            updates[key] = value
+    # Explicit CLI opt-ins lift their pins LAST, after the safety loop.
+    for key, value in live_overrides.items():
         if hasattr(base_settings, key):
             updates[key] = value
     copier = getattr(base_settings, "model_copy", None)

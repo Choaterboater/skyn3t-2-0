@@ -31,6 +31,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from skyn3t.exec_paths import resolve_executable
 from skyn3t.working_diff import working_diff
 
 _OUTPUT_LIMIT = 64 * 1024
@@ -206,12 +207,18 @@ class CandidateStatus(StrEnum):
     ERROR = "error"
 
 
+# STALE_BASE is deliberately NOT in this set: it is only ever assigned AFTER
+# every verification command and the candidate-integrity check passed, so it
+# always denotes a fully verified candidate whose base simply moved mid-verify.
+# Treating it as a failure made _finish delete the worktree and branch under
+# the production policy (preserve_failed_worktrees=False), leaving the verified
+# commit dangling. It now follows the READY retention path instead, so the
+# operator can rebase/merge manually from the preserved worktree.
 _FAILED_CANDIDATE_STATUSES = frozenset(
     {
         CandidateStatus.APPLY_FAILED,
         CandidateStatus.REJECTED_PATHS,
         CandidateStatus.VERIFY_FAILED,
-        CandidateStatus.STALE_BASE,
         CandidateStatus.MERGE_FAILED,
         CandidateStatus.ERROR,
     }
@@ -258,8 +265,16 @@ def subprocess_command_runner(
 
     process: subprocess.Popen[str] | None = None
     try:
+        # argv[0] is validated upstream as a bare allowlisted name
+        # (_validate_executable_name rejects separators), so resolution has to
+        # happen HERE, at the exec boundary. Without it a `.cmd` shim such as
+        # npm raises WinError 2 on Windows. CommandEvidence keeps the bare name
+        # so persisted reports stay stable and comparable across hosts.
+        resolved = list(argv)
+        if resolved:
+            resolved[0] = resolve_executable(resolved[0])
         process = subprocess.Popen(  # noqa: S603 - argv is validated; shell is never used
-            list(argv),
+            resolved,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -270,10 +285,26 @@ def subprocess_command_runner(
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
         if process is not None:
+            # getattr(os, "killpg") and getattr(signal, "SIGKILL") DO NOT EXIST on Windows, and
+            # AttributeError is not an OSError — it escaped the handler below,
+            # so a timed-out git command raised out of the TimeoutExpired
+            # handler AND leaked the child. Mirrors the guarded siblings at
+            # app_runner._kill_group, llm._terminate and cli_playtest._terminate.
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+                if os.name == "nt":
+                    subprocess.run(  # noqa: S603 - fixed argv, no shell
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        check=False, timeout=15,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)  # type: ignore[attr-defined]
+            except (ProcessLookupError, PermissionError, OSError, AttributeError):
+                pass
+            try:
                 process.kill()
+            except (ProcessLookupError, OSError):
+                pass
             stdout, stderr = process.communicate()
         else:  # pragma: no cover - Popen either returns or raises directly
             stdout, stderr = "", ""

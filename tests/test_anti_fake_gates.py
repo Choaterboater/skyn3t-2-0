@@ -136,6 +136,15 @@ def test_detect_scaffold_stub_flags_untouched_scaffold(tmp_path) -> None:
     assert "scaffold" in note.lower()
 
 
+def test_detect_scaffold_stub_declines_ambiguous_comparison_without_brief(tmp_path) -> None:
+    for rel, content in scaffold_for("agent_pack", "demo", "an agent team pack").items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    assert detect_scaffold_stub(tmp_path, "agent_pack") is None
+
+
 def test_detect_scaffold_stub_none_for_real_app(tmp_path) -> None:
     brief = "a task manager"
     files = dict(scaffold_for("react_vite", "demo", brief))

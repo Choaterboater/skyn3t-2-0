@@ -51,6 +51,20 @@ _FABRICATED_LOG = re.compile(
     r"(?i)(all tests pass(ed)?|build succeeded|100% coverage|everything works|"
     r"no errors found|✅\s*done)"
 )
+# UNCONDITIONALLY disabled coverage only. Case-sensitive against RAW text —
+# pytest markers are identifiers. Deliberately NOT matched: legitimate
+# `@pytest.mark.skipif(<condition>, ...)` platform/optional-dep guards
+# (negative lookahead), `xfail` appearing in comments/strings/prose (the
+# decorator form is required), and conditional in-test `pytest.skip()` guards
+# (indented, so never at column 0). A tautological `skipif(True|1, ...)` is
+# still flagged — that is a disabled test wearing a guard's clothes.
+_DISABLED_TEST_RE = re.compile(
+    r"@pytest\.mark\.skip(?!if)\b"
+    r"|@pytest\.mark\.xfail\b"
+    r"|@pytest\.mark\.skipif\(\s*(?:True|1)\b"
+    r"|^pytest\.skip\(",
+    re.MULTILINE,
+)
 
 
 def _iter_test_files(root: Path) -> list[Path]:
@@ -128,14 +142,14 @@ def detect_reward_hacking(artifact_dir: str | Path | None,
         flags.append(f"{trivial} test file(s) contain no assertions")
 
     # 3) Deleted assertions / disabled acceptance: a structural assertion in
-    # the same file must not hide skipped or xfailed behavioral coverage.
+    # the same file must not hide UNCONDITIONALLY skipped or xfailed behavioral
+    # coverage. Conditional skipif/runtime guards are legitimate engineering
+    # and must not be branded reward hacking (see _DISABLED_TEST_RE).
     for tf in test_files:
         text = vc.safe_read(tf)
-        lowered = text.lower()
-        if ("pytest.skip" in lowered or "@pytest.mark.skip" in lowered
-                or "xfail" in lowered) and not is_system_acceptance_contract(
-                    tf, root, content=text
-                ):
+        if _DISABLED_TEST_RE.search(text) and not is_system_acceptance_contract(
+            tf, root, content=text
+        ):
             flags.append(f"{tf.name}: tests skipped/xfailed instead of asserting")
 
     # 4) Fabricated success logs committed as files (vs real tool output).
@@ -214,7 +228,13 @@ class BuildVerifierAgent(BaseAgent):
 
         ran_real, build_ok, mode, details = await self._build(root, stack)
 
-        ok = build_ok and not reward["suspicious"]
+        # reward_hardening was a dead switch until now: it existed in Settings and
+        # in the roadmap but no production code read it, so turning it off did
+        # nothing. It is the operator's consent for the reward heuristics to
+        # VETO a build; the detection itself always runs and is always reported
+        # in `reward_hacking`, so the evidence survives either way.
+        reward_gates = bool(getattr(self.settings, "reward_hardening", True))
+        ok = build_ok and not (reward["suspicious"] and reward_gates)
         if reward["suspicious"]:
             details = f"reward-hacking suspected: {'; '.join(reward['flags'])} | {details}"
 
@@ -270,6 +290,26 @@ class BuildVerifierAgent(BaseAgent):
                     detail = f"reinstalled host deps after {foreign_deps} node_modules; {detail}"
                 return True, True, "npm", detail
             return True, False, "npm", out[-500:]
+
+        # Native Swift/iOS: build a real simulator target when Xcode is available.
+        # Windows/Linux fall through to structural verification rather than pretending
+        # a simulator build ran.
+        if stack == "swift_ios" and allow_real and shutil.which("xcodebuild"):
+            project = root / "App.xcodeproj"
+            if (project / "project.pbxproj").is_file():
+                ok, exit_code, out = await self._run_via_broker(
+                    ["xcodebuild", "-project", "App.xcodeproj", "-scheme", "App", "-sdk",
+                     "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build"],
+                    root, timeout=600)
+                if exit_code == 127:
+                    # Same reasoning as the swift-build branch below: xcodebuild
+                    # is macOS/Xcode-only and cannot run inside a Linux Docker
+                    # sandbox. A host `which xcodebuild` only proves the BINARY
+                    # exists, not that the backend picked for THIS call is local.
+                    return False, False, "xcodebuild", (
+                        "xcodebuild could not be launched in the sandbox — build skipped"
+                    )
+                return True, ok, "xcodebuild", (out[-700:] if out else "xcodebuild build")
 
         # Swift Package Manager: key on the manifest (like package.json above),
         # NOT the stack label, and compile for real with `swift build`. Absent

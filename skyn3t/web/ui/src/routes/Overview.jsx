@@ -4,6 +4,8 @@ import { queryFn } from "../api.js";
 import { agentActivity, agentIsBusy } from "../agentSignals.js";
 import { PageHeader, Panel, PanelHead, Empty } from "../components/ui.jsx";
 import GateLadder from "../components/GateLadder.jsx";
+import GoldenBenchCard from "../components/GoldenBenchCard.jsx";
+import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
 
 // A quiet telemetry reading — demoted from the old 4-up hero grid so the boldness
 // lives in the Verify Ladder above. Label + mono number, inline.
@@ -81,8 +83,14 @@ export default function Overview({ stream }) {
         </Panel>
       ) : null}
 
+      {/* a dead stream freezes the ladder's heat — say so instead of pulsing */}
+      <StreamStaleBanner stream={stream} />
+
       {/* the signature: every build climbs the verify ladder before it ships */}
       <GateLadder stream={stream} />
+
+      {/* golden bench runs are isolated from build memory — surface them here */}
+      <GoldenBenchCard />
 
       {/* demoted telemetry — quiet strip, not the hero */}
       <Panel className="mb-6">

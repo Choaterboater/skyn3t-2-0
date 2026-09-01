@@ -203,6 +203,7 @@ def _wire_passing_proof(monkeypatch, *, detail=None, on_proof=None) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_docker
 async def test_reverify_promotes_with_local_proof_and_persists_evidence(
     tmp_path, monkeypatch
 ):
@@ -536,6 +537,7 @@ async def test_reverify_exact_tree_mismatch_never_downgrades_to_legacy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_docker
 async def test_reverify_refreshes_durable_stale_review_on_the_verified_tree(
     tmp_path, monkeypatch
 ):
@@ -589,6 +591,7 @@ async def test_reverify_invalid_new_review_snapshot_never_uses_legacy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_docker
 async def test_reverify_exact_tree_review_promotes_current_source(tmp_path, monkeypatch):
     memory = _Memory({"build_id": "build-exact", "slug": "exact"})
     state = _state(tmp_path, memory=memory)
@@ -630,6 +633,7 @@ async def test_reverify_source_mutation_during_proof_blocks_promotion(
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_docker
 async def test_reverify_stabilizes_lockfile_before_candidate_snapshot(
     tmp_path, monkeypatch
 ):

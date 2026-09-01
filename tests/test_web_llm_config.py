@@ -12,7 +12,9 @@ from skyn3t.config.settings import Settings
 
 pytest.importorskip("skyn3t.web.deps")
 from skyn3t.web.deps import AppState  # noqa: E402
-from skyn3t.web.routes import (  # noqa: E402
+from skyn3t.web.routes import (
+    _normalize_moa_advisors,
+    cli_providers_payload,  # noqa: E402
     llm_secrets_payload,
     set_asset_gen,
     set_llm_backend,
@@ -34,9 +36,20 @@ async def test_secrets_payload_shape():
     assert p["backend"] == "stub"
     assert p["backend_pref"] == "stub"
     assert p["free_only"] is True
+    assert p["no_claude"] is True
     assert "routing" in p
     assert "model_pins" in p
 
+
+async def test_no_claude_is_enforced_in_advisor_payload_and_request_normalization():
+    state = _state(llm_backend="stub", no_claude=True)
+
+    payload = await cli_providers_payload(state)
+
+    assert all(provider["provider"] != "claude" for provider in payload["providers"])
+    assert _normalize_moa_advisors(
+        ["claude_cli:sonnet", "kimi_cli"], no_claude=True
+    ) == "kimi_cli"
 
 async def test_set_key_does_not_change_explicit_stub_backend():
     r = await set_llm_key(_state(llm_backend="stub"), "openrouter", "sk-or-x", persist=False)

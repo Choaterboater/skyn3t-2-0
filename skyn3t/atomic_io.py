@@ -7,6 +7,7 @@ on POSIX — so a reader never sees a partial file. Used for durable JSON state
 (build manifests, tuning store, tournament/bench ledgers). Import is side-effect
 free.
 """
+
 from __future__ import annotations
 
 import os
@@ -14,14 +15,16 @@ import tempfile
 from pathlib import Path
 
 
-def atomic_write_text(path: str | Path, text: str) -> Path:
-    """Write ``text`` to ``path`` atomically (temp + fsync + rename). Returns the path."""
+def _atomic_write(path: str | Path, content: str | bytes, *, binary: bool) -> Path:
+    """Write content atomically (temp + fsync + rename)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        mode = "wb" if binary else "w"
+        kwargs = {} if binary else {"encoding": "utf-8"}
+        with os.fdopen(fd, mode, **kwargs) as fh:
+            fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
@@ -32,3 +35,13 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
             except OSError:
                 pass
     return path
+
+
+def atomic_write_text(path: str | Path, text: str) -> Path:
+    """Write UTF-8 ``text`` atomically (temp + fsync + rename)."""
+    return _atomic_write(path, text, binary=False)
+
+
+def atomic_write_bytes(path: str | Path, content: bytes) -> Path:
+    """Write exact ``content`` atomically without text newline conversion."""
+    return _atomic_write(path, content, binary=True)

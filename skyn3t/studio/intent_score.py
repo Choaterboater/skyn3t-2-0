@@ -94,13 +94,69 @@ def salient_terms(brief: str, *, limit: int = 24) -> list[str]:
     return out
 
 
+#: SkyN3t's OWN artifacts, written into the delivered tree. They are not the
+#: app and must never be shown to the intent judge: on a real build they ate
+#: 4.8 KB of the 6 KB digest before it reached index.html, so the judge scored a
+#: complete site 28/100 while looking mostly at proof output and asset
+#: manifests. Matched by exact filename or by living under a SkyN3t directory.
+_OWN_ARTIFACT_NAMES = frozenset({
+    "skyn3t_manifest.json",
+    "skyn3t-observability.json",
+    "proof-ladder.json",
+    "web-assets.json",
+    "product.json",
+    ".skyn3t-proof-owned.json",
+})
+_OWN_ARTIFACT_DIRS = frozenset({".skyn3t"})
+
+#: Content-bearing suffixes, judged first. The digest is a small budget, so
+#: spending it on the app's pages and logic beats spending it on config: sorted()
+#: alone put *.json ahead of *.html purely by name.
+_CONTENT_FIRST_SUFFIXES = (
+    ".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte", ".astro",
+    ".js", ".ts", ".mjs", ".py", ".md", ".css",
+)
+
+
+def _is_own_artifact(p: Path, root: Path) -> bool:
+    if p.name in _OWN_ARTIFACT_NAMES:
+        return True
+    try:
+        parts = set(p.relative_to(root).parts)
+    except ValueError:
+        parts = set(p.parts)
+    return bool(parts & _OWN_ARTIFACT_DIRS)
+
+
 def _iter_source_files(project_dir: Path):
-    for p in sorted(project_dir.rglob("*")):
+    """Delivered app source, content-bearing files first.
+
+    Excludes SkyN3t's own artifacts so the judge sees the APP, and orders by
+    content value so a bounded digest spends its budget on pages rather than
+    on config that happens to sort earlier alphabetically.
+    """
+    root = Path(project_dir)
+    candidates: list[Path] = []
+    for p in sorted(root.rglob("*")):
         if not p.is_file() or p.suffix.lower() not in _SOURCE_SUFFIXES:
             continue
         if set(p.parts) & _SKIP_DIRS:
             continue
-        yield p
+        if _is_own_artifact(p, root):
+            continue
+        candidates.append(p)
+
+    def rank(path: Path) -> tuple[int, int, str]:
+        suffix = path.suffix.lower()
+        try:
+            order = _CONTENT_FIRST_SUFFIXES.index(suffix)
+        except ValueError:
+            order = len(_CONTENT_FIRST_SUFFIXES)
+        # An entry page outranks a sibling of the same type.
+        entry = 0 if path.stem.lower() in ("index", "main", "app") else 1
+        return (order, entry, str(path).lower())
+
+    yield from sorted(candidates, key=rank)
 
 
 def _subwords(identifier: str) -> set[str]:
@@ -140,6 +196,35 @@ def _delivered_tokens(project_dir) -> set[str]:
     return toks
 
 
+_HTML_HEAD_RE = re.compile(r"<head\b.*?</head\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_NOISE_RE = re.compile(
+    r"<(script|style|svg|template)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL
+)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"[ \t\r\f\v]*\n\s*|\s{2,}")
+
+
+def _readable_excerpt(path: Path, text: str, limit: int) -> str:
+    """The part of a file that says what the app IS, bounded to ``limit``.
+
+    For HTML this matters enormously. A page's first 1500 characters are its
+    ``<head>`` — meta tags, a title, and a stack of stylesheet links — which is
+    near-identical across every page of a site. Judging a golf site on four
+    such heads told the LLM judge nothing about golf, and it scored the
+    delivery 8/100 on that evidence. Strip the head and the tag soup so the
+    budget buys prose, not boilerplate.
+    """
+    if path.suffix.lower() in (".html", ".htm"):
+        body = _HTML_HEAD_RE.sub(" ", text)
+        body = _HTML_NOISE_RE.sub(" ", body)
+        body = _HTML_COMMENT_RE.sub(" ", body)
+        body = _HTML_TAG_RE.sub(" ", body)
+        body = _WS_RE.sub(" ", body).strip()
+        return body[:limit]
+    return text[:limit]
+
+
 def _content_digest(project_dir, *, max_bytes: int = _MAX_DIGEST_BYTES) -> str:
     """A bounded excerpt of actual file contents for the LLM judge."""
     pdir = Path(project_dir)
@@ -154,7 +239,9 @@ def _content_digest(project_dir, *, max_bytes: int = _MAX_DIGEST_BYTES) -> str:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        snippet = text[:1500]
+        snippet = _readable_excerpt(p, text, min(1500, budget))
+        if not snippet:
+            continue
         chunks.append(f"# {p.name}\n{snippet}")
         budget -= len(snippet)
     return "\n\n".join(chunks)[:max_bytes]

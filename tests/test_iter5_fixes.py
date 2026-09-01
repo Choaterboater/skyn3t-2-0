@@ -7,6 +7,8 @@ import asyncio
 import json
 import warnings
 
+import pytest
+
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.intelligence.debate import _parse_vote
@@ -84,7 +86,10 @@ def test_sandbox_docker_timeout_removes_named_container(tmp_path, monkeypatch):
 def test_sandbox_subprocess_fallback_warns_about_network(tmp_path):
     from skyn3t.security.sandbox import SandboxRunner
 
-    runner = SandboxRunner(settings=Settings(execution_backend="subprocess"))
+    # "subprocess" is sandbox's INTERNAL backend name, not a settings value;
+    # execution_backend is Literal-validated now. The forced backend below is
+    # what actually selects subprocess execution for this test.
+    runner = SandboxRunner(settings=Settings(execution_backend="inline"))
 
     async def force_subprocess():
         return "subprocess"
@@ -92,9 +97,24 @@ def test_sandbox_subprocess_fallback_warns_about_network(tmp_path):
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        asyncio.run(runner.run("echo hi", cwd=tmp_path, network=False))
+        asyncio.run(runner.run(["echo", "hi"], cwd=tmp_path, network=False))
     msgs = " ".join(str(x.message).lower() for x in w)
     assert "network" in msgs  # downgrade is surfaced, not silent
+
+
+def test_sandbox_subprocess_rejects_str_command(tmp_path):
+    from skyn3t.security.sandbox import SandboxRunner
+
+    runner = SandboxRunner(settings=Settings(execution_backend="inline"))
+
+    async def force_subprocess():
+        return "subprocess"
+    runner._choose_backend_async = force_subprocess  # type: ignore[method-assign]
+
+    # A str command would mean host `sh -lc`; only the docker backend may
+    # wrap strings in a shell.
+    with pytest.raises(TypeError, match="argv list"):
+        asyncio.run(runner.run("echo hi", cwd=tmp_path, network=False))
 
 
 # --- channels: a proposal decision must reach the handler's expected shape ---

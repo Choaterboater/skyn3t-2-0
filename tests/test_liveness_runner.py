@@ -82,7 +82,7 @@ def test_liveness_visual_failure_gates_ui_stack(tmp_path, monkeypatch):
     async def fake(*a, **k):
         return _visually_broken()
     monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
-    r = _runner(tmp_path)
+    r = _runner(tmp_path, build_posture="release")
     man = BuildManifest(slug="x", brief="b", stack="nextjs")
     score, verdict = asyncio.run(
         r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
@@ -92,6 +92,46 @@ def test_liveness_visual_failure_gates_ui_stack(tmp_path, monkeypatch):
     assert man.extra["liveness_visual_health"] == 0.0
     assert man.extra["responsive_visual_proof"]["status"] == "failed"
     assert "visual liveness" in man.extra["liveness_gate"]
+    finding = man.extra["gate_findings"][-1]
+    assert finding["gate"] == "liveness"
+    assert finding["status"] == "failed"
+    assert finding["blocked"] is True
+
+
+def test_liveness_visual_failure_records_without_blocking_in_lab(tmp_path, monkeypatch):
+    """Visual liveness is a viewport heuristic / vision judgement, not proof the
+    delivery is broken: under lab posture it lands in the gate_findings ledger
+    (with the score already health-dampened) but must not flip a delivered,
+    served app to no_go."""
+    async def fake(*a, **k):
+        return _visually_broken()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path, build_posture="lab")
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+    score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 80.0, "go"))
+    assert score == 40.0
+    assert verdict == "go"
+    finding = man.extra["gate_findings"][-1]
+    assert finding["gate"] == "liveness"
+    assert finding["status"] == "failed"
+    assert finding["blocked"] is False
+    assert finding["posture"] == "lab"
+    # The legacy key survives in both postures — it feeds the fix loop/reports.
+    assert "visual liveness" in man.extra["liveness_gate"]
+
+
+def test_liveness_visual_failure_blocking_gates_escape_hatch(tmp_path, monkeypatch):
+    async def fake(*a, **k):
+        return _visually_broken()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path, build_posture="lab", blocking_gates="liveness")
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+    _score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 80.0, "go"))
+    assert verdict == "no_go"
 
 
 def test_liveness_visual_success_clears_stale_visual_self_heal_gate(tmp_path, monkeypatch):
@@ -107,6 +147,8 @@ def test_liveness_visual_success_clears_stale_visual_self_heal_gate(tmp_path, mo
     r = _runner(tmp_path)
     man = BuildManifest(slug="x", brief="b", stack="nextjs")
     man.extra["visual_self_heal_gate"] = "rendered UI still failed visual check after self-heal"
+    # The gate itself flipped the verdict go -> no_go; reconciliation may undo it.
+    man.extra["visual_self_heal_gate_flipped_from"] = "go"
     man.extra["visual_self_heal"] = {
         "passed": False,
         "skipped": False,
@@ -122,6 +164,43 @@ def test_liveness_visual_success_clears_stale_visual_self_heal_gate(tmp_path, mo
     assert man.extra["liveness_visual_health"] == 1.0
     assert man.extra["responsive_visual_proof"]["status"] == "passed"
     assert "visual_self_heal_gate" not in man.extra
+    assert "visual_self_heal_gate_flipped_from" not in man.extra
+
+
+def test_liveness_reconciliation_keeps_no_go_from_other_causes(tmp_path, monkeypatch):
+    """A stale visual_self_heal marker is cleared when the rendered UI proves
+    healthy, but a no_go the gate did NOT cause (lab-posture reviewer/rescore,
+    delivery signals, forced_blocking gates) must survive: perfect liveness says
+    nothing about those findings. Only the flip recorded via
+    visual_self_heal_gate_flipped_from is restored."""
+    async def fake(*a, **k):
+        return LivenessOutcome(passed=True, report=LivenessReport(
+            results=[RouteResult("/", "GET", 200, True, "page",
+                                 {"matches": True, "issues": []})],
+            total=1, ok=1, dead=0, dead_routes=[], health=1.0,
+            visual_total=1, visual_failed=0, visual_failed_routes=[],
+            visual_health=1.0))
+
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path)
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+    man.extra["visual_self_heal_gate"] = "rendered UI still failed visual check after self-heal"
+    # No visual_self_heal_gate_flipped_from marker: the gate never flipped the
+    # verdict (lab posture records it non-blocking), so this no_go came from
+    # somewhere else and must be preserved.
+    man.extra["visual_self_heal"] = {
+        "passed": False,
+        "skipped": False,
+        "reason": "visual issues remain after max rounds",
+    }
+
+    _score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 80.0, "no_go"))
+
+    assert verdict == "no_go"
+    assert "visual_self_heal_gate" not in man.extra
+    assert man.extra["visual_self_heal_reconciled_by_liveness"] is True
 
 
 def test_liveness_skipped_leaves_score_and_verdict(tmp_path, monkeypatch):
@@ -412,7 +491,7 @@ def test_product_quality_gates_skip_non_finance_build(tmp_path):
 
 
 def test_ai_native_gate_blocks_real_contract_findings(tmp_path):
-    r = _runner(tmp_path)
+    r = _runner(tmp_path, build_posture="release")
     man = BuildManifest(slug="x", brief="chat with docs", stack="rag")
     man.extra["rag_check"] = {
         "ok": False,
@@ -425,6 +504,48 @@ def test_ai_native_gate_blocks_real_contract_findings(tmp_path):
     assert verdict == "no_go"
     assert "ai_native_gate" in man.extra
     assert "rag_check" in man.extra["ai_native_gate"]
+    finding = man.extra["gate_findings"][-1]
+    assert finding["gate"] == "ai_native"
+    assert finding["blocked"] is True
+
+
+def test_ai_native_gate_records_without_blocking_in_lab(tmp_path):
+    """The MCP/RAG/workflow probes are environment-dependent contract checks:
+    under lab posture a real finding is recorded (and the runner caps the score
+    via _score_after_finding at the call site) but must not flip a delivered,
+    working app to no_go."""
+    r = _runner(tmp_path, build_posture="lab")
+    man = BuildManifest(slug="x", brief="chat with docs", stack="rag")
+    man.extra["rag_check"] = {
+        "ok": False,
+        "skipped": False,
+        "issues": ["query did not retrieve the planted marker"],
+    }
+
+    verdict = r._apply_ai_native_gates(man, "go")
+
+    assert verdict == "go"
+    assert "rag_check" in man.extra["ai_native_gate"]
+    finding = man.extra["gate_findings"][-1]
+    assert finding["gate"] == "ai_native"
+    assert finding["status"] == "failed"
+    assert finding["blocked"] is False
+    assert finding["posture"] == "lab"
+    # The call-site score honesty rule (mirrors product_quality): even a
+    # non-blocking finding must not ship a success-looking score.
+    assert r._score_after_finding(95.0, verdict) == r.settings.degraded_proof_score_cap
+
+
+def test_ai_native_gate_blocking_gates_escape_hatch_restores_block(tmp_path):
+    r = _runner(tmp_path, build_posture="lab", blocking_gates="ai_native")
+    man = BuildManifest(slug="x", brief="chat with docs", stack="rag")
+    man.extra["rag_check"] = {
+        "ok": False,
+        "skipped": False,
+        "issues": ["query did not retrieve the planted marker"],
+    }
+
+    assert r._apply_ai_native_gates(man, "go") == "no_go"
 
 
 def test_ai_native_gate_never_blocks_soft_skips(tmp_path):
@@ -438,6 +559,33 @@ def test_ai_native_gate_never_blocks_soft_skips(tmp_path):
 
     assert r._apply_ai_native_gates(man, "go") == "go"
     assert "ai_native_gate" not in man.extra
+
+
+def test_game_quality_master_switch_blocks_even_in_lab(tmp_path):
+    """Mirrors the runner's _signals fold: ("game_quality", ok=False) routed
+    through _gate_outcome with a lab posture must still block while the
+    documented master switch (game_quality_gates_verdict, default ON) is on —
+    the switch outranks the posture default via forced_blocking."""
+    from skyn3t.studio.gate_posture import GatePosture
+
+    r = _runner(tmp_path, build_posture="lab", game_quality_gates_verdict=True)
+    man = BuildManifest(slug="x", brief="a game", stack="phaser")
+    posture = GatePosture.from_settings(r.settings)
+
+    verdict = r._gate_outcome(man, "game_quality", False, "go",
+                              "game visual/playtest gate failed", posture=posture)
+
+    assert verdict == "no_go"
+    assert r._clamp_score_to_verdict(88.0, verdict) <= 49.0
+    finding = man.extra["gate_findings"][-1]
+    assert finding["gate"] == "game_quality"
+    assert finding["blocked"] is True
+
+    advisory = _runner(tmp_path, build_posture="lab", game_quality_gates_verdict=False)
+    lab = GatePosture.from_settings(advisory.settings)
+    assert advisory._gate_outcome(
+        man, "game_quality", False, "go", "still failing", posture=lab
+    ) == "go"
 
 
 def test_degraded_proof_caps_success_score(tmp_path):

@@ -13,12 +13,18 @@ the autonomy layer still has something to triage (design rules #1 and #6).
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+import structlog
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
+
+log = structlog.get_logger(__name__)
 
 # Optional HTTP client — guarded so the module always imports.
 try:  # pragma: no cover - presence depends on environment
@@ -103,6 +109,10 @@ class RepoScout:
         self._scout_i = 0  # rotates the topic so repeated scouts vary
         self._topic_pages: dict[str, int] = {}  # per-topic result page cursor
         self._stop = False  # explicit init (matches MetaTick/AutonomousLoop)
+        self._state_path = (
+            Path(getattr(self.settings, "data_dir", "data")) / "cortex" / "scout_state.json"
+        )
+        self._topic_pages = self._load_topic_pages()
 
     def _next_page(self, topic: str) -> int:
         """Next GitHub result page for ``topic``, advancing the cursor.
@@ -112,7 +122,41 @@ class RepoScout:
         """
         page = self._topic_pages.get(topic, 1)
         self._topic_pages[topic] = page + 1
+        self._save_topic_pages()
         return page
+
+    def _load_topic_pages(self) -> dict[str, int]:
+        """Resume page cursors across restarts so the scout keeps walking
+        FRESH pages instead of re-scouting page 1 on every boot — page-1
+        exhaustion on restart was the real 'scout finds nothing anymore'."""
+        if not self._state_path.is_file():
+            return {}
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, int] = {}
+        for k, v in data.items():
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv > 0:
+                out[str(k)] = iv
+        return out
+
+    def _save_topic_pages(self) -> None:
+        try:
+            from skyn3t.atomic_io import atomic_write_text
+
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                self._state_path, json.dumps(self._topic_pages, indent=1) + '\n'
+            )
+        except Exception:  # noqa: BLE001 - a lost cursor degrades to page 1, never fatal
+            pass
 
     @property
     def online(self) -> bool:
@@ -222,6 +266,15 @@ class RepoScout:
         """
         if not getattr(self.settings, "autonomous_learning", False):
             return
+        # Honest auth note, logged only when the scout actually runs (the
+        # cortex.start() path): a token is NOT required — the scout searches
+        # unauthenticated and can degrade to offline seeds; a token only
+        # raises the GitHub API rate limit.
+        if not self.github_token:
+            log.warning(
+                "cortex.scout_unauthenticated",
+                hint="scout works without a token; set SKYN3T_GITHUB_TOKEN to raise the GitHub rate limit",
+            )
         self._stop = False
         interval = float(getattr(self.settings, "scout_interval", 1800.0))
         # Eager first scout shortly after boot so the inbox isn't empty for a full
@@ -235,6 +288,13 @@ class RepoScout:
             if self._stop:
                 break
             try:
+                # Expire the ignored backlog FIRST: dedupe blocks a topic while
+                # its proposal is open, so weeks of undecided gated proposals
+                # froze discovery entirely (the 65-gated-forever store).
+                if self.cortex is not None:
+                    expired = self.cortex.store.expire_stale()
+                    if expired:
+                        log.info("cortex.proposals_expired", count=expired)
                 await self.scout_next()
             except Exception:  # noqa: BLE001
                 pass

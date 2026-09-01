@@ -10,11 +10,13 @@ an unfixable step is flagged ``degraded`` and the build proceeds best-effort.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from skyn3t.core.events import EventType
+from skyn3t.studio.fix_feedback import format_fix_feedback
 from skyn3t.studio.proof_run import proof_run
 
 # Stage agent_types whose output gets a full proof + fix loop. Other stages get
@@ -54,7 +56,13 @@ def _run_check(spec: Any, record: Any, worktree_dir: str, plan: Any, settings: A
             run_build=bool(getattr(settings, "run_generated_build", True)),
             build_timeout=int(getattr(settings, "generated_build_timeout", 300)),
         )
-        gaps = list(proof.missing) + list(proof.syntax_errors)
+        # A failed build/tests appends only bare "<build>"/"<tests>" sentinels
+        # to proof.missing — zero error text, so the improver cannot locate the
+        # failing file. error_gaps() distills the captured compiler/test output
+        # into per-failure strings (it already folds syntax_errors in), making
+        # the repair directed instead of a blind entrypoint rewrite.
+        error_gaps = proof.error_gaps()
+        gaps = list(proof.missing) + (error_gaps or list(proof.syntax_errors))
         return _Check(passed=proof.passed, score=proof.score, gaps=gaps)
     passed = record.status == "completed"
     gaps = [] if passed else [f"stage {spec.name} status={record.status}"]
@@ -78,27 +86,41 @@ async def debug_stage(
     check_kind = "proof" if spec.agent_type in _CODE_AGENT_TYPES else "light"
     await emit(EventType.STAGE_DEBUG_STARTED, {**base, "check": check_kind})
 
-    check = _run_check(spec, record, worktree_dir, plan, settings)
+    # Thread-offloaded: proof_run blocks for minutes (installs + builds); an
+    # on-loop call freezes the cockpit and every concurrent build.
+    check = await asyncio.to_thread(_run_check, spec, record, worktree_dir, plan, settings)
     attempts = 0
     while not check.passed and improve is not None and attempts < max_attempts:
         attempts += 1
         score_before = check.score
         try:
-            ran = await improve(check.gaps)
+            # The structured QA-FAIL contract is what every other repair path
+            # hands the improver; raw check.gaps stays in the event payload.
+            ran = await improve(format_fix_feedback(
+                check.gaps, stage="stage_debug",
+                attempt=attempts, max_attempts=max_attempts,
+            ))
         except Exception:  # noqa: BLE001 - a failed fix must not crash the build
             ran = False
-        nxt = _run_check(spec, record, worktree_dir, plan, settings)
+        if not ran:
+            # A successfully dispatched improver that changed zero files cannot
+            # make the next identical proof pass. Stop here WITHOUT re-proving
+            # the unchanged tree (a re-proof pays minutes of build+test
+            # timeouts for a result that cannot differ).
+            await emit(EventType.STAGE_DEBUG_ATTEMPT, {
+                **base, "agent_type": spec.agent_type, "attempt": attempts,
+                "errors": check.gaps[:10], "fix_applied": False,
+                "passed": check.passed, "score_before": score_before,
+                "score_after": check.score,
+            })
+            break
+        nxt = await asyncio.to_thread(_run_check, spec, record, worktree_dir, plan, settings)
         await emit(EventType.STAGE_DEBUG_ATTEMPT, {
             **base, "agent_type": spec.agent_type, "attempt": attempts,
-            "errors": check.gaps[:10], "fix_applied": bool(ran),
+            "errors": check.gaps[:10], "fix_applied": True,
             "passed": nxt.passed, "score_before": score_before, "score_after": nxt.score,
         })
         check = nxt
-        if not ran:
-            # A successfully dispatched improver that changed zero files cannot
-            # make the next identical proof pass. Stop here instead of spending
-            # every debug attempt on repeated no-op model calls.
-            break
 
     status = "passed" if check.passed else "degraded"
     await emit(EventType.STAGE_DEBUG_RESOLVED, {

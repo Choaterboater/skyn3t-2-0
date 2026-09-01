@@ -1,7 +1,120 @@
 # SkyN3t 2.0 — Status
 
-_Last reviewed: 2026-07-09 (2,539 passed / 6 expected skips; all 2,545
-collected tests across 283 files ran with no deselections)._
+_Last reviewed: 2026-08-01 (4,234 passed / 12 skipped; full suite green.
+Design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex, zero
+AI-look warnings with briefs threaded)._
+
+**2026-07-31 — de-slop pass (generated-app look):** deep-dived why builds had
+converged on the AI-default look and removed the same-look drivers. Design
+tokens are now brief-derived (`studio/design_tokens.py`): four AA-contrast
+themes — light `paper` default, `slate`, `sand`, dark `ink` only when the brief
+implies it — plus a curated accent rotation with the indigo/violet family
+absent by default, replacing the one fixed indigo-on-dark "use EXACTLY" set.
+The asset foundry no longer pastes a `<section class="skyn3t-asset-hero">`
+banner into delivered HTML (`studio/assets.py`), and the hero directive leaves
+placement to the design (`agents/code_agent.py`). Scaffolds no longer ship
+Inter-first font stacks or a gradient body (`agents/_scaffold.py`).
+Repair/improve prompts re-assert the DESIGN BAR so fixes stop diluting styling
+(`agents/code_improver.py`). MoA advisors are scoped to engineering judgement —
+visual direction stays with the design tokens (`intelligence/council.py`).
+`web_polish` gained advisory AI-look warnings (indigo gradient, Inter-first
+type, glassmorphism cluster) — recorded on the manifest, never blocking. New
+`skyn3t/benchmarks/golden-design-v1.json` (5 aesthetic contracts) measures
+distinctiveness without touching the golden-v1 baseline.
+
+**2026-07-31 — three-swarm wave (research / debug / adversarial):** 6 research
+agents (v0+shadcn, Lovable+Bolt, Replit+Spark, OpenHands+Aider+opencode,
+hermes-agent+claw-code latest, design-engineering) produced ~40 proposals; 4
+debug agents found 11 real defects; 3 adversarial agents verified every claim
+(11/11 confirmed + 4 missed bugs) and hostile-triaged the proposals. Shipped
+from that: **the de-slop centerpiece now actually reaches the model** — design
+tokens are injected beside the DESIGN BAR in every codegen prompt variant
+(previously appended to the head-capped skill bucket, where a mature skill
+library truncated them to 0 bytes) and the DesignerAgent's nested payload is
+unwrapped (its whole output previously dropped). Tokens now include
+`--accent-text` (AA-fitted per theme) and a curated Google-Fonts pair catalog;
+the DESIGN BAR gained v0's micro-discipline rules (analogous-only gradients,
+flex-first layout, text-balance, no blob/SVG filler). Whole-word matching in
+`derive_theme`/`derive_accent` ("aircraft" ≠ "craft"). Repairs thread the
+frozen layout profile on every dispatch path and align the UI extension set
+with codegen (phaser excluded). Dashboard: live-preview panel refetches after
+delivery instead of sticking on a mid-build 409; GateLadder live heat works for
+all repair-dispatched gates (metadata.stage). Housekeeping: golden-design suite
+shipped in the wheel + correct run command; `blocking_gates` warns on
+never-emitted names; dead `code_degraded` score branch removed; mixed line
+endings normalized.
+
+**2026-07-31 — full adversarial-ranked roadmap shipped (R1–R6):** the top six
+BUILD items from the swarm triage are all in. (R1) Style-personality presets:
+six coupled shape languages (sharp brutalist / compact workspace / soft
+editorial / rounded friendly / pill playful / minimal flat) picked per brief —
+radius scale + density + depth treatment, emitted as `--radius-*` tokens.
+(R2) Semantic token contract: `--text-on-accent` (contrast-picked) and a
+`--chart-1..5` data-viz palette hue-rotated from the accent; the contrast lint
+now checks `--text-on-<target>` against its named bg. (R3) Eight named layout
+archetypes (masonry, bento, split-screen, sidebar workspace…) picked per brief
+with a "compose from THIS shape, not centered hero + 3-card grid" line, plus
+new advisory AI-look warnings: full-viewport hero, identical card grid,
+placeholder copy, bounce easing. (R4) Scaffold primitives expanded to 8
+(Badge/Modal/Table/FormField added) with a COMPOSE-never-restyle clause in the
+DESIGN BAR and an advisory detector for hand-rolled duplicate buttons.
+(R5) DESIGN.md persistence: the build's full design direction is written into
+the delivered tree (never clobbering codegen's own) and re-read into every
+Improve context — palette/fonts no longer drift across iterations. (R6)
+Security: hardcoded secret literals are deterministically rewritten to env
+reads (+ `.env.example` updated) with a gate re-check, and every deploy plan
+now carries the env-var manifest the target host needs. Deferred (sequenced,
+not killed): OKLCH ramps, divergence-seeded best-of-N, REPL web-test agent,
+prerender pass. Killed by triage: stable-ID Vite plugin, PID routing,
+vision-RL.
+
+**2026-08-01 — golden-design bench loop (stub 0/5 → 2/5; live codex 3/5 →
+5/5):** the new suite immediately paid for itself as a bug finder, and the
+final live run is a clean sweep: 5/5 go (all 68.0), every build with a
+DESIGN.md in the delivered tree, seo green everywhere, and **zero AI-look
+warnings on 4 of 5 builds** — the 5th (y2k-portfolio) flags emoji + a card
+grid in a brief that literally asks for playful sticker badges, which is why
+those detectors are advisory. Fixes the loop drove: every scaffold HTML head
+now ships a meta description (the seo gate correctly hard-failed 4/5); the
+bare astro starter got real styled content with actions (failed web_polish
+structurally); astro bumped 4→5 with an npm `overrides` pin forcing ESM
+estree-walker@3 (its CLI chain nests a CJS estree-walker@2 that Node 24's ESM
+loader rejects — reproduced and fix-verified in the delivered project, baked
+into the scaffold with a regression test); the seo gate learned the Astro
+`content={description}` idiom; two new `apply_deterministic_repairs` entries
+— `pin_astro_estree_walker_override` (model-written package.json has no pin)
+and `drop_dangling_node_script_files` (a phantom `node scripts/validate.mjs`
+build script was MODULE_NOT_FOUND-ing a complete static site); the
+verify_build stale-veto override now also honors a SKIPPED build with passing
+proof (a static site has no build step once the phantom script is dropped);
+`GoldenExpectations.min_intent_score` floor relaxed to 60 (style-direction
+words legitimately never appear as page copy — verified against the delivered
+site), with the brutalist case at 70. Bench learning is isolated by design
+(work-root state); production builds feed `data/build_patterns.json` as usual.
+Follow-up: the two invitation-dependent AI-look detectors (decorative emoji,
+identical card grid) are now **brief-aware** — a brief asking for playful
+stickers or a gallery/card grid no longer false-flags its own correct delivery
+(neutral/unknown briefs behave exactly as before); verified zero warnings on
+all five live builds with briefs threaded.
+
+**2026-08-01 — cortex diet (telemetry noise out, learning kept):** the
+autonomy heartbeat stopped re-reporting itself. `MetaTick` now logs
+`metatick.cycle` only when the hypothesis SET changes (digest of
+titles/actions) and fires INSIGHT_PUBLISHED once per suggestion
+target+action instead of every 300s, so the two permanent standing
+hypotheses no longer spam the control-plane log (`cortex/meta_tick.py`;
+SelfTuningEngine itself untouched). The repo scout's construction-time
+`scout_disabled_no_token` warning was both wrong — the scout works
+unauthenticated — and misplaced: it fired on CLI `studio build`, where the
+scout never runs. It now logs once from `RepoScout.run()` (the
+`cortex.start()` path) with the honest note that a token only raises the
+GitHub rate limit (`cortex/bootstrap.py`, `cortex/repo_scout.py`). The dead
+`github_explorer`/`github_ingestor` registrations were dropped from the CLI
+boot list (agent classes + their tests kept for future use; external-repo
+learning stays on the RepoScout -> gated ingest path), and the unloaded
+422-file frozen corpus in `skyn3t/skills/` was quarantined to a one-line
+README pointing at the live `data/skills/` library. Lessons, the skill
+library, and the scout -> ingest path are unchanged.
 
 **2026-07-09 review and hardening swarm:** the control plane and generated
 previews now have explicit origin, host, CSP, and capability-URL boundaries;
@@ -74,7 +187,6 @@ If you get disconnected, open these in order:
 | `--best-of N`, `--no-critic` | Trajectory sampling and critic-gate toggle. |
 | `skyn3t project list` | Recent builds from the SQLite memory store. |
 | `skyn3t snapshot` | Event-history snapshot to JSON. |
-| `skyn3t studio approve/reject` | Records a decision event. |
 | `skyn3t domain ingest <path>` | Ingests into the in-memory RAG fallback. |
 | Memory / lessons | SQLite via `aiosqlite`; learning loop injects + grades. |
 | Proof-run | Inline backend (no Docker required). |
@@ -96,9 +208,23 @@ If you get disconnected, open these in order:
 ## Defaults (safe + cheap)
 
 - `free_only=true`, autonomy gated (`autonomous_builds=false`, `approval_gates=true`).
-- Hard caps: `per_build_usd_cap=0` (disabled by default), `daily_usd_cap=5.00`,
-  `daily_token_cap=5M`.
+- **Budget guards ship DISABLED, all three of them**: `per_build_usd_cap=0.0`,
+  `daily_usd_cap=0.0`, `daily_token_cap=0`. `0` means "no ceiling", not "no
+  spend" — every cap check is gated on `> 0`. Set a positive value to get one.
+  (This section previously claimed a `$5.00`/day and `5M`-token cap; neither
+  has ever existed in the code.)
+- A dollar cap cannot bound a **CLI** backend in any case: a signed-in CLI
+  reports no per-call price (`cost_usd=0.0`,
+  `cost_source="not_reported_by_cli"`), so CLI spend is invisible to the
+  ledger and bills the operator's subscription directly. Dollar caps bind
+  OpenRouter only. See [docs/MOA.md](docs/MOA.md#cost).
 - Web access is loopback-only unless `SKYN3T_AUTH_TOKEN` is set.
+- Gate posture is `lab`: only proof that the delivery is broken blocks a
+  build. A gate that could not run never blocks in any posture.
+- The MoA advisory council is **on** (default advisors `kimi_cli,copilot_cli,
+  openrouter`; Claude is opt-in only — nothing Claude-powered runs unless
+  selected) and adds N
+  completions per build, inline before codegen.
 
 ## Known gaps / follow-ups
 

@@ -3,7 +3,9 @@
 * **Inbound** (opt-in, start/stop from the dashboard): a Telegram long-poll loop
   (``getUpdates`` — no public URL needed) that turns chat messages into briefs
   and runs them through the studio (``/build <idea>``, ``/approve <id>``,
-  ``/ping``, or bare text).
+  ``/ping``, or bare text). Only allow-listed chat ids are processed, and the
+  listener refuses to start without one — getUpdates delivers messages from
+  anyone who discovers the bot.
 * **Outbound** (always on): build-completion notifications pushed to each
   configured channel's default target.
 
@@ -86,6 +88,27 @@ class MessagingService:
         await self.notify(text)
 
     async def notify(self, text: str) -> int:
+        """Send ``text`` to every configured channel. Returns the send count.
+
+        The text is scrubbed before it leaves the process. This is the only
+        egress path for build notifications, and build output routinely
+        contains provider tokens (``sk-``, ``ghp_``, ``xox``, ``AKIA``) picked
+        up from logs and error strings. Scrubbing used to live only in a
+        ``DeliveryGateway`` that nothing called — the guarantee existed in a
+        dead path while this live one egressed secrets to
+        Telegram/Discord/Slack unredacted. That module has since been deleted.
+        """
+        try:
+            from skyn3t.security.secrets import scrub_text
+
+            text = scrub_text(text)
+        except Exception:  # noqa: BLE001 - fail CLOSED, see below
+            # Deliberately not the "degrade, don't crash" fallback of returning
+            # the raw text. Rule #6 protects the BUILD; dropping a chat
+            # notification breaks nothing, whereas egressing an unscrubbed token
+            # to a third-party service is irreversible. Send a safe stub instead.
+            log.warning("integrations.scrub_failed_sending_placeholder")
+            text = "SkyN3t build notification (withheld: redaction unavailable)"
         sent = 0
         for name, ch in self.channels.items():
             target = self._target(name)
@@ -122,6 +145,16 @@ class MessagingService:
         tg = self.channels.get("telegram")
         if tg is None:
             return {"running": False, "error": "no telegram bot token configured"}
+        if not getattr(tg, "allowed_chat_ids", frozenset()):
+            # Fail closed: an unfiltered listener would hand /build and
+            # /approve to any Telegram user who finds the bot username.
+            return {
+                "running": False,
+                "error": (
+                    "no telegram chat allowlist configured — set "
+                    "SKYN3T_TELEGRAM_ALLOWED_CHAT_IDS (or SKYN3T_TELEGRAM_CHAT_ID)"
+                ),
+            }
         if self._running:
             return self.status()
         self._running = True
@@ -155,8 +188,14 @@ class MessagingService:
                     for upd in resp.json().get("result", []):
                         offset = int(upd["update_id"]) + 1
                         msg = channel.parse_update(upd)
-                        if msg:
-                            await channel.handle_inbound(msg)
+                        if not msg:
+                            continue
+                        # Second gate alongside TelegramChannel.handle_inbound:
+                        # unlisted chats never reach the brief/approve flow.
+                        if msg.target not in getattr(channel, "allowed_chat_ids", frozenset()):
+                            log.warning("telegram.unauthorized_chat", chat=msg.target)
+                            continue
+                        await channel.handle_inbound(msg)
                 except asyncio.CancelledError:  # pragma: no cover - shutdown
                     break
                 except Exception as exc:  # noqa: BLE001 - keep polling through errors

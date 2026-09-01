@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import os
 import re
 import shutil
@@ -29,7 +30,8 @@ from typing import Any
 
 import structlog
 
-from skyn3t.adapters.llm import LLMClient
+from skyn3t.adapters.llm import _BUILD_ROUTING, LLMClient
+from skyn3t.adapters.model_slot import ModelSlot
 from skyn3t.agents._common import (
     canonical_project_relpath,
     detect_stack,
@@ -49,12 +51,14 @@ from skyn3t.agents._scaffold import (
     synthesize_python_entrypoint,
 )
 from skyn3t.core.agent import AgentCapability, AgentStatus, BaseAgent, TaskRequest, TaskResult
-from skyn3t.core.events import EventBus
-from skyn3t.core.model_router import Tier
+from skyn3t.core.events import EventBus, EventType
+from skyn3t.core.model_router import Tier, parse_task_model_slot
 from skyn3t.studio.acceptance_contract import (
     restore_acceptance_contracts,
     snapshot_acceptance_contracts,
 )
+from skyn3t.studio.design_tokens import design_md_block
+from skyn3t.studio.visual_design_contract import visual_design_contract_prompt_block
 from skyn3t.studio.layout_profiles import LayoutProfile, layout_contract_block, profile_from_payload
 from skyn3t.worktree import list_files
 
@@ -113,7 +117,22 @@ _DESIGN_DIRECTIVE = (
     "BANNED AI-DEFAULT LOOK (do NOT ship these unless the brief explicitly asks for "
     "them — they read as a generic AI template): a generic purple/violet gradient hero "
     "band on a white page, and emoji-bullet feature grids (an emoji next to each "
-    "feature card). Pick a palette that fits THIS product instead."
+    "feature card). Pick a palette that fits THIS product instead. "
+    "GRADIENTS: off by default — if one genuinely fits the product, use subtle "
+    "ANALOGOUS hues only (e.g. blue into teal), 2-3 stops max, never on primary "
+    "surfaces. "
+    "LAYOUT: flexbox first; CSS grid only for true 2-D arrangements; prefer gap "
+    "over margins; no floats, no absolute-positioned scaffolding. "
+    "TYPE POLISH: headings wrap with text-wrap: balance; body line-height "
+    "1.4-1.6; set the page background on <html> so it never flashes white. "
+    "NO FILLER VISUALS: no abstract blobs, gradient circles or decorative shape "
+    "divs as filler; no hand-drawn SVG illustrations — real content and real "
+    "imagery only. "
+    "COMPOSE FROM PRIMITIVES: the scaffold ships UI primitives at "
+    "src/components/ui.jsx (Button, Panel, StatCard, TextInput, Badge, Modal, "
+    "Table, FormField) — COMPOSE pages from them; never restyle them with "
+    "one-off inline classes, never hand-roll a duplicate of a primitive — "
+    "extend the primitives file instead."
 )
 # Config hygiene — keeps codegen from hardcoding API keys/endpoints. Reading
 # config through env/an accessor lets the post-build config surfacer detect it and
@@ -127,6 +146,113 @@ _CONFIG_DIRECTIVE = (
     "user-supplied values (e.g. an API key), expose them via a config module and "
     "a Settings screen the user can fill in, not literals in code."
 )
+# Friction-report channel (ported from Lovable's vent loop — measured there to
+# improve limit-explanation and cut futile retry loops; vent spikes double as
+# incident detection). When the PIPELINE blocks codegen — not the app — the
+# agent reports it on a bounded VENT: line instead of silently working around
+# it or faking compliance. CodeAgent parses these out of the session output
+# into run_metadata + the build's vents.jsonl; the learning loop turns a
+# recurring vent into a lesson. Vents never ship in code, commits, or READMEs.
+_VENT_DIRECTIVE = (
+    "VENT CHANNEL: if something in this pipeline blocks you — a tool you do not "
+    "have, a contradictory directive, an error you cannot diagnose, or a "
+    "requirement you cannot satisfy honestly — do NOT work around it silently "
+    "or fake it. Emit one line per issue starting with `VENT: ` (max 3) "
+    "explaining it plainly. Vents go to the operator and the self-improvement "
+    "loop, never into code, commits, or the README."
+)
+_VENT_PREFIX = "VENT:"
+_VENT_MAX = 3
+_VENT_MAX_CHARS = 300
+
+
+def parse_vents(text: str, *, max_vents: int = _VENT_MAX,
+                max_chars: int = _VENT_MAX_CHARS) -> list[str]:
+    """Extract bounded ``VENT:`` friction reports from agentic session output.
+
+    First ``max_vents`` lines win; each is whitespace-flattened and trimmed to
+    ``max_chars``. Deterministic and side-effect free."""
+    vents: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(_VENT_PREFIX):
+            continue
+        vent = " ".join(stripped[len(_VENT_PREFIX):].split())[:max_chars].strip()
+        if vent:
+            vents.append(vent)
+        if len(vents) >= max_vents:
+            break
+    return vents
+
+
+def strip_vent_lines(content: str) -> str:
+    """Remove any ``VENT:`` lines from text about to be written to disk.
+
+    A vent is a pipeline signal, not source — it must never land in a written
+    file even when the agent ignores the convention and inlines one. Content
+    without the prefix is returned untouched (zero behavior change)."""
+    if _VENT_PREFIX not in content:
+        return content
+    return "\n".join(
+        line for line in content.split("\n")
+        if not line.strip().startswith(_VENT_PREFIX)
+    )
+
+
+def _vents_log_path(logs_dir: Any, slug: str) -> Path:
+    safe = "".join(
+        ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(slug or "app")
+    ) or "app"
+    return Path(logs_dir or "logs") / safe / "vents.jsonl"
+
+
+def _append_vents_log(slug: str, records: list[dict[str, Any]]) -> Path | None:
+    """Append vent records to ``logs/<slug>/vents.jsonl``; never raises.
+
+    One JSON line per vent (``{slug, vent, attempt}``) — the operator trail a
+    vent-spike incident check reads. Mirrors council_trace's per-build JSONL
+    (logs_dir, disposable) rather than the durable manifest."""
+    try:
+        from skyn3t.config.settings import get_settings
+
+        path = _vents_log_path(getattr(get_settings(), "logs_dir", "logs"), slug)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            for record in records:
+                fh.write(json.dumps(record, default=str) + "\n")
+        return path
+    except Exception as exc:  # noqa: BLE001 - vent logging may never fail a build
+        log.warning("code_agent.vents_log_failed", error=str(exc)[:160])
+        return None
+
+
+def read_vents_log(logs_dir: Any, slug: str, *, max_vents: int = _VENT_MAX) -> list[str]:
+    """Read back the bounded, de-duplicated vent texts for a build.
+
+    Best-effort: a missing/corrupt log yields ``[]`` — the learning capture
+    degrades to zero vent lessons, never a failed build."""
+    try:
+        path = _vents_log_path(logs_dir, slug)
+        if not path.exists():
+            return []
+        vents: list[str] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            vent = (
+                str(record.get("vent") or "").strip()
+                if isinstance(record, dict) else ""
+            )
+            if vent and vent not in vents:
+                vents.append(vent)
+            if len(vents) >= max_vents:
+                break
+        return vents
+    except Exception as exc:  # noqa: BLE001
+        log.warning("code_agent.vents_log_read_failed", error=str(exc)[:160])
+        return []
 # Cheap, broadly-available default for generated apps. Overridable per-app via the
 # OPENROUTER_MODEL env var; intentionally NOT a Claude model (cost) or a :free id
 # (those get retired and 404 — see the OpenRouter cascade debugging).
@@ -354,6 +480,20 @@ _WEB_STACKS = frozenset({
 # Generated app composition contracts apply to conventional web frontends, not
 # canvas-game prompts. Phaser retains its dedicated game/art directives.
 _DESIGN_WEB_STACKS = _WEB_STACKS - {"phaser"}
+
+
+def _seed_tokens_md(extra: Any) -> str:
+    """The per-build design-seed override the runner threads for divergence-
+    seeded best-of-N: ``extra["design_seed"]["tokens_md"]`` replaces the
+    brief-derived ``design_md_block(brief)`` so each candidate themes from a
+    DISTINCT token set. '' when absent/malformed -> derive (the byte-identical
+    default path)."""
+    seed = extra.get("design_seed") if isinstance(extra, dict) else None
+    if isinstance(seed, dict):
+        tokens_md = seed.get("tokens_md")
+        if isinstance(tokens_md, str):
+            return tokens_md
+    return ""
 _FRONTEND_EXTENSIONS = frozenset({
     ".jsx", ".tsx", ".css", ".html", ".htm", ".vue", ".svelte",
     ".astro", ".scss", ".sass", ".less",
@@ -395,6 +535,33 @@ _SWIFT_DIRECTIVE = (
     "`.build/debug/AppCLI` and literal help / interactive / invalid-input scenarios. "
     "TARGET: macOS 13+; keep it compiling cleanly under the installed toolchain "
     "(avoid unavailable APIs). Implement the brief's real features, not a stub."
+)
+
+
+# Native iOS is deliberately separate from the macOS SwiftPM directive: it needs
+# an Xcode target, iOS privacy declarations, device-only capture APIs, and a
+# first-class accessibility contract.
+_SWIFT_IOS_DIRECTIVE = (
+    "STACK — NON-NEGOTIABLE: build a NATIVE iPhone/iPad app in Swift + SwiftUI for Xcode, "
+    "not a website and not a macOS SwiftPM executable. NEVER emit package.json, npm, "
+    "node_modules, index.html, JavaScript/TypeScript, Vite, React, Expo, or web files. "
+    "PROJECT: preserve/create App.xcodeproj with a real application target named App and "
+    "an XCTest target; use its synced App/ source folder so new Swift files compile without "
+    "fragile manual PBX lists. Keep App/Info.plist and include NSCameraUsageDescription. "
+    "Use Swift 6 strict concurrency, @MainActor UI mutation, structured async/await, and "
+    "Observation (@Observable) for nonpersistent screen state. PERSISTENCE: use SwiftData "
+    "@Model, ModelContainer, @Query, and explicit relationships; ship offline-first data with "
+    "no account or key required. Keep parsing/normalization/business rules testable via XCTest. "
+    "SCANNING: use VisionKit DataScannerViewController only after support/availability checks; "
+    "always offer prominent manual entry and let people correct every OCR field. REVIEWS: never "
+    "scrape sites or invent external scores. Model attributed provider links/adapters, fetch only "
+    "documented user-configured APIs, and keep community tasting notes as first-party local data. "
+    "ACCESSIBILITY IS LOAD-BEARING: Dynamic Type, VoiceOver labels/hints, semantic colors, 44pt "
+    "targets, visible text actions, high contrast, and simple large-button navigation for older "
+    "adults. DESIGN: standard SwiftUI navigation, tabs, sheets, SF Symbols, and semantic materials "
+    "that adapt to Liquid Glass; newer visual APIs need availability fallbacks. Implement the full "
+    "brief, never a starter counter. MAC PROOF: xcodebuild -project App.xcodeproj -scheme App -sdk "
+    "iphonesimulator -destination generic/platform=iOS Simulator build."
 )
 
 
@@ -570,13 +737,70 @@ def variant_directive(stack: str, brief: str) -> str:
     return ""
 
 
+def _explicit_stub_fences_cli_slot(settings: Any, slot: ModelSlot) -> bool:
+    """Money fence, mirrored from ``llm.build_routing_snapshot``: an EXPLICITLY
+    selected stub backend means offline and free — no subscription CLI may be
+    launched on its behalf by a task slot. (A backend that merely DEGRADED to
+    stub keeps the pin: "stages offline, codegen on my signed-in CLI" is a
+    legitimate configuration.)"""
+    requested = str(getattr(settings, "llm_backend", "") or "").strip().lower()
+    return requested == "stub" and slot.provider.endswith("_cli")
+
+
+def _lock_agentic_route_to_slot(slot: ModelSlot, *, cli_available: bool) -> None:
+    """Reconcile the runner/improve locked routing snapshot with a task slot.
+
+    GUI submissions freeze ``_BUILD_ROUTING`` BEFORE the code stage runs, and
+    ``agentic_build`` enforces that snapshot over its provider/model kwargs.
+    The snapshot predates task slots (it is built from ``codegen_cli_provider``
+    & friends), so left alone it would silently strip a CLI slot's provider —
+    or worse, forward a CLI model alias to OpenRouter. Rewriting the codegen
+    entry to exactly what ``build_routing_snapshot`` WOULD have produced for
+    the slot keeps the lock, the manifest's routing snapshot, and the executed
+    route in agreement. Idempotent: every best-of-N trajectory writes the same
+    values into the shared per-build dict. No-op when no build locked routing
+    (direct CLI runs), where the kwargs flow through unmediated.
+    """
+    locked = _BUILD_ROUTING.get()
+    if not (isinstance(locked, dict) and isinstance(locked.get("codegen"), dict)):
+        return
+    codegen = locked["codegen"]
+    cli = slot.provider[:-4] if slot.provider.endswith("_cli") else ""
+    if cli:
+        locked["codegen"] = {
+            **codegen,
+            "source": "codegen_cli_pin",
+            "requested_backend": f"{cli}_cli",
+            "effective_backend": f"{cli}_cli" if cli_available else "stub",
+            "requested_model": slot.model,
+            "effective_model": (
+                (slot.model or f"{cli}-cli:default") if cli_available else "offline-stub"
+            ),
+        }
+        return
+    if slot.provider == "openrouter":
+        locked["codegen"] = {
+            **codegen,
+            "requested_model": slot.model,
+            "effective_model": slot.model or "router:auto",
+        }
+        return
+    # Bare model id: pinned on the active route (provider untouched).
+    locked["codegen"] = {
+        **codegen,
+        "requested_model": slot.model,
+        "effective_model": slot.model,
+    }
+
+
 class CodeAgent(BaseAgent):
     # Max concurrent per-file generations (bounds nested claude -p instances).
     _gen_concurrency = 4
     _run_metadata_keys = (
         "degraded", "degraded_reason", "codegen_override_unavailable",
         "prompts", "agentic", "prose_rejected", "index_html_repaired",
-        "scene_registry_repaired", "agentic_untrusted_paths",
+        "scene_registry_repaired", "agentic_untrusted_paths", "vents",
+        "model_used",
     )
 
     def __init__(self, name: str = "code", *, event_bus: EventBus,
@@ -706,11 +930,21 @@ class CodeAgent(BaseAgent):
         # depth directive uses it so a retry keeps the SAME design the run committed.
         _game_design = _extra.get("game_design") if isinstance(_extra, dict) else None
         _asset_foundry = _extra.get("asset_foundry") if isinstance(_extra, dict) else None
+        # Advisory-council guidance the runner computed ONCE for this build and
+        # threaded, exactly like art_plan/game_design above. Threading rather
+        # than recomputing keeps every best-of-N trajectory on the SAME advice,
+        # so the trajectories still differ only by model.
+        _moa_guidance = str(
+            (_extra.get("moa_guidance") or "") if isinstance(_extra, dict) else ""
+        )
+        # Per-trajectory design seed (divergence-seeded best-of-N): threaded
+        # exactly like moa_guidance above; overrides the derived token block.
+        _design_tokens_md = _seed_tokens_md(_extra)
         raw_plan = p.get("plan")
         plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
         raw_prior = p.get("prior")
         prior = raw_prior if isinstance(raw_prior, dict) else {}
-        raw_design = prior.get("design")
+        raw_design = self._unwrap_design_payload(prior.get("design"))
         profile = profile_from_payload(_extra.get("layout_profile") if isinstance(_extra, dict) else None)
         design = self._design_with_layout_profile(
             raw_design if isinstance(raw_design, dict) else None, profile,
@@ -809,11 +1043,20 @@ class CodeAgent(BaseAgent):
                     self._agentic_prompt(
                         brief, stack, plan, knowledge,
                         art_plan=_art_plan, game_design=_game_design,
-                        asset_foundry=_asset_foundry, design=design)
+                        asset_foundry=_asset_foundry, design=design,
+                        moa_guidance=_moa_guidance,
+                        design_tokens_md=_design_tokens_md)
                     if attempt == 0
+                    # The resume shares the initial prompt's static head (SAME
+                    # per-build inputs threaded) so provider prompt caching hits
+                    # on every fix-loop iteration; only the volatile resume
+                    # context (issues / missing / existing) differs, at the tail.
                     else self._agentic_resume_prompt(
                         brief, stack, plan, disk, missing_planned,
-                        agentic_error, contract_gap, design=design)
+                        agentic_error, contract_gap, design=design,
+                        design_tokens_md=_design_tokens_md,
+                        knowledge=knowledge, art_plan=_art_plan,
+                        game_design=_game_design, asset_foundry=_asset_foundry)
                 )
                 # Capture the exact prompt this build sends the model so it's
                 # inspectable per-build in the dashboard. Built, sent, and — until
@@ -845,6 +1088,9 @@ class CodeAgent(BaseAgent):
                     res.get("completed", agentic_ok)
                 )
                 agentic_error = res.get("error", "")
+                # Vent channel: harvest friction reports from the session output
+                # BEFORE any degradation handling — best-effort, never raises.
+                await self._capture_vents(res, app_name, attempt)
                 disk = self._read_files(worktree)
                 # The CLI writes files directly (bypassing extract/validate). Guard
                 # against it writing chat prose instead of code: reject prose source
@@ -854,6 +1100,16 @@ class CodeAgent(BaseAgent):
                 code_bytes = self._code_bytes(disk)
                 present_planned = self._present_planned_files(worktree, expected_planned)
                 missing_planned = sorted(expected_planned - present_planned)
+                # Decoration the model planned but never wrote must not buy an
+                # agentic round-trip — see _synthesize_trivial_assets.
+                if missing_planned:
+                    synthesized = self._synthesize_trivial_assets(worktree, missing_planned)
+                    if synthesized:
+                        log.info("code_agent.trivial_assets_synthesized",
+                                 files=synthesized[:12])
+                        present_planned = self._present_planned_files(
+                            worktree, expected_planned)
+                        missing_planned = sorted(expected_planned - present_planned)
                 contract_gap = self._agentic_contract_gap(stack, disk)
                 under_delivered = (
                     not (disk and code_bytes >= threshold)
@@ -974,7 +1230,8 @@ class CodeAgent(BaseAgent):
                     try:
                         return rel_path, await self._generate_file(
                             rel_path, brief, stack, plan, knowledge,
-                            model_override=model_override, design=design)
+                            model_override=model_override, design=design,
+                            design_tokens_md=_design_tokens_md)
                     except Exception:  # noqa: BLE001 - keep scaffold fallback for this file
                         return rel_path, None
 
@@ -1010,6 +1267,17 @@ class CodeAgent(BaseAgent):
             # scaffold path). The runner lifts these into manifest.extra["prompts"].
             "prompts": run_metadata.get("prompts", []),
         }
+        # Agent-reported pipeline friction (bounded); absent on vent-free builds,
+        # so a build that never vents is byte-identical downstream to before.
+        if run_metadata.get("vents"):
+            out["vents"] = list(run_metadata["vents"])
+        # Task-slot attribution (``codegen_model_slot``): which slot governed
+        # this build's greenfield routing. Absent unless a slot is set, so a
+        # slot-free build stays byte-identical; the golden bench / model
+        # tournament read this to attribute outcomes per slot.
+        model_used = run_metadata.get("model_used")
+        if isinstance(model_used, dict):
+            out["model_used"] = dict(model_used)
         agentic = run_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
@@ -1022,6 +1290,8 @@ class CodeAgent(BaseAgent):
                     "fallback_model",
                     "stalled",
                     "stall_reason",
+                    "stall_kind",
+                    "stall_evidence",
                     "turn_timeouts",
                     "completed",
                     "complete",
@@ -1111,7 +1381,9 @@ class CodeAgent(BaseAgent):
                         *, art_plan: dict[str, Any] | None = None,
                         game_design: dict[str, Any] | None = None,
                         asset_foundry: dict[str, Any] | None = None,
-                        design: dict[str, Any] | None = None) -> str:
+                        design: dict[str, Any] | None = None,
+                        moa_guidance: str = "",
+                        design_tokens_md: str | None = None) -> str:
         files = plan.get("files") or []
         manifest = "\n".join(
             f"  {f['path']} — {f.get('purpose', '')}"
@@ -1126,6 +1398,7 @@ class CodeAgent(BaseAgent):
             + (f"{_GAME_FEEL_DIRECTIVE}\n\n" if stack == "phaser" else "")
             + (f"{self._game_depth_directive(brief, game_design)}\n\n" if stack == "phaser" else "")
             + (f"{_SWIFT_DIRECTIVE}\n\n" if stack == "swift" else "")
+            + (f"{_SWIFT_IOS_DIRECTIVE}\n\n" if stack == "swift_ios" else "")
             + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
             + (f"{_RAG_DIRECTIVE}\n\n" if stack == "rag" else "")
             + (f"{_WORKFLOW_DIRECTIVE}\n\n" if stack == "workflow" else "")
@@ -1153,6 +1426,12 @@ class CodeAgent(BaseAgent):
             "or pyproject.toml for Python, package.json (with a populated dependencies block and "
             "a description field) for Node/JS. Do not leave it empty or omit deps you use.\n"
             + (f"{_DESIGN_DIRECTIVE}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
+            # Brief-derived tokens travel WITH the design bar, not in the
+            # head-capped skill-advice bucket (a mature skill library truncated
+            # them to 0 bytes). Same stack gate as the bar: never phaser/mobile.
+            # A threaded design seed (best-of-N divergence) overrides the
+            # derived block; default (falsy) derives exactly as before.
+            + (f"{design_tokens_md or design_md_block(brief)}\n{visual_design_contract_prompt_block()}\n" if (stack or "").lower() in _DESIGN_WEB_STACKS else "")
             + (
                 f"Follow this design direction: {self._design_summary(design)}\n"
                 if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
@@ -1170,8 +1449,23 @@ class CodeAgent(BaseAgent):
             + (f"{_AGENT_APP_DIRECTIVE}\n" if _implies_agent_app(brief) else "")
             + f"{_FULL_FILE_CONTRACT}\n"
             + f"{_CONFIG_DIRECTIVE}\n"
+            + f"{_VENT_DIRECTIVE}\n"
             + f"{_LLM_DIRECTIVE}\n"
             + "Do not ask questions — just build it."
+            # Advisory-council guidance is the VERY TAIL of the prompt, after
+            # every directive AND the closer. Everything above this line is
+            # STATIC for a given build (same brief/plan/stack/design inputs) —
+            # byte-identical across the initial prompt, every resume prompt,
+            # and every best-of-N trajectory, so provider prompt caching hits
+            # on the shared prefix each fix-loop iteration (hermes v0.19.0).
+            # Volatile text — this guidance, and the resume prompt's issue /
+            # missing-file / existing-file lists — only ever APPENDS at the
+            # tail; splicing it into the middle would fragment the cached
+            # span. (Hermes appends for the same reason at a different scale —
+            # agent/moa_loop.py:1303-1337.) Empty by default, so a council-off
+            # build's prompt is byte-identical to before. This ordering is a
+            # tested invariant (tests/test_prompt_prefix_stability.py).
+            + (f"\n{moa_guidance}\n" if moa_guidance else "")
         )
         return self.system_prompt(prompt)
 
@@ -1353,7 +1647,23 @@ class CodeAgent(BaseAgent):
             "Use these real assets; do not invent stock-image URLs, remote CDNs, or missing /assets paths.",
         ]
         if hero:
-            parts.append(f"Hero image: `{hero}`. Render it visibly on the primary page.")
+            # "Render it visibly" was the previous wording and was not enough.
+            # Measured on a delivered site: the model wired the favicon and the
+            # og:image — both mechanical one-liners in <head> — and skipped the
+            # hero, the only asset needing a layout decision in the page body.
+            # So name the element and the alt text and state the consequence,
+            # rather than describing the intent. Placement stays with the design:
+            # an earlier "above-the-fold hero/banner" mandate made every page a
+            # banner-band template.
+            parts.append(
+                f"Hero image: `{hero}`. The primary page MUST render an `<img>` tag "
+                f"(or this stack's image component) whose src is `{hero}`, with "
+                "descriptive alt text. Place it where it strengthens THIS design — "
+                "a hero, feature, about or media section, sized and cropped by the "
+                "layout — never as a boilerplate full-width banner band pasted at "
+                "the top. Wiring it into metadata alone does NOT satisfy this: a "
+                "page that never displays the hero fails acceptance."
+            )
         if og:
             parts.append(f"Open Graph image: `{og}`. Wire it into metadata when the stack supports it.")
         if favicon:
@@ -1408,6 +1718,77 @@ class CodeAgent(BaseAgent):
             timeout = None
         runtime = {"timeout": timeout} if timeout else {}
         live_settings = getattr(self.llm, "settings", None)
+        # Task-specialized greenfield pin (``codegen_model_slot``). When set and
+        # parseable it is authoritative for the codegen path — ahead of BOTH the
+        # ``codegen_cli_provider`` override below and the payload model_override,
+        # mirroring the rule that an operator's settings pin wins the whole build.
+        # Empty/unparseable (warned in parse_task_model_slot) or unusable on this
+        # backend (warned below) falls through to today's chain unchanged.
+        codegen_slot = parse_task_model_slot(
+            str(getattr(live_settings, "codegen_model_slot", "") or ""),
+            path="codegen",
+        )
+        if codegen_slot is not None:
+            self._task_metadata["model_used"] = {"codegen": codegen_slot.address}
+            slot_provider = codegen_slot.provider
+            if slot_provider.endswith("_cli"):
+                cli = slot_provider[:-4]
+                if _explicit_stub_fences_cli_slot(live_settings, codegen_slot):
+                    # Explicit stub = offline+free: ignore the slot and keep
+                    # today's chain (which yields the offline scaffold anyway).
+                    self._task_metadata.pop("model_used", None)
+                    log.warning(
+                        "code_agent.codegen_slot_ignored",
+                        slot=codegen_slot.address,
+                        reason="explicit stub backend is offline+free; CLI slot refused",
+                    )
+                else:
+                    # Same routing-lock semantics as ``codegen_cli_provider``: an
+                    # explicit CLI pin never silently spends through OpenRouter —
+                    # unavailable means keep the offline scaffold, not fall back.
+                    cli_ok = self.llm._cli_available(cli)
+                    _lock_agentic_route_to_slot(codegen_slot, cli_available=cli_ok)
+                    slot_kwargs = {
+                        "provider": cli,
+                        "model": codegen_slot.model or None,
+                        "stack": stack,
+                        **runtime,
+                    }
+                    if cli_ok:
+                        return True, slot_kwargs, ""
+                    return False, slot_kwargs, cli
+            elif slot_provider == "openrouter":
+                # The openrouter agentic tool-loop is the only agentic path an
+                # openrouter slot can ride; on any other backend the pin is
+                # unusable, so warn and keep today's routing rather than send a
+                # hosted model id to a CLI (or vice versa).
+                if self.llm.backend == "openrouter":
+                    _lock_agentic_route_to_slot(codegen_slot, cli_available=False)
+                    return False, {
+                        "model": codegen_slot.model or None,
+                        "stack": stack,
+                        **runtime,
+                    }, ""
+                self._task_metadata.pop("model_used", None)
+                log.warning(
+                    "code_agent.codegen_slot_ignored",
+                    slot=codegen_slot.address,
+                    backend=self.llm.backend,
+                    reason="openrouter slot requires the openrouter backend",
+                )
+            elif slot_provider:
+                # "stub" — a no-op pin for codegen; warn and keep today's routing.
+                self._task_metadata.pop("model_used", None)
+                log.warning(
+                    "code_agent.codegen_slot_ignored",
+                    slot=codegen_slot.address,
+                    reason="provider cannot serve agentic codegen",
+                )
+            else:
+                # Bare model id: pin it on the active codegen route (the grammar's
+                # documented "no known provider prefix" semantics).
+                _lock_agentic_route_to_slot(codegen_slot, cli_available=False)
+                return False, {"model": codegen_slot.model, "stack": stack, **runtime}, ""
         codegen_provider = str(
             getattr(live_settings, "codegen_cli_provider", "") or "").strip().lower()
         codegen_model = (
@@ -1466,8 +1847,9 @@ class CodeAgent(BaseAgent):
         prior: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
         raw_extra = p.get("extra")
         extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+        design_tokens_md = _seed_tokens_md(extra)
         profile = profile_from_payload(extra.get("layout_profile"))
-        raw_design = prior.get("design")
+        raw_design = self._unwrap_design_payload(prior.get("design"))
         design = self._design_with_layout_profile(
             raw_design if isinstance(raw_design, dict) else None, profile,
         )
@@ -1496,11 +1878,12 @@ class CodeAgent(BaseAgent):
             while True:
                 prompt = (
                     self._agentic_slice_prompt(
-                        brief, stack, name, slice_files, manifest, knowledge, design=design)
+                        brief, stack, name, slice_files, manifest, knowledge, design=design,
+                        design_tokens_md=design_tokens_md)
                     if attempt == 0
                     else self._agentic_slice_resume_prompt(
                         brief, stack, name, slice_files, disk, missing, agentic_error,
-                        design=design)
+                        design=design, design_tokens_md=design_tokens_md)
                 )
                 self._task_metadata.setdefault("prompts", []).append({
                     "stage": f"codegen_slice_{name}"
@@ -1522,6 +1905,7 @@ class CodeAgent(BaseAgent):
                 agentic_ok = bool(res.get("ok", True))
                 confirmed = agentic_ok and bool(res.get("completed", agentic_ok))
                 agentic_error = str(res.get("error", "") or "")
+                await self._capture_vents(res, app_name, attempt)
                 out_of_scope_seen.update(
                     self._prune_slice_out_of_scope(worktree, expected, slice_baseline)
                 )
@@ -1589,7 +1973,8 @@ class CodeAgent(BaseAgent):
                     try:
                         return rel, await self._generate_file(
                             rel, brief, stack, plan, knowledge,
-                            model_override=model_override, manifest=manifest, design=design)
+                            model_override=model_override, manifest=manifest, design=design,
+                            design_tokens_md=design_tokens_md)
                     except Exception:  # noqa: BLE001 - isolate per file
                         return rel, None
 
@@ -1617,6 +2002,13 @@ class CodeAgent(BaseAgent):
             "slice": name,
             "prompts": self._task_metadata.get("prompts", []),
         }
+        if self._task_metadata.get("vents"):
+            out["vents"] = list(self._task_metadata["vents"])
+        # Same task-slot attribution as the monolithic path — a slice is still
+        # greenfield codegen, so a set ``codegen_model_slot`` governs it too.
+        slice_model_used = self._task_metadata.get("model_used")
+        if isinstance(slice_model_used, dict):
+            out["model_used"] = dict(slice_model_used)
         agentic = self._task_metadata.get("agentic")
         if isinstance(agentic, dict):
             out["agentic"] = {
@@ -1649,6 +2041,7 @@ class CodeAgent(BaseAgent):
     def _agentic_slice_prompt(
         self, brief: str, stack: str, slice_name: str, slice_files: list[str],
         manifest: str, knowledge: str, design: dict[str, Any] | None = None,
+        design_tokens_md: str | None = None,
     ) -> str:
         want = "\n".join(f"  {f}" for f in slice_files) or "  (none listed)"
         # The frontend slice owns the look — give it the design bar + the chosen
@@ -1659,7 +2052,10 @@ class CodeAgent(BaseAgent):
             (slice_name == "frontend" or slice_name.startswith("frontend_"))
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n\n{_DESIGN_DIRECTIVE}"
+            design_block = (
+                f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
+                f"\n{visual_design_contract_prompt_block()}"
+            )
             summary = self._design_summary(design)
             if summary:
                 design_block += f"\nFollow this design direction: {summary}"
@@ -1675,6 +2071,7 @@ class CodeAgent(BaseAgent):
             "Implement real logic and error handling for your files only. Match the import "
             "paths above exactly. Do not ask questions — just write your files."
             f"{design_block}"
+            f"\n\n{_VENT_DIRECTIVE}"
         )
         return self.system_prompt(prompt)
 
@@ -1688,6 +2085,7 @@ class CodeAgent(BaseAgent):
         missing: list[str],
         previous_error: str,
         design: dict[str, Any] | None = None,
+        design_tokens_md: str | None = None,
     ) -> str:
         """Compact continuation for an incomplete specialist slice."""
         remaining = "\n".join(f"- {path}" for path in missing) or (
@@ -1703,7 +2101,11 @@ class CodeAgent(BaseAgent):
         ):
             summary = self._design_summary(design)
             if summary:
-                design_block = f"\n\n{_DESIGN_DIRECTIVE}\nFollow this design direction: {summary}"
+                design_block = (
+                    f"\n\n{_DESIGN_DIRECTIVE}\n\n{design_tokens_md or design_md_block(brief)}"
+                    f"\n{visual_design_contract_prompt_block()}"
+                    f"\nFollow this design direction: {summary}"
+                )
         return self.system_prompt(
             "RESUME THIS SLICE IN PLACE. Preserve every working file and do not restart "
             "or reduce the implementation.\n\n"
@@ -1715,6 +2117,7 @@ class CodeAgent(BaseAgent):
             "Implement every missing owned file in full, repair wiring among the owned "
             "files, and finish successfully only when the entire slice is complete."
             + design_block
+            + f"\n\n{_VENT_DIRECTIVE}"
         )
 
     @staticmethod
@@ -1736,6 +2139,16 @@ class CodeAgent(BaseAgent):
         if profile.name == "editorial":
             return contract + " A constrained reading column is permitted where it suits the content."
         return contract
+
+    @staticmethod
+    def _unwrap_design_payload(raw_design: Any) -> Any:
+        """The designer stage returns {"design": {...}, "model"/"backend": ...}
+        and the runner stores that verbatim in prior["design"] — unwrap the
+        payload when nested, else the whole design direction silently drops
+        out of every codegen prompt."""
+        if isinstance(raw_design, dict) and isinstance(raw_design.get("design"), dict):
+            return raw_design["design"]
+        return raw_design
 
     @staticmethod
     def _design_summary(design: dict[str, Any] | None) -> str:
@@ -1843,7 +2256,7 @@ class CodeAgent(BaseAgent):
             )
             looks_like_react_shell = bool(
                 re.search(
-                    r"react-router-dom|ReactDOM\.createRoot|createRoot\(|<Routes\b|"
+                    r"react-router(?:-dom)?|ReactDOM\.createRoot|createRoot\(|<Routes\b|"
                     r"src/App\.(jsx|tsx)|src/pages/",
                     "\n".join(f"{rel}\n{content}" for rel, content in files.items()),
                 )
@@ -1894,12 +2307,24 @@ class CodeAgent(BaseAgent):
         previous_error: str,
         contract_gap: str,
         design: dict[str, Any] | None = None,
+        design_tokens_md: str | None = None,
+        knowledge: str = "",
+        art_plan: dict[str, Any] | None = None,
+        game_design: dict[str, Any] | None = None,
+        asset_foundry: dict[str, Any] | None = None,
     ) -> str:
-        """Compact in-place continuation after an incomplete agentic session.
+        """In-place continuation after an incomplete agentic session.
 
-        Repeating the full ~14K initial prompt wastes the small recovery window
-        and encourages wholesale rewrites. The new session can inspect the shared
-        worktree, so give it the brief, exact remaining contract, and prior error.
+        Ordering invariant (tests/test_prompt_prefix_stability.py): the prompt
+        is the INITIAL prompt's static directive head — built by the SAME
+        ``_agentic_prompt`` call with the SAME per-build inputs, so it is
+        byte-identical and provider prompt caching hits on every fix-loop
+        iteration (hermes v0.19.0) — followed by the VOLATILE resume context
+        at the tail: prior completion issues, the missing-file list, and the
+        existing-file survey. The new session can inspect the shared worktree,
+        so the tail carries the exact remaining contract instead of a
+        rewrite-from-scratch brief; the static head keeps it on the same
+        stack/design/contracts the initial session built against.
         """
         purposes = {
             str(item.get("path", "")).replace("\\", "/"): str(item.get("purpose", ""))
@@ -1914,23 +2339,20 @@ class CodeAgent(BaseAgent):
         issues = "\n".join(
             f"- {issue}" for issue in (previous_error, contract_gap) if issue
         ) or "- The prior session ended without confirming completion."
-        variant = variant_directive(stack, brief)
+        head = self._agentic_prompt(
+            brief, stack, plan, knowledge,
+            art_plan=art_plan, game_design=game_design,
+            asset_foundry=asset_foundry, design=design,
+            design_tokens_md=design_tokens_md)
         return (
-            "RESUME IN PLACE. A previous codegen session ended before the complete "
+            head
+            + "\n\nRESUME IN PLACE. A previous codegen session ended before the complete "
             "architecture was confirmed. Preserve working files and do not restart or "
             "replace the product with a smaller demo.\n\n"
-            f"Brief: {brief}\nStack: {stack}\n"
-            f"Architecture: {plan.get('summary', '')}\n\n"
             f"Prior completion issues:\n{issues}\n\n"
             f"Files still required by the approved architecture:\n{remaining}\n\n"
             f"Files already present (inspect before editing):\n{existing}\n\n"
-            + (f"Variant contract: {variant}\n\n" if variant else "")
-            + (
-                f"{_DESIGN_DIRECTIVE}\nFollow this design direction: {self._design_summary(design)}\n\n"
-                if self._design_summary(design) and (stack or "").lower() in _DESIGN_WEB_STACKS
-                else ""
-            )
-            + "Implement every missing file in full, repair imports and entrypoint wiring, "
+            "Implement every missing file in full, repair imports and entrypoint wiring, "
             "and validate the complete existing app. Do not omit features, TODO, or elide "
             "code. Finish successfully only after the whole planned application is present."
         )
@@ -1955,6 +2377,72 @@ class CodeAgent(BaseAgent):
         "utils",
     })
     _AGENTIC_ALWAYS_ALLOWED_ROOTS = frozenset({"assets", "data", "public", "test", "tests"})
+
+    # Static decoration the model routinely PLANS and then does not write.
+    # Content here is deliberately neutral and unbranded — the point is that the
+    # reference resolves, not that the placeholder is good art.
+    _TRIVIAL_ASSET_BODIES: dict[str, str] = {
+        ".svg": (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" '
+            'role="img" aria-label="App icon">\n'
+            '  <rect width="64" height="64" rx="12" fill="#1f2933"/>\n'
+            '  <circle cx="32" cy="32" r="14" fill="#e6e8eb"/>\n'
+            "</svg>\n"
+        ),
+        "robots.txt": "User-agent: *\nAllow: /\n",
+        ".nojekyll": "",
+        ".gitkeep": "",
+    }
+
+    @classmethod
+    def _synthesize_trivial_assets(cls, worktree: Path, missing: list[str]) -> list[str]:
+        """Create missing planned files that are static decoration, not logic.
+
+        A planned-but-unwritten file makes the delivery "under-delivered" and
+        buys another agentic round-trip. That is the right trade for a missing
+        module and a bad one for a favicon. Measured on a real build: both
+        best-of-N trajectories planned ``public/favicon.svg``, neither wrote it,
+        and each spent ~60s on a resume that did not produce it either — so the
+        round-trip was pure cost with no chance of success.
+
+        Only extensions/names whose content carries no app behaviour are
+        synthesized; anything else stays missing so the resume still happens.
+        Confined to the worktree, and never through a symlinked parent.
+        """
+        root = Path(worktree).resolve()
+        made: list[str] = []
+        for rel in missing:
+            parts = PurePosixPath(rel).parts
+            if not parts or ".." in parts:
+                continue
+            name = parts[-1]
+            body = cls._TRIVIAL_ASSET_BODIES.get(name)
+            if body is None:
+                body = cls._TRIVIAL_ASSET_BODIES.get(PurePosixPath(rel).suffix)
+            if body is None:
+                continue
+            target = root.joinpath(*parts)
+            try:
+                if not target.resolve().is_relative_to(root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            current = root
+            unsafe = False
+            for part in parts:
+                current = current / part
+                if current.is_symlink():
+                    unsafe = True
+                    break
+            if unsafe or target.exists():
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(body, encoding="utf-8")
+            except OSError:
+                continue
+            made.append(rel)
+        return made
 
     @staticmethod
     def _present_planned_files(worktree: Path, expected: set[str]) -> set[str]:
@@ -2511,6 +2999,42 @@ class CodeAgent(BaseAgent):
         return files
 
 
+    async def _capture_vents(self, res: dict[str, Any], slug: str, attempt: int) -> None:
+        """Harvest ``VENT:`` lines from one agentic session's output text.
+
+        Best-effort by design — the vent channel must never fail a build.
+        Bounded (first 3 across the whole build, ≤300 chars each) and recorded
+        three ways: ``run_metadata["vents"]`` (surfaces with the build record),
+        one CODEGEN_VENT event per vent (dashboard/incident signal), and an
+        append to ``logs/<slug>/vents.jsonl`` (the operator trail the learning
+        capture reads back at build end)."""
+        try:
+            text = res.get("output_text") if isinstance(res, dict) else ""
+            vents = parse_vents(str(text or ""))
+            if not vents:
+                return
+            run_metadata = self._task_metadata
+            captured = run_metadata.setdefault("vents", [])
+            new_records: list[dict[str, Any]] = []
+            for vent in vents:
+                if len(captured) >= _VENT_MAX:
+                    break
+                captured.append(vent)
+                new_records.append({"slug": slug, "vent": vent, "attempt": attempt})
+                try:
+                    await self.event_bus.emit(
+                        EventType.CODEGEN_VENT, self.name,
+                        {"slug": slug, "vent": vent, "attempt": attempt},
+                    )
+                except Exception:  # noqa: BLE001 - a bus failure must not stop capture
+                    pass
+            if new_records:
+                _append_vents_log(slug, new_records)
+                log.info("code_agent.vents_captured", slug=slug,
+                         attempt=attempt, count=len(new_records))
+        except Exception as exc:  # noqa: BLE001 - the vent channel never fails a build
+            log.warning("code_agent.vent_capture_failed", error=str(exc)[:160])
+
     @staticmethod
     def _clean_agentic_files(
         disk: dict[str, str], scaffold: dict[str, str]
@@ -2542,6 +3066,10 @@ class CodeAgent(BaseAgent):
         for path, content in disk.items():
             p = path.lower()
             is_code = p.endswith(_CODE_EXTS)
+            # A vent is a pipeline signal, never source: strip VENT: lines from
+            # everything about to ship (code AND prose-check below see the
+            # scrubbed text) so the channel can't leak into a written file.
+            content = strip_vent_lines(content)
             # (a) the agent chatted instead of coding, or (b) it elided the file
             # body with an edit-style "/* ... unchanged ... */" placeholder (a
             # non-functional stub — there is no original to be unchanged from).
@@ -2585,7 +3113,8 @@ class CodeAgent(BaseAgent):
                              plan: dict[str, Any], knowledge: str = "",
                              model_override: str | None = None,
                              manifest: str = "",
-                             design: dict[str, Any] | None = None) -> str | None:
+                             design: dict[str, Any] | None = None,
+                             design_tokens_md: str | None = None) -> str | None:
         ext = Path(rel_path).suffix.lower()
         base = Path(rel_path).name.lower()
         is_readme = base in _README_NAMES
@@ -2616,7 +3145,10 @@ class CodeAgent(BaseAgent):
             ext in _FRONTEND_EXTENSIONS
             and (stack or "").lower() in _DESIGN_WEB_STACKS
         ):
-            design_block = f"\n{_DESIGN_DIRECTIVE}"
+            design_block = (
+                f"\n{_DESIGN_DIRECTIVE}\n{design_tokens_md or design_md_block(brief)}"
+                f"\n{visual_design_contract_prompt_block()}"
+            )
             if design_summary:
                 design_block += f"\nFollow this design direction: {design_summary}"
         prompt = (

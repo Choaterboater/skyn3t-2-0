@@ -272,14 +272,22 @@ def test_source_tree_snapshot_fails_closed_on_unreadable_directory(
     assert snapshot["unreadable_files"]
 
 
-def test_tree_snapshots_bind_executable_mode(tmp_path):
+def test_tree_snapshots_bind_file_mode(tmp_path):
+    """A silent permission change must break snapshot verification.
+
+    Uses 0o755 -> 0o444 rather than 0o755 -> 0o644 so the invariant is provable
+    on BOTH platforms. `worktree.py` hashes the whole `S_IMODE`, so it is not
+    POSIX-specific — but Windows collapses 0o755 and 0o644 to the same 0o666,
+    which made this look like an untestable platform gap. The read-only bit
+    round-trips exactly on Windows, so it exercises the same binding.
+    """
     script = tmp_path / "run.sh"
     script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     script.chmod(0o755)
     executable_source = source_tree_snapshot(tmp_path)
     executable_delivery = deliverable_tree_snapshot(tmp_path)
 
-    script.chmod(0o644)
+    script.chmod(0o444)
     plain_source = source_tree_snapshot(tmp_path)
     plain_delivery = deliverable_tree_snapshot(tmp_path)
 

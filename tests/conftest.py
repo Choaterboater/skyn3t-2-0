@@ -7,6 +7,8 @@ tests stay fast, hermetic, and reproducible regardless of what's on the host.
 
 import os
 import socket
+import subprocess
+import tempfile
 from functools import cache, lru_cache
 
 import pytest
@@ -53,14 +55,99 @@ def _test_file_needs_loopback(path: str) -> bool:
     return any(pattern in text for pattern in _LOOPBACK_BIND_PATTERNS)
 
 
+@lru_cache(maxsize=1)
+def _docker_available() -> bool:
+    """Whether Docker can run the same bind-mounted preview shape as these tests.
+
+    A running Desktop daemon is not enough on Windows: it can reject the
+    temporary drive used by pytest while SkyN3t's configured project drive is
+    shared. Do not pull images during collection; an absent image is simply an
+    unavailable offline test capability.
+    """
+    try:
+        from skyn3t.config.settings import Settings
+        from skyn3t.exec_paths import find_executable
+        from skyn3t.security.sandbox import SandboxRunner
+        from skyn3t.studio.preview_supervisor import _DEFAULT_PYTHON_IMAGE
+
+        if not SandboxRunner(Settings()).docker_available():
+            return False
+        docker = find_executable("docker")
+        if not docker:
+            return False
+        image = subprocess.run(
+            [docker, "image", "inspect", _DEFAULT_PYTHON_IMAGE],
+            capture_output=True, timeout=5,
+        )
+        if image.returncode != 0:
+            return False
+        with tempfile.TemporaryDirectory() as source:
+            probe = subprocess.run(
+                [
+                    docker, "run", "--rm", "--network", "none",
+                    "--mount", f"type=bind,source={source},target=/work,readonly",
+                    _DEFAULT_PYTHON_IMAGE, "true",
+                ],
+                capture_output=True, timeout=12,
+            )
+        return probe.returncode == 0
+    except Exception:  # noqa: BLE001 - unavailable test capability
+        return False
+
+
+@lru_cache(maxsize=1)
+def _posix_modes_available() -> bool:
+    """True when chmod can express distinct permission bits.
+
+    Windows collapses 0o755 and 0o644 to 0o666 and ignores directory chmod
+    entirely, so tests asserting exact POSIX modes cannot pass there. Probed
+    rather than keyed off sys.platform so the reason stays factual.
+    """
+    import os as _os
+    import stat as _stat
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            probe = _os.path.join(directory, "probe")
+            with open(probe, "w", encoding="utf-8") as handle:
+                handle.write("x")
+            _os.chmod(probe, 0o755)
+            executable = _stat.S_IMODE(_os.stat(probe).st_mode)
+            _os.chmod(probe, 0o644)
+            plain = _stat.S_IMODE(_os.stat(probe).st_mode)
+            return executable != plain
+    except OSError:
+        return False
+
+
 def pytest_collection_modifyitems(config, items):
-    if _loopback_bind_available():
-        return
-    skip = pytest.mark.skip(reason="loopback socket bind is not available in this environment")
+    """Skip on MISSING CAPABILITY, never on a known-bad list.
+
+    A capability skip states why it did not run and what would make it run. A
+    known-failures allowlist states neither and rots — which is exactly how a
+    real product bug (proof-artifact reuse being broken on Windows) sat
+    undetected inside a "these always fail here" pile.
+    """
+    loopback_ok = _loopback_bind_available()
+    capabilities = (
+        ("requires_loopback", loopback_ok,
+         "loopback socket bind is not available in this environment"),
+        ("requires_docker", _docker_available(),
+         "Docker preview bind mounts are not available for this test environment"),
+        ("requires_posix_modes", _posix_modes_available(),
+         "filesystem cannot represent POSIX permission bits (Windows)"),
+    )
     for item in items:
-        path = str(getattr(item, "path", "") or "")
-        if item.get_closest_marker("requires_loopback") or _test_file_needs_loopback(path):
-            item.add_marker(skip)
+        for marker, available, reason in capabilities:
+            if not available and item.get_closest_marker(marker):
+                item.add_marker(pytest.mark.skip(reason=reason))
+        if not loopback_ok:
+            path = str(getattr(item, "path", "") or "")
+            if _test_file_needs_loopback(path):
+                item.add_marker(
+                    pytest.mark.skip(reason=capabilities[0][2])
+                )
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +187,7 @@ def _no_real_llm_cli(monkeypatch):
     )
     monkeypatch.setattr(LLMClient, "_cli_cache_checked_at", {})
     monkeypatch.setattr(LLMClient, "_cli_version_cache", {})
+    monkeypatch.setattr(LLMClient, "_stub_degrade_logged", {})
     yield
 
 
@@ -131,6 +219,18 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     # External Docker/Playwright/Maestro proof has focused seam tests. Keep the
     # rest of the suite hermetic even though production builds require it.
     monkeypatch.setenv("SKYN3T_PROOF_LADDER_REQUIRED", "false")
+    # Gate posture defaults to "lab" for real builds (findings are recorded, not
+    # blocking). The suite asserts on 2.0's blocking behaviour in ~51 files, so
+    # pin "release" here and let the focused posture tests opt into lab via an
+    # explicit Settings(build_posture="lab") kwarg (init args outrank env).
+    monkeypatch.setenv("SKYN3T_BUILD_POSTURE", "release")
+    # The MoA council ships ON. It is inert on the stub backend, so most of the
+    # suite would be unaffected — but ~18 files construct a NON-stub backend,
+    # and there an advisor slot would spawn a real signed-in CLI mid-test. Pin
+    # the master switch off and let the focused council tests opt in with an
+    # explicit Settings(moa_enabled=True, moa_advisors=...) kwarg.
+    monkeypatch.setenv("SKYN3T_MOA_ENABLED", "false")
+    monkeypatch.setenv("SKYN3T_MOA_ADVISORS", "")
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
     # Don't read the developer's real repo .env during tests. Settings hard-codes
     # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github

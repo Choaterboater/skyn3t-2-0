@@ -172,8 +172,10 @@ _AGENT_MODULES: tuple[tuple[str, str], ...] = (
     ("skyn3t.agents.packaging_agent", "PackagingAgent"),
     ("skyn3t.agents.deploy_agent", "DeployAgent"),
     ("skyn3t.agents.browser_agent", "BrowserAgent"),
-    ("skyn3t.agents.github_explorer", "GithubExplorer"),
-    ("skyn3t.agents.github_ingestor", "GithubIngestor"),
+    # github_explorer / github_ingestor are deliberately NOT registered: no
+    # production code dispatches them (external-repo learning goes through the
+    # cortex RepoScout -> gated ingest path). The agent classes and their tests
+    # stay in skyn3t/agents/ for future use.
 )
 
 
@@ -550,6 +552,8 @@ def studio_build(
     table.add_row("files", str(len(outcome.get("files", []))))
     table.add_row("cost_usd", str(outcome.get("cost_usd", 0.0)))
     table.add_row("artifact", str(outcome.get("project_dir", "")))
+    for label, value in _verdict_explanation(outcome):
+        table.add_row(label, value)
     console.print(table)
     fo = outcome.get("fanout")
     if isinstance(fo, dict):
@@ -562,10 +566,113 @@ def studio_build(
         raise typer.Exit(code=2)
 
 
-async def _run_debate(question: str, settings: Any | None = None) -> Any:
+def _verdict_explanation(outcome: dict[str, Any]) -> list[tuple[str, str]]:
+    """Rows explaining WHY the verdict and score came out as they did.
+
+    The result table reported a number and nothing else, so a no_go at 44 gave
+    no clue whether the app was bad or the toolchain was. This session that
+    distinction turned out to matter enormously: a delivery with intent 100 and
+    a green test suite scored 44 because of an npm cache artifact. The evidence
+    was always in manifest.extra; it was just never surfaced where it is read.
+
+    Defensive by construction — any missing/odd shape yields no rows rather
+    than breaking the summary of a build that already completed.
+    """
+    rows: list[tuple[str, str]] = []
+
+    # What the REVIEWERS thought, when it differs from what shipped. Measured on
+    # a build that reported no_go 44: the reviewer returned
+    # {"score": 100.0, "verdict": "go", "gaps": []} and the critic passed it —
+    # both were overridden by a failed proof, correctly, since an app that
+    # cannot build must not ship. But the output showed only the 44, so there
+    # was no way to tell an app problem from a toolchain problem without
+    # reading the manifest by hand. When these two disagree that IS the story.
+    stages = outcome.get("stages")
+    if isinstance(stages, list):
+        for value in reversed(stages):
+            if not isinstance(value, dict):
+                continue
+            if str(value.get("agent_type") or "").strip().lower() != "reviewer":
+                continue
+            if str(value.get("status") or "").strip().lower() != "completed":
+                continue
+            summary = value.get("output_summary")
+            summary = summary if isinstance(summary, dict) else {}
+            rv = str(summary.get("verdict") or "").strip().lower()
+            if not rv:
+                break
+            raw_score = summary.get("score")
+            if isinstance(raw_score, (str, int, float)):
+                try:
+                    rs = float(raw_score)
+                except ValueError:
+                    rs = None
+            else:
+                rs = None
+            gaps = summary.get("gaps")
+            n_gaps = len(gaps) if isinstance(gaps, list) else 0
+            if rv != str(outcome.get("verdict") or "").strip().lower():
+                colour = "green" if rv == "go" else "yellow"
+                shown = f"{rs:g}" if rs is not None else "?"
+                rows.append((
+                    "reviewer_said",
+                    f"[{colour}]{rv} @ {shown}[/{colour}] "
+                    f"({n_gaps} gap{'s' if n_gaps != 1 else ''}) — overridden below",
+                ))
+            break
+
+    extra = outcome.get("extra")
+    if not isinstance(extra, dict):
+        return rows
+
+    findings = extra.get("gate_findings")
+    if isinstance(findings, list) and findings:
+        blocked = [
+            str(f.get("gate")) for f in findings
+            if isinstance(f, dict) and f.get("blocked")
+        ]
+        advisory = [
+            str(f.get("gate")) for f in findings
+            if isinstance(f, dict) and not f.get("blocked")
+        ]
+        parts: list[str] = []
+        if blocked:
+            parts.append(f"[red]blocked: {', '.join(blocked)}[/red]")
+        if advisory:
+            parts.append(f"[yellow]advisory: {', '.join(advisory)}[/yellow]")
+        if parts:
+            rows.append(("findings", " · ".join(parts)))
+        first_block = next(
+            (f for f in findings if isinstance(f, dict) and f.get("blocked")), None
+        )
+        if first_block:
+            reason = " ".join(str(first_block.get("reason") or "").split())
+            if reason:
+                rows.append(("blocked_by", reason[:160]))
+
+    gate = extra.get("proof_environment_gate")
+    if isinstance(gate, dict) and gate.get("capped"):
+        reasons = gate.get("reasons")
+        why = "; ".join(str(r) for r in reasons[:2]) if isinstance(reasons, list) else ""
+        rows.append((
+            "score_capped_at",
+            f"{gate.get('score_cap')}" + (f" — {why[:120]}" if why else ""),
+        ))
+    return rows
+
+
+async def _run_debate(
+    question: str, settings: Any | None = None, slots: str = "",
+) -> Any:
     """Run a multi-model debate, gated by ``debate_enabled``, feeding the
     ModelTournament that the learned router reads. Returns ``None`` if the LLM
-    stack is unavailable."""
+    stack is unavailable.
+
+    ``slots`` is what makes the debate MULTI-model. Without it every debater
+    resolves through the same tier to the same model — one model arguing with
+    itself, voting on itself, and feeding that self-play to the tournament as
+    if it were independent evidence. Falls back to ``settings.debate_slots``.
+    """
     try:
         from skyn3t.adapters.llm import LLMClient
         from skyn3t.config.settings import get_settings
@@ -586,12 +693,19 @@ async def _run_debate(question: str, settings: Any | None = None) -> Any:
         ),
         tournament=tournament,
         event_bus=EventBus(),
+        slots=slots or str(getattr(settings, "debate_slots", "") or ""),
     )
 
 
 @app.command()
 def debate(
     question: str = typer.Argument(..., help="The question to debate across models."),
+    slots: str = typer.Option(
+        "", "--slots",
+        help="Comma-separated provider:model debaters, e.g. "
+             "'codex_cli,claude_cli,kimi_cli'. Empty uses SKYN3T_DEBATE_SLOTS; "
+             "empty there too means every debater runs the SAME routed model.",
+    ),
 ) -> None:
     """Multi-model debate: propose -> cross-examine -> vote -> synthesise.
 
@@ -599,9 +713,13 @@ def debate(
     is a single cheap completion; on runs several models and records the winner
     into the ModelTournament that feeds the learned router. Degrades
     deterministically on the stub backend.
+
+    Pass --slots to make it an actual ensemble. Without slots the debaters all
+    resolve to one model, so the "winner" beats only itself and the tournament
+    records an unopposed win.
     """
     console = _console()
-    result = asyncio.run(_run_debate(question))
+    result = asyncio.run(_run_debate(question, slots=slots))
     if result is None:
         console.print("[red]LLM stack unavailable — cannot debate.[/red]")
         raise typer.Exit(code=1)
@@ -668,6 +786,260 @@ def cortex_status() -> None:
         text = instr if len(instr) <= 80 else instr[:77] + "..."
         pt.add_row(str(agent), text)
     console.print(pt if prompts else "[dim]No prompt overrides applied.[/dim]")
+
+
+@cortex_app.command("promote-skill")
+def cortex_promote_skill(
+    slug: str = typer.Argument(..., help="Quarantined external skill slug to approve."),
+) -> None:
+    """Explicitly approve a provenance-pinned external skill for advisory use.
+
+    GitHub-derived skills are deliberately inert until an operator runs this
+    command. The library verifies its immutable revision, content hash, and
+    HTTPS source URL before removing the quarantine tag.
+    """
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    console = _console()
+    library = SkillLibrary(get_settings().data_dir / "skills")
+    skill = library.promote_external(slug)
+    if skill is None:
+        console.print(
+            "[red]Not promoted[/red] — the skill must be a quarantined GitHub "
+            "candidate with an HTTPS source URL, immutable revision, content hash, "
+            "and source path."
+        )
+        raise typer.Exit(code=1)
+    console.print(
+        f"[green]Promoted[/green] [cyan]{skill.slug}[/cyan] for advisory use. "
+        "It remains non-binding build guidance."
+    )
+
+
+_LEGACY_SKILL_EVIDENCE_OPTION = typer.Option(
+    ..., "--evidence", help="Local regular file holding the exact source evidence."
+)
+
+@cortex_app.command("migrate-legacy-skill")
+def cortex_migrate_legacy_skill(
+    slug: str = typer.Argument(..., help="Legacy github-distilled skill slug to curate."),
+    source_url: str = typer.Option(
+        ..., "--source-url", help="Canonical https://github.com/<owner>/<repo> source."
+    ),
+    pinned_revision: str = typer.Option(
+        ..., "--revision", help="Full immutable 40- or 64-character Git object ID."
+    ),
+    source_path: str = typer.Option(
+        ..., "--source-path", help="Safe relative upstream evidence path, for example README.md."
+    ),
+    evidence: Path = _LEGACY_SKILL_EVIDENCE_OPTION,
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Create the new quarantined candidate after the default dry run has been reviewed.",
+    ),
+) -> None:
+    """Curate one legacy external skill into a new, still-quarantined candidate.
+
+    The default is a read-only preview. Even with ``--apply``, the old skill is
+    retained inert and the new candidate is not promoted; a separate explicit
+    ``cortex promote-skill`` action remains required after review.
+    """
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    console = _console()
+    try:
+        if evidence.is_symlink() or not evidence.is_file():
+            raise ValueError("evidence must be a regular local file")
+        raw_evidence = evidence.read_bytes()
+        library = SkillLibrary(get_settings().data_dir / "skills")
+        result = library.migrate_legacy_external(
+            slug,
+            source_url=source_url,
+            pinned_revision=pinned_revision,
+            source_path=source_path,
+            evidence=raw_evidence,
+            dry_run=not apply,
+        )
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]Legacy migration not performed[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+
+    if not apply:
+        console.print(
+            f"[cyan]Dry run[/cyan] — [bold]{result['legacy_slug']}[/bold] stays inert; "
+            f"would create quarantined candidate [cyan]{result['candidate_slug']}[/cyan]."
+        )
+        console.print(
+            f"Evidence: {result['evidence_sha256']}  "
+            f"({result['evidence_bytes']} bytes; {result['source_path']})"
+        )
+        console.print(
+            "Review the receipt, then rerun with [cyan]--apply[/cyan]. Nothing was promoted."
+        )
+        return
+
+    if result["status"] == "existing":
+        console.print(
+            f"[yellow]Already present[/yellow] — quarantined candidate "
+            f"[cyan]{result['candidate_slug']}[/cyan] was left unchanged."
+        )
+        return
+
+    if result["status"] == "repaired":
+        console.print(
+            f"[green]Restored evidence[/green] for quarantined candidate "
+            f"[cyan]{result['candidate_slug']}[/cyan]. No skill was promoted."
+        )
+        return
+    console.print(
+        f"[green]Created[/green] quarantined candidate [cyan]{result['candidate_slug']}[/cyan]. "
+        "The legacy record remains inert; no skill was promoted."
+    )
+
+
+@cortex_app.command("skill-hubs")
+def cortex_skill_hubs() -> None:
+    """Show the most recent configured local skill-hub import report."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    console = _console()
+    report = SkillLibrary(get_settings().data_dir / "skills").hub_report()
+    reports = list(report.get("reports") or [])
+    if not reports:
+        console.print("[dim]No configured local skill hubs have been imported yet.[/dim]")
+        return
+    updated_at = float(report.get("updated_at") or 0.0)
+    if updated_at:
+        stamp = datetime.fromtimestamp(updated_at, tz=UTC).isoformat(timespec="seconds")
+        console.print(f"[dim]Last configured-hub import: {stamp}[/dim]")
+    table = _table(
+        "Configured local skill hubs",
+        ["path", "status", "imported", "active", "quarantined", "skipped", "reason"],
+    )
+    for item in reports:
+        table.add_row(
+            str(item.get("path") or item.get("configured_path") or ""),
+            str(item.get("status") or "unknown"),
+            str(item.get("imported", 0)),
+            str(item.get("active", 0)),
+            str(item.get("quarantined", 0)),
+            str(item.get("skipped", 0)),
+            str(item.get("reason") or ""),
+        )
+    console.print(table)
+
+
+_EVALUATION_KIND_OPTION = typer.Option(
+    ..., "--kind", help="Candidate kind: prompt, skill_policy, or router_policy."
+)
+_EVALUATION_CANDIDATE_FILE_OPTION = typer.Option(
+    ..., "--candidate", help="JSON file containing only the candidate configuration mapping."
+)
+_EVALUATION_BASELINE_LEDGER_OPTION = typer.Option(
+    ..., "--baseline-ledger", help="Completed baseline Golden ledger JSON."
+)
+_EVALUATION_CANDIDATE_LEDGER_OPTION = typer.Option(
+    ..., "--candidate-ledger", help="Completed candidate Golden ledger JSON."
+)
+_EVALUATION_BASE_REVISION_OPTION = typer.Option(
+    "unknown", "--base-revision", help="Optional lowercase source Git revision for the candidate."
+)
+_EVALUATION_MAX_DROP_OPTION = typer.Option(
+    0.0, "--max-suite-pass-rate-drop", help="Allowed Golden suite pass-rate regression (0-1)."
+)
+_EVALUATION_MIN_CASE_OPTION = typer.Option(
+    1.0, "--min-case-pass-rate", help="Required minimum candidate pass rate per Golden case (0-1)."
+)
+
+
+@cortex_app.command("evaluate")
+def cortex_evaluate(
+    candidate_kind: str = _EVALUATION_KIND_OPTION,
+    candidate_file: Path = _EVALUATION_CANDIDATE_FILE_OPTION,
+    baseline_ledger: Path = _EVALUATION_BASELINE_LEDGER_OPTION,
+    candidate_ledger: Path = _EVALUATION_CANDIDATE_LEDGER_OPTION,
+    base_revision: str = _EVALUATION_BASE_REVISION_OPTION,
+    max_suite_pass_rate_drop: float = _EVALUATION_MAX_DROP_OPTION,
+    min_case_pass_rate: float = _EVALUATION_MIN_CASE_OPTION,
+) -> None:
+    """Record Golden evidence for a config candidate without changing runtime state.
+
+    The input can describe only a prompt, skill-selection policy, or router
+    policy. A passed comparison is saved as ``review_required``; this command
+    cannot apply or promote it.
+    """
+    from skyn3t.config.settings import get_settings
+    from skyn3t.cortex.evaluation import EvaluationError, evaluate_candidate
+
+    console = _console()
+    try:
+        if not candidate_file.is_file() or candidate_file.is_symlink():
+            raise ValueError("candidate must be a regular JSON file")
+        if candidate_file.stat().st_size > 256_000:
+            raise ValueError("candidate JSON exceeds 256 KB")
+        raw_candidate = json.loads(candidate_file.read_text(encoding="utf-8"))
+        if not isinstance(raw_candidate, dict):
+            raise ValueError("candidate JSON must be an object")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        console.print(f"[red]Invalid candidate[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+
+    try:
+        result = evaluate_candidate(
+            data_dir=get_settings().data_dir,
+            candidate_kind=candidate_kind,
+            candidate=raw_candidate,
+            baseline_ledger_path=baseline_ledger,
+            candidate_ledger_path=candidate_ledger,
+            base_revision=base_revision,
+            max_suite_pass_rate_drop=max_suite_pass_rate_drop,
+            min_case_pass_rate=min_case_pass_rate,
+        )
+    except EvaluationError as exc:
+        console.print(f"[red]Evaluation unavailable[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+
+    manifest = result.manifest
+    console.print(
+        f"[cyan]{manifest.evaluation_id}[/cyan]  "
+        f"[bold]{manifest.status}[/bold]  "
+        f"({manifest.candidate_kind}; evidence: {result.manifest_path})"
+    )
+    if manifest.status == "review_required":
+        console.print(
+            "[green]Evidence passed[/green] — retained for review only; nothing was applied or promoted."
+        )
+        return
+    reasons = "; ".join(manifest.reasons) or "Golden comparison rejected the candidate."
+    console.print(f"[yellow]Evidence rejected[/yellow] — {reasons}")
+    raise typer.Exit(code=1)
+
+
+@cortex_app.command("evaluations")
+def cortex_evaluations() -> None:
+    """List verified evidence-only configuration evaluation records."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.cortex.evaluation import EvaluationError, list_manifests
+
+    console = _console()
+    try:
+        manifests = list_manifests(get_settings().data_dir)
+    except EvaluationError as exc:
+        console.print(f"[red]Cannot read evaluations[/red] — {exc}")
+        raise typer.Exit(code=2) from exc
+    if not manifests:
+        console.print("[dim]No evidence evaluations recorded.[/dim]")
+        return
+    console.print("[bold]Evidence-only configuration evaluations[/bold]")
+    for manifest in sorted(manifests, key=lambda item: item.created_at, reverse=True):
+        console.print(
+            f"[cyan]{manifest.evaluation_id}[/cyan]  {manifest.status}  "
+            f"{manifest.candidate_kind}  {manifest.base_revision}  {manifest.created_at}"
+        )
 
 
 def _ratchet_coerce(v: str) -> Any:
@@ -793,18 +1165,25 @@ def _build_intelligence(settings: Any, event_bus: Any, memory: Any) -> tuple[Any
     learning = patterns = skills = rag = None
     try:
         from skyn3t.intelligence.learning_loop import LearningLoop
+
         learning = LearningLoop(store=memory, event_bus=event_bus)
     except Exception:  # noqa: BLE001
         pass
     try:
         from skyn3t.intelligence.build_patterns import BuildPatternBoard
+
         patterns = BuildPatternBoard(settings.data_dir / "build_patterns.json")
     except Exception:  # noqa: BLE001
         pass
     try:
         from skyn3t.intelligence.skill_library import SkillLibrary, seed_default_skills
+
         skills = SkillLibrary(settings.data_dir / "skills")
         seed_default_skills(skills)  # starter skills so builds have advice from day 1
+        # Configured local hubs are an explicit operator trust boundary. The
+        # loader parses Markdown only, never executes hub content, records a
+        # byte-hash/evidence receipt, and keeps per-path status for inspection.
+        skills.import_configured_hubs(getattr(settings, "skills_hub_paths", ""))
     except Exception:  # noqa: BLE001
         pass
     # Shared persistent RAG + live experience ingestion. The ingestor subscribes
@@ -1195,6 +1574,7 @@ async def _golden_run_async(
     execution_backend: str,
     llm_backend: str,
     work_root: Path | None,
+    live_overrides: dict | None = None,
 ):
     """Execute golden cases through fresh, isolated ``StudioRunner.start`` paths."""
     from skyn3t.adapters.llm import BudgetTracker
@@ -1207,7 +1587,9 @@ async def _golden_run_async(
     from skyn3t.studio.runner import StudioRunner
 
     base_settings = get_settings()
-    settings_profile = benchmark_settings_profile(base_settings, llm_backend=llm_backend)
+    settings_profile = benchmark_settings_profile(
+        base_settings, llm_backend=llm_backend, live_overrides=live_overrides
+    )
     shared_budget = None
 
     async def build_fn(case, context):
@@ -1217,6 +1599,7 @@ async def _golden_run_async(
             context.workspace_dir,
             llm_backend=llm_backend,
             execution_backend=execution_backend,
+            live_overrides=live_overrides,
         )
         spine = await _assemble_spine(settings_override=settings)
         rag = None
@@ -1364,6 +1747,24 @@ def golden_run(
         "--work-root",
         help="Optional root for isolated per-attempt state and projects.",
     ),
+    moa: bool = typer.Option(
+        False,
+        "--moa",
+        help=(
+            "LIVE opt-in: lift the bench's MoA pin and advise every case with "
+            "the operator's configured advisors (non-deterministic, uses real "
+            "model subscriptions/keys)."
+        ),
+    ),
+    codegen_cli: str = typer.Option(
+        "",
+        "--codegen-cli",
+        help=(
+            "LIVE opt-in: route codegen to this CLI (codex|claude|kimi|copilot) "
+            "like the operator's real builds, instead of the bench-pinned "
+            "follow-the-backend default."
+        ),
+    ),
 ) -> None:
     """Run every golden contract through StudioRunner and write durable evidence."""
     from skyn3t.studio.golden_bench import GoldenBenchError, load_suite
@@ -1371,6 +1772,22 @@ def golden_run(
     console = _console()
     out_path = Path(out).expanduser()
     report_path = Path(report).expanduser()
+    live_overrides: dict[str, object] = {}
+    if moa:
+        from skyn3t.config.settings import get_settings
+
+        live_overrides["moa_enabled"] = True
+        live_overrides["moa_advisors"] = str(
+            getattr(get_settings(), "moa_advisors", "") or ""
+        )
+    if codegen_cli.strip():
+        live_overrides["codegen_cli_provider"] = codegen_cli.strip().lower()
+    if live_overrides:
+        console.print(
+            "[yellow]LIVE overrides active[/yellow] "
+            f"({', '.join(sorted(live_overrides))}): real models will run — "
+            "subscription/API usage, non-deterministic ledger."
+        )
     try:
         suite = load_suite(suite_path or None)
         console.print(
@@ -1387,6 +1804,7 @@ def golden_run(
                 execution_backend=execution_backend.strip().lower(),
                 llm_backend=llm_backend.strip().lower(),
                 work_root=Path(work_root).expanduser() if work_root.strip() else None,
+                live_overrides=live_overrides,
             )
         )
     except (GoldenBenchError, OSError) as exc:
@@ -1639,7 +2057,13 @@ def studio_serve(
             console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
             raise typer.Exit(code=1)
         if app.status != "running":
-            console.print(f"[red]Failed to start[/red]: {app.detail.get('log_tail', '')[-400:]}")
+            # The supervisor always records WHY (detail["reason"]); the old
+            # message printed only log_tail, which is empty for pre-launch
+            # failures (docker missing, port conflicts) — a blank error.
+            reason = str(app.detail.get("reason") or "").strip()
+            tail = str(app.detail.get("log_tail") or "")[-400:].strip()
+            message = " — ".join(p for p in (reason, tail) if p) or str(app.detail)[:400]
+            console.print(f"[red]Failed to start[/red]: {message}")
             raise typer.Exit(code=2)
         console.print(
             f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] "
@@ -1651,6 +2075,128 @@ def studio_serve(
         except KeyboardInterrupt:
             console.print("\n[dim]stopped.[/dim]")
     finally:
+        try:
+            stopped = runner.stop(app)
+            if inspect.isawaitable(stopped):
+                asyncio.run(stopped)
+        except Exception:  # noqa: BLE001 - shutdown must not mask CLI result
+            pass
+        cleanup_serve(app)
+
+
+@studio_app.command("share")
+def studio_share(
+    project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
+    port: int = typer.Option(0, "--port", "-p", help="Preferred local port (0 = auto)."),
+    no_tunnel: bool = typer.Option(
+        False, "--no-tunnel", help="Local preview only — identical to `studio serve`."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Share even when the manifest marks the build failed/incomplete."
+    ),
+) -> None:
+    """Serve a project locally AND expose it at a public URL (cloudflared/localhost.run).
+
+    The preview boot is the same loopback-only one ``studio serve`` uses; this
+    command layers a public tunnel over it. Sharing is opt-in — this command IS
+    the asking. A tunnel failure never kills the local preview.
+    """
+    import time as _time
+    from pathlib import Path as _Path
+
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.app_runner import cleanup_serve
+    from skyn3t.studio.preview_supervisor import PreviewSupervisor
+    from skyn3t.studio.share import PublicTunnel, detect_provider, install_hint
+
+    console = _console()
+    s = get_settings()
+    cand = _Path(project)
+    pdir = cand if cand.is_absolute() else (s.projects_dir / project)
+    man = None
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+        man = BuildManifest.load(pdir)
+    except Exception:  # noqa: BLE001
+        man = None
+    # Sharing publishes generated code to the internet, so a build the manifest
+    # marks failed/incomplete (or verdicted no_go) is refused unless forced.
+    if man is not None and not force and (man.status != "completed" or man.verdict == "no_go"):
+        verdict = f" (verdict: {man.verdict})" if man.verdict else ""
+        console.print(
+            f"[red]Refusing to share[/red] {pdir.name}: the manifest marks this build "
+            f"[bold]{man.status or 'unknown'}[/bold]{verdict}. "
+            "Fix it first, or re-run with [cyan]--force[/cyan] to share it anyway."
+        )
+        raise typer.Exit(code=4)
+    stack = man.stack if man else ""
+    runner = PreviewSupervisor()
+    app = asyncio.run(runner.start(pdir, stack, port=port or None))
+    tunnel = None
+    try:
+        if app.status == "no_preview":
+            console.print(f"[yellow]No live preview[/yellow] for {pdir} (not a web/site project).")
+            raise typer.Exit(code=1)
+        if app.status != "running":
+            # Same failure reporting as `studio serve` (reason + log tail).
+            reason = str(app.detail.get("reason") or "").strip()
+            tail = str(app.detail.get("log_tail") or "")[-400:].strip()
+            message = " — ".join(p for p in (reason, tail) if p) or str(app.detail)[:400]
+            console.print(f"[red]Failed to start[/red]: {message}")
+            raise typer.Exit(code=2)
+        if no_tunnel:
+            console.print(
+                f"[green]Serving[/green] {pdir.name} at [cyan]{app.url}[/cyan] "
+                "(Docker isolated). Press Ctrl+C to stop."
+            )
+        else:
+            provider = detect_provider(app.port)
+            if provider is None:
+                # No tunnel binary — the local URL is still the deliverable.
+                console.print(
+                    f"[green]Serving[/green] {pdir.name} locally at [cyan]{app.url}[/cyan]"
+                )
+                console.print(
+                    "[red]No tunnel provider found[/red] — the app stays loopback-only."
+                )
+                console.print(install_hint())
+                raise typer.Exit(code=3)
+            console.print(
+                "[yellow]Warning:[/yellow] this app will be [bold]PUBLIC[/bold] on the "
+                "internet until you stop sharing (Ctrl+C)."
+            )
+            tunnel = PublicTunnel(provider)
+            public_url = tunnel.start()
+            if public_url is None:
+                # Tunnel errors NEVER fail the underlying serve: keep local, report.
+                tunnel = None  # start() already killed the half-open tunnel
+                console.print(
+                    "[red]Tunnel failed to start[/red] — keeping the local preview only."
+                )
+                console.print(
+                    f"[green]Serving[/green] {pdir.name} locally at [cyan]{app.url}[/cyan]. "
+                    "Press Ctrl+C to stop."
+                )
+            else:
+                console.print(
+                    f"[bold green]Public URL:[/bold green] [cyan]{public_url}[/cyan] "
+                    f"[dim](via {provider.label})[/dim]"
+                )
+                console.print(f"[green]Local:[/green]      {app.url}")
+                console.print("Press Ctrl+C to stop sharing.")
+        try:
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            console.print("\n[dim]stopped.[/dim]")
+    finally:
+        # Teardown order: the tunnel first (stop being public), then the preview
+        # (mirrors `studio serve`'s cleanup).
+        if tunnel is not None:
+            try:
+                tunnel.stop()
+            except Exception:  # noqa: BLE001 - shutdown must not mask CLI result
+                pass
         try:
             stopped = runner.stop(app)
             if inspect.isawaitable(stopped):
@@ -2225,14 +2771,19 @@ def deploy(
     write: bool = typer.Option(False, "--write", help="Write generated deploy artifacts (e.g. a Dockerfile) into the project."),
     now: bool = typer.Option(False, "--now", help="Actually deploy it live (token-gated). Default: just show the plan."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when using --now."),
+    execute: bool = typer.Option(False, "--execute", help="With --now: run the REAL provider CLI deploy using the operator's env-held token. Never the default."),
+    force: bool = typer.Option(False, "--force", help="Deploy even when the build proof gate has not passed."),
 ) -> None:
     """Show the keyless deploy plan for a build — the right hosts, the exact
     one-command deploy, and (for server stacks) a ready Dockerfile.
 
     By default nothing is deployed and no token is needed: this is the honest
     "…and here's how it ships" answer for a proven build. Use ``--write`` to drop
-    generated artifacts (like a Dockerfile) into the project, or ``--now`` to fire
-    a real, token-gated deploy (needs a provider token configured in Settings).
+    generated artifacts (like a Dockerfile) into the project, ``--now`` to fire
+    a real, token-gated deploy (needs a provider token configured in Settings),
+    or ``--now --execute`` to run the official provider CLI directly with the
+    operator's env-held token (CLOUDFLARE_API_TOKEN / VERCEL_TOKEN /
+    FLY_API_TOKEN / NETLIFY_AUTH_TOKEN).
     """
     from pathlib import Path as _Path
 
@@ -2295,15 +2846,25 @@ def deploy(
         console.print(f"deploy: {plan.command}")
     console.print(f"[dim]{plan.notes}[/dim]")
 
+    if execute and not now:
+        console.print("[red]--execute requires --now[/red] — printing the plan is "
+                      "always free and tokenless; execution never is.")
+        raise typer.Exit(code=1)
+
     if now:
         from skyn3t.studio.deploy import deployment_quality_gate
 
         quality = deployment_quality_gate(man)
         if not quality["passed"]:
+            if not force:
+                console.print(
+                    "[red]Deploy blocked[/red]: " + "; ".join(quality["blockers"])
+                )
+                raise typer.Exit(code=1)
             console.print(
-                "[red]Deploy blocked[/red]: " + "; ".join(quality["blockers"])
+                "[yellow]--force[/yellow] — deploying despite: "
+                + "; ".join(quality["blockers"])
             )
-            raise typer.Exit(code=1)
 
     if write and plan.artifacts:
         written = write_deploy_artifacts(plan, pdir)
@@ -2330,6 +2891,12 @@ def deploy(
     if not provider:
         console.print("[red]No deploy target[/red] to deploy to.")
         raise typer.Exit(code=1)
+    if execute:
+        # --now --execute: the direct, env-token-gated execution path. Handles
+        # its own preflight, consent, execution, verification and recording;
+        # never returns on failure (raises typer.Exit).
+        _execute_live_deploy(pdir, plan, provider, resolved_stack, yes=yes, settings=s)
+        return
     if not yes and not typer.confirm(f"Deploy {pdir.name} live to {provider}?", default=False):
         console.print("[dim]Aborted — nothing deployed.[/dim]")
         raise typer.Exit(code=0)
@@ -2406,6 +2973,109 @@ def deploy(
     console.print(f"[green]Deployed[/green] at [cyan]{url}[/cyan]")
 
 
+def _execute_live_deploy(pdir, plan, provider, stack, *, yes, settings) -> None:
+    """``skyn3t deploy --now --execute``: run the REAL provider deploy with the
+    operator's env-held token. Raises ``typer.Exit`` on every failure path.
+
+    Consent posture: an external side effect requires EITHER the lab autonomy
+    setting (``LabAutonomyPolicy``, same idiom as the runner) OR an interactive
+    confirmation (skippable with ``--yes``). Printing the plan stays free and
+    tokenless; this function is only reached behind explicit ``--execute``.
+    """
+    from skyn3t.security.secrets import mask_secrets
+    from skyn3t.studio.deploy import (
+        deploy_execution_blocker,
+        executable_provider,
+        execute_deploy,
+        record_deploy_outcome,
+        resolve_deploy_token,
+        write_deploy_artifacts,
+    )
+    from skyn3t.studio.lab_policy import LabAutonomyPolicy
+
+    console = _console()
+    # Deterministic preflight BEFORE any consent prompt or side effect: the
+    # target must be executable, the token present, and the CLI installed.
+    blocker = deploy_execution_blocker(pdir, plan, provider)
+    if blocker:
+        spec = executable_provider(provider)
+        if spec is not None:
+            token, env_name = resolve_deploy_token(provider)
+            if not token:
+                console.print(
+                    f"[red]Missing deploy token[/red] — set [cyan]{env_name}[/cyan] "
+                    f"to execute a {provider} deploy. Nothing was deployed."
+                )
+                raise typer.Exit(code=1)
+        console.print(f"[red]Cannot execute deploy[/red] — {blocker}. Nothing was deployed.")
+        raise typer.Exit(code=1)
+    spec = executable_provider(provider)
+    if spec is None:
+        console.print(
+            f"[red]Cannot execute deploy[/red] — unsupported provider {provider}. "
+            "Nothing was deployed."
+        )
+        raise typer.Exit(code=1)
+    cli = spec[0]
+    if not yes and not LabAutonomyPolicy.from_settings(settings).enabled:
+        if not typer.confirm(
+            f"Execute a REAL deploy of {pdir.name} to {provider} via {cli}?",
+            default=False,
+        ):
+            console.print("[dim]Aborted — nothing deployed.[/dim]")
+            raise typer.Exit(code=0)
+    # A container needs its Dockerfile on disk to build the image.
+    if plan.artifacts:
+        write_deploy_artifacts(plan, pdir)
+
+    token, _ = resolve_deploy_token(provider)
+    console.print(
+        f"[yellow]Executing[/yellow] real deploy of {pdir.name} to "
+        f"[cyan]{provider}[/cyan] via {cli}…"
+    )
+    result = execute_deploy(pdir, plan, provider, token=token)
+    tail = mask_secrets(str(result.get("output_tail") or ""))
+    if tail:
+        console.print(f"[dim]{tail}[/dim]")
+    if not (result.get("ok") and result.get("url")):
+        console.print(
+            f"[red]Deploy failed[/red]: "
+            f"{mask_secrets(str(result.get('error') or 'unknown error'))}"
+        )
+        raise typer.Exit(code=1)
+
+    url = str(result["url"])
+    # Post-deploy verification: the same liveness gate, against the LIVE url.
+    try:
+        from skyn3t.studio.deploy_check import check_deploy
+
+        verdict = asyncio.run(check_deploy(url, stack))
+        deploy_check = verdict.to_dict()
+    except Exception as exc:  # noqa: BLE001 - persist an unverified attempt
+        deploy_check = {
+            "ok": False,
+            "skipped": True,
+            "issues": [],
+            "checked": {},
+            "reason": f"deploy check unavailable: {str(exc)[:160]}",
+            "gaps": [],
+        }
+    verified = bool(deploy_check.get("ok"))
+    record = record_deploy_outcome(pdir, kind=plan.kind, url=url, verified=verified)
+    if not record.get("persisted"):
+        console.print(
+            "[yellow]Deploy outcome was not persisted[/yellow]: "
+            f"{record.get('persistence_error') or 'unknown manifest error'}"
+        )
+    if verified:
+        console.print("[green]deploy check[/green] — live url verified ✓")
+        console.print(f"[green]Deployed + verified[/green] at [cyan]{url}[/cyan]")
+        return
+    reason = str(deploy_check.get("reason") or "unhealthy live URL")
+    console.print(f"[red]Deployed but not verified[/red] — {mask_secrets(reason)}")
+    raise typer.Exit(code=1)
+
+
 @domain_app.command("ingest")
 def domain_ingest(
     source: str = typer.Argument(..., help="Local path (file/dir) or http(s):// URL."),
@@ -2442,14 +3112,19 @@ async def _ingest_source(source: str) -> int:
     except Exception:  # noqa: BLE001
         return -1
 
-    # Learn from a GitHub repo: pull README + metadata (redacted) into RAG so it
-    # informs future builds. Uses SKYN3T_GITHUB_TOKEN if configured (UI/​.env).
+    # Store a GitHub README + metadata as an unreviewed RAG reference. It is
+    # searchable for later audited promotion, never directly prompt-injected.
     if "github.com/" in source:
         text = await _fetch_github_repo(source)
         if not text:
             return 0
         try:
-            return engine.ingest_text(text, source=source, kind="github")
+            return engine.ingest_text(
+                text,
+                source=source,
+                kind="github",
+                metadata={"external_unreviewed": True, "source_kind": "github_readme"},
+            )
         except Exception:  # noqa: BLE001
             return 0
 
@@ -2595,11 +3270,18 @@ def _check_llm(settings: Any) -> tuple[str, bool]:
 
 def _check_sandbox(settings: Any) -> str:
     backend = getattr(settings, "execution_backend", "auto")
-    docker_present = _has_module("docker")
-    if backend == "docker" and not docker_present:
-        return "docker requested but SDK absent -> falls back to inline"
-    if backend == "auto":
-        return f"auto (docker SDK {'present' if docker_present else 'absent'} -> inline fallback)"
+    if backend in {"auto", "docker"}:
+        try:
+            from skyn3t.security.sandbox import SandboxRunner
+
+            docker_ready = SandboxRunner(settings).docker_available()
+        except Exception:  # noqa: BLE001 - doctor must remain diagnostic
+            docker_ready = False
+        if backend == "docker":
+            return "docker (daemon ready)" if docker_ready else "docker requested but unavailable"
+        if docker_ready:
+            return "auto (docker daemon ready)"
+        return "auto (docker unavailable -> hardened local fallback)"
     return backend
 
 

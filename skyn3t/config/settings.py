@@ -8,12 +8,16 @@ crash — features degrade instead.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field
+import structlog
+from pydantic import Field, TypeAdapter, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = structlog.get_logger(__name__)
 
 
 def _resolve_runtime_layout(
@@ -37,6 +41,34 @@ def _resolve_runtime_layout(
 # Checkouts keep their historical repo-relative layout. Installed wheels must
 # never try to write mutable state into site-packages.
 REPO_ROOT, DEFAULT_PROJECTS_DIR = _resolve_runtime_layout(__file__)
+
+
+def _validated_tuning_overrides(settings_cls, data: dict) -> dict:
+    """Drop persisted tuning values the target field would reject.
+
+    ``load_overrides`` allow-lists KEYS only; a hand-edited
+    ``settings_overrides.json`` with a bad VALUE (``{"best_of_n": "x"}``)
+    previously raised ``ValidationError`` out of every ``get_settings()``
+    caller — the exact crash the surrounding try/except promises to prevent.
+    Trial-validate each value against its field (constraints included) so a
+    bad value costs that one override, never config construction.
+    """
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        field_info = settings_cls.model_fields.get(key)
+        if field_info is None:
+            continue
+        annotation = field_info.annotation if field_info.annotation is not None else Any
+        if field_info.metadata:
+            annotation = Annotated[tuple([annotation, *field_info.metadata])]
+        try:
+            TypeAdapter(annotation).validate_python(value)
+        except Exception as exc:  # noqa: BLE001 - drop the override, keep booting
+            log.warning("settings.tuning_override_dropped", key=key,
+                        error=str(exc)[:120])
+            continue
+        out[key] = value
+    return out
 
 
 class Settings(BaseSettings):
@@ -71,11 +103,45 @@ class Settings(BaseSettings):
         try:
             from skyn3t.cortex.tuning_store import load_overrides  # local: no import cycle
 
-            data = load_overrides(REPO_ROOT / "data")
+            # The allow-list filters keys; _validated_tuning_overrides filters
+            # VALUES — both are needed for the "never break construction"
+            # promise, because pydantic validates these after this hook.
+            #
+            # Root resolution mirrors the writers (cli/main.py and
+            # cortex/bootstrap.py persist to ``settings.data_dir``) and
+            # pydantic's own precedence for that field: OS env first, then the
+            # .env file, else the repo default. Reading only REPO_ROOT/data
+            # meant that with SKYN3T_DATA_DIR set, persisted tuning was
+            # written to one root and silently never applied from the other
+            # (audit M2); reading only OS env left the flagship .env surface
+            # (.env.example documents SKYN3T_DATA_DIR) with the same split.
+            # An init-kwarg data_dir remains unknowable this early.
+            data_root = os.environ.get("SKYN3T_DATA_DIR", "").strip()
+            if not data_root:
+                try:
+                    # dotenv source keys are FIELD names (prefix stripped):
+                    # a .env SKYN3T_DATA_DIR arrives as "data_dir".
+                    data_root = str(dotenv_settings().get("data_dir") or "").strip()
+                except Exception:  # noqa: BLE001 - a bad .env must not cost tuning for default roots
+                    data_root = ""
+            data = _validated_tuning_overrides(
+                settings_cls, load_overrides(data_root or REPO_ROOT / "data")
+            )
         except Exception:  # noqa: BLE001 - never let tuning break config construction
             data = {}
         overrides_source = InitSettingsSource(settings_cls, data)
         return (init_settings, env_settings, overrides_source, dotenv_settings, file_secret_settings)
+
+    @field_validator("llm_backend", "execution_backend", "game_art_source", mode="before")
+    @classmethod
+    def _normalize_choice_fields(cls, value):
+        """Keep the historical tolerance for case/whitespace on choice fields.
+
+        These were free strings that every consumer ``.strip().lower()``-ed;
+        now that they are Literal-typed, ``Auto`` must still mean ``auto`` —
+        only genuinely unknown values should fail construction.
+        """
+        return value.strip().lower() if isinstance(value, str) else value
 
     # ---- Identity / paths ------------------------------------------------
     app_name: str = "SkyN3t"
@@ -99,6 +165,9 @@ class Settings(BaseSettings):
     # OPENROUTER_API_KEY fallback without destroying an externally managed
     # credential. Saving a key through Settings turns this back on.
     openrouter_enabled: bool = True
+    # Stored for redaction seeding (SecretsStore) and possible future native
+    # backends — NO current backend consumes these three; only the OpenRouter
+    # key above (and the local CLIs' own logins) can actually generate.
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     kimi_api_key: str = ""
@@ -131,13 +200,35 @@ class Settings(BaseSettings):
     allow_remote_deploy: bool = False
 
     # ---- CLI LLM backends (no API key; use locally-installed CLIs) -------
-    # ``auto`` is intentionally local Codex CLI only. It never uses OpenRouter
-    # merely because a key is configured; select ``openrouter`` explicitly in
-    # Settings when a hosted provider is intended.
-    llm_backend: str = "auto"  # auto|stub|openrouter|codex_cli|claude_cli|kimi_cli|copilot_cli
+    # ``auto`` resolves to the first signed-in CLI in ``auto_cli_priority``. It
+    # never uses OpenRouter merely because a key is configured: a key is
+    # configuration, not consent to spend. Select ``openrouter`` explicitly, or
+    # set ``auto_allow_openrouter``, when a hosted provider is intended.
+    # Mirrors SUPPORTED_LLM_BACKENDS in skyn3t/adapters/llm.py (settings cannot
+    # import the adapter). Literal-typed so a typo like ``claude`` (missing
+    # ``_cli``) fails construction loudly instead of silently degrading the
+    # whole system to the offline stub.
+    llm_backend: Literal[
+        "auto", "stub", "openrouter",
+        "codex_cli", "claude_cli", "kimi_cli", "copilot_cli",
+    ] = "auto"
+    # Order ``auto`` tries local CLIs in. Codex leads only because it was the
+    # historical default, so existing hosts see no change — there is nothing
+    # special about it, and reordering this is the supported way to prefer a
+    # different provider for unattended builds. Unknown entries are ignored.
+    # ``copilot`` is deliberately absent from the default chain (add it here to
+    # opt in). ``claude`` is absent too: nothing Claude-powered runs unless the
+    # operator selects it (``llm_backend=claude_cli``, a slot, or an entry
+    # here). Both remain fully supported and explicitly addressable.
+    auto_cli_priority: str = "codex,kimi"
+    # Explicit consent for ``auto`` to fall back to hosted OpenRouter when NO
+    # local CLI is available. Off by default: without it, ``auto`` degrades to
+    # the offline stub rather than silently spending.
+    auto_allow_openrouter: bool = False
     # Used by manually selected CLI-adjacent features (for example vision
-    # checks). Automatic build execution always uses Codex CLI.
-    cli_llm_provider: str = "claude"
+    # checks). Automatic build execution walks ``auto_cli_priority`` (any
+    # available CLI in that chain satisfies the routing lock), never this field.
+    cli_llm_provider: str = "codex"
     # Route ONLY the codegen (code agent) stage to a coding-agent CLI's agentic
     # whole-app build, while every OTHER stage keeps the global backend (e.g. cheap
     # OpenRouter models). Empty = no override (codegen follows the global backend).
@@ -159,6 +250,25 @@ class Settings(BaseSettings):
     # the router's backend tier pick. This is separate from ``codegen_cli_model``
     # because the CLI override and OpenRouter path are mutually exclusive.
     openrouter_codegen_model: str = ""
+    # Task-specialized model routing (evidence: OpenHands SDK paper, MLSys 2026,
+    # Table 5 — models diverge sharply by TASK TYPE: one model leads GREENFIELD
+    # codegen, another leads ISSUE-RESOLUTION/repair). SkyN3t's loop is exactly
+    # those two task types: ``codegen_model_slot`` pins the greenfield path
+    # (code_agent's agentic whole-app build), ``repair_model_slot`` pins the
+    # repair path (code_improver's fix-loop rewrites + agentic improve). Both
+    # use the SAME ``provider:model`` grammar as the MoA council
+    # (skyn3t/adapters/model_slot.py): "openrouter:deepseek/deepseek-v4-flash",
+    # "claude_cli:sonnet", a bare provider ("kimi_cli"), or a bare model id
+    # pinned on the active backend. Empty (default) = today's tier-routed
+    # behavior, byte-identical. When set, the slot is authoritative for its
+    # path ONLY: it outranks the tier pick, the per-tier pins, and (like
+    # ``codegen_cli_provider``) the payload ``model_override`` — operator pins
+    # stay authoritative for the whole build. A junk slot string never breaks
+    # a build: it logs a warning and falls back to tier routing. BILLING: a
+    # ``*_cli`` slot runs on that CLI's subscription — spend the USD ledger
+    # cannot see; an ``openrouter:`` slot bills the OpenRouter key like any pin.
+    codegen_model_slot: str = ""
+    repair_model_slot: str = ""
     # First-class per-tier model pins. These outrank persisted
     # data/model_tier_overrides.json so dashboard/env choices are visible and
     # predictable.
@@ -199,8 +309,17 @@ class Settings(BaseSettings):
     # NO stream events for this long it has hung, so we kill it early instead of
     # burning the full build budget. A working `claude -p` emits message/tool
     # events far more often than this, so it never trips on real progress. 0
-    # uses ``agentic_build_timeout`` as the inactivity/no-progress window.
+    # (or any negative value) uses ``agentic_build_timeout`` as the
+    # inactivity/no-progress window — the same rule on both agentic paths
+    # (see llm._resolved_agentic_idle_timeout).
     agentic_idle_timeout: int = 600
+    # Liveness heartbeat (seconds) while a streaming agentic session runs. The
+    # stream is where the only evidence of progress lives, and nothing surfaced
+    # it: a measured build went 24 minutes between log lines while genuinely
+    # working, which is indistinguishable from a hang to anyone watching. With
+    # agentic_build_timeout at 1800 and best_of_n above 1, that silent window is
+    # long enough that "is it running?" is a fair question. 0 disables.
+    agentic_heartbeat_seconds: int = 60
     # Route dashboard Improve goals through the whole-project agentic tool-loop
     # (same machinery as builds) so a feature goal can CREATE new pages and touch
     # multiple files, instead of one entrypoint rewrite. The classic per-file
@@ -242,6 +361,13 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=3, ge=0, le=8)
     llm_retry_base_delay: float = Field(default=0.5, ge=0.0)
     llm_retry_max_delay: float = Field(default=8.0, ge=0.0)
+    # Failover ladder bounds (win-rate sweep): at most this many fallback
+    # candidates are appended after the primary misses (0 = primary only), and
+    # an optional wall-clock deadline (seconds, 0 = disabled) caps one
+    # resilient call end-to-end so retries x fallbacks x timeout cannot stack
+    # into an unbounded stall.
+    llm_max_fallbacks: int = Field(default=4, ge=0)
+    llm_call_deadline_seconds: float = Field(default=0.0, ge=0.0)
     # Agentic tool-loop context editing (langchain ClearToolUsesEdit): when the
     # SENT history exceeds this byte budget, OLD tool-result file dumps (read_file/
     # list_files output) are replaced with a short stub on a COPY of the history —
@@ -264,11 +390,25 @@ class Settings(BaseSettings):
 
     # ---- Routing policy --------------------------------------------------
     free_only: bool = True
-    no_claude: bool = False
+    # Claude is opt-in and defaults to UNCHECKED (the operator does not pay for
+    # it): nothing resolves to Claude while this is true — not a claude_cli
+    # backend, not a chain entry, not a codegen pin, not a council slot. It is a
+    # hard fence, not a ranking tweak. Uncheck it in Settings (set false) only
+    # when Claude is actually available and paid for.
+    no_claude: bool = True
     model_evolution: bool = False  # opt-in: with auto_route, route via the learned ModelTournament router
     # Shared stage admission. Eight lets several full-app candidate/slice agents
     # progress together; provider-side retry/backoff still absorbs rate pressure.
     openrouter_max_concurrency: int = Field(default=8, ge=1)
+    # Concurrent dispatches to any ONE local CLI provider. Fan-out multiplies
+    # here (best_of_n x parallel_code_slices x per-file generation), and a CLI
+    # slot is a 300MB-1GB agentic process tree whose subscription rate-limits per
+    # account — so 32 concurrent `claude -p` produces thrash, not throughput.
+    # This queues work, it never rejects it. 0 = unbounded (pre-2.1 behaviour).
+    cli_max_concurrency: int = Field(default=2, ge=0)
+    # Per-provider overrides, e.g. {"codex_cli": 1, "openrouter": 12}. Keys may
+    # be "codex" or "codex_cli". Wins over the two class defaults above.
+    provider_max_concurrency: dict[str, int] = Field(default_factory=dict)
 
     # ---- Optional cost/build ceilings ----------------------------------
     # Values <= 0 disable the corresponding guard.
@@ -290,7 +430,7 @@ class Settings(BaseSettings):
     # (themed sprites generated at build time, ~cents), or "auto"
     # (Kenney when installed, else replicate when configured, else offline).
     game_art_enabled: bool = True
-    game_art_source: str = "auto"  # offline | kenney | replicate | auto
+    game_art_source: Literal["offline", "kenney", "replicate", "auto"] = "auto"
     # When on, a cheap LLM art-director (one call/build, gated here) tailors a game's
     # roles + palette to the brief for the long tail of games the deterministic
     # planner doesn't recognize (e.g. fishing -> boat/fish/hook). Off -> the
@@ -389,7 +529,9 @@ class Settings(BaseSettings):
     # SEO check records findings to manifest.extra["mcp_check"] and feeds ONE
     # repair (snapshot → improve → re-proof → keep or roll back). When
     # ai_native_gates_verdict is on, a real non-skipped MCP/RAG/workflow contract
-    # failure blocks the final verdict; soft-skips never block.
+    # failure blocks under release posture (or via blocking_gates /
+    # ai_native_gates_verdict); under lab it records findings, dampens the
+    # score, and feeds the repair loop. Soft-skips never block.
     mcp_check_enabled: bool = True
     # Deterministic RAG-app gate (rag stack, wave-2 §3.1): boot the delivered
     # FastAPI app and drive the real HTTP contract (/health → /v1/stats → /ingest
@@ -410,6 +552,16 @@ class Settings(BaseSettings):
     ai_native_gates_verdict: bool = True
     security_check_enabled: bool = True
     web_polish_gate_enabled: bool = True
+    # Advisory end-of-build WEB INTERACTION check (web stacks): serve the delivered
+    # app in the isolated preview and drive ONE LLM-authored Playwright script
+    # through ONE real user flow (click the nav, submit the main form), asserting
+    # BOTH the UI surface (success state visible) and the backend surface (the
+    # API/state endpoint reflects it) — the "renders but isn't wired" catch no
+    # static/route gate can make. ADVISORY only: recorded to
+    # manifest.extra["web_interact"], it NEVER flips the verdict; it soft-skips
+    # ($0, decided before anything is served) without Playwright or a real
+    # (non-stub) LLM backend.
+    web_interact_check_enabled: bool = True
     # Deterministic CLI gate (python_cli family, wave-2 §3.6 tier): drive the
     # delivered main.py's command surface with bounded subprocess calls —
     # --help must work, every advertised subcommand's --help must work, and
@@ -492,6 +644,95 @@ class Settings(BaseSettings):
     visual_self_heal_max_rounds: int = Field(default=2, ge=1, le=5)
     reward_hardening: bool = True  # 2.0: anti-reward-hacking on graders
 
+    # Debaters for `skyn3t debate`, as comma-separated provider:model slots
+    # (same grammar as moa_advisors). Empty means every debater resolves to the
+    # SAME routed model — one model arguing with itself, whose "win" is then
+    # recorded unopposed into the ModelTournament. Set this to make it a real
+    # ensemble, e.g. "codex_cli,claude_cli,kimi_cli".
+    debate_slots: str = ""
+
+    # ---- Mixture-of-Agents advisory council -------------------------------
+    # N tool-free advisor models read the brief + stack + plan and hand private
+    # engineering guidance to the ONE agent that actually writes the app (the
+    # aggregator, i.e. the code agent). Advisors never write files, never score,
+    # never gate — this is a capability layer, not a check. Adapted from
+    # NousResearch/hermes-agent (MIT); see docs/MOA.md and CREDITS.md.
+    # ON by default. The council is what makes a build multi-model instead of
+    # whatever one CLI happens to be routed, so it is the default posture, not
+    # an add-on. It stays inert until moa_advisors is non-empty AND the backend
+    # is not stub, so the offline test suite and a keyless checkout still cost
+    # nothing. Clearing moa_advisors is the ordinary way to turn it off;
+    # SKYN3T_MOA_ENABLED=0 is the master switch.
+    moa_enabled: bool = True
+    # Advisor slots as comma-separated "provider:model" (model optional, empty =
+    # that CLI's own default). Providers may DIFFER per slot — that is the whole
+    # point. Addressable backends: codex_cli, claude_cli, kimi_cli, openrouter
+    # (and copilot_cli, supported but not in the default chain). Prefer the BARE
+    # form — no ":model" — so each CLI uses its own configured default:
+    #   "codex_cli,claude_cli,kimi_cli"
+    # A bare slot also sidesteps id churn. "kimi_cli:k3" in particular does NOT
+    # work: that CLI needs the fully-qualified "kimi-code/k3", which its own
+    # config.toml already sets as the default, so bare "kimi_cli" is correct.
+    # Pin a model only when you mean it, e.g. "claude_cli:sonnet".
+    # Empty => the council is off even when moa_enabled.
+    # Defaults to Kimi + Copilot + one hosted OpenRouter model: a genuinely
+    # multi-model council with no Claude. Claude is deliberately NOT in the
+    # default: nothing Claude-powered runs unless the operator selects it —
+    # add it back with
+    #   SKYN3T_MOA_ADVISORS="claude_cli,kimi_cli"
+    # (codex_cli is left out because auto routes codegen to Codex first, so a
+    # codex advisor would be the acting model reviewing itself). A slot whose
+    # CLI is not installed is recorded as a failed advisor and the build
+    # proceeds on the survivors; if ALL fail the codegen prompt is
+    # byte-identical to a council-off build, so this default costs nothing on a
+    # machine without them. Set SKYN3T_MOA_ADVISORS="" to turn the council off.
+    moa_advisors: str = "kimi_cli,copilot_cli,openrouter"
+    # Concurrent advisor calls. Matches the ceiling code_agent already uses for
+    # nested CLI children; per-provider limits still apply underneath.
+    moa_max_concurrency: int = Field(default=4, ge=1, le=8)
+    # Wall-clock ceiling per advisor. A slow advisor is dropped AT THIS DEADLINE
+    # — but the council IS awaited inline before codegen, so it can delay a
+    # build by up to ceil(N_advisors / moa_max_concurrency) * this value. The
+    # earlier claim that advisors "never extend the critical path" was wrong.
+    # 60s, not 180s: a tool-free advisory of <=400 words does not need three
+    # minutes, and now that the council is on by default that delay is paid by
+    # every build.
+    moa_advisor_timeout: int = Field(default=60, ge=10)
+    # Output cap per advisor (binds on OpenRouter; CLI backends are governed by
+    # the byte budget below, since complete() cannot pass max_tokens to a CLI).
+    moa_advisor_max_tokens: int = Field(default=1200, ge=128)
+    # Default reasoning effort for advisor slots that don't pin their own with
+    # the "@effort" suffix (e.g. "claude_cli:sonnet@high" — see
+    # adapters/model_slot.py). One of low|medium|high; anything else falls back
+    # to "medium" with a logged warning at the council's single resolution
+    # chokepoint (resolve_advisor_effort). Mapping: an OpenRouter advisor call
+    # carries {"reasoning": {"effort": X}} on the request — the API ignores it
+    # for models without a reasoning mode, so it can never break a call — while
+    # the CLI invocation templates (_CLI_COMMANDS) carry no effort flag, so for
+    # CLI advisors effort is a deliberate no-op, logged once per provider.
+    moa_advisor_effort: str = "medium"
+    # Hard per-advisor byte budget for the assembled guidance block. Prompt bloat
+    # is the real hazard here: an oversized codegen prompt slows the agentic CLI
+    # enough to blow agentic_build_timeout and ship a stub.
+    moa_advisor_block_bytes: int = Field(default=3000, ge=500)
+    # Opt-in JSONL trace: one line per council run under logs_dir/moa/.
+    moa_trace_enabled: bool = False
+
+    # ---- Gate posture ----------------------------------------------------
+    # Whether a gate's finding BLOCKS the verdict, separately from whether the
+    # gate RUNS (that stays each gate's own *_enabled flag, above). "lab"
+    # (default): only proof that the DELIVERY IS BROKEN blocks; heuristics,
+    # taste rules, environment-dependent probes and policy preferences record
+    # their finding, dampen the score, feed the fix loop, and let the build
+    # complete. "release": every gate blocks (2.0's historical behaviour).
+    # A gate that COULD NOT RUN never blocks in EITHER posture — that is
+    # GateVerdict's `skipped` contract applied to every gate, including the
+    # ones that never adopted it. See skyn3t/studio/gate_posture.py.
+    build_posture: Literal["lab", "release"] = "lab"
+    # Escape hatch: comma-separated gate names that block regardless of posture
+    # (for example "security,proof_ladder"). Empty -> the posture decides.
+    blocking_gates: str = ""
+
     # ---- Autonomy --------------------------------------------------------
     autonomous_builds: bool = False
     autonomous_learning: bool = True
@@ -500,6 +741,9 @@ class Settings(BaseSettings):
     # Personal-lab profile: remove repetitive approval and budget friction for
     # local generation/research while retaining every proof and quality gate.
     lab_autonomy: bool = False
+    # One plain-language control for the local recovery / learning queue. It
+    # never enables remote push or deployment; it only selects local work.
+    lab_autopilot: bool = False
     # Cortex can author narrowly scoped self-improvement candidates in an
     # isolated git worktree. The engine never pushes. Local main auto-merge is
     # a separate explicit consent and only occurs after all blocking gates pass.
@@ -520,7 +764,7 @@ class Settings(BaseSettings):
     reliability_ratchet_enabled: bool = False
 
     # ---- Sandbox ---------------------------------------------------------
-    execution_backend: str = "auto"  # auto | docker | inline
+    execution_backend: Literal["auto", "docker", "inline"] = "auto"
     sandbox_hardening: bool = True
     sandbox_drop_caps: bool = True
 
@@ -564,12 +808,18 @@ class Settings(BaseSettings):
 
     @property
     def has_any_llm(self) -> bool:
-        return bool(
-            self.openrouter_api_key
-            or self.anthropic_api_key
-            or self.openai_api_key
-            or self.kimi_api_key
-        )
+        """Whether a CONSUMABLE hosted-LLM credential is configured.
+
+        Only the OpenRouter key counts: no backend consumes the
+        anthropic/openai/kimi keys, so including them made ``/api/status``
+        claim LLM availability while generation stayed on the offline stub.
+        (Local CLI availability is reported separately by the runtime — see
+        ``web/deps.py`` status(), which ORs in the resolved backend.)
+        The ``openrouter_enabled`` disconnect flag suppresses availability
+        just as it suppresses key resolution (mirror of ``llm.openrouter_key``):
+        a disabled key cannot generate, so it must not report as available.
+        """
+        return bool(self.openrouter_api_key) and bool(self.openrouter_enabled)
 
 
 @lru_cache

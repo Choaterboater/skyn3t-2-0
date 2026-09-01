@@ -53,12 +53,21 @@ class EventType(StrEnum):
     BUILD_STAGE_COMPLETED = "build.stage.completed"
     BUILD_COMPLETED = "build.completed"
     BUILD_FAILED = "build.failed"
+    # A gated stage is waiting on operator approval — event-driven discovery
+    # for the dashboard banner (which otherwise only polls; the gate can
+    # auto-reject before a poll lands).
+    APPROVAL_REQUESTED = "approval.requested"
     FIX_STALLED = "fix.stalled"
     # Per-stage autonomous debug loop + live artifact snapshots (cockpit, Phase A)
     STAGE_DEBUG_STARTED = "build.stage.debug.started"
     STAGE_DEBUG_ATTEMPT = "build.stage.debug.attempt"
     STAGE_DEBUG_RESOLVED = "build.stage.debug.resolved"
     STAGE_ARTIFACT_SNAPSHOT = "build.stage.artifact.snapshot"
+    # Codegen friction report (vent channel): the agent flagged a PIPELINE
+    # blocker — a missing tool, a contradictory directive, an undiagnosable
+    # error, an unsatisfiable gate. Feeds the operator log + the learning
+    # loop's vent-tagged lessons; never ships in code.
+    CODEGEN_VENT = "codegen.vent"
 
     # Operator mode: improve an already-built project
     IMPROVE_STARTED = "improve.started"
@@ -70,7 +79,9 @@ class EventType(StrEnum):
     # settings UI generated, and its wiring verified (build + improve).
     CONFIG_CHECK = "improve.config_check"
     # Live app preview (two-pane cockpit): start/stop a delivered project as a server
+    SERVE_STARTING = "serve.starting"
     SERVE_STARTED = "serve.started"
+    SERVE_FAILED = "serve.failed"
     SERVE_STOPPED = "serve.stopped"
     # Fan-out exploration (Spec 4): build N divergent candidates, referee, pick winner
     FANOUT_STARTED = "fanout.started"

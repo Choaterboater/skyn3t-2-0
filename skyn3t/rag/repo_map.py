@@ -1398,11 +1398,11 @@ def _open_confined_descriptor(path: Path, root: Path | None) -> int:
     """Open a leaf without following symlinks in any project-relative segment."""
     file_flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
-        file_flags |= os.O_NOFOLLOW
+        file_flags |= getattr(os, "O_NOFOLLOW", 0)
     if hasattr(os, "O_NONBLOCK"):
         file_flags |= os.O_NONBLOCK
     if hasattr(os, "O_CLOEXEC"):
-        file_flags |= os.O_CLOEXEC
+        file_flags |= getattr(os, "O_CLOEXEC", 0)
 
     if (
         root is not None
@@ -1414,9 +1414,9 @@ def _open_confined_descriptor(path: Path, root: Path | None) -> int:
             raise OSError("unsafe project-relative path")
         directory_flags = os.O_RDONLY | os.O_DIRECTORY
         if hasattr(os, "O_NOFOLLOW"):
-            directory_flags |= os.O_NOFOLLOW
+            directory_flags |= getattr(os, "O_NOFOLLOW", 0)
         if hasattr(os, "O_CLOEXEC"):
-            directory_flags |= os.O_CLOEXEC
+            directory_flags |= getattr(os, "O_CLOEXEC", 0)
         opened_directories: list[int] = []
         try:
             current = os.open(root, directory_flags)

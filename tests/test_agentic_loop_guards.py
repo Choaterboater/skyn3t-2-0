@@ -47,7 +47,7 @@ class _RecordingClient:
     async def __aexit__(self, *a):
         return False
 
-    async def post(self, url, json=None, headers=None):
+    async def post(self, url, json=None, headers=None, timeout=None):
         self.bodies.append(json)
         if self.i >= len(self._turns):
             return _FakeResp({"choices": [{"message": {"content": "done"}}]})

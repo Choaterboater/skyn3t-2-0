@@ -7,19 +7,28 @@ No token, no network: it is the honest "…and here's how it ships" answer for
 every stack the builder can produce, or an honest "not a hosted app" verdict.
 
 Registry-driven (the same idiom as ``core.stacks``): every builder stack maps to
-a deploy KIND, so a new stack is never silently un-shippable. Real, token-gated
-deployment is handled by :class:`DeployAgent`; this planner stays side-effect
-free so its output can be inspected and persisted safely.
+a deploy KIND, so a new stack is never silently un-shippable. The planner stays
+side-effect free so its output can be inspected and persisted safely; REAL,
+token-gated execution lives in :func:`execute_deploy` below (the
+``skyn3t deploy --now --execute`` path) and in the Settings-gated
+:class:`skyn3t.agents.deploy_agent.DeployAgent`.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from time import time
 from typing import Any
+from urllib.parse import urlsplit
 
 # stack (agent vocab + planner aliases) -> deploy kind. Every KNOWN_STACKS entry
 # is present (a drift test asserts it). Kinds:
@@ -44,7 +53,7 @@ DEPLOY_KIND: dict[str, str] = {
     "agent_pack": "artifact", "mcp": "artifact",
     "swift": "artifact", "tauri": "artifact", "desktop": "artifact",
     # mobile app binary
-    "react_native": "mobile",
+    "react_native": "mobile", "swift_ios": "mobile",
 }
 
 _PY_DOCKERFILE = (
@@ -134,6 +143,7 @@ class DeployPlan:
     artifacts: dict[str, str] = field(default_factory=dict)
     serves_url: bool = False
     notes: str = ""
+    env_vars: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -146,6 +156,7 @@ class DeployPlan:
             "artifacts": dict(self.artifacts),
             "serves_url": self.serves_url,
             "notes": self.notes,
+            "env_vars": list(self.env_vars),
         }
 
 
@@ -406,6 +417,47 @@ def _provider_project_name(project_dir: Path) -> str:
     return (normalized or "skyn3t-app")[:63].rstrip("-")
 
 
+# Environment reads the operator must satisfy at deploy time. Regex-based and
+# offline: each pattern captures the variable NAME from one read idiom —
+# process.env.NAME, import.meta.env.VITE_NAME, os.getenv("NAME"),
+# os.environ["NAME"], os.environ.get("NAME").
+_PROCESS_ENV_RE = re.compile(r"\bprocess\.env\.([A-Za-z_][A-Za-z0-9_]*)")
+_IMPORT_META_ENV_RE = re.compile(r"\bimport\.meta\.env\.([A-Za-z_][A-Za-z0-9_]*)")
+_PY_ENV_RE = re.compile(
+    r"\bos\.(?:getenv\(\s*|environ\[\s*|environ\.get\(\s*)['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"
+)
+# Vite injects these build-time meta vars itself; they are not operator config.
+_VITE_META_VARS = {"MODE", "BASE_URL", "PROD", "DEV", "SSR"}
+_ENV_SOURCE_SUFFIXES = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte", ".astro",
+}
+_ENV_SKIP_DIRS = {"node_modules", ".next", "dist", "build", "out", ".venv", "venv", "__pycache__", ".git"}
+
+
+def _scan_env_vars(project_dir: Path) -> list[str]:
+    """Return the sorted, deduplicated env vars the project source reads.
+    Same file-selection posture as the other offline scans: source suffixes
+    only, dependency/build dirs skipped, link-like files never followed."""
+    found: set[str] = set()
+    for path in project_dir.rglob("*"):
+        if any(part in _ENV_SKIP_DIRS for part in path.relative_to(project_dir).parts):
+            continue
+        if path.suffix.lower() not in _ENV_SOURCE_SUFFIXES:
+            continue
+        if not _safe_project_file(project_dir, path):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        found.update(_PROCESS_ENV_RE.findall(text))
+        found.update(
+            name for name in _IMPORT_META_ENV_RE.findall(text) if name not in _VITE_META_VARS
+        )
+        found.update(_PY_ENV_RE.findall(text))
+    return sorted(found)
+
+
 def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None = None) -> DeployPlan:
     """Classify ``project_dir`` and return a keyless :class:`DeployPlan`. Never
     raises; a missing dir or unknown stack still yields a sane plan.
@@ -413,7 +465,31 @@ def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None 
     ``target`` is an optional preferred host (e.g. ``"vercel"``, ``"fly"``):
     when it is a valid host for the detected kind it is moved to the front of
     ``targets`` and its host-specific ``command`` is chosen; an unavailable
-    target keeps the default and is explained in ``notes``."""
+    target keeps the default and is explained in ``notes``.
+
+    Every plan also carries ``env_vars`` — the sorted, deduplicated environment
+    variables the project source reads — rendered into ``notes`` as a
+    "Required environment variables" section so the operator knows what to set
+    before deploying (or "none detected")."""
+    plan = _plan_deploy(project_dir, stack, target=target)
+    try:
+        pdir = Path(project_dir)
+        if pdir.is_dir() and not _path_is_link_like(pdir):
+            plan.env_vars = _scan_env_vars(pdir)
+    except Exception:  # noqa: BLE001 - the env scan must never break planning
+        plan.env_vars = []
+    section = (
+        "Required environment variables: " + ", ".join(plan.env_vars)
+        if plan.env_vars
+        else "Required environment variables: none detected"
+    )
+    plan.notes = f"{plan.notes}\n{section}" if plan.notes else section
+    return plan
+
+
+def _plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None = None) -> DeployPlan:
+    """Classify the build and pick a deploy kind/targets (see :func:`plan_deploy`,
+    which layers the env-var manifest on top). Never raises."""
     try:
         pdir = Path(project_dir)
         if not pdir.is_dir() or _path_is_link_like(pdir):
@@ -504,6 +580,17 @@ def plan_deploy(project_dir: str | Path, stack: str = "", *, target: str | None 
             )
 
         if kind == "mobile":
+            norm = _normalize(stack)
+            if norm == "swift_ios":
+                targets, command, note = _apply_target(target, [
+                    ("xcode-testflight", "xcodebuild -project App.xcodeproj -scheme App -configuration Release archive"),
+                ])
+                return DeployPlan(
+                    deployable=True, kind="mobile", serves_url=False,
+                    targets=targets, output_dir=".", build_command="", command=command,
+                    notes=("A native iOS app — archive/sign in Xcode, then upload to TestFlight "
+                           "or install it on a registered device." + note),
+                )
             targets, command, note = _apply_target(target, [
                 ("expo-eas", "eas build --platform all"),
             ])
@@ -816,3 +903,318 @@ def rollback_deployment(
             "error": str(exc)[:160],
         })
     return record
+
+
+# ── Ship pillar, slice 2: token-gated REAL execution ─────────────────────────
+# Everything above this line is the KEYLESS planner: it never touches the
+# network and never needs a credential. This section is the complement — it
+# executes one plan against its real host, ONLY when the operator holds the
+# provider token in their own environment. Posture (same as the rest of the
+# repo): the token crosses via the subprocess ENVIRONMENT, never argv (process
+# lists leak); the subprocess env is scrubbed by ``filter_env`` so only the one
+# provider token is added back; every byte of captured output is masked before
+# it is printed or persisted; and nothing here runs without the CLI's explicit
+# ``--execute`` consent flow (lab autonomy / --yes / interactive confirm).
+
+# plan target -> (official CLI binary, operator token env var, install hint).
+# Covers every URL-serving host the planner emits that has a token-gated
+# official CLI: Cloudflare Pages (wrangler), Vercel, Fly.io (flyctl), Netlify.
+EXECUTABLE_PROVIDERS: dict[str, tuple[str, str, str]] = {
+    "cloudflare-pages": (
+        "wrangler",
+        "CLOUDFLARE_API_TOKEN",
+        "install wrangler: npm install -g wrangler",
+    ),
+    "vercel": (
+        "vercel",
+        "VERCEL_TOKEN",
+        "install the Vercel CLI: npm install -g vercel",
+    ),
+    "fly": (
+        "flyctl",
+        "FLY_API_TOKEN",
+        "install flyctl: https://fly.io/docs/flyctl/install/",
+    ),
+    "netlify": (
+        "netlify",
+        "NETLIFY_AUTH_TOKEN",
+        "install the Netlify CLI: npm install -g netlify-cli",
+    ),
+}
+
+# provider -> canonical hostname suffix of its live deploy URLs. CLI output
+# mixes docs/dashboard/support links with the real URL, so only a suffixed
+# https URL is accepted as the deploy URL.
+_EXECUTE_URL_SUFFIXES: dict[str, tuple[str, ...]] = {
+    "cloudflare-pages": (".pages.dev",),
+    "vercel": (".vercel.app",),
+    "fly": (".fly.dev",),
+    "netlify": (".netlify.app",),
+}
+
+_LIVE_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
+
+# Flags a provider CLI could accept a credential through. A plan command
+# carrying one is rejected outright: tokens cross via the environment ONLY.
+_CREDENTIAL_ARGV_FLAGS = frozenset({
+    "-t", "--access-token", "--api-key", "--auth", "--auth-token", "--token",
+})
+
+
+def executable_provider(target: str) -> tuple[str, str, str] | None:
+    """The ``(CLI, token env var, install hint)`` for a plan target, or ``None``
+    when ``--execute`` is not wired for it (the keyless plan is all you get)."""
+    return EXECUTABLE_PROVIDERS.get((target or "").strip().lower())
+
+
+def resolve_deploy_token(
+    target: str,
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    """Discover the operator's deploy token for ``target`` in the environment.
+
+    Returns ``(token, env_var_name)``; the token is ``""`` when unset — the
+    caller refuses to execute and names the exact env var to set. No partial
+    behavior: an absent token is an error, never a silent fallback to ambient
+    CLI credentials cached on disk.
+    """
+    spec = executable_provider(target)
+    if spec is None:
+        return "", ""
+    _, env_name, _ = spec
+    source = env if env is not None else os.environ
+    return (source.get(env_name) or "").strip(), env_name
+
+
+def deploy_execution_blocker(
+    project_dir: str | Path,
+    plan: DeployPlan,
+    target: str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Deterministic ``--execute`` preflight. Returns ``""`` when execution may
+    proceed, else the exact human-actionable blocker: the env var to set, the
+    CLI install hint, or why the target is unsupported. Pure — no subprocess,
+    no writes, no network."""
+    spec = executable_provider(target)
+    if spec is None:
+        supported = ", ".join(sorted(EXECUTABLE_PROVIDERS))
+        return (
+            f"--execute is not wired for target '{target}' "
+            f"(supported: {supported})"
+        )
+    cli, _, install_hint = spec
+    token, env_name = resolve_deploy_token(target, env=env)
+    if not token:
+        return f"set {env_name} to execute a {target} deploy"
+    if _resolve_provider_cli(project_dir, cli) is None:
+        return f"'{cli}' is not installed (outside the project) — {install_hint}"
+    return ""
+
+
+def _resolve_provider_cli(project_dir: str | Path, cli: str) -> Path | None:
+    """Resolve the real provider CLI, rejecting project-controlled executables.
+
+    A generated project must never choose the binary that receives a production
+    token, even when PATH contains the project directory.
+    """
+    raw = shutil.which(cli)
+    if not raw:
+        return None
+    try:
+        resolved = Path(raw).resolve(strict=True)
+    except OSError:
+        return None
+    try:
+        resolved.relative_to(Path(project_dir).resolve(strict=True))
+        return None
+    except (ValueError, OSError):
+        pass
+    return resolved if resolved.is_file() else None
+
+
+def _mask_deploy_text(text: str, token: str) -> str:
+    """Mask the operator token (explicit replace — its env-var name family is
+    not in the mask registry) plus every registered secret via
+    :func:`skyn3t.security.secrets.mask_secrets`."""
+    from skyn3t.security.secrets import MASKED, mask_secrets
+
+    out = (text or "").replace(token, MASKED) if token else (text or "")
+    return mask_secrets(out)
+
+
+def extract_live_url(text: str, target: str) -> str:
+    """Parse the deploy URL a provider CLI printed: the LAST https URL under the
+    provider's canonical hostname suffix (CLIs print docs/dashboard links
+    first; the live URL comes last). ``""`` when nothing qualifies."""
+    suffixes = _EXECUTE_URL_SUFFIXES.get((target or "").strip().lower(), ())
+    if not suffixes:
+        return ""
+    for raw in reversed(_LIVE_URL_RE.findall(text or "")):
+        candidate = raw.rstrip(".,;:!?)]}")
+        try:
+            parsed = urlsplit(candidate)
+            hostname = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme == "https"
+            and not parsed.username
+            and not parsed.password
+            and port in (None, 443)
+            and any(hostname.endswith(suffix) for suffix in suffixes)
+        ):
+            return f"https://{hostname}"
+    return ""
+
+
+def execute_deploy(
+    project_dir: str | Path,
+    plan: DeployPlan,
+    target: str,
+    *,
+    token: str,
+    timeout: float = 600.0,
+) -> dict[str, Any]:
+    """Execute ``plan`` against its real host via the official provider CLI.
+
+    The caller (CLI ``--now --execute``) has already obtained explicit consent
+    and the token from :func:`resolve_deploy_token`. The token is injected into
+    a SCRUBBED subprocess environment (never argv), all captured output is
+    masked with the token + :func:`mask_secrets`, and the returned dict is safe
+    to print or persist. Never raises; failure is ``{"ok": False, "error": ...}``.
+    """
+    result: dict[str, Any] = {
+        "ok": False,
+        "url": "",
+        "target": str(target or ""),
+        "kind": str(getattr(plan, "kind", "") or ""),
+        "status": "not_started",
+        "argv": [],
+        "returncode": None,
+        "output_tail": "",
+        "error": "",
+    }
+    spec = executable_provider(target)
+    if spec is None:
+        supported = ", ".join(sorted(EXECUTABLE_PROVIDERS))
+        result["error"] = (
+            f"--execute is not wired for target '{target}' (supported: {supported})"
+        )
+        return result
+    cli, token_env, _ = spec
+    if not token:
+        result["error"] = f"set {token_env} to execute a {target} deploy"
+        return result
+    try:
+        argv = shlex.split(str(getattr(plan, "command", "") or ""))
+    except ValueError as exc:
+        result["status"] = "invalid_plan"
+        result["error"] = f"invalid deploy command quoting: {exc}"
+        return result
+    # Only the planner's own command for THIS provider may receive the token:
+    # the entrypoint must be the provider CLI and carry no credential flags.
+    if not argv or Path(argv[0]).stem.lower() != cli:
+        result["status"] = "invalid_plan"
+        result["error"] = f"plan command is not a {cli} invocation"
+        return result
+    if any(
+        str(part).split("=", 1)[0].lower() in _CREDENTIAL_ARGV_FLAGS for part in argv[1:]
+    ):
+        result["status"] = "invalid_plan"
+        result["error"] = (
+            "deploy command carries a credential flag; tokens cross via the "
+            "environment only"
+        )
+        return result
+    resolved = _resolve_provider_cli(project_dir, cli)
+    if resolved is None:
+        result["status"] = "cli_unavailable"
+        result["error"] = (
+            f"'{cli}' is not installed (outside the project) — {spec[2]}"
+        )
+        return result
+    argv[0] = str(resolved)
+    result["argv"] = [str(part) for part in argv]
+
+    # Least-privilege env: scrub every secret, strip ALL provider tokens, then
+    # add back only the one token this provider's CLI reads.
+    from skyn3t.security.secrets import filter_env
+
+    deploy_env = filter_env(
+        os.environ,
+        extra_block=[spec[1] for spec in EXECUTABLE_PROVIDERS.values()],
+    )
+    deploy_env[token_env] = token
+    deploy_env["CI"] = "true"
+    deploy_env["NO_COLOR"] = "1"
+
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=deploy_env,
+        )
+    except Exception as exc:  # noqa: BLE001 - an exec failure is a failed deploy
+        result["status"] = "execution_error"
+        result["error"] = _mask_deploy_text(str(exc)[:500], token)
+        return result
+    result["returncode"] = proc.returncode
+    combined = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+    masked = _mask_deploy_text(combined, token)
+    result["output_tail"] = masked.strip()[-500:]
+    if proc.returncode != 0:
+        result["status"] = "deploy_failed"
+        result["error"] = (
+            f"{cli} exited {proc.returncode}: {masked.strip()[-300:] or 'no output'}"
+        )
+        return result
+    url = extract_live_url(combined, target)
+    if url and len(token) >= 6 and token in url:
+        url = ""  # a URL echoing the credential is not a deploy URL
+    if not url:
+        result["status"] = "succeeded_url_unresolved"
+        result["error"] = f"{cli} succeeded but printed no {target} URL"
+        return result
+    result.update({"ok": True, "url": url, "status": "succeeded"})
+    return result
+
+
+def record_deploy_outcome(
+    project_dir: str | Path,
+    *,
+    kind: str,
+    url: str,
+    verified: bool,
+) -> dict[str, Any]:
+    """Record the latest REAL deploy execution in ``manifest.extra["deploy"]``.
+
+    Single-slot "current live deploy" summary — ``{kind, url, verified, at}``
+    with bounded, masked strings (the append-only evidence trail stays in
+    ``extra["deployments"]`` via :func:`record_deployment`). Never raises.
+    """
+    from skyn3t.security.secrets import mask_secrets
+
+    entry = {
+        "kind": str(kind or "")[:40],
+        "url": mask_secrets(str(url or ""))[:200],
+        "verified": bool(verified),
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    try:
+        from skyn3t.studio.manifest import BuildManifest
+
+        pdir = Path(project_dir)
+        manifest = BuildManifest.load(pdir)
+        if manifest is None:
+            return {**entry, "persisted": False, "persistence_error": "manifest not found"}
+        manifest.extra["deploy"] = dict(entry)
+        manifest.save(pdir)
+        return {**entry, "persisted": True}
+    except Exception as exc:  # noqa: BLE001 - recording must not fail a deploy
+        return {**entry, "persisted": False, "persistence_error": str(exc)[:160]}

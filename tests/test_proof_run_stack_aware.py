@@ -12,6 +12,7 @@ execution_backend="inline" flag so no daemon probe occurs.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -324,11 +325,41 @@ def test_proof_run_routes_boot_command_through_sandbox(tmp_path, monkeypatch):
     assert calls[0]["stack"] == "python"
 
 
-def test_proof_run_records_degraded_environment_when_build_skips(tmp_path):
+def test_having_no_build_script_is_not_a_degraded_environment(tmp_path):
+    """"There is no build step" is a complete answer, not missing evidence.
+
+    proof_environment describes whether the ENVIRONMENT could produce evidence.
+    A static site legitimately has no build/typecheck script, so counting that
+    as degradation capped the score of every such delivery for producing
+    exactly the artifact it was asked for.
+    """
     import skyn3t.studio.proof_run as proof_mod
 
     (tmp_path / "index.html").write_text("<!doctype html><h1>Hi</h1>")
     (tmp_path / "package.json").write_text('{"scripts":{}}')
+
+    res = proof_mod.proof_run(
+        tmp_path,
+        stack="static",
+        run_build=True,
+        execution_backend="inline",
+    )
+
+    env = res.detail["proof_environment"]
+    assert res.detail["build"] == "skipped"
+    assert not any("build skipped" in reason for reason in env["degraded_reasons"])
+
+
+def test_a_build_that_could_not_run_is_still_degraded(tmp_path, monkeypatch):
+    """The other half: a build blocked by the toolchain IS missing evidence."""
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "index.html").write_text("<!doctype html><h1>Hi</h1>")
+    (tmp_path / "package.json").write_text('{"scripts":{"build":"vite build"}}')
+    monkeypatch.setattr(
+        proof_mod, "_run_node_build",
+        lambda *_a, **_k: (False, False, "npm is not installed — skipped"),
+    )
 
     res = proof_mod.proof_run(
         tmp_path,
@@ -652,3 +683,32 @@ def test_local_proof_command_replaces_invalid_utf8_output(tmp_path):
 
     assert result.returncode == 0
     assert "\ufffd" in result.stdout
+
+
+def test_local_proof_command_timeout_kills_grandchildren(tmp_path):
+    """A timed-out command must return promptly even when grandchildren survive.
+
+    Killing only the direct child leaves grandchildren (npm -> node) holding the
+    inherited stdout/stderr pipes, so the pipe readers block until the orphan
+    exits and the timeout guarantee is voided.
+    """
+    import skyn3t.studio.proof_run as proof_mod
+
+    script = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        "                 stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr)\n"
+        "time.sleep(60)\n"
+    )
+    started = time.monotonic()
+    result = proof_mod._run_proof_command(
+        None,
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        timeout=3,
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 124
+    assert result.timed_out is True
+    assert elapsed < 30

@@ -152,9 +152,21 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         ):
             lessons.append(f"{stack}: build failed verification — re-check the plan.")
     elif "go" in verdict or "complete" in verdict or "success" in str(verdict):
-        notes = build.get("notes") or build.get("brief")
+        # Never echo the brief into a lesson: a row whose text literally IS an
+        # old brief maximally matches any similar future brief in the
+        # injection re-rank (BM25 + cosine against the CURRENT brief), gets
+        # graded helpful on every go, and permanently crowds actionable
+        # avoid/gap rules out of the score-ranked top fetch — one content-free
+        # row per distinct brief. Real notes are fine; without them mint one
+        # constant, brief-free success note that dedupes to a single row per
+        # stack.
+        notes = build.get("notes")
         if notes:
             lessons.append(f"{stack}: successful build — {str(notes)[:120]}")
+        else:
+            lessons.append(
+                f"{stack}: build succeeded with this pipeline shape; keep its approach."
+            )
 
     # Advisory-gate findings become lessons REGARDLESS of verdict: the
     # end-of-build gates (seo/mcp_check/rag_check/liveness) record findings and
@@ -204,6 +216,30 @@ _DETAIL_GATE_KEYS = ("headless_gate", "game_visual", "qa_playtest")
 
 def _flat_finding(text: Any, limit: int = 160) -> str:
     return " ".join(str(text).split())[:limit]
+
+
+def vent_lesson_texts(stack: str, vents: Any, *, max_vents: int = 3,
+                      max_chars: int = 300) -> list[str]:
+    """Turn codegen friction vents into low-severity, vent-tagged lesson texts.
+
+    The vent channel (code_agent's ``VENT:`` convention) reports PIPELINE
+    friction — a missing tool, a contradictory directive, an undiagnosable
+    error, an unsatisfiable gate. Texts are stored through the normal
+    ``add_lesson`` path (capture-side dedupe applies, so a recurring vent
+    reinforces one row instead of minting duplicates), tagged by the
+    ``vent —`` prefix so the class is greppable in the lesson store."""
+    out: list[str] = []
+    if not isinstance(vents, (list, tuple)):
+        return out
+    for vent in vents:
+        flat = " ".join(str(vent).split())[:max_chars].strip()
+        if flat:
+            text = f"{stack}: vent — {flat}"
+            if text not in out:
+                out.append(text)
+        if len(out) >= max_vents:
+            break
+    return out
 
 
 def extract_gate_findings(extra: dict[str, Any] | None) -> list[str]:
@@ -350,13 +386,22 @@ class LearningLoop:
         stack = str(build.get("stack") or "generic")
         stage = str(build.get("stage") or "")
         source_build = build.get("build_id") or build.get("slug")
-        texts = await self._drop_known(stack, _summarize_outcome(build))
+        texts = _summarize_outcome(build)
+        # Codegen friction vents become low-severity "vent" lessons through the
+        # same deduped add_lesson path — a vent that keeps recurring surfaces
+        # exactly like any recurring finding. No parallel store.
+        texts.extend(vent_lesson_texts(stack, build.get("vents")))
+        texts = await self._drop_known(stack, texts)
         ids: list[int] = []
+        stored: list[str] = []
         for text in texts:
             lid = await self._add_lesson(stack, stage, text, source_build)
+            if lid is None:
+                continue  # a concurrent capture stored it first — not a new lesson
             ids.append(lid)
+            stored.append(text)
         if ids and self.event_bus is not None:
-            await self._emit_captured(stack, stage, texts, ids, source_build)
+            await self._emit_captured(stack, stage, stored, ids, source_build)
         _info("learning.captured", stack=stack, stage=stage, count=len(ids))
         return ids
 
@@ -389,7 +434,7 @@ class LearningLoop:
 
     async def _add_lesson(
         self, stack: str, stage: str, text: str, source_build: Any
-    ) -> int:
+    ) -> int | None:
         if self.store is not None:
             try:
                 return int(
@@ -399,6 +444,8 @@ class LearningLoop:
                 )
             except Exception as exc:  # noqa: BLE001
                 _info("learning.store_add_failed", error=str(exc))
+                if await self._known_after_failed_add(stack, text):
+                    return None
         lid = self._next_id
         self._next_id += 1
         self._mem.append(
@@ -413,6 +460,25 @@ class LearningLoop:
             }
         )
         return lid
+
+    async def _known_after_failed_add(self, stack: str, text: str) -> bool:
+        """Whether a failed ``add_lesson`` lost the capture race.
+
+        ``_drop_known`` -> ``add_lesson`` spans two store sessions, so a
+        concurrent build can insert the identical (stack, text) between the
+        check and the insert; the store's unique index then rejects ours. Such
+        a text is already stored — buffering it in the in-memory fallback would
+        mint the very duplicate the dedupe exists to prevent. Degrades to
+        ``False`` (keep the fallback buffer) for duck-typed stores without
+        ``lesson_exists`` and for genuine store outages.
+        """
+        exists = getattr(self.store, "lesson_exists", None)
+        if exists is None:
+            return False
+        try:
+            return bool(await exists(stack, text))
+        except Exception:  # noqa: BLE001 - degrade to the fallback buffer
+            return False
 
     async def _emit_captured(
         self,

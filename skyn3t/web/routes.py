@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -36,6 +37,7 @@ from skyn3t.core.events import EventType
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
 from skyn3t.core.model_router import prime_live_catalog
 from skyn3t.process_utils import is_process_alive
+from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME, BuildManifest
 from skyn3t.web.deps import (
@@ -909,9 +911,11 @@ def _orchestration_extra(
 def _enforce_build_routing(state: AppState) -> None:
     """Reject unusable routes before an API request creates build state.
 
-    Dashboard ``auto`` builds are local Codex-only. A configured OpenRouter key
-    is never implicit consent to use it, so surface a missing Codex CLI before
-    queueing a build or allocating its ledger.
+    Dashboard ``auto`` builds run on a local CLI from the operator's
+    ``auto_cli_priority`` chain; hosted fallback needs the explicit
+    ``auto_allow_openrouter`` opt-in. A configured OpenRouter key is never
+    implicit consent to use it, so surface a missing executor before queueing
+    a build or allocating its ledger.
     """
     from skyn3t.adapters.llm import enforce_explicit_routing_lock
 
@@ -982,7 +986,7 @@ def _restore_submission_routing_trace(
     rec = state.builds.get(build_id)
     if rec is None:
         return
-    trace = dict(rec.model_trace or {})
+    trace = dict(rec.model_trace) if isinstance(rec.model_trace, dict) else {}
     existing_codegen = (
         dict(trace["codegen"]) if isinstance(trace.get("codegen"), dict) else {}
     )
@@ -1003,9 +1007,10 @@ def _restore_submission_routing_trace(
     submission.setdefault("requested_backend", routing.get("requested_backend", ""))
     submission.setdefault("effective_backend", routing.get("effective_backend", ""))
     submission.setdefault("requested_model", routing.get("requested_model", ""))
-    submission["codegen"] = dict(
-        submission.get("codegen")
-        if isinstance(submission.get("codegen"), dict)
+    submission_codegen = submission.get("codegen")
+    submission["codegen"] = (
+        dict(submission_codegen)
+        if isinstance(submission_codegen, dict)
         else routing_codegen
     )
     trace["submission"] = submission
@@ -1047,11 +1052,95 @@ def _restore_submission_routing_trace(
     rec.model_trace = trace
 
 
+def _normalize_moa_advisors(value: Any, *, no_claude: bool = False) -> str | None:
+    """Coerce a dashboard advisor selection into a slot string.
+
+    Accepts a list (checkbox selection) or a comma string. ``None``/absent means
+    "use the configured default"; an explicit empty list or string means "no
+    advisors for THIS build" — the two are deliberately different, so unchecking
+    every box is honoured rather than silently falling back to the default.
+    Unknown providers are dropped here so a hand-crafted request cannot smuggle
+    an arbitrary token into an advisor slot.
+    """
+    if value is None:
+        return None
+    from skyn3t.adapters.model_slot import parse_slots
+
+    if isinstance(value, (list, tuple, set)):
+        raw = ",".join(str(v) for v in value)
+    else:
+        raw = str(value)
+    # Require a RECOGNISED provider. parse_slots treats an unknown token as a
+    # bare model id on the active backend, which is right for an operator's
+    # settings string but wrong for request input: it would let a caller aim an
+    # advisor at an arbitrary model instead of picking from the offered list.
+    return ",".join(
+        slot.address
+        for slot in parse_slots(raw)
+        if slot.provider
+        and not (
+            no_claude
+            and (slot.provider == "claude" or "claude" in slot.address.lower())
+        )
+    )
+
+
+async def cli_providers_payload(state: AppState) -> dict[str, Any]:
+    """Selectable advisor providers with live availability, for the build form.
+
+    Registry-driven so a newly supported backend appears in the GUI with no
+    route change (the same rule ``gates_payload`` follows). ``available``
+    reflects PATH detection only — it cannot prove a CLI is signed in, so a
+    listed provider may still fail at call time and be recorded as a failed
+    advisor rather than breaking the build.
+    """
+    from skyn3t.adapters.llm import KNOWN_CLI_PROVIDERS, LLMClient, openrouter_key
+    from skyn3t.adapters.model_slot import parse_slots
+
+    settings = state.settings
+    labels = {
+        "codex": "Codex CLI",
+        "claude": "Claude Code CLI",
+        "kimi": "Kimi Code CLI",
+        "copilot": "GitHub Copilot CLI",
+    }
+    selected = {s.address for s in parse_slots(getattr(settings, "moa_advisors", "") or "")}
+    providers: list[dict[str, Any]] = []
+    for name in KNOWN_CLI_PROVIDERS:
+        if bool(getattr(settings, "no_claude", False)) and name == "claude":
+            continue
+        slot = f"{name}_cli"
+        try:
+            available = bool(LLMClient._cli_available(name))
+        except Exception:  # noqa: BLE001 - a probe failure must not 500 the route
+            available = False
+        providers.append({
+            "slot": slot,
+            "provider": name,
+            "label": labels.get(name, name),
+            "available": available,
+            "selected": slot in selected,
+        })
+    providers.append({
+        "slot": "openrouter",
+        "provider": "openrouter",
+        "label": "OpenRouter (hosted)",
+        "available": bool(openrouter_key(settings)),
+        "selected": any(s.startswith("openrouter") for s in selected),
+    })
+    return {
+        "providers": providers,
+        "moa_enabled": bool(getattr(settings, "moa_enabled", False)),
+        "default_advisors": getattr(settings, "moa_advisors", "") or "",
+    }
+
+
 async def submit_build(state: AppState, brief: str, stack: str = "", slug: str = "",
                        reference_image: str = "", reference_images: list[str] | None = None,
                        build_profile: str = "cheap_learned",
                        model_override: str = "", full_app: bool = False,
-                       source_product_spec: dict[str, Any] | None = None) -> dict[str, Any]:
+                       source_product_spec: dict[str, Any] | None = None,
+                       moa_advisors: str | None = None) -> dict[str, Any]:
     """Queue a build. Uses the studio if wired, else records + emits an event.
 
     ``reference_image`` is an optional base64 ``data:`` URL; ``reference_images``
@@ -1081,7 +1170,7 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     )
     model = requested_model
     full_app_requested = bool(full_app) or profile == "full_app"
-    routing_trace = {
+    routing_trace: dict[str, Any] = {
         key: deepcopy(routing[key])
         for key in (
             "requested_backend",
@@ -1135,6 +1224,11 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
     }
     if source_product_spec is not None:
         build_extra["source_product_spec"] = deepcopy(source_product_spec)
+    if moa_advisors is not None:
+        # Per-build advisory-council selection from the dashboard picker. An
+        # explicit empty string means "no advisors for this build", which is
+        # distinct from the key being absent (use the configured default).
+        build_extra["moa_advisors"] = str(moa_advisors)
     build_extra.update(
         _orchestration_extra(
             profile,
@@ -2364,7 +2458,7 @@ async def _fresh_reverify_review(
         verdict = "no_go"
         gaps.append("source tree snapshot was invalid")
     try:
-        score = float(output.get("score"))
+        score = float(output.get("score") or 0.0)
     except (TypeError, ValueError):
         score = 0.0
     return {
@@ -3437,6 +3531,56 @@ async def get_project_product(state: AppState, slug: str) -> dict[str, Any]:
     }
 
 
+async def capture_project_human_feedback(
+    state: AppState,
+    slug: str,
+    *,
+    feedback: Any,
+    category: Any = None,
+    context: Any = None,
+    rating: Any = None,
+) -> dict[str, Any]:
+    """Distil a delivered project's human design feedback into shared lessons.
+
+    The raw reviewer text is validated by ``human_feedback`` but intentionally
+    is not echoed back or stored as a prompt. Only fixed, durable design rules
+    are persisted to MemoryStore for future web-design builds to retrieve.
+    """
+    from skyn3t.intelligence.human_feedback import (
+        HUMAN_DESIGN_LESSON_STACK,
+        HUMAN_DESIGN_LESSON_STAGE,
+        capture_human_design_feedback,
+    )
+
+    _project, manifest = _require_delivered_project(state, slug)
+    stack = str(manifest.stack or "").strip()
+    if not stack:
+        raise ValueError("project has no detected build stack")
+    result = await capture_human_design_feedback(
+        getattr(state, "memory", None),
+        feedback=feedback,
+        category=category,
+        context=context,
+        rating=rating,
+        source_build=manifest.build_id,
+        event_bus=getattr(state, "event_bus", None),
+    )
+    return {
+        "slug": slug,
+        "stack": stack,
+        "lesson_stack": HUMAN_DESIGN_LESSON_STACK,
+        "stage": HUMAN_DESIGN_LESSON_STAGE,
+        "feedback": {
+            "category": result.feedback.category,
+            "context": result.feedback.context,
+            "rating": result.feedback.rating,
+        },
+        "captured": result.captured,
+        "deduped": result.deduped,
+        "lessons": [lesson.to_dict() for lesson in result.lessons],
+    }
+
+
 async def patch_project_product(
     state: AppState,
     slug: str,
@@ -3625,6 +3769,372 @@ def _serve_registry(state: AppState) -> dict[str, Any]:
     return reg
 
 
+def _serve_start_tasks(state: AppState) -> dict[str, asyncio.Task[Any]]:
+    """Background Docker-preview launches, keyed by project slug."""
+    tasks = getattr(state, "serve_start_tasks", None)
+    if tasks is None:
+        tasks = {}
+        try:
+            state.serve_start_tasks = tasks
+        except Exception:  # noqa: BLE001 - test doubles may be read-only
+            pass
+    return tasks
+
+
+_SERVE_HISTORY_SCHEMA_VERSION = 1
+_SERVE_HISTORY_LIMIT = 40
+
+
+def _serve_history_path(state: AppState) -> Path | None:
+    """Return the restart-safe preview-launch history file, when configured."""
+    data_dir = getattr(getattr(state, "settings", None), "data_dir", None)
+    if not data_dir:
+        return None
+    try:
+        return Path(data_dir).expanduser().resolve() / "serve_launch_history.json"
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _serve_history_cache(state: AppState) -> dict[str, list[dict[str, Any]]]:
+    """Load a bounded, defensive history cache once per dashboard process."""
+    cached = getattr(state, "serve_launch_history", None)
+    if isinstance(cached, dict):
+        return cached
+    cache: dict[str, list[dict[str, Any]]] = {}
+    path = _serve_history_path(state)
+    if path is not None:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            launches = raw.get("launches", {}) if isinstance(raw, dict) else {}
+            if isinstance(launches, dict):
+                for key, entries in launches.items():
+                    if isinstance(key, str) and isinstance(entries, list):
+                        cache[key] = [
+                            dict(entry) for entry in entries[:_SERVE_HISTORY_LIMIT]
+                            if isinstance(entry, dict)
+                        ]
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    reconciled = _reconcile_unfinished_serve_launches(cache)
+    attached_to_state = False
+    try:
+        state.serve_launch_history = cache
+        attached_to_state = True
+    except Exception:  # noqa: BLE001 - read-only test state still serves
+        pass
+    if reconciled and attached_to_state:
+        _persist_serve_history(state)
+    return cache
+
+def _persist_serve_history(state: AppState) -> None:
+    path = _serve_history_path(state)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            path,
+            json.dumps(
+                {
+                    "schema_version": _SERVE_HISTORY_SCHEMA_VERSION,
+                    "launches": _serve_history_cache(state),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+    except OSError as exc:
+        log.warning("web.serve_history_persist_failed", error=str(exc))
+
+
+def _serve_elapsed_ms(entry: dict[str, Any]) -> int:
+    try:
+        started_at_ms = int(entry.get("started_at_ms") or 0)
+    except (TypeError, ValueError):
+        started_at_ms = 0
+    return max(0, int(time.time() * 1000) - started_at_ms) if started_at_ms else 0
+
+
+def _reconcile_unfinished_serve_launches(
+    cache: dict[str, list[dict[str, Any]]],
+) -> bool:
+    """Close persisted launches whose live process cannot survive a restart."""
+    now = datetime.now(UTC).isoformat()
+    message = "Dashboard restarted before preview state could be restored"
+    changed = False
+    for entries in cache.values():
+        for entry in entries:
+            if entry.get("status") not in {"starting", "running"}:
+                continue
+            elapsed_ms = _serve_elapsed_ms(entry)
+            timeline = entry.setdefault("timeline", [])
+            if not isinstance(timeline, list):
+                timeline = []
+                entry["timeline"] = timeline
+            if not timeline or (
+                timeline[-1].get("phase") != "interrupted"
+                or timeline[-1].get("message") != message
+            ):
+                timeline.append(
+                    {
+                        "phase": "interrupted",
+                        "message": message,
+                        "at": now,
+                        "elapsed_ms": elapsed_ms,
+                    }
+                )
+            entry.update(
+                {
+                    "status": "interrupted",
+                    "phase": "interrupted",
+                    "message": message,
+                    "updated_at": now,
+                    "elapsed_ms": elapsed_ms,
+                }
+            )
+            changed = True
+    return changed
+
+def _current_serve_launch(state: AppState, slug: str) -> dict[str, Any] | None:
+    entries = _serve_history_cache(state).get(slug, [])
+    return dict(entries[0]) if entries else None
+
+
+def _record_serve_launch(
+    state: AppState,
+    slug: str,
+    *,
+    phase: str,
+    message: str,
+    status: str = "starting",
+) -> dict[str, Any]:
+    now = datetime.now(UTC).isoformat()
+    entry: dict[str, Any] = {
+        "id": uuid.uuid4().hex,
+        "status": status,
+        "phase": phase,
+        "message": message,
+        "started_at": now,
+        "started_at_ms": int(time.time() * 1000),
+        "updated_at": now,
+        "elapsed_ms": 0,
+        "timeline": [
+            {"phase": phase, "message": message, "at": now, "elapsed_ms": 0}
+        ],
+    }
+    cache = _serve_history_cache(state)
+    cache[slug] = [entry, *cache.get(slug, [])][:_SERVE_HISTORY_LIMIT]
+    _persist_serve_history(state)
+    return dict(entry)
+
+
+def _update_serve_launch(
+    state: AppState,
+    slug: str,
+    launch_id: str,
+    *,
+    phase: str,
+    message: str,
+    status: str = "starting",
+    **extra: Any,
+) -> dict[str, Any] | None:
+    entries = _serve_history_cache(state).get(slug, [])
+    entry = next((item for item in entries if item.get("id") == launch_id), None)
+    if entry is None:
+        return None
+    now = datetime.now(UTC).isoformat()
+    elapsed_ms = _serve_elapsed_ms(entry)
+    timeline = entry.setdefault("timeline", [])
+    if not isinstance(timeline, list):
+        timeline = []
+        entry["timeline"] = timeline
+    if not timeline or (
+        timeline[-1].get("phase") != phase
+        or timeline[-1].get("message") != message
+    ):
+        timeline.append(
+            {"phase": phase, "message": message, "at": now, "elapsed_ms": elapsed_ms}
+        )
+    entry.update(
+        {
+            "status": status,
+            "phase": phase,
+            "message": message,
+            "updated_at": now,
+            "elapsed_ms": elapsed_ms,
+            **extra,
+        }
+    )
+    _persist_serve_history(state)
+    return dict(entry)
+
+
+async def serve_history(state: AppState, slug: str) -> dict[str, Any]:
+    _require_delivered_project(state, slug)
+    return {"slug": slug, "launches": _serve_history_cache(state).get(slug, [])}
+
+def _serve_starting_payload(
+    slug: str,
+    stack: str,
+    launch: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    launch = launch or {}
+    return {
+        "slug": slug,
+        "url": "",
+        "port": 0,
+        "pid": None,
+        "kind": stack or "web",
+        "status": "starting",
+        "detail": {
+            "engine": "docker",
+            "phase": str(launch.get("phase") or "queued"),
+            "message": str(launch.get("message") or "Queued isolated preview"),
+            "elapsed_ms": int(launch.get("elapsed_ms") or 0),
+            "launch_id": str(launch.get("id") or ""),
+            "fallback_used": False,
+        },
+    }
+
+async def start_serve_project(state: AppState, slug: str) -> dict[str, Any]:
+    """Queue a Docker-only preview and return immediately for UI polling.
+
+    First-time dependency preparation can take several minutes. The launch
+    record is updated phase-by-phase and persisted under ``data_dir`` so a
+    restart does not erase the useful explanation of what Docker was doing.
+    """
+    _pdir, manifest = _require_delivered_project(state, slug)
+    registry = _serve_registry(state)
+    existing = registry.get(slug)
+    if existing is not None and getattr(existing, "status", "") == "running":
+        return {**existing.to_dict(), "slug": slug}
+    tasks = _serve_start_tasks(state)
+    existing_task = tasks.get(slug)
+    if existing_task is not None and not existing_task.done():
+        return _serve_starting_payload(
+            slug, manifest.stack, _current_serve_launch(state, slug)
+        )
+
+    launch = _record_serve_launch(
+        state,
+        slug,
+        phase="queued",
+        message="Queued isolated Docker preview",
+    )
+    launch_id = str(launch["id"])
+
+    async def _progress(phase: str, message: str) -> None:
+        snapshot = _update_serve_launch(
+            state,
+            slug,
+            launch_id,
+            phase=phase,
+            message=message,
+        )
+        await state.event_bus.emit(
+            EventType.SERVE_STARTING,
+            source="web.api",
+            payload={
+                "slug": slug,
+                "phase": phase,
+                "message": message,
+                "elapsed_ms": int((snapshot or {}).get("elapsed_ms") or 0),
+                "launch_id": launch_id,
+            },
+        )
+
+    async def _launch() -> None:
+        try:
+            result = await serve_project(
+                state, slug, progress_callback=_progress
+            )
+            if result.get("status") == "running":
+                _update_serve_launch(
+                    state,
+                    slug,
+                    launch_id,
+                    phase="ready",
+                    message="Preview is live",
+                    status="running",
+                    url=str(result.get("url") or ""),
+                    port=int(result.get("port") or 0),
+                )
+                return
+            reason = scrub_text(
+                str((result.get("detail") or {}).get("reason") or result.get("status") or "preview failed")
+            )[:1000]
+            _update_serve_launch(
+                state,
+                slug,
+                launch_id,
+                phase="failed",
+                message="Preview launch failed",
+                status="failed",
+                error=reason,
+            )
+            await state.event_bus.emit(
+                EventType.SERVE_FAILED,
+                source="web.api",
+                payload={"slug": slug, "reason": reason, "launch_id": launch_id},
+            )
+        except asyncio.CancelledError:
+            _update_serve_launch(
+                state,
+                slug,
+                launch_id,
+                phase="cancelled",
+                message="Preview launch cancelled",
+                status="cancelled",
+            )
+            await state.event_bus.emit(
+                EventType.SERVE_STOPPED,
+                source="web.api",
+                payload={"slug": slug, "cancelled": True, "launch_id": launch_id},
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - background errors become UI evidence
+            reason = scrub_text(f"preview launch error: {exc}")[:1000]
+            _update_serve_launch(
+                state,
+                slug,
+                launch_id,
+                phase="failed",
+                message="Preview launch failed",
+                status="failed",
+                error=reason,
+            )
+            await state.event_bus.emit(
+                EventType.SERVE_FAILED,
+                source="web.api",
+                payload={"slug": slug, "reason": reason, "launch_id": launch_id},
+            )
+        finally:
+            task = asyncio.current_task()
+            if tasks.get(slug) is task:
+                tasks.pop(slug, None)
+            # A cancellation can leave the synchronous serve claim in place;
+            # never let that placeholder make a later Serve look permanently busy.
+            current = registry.get(slug)
+            if current is not None and not hasattr(current, "status"):
+                registry.pop(slug, None)
+
+    task = asyncio.create_task(_launch(), name=f"skyn3t-serve-{slug}")
+    tasks[slug] = task
+    payload = _serve_starting_payload(slug, manifest.stack, launch)
+    await state.event_bus.emit(
+        EventType.SERVE_STARTING,
+        source="web.api",
+        payload={
+            "slug": slug,
+            "phase": payload["detail"]["phase"],
+            "message": payload["detail"]["message"],
+            "elapsed_ms": payload["detail"]["elapsed_ms"],
+            "launch_id": launch_id,
+        },
+    )
+    return payload
+
 def _app_runner(state: AppState) -> Any:
     runner = getattr(state, "app_runner", None)
     if runner is None:
@@ -3648,7 +4158,12 @@ def _pid_alive(pid: int) -> bool:
     return is_process_alive(pid)
 
 
-async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
+async def serve_project(
+    state: AppState,
+    slug: str,
+    *,
+    progress_callback: Any | None = None,
+) -> dict[str, Any]:
     """Start a delivered project as a live localhost server, registering the
     handle so a later stop can find it. Restarting a slug supersedes the prior
     run.
@@ -3672,7 +4187,9 @@ async def serve_project(state: AppState, slug: str) -> dict[str, Any]:
     registry[slug] = claim
 
     stack = man.stack
-    app = await runner.start(pdir, stack)
+    app = await runner.start(
+        pdir, stack, progress_callback=progress_callback
+    )
 
     if registry.get(slug) is not claim:
         # A concurrent serve superseded us, or a stop cancelled us, mid-start:
@@ -3699,16 +4216,35 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
     an in-flight start *claim* cancels that start — serve_project tears itself
     down when it finds the slot gone (review finding #2)."""
     from skyn3t.studio.app_runner import RunningApp, cleanup_serve
+    tasks = _serve_start_tasks(state)
+    task = tasks.pop(slug, None)
+    cancelled_start = task is not None and not task.done()
+    if cancelled_start:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
     registry = _serve_registry(state)
     app = registry.pop(slug, None)
     if app is None:
-        return {"slug": slug, "stopped": False}
+        return {"slug": slug, "stopped": cancelled_start}
     if not isinstance(app, RunningApp):
         # Popped an in-flight claim: the in-progress serve will self-cancel.
         return {"slug": slug, "stopped": True}
     runner = _app_runner(state)
     await _stop_running_app(runner, app)
     cleanup_serve(app)
+    latest = _current_serve_launch(state, slug)
+    if latest is not None and latest.get("status") == "running":
+        _update_serve_launch(
+            state,
+            slug,
+            str(latest.get("id") or ""),
+            phase="stopped",
+            message="Preview stopped",
+            status="stopped",
+        )
     await state.event_bus.emit(
         EventType.SERVE_STOPPED, source="web.api",
         payload={"slug": slug, "port": app.port},
@@ -3730,6 +4266,19 @@ async def serve_status(state: AppState) -> dict[str, Any]:
             registry.pop(slug, None)
             continue
         running.append({**app.to_dict(), "slug": slug})
+    for slug, task in list(_serve_start_tasks(state).items()):
+        if task.done():
+            continue
+        if not isinstance(registry.get(slug), RunningApp):
+            try:
+                _pdir, manifest = _require_delivered_project(state, slug)
+            except (FileNotFoundError, ProjectNotDeliveredError, ValueError):
+                continue
+            running.append(
+                _serve_starting_payload(
+                    slug, manifest.stack, _current_serve_launch(state, slug)
+                )
+            )
     return {"running": running}
 
 
@@ -3762,6 +4311,274 @@ async def visual_editor_style(state: AppState, slug: str) -> dict[str, Any]:
     return {"slug": slug, "style": style.to_dict()}
 
 
+# ---- batched visual annotations (v0 Design Mode port) ----------------------
+# Click-to-comment pins collected in the preview arrive as ONE improve goal.
+# Resolution borrows the visual editor's click-to-source inspection, but
+# annotations never edit files: they only shape a goal for ImproveEngine.
+_ANNOTATION_MAX_COUNT = 20
+_ANNOTATION_COMMENT_MAX_CHARS = 2_000
+_ANNOTATION_SELECTOR_MAX_CHARS = 200
+_ANNOTATION_SOURCE_FILE_MAX_CHARS = 500
+_ANNOTATION_SOURCE_LINE_MAX = 10_000_000
+_ANNOTATION_SCREENSHOT_MAX_BYTES = 512 * 1024
+_ANNOTATION_SELECTOR_RE = re.compile(r"^[A-Za-z0-9#._:\-\[\]()=\"' >+~,]+$")
+_ANNOTATION_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_ANNOTATION_DATA_ID_RE = re.compile(r'^\[data-skyn3t-id="([A-Za-z0-9_.:-]{1,128})"\]$')
+
+
+def _validate_annotation(item: Any, index: int) -> dict[str, Any]:
+    """Normalize one raw annotation into a bounded internal shape (422 input)."""
+    label = f"annotation #{index + 1}"
+    if not isinstance(item, dict):
+        raise ValueError(f"{label} must be an object")
+    comment = " ".join(str(item.get("comment", "") or "").split())
+    if not 1 <= len(comment) <= _ANNOTATION_COMMENT_MAX_CHARS:
+        raise ValueError(
+            f"{label} comment must contain 1 to "
+            f"{_ANNOTATION_COMMENT_MAX_CHARS} characters"
+        )
+    selector = str(item.get("selector", "") or "").strip()
+    if len(selector) > _ANNOTATION_SELECTOR_MAX_CHARS or (
+        selector and not _ANNOTATION_SELECTOR_RE.fullmatch(selector)
+    ):
+        raise ValueError(f"{label} selector contains unsupported characters")
+    signature = item.get("signature")
+    if signature is not None and not isinstance(signature, dict):
+        raise ValueError(f"{label} signature must be an object")
+    if not selector and not signature:
+        raise ValueError(f"{label} requires a selector or element signature")
+    source_file = str(item.get("source_file", "") or "").strip().replace("\\", "/")
+    if source_file:
+        parts = source_file.split("/")
+        if (
+            len(source_file) > _ANNOTATION_SOURCE_FILE_MAX_CHARS
+            or source_file.startswith("/")
+            or _ANNOTATION_DRIVE_RE.match(source_file)
+            or "\x00" in source_file
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise ValueError(f"{label} source_file must be a safe relative path")
+    raw_line = item.get("source_line")
+    source_line: int | None = None
+    if raw_line is not None and raw_line != "":
+        if isinstance(raw_line, bool) or not isinstance(raw_line, int):
+            raise ValueError(f"{label} source_line must be an integer")
+        if not 1 <= raw_line <= _ANNOTATION_SOURCE_LINE_MAX:
+            raise ValueError(f"{label} source_line is out of range")
+        source_line = raw_line
+    screenshot = item.get("screenshot_b64")
+    has_screenshot = False
+    if screenshot is not None and screenshot != "":
+        if not isinstance(screenshot, str) or len(screenshot) > 4 * (
+            _ANNOTATION_SCREENSHOT_MAX_BYTES // 3 + 2
+        ):
+            raise ValueError(f"{label} screenshot exceeds the size cap")
+        try:
+            decoded = base64.b64decode(screenshot, validate=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} screenshot must be base64") from exc
+        if len(decoded) > _ANNOTATION_SCREENSHOT_MAX_BYTES:
+            raise ValueError(f"{label} screenshot exceeds the size cap")
+        has_screenshot = True
+    return {
+        "index": index + 1,
+        "selector": selector,
+        "comment": comment,
+        "signature": signature,
+        "source_file": source_file,
+        "source_line": source_line,
+        "screenshot": has_screenshot,
+    }
+
+
+def _annotation_selector_signature(selector: str) -> dict[str, Any] | None:
+    """Derive an inspect signature from a simple id/class/data selector."""
+    if not selector:
+        return None
+    data_match = _ANNOTATION_DATA_ID_RE.fullmatch(selector)
+    if data_match:
+        return {"element_id": data_match.group(1)}
+    if selector.startswith("#"):
+        return {"element_id": selector[1:]}
+    if selector.startswith("."):
+        classes = [part for part in selector.split(".") if part]
+        return {"classes": classes} if classes else None
+    return None
+
+
+def _annotation_element_label(item: dict[str, Any]) -> str:
+    """Human-readable element description for the shaped goal, e.g. h1.hero."""
+    signature = item.get("signature") or {}
+    tag = str(signature.get("tag", "") or "").strip()
+    element_id = str(
+        signature.get("element_id", signature.get("id", "")) or ""
+    ).strip()
+    raw_classes = signature.get("classes", ())
+    if isinstance(raw_classes, str):
+        raw_classes = raw_classes.split()
+    classes = [str(name).strip() for name in raw_classes if str(name).strip()][:3]
+    label = tag or "element"
+    if element_id:
+        label += f"#{element_id}"
+    label += "".join(f".{name}" for name in classes)
+    if label == "element" and item.get("selector"):
+        return str(item["selector"])
+    return label
+
+
+def shape_annotations_goal(report: list[dict[str, Any]]) -> str:
+    """Shape the batch into ONE numbered improve goal with per-element evidence."""
+    noun = "annotation" if len(report) == 1 else "annotations"
+    lines = [
+        f"Address these {len(report)} visual {noun} "
+        "(numbered pins dropped on elements in the live preview):"
+    ]
+    for entry in report:
+        source = entry.get("source")
+        hint = entry.get("hint")
+        if source:
+            label = entry.get("element") or entry.get("selector") or "element"
+            location = f"{source['file']}:{source['line']} · {label}"
+        elif hint:
+            hint_line = f":{hint['line']}" if hint.get("line") else ""
+            location = (
+                f"{entry.get('selector') or 'element'} — source unresolved; "
+                f"user-marked hint {hint['file']}{hint_line}"
+            )
+        else:
+            location = f"{entry.get('selector') or 'element'} — source unresolved"
+        lines.append(f"#{entry['index']} [{location}] {entry['comment']}")
+    return "\n".join(lines)
+
+
+async def annotations_improve(
+    state: AppState,
+    slug: str,
+    body: Any,
+) -> dict[str, Any]:
+    """Resolve a batch of preview pins and dispatch ONE improve goal for them.
+
+    Unresolvable pins are still accepted with ``source: null``; submission goes
+    through the exact :func:`improve_project` path the improve UI uses."""
+    raw_items: Any
+    if isinstance(body, list):
+        raw_items = body
+    elif isinstance(body, dict):
+        raw_items = body.get("annotations")
+    else:
+        raw_items = None
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("annotations must be a non-empty array")
+    if len(raw_items) > _ANNOTATION_MAX_COUNT:
+        raise ValueError(f"at most {_ANNOTATION_MAX_COUNT} annotations per batch")
+    items = [
+        _validate_annotation(item, index) for index, item in enumerate(raw_items)
+    ]
+    project, _manifest = _require_delivered_project(state, slug)
+    from skyn3t.studio.visual_editor import ElementSignature, VisualEditor
+
+    editor = VisualEditor(project)
+    report: list[dict[str, Any]] = []
+    for item in items:
+        source: dict[str, Any] | None = None
+        raw_signature = item["signature"] or _annotation_selector_signature(
+            item["selector"]
+        )
+        if raw_signature:
+            signature = ElementSignature.from_mapping(raw_signature)
+            occurrences = await asyncio.to_thread(editor.inspect, signature, limit=1)
+            if occurrences:
+                top = occurrences[0]
+                source = {"file": top.relative_path, "line": top.line}
+        hint = None
+        if item["source_file"]:
+            hint = {"file": item["source_file"], "line": item["source_line"]}
+        report.append(
+            {
+                "index": item["index"],
+                "selector": item["selector"],
+                "element": _annotation_element_label(item),
+                "comment": item["comment"],
+                "resolved": source is not None,
+                "source": source,
+                "hint": hint,
+                "screenshot": item["screenshot"],
+            }
+        )
+    goal = shape_annotations_goal(report)
+    result = await improve_project(state, slug, goal)
+    return {**result, "annotation_count": len(report), "annotations": report}
+
+
+def _visual_quality_tasks(state: AppState) -> dict[str, Any]:
+    tasks = getattr(state, "_visual_quality_tasks", None)
+    if not isinstance(tasks, dict):
+        tasks = {}
+        state._visual_quality_tasks = tasks  # type: ignore[attr-defined]
+    return tasks
+
+
+async def get_visual_quality(state: AppState, slug: str) -> dict[str, Any]:
+    """Return persisted Visual Quality Lab receipts for one delivered project."""
+    from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+    project, _manifest = _require_delivered_project(state, slug)
+    tasks = _visual_quality_tasks(state)
+    active = tasks.get(slug)
+    return {
+        "slug": slug,
+        "running": bool(active is not None and not active.done()),
+        "runs": await asyncio.to_thread(VisualQualityLab.list_runs, project),
+    }
+
+
+async def start_visual_quality(state: AppState, slug: str) -> dict[str, Any]:
+    """Queue one local visual review and auto-repair run for a delivered project."""
+    from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+    project, manifest = _require_delivered_project(state, slug)
+    tasks = _visual_quality_tasks(state)
+    active = tasks.get(slug)
+    if active is not None and not active.done():
+        return {"accepted": False, "slug": slug, "reason": "visual quality run already in progress"}
+    run_id = uuid.uuid4().hex
+    lab = VisualQualityLab(
+        project,
+        slug=slug,
+        brief=manifest.brief,
+        stack=manifest.stack,
+        settings=state.settings,
+        event_bus=state.event_bus,
+        orchestrator=state.orchestrator,
+        memory=state.memory,
+        skills=state.skills,
+        rag=getattr(getattr(state, "studio", None), "rag", None),
+    )
+
+    async def worker() -> None:
+        try:
+            await lab.run(run_id=run_id)
+        except Exception as exc:  # noqa: BLE001 - the durable receipt records this too
+            log.warning("visual_quality_lab.worker_failed", slug=slug, error=str(exc))
+        finally:
+            if tasks.get(slug) is task:
+                tasks.pop(slug, None)
+
+    task = asyncio.create_task(worker(), name=f"visual-quality:{slug}:{run_id[:8]}")
+    tasks[slug] = task
+    return {"accepted": True, "slug": slug, "run_id": run_id, "status": "queued"}
+
+
+def visual_quality_artifact(state: AppState, slug: str, run_id: str, path: str) -> Path:
+    """Resolve one stored lab artifact without exposing arbitrary project files."""
+    from skyn3t.studio.visual_quality_lab import VisualQualityLab
+
+    project, _manifest = _require_delivered_project(state, slug)
+    candidate = VisualQualityLab.artifact_path(project, run_id, path)
+    if candidate is None:
+        raise FileNotFoundError(path)
+    return candidate
+
 def _visual_editor_lock(state: AppState, project: Path) -> asyncio.Lock:
     """Return the process-local transaction lock for one delivered project."""
 
@@ -3769,7 +4586,7 @@ def _visual_editor_lock(state: AppState, project: Path) -> asyncio.Lock:
     if not isinstance(locks, dict):
         locks = {}
         try:
-            state._visual_editor_locks = locks
+            state._visual_editor_locks = locks  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001 - fail closed without lock storage
             raise RuntimeError("visual-editor project locking is unavailable") from exc
     key = str(project.resolve())
@@ -4619,6 +5436,355 @@ async def run_cortex_candidate_payload(
     return await asyncio.to_thread(run_cortex_candidate, state.settings, goal)
 
 
+def _lab_autopilot(state: AppState) -> Any:
+    """Return the process-local controller backed by durable lab receipts."""
+    controller = getattr(state, "_lab_autopilot_controller", None)
+    if controller is None:
+        from skyn3t.cortex.lab_autopilot import LabAutopilot
+
+        controller = LabAutopilot(
+            state.settings.data_dir,
+            enabled=bool(getattr(state.settings, "lab_autopilot", False)),
+        )
+        state._lab_autopilot_controller = controller
+    return controller
+
+
+async def cortex_autopilot_payload(state: AppState) -> dict[str, Any]:
+    """Plain-language local autonomy status for the Cortex dashboard."""
+    return _lab_autopilot(state).payload()
+
+
+async def set_cortex_autopilot(
+    state: AppState, *, enabled: bool, persist: bool = True
+) -> dict[str, Any]:
+    """Enable or stop local Cortex autopilot without remote authority."""
+    enabled = _coerce_bool(enabled)
+    controller = _lab_autopilot(state)
+    controller.set_enabled(enabled)
+    try:
+        state.settings.lab_autopilot = enabled
+    except Exception:  # noqa: BLE001 - immutable test settings remain readable
+        pass
+    os.environ["SKYN3T_LAB_AUTOPILOT"] = "true" if enabled else "false"
+    if persist:
+        _persist_env_var("SKYN3T_LAB_AUTOPILOT", "true" if enabled else "false")
+    if enabled:
+        await set_lab_autonomy(state, True, persist=persist)
+        await set_cortex_candidate_policy(
+            state, enabled=True, auto_merge=True, persist=persist
+        )
+    return await cortex_autopilot_payload(state)
+
+
+async def report_cortex_autopilot_incident(
+    state: AppState, *, scope: str, category: str, summary: str, evidence: str = ""
+) -> dict[str, Any]:
+    """Record a deduplicated local repair signal for the next autopilot tick."""
+    controller = _lab_autopilot(state)
+    incident = controller.report_incident(
+        scope=scope, category=category, summary=summary, evidence=evidence
+    )
+    return {"incident": asdict(incident), **controller.payload()}
+
+
+async def tick_cortex_autopilot(state: AppState) -> dict[str, Any]:
+    """Advance the durable queue by one local work item."""
+    controller = _lab_autopilot(state)
+    run = controller.next_run()
+    return {"run": asdict(run) if run is not None else None, **controller.payload()}
+
+def _cortex_graph_run_row(run: Any, comparison: dict[str, Any] | None) -> dict[str, Any]:
+    """Reduce a durable graph run to dashboard-safe experiment metadata."""
+    raw_rerun = run.inputs.get("_graph_rerun")
+    rerun = raw_rerun if isinstance(raw_rerun, dict) else {}
+    raw_build = {
+        name: run.inputs.get(name)
+        for name in ("build_id", "slug", "stack")
+        if run.inputs.get(name) not in (None, "")
+    }
+    statuses = {node.id: run.node_statuses[node.id].value for node in run.graph.nodes}
+    rerunnable = [
+        node_id for node_id, status in statuses.items() if status in {"succeeded", "cached"}
+    ]
+    comparison_payload = None
+    if comparison is not None:
+        comparison_payload = {
+            name: comparison.get(name)
+            for name in (
+                "comparison_id",
+                "source_run_id",
+                "rerun_run_id",
+                "from_node_id",
+                "rerun_nodes",
+                "baseline_digest",
+                "candidate_digest",
+                "outcome",
+                "promotion_status",
+                "created_at",
+                "baseline_evidence",
+                "candidate_evidence",
+            )
+        }
+    return {
+        "run_id": run.run_id,
+        "graph_id": run.graph.graph_id,
+        "graph_version": run.graph.version,
+        "status": run.status.value,
+        "created_at": run.created_at,
+        "build": raw_build,
+        "nodes": statuses,
+        "rerunnable_nodes": rerunnable,
+        "rerun": {
+            "source_run_id": rerun.get("source_run_id"),
+            "from_node_id": rerun.get("from_node_id"),
+            "rerun_nodes": rerun.get("rerun_nodes", []),
+        }
+        if rerun
+        else None,
+        "comparison": comparison_payload,
+    }
+
+
+async def cortex_graph_runs_payload(
+    state: AppState,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """List bounded preflight graph evidence for review in the Cortex dashboard."""
+    from skyn3t.studio.graph_runtime import GraphStore
+
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        runs = await store.list_runs(limit=max(1, min(int(limit), 100)))
+        rows = []
+        for run in runs:
+            comparison = await store.load_rerun_comparison(run.run_id)
+            rows.append(_cortex_graph_run_row(run, comparison))
+        return {"available": True, "review_only": True, "runs": rows}
+    except Exception:  # noqa: BLE001 - history must not break Cortex control plane
+        log.warning("cortex.graph_history_unavailable")
+        return {"available": False, "review_only": True, "runs": []}
+    finally:
+        await store.close()
+
+
+async def rerun_cortex_graph_payload(
+    state: AppState,
+    *,
+    source_run_id: str,
+    from_node_id: str,
+) -> dict[str, Any]:
+    """Execute only a human-selected completed preflight branch for review."""
+    from skyn3t.studio.build_intelligence import rerun_build_intelligence
+
+    return await rerun_build_intelligence(
+        settings=state.settings,
+        source_run_id=source_run_id,
+        from_node_id=from_node_id,
+    )
+
+
+def _cortex_graph_review_row(
+    item: dict[str, Any],
+    source_run: Any | None,
+) -> dict[str, Any]:
+    """Reduce one immutable comparison/receipt set for the decision inbox."""
+
+    comparison = dict(item.get("comparison") or {})
+    decision = item.get("decision")
+    dispatch = item.get("build_dispatch")
+    source_inputs = getattr(source_run, "inputs", {}) if source_run is not None else {}
+    source_inputs = source_inputs if isinstance(source_inputs, dict) else {}
+    source_build = {
+        name: source_inputs.get(name)
+        for name in ("build_id", "slug", "stack")
+        if source_inputs.get(name) not in (None, "")
+    }
+    return {
+        "comparison": {
+            name: comparison.get(name)
+            for name in (
+                "comparison_id",
+                "source_run_id",
+                "rerun_run_id",
+                "from_node_id",
+                "rerun_nodes",
+                "baseline_digest",
+                "candidate_digest",
+                "outcome",
+                "promotion_status",
+                "created_at",
+            )
+        },
+        "source_build": source_build,
+        "decision": dict(decision) if isinstance(decision, dict) else None,
+        "build_dispatch": dict(dispatch) if isinstance(dispatch, dict) else None,
+        "state": "awaiting_human_decision" if decision is None else "decided",
+        "review_only": True,
+        "auto_promotion": False,
+    }
+
+
+async def cortex_graph_reviews_payload(
+    state: AppState,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """List durable rerun comparisons that do or do not have a human receipt."""
+
+    from skyn3t.studio.graph_runtime import GraphStore
+
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        items = await store.list_review_items(limit=max(1, min(int(limit), 100)))
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            comparison = dict(item.get("comparison") or {})
+            source_run = await store.load_run(str(comparison.get("source_run_id") or ""))
+            rows.append(_cortex_graph_review_row(item, source_run))
+        return {
+            "available": True,
+            "review_only": True,
+            "auto_promotion": False,
+            "pending_count": sum(row["decision"] is None for row in rows),
+            "reviews": rows,
+        }
+    except Exception:  # noqa: BLE001 - history must not break Cortex control plane
+        log.warning("cortex.graph_review_history_unavailable")
+        return {
+            "available": False,
+            "review_only": True,
+            "auto_promotion": False,
+            "pending_count": 0,
+            "reviews": [],
+        }
+    finally:
+        await store.close()
+
+
+async def decide_cortex_graph_review_payload(
+    state: AppState,
+    *,
+    comparison_id: str,
+    decision: str,
+    note: str = "",
+) -> dict[str, Any]:
+    """Append the only allowed human outcome for a graph comparison.
+
+    This does not promote a candidate or change code/configuration/policy. It
+    only records what a human decided about the exact source/candidate digests.
+    """
+
+    from skyn3t.studio.graph_runtime import GraphReviewDecision, GraphStore
+
+    selected_id = str(comparison_id).strip()
+    selected_decision = str(decision).strip().lower()
+    selected_note = str(note).strip()
+    if selected_decision not in {"keep", "reject"}:
+        raise ValueError("decision must be 'keep' or 'reject'")
+    if len(selected_note) > 2_000:
+        raise ValueError("review decision note must be at most 2000 characters")
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        comparison = await store.load_rerun_comparison_by_id(selected_id)
+        if comparison is None:
+            raise KeyError(selected_id)
+        if comparison.get("promotion_status") != "review_required":
+            raise ValueError("only completed review-required comparisons can be decided")
+        receipt = GraphReviewDecision(
+            decision_id=uuid.uuid4().hex,
+            comparison_id=selected_id,
+            source_run_id=str(comparison.get("source_run_id") or ""),
+            rerun_run_id=str(comparison.get("rerun_run_id") or ""),
+            decision=selected_decision,
+            note=selected_note,
+            decided_by="dashboard",
+            baseline_digest=str(comparison.get("baseline_digest") or ""),
+            candidate_digest=str(comparison.get("candidate_digest") or ""),
+            outcome=str(comparison.get("outcome") or ""),
+        )
+        await store.save_review_decision(receipt)
+        return {
+            "review_only": True,
+            "auto_promotion": False,
+            "decision": receipt.to_dict(),
+        }
+    finally:
+        await store.close()
+
+
+async def queue_cortex_graph_review_build_payload(
+    state: AppState,
+    *,
+    comparison_id: str,
+    brief: str,
+) -> dict[str, Any]:
+    """Start one normal Studio build from an explicitly kept experiment.
+
+    The review receipt stays immutable and this path delegates to the ordinary
+    build submission function, retaining its routing and admission safeguards.
+    It is an operator action, not a promotion of graph evidence.
+    """
+
+    from skyn3t.studio.graph_runtime import (
+        GraphReviewBuildDispatch,
+        GraphReviewBuildRequest,
+        GraphStore,
+    )
+
+    selected_id = str(comparison_id).strip()
+    selected_brief = str(brief).strip()
+    if not selected_brief:
+        raise ValueError("follow-up build brief is required")
+    if len(selected_brief) > 12_000:
+        raise ValueError("follow-up build brief must be at most 12000 characters")
+    store = GraphStore(Path(state.settings.data_dir) / "build_graphs.sqlite3")
+    try:
+        comparison = await store.load_rerun_comparison_by_id(selected_id)
+        if comparison is None:
+            raise KeyError(selected_id)
+        decision = await store.load_review_decision(selected_id)
+        if decision is None or decision.get("decision") != "keep":
+            raise ValueError("keep the experiment evidence before queueing a follow-up build")
+        existing = await store.load_review_build_dispatch(selected_id)
+        if existing is not None:
+            raise ValueError("a follow-up build is already queued for this decision")
+        source_run = await store.load_run(str(comparison.get("source_run_id") or ""))
+        source_inputs = getattr(source_run, "inputs", {}) if source_run is not None else {}
+        stack = str(source_inputs.get("stack") or "") if isinstance(source_inputs, dict) else ""
+        request = GraphReviewBuildRequest(
+            request_id=uuid.uuid4().hex,
+            decision_id=str(decision.get("decision_id") or ""),
+            comparison_id=selected_id,
+            brief_sha256=hashlib.sha256(selected_brief.encode("utf-8")).hexdigest(),
+            stack=stack,
+            requested_by="dashboard",
+        )
+        await store.save_review_build_request(request)
+        queued = await submit_build(state, brief=selected_brief, stack=stack)
+        build_id = str(queued.get("build_id") or "")
+        if not build_id:
+            raise RuntimeError("normal Studio build did not return a build id")
+        dispatch = GraphReviewBuildDispatch(
+            dispatch_id=uuid.uuid4().hex,
+            request_id=request.request_id,
+            decision_id=request.decision_id,
+            comparison_id=selected_id,
+            build_id=build_id,
+        )
+        await store.save_review_build_dispatch(dispatch)
+        return {
+            "review_only": True,
+            "auto_promotion": False,
+            "request": request.to_dict(),
+            "build_dispatch": dispatch.to_dict(),
+            "build": {"build_id": build_id, "status": queued.get("status", "queued")},
+        }
+    finally:
+        await store.close()
+
+
 async def decide_proposal(state: AppState, proposal_id: str, approved: bool, reason: str = "", decided_by: str = "api") -> dict[str, Any]:
     rec = state.proposals.get(proposal_id)
     if rec is None:
@@ -4647,6 +5813,201 @@ async def decide_proposal(state: AppState, proposal_id: str, approved: bool, rea
     return {"proposal_id": proposal_id, "status": rec.status}
 
 
+_SKILL_QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
+_EXTERNAL_CANDIDATE_SKILL_TAG = "external-candidate"
+_EXTERNAL_GITHUB_SKILL_SOURCE = "github-distilled"
+_EXTERNAL_PROMOTION_REFUSAL = (
+    "Not promoted. Only a quarantined GitHub-derived external candidate with a "
+    "canonical repository URL, immutable 40/64-character revision, SHA-256 "
+    "provenance hash, and source path can be promoted. Migrated candidates also "
+    "need retained source bytes that match that hash; repair the provenance or "
+    "receipt and try again."
+)
+
+
+def _skill_value(skill: Any, name: str, default: Any = None) -> Any:
+    if isinstance(skill, dict):
+        return skill.get(name, default)
+    return getattr(skill, name, default)
+
+
+def _skill_tags(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(tag) for tag in value if str(tag).strip()]
+
+
+def _external_provenance_complete(skill: Any) -> bool:
+    """Whether a GitHub-derived skill has complete immutable provenance fields.
+
+    This is intentionally distinct from promotion readiness: older candidates
+    are provenance-complete even when no retained-byte receipt exists, while
+    migrated candidates additionally need that local receipt to verify.
+    """
+    source = str(_skill_value(skill, "source", "") or "").strip().lower()
+    if source != _EXTERNAL_GITHUB_SKILL_SOURCE:
+        return False
+    try:
+        from skyn3t.intelligence.skill_library import _has_complete_github_provenance
+
+        return bool(_has_complete_github_provenance(_skill_value(skill, "provenance")))
+    except Exception:  # noqa: BLE001 - unavailable provenance is never complete
+        return False
+
+
+def _external_promotion_ready(
+    library: Any,
+    skill: Any,
+    *,
+    tags: list[str] | None = None,
+) -> bool:
+    """Whether the live SkillLibrary will allow this one candidate to promote.
+
+    The read-only library predicate is the sole readiness authority because a
+    migrated legacy candidate must also verify its retained source bytes. The
+    route keeps a narrow fallback of ``False`` rather than guessing from
+    metadata when a custom library does not expose that predicate.
+    """
+    tagset = {
+        tag.strip().lower()
+        for tag in (tags or _skill_tags(_skill_value(skill, "tags", [])))
+    }
+    source = str(_skill_value(skill, "source", "") or "").strip().lower()
+    slug = str(_skill_value(skill, "slug", "") or "").strip()
+    if not (
+        slug
+        and source == _EXTERNAL_GITHUB_SKILL_SOURCE
+        and _EXTERNAL_CANDIDATE_SKILL_TAG in tagset
+        and bool(tagset & _SKILL_QUARANTINE_TAGS)
+    ):
+        return False
+    checker = getattr(library, "can_promote_external", None)
+    if not callable(checker):
+        return False
+    try:
+        return bool(checker(slug))
+    except Exception:  # noqa: BLE001 - failed checks must keep candidates inert
+        return False
+
+
+def _skill_payload(skill: Any, *, library: Any = None) -> dict[str, Any]:
+    """Serialize one skill plus its safe injection/promotion state."""
+    if isinstance(skill, dict):
+        out = dict(skill)
+        title = str(out.get("title") or out.get("name") or "")
+        body = str(out.get("body") or "")
+        out.setdefault("slug", str(out.get("id") or ""))
+        out.setdefault("title", title)
+        out.setdefault("name", title)
+        out.setdefault("stack", "")
+        if "description" not in out:
+            out["description"] = body[:160] + ("…" if len(body) > 160 else "")
+        out.setdefault("score", 0)
+        out.setdefault("source", "")
+    else:
+        title = str(getattr(skill, "title", "") or "")
+        body = str(getattr(skill, "body", "") or "")
+        out = {
+            "slug": getattr(skill, "slug", ""),
+            "title": title,
+            "name": title,  # SPA card reads s.name
+            "stack": getattr(skill, "stack", ""),
+            "description": body[:160] + ("…" if len(body) > 160 else ""),
+            "tags": list(getattr(skill, "tags", []) or []),
+            "score": getattr(skill, "score", 0),
+            "source": getattr(skill, "source", ""),
+        }
+
+    tags = _skill_tags(out.get("tags", []))
+    tagset = {tag.strip().lower() for tag in tags}
+    quarantined = bool(tagset & _SKILL_QUARANTINE_TAGS)
+    out["tags"] = tags
+    out["active"] = not quarantined
+    out["quarantined"] = quarantined
+    out["provenance_complete"] = _external_provenance_complete(skill)
+    out["promotion_ready"] = _external_promotion_ready(library, skill, tags=tags)
+    return out
+
+
+def _skills_summary(skills: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "registered": len(skills),
+        "active": sum(1 for skill in skills if skill.get("active") is True),
+        "quarantined": sum(1 for skill in skills if skill.get("quarantined") is True),
+        "promotion_ready": sum(1 for skill in skills if skill.get("promotion_ready") is True),
+    }
+
+
+async def promote_external_skill(state: AppState, slug: str) -> dict[str, Any]:
+    """Promote exactly one evidence-valid external candidate, never a batch.
+
+    ``SkillLibrary.promote_external`` owns the security contract. A refusal is
+    returned as structured data so the authenticated UI/API caller can explain
+    how to make a candidate eligible without treating a rejected action as a
+    server outage.
+    """
+    candidate_slug = str(slug or "").strip()
+    if not candidate_slug:
+        raise ValueError("skill slug is required")
+    promoter = getattr(getattr(state, "skills", None), "promote_external", None)
+    if not callable(promoter):
+        raise RuntimeError("the skills hub does not support reviewed external promotion")
+    promoted = promoter(candidate_slug)
+    if hasattr(promoted, "__await__"):
+        promoted = await promoted
+    if promoted is None:
+        return {
+            "status": "refused",
+            "promoted": False,
+            "slug": candidate_slug,
+            "message": _EXTERNAL_PROMOTION_REFUSAL,
+        }
+    return {
+        "status": "promoted",
+        "promoted": True,
+        "slug": candidate_slug,
+        "skill": _skill_payload(promoted, library=getattr(state, "skills", None)),
+        "message": f"Promoted {getattr(promoted, 'title', candidate_slug)} for future builds.",
+    }
+
+
+async def promote_all_ready_skills(state: AppState) -> dict[str, Any]:
+    """Promote every currently evidence-ready external skill in one local action.
+
+    Candidates that do not pass the existing immutable-evidence predicate are
+    deliberately left untouched. This is a convenience bulk action, not a
+    bypass of SkillLibrary's promotion contract.
+    """
+    library = getattr(state, "skills", None)
+    getter = getattr(library, "all", None) or getattr(library, "list_skills", None)
+    if not callable(getter):
+        raise RuntimeError("the skills hub does not support reviewed external promotion")
+    records = getter()
+    if hasattr(records, "__await__"):
+        records = await records
+    ready = [
+        skill for skill in list(records or [])
+        if _external_promotion_ready(library, skill)
+    ]
+    promoted: list[dict[str, Any]] = []
+    refused: list[str] = []
+    for skill in ready:
+        slug = str(_skill_value(skill, "slug", "") or "").strip()
+        if not slug:
+            continue
+        result = await promote_external_skill(state, slug)
+        if result.get("promoted"):
+            promoted.append(result["skill"])
+        else:
+            refused.append(slug)
+    return {
+        "status": "completed",
+        "attempted": len(ready),
+        "promoted": promoted,
+        "refused": refused,
+        "message": f"Accepted {len(promoted)} ready skill{'s' if len(promoted) != 1 else ''}.",
+    }
+
 async def list_skills(state: AppState) -> dict[str, Any]:
     skills = state.skills
     patterns: list[dict[str, Any]] = []
@@ -4666,29 +6027,18 @@ async def list_skills(state: AppState) -> dict[str, Any]:
             res = getter()
             if hasattr(res, "__await__"):
                 res = await res
-            out = []
-            for s in res:
-                if isinstance(s, dict):
-                    out.append(s)
-                else:
-                    title = getattr(s, "title", "")
-                    body = str(getattr(s, "body", "") or "")
-                    out.append({
-                        "slug": getattr(s, "slug", ""),
-                        "title": title,
-                        "name": title,  # SPA card reads s.name
-                        "stack": getattr(s, "stack", ""),
-                        "description": body[:160] + ("…" if len(body) > 160 else ""),
-                        "tags": list(getattr(s, "tags", []) or []),
-                        "score": getattr(s, "score", 0),
-                        "source": getattr(s, "source", ""),
-                    })
-            return {"skills": out, "patterns": patterns}
+            out = [_skill_payload(skill, library=skills) for skill in res]
+            return {"skills": out, "patterns": patterns, "summary": _skills_summary(out)}
         except Exception:  # noqa: BLE001
             pass
     # Degraded: surface configured skill-hub paths from settings.
     paths = [p for p in state.settings.skills_hub_paths.split(",") if p.strip()]
-    return {"skills": [], "patterns": patterns, "hub_paths": paths}
+    return {
+        "skills": [],
+        "patterns": patterns,
+        "summary": _skills_summary([]),
+        "hub_paths": paths,
+    }
 
 
 def _catalog_entry_payload(entry: Any) -> dict[str, Any]:
@@ -4728,11 +6078,13 @@ async def agent_catalog_preview(
 
 
 async def import_agent_catalog(
-    state: AppState, path: str, limit: int = 100
+    state: AppState, path: str, limit: int = 100, activate: bool = False
 ) -> dict[str, Any]:
-    """Import a local external agent catalog as compact advisory skills."""
+    """Import local catalog roles as candidates or explicitly activate them."""
     if state.skills is None or not hasattr(state.skills, "add"):
         raise ValueError("a writable skill library is required to import catalogs")
+    if not isinstance(activate, bool):
+        raise ValueError("catalog activate must be a boolean")
     preview = await agent_catalog_preview(state, path, limit=limit)
     from skyn3t.intelligence.agent_catalog import import_catalog_as_skills
 
@@ -4740,13 +6092,19 @@ async def import_agent_catalog(
         preview["path"],
         state.skills,
         limit=max(1, min(int(limit or 100), 500)),
+        activate=activate,
     )
     return {
         "path": preview["path"],
         "imported": imported,
         "summary": preview["summary"],
+        "activation": {
+            "requested": activate,
+            "status": "activated" if activate else "quarantined",
+            "activated": imported if activate else 0,
+            "quarantined": 0 if activate else imported,
+        },
     }
-
 
 async def knowledge_search(state: AppState, q: str, limit: int = 10) -> dict[str, Any]:
     knowledge = state.knowledge
@@ -4877,6 +6235,7 @@ _DEPLOY_PROVIDER_FIELDS = {
     "cloudflare": "cloudflare_api_token",
     "netlify": "netlify_auth_token",
     "railway": "railway_token",
+    "render": "render_api_key",
 }
 
 _DEPLOY_PROVIDER_NATIVE_ENV = {
@@ -4885,14 +6244,20 @@ _DEPLOY_PROVIDER_NATIVE_ENV = {
     "cloudflare": "CLOUDFLARE_API_TOKEN",
     "netlify": "NETLIFY_AUTH_TOKEN",
     "railway": "RAILWAY_TOKEN",
+    "render": "RENDER_API_KEY",
 }
 
+# Mirrors DeployAgent._PROVIDER_CLIS — these three maps must list the same
+# providers Settings.deploy_tokens and DeployAgent support, or a provider
+# becomes unreachable from the GUI (render was missing from all three while
+# being fully supported downstream).
 _DEPLOY_PROVIDER_CLIS = {
     "fly": "flyctl",
     "vercel": "vercel",
     "cloudflare": "wrangler",
     "netlify": "netlify",
     "railway": "railway",
+    "render": "render",
 }
 
 
@@ -4918,7 +6283,7 @@ def _persist_env_vars(values: dict[str, str]) -> None:
 
         env = REPO_ROOT / ".env"
         with _ENV_WRITE_LOCK:
-            lines = env.read_text().splitlines() if env.exists() else []
+            lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
             out: list[str] = []
             found: set[str] = set()
             for ln in lines:
@@ -4983,11 +6348,15 @@ async def llm_secrets_payload(state: AppState) -> dict[str, Any]:
         "backend": backend,
         "routing": routing,
         "backend_pref": getattr(s, "llm_backend", "auto"),
-        "cli_provider": getattr(s, "cli_llm_provider", "claude"),
+        "cli_provider": getattr(s, "cli_llm_provider", "codex"),
         "codegen_cli_provider": getattr(s, "codegen_cli_provider", "") or "",
         "codegen_cli_model": getattr(s, "codegen_cli_model", "") or "",
         "openrouter_codegen_model": getattr(s, "openrouter_codegen_model", "") or "",
+        "vision_model": getattr(s, "vision_model", "") or "",
+        "codegen_model_slot": getattr(s, "codegen_model_slot", "") or "",
+        "repair_model_slot": getattr(s, "repair_model_slot", "") or "",
         "free_only": bool(getattr(s, "free_only", True)),
+        "no_claude": bool(getattr(s, "no_claude", False)),
         "model_pins": {
             "cheap": getattr(s, "model_cheap", "") or "",
             "ui": getattr(s, "model_ui", "") or "",
@@ -5105,6 +6474,70 @@ async def set_replicate_token(
         # disconnect callers receive the coupled opt-in state they just changed.
         result["asset_gen"] = bool(getattr(state.settings, "asset_gen", False))
     return result
+
+
+async def golden_bench_payload(state: AppState) -> dict[str, Any]:
+    """Live progress of golden-bench ledgers, straight from the durable files.
+
+    Bench attempts run in ISOLATED per-attempt state on purpose (they must
+    never pollute real build memory), which also made every run invisible to
+    the dashboard — operators watched a blank cockpit while 62 builds ran.
+    The ledgers under artifacts/golden are the bench's own progressive
+    checkpoints, so reading them is the honest window.
+    """
+
+    def _collect() -> dict[str, Any]:
+        from skyn3t.config.settings import REPO_ROOT
+
+        ledgers: list[dict[str, Any]] = []
+        root = REPO_ROOT / "artifacts" / "golden"
+        try:
+            candidates = sorted(root.glob("*.json"))
+        except OSError:
+            candidates = []
+        for path in candidates:
+            if path.name.startswith("comparison"):
+                continue
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(raw, dict) or "attempts" not in raw:
+                continue
+            attempts = [a for a in raw.get("attempts") or [] if isinstance(a, dict)]
+            cases = raw.get("case_ids") or []
+            repeats = int(raw.get("repeats") or 0)
+            raw_metadata = raw.get("metadata")
+            metadata: dict[str, Any] = (
+                dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            )
+            raw_profile = metadata.get("safety_profile")
+            profile: dict[str, Any] = (
+                dict(raw_profile) if isinstance(raw_profile, dict) else {}
+            )
+            try:
+                updated_at = path.stat().st_mtime
+            except OSError:
+                updated_at = 0.0
+            ledgers.append({
+                "name": path.stem,
+                "status": str(raw.get("status") or ""),
+                "attempts": len(attempts),
+                "passed": sum(1 for a in attempts if a.get("passed")),
+                "expected": (len(cases) * repeats) if cases and repeats else None,
+                "llm_backend": str(metadata.get("llm_backend") or ""),
+                # A lifted pin is what distinguishes a live (billed,
+                # non-deterministic) ledger from the free floor.
+                "live": bool(
+                    profile.get("moa_enabled") or profile.get("codegen_cli_provider")
+                ),
+                "updated_at": updated_at,
+                "completed_at": raw.get("completed_at"),
+            })
+        ledgers.sort(key=lambda entry: entry["updated_at"], reverse=True)
+        return {"ledgers": ledgers}
+
+    return await asyncio.to_thread(_collect)
 
 
 async def deploy_settings_payload(state: AppState) -> dict[str, Any]:
@@ -6116,7 +7549,7 @@ async def set_llm_backend(state: AppState, backend: str, persist: bool = True) -
     if backend not in SUPPORTED_LLM_BACKENDS:
         allowed = ", ".join(SUPPORTED_LLM_BACKENDS)
         raise ValueError(f"Unsupported LLM backend {backend!r}; use one of: {allowed}")
-    state.settings.llm_backend = backend
+    state.settings.llm_backend = backend  # type: ignore[assignment]
     os.environ["SKYN3T_LLM_BACKEND"] = backend
     if state.llm_client is not None:
         try:
@@ -6151,14 +7584,19 @@ async def set_llm_routing(
     codegen_cli_model: str | None = None,
     openrouter_codegen_model: str | None = None,
     model_pins: dict[str, Any] | None = None,
+    vision_model: str | None = None,
+    codegen_model_slot: str | None = None,
+    repair_model_slot: str | None = None,
     free_only: bool | None = None,
     persist: bool = True,
 ) -> dict[str, Any]:
     """Set model-routing controls used by future builds.
 
     Missing fields are left unchanged; explicit empty strings clear a
-    pin/override. Values are written to the live Settings object, process env,
-    and optionally .env.
+    pin/override. Values are always written to the live Settings object;
+    ``persist=True`` additionally writes process env and .env, while
+    ``persist=False`` stays scoped to the live object so the change cannot
+    survive a Settings() reconstruction.
     """
     import os
 
@@ -6173,6 +7611,12 @@ async def set_llm_routing(
         updates["codegen_cli_model"] = _normalize_model_id(codegen_cli_model)
     if openrouter_codegen_model is not None:
         updates["openrouter_codegen_model"] = _normalize_model_id(openrouter_codegen_model)
+    if vision_model is not None:
+        updates["vision_model"] = _normalize_model_id(vision_model)
+    if codegen_model_slot is not None:
+        updates["codegen_model_slot"] = (codegen_model_slot or "").strip()
+    if repair_model_slot is not None:
+        updates["repair_model_slot"] = (repair_model_slot or "").strip()
     if model_pins is not None:
         for tier, field in _MODEL_PIN_FIELDS.items():
             if tier in model_pins:
@@ -6183,6 +7627,12 @@ async def set_llm_routing(
             setattr(state.settings, field, value)
         except Exception:  # noqa: BLE001
             pass
+        # persist=False is DELIBERATELY env-free (pinned by
+        # test_set_llm_routing_persist_false_does_not_mutate_env): a
+        # non-persisted routing change is scoped to this AppState's live
+        # settings and must not survive a Settings() reconstruction via
+        # process env. Audit M22 flagged the old docstring, which promised
+        # env writes — the docs were wrong, not this gate.
         env_key = f"SKYN3T_{field.upper()}"
         if persist:
             if value:
@@ -6317,6 +7767,7 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "daily_token_cap", "autonomous_daily_build_cap", "llm_backend",
             "codegen_cli_provider", "codegen_cli_model", "openrouter_codegen_model",
             "model_cheap", "model_ui", "model_backend", "model_strong", "model_docs",
+            "vision_model", "codegen_model_slot", "repair_model_slot",
             "auto_route", "model_evolution", "app_type_override", "engine_override",
             "visual_self_heal", "visual_self_heal_max_rounds",
             "improve_agentic", "improve_agentic_timeout",
@@ -6325,7 +7776,18 @@ async def settings_payload(state: AppState) -> dict[str, Any]:
             "github_similarity_max_repos", "proof_ladder_required",
             "build_graph_max_concurrency", "cortex_candidates_enabled",
             "cortex_candidate_auto_merge",
-            "cortex_candidate_merge_strategy", "cortex_candidate_timeout")
+            "cortex_candidate_merge_strategy", "cortex_candidate_timeout",
+            # Gate posture: whether a gate's finding BLOCKS the verdict, as
+            # opposed to whether the gate RUNS (that stays each gate's own
+            # *_enabled flag, driven by gates_payload/set_gate_enabled).
+            "build_posture", "blocking_gates",
+            # Multi-provider routing.
+            "auto_cli_priority", "auto_allow_openrouter",
+            "cli_max_concurrency", "provider_max_concurrency",
+            # Mixture-of-Agents advisory council.
+            "moa_enabled", "moa_advisors", "moa_max_concurrency",
+            "moa_advisor_timeout", "moa_advisor_max_tokens",
+            "moa_advisor_block_bytes", "moa_trace_enabled")
     payload = {k: getattr(s, k, None) for k in keys}
     deploy = await deploy_settings_payload(state)
     payload["allow_remote_deploy"] = deploy["allow_remote_deploy"]
@@ -6474,6 +7936,7 @@ def build_router(state: AppState) -> Any:
     auth = Depends(require_control_auth)
     project_auth = Depends(require_auth)
     empty_body: Any = Body(default_factory=dict)
+    any_body: Any = Body(default=None)
 
     @router.get("/auth/self-test", dependencies=[auth])
     async def _auth_self_test(request: Request) -> dict[str, Any]:
@@ -6491,6 +7954,9 @@ def build_router(state: AppState) -> Any:
     @router.get("/recovery", dependencies=[auth])
     async def _recovery() -> dict[str, Any]:
         return await recovery_payload(state)
+    @router.get("/bench/golden", dependencies=[auth])
+    async def _bench_golden() -> dict[str, Any]:
+        return await golden_bench_payload(state)
 
     @router.get("/agents", dependencies=[auth])
     async def _agents() -> dict[str, Any]:
@@ -6517,6 +7983,10 @@ def build_router(state: AppState) -> Any:
     async def _settings() -> dict[str, Any]:
         return await settings_payload(state)
 
+    @router.get("/cli-providers", dependencies=[auth])
+    async def _cli_providers() -> dict[str, Any]:
+        return await cli_providers_payload(state)
+
     @router.get("/builds", dependencies=[auth])
     async def _builds_alias(limit: int = Query(default=25, ge=1, le=200)) -> dict[str, Any]:
         return await list_builds(state, limit=limit)
@@ -6535,6 +8005,10 @@ def build_router(state: AppState) -> Any:
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=_coerce_bool(body.get("full_app", False)),
+                moa_advisors=_normalize_moa_advisors(
+                    body.get("moa_advisors"),
+                    no_claude=bool(getattr(state.settings, "no_claude", False)),
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -6687,6 +8161,36 @@ def build_router(state: AppState) -> Any:
                 detail="product contract could not be read",
             ) from None
 
+    @router.post("/projects/{slug}/feedback", dependencies=[auth])
+    async def _project_feedback(
+        slug: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        from skyn3t.intelligence.human_feedback import (
+            HumanFeedbackPersistenceError,
+            HumanFeedbackValidationError,
+        )
+
+        try:
+            return await capture_project_human_feedback(
+                state,
+                slug,
+                feedback=body.get("feedback"),
+                category=body.get("category"),
+                context=body.get("context"),
+                rating=body.get("rating"),
+            )
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except HumanFeedbackValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except HumanFeedbackPersistenceError:
+            raise HTTPException(status_code=503, detail="feedback learning store is unavailable") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
     @router.patch("/projects/{slug}/product", dependencies=[auth])
     async def _patch_project_product(
         slug: str,
@@ -6699,11 +8203,20 @@ def build_router(state: AppState) -> Any:
         )
 
         try:
+            raw_base_version = body.get("base_version")
+            raw_patch = body.get("patch")
+            if isinstance(raw_base_version, bool) or not isinstance(raw_base_version, int):
+                raise ValueError("base_version must be an integer")
+            if not isinstance(raw_patch, dict) or not all(
+                isinstance(key, str) for key in raw_patch
+            ):
+                raise ValueError("patch must be an object with string keys")
+            patch: dict[str, Any] = dict(raw_patch)
             return await patch_project_product(
                 state,
                 slug,
-                base_version=body.get("base_version"),
-                patch=body.get("patch"),
+                base_version=raw_base_version,
+                patch=patch,
                 reason=str(body.get("reason") or ""),
             )
         except ProjectNotDeliveredError:
@@ -6741,10 +8254,13 @@ def build_router(state: AppState) -> Any:
         )
 
         try:
+            raw_base_version = body.get("base_version")
+            if isinstance(raw_base_version, bool) or not isinstance(raw_base_version, int):
+                raise ValueError("base_version must be an integer")
             return await research_project_product(
                 state,
                 slug,
-                base_version=body.get("base_version"),
+                base_version=raw_base_version,
                 force_refresh=bool(body.get("force_refresh", True)),
             )
         except ProjectNotDeliveredError:
@@ -6786,6 +8302,44 @@ def build_router(state: AppState) -> Any:
                 detail="failed to persist local re-verification",
             ) from exc
 
+    @router.get("/projects/{slug}/visual-quality", dependencies=[auth])
+    async def _visual_quality(slug: str) -> dict[str, Any]:
+        try:
+            return await get_visual_quality(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
+
+    @router.post("/projects/{slug}/visual-quality/run", dependencies=[auth])
+    async def _start_visual_quality(slug: str) -> dict[str, Any]:
+        try:
+            return await start_visual_quality(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid project") from None
+
+    @router.get(
+        "/projects/{slug}/visual-quality/runs/{run_id}/artifacts/{artifact_path:path}",
+        dependencies=[auth],
+    )
+    async def _visual_quality_artifact(
+        slug: str,
+        run_id: str,
+        artifact_path: str,
+    ) -> Any:
+        try:
+            artifact = visual_quality_artifact(state, slug, run_id, artifact_path)
+            return FileResponse(str(artifact), headers={"Cache-Control": "no-store"})
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(status_code=404, detail="visual quality artifact not found") from None
     @router.post("/projects/{slug}/visual-editor/inspect", dependencies=[auth])
     async def _visual_editor_inspect(
         slug: str,
@@ -6848,6 +8402,20 @@ def build_router(state: AppState) -> Any:
             detail = exc.to_dict() if isinstance(exc, VisualEditorError) else str(exc)
             raise HTTPException(status_code=422, detail=detail) from None
 
+    @router.post("/projects/{slug}/annotations/improve", dependencies=[auth])
+    async def _annotations_improve(slug: str, body: Any = any_body) -> dict[str, Any]:
+        from skyn3t.studio.visual_editor import VisualEditorError
+
+        try:
+            return await annotations_improve(state, slug, body)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="project not found") from None
+        except (ValueError, VisualEditorError) as exc:
+            detail = exc.to_dict() if isinstance(exc, VisualEditorError) else str(exc)
+            raise HTTPException(status_code=422, detail=detail) from None
+
     @router.get("/projects/{slug}/{path:path}", dependencies=[project_auth])
     async def _project_file(slug: str, path: str) -> Any:
         try:
@@ -6902,6 +8470,101 @@ def build_router(state: AppState) -> Any:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
 
+    @router.get("/cortex/autopilot", dependencies=[auth])
+    async def _cortex_autopilot() -> dict[str, Any]:
+        return await cortex_autopilot_payload(state)
+
+    @router.post("/cortex/autopilot", dependencies=[auth])
+    async def _set_cortex_autopilot(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            enabled = _coerce_bool(body.get("enabled", body.get("on", False)))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return await set_cortex_autopilot(state, enabled=enabled)
+
+    @router.post("/cortex/autopilot/incidents", dependencies=[auth])
+    async def _cortex_autopilot_incident(
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        summary = str(body.get("summary") or "").strip()
+        if not summary:
+            raise HTTPException(status_code=422, detail="incident summary is required")
+        return await report_cortex_autopilot_incident(
+            state,
+            scope=str(body.get("scope") or "skyn3t"),
+            category=str(body.get("category") or "unknown"),
+            summary=summary,
+            evidence=str(body.get("evidence") or ""),
+        )
+
+    @router.post("/cortex/autopilot/tick", dependencies=[auth])
+    async def _cortex_autopilot_tick() -> dict[str, Any]:
+        return await tick_cortex_autopilot(state)
+    @router.get("/cortex/graphs", dependencies=[auth])
+    async def _cortex_graphs(
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> dict[str, Any]:
+        return await cortex_graph_runs_payload(state, limit=limit)
+
+    @router.post("/cortex/graphs/{run_id}/rerun", dependencies=[auth])
+    async def _cortex_graph_rerun(
+        run_id: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await rerun_cortex_graph_payload(
+                state,
+                source_run_id=run_id,
+                from_node_id=str(body.get("from_node_id") or ""),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="graph run not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @router.get("/cortex/graph-reviews", dependencies=[auth])
+    async def _cortex_graph_reviews(
+        limit: int = Query(default=25, ge=1, le=100),
+    ) -> dict[str, Any]:
+        return await cortex_graph_reviews_payload(state, limit=limit)
+
+    @router.post("/cortex/graph-reviews/{comparison_id}/decide", dependencies=[auth])
+    async def _cortex_graph_review_decide(
+        comparison_id: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await decide_cortex_graph_review_payload(
+                state,
+                comparison_id=comparison_id,
+                decision=str(body.get("decision") or ""),
+                note=str(body.get("note") or ""),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="graph comparison not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    @router.post("/cortex/graph-reviews/{comparison_id}/build", dependencies=[auth])
+    async def _cortex_graph_review_build(
+        comparison_id: str,
+        body: dict[str, Any] = empty_body,
+    ) -> dict[str, Any]:
+        try:
+            return await queue_cortex_graph_review_build_payload(
+                state,
+                comparison_id=comparison_id,
+                brief=str(body.get("brief") or ""),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="graph comparison not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+
     @router.get("/stacks", dependencies=[auth])
     async def _stacks() -> dict[str, Any]:
         return await stacks_payload(state)
@@ -6945,6 +8608,9 @@ def build_router(state: AppState) -> Any:
                 codegen_cli_model=str(body["codegen_cli_model"]) if "codegen_cli_model" in body else None,
                 openrouter_codegen_model=str(body["openrouter_codegen_model"]) if "openrouter_codegen_model" in body else None,
                 model_pins=body.get("model_pins") if isinstance(body.get("model_pins"), dict) else None,
+                vision_model=str(body["vision_model"]) if "vision_model" in body else None,
+                codegen_model_slot=str(body["codegen_model_slot"]) if "codegen_model_slot" in body else None,
+                repair_model_slot=str(body["repair_model_slot"]) if "repair_model_slot" in body else None,
                 free_only=free_only,
             )
         except ValueError as exc:
@@ -7191,6 +8857,10 @@ def build_router(state: AppState) -> Any:
                 build_profile=str(body.get("build_profile", "")),
                 model_override=str(body.get("model_override", "")),
                 full_app=_coerce_bool(body.get("full_app", False)),
+                moa_advisors=_normalize_moa_advisors(
+                    body.get("moa_advisors"),
+                    no_claude=bool(getattr(state.settings, "no_claude", False)),
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -7252,7 +8922,7 @@ def build_router(state: AppState) -> Any:
     @router.post("/studio/serve", dependencies=[auth])
     async def _serve(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
-            return await serve_project(state, str(body.get("slug", "")))
+            return await start_serve_project(state, str(body.get("slug", "")))
         except ProjectNotDeliveredError:
             raise HTTPException(status_code=409, detail="project build is not complete") from None
         except ValueError:
@@ -7268,6 +8938,16 @@ def build_router(state: AppState) -> Any:
     async def _serve_status() -> dict[str, Any]:
         return await serve_status(state)
 
+    @router.get("/studio/serve/history", dependencies=[auth])
+    async def _serve_history(slug: str) -> dict[str, Any]:
+        try:
+            return await serve_history(state, slug)
+        except ProjectNotDeliveredError:
+            raise HTTPException(status_code=409, detail="project build is not complete") from None
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid slug") from None
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="not found") from None
     @router.get("/studio/deploy/plan", dependencies=[auth])
     async def _deploy_plan(slug: str, target: str = "") -> dict[str, Any]:
         try:
@@ -7369,6 +9049,21 @@ def build_router(state: AppState) -> Any:
     async def _skills() -> dict[str, Any]:
         return await list_skills(state)
 
+    @router.post("/skills/{slug}/promote", dependencies=[auth])
+    async def _promote_external_skill(slug: str) -> dict[str, Any]:
+        try:
+            return await promote_external_skill(state, slug)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/skills/promote-ready", dependencies=[auth])
+    async def _promote_all_ready_skills() -> dict[str, Any]:
+        try:
+            return await promote_all_ready_skills(state)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     @router.get("/agent-catalog", dependencies=[auth])
     async def _agent_catalog(
         path: str = Query(default=""),
@@ -7382,10 +9077,14 @@ def build_router(state: AppState) -> Any:
     @router.post("/agent-catalog/import", dependencies=[auth])
     async def _agent_catalog_import(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         try:
+            activate = body.get("activate", False)
+            if not isinstance(activate, bool):
+                raise ValueError("catalog activate must be a boolean")
             return await import_agent_catalog(
                 state,
                 str(body.get("path", "")),
                 limit=int(body.get("limit", 100) or 100),
+                activate=activate,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

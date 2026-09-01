@@ -53,6 +53,36 @@ still leaves complete JSON and Markdown evidence for comparison and upload.
 Use a fixed seed and repeat count when comparing runs. Changing either alters the metadata
 fingerprint and makes the results unsuitable for promotion gating.
 
+## The design suite
+
+A second packaged suite, `skyn3t/benchmarks/golden-design-v1.json`, examines design
+distinctiveness instead of general coverage: five briefs that each demand a specific,
+non-default aesthetic (brutalist zine, warm bakery editorial, Swiss dashboard, art-deco
+hotel, Y2K portfolio), so generic output fails visibly. It shares the v1 schema and the
+same runner; the only contract difference is that per-case `min_intent_score` floors may
+sit below 80 — the schema floor is 60 — because style-direction words legitimately never
+appear as page copy on a correct delivery.
+
+Run it exactly like the default suite, pointing `--suite` at the file. For a real design
+measurement you want live codegen, not the stub floor:
+
+```powershell
+skyn3t bench golden run `
+  --suite skyn3t/benchmarks/golden-design-v1.json `
+  --codegen-cli codex `
+  --out artifacts/golden/design.json `
+  --report artifacts/golden/design.md `
+  --repeats 1
+```
+
+Beyond score and gates, compare the advisory AI-look warnings recorded per build at
+`manifest.extra.web_polish.warnings` (indigo gradients, Inter-first type, glassmorphism,
+placeholder copy, full-viewport heroes, identical card grids) — that is the direct "does
+it still look generated" signal. The two invitation-dependent detectors (emoji, identical
+card grid) are brief-aware: a brief asking for playful stickers or a gallery grid does not
+false-flag its own delivery. Live runs are non-deterministic; compare trends over several
+seeds/repeats, not single runs.
+
 ## Compare
 
 A baseline must come from a real completed run of the same suite. Do not hand-author it. Once a

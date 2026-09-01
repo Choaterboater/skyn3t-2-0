@@ -14,6 +14,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from skyn3t.core.stacks import WEB_STACKS
+
 # Canonical stacks the CodeAgent can scaffold offline.
 KNOWN_STACKS = (
     "react_vite",
@@ -31,6 +33,7 @@ KNOWN_STACKS = (
     "tauri",
     "phaser",
     "swift",
+    "swift_ios",
     "mcp",
     "rag",
     "workflow",
@@ -192,6 +195,18 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         return "react_ts"
     if any(k in text for k in ("cli", "command line", "command-line", "terminal tool", "script")):
         return "python_cli"
+    # A native iOS brief with an explicit Swift/SwiftUI signal must precede Expo.
+    # Bare "ios app" remains react_native below: it is a cross-platform request
+    # unless the user names the native language/framework (or says native iOS).
+    if any(k in text for k in (
+        "swift ios", "ios swift", "swiftui ios", "ios swiftui",
+        "swift iphone", "iphone swift", "swift ipad", "ipad swift",
+        "native ios", "native iphone", "native ipad",
+    )) or (
+        re.search(r"\b(?:ios|iphone|ipad)\b", text)
+        and re.search(r"\b(?:swift|swiftui)\b", text)
+    ):
+        return "swift_ios"
     # Mobile must precede react_vite: "mobile app" / "react native" / "ios app"
     # are mobile, not the web React scaffold.
     if any(k in text for k in (
@@ -228,11 +243,6 @@ def detect_stack(brief: str = "", plan: Any = None, explicit: str = "") -> str:
         return "sveltekit"
     if re.search(r"\bvue(?:\.js|js)?\b", text):
         return "vue"
-    if any(k in text for k in (
-        "react typescript", "typescript react", "vite typescript",
-        "typescript spa", "typescript web app", "tsx app",
-    )):
-        return "react_ts"
     # Whole-word only: "astrology"/"astronomy"/"gastro" must not route to astro,
     # nor "remixing" to remix.
     if re.search(r"\bastro\b", text):
@@ -283,6 +293,17 @@ def _normalize_stack(value: str) -> str:
         "macos_native": "swift",
         "swift_macos": "swift",
         "swift_native": "swift",
+        # Native Swift / SwiftUI iOS. Keep this distinct from the existing
+        # `ios` -> React Native alias: that alias is the sensible default for an
+        # unqualified cross-platform mobile request.
+        "swift_ios": "swift_ios",
+        "ios_swift": "swift_ios",
+        "swiftui_ios": "swift_ios",
+        "ios_swiftui": "swift_ios",
+        "ios_native": "swift_ios",
+        "native_ios": "swift_ios",
+        "iphone_swift": "swift_ios",
+        "ipad_swift": "swift_ios",
         # MCP server (Model Context Protocol) — Python stdio tool server. A real
         # builder stack; only explicit mcp/model-context-protocol signals map here.
         "mcp": "mcp",
@@ -498,10 +519,9 @@ def _full_app_contract(payload: dict[str, Any], extra: dict[str, Any]) -> str:
     """
     stack = str(payload.get("stack") or extra.get("stack") or "").lower()
     brief = str(payload.get("brief") or "").lower()
-    webish = stack in {
-        "react", "nextjs", "static", "astro", "remix", "express", "fastapi",
-        "rag", "workflow", "phaser",
-    } or any(k in brief for k in ("website", "web app", "site", "page", "dashboard"))
+    webish = stack in WEB_STACKS or any(
+        k in brief for k in ("website", "web app", "site", "page", "dashboard")
+    )
     contentish = any(
         k in brief
         for k in (

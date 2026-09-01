@@ -195,6 +195,29 @@ class AppState:
         self.builds: dict[str, BuildRecord] = {}
         self.proposals: dict[str, ProposalRecord] = {}
 
+        # Backfill open proposals from the cortex store: the registry above is
+        # otherwise fed only by PROPOSAL_CREATED events during this process'
+        # lifetime, so every restart showed 0 pending (and a "dead" scout)
+        # while dozens of gated proposals sat on disk.
+        if cortex is not None:
+            try:
+                store = getattr(cortex, "store", None)
+                if store is not None:
+                    for p in list(store.pending()) + list(store.gated()):
+                        if p.id not in self.proposals:
+                            kind = p.type.value if hasattr(p.type, "value") else str(p.type)
+                            status = p.status.value if hasattr(p.status, "value") else str(p.status)
+                            self.proposals[p.id] = ProposalRecord(
+                                proposal_id=p.id,
+                                kind=str(kind),
+                                summary=str(p.title or ""),
+                                payload=dict(p.to_dict()) if hasattr(p, "to_dict") else {},
+                                status=str(status),
+                                created_at=float(p.created_at or 0.0),
+                            )
+            except Exception:  # noqa: BLE001 - backfill is best-effort
+                pass
+
         # Live preview servers (Spec 3 two-pane workspace): slug -> RunningApp,
         # plus a shared Docker preview supervisor. Populated lazily by the
         # serve endpoints.
@@ -209,6 +232,7 @@ class AppState:
 
         # Mirror cortex proposals into the cache as they are created.
         self._wire_proposal_capture()
+        self._wire_autopilot_capture()
 
     async def _stop_all_serves_async(self) -> None:
         """Stop the current preview registry, awaiting either runner shape."""
@@ -449,6 +473,34 @@ class AppState:
         ):
             self.event_bus.subscribe(et, _on_build)
 
+    def _wire_autopilot_capture(self) -> None:
+        """Capture unresolved local build failures for Cortex when enabled."""
+        async def _on_build_failed(ev: Event) -> None:  # pragma: no cover - event wiring
+            if not bool(getattr(self.settings, "lab_autopilot", False)):
+                return
+            try:
+                from skyn3t.cortex.lab_autopilot import LabAutopilot
+
+                controller = getattr(self, "_lab_autopilot_controller", None)
+                if controller is None:
+                    controller = LabAutopilot(self.settings.data_dir, enabled=True)
+                    self._lab_autopilot_controller = controller
+                payload = ev.payload if isinstance(ev.payload, dict) else {}
+                summary = str(
+                    payload.get("error") or payload.get("reason") or "A build failed"
+                )
+                scope = str(payload.get("slug") or "active-project")
+                controller.report_incident(
+                    scope=scope,
+                    category="build_failure",
+                    summary=summary,
+                    evidence=str(payload.get("stage") or payload.get("status") or ""),
+                )
+                controller.next_run()
+            except Exception:  # noqa: BLE001 - observability never blocks build events
+                return
+
+        self.event_bus.subscribe(EventType.BUILD_FAILED, _on_build_failed)
     # ---- snapshots used by /api/status -----------------------------------
     def status(self) -> dict[str, Any]:
         s = self.settings
@@ -470,8 +522,11 @@ class AppState:
             "events_published": self.event_bus.published_count,
             "agents": len(self.orchestrator.agents) if self.orchestrator else 0,
             "builds": len(self.builds),
+            # GATED is pending too (awaiting human approval) — counting only
+            # "pending" reported 0 while 65 proposals sat gated for weeks,
+            # which made the scout look dead on the dashboard.
             "proposals_pending": sum(
-                1 for p in self.proposals.values() if p.status == "pending"
+                1 for p in self.proposals.values() if p.status in ("pending", "gated")
             ),
             "backends": {
                 "orchestrator": self.orchestrator is not None,

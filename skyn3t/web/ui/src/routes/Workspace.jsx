@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
 import {
@@ -13,6 +13,15 @@ import {
   countWorkspaceActivity,
   workspaceEventMatches,
 } from "../workspaceSignals.js";
+import {
+  addPin,
+  canSubmit,
+  elementLabel,
+  pinsToPayload,
+  removePin,
+  updatePinComment,
+  MAX_PINS,
+} from "../annotations.js";
 
 // ---------------------------------------------------------------------------
 // Two-pane live workspace (Spec 3): a running app on the left, an improve chat
@@ -20,9 +29,23 @@ import {
 // streaming IMPROVE_*/SERVE_* events from the shared WebSocket.
 // ---------------------------------------------------------------------------
 
+function formatElapsed(ms) {
+  const seconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
 function eventLine(e) {
   const p = e.payload || {};
   switch (e.type) {
+    case "serve.starting":
+      return {
+        glyph: "·",
+        tone: "text-ash",
+        text: `preview ${p.phase || "preparing"} — ${p.message || "working"}`,
+      };
+    case "serve.failed":
+      return { glyph: "✕", tone: "text-ember", text: `preview failed: ${p.reason || "unknown"}` };
     case "serve.started":
       return { glyph: "●", tone: "text-plasma", text: `serving at ${p.url}` };
     case "serve.stopped":
@@ -71,6 +94,14 @@ function ServePane({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [reserved, setReserved] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const historyQuery = useQuery({
+    queryKey: ["serve-history", slug],
+    queryFn: () => apiFetch(`/studio/serve/history?slug=${encodeURIComponent(slug)}`),
+    enabled: Boolean(slug),
+    refetchInterval: served?.status === "starting" ? 1000 : false,
+    refetchOnWindowFocus: false,
+  });
   const lastImproveRef = useRef(null);
   const iframeRef = useRef(null);
 
@@ -112,7 +143,7 @@ function ServePane({
     setErr(null);
     try {
       const r = await apiPost("/studio/serve", { slug });
-      if (r.status === "running") {
+      if (r.status === "running" || r.status === "starting") {
         setServed(r);
         // Baseline at serve time so the NEXT improve (even the first one) triggers
         // a re-serve, but a completion that predates this serve does not.
@@ -141,6 +172,54 @@ function ServePane({
   }
 
   const running = served && served.status === "running";
+  const starting = served && served.status === "starting";
+  const active = running || starting;
+  const latestLaunch = historyQuery.data?.launches?.[0] || null;
+  const priorLaunches = (historyQuery.data?.launches || []).slice(1, 4);
+  const currentMessage = served?.detail?.message || latestLaunch?.message || "Preparing an isolated Docker preview";
+  const elapsedMs = starting
+    ? Math.max(Number(latestLaunch?.elapsed_ms || served?.detail?.elapsed_ms || 0), nowMs - Number(latestLaunch?.started_at_ms || nowMs))
+    : Number(latestLaunch?.elapsed_ms || 0);
+
+  useEffect(() => {
+    if (!starting) return undefined;
+    setNowMs(Date.now());
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [starting]);
+
+  // Streamed terminal events update this pane without waiting for the 15-second
+  // status poll after Docker finishes a long first-time dependency prepare.
+  useEffect(() => {
+    const events = stream?.events || [];
+    const latest = [...events].reverse().find((event) =>
+      event.payload?.slug === slug && ["serve.started", "serve.starting", "serve.failed", "serve.stopped"].includes(event.type)
+    );
+    if (!latest) return;
+    void historyQuery.refetch();
+    if (latest.type === "serve.started") {
+      setErr(null);
+      setServed({ slug, url: latest.payload.url, port: latest.payload.port, status: "running" });
+    } else if (latest.type === "serve.starting") {
+      setErr(null);
+      setServed((previous) => ({
+        ...(previous || { slug, url: "", port: 0 }),
+        status: "starting",
+        detail: {
+          ...(previous?.detail || {}),
+          phase: latest.payload?.phase,
+          message: latest.payload?.message,
+          elapsed_ms: latest.payload?.elapsed_ms,
+          launch_id: latest.payload?.launch_id,
+        },
+      }));
+    } else if (latest.type === "serve.failed") {
+      setServed(null);
+      setErr(latest.payload?.reason || "Docker preview failed");
+    } else if (latest.type === "serve.stopped") {
+      setServed(null);
+    }
+  }, [stream?.events, slug]);
 
   // Auto re-serve when an improve completes for this slug: python/node servers
   // hold the old code in memory, so a restart is what surfaces the change (and
@@ -208,19 +287,64 @@ function ServePane({
                 {served.url} ↗
               </a>
             ) : null}
-            {running ? (
+            {active ? (
               <button onClick={stop} disabled={busy} className="btn-ghost disabled:opacity-50">
-                {busy ? "…" : "Stop"}
+                {busy ? "…" : starting ? "Cancel" : "Stop"}
               </button>
             ) : (
               <button onClick={start} disabled={busy || !slug} className="btn-ember disabled:opacity-50">
-                {busy ? "Starting…" : "Serve"}
+                {busy ? "Starting…" : err ? "Retry Serve" : "Serve"}
               </button>
             )}
           </div>
         }
       />
       {err ? <p className="px-4 py-2 font-mono text-[11px] text-ember">{err}</p> : null}
+      {latestLaunch ? (
+        <div className="border-b border-hairline bg-ink/20 px-4 py-3">
+          <div className="mb-2 flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wider text-ash/70">
+            <span>Launch timeline</span>
+            <span className={starting ? "text-ember" : latestLaunch.status === "running" ? "text-plasma" : "text-ash"}>
+              {starting ? `live · ${formatElapsed(elapsedMs)}` : latestLaunch.status}
+            </span>
+          </div>
+          <ol className="space-y-1">
+            {(latestLaunch.timeline || []).slice(-6).map((step, index) => (
+              <li key={`${step.at || index}-${step.phase || "phase"}`} className="flex items-start gap-2 font-mono text-[11px] text-ash">
+                <span className={index === (latestLaunch.timeline || []).slice(-6).length - 1 ? "text-ember" : "text-ash/40"}>●</span>
+                <span>{step.message || step.phase || "working"}</span>
+                <span className="ml-auto text-ash/50">{formatElapsed(step.elapsed_ms)}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+      {priorLaunches.length ? (
+        <details className="border-b border-hairline bg-void/20 px-4 py-2.5">
+          <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-wider text-ash/70 marker:text-ash/40">
+            Previous attempts ({priorLaunches.length})
+          </summary>
+          <ol className="mt-2 space-y-2">
+            {priorLaunches.map((attempt, index) => {
+              const failed = attempt.status === "failed";
+              const succeeded = attempt.status === "running";
+              return (
+                <li key={attempt.id || `${attempt.started_at || index}-${index}`} className="rounded border border-hairline/70 bg-ink/20 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3 font-mono text-[10px] uppercase tracking-wider">
+                    <span className={failed ? "text-ember" : succeeded ? "text-plasma" : "text-ash"}>
+                      {attempt.status || "unknown"}
+                    </span>
+                    <span className="text-ash/55">{formatElapsed(attempt.elapsed_ms)}</span>
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-ash">
+                    {attempt.error || attempt.message || attempt.phase || "No retained launch detail."}
+                  </p>
+                </li>
+              );
+            })}
+          </ol>
+        </details>
+      ) : null}
       <div className="flex-1 bg-ink/40">
         {running ? (
           <iframe
@@ -234,7 +358,9 @@ function ServePane({
           />
         ) : (
           <Empty icon="▢">
-            {slug ? "Press Serve to launch a live preview." : "Pick a project to begin."}
+            {starting
+              ? `${currentMessage} · ${formatElapsed(elapsedMs)}. You can cancel it at any time.`
+              : slug ? "Press Serve to launch a live preview." : "Pick a project to begin."}
           </Empty>
         )}
       </div>
@@ -631,6 +757,105 @@ function VisualEditorPane({ slug, signature, onEdited }) {
   );
 }
 
+function AnnotatePane({ slug, pins, onPinsChange, onDispatched, onSubmitted }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function submit() {
+    if (!slug || !canSubmit(pins)) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const result = await apiPost(
+        `/projects/${encodeURIComponent(slug)}/annotations/improve`,
+        pinsToPayload(pins),
+      );
+      if (result.accepted) {
+        if (result.correlation_id) onDispatched?.(slug, result.correlation_id);
+        onPinsChange?.([]);
+        // Hand off to the AI improve pane so the run's progress shows in the
+        // existing timeline.
+        onSubmitted?.(result);
+      } else {
+        setErr(result.reason || "improve unavailable");
+      }
+    } catch (error) {
+      setErr(String(error.message));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel className="flex h-full flex-col overflow-hidden">
+      <PanelHead
+        label="Annotate"
+        right={
+          <span className="font-mono text-[10px] text-plasma">
+            {busy ? "sending…" : `${pins.length}/${MAX_PINS} pins`}
+          </span>
+        }
+      />
+      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+        {!pins.length ? (
+          <Empty icon="✎">
+            Click elements in the live app to drop numbered pins, write one
+            comment per pin, then send them all as a single improve goal. Pins
+            create goals, never direct edits.
+          </Empty>
+        ) : (
+          <ol className="space-y-3">
+            {pins.map((pin, index) => (
+              <li
+                key={pin.id}
+                className="rounded border border-hairline bg-void/40 p-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-xs text-bone">
+                    <span className="text-ember">#{index + 1}</span>{" "}
+                    {elementLabel(pin.signature)}
+                  </span>
+                  <button
+                    className="btn-ghost"
+                    aria-label={`Delete pin ${index + 1}`}
+                    onClick={() => onPinsChange?.(removePin(pins, pin.id))}
+                  >
+                    Delete
+                  </button>
+                </div>
+                <textarea
+                  aria-label={`Comment for pin ${index + 1}`}
+                  className="field mt-2 min-h-14 w-full"
+                  placeholder="What should change here?"
+                  value={pin.comment}
+                  onChange={(event) =>
+                    onPinsChange?.(
+                      updatePinComment(pins, pin.id, event.target.value),
+                    )
+                  }
+                />
+              </li>
+            ))}
+          </ol>
+        )}
+        {err ? <p className="font-mono text-[11px] text-ember">{err}</p> : null}
+      </div>
+      <div className="flex items-center justify-between border-t border-hairline px-4 py-3">
+        <span className="font-mono text-[11px] text-ash/60">
+          one goal · per-element source evidence
+        </span>
+        <button
+          className="btn-ember disabled:opacity-50"
+          disabled={busy || !slug || !canSubmit(pins)}
+          onClick={submit}
+        >
+          {busy ? "Sending…" : "Send annotations"}
+        </button>
+      </div>
+    </Panel>
+  );
+}
+
 function ProductPane({ slug, buildId }) {
   const qc = useQueryClient();
   const actionInFlightRef = useRef(false);
@@ -948,6 +1173,156 @@ function ProductPane({ slug, buildId }) {
   );
 }
 
+function visualQualityArtifactUrl(slug, runId, screenshot) {
+  const raw = String(screenshot || "").replaceAll("\\", "/");
+  const prefix = `.skyn3t/visual-quality/${runId}/`;
+  if (!slug || !runId || !raw.startsWith(prefix)) return "";
+  const artifact = raw.slice(prefix.length);
+  return `/api/projects/${encodeURIComponent(slug)}/visual-quality/runs/${encodeURIComponent(runId)}/artifacts/${artifact.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function visualQualityIssues(run) {
+  const issues = [];
+  for (const round of run?.visual_loop?.rounds || []) {
+    for (const issue of round?.issues || []) issues.push(String(issue));
+    for (const issue of round?.layout_audit?.issues || []) issues.push(String(issue));
+  }
+  for (const viewport of run?.after?.viewports || run?.before?.viewports || []) {
+    for (const issue of viewport?.issues || []) {
+      issues.push(String(issue?.message || issue?.code || "visual proof issue"));
+    }
+  }
+  return [...new Set(issues)].slice(0, 8);
+}
+
+function VisualQualityPane({ slug, onCompleted }) {
+  const qc = useQueryClient();
+  const visual = useQuery({
+    queryKey: ["visual-quality", slug],
+    queryFn: queryFn(`/projects/${encodeURIComponent(slug)}/visual-quality`),
+    enabled: Boolean(slug),
+    retry: 0,
+  });
+  const run = useMutation({
+    mutationFn: () => apiPost(`/projects/${encodeURIComponent(slug)}/visual-quality/run`, {}),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["visual-quality", slug] });
+    },
+  });
+
+  useEffect(() => {
+    if (!visual.data?.running) return undefined;
+    const timer = window.setInterval(() => {
+      void visual.refetch().then((result) => {
+        if (!result.data?.running) onCompleted?.();
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [visual.data?.running, visual.refetch, onCompleted]);
+
+  const latest = visual.data?.runs?.[0] || null;
+  const viewports = latest?.after?.viewports?.length
+    ? latest.after.viewports
+    : latest?.before?.viewports || [];
+  const issues = visualQualityIssues(latest);
+  const state = visual.data?.running
+    ? "reviewing and repairing locally…"
+    : latest?.status === "completed"
+      ? latest?.visual_loop?.passed
+        ? "passed visual review"
+        : "finished with remaining visual findings"
+      : latest?.status === "skipped"
+        ? latest?.reason || "visual tooling was unavailable"
+        : latest?.status === "failed"
+          ? latest?.reason || "visual review failed"
+          : "no visual-quality run yet";
+
+  return (
+    <Panel className="flex h-full flex-col overflow-hidden">
+      <PanelHead
+        label="Visual quality"
+        right={
+          <button
+            type="button"
+            className="btn-ember"
+            disabled={!slug || run.isPending || visual.data?.running}
+            onClick={() => run.mutate()}
+          >
+            {run.isPending || visual.data?.running ? "Running…" : "Run review"}
+          </button>
+        }
+      />
+      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        {!slug ? (
+          <Empty icon="◌">Pick a delivered web project to review its visual quality.</Empty>
+        ) : (
+          <>
+            <div className="rounded border border-hairline bg-void/40 p-3">
+              <div className="eyebrow">Local visual loop</div>
+              <p className="mt-2 text-sm text-bone" aria-live="polite">{state}</p>
+              <p className="mt-1 text-xs text-ash">
+                Captures desktop and mobile evidence, checks rendering, then uses the proof-backed Improve path for clear fixes.
+              </p>
+            </div>
+
+            {issues.length ? (
+              <div>
+                <div className="eyebrow mb-2">Findings</div>
+                <ul className="space-y-1.5">
+                  {issues.map((issue) => (
+                    <li key={issue} className="rounded border border-ember/30 bg-ember/5 px-3 py-2 text-xs text-ash">
+                      {issue}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : latest ? (
+              <p className="text-xs text-ash">No specific findings were retained for this run.</p>
+            ) : null}
+
+            {viewports.length ? (
+              <div>
+                <div className="eyebrow mb-2">Latest evidence</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {viewports.map((viewport) => {
+                    const src = visualQualityArtifactUrl(slug, latest?.run_id, viewport?.screenshot);
+                    return (
+                      <div key={viewport?.name || viewport?.width} className="overflow-hidden rounded border border-hairline bg-ink/40">
+                        <div className="flex items-center justify-between border-b border-hairline px-3 py-2 font-mono text-[10px] text-ash">
+                          <span>{viewport?.name || "viewport"}</span>
+                          <span>{viewport?.width} × {viewport?.height}</span>
+                        </div>
+                        {src ? (
+                          <img src={src} alt={`${viewport?.name || "Visual"} evidence for ${slug}`} className="block h-44 w-full object-cover object-top" />
+                        ) : (
+                          <div className="flex h-44 items-center justify-center p-3 text-center text-xs text-ash">Screenshot evidence was unavailable.</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {latest?.assets?.length ? (
+              <div>
+                <div className="eyebrow mb-2">Real-image sources</div>
+                {latest.assets.map((asset) => (
+                  <p key={asset.local_path || asset.url} className="rounded border border-hairline px-3 py-2 text-xs text-ash">
+                    {asset.attribution || asset.title || "Recorded image source"}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+
+            {run.isError ? <p className="font-mono text-xs text-ember">{String(run.error?.message || run.error)}</p> : null}
+            {visual.isError ? <p className="font-mono text-xs text-ember">{String(visual.error?.message || visual.error)}</p> : null}
+          </>
+        )}
+      </div>
+    </Panel>
+  );
+}
 export default function Workspace({ stream }) {
   const [params, setParams] = useSearchParams();
   const slug = params.get("slug") || "";
@@ -955,6 +1330,7 @@ export default function Workspace({ stream }) {
   const [rightMode, setRightMode] = useState("improve");
   const [selectedSignature, setSelectedSignature] = useState(null);
   const [previewRevision, setPreviewRevision] = useState(0);
+  const [annotationPins, setAnnotationPins] = useState([]);
 
   const { data } = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
   const projects = Array.isArray(data) ? data : data?.projects || [];
@@ -965,6 +1341,7 @@ export default function Workspace({ stream }) {
     else p.delete("slug");
     setParams(p, { replace: true });
     setSelectedSignature(null);
+    setAnnotationPins([]);
   }
 
   const current = projects.find((p) => p.slug === slug);
@@ -1038,8 +1415,12 @@ export default function Workspace({ stream }) {
         <ServePane
           slug={slug}
           stream={stream}
-          editorMode={rightMode === "visual"}
-          onElementSelected={setSelectedSignature}
+          editorMode={rightMode === "visual" || rightMode === "annotate"}
+          onElementSelected={
+            rightMode === "annotate"
+              ? (signature) => setAnnotationPins((prev) => addPin(prev, signature))
+              : setSelectedSignature
+          }
           refreshRevision={previewRevision}
         />
         <div className="flex min-h-0 flex-col gap-2">
@@ -1057,6 +1438,17 @@ export default function Workspace({ stream }) {
               Visual edit
             </button>
             <button
+              className={rightMode === "annotate" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("annotate")}
+            >
+              Annotate
+            </button>
+            <button
+              className={rightMode === "quality" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("quality")}
+            >
+              Visual quality
+            </button>            <button
               className={rightMode === "product" ? "btn-ember" : "btn-ghost"}
               onClick={() => setRightMode("product")}
             >
@@ -1064,7 +1456,12 @@ export default function Workspace({ stream }) {
             </button>
           </div>
           <div className="min-h-0 flex-1">
-            {rightMode === "product" ? (
+            {rightMode === "quality" ? (
+              <VisualQualityPane
+                slug={slug}
+                onCompleted={() => setPreviewRevision((value) => value + 1)}
+              />
+            ) : rightMode === "product" ? (
               <ProductPane
                 slug={slug}
                 buildId={current?.build_id || ""}
@@ -1074,6 +1471,14 @@ export default function Workspace({ stream }) {
                 slug={slug}
                 signature={selectedSignature}
                 onEdited={() => setPreviewRevision((value) => value + 1)}
+              />
+            ) : rightMode === "annotate" ? (
+              <AnnotatePane
+                slug={slug}
+                pins={annotationPins}
+                onPinsChange={setAnnotationPins}
+                onDispatched={rememberImproveCid}
+                onSubmitted={() => setRightMode("improve")}
               />
             ) : (
               <ImprovePane

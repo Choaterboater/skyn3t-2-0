@@ -271,7 +271,6 @@ def test_disabled_auto_merge_preserves_verified_candidate_and_cleanup_is_idempot
         CandidateStatus.APPLY_FAILED,
         CandidateStatus.REJECTED_PATHS,
         CandidateStatus.VERIFY_FAILED,
-        CandidateStatus.STALE_BASE,
         CandidateStatus.MERGE_FAILED,
         CandidateStatus.ERROR,
     ],
@@ -301,6 +300,34 @@ def test_failed_worktree_policy_cleans_every_terminal_failure(
     assert report.worktree_preserved is False
     assert not worktree.exists()
     assert _git(repo, "branch", "--list", report.candidate_branch) == ""
+
+
+def test_stale_base_preserves_verified_worktree_and_branch(tmp_path: Path) -> None:
+    """STALE_BASE is only ever set AFTER full verification passed — main simply
+    advanced mid-verify. The failed-worktree policy must not destroy the
+    verified candidate; it follows the READY retention path so the operator can
+    rebase/merge manually from the preserved worktree and branch."""
+    repo = _repo(tmp_path)
+    engine = _engine(
+        tmp_path,
+        repo,
+        auto_merge=False,
+        preserve_unmerged=True,
+        preserve_failed_worktrees=False,
+    )
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+    worktree = Path(report.worktree_path)
+
+    assert report.status is CandidateStatus.READY
+    assert worktree.exists()
+
+    report.status = CandidateStatus.STALE_BASE
+    report = engine._finish(report, created=True)
+
+    assert report.status is CandidateStatus.STALE_BASE
+    assert report.worktree_preserved is True
+    assert worktree.exists()
+    assert _git(repo, "branch", "--list", report.candidate_branch)
 
 
 def test_command_strings_shell_eval_and_traversal_are_rejected(tmp_path: Path) -> None:

@@ -13,10 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
+import os
+import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
+
+import structlog
 
 from skyn3t.core.agent import TaskResult
 from skyn3t.studio.proof_run import ProofResult, proof_run
@@ -27,6 +32,8 @@ from skyn3t.worktree import (
     list_files,
     merge_back,
 )
+
+log = structlog.get_logger(__name__)
 
 # A factory that runs ONE code-stage trajectory in a given worktree and returns
 # the stage TaskResult. Provided by the StudioRunner.
@@ -275,10 +282,17 @@ async def sample(
     checklist: list[str] | None = None,
     execution_backend: str = "auto",
     stack: str = "",
+    run_tests: bool = False,
+    test_timeout: int = 90,
+    run_build: bool = False,
+    build_timeout: int = 300,
+    brief: str = "",
     seed_dir: str | None = None,
     worktrees_root: str | None = None,
     worktree_registry: list[Worktree] | None = None,
     preserve_on_cancel: bool = False,
+    vision_fn: Any = None,
+    tie_epsilon: float = 0.5,
 ) -> SelectionResult:
     """Run ``n`` code trajectories in parallel, proof each, select the best.
 
@@ -287,6 +301,12 @@ async def sample(
     before any trajectory starts. This preserves deterministic tests and assets
     authored by earlier stages so each candidate is generated and proved
     against the same complete input tree.
+    ``run_tests``/``run_build`` (and their timeouts, plus ``brief``) thread
+    straight into :func:`proof_run` and default to its own defaults, so direct
+    callers keep the structural-only proof. The runner passes its settings so
+    candidate ranking uses the SAME objective proof the delivered tree must
+    later pass — otherwise a fatter tree that fails ``npm run build`` can beat
+    a leaner one that compiles.
     The caller owns merging and cleaning the winner; this function normally
     cleans every loser. A runner that needs to recover partial output on
     cancellation can register every worktree up front and defer cancellation
@@ -323,6 +343,11 @@ async def sample(
                 checklist=checklist,
                 execution_backend=execution_backend,
                 stack=stack,
+                run_tests=run_tests,
+                test_timeout=test_timeout,
+                run_build=run_build,
+                build_timeout=build_timeout,
+                brief=brief,
             )
         except Exception as exc:  # noqa: BLE001 - isolate proof failures per candidate
             cand.proof = None
@@ -337,6 +362,12 @@ async def sample(
     try:
         await asyncio.gather(*(_run(c) for c in candidates))
         selection = select(candidates)
+        # Proof-tie among the leaders? With divergence-seeded candidates the
+        # designs genuinely differ, so a vision judge (when configured) breaks
+        # the tie; without one the rank order stands (logged). Never fails a
+        # build — every step soft-skips.
+        selection = await _maybe_vision_tie_break(
+            selection, vision_fn=vision_fn, brief=brief, epsilon=tie_epsilon)
         return selection
     except asyncio.CancelledError:
         cancelled = True
@@ -391,3 +422,200 @@ def select(candidates: list[Candidate]) -> SelectionResult:
     )
     selection.freeze_evidence()
     return selection
+
+
+# ---- Vision tie-break (divergence-seeded best-of-N) -------------------------
+#
+# Ranking stays proof-first. Only when the top two candidates sit in the SAME
+# proof class with proof scores within ``tie_epsilon`` — a genuine proof-tie —
+# may a configured vision judge pick the better-LOOKING leader. Without a
+# vision provider the tie breaks by the existing rank order with a logged
+# note. Every step soft-skips: no playwright, no index page, a screenshot or
+# judge failure, or an unparseable verdict all keep the rank-order winner.
+
+
+def _tie_leaders(selection: SelectionResult, epsilon: float) -> tuple[Candidate, Candidate] | None:
+    """The top two candidates when they form a proof-tie: same proof-pass and
+    completeness classes (rank_key's first two components) and proof scores
+    within ``epsilon``. ``None`` when the leader wins outright."""
+    ordered = sorted(selection.candidates, key=lambda c: c.rank_key, reverse=True)
+    if len(ordered) < 2:
+        return None
+    first, second = ordered[0], ordered[1]
+    ka, kb = first.rank_key, second.rank_key
+    if ka[0] != kb[0] or ka[1] != kb[1]:
+        return None
+    if abs(float(ka[2]) - float(kb[2])) > float(epsilon):
+        return None
+    return first, second
+
+
+async def _maybe_vision_tie_break(
+    selection: SelectionResult,
+    *,
+    vision_fn: Any = None,
+    brief: str = "",
+    epsilon: float = 0.5,
+) -> SelectionResult:
+    """Let a vision judge break a proof-tie between the top two candidates.
+    Returns the original selection untouched unless the judge cleanly prefers
+    the runner-up. Never raises; never fails a build."""
+    if selection.winner is None:
+        return selection
+    try:
+        leaders = _tie_leaders(selection, epsilon)
+    except Exception:  # noqa: BLE001 - tie detection must not fail a build
+        return selection
+    if leaders is None:
+        return selection
+    first, second = leaders
+    if vision_fn is None:
+        log.info(
+            "best_of_n.tie_break_no_vision",
+            candidates=[first.index, second.index],
+            note="proof-tie broken by rank order (no vision provider configured)",
+        )
+        return selection
+    try:
+        scores = await asyncio.to_thread(_judge_pair, first, second, vision_fn, brief)
+    except Exception as exc:  # noqa: BLE001 - the judge must never fail a build
+        log.warning("best_of_n.tie_break_failed", error=str(exc)[:160])
+        return selection
+    if not scores:
+        return selection
+    # A judge tie keeps the rank-order leader (deterministic).
+    picked = (
+        first
+        if float(scores.get(first.index, 0.0)) >= float(scores.get(second.index, 0.0))
+        else second
+    )
+    note = {
+        "candidates": [first.index, second.index],
+        "judge_scores": {str(k): round(float(v), 2) for k, v in scores.items()},
+        "winner": picked.index,
+        "judge": "vision",
+    }
+    if picked is selection.winner:
+        if selection.evidence:
+            selection.evidence["tie_break"] = note
+        return selection
+    log.info(
+        "best_of_n.tie_break_vision_override",
+        rank_winner=selection.winner.index,
+        vision_winner=picked.index,
+        scores=note["judge_scores"],
+    )
+    swapped = SelectionResult(
+        winner=picked,
+        candidates=selection.candidates,
+        any_passed=selection.any_passed,
+        reason=(
+            f"{selection.reason}; vision tie-break picked candidate "
+            f"{picked.index} over {selection.winner.index}"
+        ),
+    )
+    swapped.freeze_evidence()
+    swapped.evidence["tie_break"] = note
+    return swapped
+
+
+_JUDGE_PROMPT = (
+    "You are judging the visual design quality of a web app screenshot built "
+    "for this brief: '{goal}'. Score ONLY the aesthetic craft — layout "
+    "composition, typography, color harmony, spacing, overall polish — not "
+    "feature completeness. Respond ONLY as JSON: {{\"score\": <number 0-10>}}"
+)
+
+
+def _judge_pair(
+    first: Candidate,
+    second: Candidate,
+    vision_fn: Any,
+    brief: str,
+) -> dict[int, float] | None:
+    """Screenshot both leaders' index pages and score each with the vision
+    judge. ``None`` on any soft-skip (no playwright, no index page, capture
+    or judge failure, unparseable verdict). Sync by design — runs in a
+    worker thread via ``asyncio.to_thread`` (playwright's sync API)."""
+    from skyn3t.studio.visual_check import (
+        _extract_json,
+        capture_visual_evidence,
+        playwright_available,
+    )
+
+    if not playwright_available():
+        log.info("best_of_n.tie_break_skipped", reason="playwright not installed")
+        return None
+    scores: dict[int, float] = {}
+    for cand in (first, second):
+        shot = _screenshot_index(cand, capture_visual_evidence)
+        if not shot:
+            return None
+        try:
+            raw = vision_fn(shot, _JUDGE_PROMPT.format(goal=brief or "web app"))
+            data = json.loads(_extract_json(raw))
+            scores[cand.index] = float(data.get("score"))
+        except Exception:  # noqa: BLE001 - unparseable/judge error -> keep rank order
+            return None
+        finally:
+            try:
+                os.unlink(shot)
+            except OSError:
+                pass
+    return scores
+
+
+def _index_page_dir(root: str) -> str | None:
+    """The directory holding the candidate's index page, or None."""
+    from pathlib import Path
+
+    base = Path(root)
+    for candidate in (
+        base / "index.html",
+        base / "dist" / "index.html",
+        base / "public" / "index.html",
+    ):
+        if candidate.is_file():
+            return str(candidate.parent)
+    try:
+        for found in sorted(base.glob("*/index.html")):
+            return str(found.parent)
+    except OSError:
+        pass
+    return None
+
+
+def _screenshot_index(candidate: Candidate, capture_fn: Any) -> str | None:
+    """Serve the candidate's index page over a throwaway localhost static
+    server and screenshot it (the same capture path visual_check uses).
+    Never raises."""
+    serve_dir = _index_page_dir(candidate.worktree.dir)
+    if not serve_dir:
+        return None
+    httpd = None
+    try:
+        import functools
+        import http.server
+        import threading
+
+        class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:  # keep build logs clean
+                pass
+
+        handler = functools.partial(_QuietHandler, directory=serve_dir)
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/index.html"
+        fd, path = tempfile.mkstemp(prefix="skyn3t-bon-shot-", suffix=".png")
+        os.close(fd)
+        shot, _metrics = capture_fn(url, path)
+        return shot
+    except Exception:  # noqa: BLE001 - screenshots are best-effort
+        return None
+    finally:
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:  # noqa: BLE001
+                pass

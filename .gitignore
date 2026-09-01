@@ -15,6 +15,8 @@ data/build_patterns.json
 data/bench/
 data/model_router_paid_fallback.json
 data/model_tournament.json
+data/serve_launch_history.json
+
 data/token_rollups.json
 data/reference_images/
 data/asset_packs/
@@ -35,8 +37,11 @@ data/recovery/
 /skyn3t/build_patterns.json
 /skyn3t/model_router_paid_fallback.json
 /skyn3t/model_tournament.json
+/skyn3t/serve_launch_history.json
+
 /skyn3t/reference_images/
-/skyn3t/skills/
+/skyn3t/skills/*
+!/skyn3t/skills/README.md
 /skyn3t/snapshot.json
 /skyn3t/token_rollups.json
 /skyn3t/vector_db/
@@ -58,3 +63,6 @@ dist/
 .eggs/
 /skyn3t/cortex/staged/
 .DS_Store
+data/*.sqlite3
+
+artifacts/golden/*.log

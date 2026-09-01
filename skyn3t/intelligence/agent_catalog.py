@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from skyn3t.intelligence.skill_library import SkillLibrary, _slugify
+from skyn3t.intelligence.skill_library import (
+    SkillLibrary,
+    SkillProvenance,
+    _slugify,
+    content_sha256,
+)
 
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 _MAX_BODY_CHARS = 2400
@@ -179,7 +184,7 @@ def _entry_from_markdown(path: Path, root: Path) -> CatalogEntry | None:
     if not body.strip():
         return None
     stages, stacks, tags, risk = _classify(title, description, path.relative_to(root))
-    rel = str(path.relative_to(root))
+    rel = path.relative_to(root).as_posix()
     return CatalogEntry(
         id=_slugify(f"{root.name}-{rel}"),
         title=title,
@@ -204,7 +209,7 @@ def _entry_from_toml(path: Path, root: Path) -> CatalogEntry | None:
     if not body.strip():
         return None
     stages, stacks, tags, risk = _classify(title, description, path.relative_to(root))
-    rel = str(path.relative_to(root))
+    rel = path.relative_to(root).as_posix()
     return CatalogEntry(
         id=_slugify(f"{root.name}-{rel}"),
         title=title,
@@ -249,23 +254,49 @@ def import_catalog_as_skills(
     *,
     limit: int | None = None,
     source: str = "agent_catalog",
+    activate: bool = False,
 ) -> int:
-    """Import normalized catalog roles as compact advisory skills."""
+    """Import local catalog roles as evidence-bound, non-executable advice.
+
+    Default imports remain quarantined candidates. ``activate=True`` is the
+    explicit local trust action: it promotes each newly imported role only after
+    its compact advisory body and relative source-path receipt validate.
+    """
+    if not isinstance(activate, bool):
+        raise ValueError("catalog activate must be a boolean")
     count = 0
     for entry in discover_catalog_entries(path, limit=limit):
         stack = entry.stacks[0] if entry.stacks else "generic"
-        tags = sorted(set(entry.tags + [f"stage:{s}" for s in entry.stages] + [entry.source_kind]))
-        library.add(
+        body = entry.compact_body()
+        # Skill.stack stays the stable primary stack for older callers, but
+        # catalog roles frequently apply to several factory stacks. Keep every
+        # inferred alternative observable and matchable without duplicating the
+        # role (or losing its catalog identity) on import.
+        tags = sorted(
+            set(
+                entry.tags
+                + [f"stage:{stage}" for stage in entry.stages]
+                + [f"stack:{inferred_stack}" for inferred_stack in entry.stacks]
+                + [f"catalog:{entry.id}", entry.source_kind]
+                + ["catalog-candidate", "hygiene:quarantine"]
+            )
+        )
+        skill = library.add(
             entry.title,
-            entry.compact_body(),
+            body,
             stack=stack,
             tags=tags,
             source=source,
             slug=entry.id,
+            provenance=SkillProvenance(
+                content_hash=content_sha256(body),
+                source_path=entry.source_path,
+            ),
         )
+        if activate and library.activate_catalog_candidate(skill.slug) is None:
+            raise ValueError(f"catalog activation evidence was invalid for {entry.source_path!r}")
         count += 1
     return count
-
 
 def catalog_summary(entries: list[CatalogEntry]) -> dict[str, Any]:
     """Small serializable summary for UI/API use."""

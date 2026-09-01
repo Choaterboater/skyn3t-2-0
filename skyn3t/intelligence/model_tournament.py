@@ -24,6 +24,12 @@ counters accrue over real traffic. After a few dozen stages a model can clear
 :class:`RoutingRecommender`'s ``min_plays``/``min_win_rate`` thresholds and the
 learned router (``Settings.model_evolution`` + ``auto_route``) starts routing to
 it; until then it abstains and the deterministic base router is used (safe).
+
+Because an automatic solo *win* makes ``win_rate`` vacuously 1.0 (stage success
+was the only signal — a model whose builds all ended no_go still cleared the
+recommender's gate), solo evidence should be graded by the build's terminal
+verdict via :meth:`record_solo` (go → win, no_go → loss). :meth:`record_win`
+keeps its historical solo semantics for existing callers.
 """
 
 from __future__ import annotations
@@ -101,7 +107,7 @@ class ModelTournament:
         if self.path is None or not self.path.exists():
             return
         try:
-            raw = json.loads(self.path.read_text())
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - unreadable/corrupt file
             if _log:
                 _log.warning("tournament.load_failed", error=str(exc))
@@ -150,6 +156,11 @@ class ModelTournament:
             return False
 
     # ---- recording ----------------------------------------------------
+    # Competitor ids are already unambiguous across providers without extra
+    # namespacing: a CLI result is labelled ``<provider>-cli[:model]`` by
+    # ``LLMClient._cli`` and an OpenRouter result is a ``vendor/model`` id, so
+    # the two families cannot collide. Multi-provider fan-out therefore needs no
+    # change here — the distinct labels arrive on their own.
     def _stat(self, bucket: str, model: str) -> ModelStats:
         board = self._boards.setdefault(bucket, {})
         if model not in board:
@@ -199,6 +210,51 @@ class ModelTournament:
         if save:
             self.save()
 
+    def record_solo(
+        self,
+        bucket: str,
+        model: str,
+        *,
+        won: bool,
+        task_type: str = "",
+        save: bool = True,
+    ) -> None:
+        """Record a solo (uncontested) appearance graded by the build's outcome.
+
+        ``record_win(losers=[])`` counts every solo appearance as a win, so any
+        model fed by ordinary single-model traffic has ``win_rate`` exactly 1.0
+        and rating pinned at 1000 — :class:`RoutingRecommender`'s
+        ``min_win_rate`` gate is then vacuously satisfied by ANY model after
+        ``min_plays`` stages, including one whose builds all ended no_go
+        (stage success was the only signal; negative build outcomes never
+        demoted). Solo evidence must instead be graded by the build's TERMINAL
+        verdict: ``won=True`` for a go build, ``won=False`` otherwise. No Elo
+        exchange (there is no opponent); contested matches keep using
+        :meth:`record_win`, where winner-beat-loser is valid relative evidence
+        independent of the final verdict.
+
+        ``save=False`` defers the disk write for batched callers, mirroring
+        :meth:`record_win`.
+        """
+        now = time.time()
+        stats = self._stat(bucket, model)
+        if won:
+            stats.wins += 1
+        else:
+            stats.losses += 1
+        stats.plays += 1
+        stats.last_seen = now
+        self._matches.append(
+            MatchRecord(
+                bucket=bucket,
+                winner=model if won else "",
+                losers=[] if won else [model],
+                task_type=task_type,
+            )
+        )
+        if save:
+            self.save()
+
     # ---- querying -----------------------------------------------------
     def has_data(self) -> bool:
         """Return True if any model has been recorded in any bucket.
@@ -224,7 +280,15 @@ class ModelTournament:
                     "stage via StudioRunner._feed_tournament, and by debate)."
                 ),
             )
-        ranked = sorted(board.values(), key=lambda s: s.rating, reverse=True)
+        # Tie-break beyond rating: solo-only buckets hold every model at the
+        # base rating (no Elo exchange without an opponent), and a stable sort
+        # on rating alone kept dict insertion order — the first-ever-seen model
+        # topped the bucket forever regardless of how the others performed.
+        ranked = sorted(
+            board.values(),
+            key=lambda s: (s.rating, s.win_rate, s.plays),
+            reverse=True,
+        )
         return ranked[:limit]
 
     def champion(self, bucket: str, *, min_plays: int = 1) -> str | None:

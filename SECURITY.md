@@ -85,15 +85,22 @@ sandboxing logic.
   see an obviously-named credential) — they are not a sandbox. Any untrusted
   code that runs through this fallback has the same filesystem and network
   reach as the skyn3t process itself.
-- **Secret scrubbing (`security/secrets.py`'s `filter_env`/`scrub_text`).**
-  This is name/value pattern matching (`_SECRET_MARKERS` substrings like
-  `"key"`/`"token"`/`"secret"`, plus a handful of literal token-shape regexes
-  for `sk-…`/`ghp_…`/AWS/Google keys and `scheme://user:pass@host` URLs), not a
-  real secret-detection engine. It will not catch a credential in an
-  unrecognized format, split across two env vars, base64-encoded, or embedded
-  in a value under an innocuous-looking name that also fails the URL-credential
-  regex. It is a strong default, not a proof of absence. `AuditLog` records are
-  scrubbed the same way and inherit the same limitation.
+- **Secret scrubbing (`security/secrets.py`'s `filter_env`/`scrub_text`, plus a
+  separate output-side `mask_text`/registered-value masking layer added after
+  this document's first draft).** Both are name/value pattern matching
+  (`_SECRET_MARKERS` substrings like `"key"`/`"token"`/`"secret"`, a handful of
+  literal token-shape regexes for `sk-…`/`ghp_…`/AWS/Google keys and
+  `scheme://user:pass@host` URLs, plus a value-length/benign-word false-positive
+  guard on the output side), not a real secret-detection engine. Input-side
+  (`filter_env`) and output-side masking are deliberately separate mechanisms —
+  the former stops a credential from ever reaching a sandboxed process; the
+  latter redacts a registered secret VALUE that turns up in text crossing back
+  over the trust boundary (captured build/test output, gate verdicts, CLI
+  prose). Neither will catch a credential in an unrecognized format, split
+  across two env vars, or embedded in a value under an innocuous-looking name
+  that also fails the URL-credential regex. Strong defaults, not proof of
+  absence. `AuditLog` records are scrubbed the same way and inherit the same
+  limitation.
 - **Provider-CLI allowlisting in `DeployAgent`.** `_resolved_provider_cli` and
   `_is_provider_deploy_command` narrow *which binary* and *which subcommand*
   can run, but the process itself is unsandboxed once it starts — this stops

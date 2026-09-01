@@ -15,6 +15,7 @@ test("deploy settings expose every supported production provider", () => {
     "cloudflare",
     "netlify",
     "railway",
+    "render",
   ]);
 });
 

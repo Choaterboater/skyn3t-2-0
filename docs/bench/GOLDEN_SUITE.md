@@ -56,6 +56,16 @@ Run ledgers embed the exact ordered check-name contract for every case. A
 non-error attempt is invalid unless it contains every invariant, gate, and
 artifact check exactly once and in that order.
 
+## The design suite (golden-design-v1)
+
+A second packaged suite, `skyn3t/benchmarks/golden-design-v1.json`, lives beside
+the canonical one and shares the v1 schema. It measures design distinctiveness:
+five briefs with named, non-default aesthetics. Its per-case intent floors may
+drop below the version-1 `80` — the schema floor is `60` — because
+style-direction vocabulary legitimately never appears in delivered page copy;
+each case documents its own floor. It is additive: golden-v1 remains the
+promotion gate.
+
 ## Gate policy
 
 Every case requires `proof`. Cases supported by the generated-app security

@@ -126,6 +126,23 @@ def test_allowed_candidate_passes_gates_and_fast_forwards_main(tmp_path: Path) -
     assert ("git", "merge", "--ff-only", report.candidate_branch) not in runner.calls
 
 
+def test_full_diff_is_populated_from_candidate_changes(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    engine = _engine(tmp_path, repo, auto_merge=True)
+
+    report = engine.run(
+        _allowed_patch,
+        [VerificationCommand(("pytest", "-q"), timeout_seconds=12, label="focused tests")],
+    )
+
+    assert report.status is CandidateStatus.MERGED
+    assert 'FEATURE = "verified"' in report.full_diff
+    assert "candidate_feature.py" in report.full_diff
+
+    payload = json.loads(Path(report.report_path).read_text(encoding="utf-8"))
+    assert 'FEATURE = "verified"' in payload["full_diff"]
+
+
 def test_allowlist_covers_only_the_approved_product_improvement_areas(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     engine = _engine(tmp_path, repo, auto_merge=False)

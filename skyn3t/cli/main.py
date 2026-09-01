@@ -36,7 +36,10 @@ from pathlib import Path
 from typing import Annotated, Any, Protocol
 from typing import cast as type_cast
 
+import structlog
 import typer
+
+log = structlog.get_logger(__name__)
 
 app = typer.Typer(
     name="skyn3t",
@@ -1885,6 +1888,23 @@ def studio_liveness(
         raise typer.Exit(code=3)
 
 
+def _surface_recovery_result(state: Any, result: Any) -> None:
+    """Surface a restored checkpoint onto ``state`` instead of discarding it.
+
+    ``result`` is the ``RecoveryResult`` that ``RecoveryManager`` already
+    extracts from the last checkpoint on every boot (``files_state`` /
+    ``task_state``). Before this it was awaited and thrown away. A missing
+    checkpoint (``result`` is ``None`` or ``result.restored`` is falsy) is a
+    no-op: ``state.recovered_checkpoint`` keeps its ``None`` default.
+    """
+    if result is None or not getattr(result, "restored", False):
+        return
+    state.recovered_checkpoint = result
+    build_id = result.task_state.get("build_id")
+    if build_id:
+        log.info("startup.recovery_checkpoint_found", build_id=build_id, mode=result.mode)
+
+
 async def assemble_app_state(event_bus: Any | None = None) -> Any:
     """Build a fully-wired web ``AppState`` (spine + studio + intelligence).
 
@@ -1899,12 +1919,14 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
     bus = spine["event_bus"]
 
     # Recovery: restore prior state on boot, then announce (best-effort).
+    # The result is captured (not discarded) and surfaced onto `state` below.
+    recovery_result = None
     try:
         from skyn3t.persistence.recovery import RecoveryManager
 
-        await RecoveryManager().restore_and_announce(bus)
+        recovery_result = await RecoveryManager().restore_and_announce(bus)
     except Exception:  # noqa: BLE001
-        pass
+        recovery_result = None
 
     studio = None
     rag = None  # hoisted: shared with the cortex block below (NameError-safe if studio init fails)
@@ -1969,6 +1991,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
         patterns=getattr(studio, "patterns", None),
         messaging=messaging,
     )
+    _surface_recovery_result(state, recovery_result)
     ingestor = getattr(rag, "_skyn3t_ingestor", None)
     if ingestor is not None:
         state.ingestors.append(ingestor)
@@ -2118,11 +2141,18 @@ def project_cleanup(
     if not cats:
         # Safe default: failed/superseded/stray_previews require a saved manifest
         # with a terminal status, so an in-flight build (no manifest yet) is never
-        # selected. orphaned_worktrees/orphaned_projects need --categories to opt in.
+        # selected. orphaned_worktrees/orphaned_projects still need --categories
+        # to opt in.
         cats = ["failed", "superseded", "stray_previews"]
-        console.print("[dim]orphaned_worktrees/orphaned_projects are excluded by default "
-                      "(they can't be told apart from an in-flight build). Opt in with "
-                      "--categories orphaned_worktrees,orphaned_projects only when no build is running.[/dim]")
+        console.print("[dim]orphaned_worktrees/orphaned_projects are excluded by default. "
+                      "orphaned_worktrees now skips any worktree whose creating process is "
+                      "still alive (skyn3t.worktree's owner marker), so it's safe to opt in "
+                      "even while other builds run -- EXCEPT for worktrees created before this "
+                      "check existed, which carry no marker and fall back to the old "
+                      "no-live-process-can-tell rule. orphaned_projects has no such signal at "
+                      "all: opt in with --categories orphaned_worktrees,orphaned_projects only "
+                      "when no build is running, or once you know every worktree post-dates "
+                      "this feature.[/dim]")
     items = report.all_items(cats)
     table = _table("Cleanup candidates", ["category", "path", "reason", "MB"])
     for name in ("failed", "superseded", "orphaned_worktrees", "orphaned_projects", "stray_previews"):

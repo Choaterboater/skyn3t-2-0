@@ -14,6 +14,7 @@ Design constraints honored here:
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import base64
 import hashlib
@@ -182,6 +183,20 @@ def create_app(
                     log.info("startup.reconciled_orphaned_builds", count=n)
             except Exception as exc:  # noqa: BLE001 - never block startup
                 log.warning("startup.reconcile_failed", error=str(exc))
+        # Same idea for the build WORKTREES a dead instance left on disk: only
+        # ones whose marker proves the creating pid is confirmed gone are
+        # touched (blocking git/file IO -> a worker thread so a slow repo
+        # never delays the rest of startup). Ambiguous/legacy worktrees with
+        # no marker still require the human-attended `project cleanup` sweep.
+        try:
+            from skyn3t.worktree import reap_dead_worktrees
+
+            worktrees_dir = state.settings.projects_dir.parent / ".skyn3t_worktrees"
+            n = await asyncio.to_thread(reap_dead_worktrees, worktrees_dir)
+            if n:
+                log.info("startup.reaped_dead_worktrees", count=n)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            log.warning("startup.worktree_reap_failed", error=str(exc))
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:  # pragma: no cover - lifecycle hook

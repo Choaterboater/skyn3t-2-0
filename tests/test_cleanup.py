@@ -137,3 +137,65 @@ def test_failed_project_preview_not_in_stray_previews(tmp_path):
     # the failed dir is already a cleanup target; .preview must NOT appear separately
     assert not any(i.path.name == ".preview" for i in report.stray_previews)
     assert [i.path.name for i in report.failed] == ["broken"]
+
+
+def test_worktree_with_live_owner_pid_excluded_from_orphans(tmp_path):
+    import json as _json
+    import os
+
+    from skyn3t.worktree import _WORKTREE_MARKER
+
+    projects = tmp_path / "Projects"
+    worktrees = tmp_path / "wt"
+    projects.mkdir()
+    worktrees.mkdir()
+    live = worktrees / "live-abcd1234"
+    live.mkdir()
+    (live / _WORKTREE_MARKER).write_text(_json.dumps({"pid": os.getpid()}))
+
+    # No known_worktrees/active_slugs at all -- the marker's live PID alone
+    # must be enough to prove this worktree is still in use, since a fresh
+    # process auditing another (still-running) process's worktrees has no
+    # other way to know about it.
+    report = scan(projects, worktrees)
+
+    assert report.orphaned_worktrees == []
+
+
+def test_worktree_with_dead_owner_pid_flagged_as_orphan(tmp_path):
+    import json as _json
+    import subprocess
+    import sys
+
+    from skyn3t.worktree import _WORKTREE_MARKER
+
+    projects = tmp_path / "Projects"
+    worktrees = tmp_path / "wt"
+    projects.mkdir()
+    worktrees.mkdir()
+    dead = worktrees / "dead-abcd1234"
+    dead.mkdir()
+    # A process that has already exited: its pid is guaranteed dead now.
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    (dead / _WORKTREE_MARKER).write_text(_json.dumps({"pid": proc.pid}))
+
+    report = scan(projects, worktrees)
+
+    assert [i.path.name for i in report.orphaned_worktrees] == ["dead-abcd1234"]
+
+
+def test_worktree_with_no_marker_falls_back_to_prior_behavior(tmp_path):
+    # No marker at all (legacy worktree, or one predating this feature) must
+    # not regress: it's still excluded by known_worktrees/active_slugs, and
+    # still flagged orphaned when neither applies -- exactly like before the
+    # PID-liveness check existed.
+    projects = tmp_path / "Projects"
+    worktrees = tmp_path / "wt"
+    projects.mkdir()
+    worktrees.mkdir()
+    (worktrees / "loose-abcd1234").mkdir()
+
+    report = scan(projects, worktrees, known_worktrees=())
+
+    assert [i.path.name for i in report.orphaned_worktrees] == ["loose-abcd1234"]

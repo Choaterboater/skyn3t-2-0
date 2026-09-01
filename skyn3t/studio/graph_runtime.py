@@ -2396,6 +2396,7 @@ class GraphExecutor:
                 routing=run.routing,
                 cancel_event=cancel_event,
             )
+            raw_result: Any
             try:
                 if handler is None and node.kind == _SPECIALIST_JOIN_KIND:
                     raw_result = NodeResult(

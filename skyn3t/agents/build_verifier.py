@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 from typing import Any
@@ -28,13 +29,13 @@ from skyn3t.agents import _verify_common as vc
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
-from skyn3t.exec_paths import resolve_executable
 from skyn3t.npm_utils import (
     discard_foreign_node_modules,
     mark_npm_install_current,
     npm_install_args,
     npm_install_current,
 )
+from skyn3t.security.execution_broker import ExecutionBroker, SecurityProfile
 from skyn3t.studio.acceptance_contract import is_system_acceptance_contract
 
 # --- reward-hacking heuristics ------------------------------------------------
@@ -270,14 +271,16 @@ class BuildVerifierAgent(BaseAgent):
             if npm_install_current(root):
                 ok, out = True, "install skipped (dependencies current)"
             else:
-                ok, out = await self._run(npm_install_args("npm", "install"), root, timeout=300)
+                ok, _exit, out = await self._run_via_broker(
+                    npm_install_args("npm", "install"), root, stack="node")
                 if ok:
                     mark_npm_install_current(root)
             if ok:
                 # build script optional — try it but don't hard-fail if absent
                 pkg = json.loads(vc.safe_read(root / "package.json") or "{}")
                 if isinstance(pkg, dict) and "build" in (pkg.get("scripts") or {}):
-                    bok, bout = await self._run(["npm", "run", "build"], root, timeout=300)
+                    bok, _exit, bout = await self._run_via_broker(
+                        ["npm", "run", "build"], root, stack="node")
                     detail = bout[-500:] if bout else "build run"
                     if foreign_deps:
                         detail = f"reinstalled host deps after {foreign_deps} node_modules; {detail}"
@@ -294,27 +297,40 @@ class BuildVerifierAgent(BaseAgent):
         if stack == "swift_ios" and allow_real and shutil.which("xcodebuild"):
             project = root / "App.xcodeproj"
             if (project / "project.pbxproj").is_file():
-                ok, out = await self._run(
+                ok, exit_code, out = await self._run_via_broker(
                     ["xcodebuild", "-project", "App.xcodeproj", "-scheme", "App", "-sdk",
                      "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build"],
-                    root, timeout=600,
-                )
+                    root, timeout=600)
+                if exit_code == 127:
+                    # Same reasoning as the swift-build branch below: xcodebuild
+                    # is macOS/Xcode-only and cannot run inside a Linux Docker
+                    # sandbox. A host `which xcodebuild` only proves the BINARY
+                    # exists, not that the backend picked for THIS call is local.
+                    return False, False, "xcodebuild", (
+                        "xcodebuild could not be launched in the sandbox — build skipped"
+                    )
                 return True, ok, "xcodebuild", (out[-700:] if out else "xcodebuild build")
 
         # Swift Package Manager: key on the manifest (like package.json above),
         # NOT the stack label, and compile for real with `swift build`. Absent
         # toolchain falls through to the degraded dry check below.
         if (root / "Package.swift").is_file() and allow_real and shutil.which("swift"):
-            ok, out = await self._run(["swift", "build"], root, timeout=300)
+            ok, exit_code, out = await self._run_via_broker(["swift", "build"], root, timeout=300)
+            if exit_code == 127:
+                # Swift cannot run inside the Docker sandbox (no Linux image ships
+                # the toolchain); a host `which swift` above only proves the BINARY
+                # exists, not that the backend picked for THIS call is local. Treat
+                # it as an environmental soft-skip — same as proof_run.py's
+                # _run_swift_build — rather than a false build failure.
+                return False, False, "swift", "swift could not be launched in the sandbox — build skipped"
             return True, ok, "swift", (out[-500:] if out else "swift build")
 
         if stack == "python" and allow_real and shutil.which("python"):
             req = root / "requirements.txt"
             if req.exists():
-                ok, out = await self._run(
+                ok, _exit, out = await self._run_via_broker(
                     ["python", "-m", "pip", "install", "--dry-run", "-r", "requirements.txt"],
-                    root, timeout=120,
-                )
+                    root, timeout=120, stack="python")
                 return True, ok, "pip-dry", out[-500:]
             # compile all .py files as a real build signal
             ok, out = await self._compile_python(root)
@@ -353,37 +369,16 @@ class BuildVerifierAgent(BaseAgent):
             return False, "; ".join(errors[:3])
         return compiled > 0, f"compiled {compiled} python file(s)"
 
-    async def _run(self, cmd: list[str], cwd: Path, timeout: int) -> tuple[bool, str]:
-        # create_subprocess_exec bypasses the shell, and Windows CreateProcess
-        # only appends ".exe" — it never searches PATHEXT. So a bare "npm"
-        # (installed as npm.cmd) raised WinError 2, was caught below, and was
-        # reported as "failed to run npm install ..." — which the verifier gate
-        # surfaced as "verify_build: real build failed" on EVERY Node build.
-        # Native build verification had therefore never once run on Windows.
-        # The shutil.which() guard upstream stays: it is an availability test,
-        # and resolve_executable returns its input unchanged when nothing is
-        # found, so it must not be used as a presence check. The ORIGINAL cmd
-        # is kept for the messages below so gate findings stay readable.
-        argv = list(cmd)
-        if argv:
-            argv[0] = resolve_executable(argv[0])
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=str(cwd),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            )
-            try:
-                out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            except TimeoutError:
-                proc.kill()
-                # Reap the killed child / drain pipes so repeated timeouts (npm
-                # install/build at 300s) don't accumulate zombies + open FDs.
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except (TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
-                    pass
-                return False, f"command timed out after {timeout}s: {' '.join(cmd)}"
-            text = (out or b"").decode("utf-8", errors="replace")
-            return proc.returncode == 0, text
-        except (OSError, ValueError) as exc:
-            return False, f"failed to run {' '.join(cmd)}: {exc}"
+    async def _run_via_broker(
+        self, cmd: list[str], root: Path, *,
+        timeout: float = 300.0, network: bool = True, stack: str | None = None,
+    ) -> tuple[bool, int | None, str]:
+        broker = ExecutionBroker(settings=self.settings)
+        spec = shlex.join(cmd)
+        receipt = await asyncio.to_thread(
+            broker.run_generated_code, spec, str(root),
+            profile=SecurityProfile.hardened,
+            secrets={"PYTHONDONTWRITEBYTECODE": "1"},
+            network=network, timeout=timeout, stack=stack,
+        )
+        return receipt.ok, receipt.exit_code, receipt.text

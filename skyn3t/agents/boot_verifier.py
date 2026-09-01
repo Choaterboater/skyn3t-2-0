@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import shutil
 from pathlib import Path
 
 from skyn3t.agents import _verify_common as vc
+from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
+from skyn3t.security.execution_broker import ExecutionBroker, SecurityProfile
 
 
 class BootVerifierAgent(BaseAgent):
@@ -28,6 +31,7 @@ class BootVerifierAgent(BaseAgent):
                  config: dict | None = None) -> None:
         super().__init__(name, agent_type="verify_boot", provider="local",
                          event_bus=event_bus, config=config or {})
+        self.settings = get_settings()
         self.add_capability(AgentCapability(
             name="verify_boot",
             description="Smoke-tests that the generated app can import/start",
@@ -84,7 +88,7 @@ class BootVerifierAgent(BaseAgent):
         )
 
     async def _boot_python(self, root: Path, entrypoints: list[str]):
-        py = shutil.which("python") or shutil.which("python3")
+        py = "python" if shutil.which("python") else ("python3" if shutil.which("python3") else None)
         if not py:
             # degrade: byte-compile the entrypoint(s)
             import py_compile
@@ -106,50 +110,36 @@ class BootVerifierAgent(BaseAgent):
             "import importlib, sys; sys.path.insert(0, '.'); "
             f"importlib.import_module({module_path!r})"
         )
-        # -B + PYTHONDONTWRITEBYTECODE so the smoke import never drops a
-        # __pycache__/.pyc into the worktree (which would then be delivered).
-        import os as _os
-
-        env = {**_os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
         try:
-            proc = await asyncio.create_subprocess_exec(
-                py, "-B", "-c", code, cwd=str(root),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-                env=env,
+            spec = shlex.join([py, "-B", "-c", code])
+            broker = ExecutionBroker(settings=self.settings)
+            receipt = await asyncio.to_thread(
+                broker.run_generated_code, spec, str(root),
+                profile=SecurityProfile.hardened,
+                secrets={"PYTHONDONTWRITEBYTECODE": "1"},
+                stack="python", timeout=20,
             )
-            try:
-                out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-            except TimeoutError:
-                proc.kill()
-                # Reap the killed child and drain its pipes so we don't leak the
-                # transport / leave a zombie until GC (bounded so a stuck process
-                # can't re-hang us here).
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except (TimeoutError, ProcessLookupError, Exception):  # noqa: BLE001
-                    pass
-                # A hung import is INDETERMINATE, not a pass: we cannot tell a
-                # serve loop from a module-level deadlock/infinite loop/blocking
-                # call. stdin is closed above so input() raises EOFError instead
-                # of blocking; a genuine hang here is treated as a boot failure
-                # rather than silently greened (rule #3).
-                return False, "import-hang", "import did not complete within 20s (hung or blocking at import time)"
-            text = (out or b"").decode("utf-8", errors="replace")
-            if proc.returncode == 0:
-                return True, "import", "entrypoint imported cleanly"
-            # ModuleNotFoundError for third-party deps is not a code defect.
-            if "ModuleNotFoundError" in text or "ImportError" in text:
-                # fall back to byte-compile to confirm syntax is sound
-                import py_compile
-                try:
-                    py_compile.compile(str(root / target), doraise=True)
-                    return True, "compile", "deps missing but entrypoint compiles cleanly"
-                except py_compile.PyCompileError as exc:
-                    return False, "compile", f"{target}: {exc}"
-            return False, "import", text[-400:]
         except (OSError, ValueError) as exc:
             return False, "import", f"could not run python: {exc}"
+        if receipt.timed_out:
+            # A hung import is INDETERMINATE, not a pass: we cannot tell a
+            # serve loop from a module-level deadlock/infinite loop/blocking
+            # call.
+            return False, "import-hang", (
+                "import did not complete within 20s (hung or blocking at import time)"
+            )
+        if receipt.exit_code == 0:
+            return True, "import", "entrypoint imported cleanly"
+        text = receipt.text
+        # ModuleNotFoundError for third-party deps is not a code defect.
+        if "ModuleNotFoundError" in text or "ImportError" in text:
+            import py_compile
+            try:
+                py_compile.compile(str(root / target), doraise=True)
+                return True, "compile", "deps missing but entrypoint compiles cleanly"
+            except py_compile.PyCompileError as exc:
+                return False, "compile", f"{target}: {exc}"
+        return False, "import", text[-400:]
 
     def _boot_node(self, root: Path, entrypoints: list[str]):
         pkg_path = root / "package.json"

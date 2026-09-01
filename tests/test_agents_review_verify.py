@@ -198,11 +198,11 @@ def test_build_verifier_runs_real_build_for_nextjs(tmp_path, monkeypatch):
                         lambda x: "/usr/bin/npm" if x == "npm" else None)
     calls = []
 
-    async def fake_run(self, cmd, cwd, timeout):
+    async def fake_run(self, cmd, cwd, **_kwargs):
         calls.append(list(cmd))
-        return False, "npm error code EINVALIDPACKAGENAME"
+        return False, None, "npm error code EINVALIDPACKAGENAME"
 
-    monkeypatch.setattr(bv.BuildVerifierAgent, "_run", fake_run)
+    monkeypatch.setattr(bv.BuildVerifierAgent, "_run_via_broker", fake_run)
 
     agent = bv.BuildVerifierAgent(event_bus=EventBus())
     res = _run(agent.run(TaskRequest(
@@ -238,16 +238,16 @@ def test_build_verifier_reinstalls_docker_node_modules_before_host_build(tmp_pat
                         lambda x: "/usr/bin/npm" if x == "npm" else None)
     install_saw_foreign = []
 
-    async def fake_run(self, cmd, cwd, timeout):
+    async def fake_run(self, cmd, cwd, **_kwargs):
         if cmd[:2] == ["npm", "install"]:
             install_saw_foreign.append((root / "node_modules" / ".skyn3t-docker-install.json").exists())
             (root / "node_modules").mkdir(exist_ok=True)
-            return True, "install ok"
+            return True, None, "install ok"
         if cmd[:3] == ["npm", "run", "build"]:
-            return True, "build ok"
-        return False, "unexpected command"
+            return True, None, "build ok"
+        return False, None, "unexpected command"
 
-    monkeypatch.setattr(bv.BuildVerifierAgent, "_run", fake_run)
+    monkeypatch.setattr(bv.BuildVerifierAgent, "_run_via_broker", fake_run)
 
     agent = bv.BuildVerifierAgent(event_bus=EventBus())
     res = _run(agent.run(TaskRequest(

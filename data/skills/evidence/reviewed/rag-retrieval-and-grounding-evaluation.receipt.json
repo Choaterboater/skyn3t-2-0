@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "slug": "rag-retrieval-and-grounding-evaluation",
+  "reviewed_at": "2026-09-08T19:14:25.531247+00:00",
+  "advisory_sha256": "8fd5221041ae9d1cf4e8e33d64abbed8cf8666f3a8695cbd8989ceca2b41484c",
+  "sources": [
+    {
+      "repository": "https://github.com/hamelsmu/evals-skills",
+      "revision": "22418da2bfb159f28a1b0dcf64e969e14ae56c99",
+      "path": "skills/evaluate-rag/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "archived": true,
+      "id": "926c537b5050a63ffc48db3cdf9c8175824b76f1a50fbfcb0fd090c1905593be",
+      "checked_url": "https://raw.githubusercontent.com/hamelsmu/evals-skills/22418da2bfb159f28a1b0dcf64e969e14ae56c99/skills/evaluate-rag/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/hamelsmu/evals-skills/22418da2bfb159f28a1b0dcf64e969e14ae56c99/skills/evaluate-rag/SKILL.md",
+      "checked_at": "2026-09-08T18:28:23.538132+00:00",
+      "sha256": "e22a7bff31a73a9a82722c771326acf13121622a8caca6221fcbea111c9bf88d",
+      "bytes": 7625,
+      "evidence_path": "evidence/reviewed/e22a7bff31a73a9a82722c771326acf13121622a8caca6221fcbea111c9bf88d.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/hamelsmu/evals-skills/22418da2bfb159f28a1b0dcf64e969e14ae56c99/LICENSE",
+        "path": "LICENSE",
+        "sha256": "e2e8edff4cd1b2a37818287afc35ac08a2fe8e9ee2fff36fc92a032b87451d56",
+        "evidence_path": "evidence/reviewed/e2e8edff4cd1b2a37818287afc35ac08a2fe8e9ee2fff36fc92a032b87451d56.license"
+      }
+    },
+    {
+      "repository": "https://github.com/hamelsmu/evals-skills",
+      "revision": "22418da2bfb159f28a1b0dcf64e969e14ae56c99",
+      "path": "skills/validate-evaluator/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "archived": true,
+      "id": "6392a2c55fed2d8f39878c66e1a8d3fcb8a8a8673c08ba006841f88f69c1459c",
+      "checked_url": "https://raw.githubusercontent.com/hamelsmu/evals-skills/22418da2bfb159f28a1b0dcf64e969e14ae56c99/skills/validate-evaluator/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/hamelsmu/evals-skills/22418da2bfb159f28a1b0dcf64e969e14ae56c99/skills/validate-evaluator/SKILL.md",
+      "checked_at": "2026-09-08T18:28:23.734061+00:00",
+      "sha256": "a183fe16e695b8959abd902b0e0cd87e3e050d61e66ae134c74f4a347071e67b",
+      "bytes": 8888,
+      "evidence_path": "evidence/reviewed/a183fe16e695b8959abd902b0e0cd87e3e050d61e66ae134c74f4a347071e67b.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/hamelsmu/evals-skills/22418da2bfb159f28a1b0dcf64e969e14ae56c99/LICENSE",
+        "path": "LICENSE",
+        "sha256": "e2e8edff4cd1b2a37818287afc35ac08a2fe8e9ee2fff36fc92a032b87451d56",
+        "evidence_path": "evidence/reviewed/e2e8edff4cd1b2a37818287afc35ac08a2fe8e9ee2fff36fc92a032b87451d56.license"
+      }
+    }
+  ]
+}

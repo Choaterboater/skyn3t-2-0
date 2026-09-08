@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "slug": "accessible-forms-with-react-hook-form-zod-and-semantic-html",
+  "reviewed_at": "2026-09-08T19:14:25.517995+00:00",
+  "advisory_sha256": "4ce224adc41513bfcd46fc2962b1cf720a4981c4304df30a9b044fe94f5c89fe",
+  "sources": [
+    {
+      "url": "https://timjames.dev/blog/building-forms-with-zod-and-react-hook-form-2geg",
+      "rationale": "Verbatim source for the zodResolver + mode:'onBlur' + z.infer wiring; explicitly not cited for the accessibility-specific claims, since its example uses MUI TextField and never mentions aria-invalid/aria-describedby.",
+      "id": "ec2f95a8acf0c6c3d4a3b558cdabadbf59bdb29a300e4ea96b4469e2c8942c91",
+      "checked_url": "https://timjames.dev/blog/building-forms-with-zod-and-react-hook-form-2geg",
+      "resolved_url": "https://timjames.dev/blog/building-forms-with-zod-and-react-hook-form-2geg",
+      "checked_at": "2026-09-08T18:34:10.371058+00:00",
+      "sha256": "e7b9b5466301ea4df740e2cd37d37ecbe8db56a867ce7e663285632ae59bc492",
+      "bytes": 509139,
+      "evidence_path": "evidence/reviewed/e7b9b5466301ea4df740e2cd37d37ecbe8db56a867ce7e663285632ae59bc492.source"
+    },
+    {
+      "url": "https://www.w3.org/WAI/tutorials/forms/notifications/",
+      "rationale": "Fetched 2026-09-08; W3C WAI's own accessible-forms tutorial gives the exact aria-describedby code snippet used here and names ARIA21 ('Using aria-invalid to Indicate An Error Field') as the aria-invalid technique.",
+      "id": "c460e653bce4bf267c3591a5b5e311155525c2ed6c1c0f02cf109080bcaf97e8",
+      "checked_url": "https://www.w3.org/WAI/tutorials/forms/notifications/",
+      "resolved_url": "https://www.w3.org/WAI/tutorials/forms/notifications/",
+      "checked_at": "2026-09-08T18:34:10.581214+00:00",
+      "sha256": "b393b8febf87fadc373399b31a7c44edfaa185b02d0366f05220211dc139cd1f",
+      "bytes": 75329,
+      "evidence_path": "evidence/reviewed/b393b8febf87fadc373399b31a7c44edfaa185b02d0366f05220211dc139cd1f.source"
+    },
+    {
+      "url": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html",
+      "rationale": "Fetched 2026-09-08; WCAG 2.1 Understanding SC 1.4.1 states verbatim 'Color is not used as the only visual means of conveying information...', the primary source for the never-color-alone claim.",
+      "id": "beda30adc0c546dbefecca25da275eb90405974be6b1624aa5143026dc291cc4",
+      "checked_url": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html",
+      "resolved_url": "https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html",
+      "checked_at": "2026-09-08T18:34:10.634278+00:00",
+      "sha256": "969e2b43a032b50dc79c93ddda9ffebcc65e9b0136ce6a3407c3af467643b7f5",
+      "bytes": 43782,
+      "evidence_path": "evidence/reviewed/969e2b43a032b50dc79c93ddda9ffebcc65e9b0136ce6a3407c3af467643b7f5.source"
+    }
+  ]
+}

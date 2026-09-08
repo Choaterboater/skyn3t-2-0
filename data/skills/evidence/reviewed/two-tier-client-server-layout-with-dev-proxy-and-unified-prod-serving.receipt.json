@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "slug": "two-tier-client-server-layout-with-dev-proxy-and-unified-prod-serving",
+  "reviewed_at": "2026-09-08T19:14:25.512165+00:00",
+  "advisory_sha256": "471cb06d716099a2d840ad39fe5f8605156f89538e60cb4f9957a84432bbcbc3",
+  "sources": [
+    {
+      "url": "https://github.com/vitejs/vite/blob/e6f6b3e3119256daa837b2dc399058c8aa45b470/docs/config/server-options.md",
+      "repository": "https://github.com/vitejs/vite",
+      "revision": "e6f6b3e3119256daa837b2dc399058c8aa45b470",
+      "path": "docs/config/server-options.md",
+      "license": "MIT",
+      "rationale": "Fetched 2026-09-08; official current Vite docs for server.proxy, including the exact '/api' key example this skill's dev-proxy claim is based on. Replaces a citation that was actually Webpack-based.",
+      "id": "6c7ffe3eb70f4a2473cc9dd9a85e7dd13a29ce7383799148c3e7b92a672bed7b",
+      "checked_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/docs/config/server-options.md",
+      "resolved_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/docs/config/server-options.md",
+      "checked_at": "2026-09-08T18:34:07.382039+00:00",
+      "sha256": "0ca5418780b0f2d2e272801424d0d5cddea7cf9c155c9e6db6983d3305be971e",
+      "bytes": 20831,
+      "evidence_path": "evidence/reviewed/0ca5418780b0f2d2e272801424d0d5cddea7cf9c155c9e6db6983d3305be971e.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
+        "evidence_path": "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license"
+      }
+    },
+    {
+      "url": "https://github.com/crsandeep/simple-react-full-stack/blob/f78a4093832611f3286a703135250da236a9d64c/README.md",
+      "repository": "https://github.com/crsandeep/simple-react-full-stack",
+      "revision": "f78a4093832611f3286a703135250da236a9d64c",
+      "path": "README.md",
+      "rationale": "Kept only for the structural client/server-split + concurrently + express.static(dist) unified-prod-serving pattern, which this pinned commit does demonstrate; its own dev server is webpack-dev-server, not Vite, so it is not cited for the Vite-specific proxy config.",
+      "id": "6726d1ef1f3ed9df5fabedae80786bec3973111237800e4e035eeaa808b0cce8",
+      "checked_url": "https://raw.githubusercontent.com/crsandeep/simple-react-full-stack/f78a4093832611f3286a703135250da236a9d64c/README.md",
+      "resolved_url": "https://raw.githubusercontent.com/crsandeep/simple-react-full-stack/f78a4093832611f3286a703135250da236a9d64c/README.md",
+      "checked_at": "2026-09-08T18:34:08.256372+00:00",
+      "sha256": "736b7131134c2611087f6fb0d5ae5589d47f9a88d4e0aeac7002d5ec4e620aa5",
+      "bytes": 11579,
+      "license_lookup_error": "gh: Not Found (HTTP 404)",
+      "evidence_path": "evidence/reviewed/736b7131134c2611087f6fb0d5ae5589d47f9a88d4e0aeac7002d5ec4e620aa5.source"
+    },
+    {
+      "url": "https://expressjs.com/en/guide/migrating-5.html",
+      "rationale": "Express's own migration guide lists 'Rejected promises handled from middleware and handlers' as a v5 behavior change, confirming the automatic forwarding did not exist in Express 4 and is not merely an undocumented implementation detail.",
+      "id": "4ef3fe88bd5ae87e43aa4dd99db855a74bfb774aec8ec8aa1c9d64ab71496335",
+      "checked_url": "https://expressjs.com/en/guide/migrating-5.html",
+      "resolved_url": "https://expressjs.com/en/guide/migrating-5/",
+      "checked_at": "2026-09-08T18:34:04.061863+00:00",
+      "sha256": "1e9e7ec3e9163751cc24ed9143ee42279621cfd6fd2354a5be7e13fae74a2cab",
+      "bytes": 211147,
+      "evidence_path": "evidence/reviewed/1e9e7ec3e9163751cc24ed9143ee42279621cfd6fd2354a5be7e13fae74a2cab.source"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "match-async-sync-route-style-to-the-work-never-block-the-event-loop",
+  "reviewed_at": "2026-09-08T19:14:25.542996+00:00",
+  "advisory_sha256": "dc26b1074d950c5fe1ec6123e678f1de7ac08866f3a98f03299173f18e01e13b",
+  "sources": [
+    {
+      "url": "https://github.com/zhanymkanov/fastapi-best-practices",
+      "checked_url": "https://raw.githubusercontent.com/zhanymkanov/fastapi-best-practices/5e00aa6095521f0d00e4eec2ef0afa44cd566af4/README.md",
+      "revision": "5e00aa6095521f0d00e4eec2ef0afa44cd566af4",
+      "path": "README.md",
+      "checked_at": "2026-09-08T16:59:17.258314+00:00",
+      "sha256": "cbe588bc3e79d10181ed661957b7c8f459bc515e2c0bbafd36d37827fe77ac20",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/zhanymkanov/fastapi-best-practices",
+      "evidence_path": "evidence/reviewed/cbe588bc3e79d10181ed661957b7c8f459bc515e2c0bbafd36d37827fe77ac20.source"
+    }
+  ]
+}

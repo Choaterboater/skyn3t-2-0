@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-alexflipnote-discord-bot-py",
+  "reviewed_at": "2026-09-08T19:14:25.467148+00:00",
+  "advisory_sha256": "c0195b9ab47152a271c0b72383e912e0e25a2d7c7fce06899128513829ce354b",
+  "sources": [
+    {
+      "repository": "https://github.com/alexflipnote/discord_bot.py",
+      "revision": "c8ea8e4719d42b4a083e22fa4447caed75b04e06",
+      "path": "README.md",
+      "sha256": "0ed1ad839b444176154085f26bb08792d3244b56cfd50b8b35fcc53c76e497aa",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/0ed1ad839b444176154085f26bb08792d3244b56cfd50b8b35fcc53c76e497aa.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "0d2eaee0bba6ad693e26f2656c21c91fa8143602edf47ba66054d28d7db1d5f7",
+        "evidence_path": "evidence/reviewed/0d2eaee0bba6ad693e26f2656c21c91fa8143602edf47ba66054d28d7db1d5f7.license"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-brillout-awesome-react-components",
+  "reviewed_at": "2026-09-08T19:14:25.475347+00:00",
+  "advisory_sha256": "ec88b88ef4553bcc0ea962f457935538d744db5f6f631d877432002019114689",
+  "sources": [
+    {
+      "repository": "https://github.com/brillout/awesome-react-components",
+      "revision": "66b2758c4808d62cfe7c2a1dc0c48f7d51153cf5",
+      "path": "README.md",
+      "sha256": "cef8d2e0891d4f3b0b0d1fec06f74d54f245dc6850f475e7ceb4194e10307e54",
+      "license": "CC0-1.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/cef8d2e0891d4f3b0b0d1fec06f74d54f245dc6850f475e7ceb4194e10307e54.source",
+      "license_receipt": {
+        "path": "license",
+        "spdx_id": "CC0-1.0",
+        "sha256": "36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673",
+        "evidence_path": "evidence/reviewed/36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673.license"
+      }
+    }
+  ]
+}

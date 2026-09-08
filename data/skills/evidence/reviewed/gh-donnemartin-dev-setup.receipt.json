@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-donnemartin-dev-setup",
+  "reviewed_at": "2026-09-08T19:14:25.483411+00:00",
+  "advisory_sha256": "09449523c5d5f739c2eba6921743035bbe5b6299e15e30a84fbfa04dc11bc691",
+  "sources": [
+    {
+      "repository": "https://github.com/donnemartin/dev-setup",
+      "revision": "d86102d761afa5cc1853078200b844212f99e234",
+      "path": "README.md",
+      "sha256": "b11c97b20cc342959f830837f6b76fdc82607b867a737113d574812261a1d8ad",
+      "license": "NOASSERTION",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/b11c97b20cc342959f830837f6b76fdc82607b867a737113d574812261a1d8ad.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "NOASSERTION",
+        "sha256": "1709f8162187f329e87ab4b1dbb459e77c40565cd7b761e20944790ca23d8a02",
+        "evidence_path": "evidence/reviewed/1709f8162187f329e87ab4b1dbb459e77c40565cd7b761e20944790ca23d8a02.license"
+      }
+    }
+  ]
+}

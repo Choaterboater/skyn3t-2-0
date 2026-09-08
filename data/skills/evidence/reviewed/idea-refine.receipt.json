@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "idea-refine",
+  "reviewed_at": "2026-09-08T19:14:25.441483+00:00",
+  "advisory_sha256": "298d6f4257229d9b0ff49bc8ba8004c4cb6adcca8ca76675721951b0bdb85eaf",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/idea-refine/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "c8cd91a11b7ae76c3e95cb9784c462dc72f8e55df14624e8fdaa91edc65cb214",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/idea-refine/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/idea-refine/SKILL.md",
+      "checked_at": "2026-09-08T17:51:23.769150+00:00",
+      "sha256": "79e773058963adc7646b0115b4f8a4afc974c5ff95843e4ef1cafff3cb51899e",
+      "bytes": 8111,
+      "evidence_path": "evidence/reviewed/79e773058963adc7646b0115b4f8a4afc974c5ff95843e4ef1cafff3cb51899e.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

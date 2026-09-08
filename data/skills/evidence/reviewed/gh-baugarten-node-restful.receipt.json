@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slug": "gh-baugarten-node-restful",
+  "reviewed_at": "2026-09-08T19:14:25.455841+00:00",
+  "advisory_sha256": "8ae722278d7045ea9a677e0da5e4f92df0cb229ad20e0c195746c853070a8868",
+  "sources": [
+    {
+      "repository": "https://github.com/baugarten/node-restful",
+      "revision": "a018736a30b0979ea5f848258ba34549e60fc04e",
+      "path": "README.md",
+      "sha256": "81a3fafd83c4b5ea02bf7675087791230f1c422fac0233598d17cde10dde049c",
+      "license": null,
+      "archived": false,
+      "evidence_path": "evidence/reviewed/81a3fafd83c4b5ea02bf7675087791230f1c422fac0233598d17cde10dde049c.source"
+    }
+  ]
+}

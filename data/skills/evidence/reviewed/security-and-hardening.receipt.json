@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "security-and-hardening",
+  "reviewed_at": "2026-09-08T19:14:25.447368+00:00",
+  "advisory_sha256": "f89b61cfc27060498ff1abb49f03a65f5bb3c5f516762a6af35fe7df155c09fd",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/security-and-hardening/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "2ce285972eb1de4f0c1c328648f6e57e311c315c867e3fbcaef3df151ef4ffda",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/security-and-hardening/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/security-and-hardening/SKILL.md",
+      "checked_at": "2026-09-08T17:51:22.680734+00:00",
+      "sha256": "4aa7a433a0a8042f47197f05893343bd9d1cc02a9179537ef3437c05c49b385d",
+      "bytes": 27993,
+      "evidence_path": "evidence/reviewed/4aa7a433a0a8042f47197f05893343bd9d1cc02a9179537ef3437c05c49b385d.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

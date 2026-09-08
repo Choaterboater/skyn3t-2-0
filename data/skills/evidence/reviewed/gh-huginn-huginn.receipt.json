@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-huginn-huginn",
+  "reviewed_at": "2026-09-08T19:14:25.496928+00:00",
+  "advisory_sha256": "55f10be570f52c7e71141c40957156ad9179b4d4fad301432bbc863eb3ee36fa",
+  "sources": [
+    {
+      "repository": "https://github.com/huginn/huginn",
+      "revision": "99ba7b05027fca7646d9d6b49752b797d4d4bf73",
+      "path": "README.md",
+      "sha256": "90dde64a17b65905953f8d292d93393b4490293389729ed579bf47aa0d50619f",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/90dde64a17b65905953f8d292d93393b4490293389729ed579bf47aa0d50619f.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "54cb9b6e54a1c64b79d707ee26593b179363d67b17e9f7fb213004f76192ba4e",
+        "evidence_path": "evidence/reviewed/54cb9b6e54a1c64b79d707ee26593b179363d67b17e9f7fb213004f76192ba4e.license"
+      }
+    }
+  ]
+}

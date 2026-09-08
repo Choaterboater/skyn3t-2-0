@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-ippa-jaws",
+  "reviewed_at": "2026-09-08T19:14:25.463814+00:00",
+  "advisory_sha256": "7c19576d2aec31ef7ef8ab6d8da182419e0e80b9d6ce7d3d629bf3174389ffd8",
+  "sources": [
+    {
+      "repository": "https://github.com/ippa/jaws",
+      "revision": "894c93f3e4e2511995dd4d938354dc935c3a3329",
+      "path": "README.rdoc",
+      "sha256": "68ee0cff21fcb7ef0d231299cfcfc3137c0be09f03cbfab19ba0e4a259877a5d",
+      "license": "LGPL-3.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/68ee0cff21fcb7ef0d231299cfcfc3137c0be09f03cbfab19ba0e4a259877a5d.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "LGPL-3.0",
+        "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
+        "evidence_path": "evidence/reviewed/da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768.license"
+      }
+    }
+  ]
+}

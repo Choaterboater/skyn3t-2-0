@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "won-nextjs-shape",
+  "reviewed_at": "2026-09-08T19:14:25.513188+00:00",
+  "advisory_sha256": "0feca9b06b403a2e6590deb3071681d288dbb7d831a29fc3a763bc08eab5d7ec",
+  "sources": [
+    {
+      "url": "https://github.com/vercel/next.js/blob/4a34974ec284d4141bce406b07d6933ce43935e0/docs/01-app/01-getting-started/01-installation.mdx",
+      "repository": "https://github.com/vercel/next.js",
+      "revision": "4a34974ec284d4141bce406b07d6933ce43935e0",
+      "path": "docs/01-app/01-getting-started/01-installation.mdx",
+      "license": "MIT",
+      "rationale": "Fetched 2026-09-08 from the current docs tree; states 'Minimum Node.js version: 20.9', used only to give one verifiable, current fact instead of inventing a Next.js major version, which the original build-distilled record never captured.",
+      "id": "fdcb599b415aee8486f97499d76c1b2e39394ab813a16b6f4b46109aa9c018d7",
+      "checked_url": "https://raw.githubusercontent.com/vercel/next.js/4a34974ec284d4141bce406b07d6933ce43935e0/docs/01-app/01-getting-started/01-installation.mdx",
+      "resolved_url": "https://raw.githubusercontent.com/vercel/next.js/4a34974ec284d4141bce406b07d6933ce43935e0/docs/01-app/01-getting-started/01-installation.mdx",
+      "checked_at": "2026-09-08T18:34:08.781110+00:00",
+      "sha256": "3df221cbb94c1f0d41e80405a8dcd30ee80ed0952fccadea711a79e6a9bf7df6",
+      "bytes": 16149,
+      "evidence_path": "evidence/reviewed/3df221cbb94c1f0d41e80405a8dcd30ee80ed0952fccadea711a79e6a9bf7df6.source",
+      "license_receipt": {
+        "path": "license.md",
+        "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
+        "evidence_path": "evidence/reviewed/ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224.license"
+      }
+    }
+  ]
+}

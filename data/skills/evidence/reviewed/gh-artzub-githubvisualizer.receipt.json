@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-artzub-githubvisualizer",
+  "reviewed_at": "2026-09-08T19:14:25.472355+00:00",
+  "advisory_sha256": "b998fef2e440f35f9ec8a0af3d5e116d240e783e56983d7fa0b4b10bde930e65",
+  "sources": [
+    {
+      "repository": "https://github.com/artzub/githubvisualizer",
+      "revision": "48576e2a44bea843a66ced1468e0a3356e0bd0cb",
+      "path": "README.md",
+      "sha256": "e89b4045e924ea7d150b1e12daf39aa8fc2f881ccc01da67a55842e69f431d0d",
+      "license": "Apache-2.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/e89b4045e924ea7d150b1e12daf39aa8fc2f881ccc01da67a55842e69f431d0d.source",
+      "license_receipt": {
+        "path": "LICENSE.txt",
+        "spdx_id": "Apache-2.0",
+        "sha256": "9a6950f8f80cda27a3cd9f56a879d7df3209105c4e4765caa82490b48288ef92",
+        "evidence_path": "evidence/reviewed/9a6950f8f80cda27a3cd9f56a879d7df3209105c4e4765caa82490b48288ef92.license"
+      }
+    }
+  ]
+}

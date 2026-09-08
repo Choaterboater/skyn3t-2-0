@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-absadiki-subsai",
+  "reviewed_at": "2026-09-08T19:14:25.465057+00:00",
+  "advisory_sha256": "3d3735d98a8eadab76cb036961a88fe847a2471befc26f4b7f2611b73fa53685",
+  "sources": [
+    {
+      "repository": "https://github.com/absadiki/subsai",
+      "revision": "5ed78a85d2b868a907c811404f7cd9179db39968",
+      "path": "README.md",
+      "sha256": "de5e1c383b2c2c6177bacea4b777c79f402b30775b515ee736ec49b0834e68ff",
+      "license": "GPL-3.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/de5e1c383b2c2c6177bacea4b777c79f402b30775b515ee736ec49b0834e68ff.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "GPL-3.0",
+        "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "evidence_path": "evidence/reviewed/3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986.license"
+      }
+    }
+  ]
+}

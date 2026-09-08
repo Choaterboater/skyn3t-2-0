@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-huakunshen-wol-web",
+  "reviewed_at": "2026-09-08T19:14:25.462964+00:00",
+  "advisory_sha256": "31195680db6be9d55dd5de380b57c15ed53c9fb9fc34df34ed9ea919c694a055",
+  "sources": [
+    {
+      "repository": "https://github.com/huakunshen/wol-web",
+      "revision": "85480436004a86472601d00e0882e872d4f3ab8b",
+      "path": "README.md",
+      "sha256": "8d10e3a7e0709a35003e32bd8d6a77f1b5aa17b382bf71e773d33c8491d5cd1c",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/8d10e3a7e0709a35003e32bd8d6a77f1b5aa17b382bf71e773d33c8491d5cd1c.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "baf40be927280792705785268764527371cd6a0b28ef268fb244010aad0a1f3c",
+        "evidence_path": "evidence/reviewed/baf40be927280792705785268764527371cd6a0b28ef268fb244010aad0a1f3c.license"
+      }
+    }
+  ]
+}

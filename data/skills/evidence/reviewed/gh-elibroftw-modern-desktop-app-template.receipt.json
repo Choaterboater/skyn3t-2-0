@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-elibroftw-modern-desktop-app-template",
+  "reviewed_at": "2026-09-08T19:14:25.459528+00:00",
+  "advisory_sha256": "cbdf124a8eea527cec4b2cf5f7a43fb5d3741eae85861b25f9fe1543ed8b4e3e",
+  "sources": [
+    {
+      "repository": "https://github.com/elibroftw/modern-desktop-app-template",
+      "revision": "d66b00517c625d860acd0c090d8e9f430363a3cc",
+      "path": "README.md",
+      "sha256": "c380805f277e9d6c4ca5af3da3f8c50d3a57122854221b1ac6a0d007d3839898",
+      "license": "CC0-1.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/c380805f277e9d6c4ca5af3da3f8c50d3a57122854221b1ac6a0d007d3839898.source",
+      "license_receipt": {
+        "path": "LICENSE.md",
+        "spdx_id": "CC0-1.0",
+        "sha256": "ef75cd57fafd08208ab91ef668ed691fd9a1c1f468e34b71e40bb71f8f379e33",
+        "evidence_path": "evidence/reviewed/ef75cd57fafd08208ab91ef668ed691fd9a1c1f468e34b71e40bb71f8f379e33.license"
+      }
+    }
+  ]
+}

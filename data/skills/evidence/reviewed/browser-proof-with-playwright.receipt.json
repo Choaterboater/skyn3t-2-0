@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "browser-proof-with-playwright",
+  "reviewed_at": "2026-09-08T19:14:25.528439+00:00",
+  "advisory_sha256": "541cc3b5882e32d03282c95be0f9200bc331fc59fec390c1e25ebb886f6b3ef0",
+  "sources": [
+    {
+      "repository": "https://github.com/microsoft/playwright-cli",
+      "revision": "655530f6d0dc71a0d6bf46ae165877d3c7311099",
+      "path": "skills/playwright-cli/SKILL.md",
+      "license": "Apache-2.0",
+      "license_path": "LICENSE",
+      "id": "45d2e0d224ad584e02ff02595242a27ab38aa2a2dac04ddff9c813f464407f78",
+      "checked_url": "https://raw.githubusercontent.com/microsoft/playwright-cli/655530f6d0dc71a0d6bf46ae165877d3c7311099/skills/playwright-cli/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/microsoft/playwright-cli/655530f6d0dc71a0d6bf46ae165877d3c7311099/skills/playwright-cli/SKILL.md",
+      "checked_at": "2026-09-08T17:51:19.123433+00:00",
+      "sha256": "1a609c93bff3eea9ab99fed93c0334c851fdc39fb6ac5335551bfb87c171d57c",
+      "bytes": 12726,
+      "evidence_path": "evidence/reviewed/1a609c93bff3eea9ab99fed93c0334c851fdc39fb6ac5335551bfb87c171d57c.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/microsoft/playwright-cli/655530f6d0dc71a0d6bf46ae165877d3c7311099/LICENSE",
+        "path": "LICENSE",
+        "sha256": "9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda",
+        "evidence_path": "evidence/reviewed/9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda.license"
+      }
+    },
+    {
+      "repository": "https://github.com/microsoft/playwright-cli",
+      "revision": "655530f6d0dc71a0d6bf46ae165877d3c7311099",
+      "path": "skills/playwright-cli/references/test-generation.md",
+      "license": "Apache-2.0",
+      "license_path": "LICENSE",
+      "id": "07f067c8af1cd1995029c36cb2cb6d291ba2394a3aba30467a8b484dc57e766f",
+      "checked_url": "https://raw.githubusercontent.com/microsoft/playwright-cli/655530f6d0dc71a0d6bf46ae165877d3c7311099/skills/playwright-cli/references/test-generation.md",
+      "resolved_url": "https://raw.githubusercontent.com/microsoft/playwright-cli/655530f6d0dc71a0d6bf46ae165877d3c7311099/skills/playwright-cli/references/test-generation.md",
+      "checked_at": "2026-09-08T17:51:19.377617+00:00",
+      "sha256": "12f54cfa718d9e559bad918120a4ca4f11c933167713d1b9c5f99872eddaf749",
+      "bytes": 16114,
+      "evidence_path": "evidence/reviewed/12f54cfa718d9e559bad918120a4ca4f11c933167713d1b9c5f99872eddaf749.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/microsoft/playwright-cli/655530f6d0dc71a0d6bf46ae165877d3c7311099/LICENSE",
+        "path": "LICENSE",
+        "sha256": "9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda",
+        "evidence_path": "evidence/reviewed/9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda.license"
+      }
+    }
+  ]
+}

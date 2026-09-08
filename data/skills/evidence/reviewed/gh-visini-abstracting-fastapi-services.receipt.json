@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-visini-abstracting-fastapi-services",
+  "reviewed_at": "2026-09-08T19:14:25.453053+00:00",
+  "advisory_sha256": "a685d55a458072a600cf101b35ab89755a470c0f115852594641fa9940dd6669",
+  "sources": [
+    {
+      "repository": "https://github.com/visini/abstracting-fastapi-services",
+      "revision": "adacaba43609a0f46d1baf315d0288ae1a6c3d33",
+      "path": "README.md",
+      "sha256": "8b70443f23ca9e3abd77d974f900930414326c01036f0d410363aaa9a8749690",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/8b70443f23ca9e3abd77d974f900930414326c01036f0d410363aaa9a8749690.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "468b168f63014cfd0089b6a43990639e2b4faeb633173cf2cfeb7bb01be96ef2",
+        "evidence_path": "evidence/reviewed/468b168f63014cfd0089b6a43990639e2b4faeb633173cf2cfeb7bb01be96ef2.license"
+      }
+    }
+  ]
+}

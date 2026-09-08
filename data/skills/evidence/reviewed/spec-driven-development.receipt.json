@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "spec-driven-development",
+  "reviewed_at": "2026-09-08T19:14:25.449745+00:00",
+  "advisory_sha256": "bb2d7423d6082a14af769374c2af867f06990cd5850724065a0b7c5f0e40f3ef",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/spec-driven-development/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "ca9220314acbc71c7e5aeac1349a4b40e028636619352fa1bc8f6d7aebdf8839",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/spec-driven-development/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/spec-driven-development/SKILL.md",
+      "checked_at": "2026-09-08T17:51:23.029354+00:00",
+      "sha256": "89411b435fc9f45cec0dd7437419e6bac64b7ddf43108791978647d453010a61",
+      "bytes": 12238,
+      "evidence_path": "evidence/reviewed/89411b435fc9f45cec0dd7437419e6bac64b7ddf43108791978647d453010a61.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

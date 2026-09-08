@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-essamamdani-search-result-scraper-markdown",
+  "reviewed_at": "2026-09-08T19:14:25.487234+00:00",
+  "advisory_sha256": "78058dfd45a996672ab8addec79a3499a32ce5db3ab52ccebf1a32bcb69cc194",
+  "sources": [
+    {
+      "repository": "https://github.com/essamamdani/search-result-scraper-markdown",
+      "revision": "337a6257cbd8964ff779a70c032251dac1614df8",
+      "path": "readme.md",
+      "sha256": "583bfb0784ea77886c55408bcac054d8a8faad2fd8908009d137bdeb4f8197fe",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/583bfb0784ea77886c55408bcac054d8a8faad2fd8908009d137bdeb4f8197fe.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "745d23ff537f1c70e5e9eeb06f6a329ff436f30d324a57fb4a6ec45460963ec0",
+        "evidence_path": "evidence/reviewed/745d23ff537f1c70e5e9eeb06f6a329ff436f30d324a57fb4a6ec45460963ec0.license"
+      }
+    }
+  ]
+}

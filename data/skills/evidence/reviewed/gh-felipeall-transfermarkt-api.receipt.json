@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-felipeall-transfermarkt-api",
+  "reviewed_at": "2026-09-08T19:14:25.488033+00:00",
+  "advisory_sha256": "be2b6c8e2afc21d1b3067cc4768795c07ad827fc8afcc89414df9ab8a201b541",
+  "sources": [
+    {
+      "repository": "https://github.com/felipeall/transfermarkt-api",
+      "revision": "bee4c49628b60f64d99137a675179ff2e6e843b4",
+      "path": "README.md",
+      "sha256": "2e3860bb1a16aa2253c34d16060abd96222463fe7bb9cdc6b0af64c4c74737d9",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/2e3860bb1a16aa2253c34d16060abd96222463fe7bb9cdc6b0af64c4c74737d9.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "8588fefa7cea5b5d72f99d5a476d90cd3cef21ece827e695a1cf0778ca7e9454",
+        "evidence_path": "evidence/reviewed/8588fefa7cea5b5d72f99d5a476d90cd3cef21ece827e695a1cf0778ca7e9454.license"
+      }
+    }
+  ]
+}

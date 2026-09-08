@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slug": "gh-tretapey-svelte-pwa",
+  "reviewed_at": "2026-09-08T19:14:25.451949+00:00",
+  "advisory_sha256": "90a98f87988f690cd86623842dd73fb1d22d3af166afaa450390ccb8e31e20b1",
+  "sources": [
+    {
+      "repository": "https://github.com/tretapey/svelte-pwa",
+      "revision": "6958525b5ba8ef0f31f68432b99610eafa648523",
+      "path": "README.md",
+      "sha256": "3e3329a4bdd447f108f6637dd4e3a08c112c673ec9335d8d3f6d0cd0498b5d18",
+      "license": null,
+      "archived": false,
+      "evidence_path": "evidence/reviewed/3e3329a4bdd447f108f6637dd4e3a08c112c673ec9335d8d3f6d0cd0498b5d18.source"
+    }
+  ]
+}

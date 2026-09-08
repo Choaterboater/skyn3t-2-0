@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-end3r-gamedev-canvas-workshop",
+  "reviewed_at": "2026-09-08T19:14:25.485203+00:00",
+  "advisory_sha256": "762bb1be9cb5c3116052b9d98b798a7785d915eccb47b72c6eec9b39f3a643f0",
+  "sources": [
+    {
+      "repository": "https://github.com/end3r/gamedev-canvas-workshop",
+      "revision": "5199692d8acb9770dc5c16b5b18afbadd95fa497",
+      "path": "README.md",
+      "sha256": "e2d283f26728de2d0bc0deaedcec5bf300180fc826b6d147277f0ee18866034f",
+      "license": "NOASSERTION",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/e2d283f26728de2d0bc0deaedcec5bf300180fc826b6d147277f0ee18866034f.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "NOASSERTION",
+        "sha256": "5d99db5182c07c40917f498159542fd46b996694c04cd99d60431a565fce4ad5",
+        "evidence_path": "evidence/reviewed/5d99db5182c07c40917f498159542fd46b996694c04cd99d60431a565fce4ad5.license"
+      }
+    }
+  ]
+}

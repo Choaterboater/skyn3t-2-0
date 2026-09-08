@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-freedmand-semantra-python",
+  "reviewed_at": "2026-09-08T19:14:25.491081+00:00",
+  "advisory_sha256": "fc85cfeb350b115cfdbf6d9d71af58017bcd4c1cc4b187f9cae4f3d50382bc07",
+  "sources": [
+    {
+      "repository": "https://github.com/freedmand/semantra-python",
+      "revision": "1aed8fd0057f6b3eb7946e0f351f9c668842774d",
+      "path": "README.md",
+      "sha256": "d51aa750f4f34265374dc7270bcd66965b5837320ed03270f37e384a66341ba4",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/d51aa750f4f34265374dc7270bcd66965b5837320ed03270f37e384a66341ba4.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "7b9a6edc7fa924a2586b59afbfdf7993de2950d5ea3fcc2c997352e8a16a2e1f",
+        "evidence_path": "evidence/reviewed/7b9a6edc7fa924a2586b59afbfdf7993de2950d5ea3fcc2c997352e8a16a2e1f.license"
+      }
+    }
+  ]
+}

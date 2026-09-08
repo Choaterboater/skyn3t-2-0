@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "share-types-between-client-and-server-via-a-shared-module",
+  "reviewed_at": "2026-09-08T19:14:25.549647+00:00",
+  "advisory_sha256": "4684aa0a0c1d8611f471e89e4c6f7aadcdaac798cebe1dd4c9218714b6ce6256",
+  "sources": [
+    {
+      "url": "https://github.com/gilamran/fullstack-typescript",
+      "checked_url": "https://raw.githubusercontent.com/gilamran/fullstack-typescript/06be7c73d3a8033d362d209b656f4cc139480d64/README.md",
+      "revision": "06be7c73d3a8033d362d209b656f4cc139480d64",
+      "path": "README.md",
+      "checked_at": "2026-09-08T16:59:18.045510+00:00",
+      "sha256": "c723fc8072961e74957b68ee89ddeaa231c9e9819ae2712a8b1485921a79a5b3",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/gilamran/fullstack-typescript",
+      "evidence_path": "evidence/reviewed/c723fc8072961e74957b68ee89ddeaa231c9e9819ae2712a8b1485921a79a5b3.source"
+    }
+  ]
+}

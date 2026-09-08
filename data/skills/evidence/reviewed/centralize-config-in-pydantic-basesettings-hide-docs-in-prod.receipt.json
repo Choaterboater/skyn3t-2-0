@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "centralize-config-in-pydantic-basesettings-hide-docs-in-prod",
+  "reviewed_at": "2026-09-08T19:14:25.537008+00:00",
+  "advisory_sha256": "a87e7c91a3b5bfabf87a417276ae4625d4f3836b4b383c342a7301d2469737f5",
+  "sources": [
+    {
+      "url": "https://github.com/zhanymkanov/fastapi-best-practices",
+      "checked_url": "https://raw.githubusercontent.com/zhanymkanov/fastapi-best-practices/5e00aa6095521f0d00e4eec2ef0afa44cd566af4/README.md",
+      "revision": "5e00aa6095521f0d00e4eec2ef0afa44cd566af4",
+      "path": "README.md",
+      "checked_at": "2026-09-08T16:59:11.837670+00:00",
+      "sha256": "cbe588bc3e79d10181ed661957b7c8f459bc515e2c0bbafd36d37827fe77ac20",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/zhanymkanov/fastapi-best-practices",
+      "evidence_path": "evidence/reviewed/cbe588bc3e79d10181ed661957b7c8f459bc515e2c0bbafd36d37827fe77ac20.source"
+    }
+  ]
+}

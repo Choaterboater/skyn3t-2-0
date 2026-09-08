@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "slug": "route-level-code-splitting-and-targeted-memoization",
+  "reviewed_at": "2026-09-08T19:14:25.522227+00:00",
+  "advisory_sha256": "f594d3a621eb566a7afcfdb304b5faab3ab761bd9e2c9d8f0d04497567ad5d84",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/performance.md",
+      "repository": "https://github.com/alan2207/bulletproof-react",
+      "revision": "9506629ed003a561c6627735480cce4994244bb4",
+      "path": "docs/performance.md",
+      "license": "MIT",
+      "rationale": "Directly supports route-level splitting, the avoid-over-splitting warning, WebP/srcset, and queryClient.prefetchQuery, all verbatim.",
+      "id": "9e788a6eaa003f5e3fd8f80a432e3c25d0b992b9645dd0f5c7eb407f4a111072",
+      "checked_url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/performance.md",
+      "resolved_url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/performance.md",
+      "checked_at": "2026-09-08T18:34:11.122343+00:00",
+      "sha256": "72b77b6a7cfe2041a297549d628cdd55bc10512eb928f28b39f7421d52b3a51a",
+      "bytes": 5611,
+      "evidence_path": "evidence/reviewed/72b77b6a7cfe2041a297549d628cdd55bc10512eb928f28b39f7421d52b3a51a.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "5e8e5036383ac3d764a03e785cc7127ee8c10718edf61a6ff0ca28854d66f370",
+        "evidence_path": "evidence/reviewed/5e8e5036383ac3d764a03e785cc7127ee8c10718edf61a6ff0ca28854d66f370.license"
+      }
+    },
+    {
+      "url": "https://github.com/reactjs/react.dev/blob/000686165c14291f48bca1008f3a9ac6303aae14/src/content/reference/react/lazy.md",
+      "repository": "https://github.com/reactjs/react.dev",
+      "revision": "000686165c14291f48bca1008f3a9ac6303aae14",
+      "path": "src/content/reference/react/lazy.md",
+      "license": "CC-BY-4.0",
+      "rationale": "Fetched 2026-09-08; official current React reference for lazy()/Suspense, which the prior citation never covered.",
+      "id": "50ba675dcaf89ffff9f525bc62aee9169d026cc82f07b3348f6990ff9ddc1ae2",
+      "checked_url": "https://raw.githubusercontent.com/reactjs/react.dev/000686165c14291f48bca1008f3a9ac6303aae14/src/content/reference/react/lazy.md",
+      "resolved_url": "https://raw.githubusercontent.com/reactjs/react.dev/000686165c14291f48bca1008f3a9ac6303aae14/src/content/reference/react/lazy.md",
+      "checked_at": "2026-09-08T18:34:11.629921+00:00",
+      "sha256": "ab85ce6e399023c8085058c4fb6d22f2ca39a6c9b3dee7cd15b59be5d1721816",
+      "bytes": 6279,
+      "evidence_path": "evidence/reviewed/ab85ce6e399023c8085058c4fb6d22f2ca39a6c9b3dee7cd15b59be5d1721816.source",
+      "license_receipt": {
+        "path": "LICENSE-DOCS.md",
+        "sha256": "61b098d905d9799fc4f4625b476dac117630a1740a02e032594ff2fccbbb6206",
+        "evidence_path": "evidence/reviewed/61b098d905d9799fc4f4625b476dac117630a1740a02e032594ff2fccbbb6206.license"
+      }
+    },
+    {
+      "url": "https://github.com/vitejs/vite/blob/de1111ab0be00879b404e7ed3b2a80e264edddc1/docs/guide/build.md",
+      "repository": "https://github.com/vitejs/vite",
+      "revision": "de1111ab0be00879b404e7ed3b2a80e264edddc1",
+      "path": "docs/guide/build.md",
+      "license": "MIT",
+      "rationale": "Pinned to the peeled commit behind the v8.2.2 annotated release tag; confirms the vite:preloadError event. The separate config source records the build option migration.",
+      "id": "440b0334431c3b27f561d08abef1066bbb866b9f2fbb8890f160abf379205672",
+      "checked_url": "https://raw.githubusercontent.com/vitejs/vite/de1111ab0be00879b404e7ed3b2a80e264edddc1/docs/guide/build.md",
+      "resolved_url": "https://raw.githubusercontent.com/vitejs/vite/de1111ab0be00879b404e7ed3b2a80e264edddc1/docs/guide/build.md",
+      "checked_at": "2026-09-08T18:39:06.784193+00:00",
+      "sha256": "4b0f5c4807d4b4f428536d765d878d6f690047bb928868546e8b282c217dd4cb",
+      "bytes": 14211,
+      "evidence_path": "evidence/reviewed/4b0f5c4807d4b4f428536d765d878d6f690047bb928868546e8b282c217dd4cb.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
+        "evidence_path": "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license"
+      }
+    },
+    {
+      "url": "https://github.com/vitejs/vite/blob/de1111ab0be00879b404e7ed3b2a80e264edddc1/docs/config/build-options.md",
+      "repository": "https://github.com/vitejs/vite",
+      "revision": "de1111ab0be00879b404e7ed3b2a80e264edddc1",
+      "path": "docs/config/build-options.md",
+      "license": "MIT",
+      "rationale": "Official build option definitions at the peeled Vite 8.2.2 release commit; documents the deprecated rollupOptions alias and the Rolldown configuration boundary.",
+      "id": "c89aa59c6f72159ff769d8c228361462ed74c0349e1722cff97579a231f04e59",
+      "checked_url": "https://raw.githubusercontent.com/vitejs/vite/de1111ab0be00879b404e7ed3b2a80e264edddc1/docs/config/build-options.md",
+      "resolved_url": "https://raw.githubusercontent.com/vitejs/vite/de1111ab0be00879b404e7ed3b2a80e264edddc1/docs/config/build-options.md",
+      "checked_at": "2026-09-08T18:39:07.621661+00:00",
+      "sha256": "a25921f335181eae59193882604f4df83eb3684c38eb124dcc80a9079506fa4d",
+      "bytes": 17117,
+      "evidence_path": "evidence/reviewed/a25921f335181eae59193882604f4df83eb3684c38eb124dcc80a9079506fa4d.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
+        "evidence_path": "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-csnw-d3-compose",
+  "reviewed_at": "2026-09-08T19:14:25.479194+00:00",
+  "advisory_sha256": "d9146009142765592722372b5e3db608ac687c2fd54f9c3a4d72ab9e652677ea",
+  "sources": [
+    {
+      "repository": "https://github.com/csnw/d3.compose",
+      "revision": "d45493646a2f9bc5ca729f0fe846985170cfe59c",
+      "path": "README.md",
+      "sha256": "3c0c48ec1eeb12a4697bf1bf28ece68593de2a5de22c6d4bb493fbab46d25119",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/3c0c48ec1eeb12a4697bf1bf28ece68593de2a5de22c6d4bb493fbab46d25119.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "bdbee0927862ffb76cf04a667b90fbb6db14ba6caf58ca4322ed3473a99a9983",
+        "evidence_path": "evidence/reviewed/bdbee0927862ffb76cf04a667b90fbb6db14ba6caf58ca4322ed3473a99a9983.license"
+      }
+    }
+  ]
+}

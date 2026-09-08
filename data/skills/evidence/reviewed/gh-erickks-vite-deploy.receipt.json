@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slug": "gh-erickks-vite-deploy",
+  "reviewed_at": "2026-09-08T19:14:25.460133+00:00",
+  "advisory_sha256": "c8ba9a66f77035fe87150b820d3f01df9196bdfee215d8253533aa05c8ebc5c7",
+  "sources": [
+    {
+      "repository": "https://github.com/erickks/vite-deploy",
+      "revision": "19f6b9e8e6235a0f36c6f0a6e65ba4d596e7b5a9",
+      "path": "README.md",
+      "sha256": "36ff68f9cb48ed3d3a6cf80fcb8e414058d80741da30c28bd6b236c60e3f9357",
+      "license": null,
+      "archived": false,
+      "evidence_path": "evidence/reviewed/36ff68f9cb48ed3d3a6cf80fcb8e414058d80741da30c28bd6b236c60e3f9357.source"
+    }
+  ]
+}

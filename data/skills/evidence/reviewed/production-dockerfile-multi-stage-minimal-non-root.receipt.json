@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "production-dockerfile-multi-stage-minimal-non-root",
+  "reviewed_at": "2026-09-08T19:14:25.546970+00:00",
+  "advisory_sha256": "867f949051eabe1ef8d0fdb0fc5c3641161f5aacdc3b7abddc74382e35067559",
+  "sources": [
+    {
+      "url": "https://docs.docker.com/build/building/best-practices/",
+      "checked_url": "https://docs.docker.com/build/building/best-practices/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:17.369379+00:00",
+      "sha256": "b4291fa371c5949dec65ede5bb8b1473c44393f583f82c7f3776756cfbac7028",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/b4291fa371c5949dec65ede5bb8b1473c44393f583f82c7f3776756cfbac7028.source"
+    }
+  ]
+}

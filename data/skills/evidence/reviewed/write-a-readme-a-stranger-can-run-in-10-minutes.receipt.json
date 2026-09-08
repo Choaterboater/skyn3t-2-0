@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "write-a-readme-a-stranger-can-run-in-10-minutes",
+  "reviewed_at": "2026-09-08T19:14:25.553167+00:00",
+  "advisory_sha256": "144bebcb3cf1a4828bd6be70cbe6755e92c4be6f09f4204b0ce8476e3e42f086",
+  "sources": [
+    {
+      "url": "https://www.freecodecamp.org/news/how-to-structure-your-readme-file/",
+      "checked_url": "https://www.freecodecamp.org/news/how-to-structure-your-readme-file/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:19.484469+00:00",
+      "sha256": "f44ef5679fc219b24519d374010fdb4e9fd0544202a92e03d9d2151cd5924fb9",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/f44ef5679fc219b24519d374010fdb4e9fd0544202a92e03d9d2151cd5924fb9.source"
+    }
+  ]
+}

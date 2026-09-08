@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "single-typed-api-client-with-colocated-query-mutation-hooks",
+  "reviewed_at": "2026-09-08T19:14:25.523503+00:00",
+  "advisory_sha256": "13e5e7228c1837b8c113ebd90d06c0b8e6e8dc3c361ba5bd9947918897ee725c",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/api-layer.md",
+      "repository": "https://github.com/alan2207/bulletproof-react",
+      "revision": "9506629ed003a561c6627735480cce4994244bb4",
+      "path": "docs/api-layer.md",
+      "license": "MIT",
+      "rationale": "Verbatim source for the single API client instance and colocated types/fetcher/hook structure; says 'validation schemas' generically, so no longer cited as endorsing Zod specifically.",
+      "id": "044220f0e5a8c0f177b1ecff563fccbeb065d32124bb4fa7926d8045d5073d91",
+      "checked_url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/api-layer.md",
+      "resolved_url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/api-layer.md",
+      "checked_at": "2026-09-08T18:39:08.146071+00:00",
+      "sha256": "417207ad44993d1d40963a1ae453da6638ba766e96a5a3301b660a7c1c1be071",
+      "bytes": 1885,
+      "evidence_path": "evidence/reviewed/417207ad44993d1d40963a1ae453da6638ba766e96a5a3301b660a7c1c1be071.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "5e8e5036383ac3d764a03e785cc7127ee8c10718edf61a6ff0ca28854d66f370",
+        "evidence_path": "evidence/reviewed/5e8e5036383ac3d764a03e785cc7127ee8c10718edf61a6ff0ca28854d66f370.license"
+      }
+    },
+    {
+      "url": "https://github.com/TanStack/query/blob/50680b98c4dc5ac4d97f7762014fa83f09a41d9a/docs/framework/react/guides/query-functions.md",
+      "repository": "https://github.com/tanstack/query",
+      "revision": "50680b98c4dc5ac4d97f7762014fa83f09a41d9a",
+      "path": "docs/framework/react/guides/query-functions.md",
+      "license": "MIT",
+      "rationale": "Fetched 2026-09-08; verbatim confirms 'the query function must throw or return a rejected Promise' and explicitly notes fetch does not throw by default while axios/graphql-request do, directly substantiating the skill's non-2xx gotcha.",
+      "id": "3b86c389c4e30bb409701ba156c769312c0958ba5c6f339a62f2e6dd3447b0d8",
+      "checked_url": "https://raw.githubusercontent.com/tanstack/query/50680b98c4dc5ac4d97f7762014fa83f09a41d9a/docs/framework/react/guides/query-functions.md",
+      "resolved_url": "https://raw.githubusercontent.com/tanstack/query/50680b98c4dc5ac4d97f7762014fa83f09a41d9a/docs/framework/react/guides/query-functions.md",
+      "checked_at": "2026-09-08T18:39:08.669778+00:00",
+      "sha256": "7b2b9901cc61ccf1ed15d19743f0dda3856625f84fe00a16d11d9fded855c523",
+      "bytes": 3972,
+      "evidence_path": "evidence/reviewed/7b2b9901cc61ccf1ed15d19743f0dda3856625f84fe00a16d11d9fded855c523.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "a405ee70c632bb938acb7ac5f210e814409b3760ea9d2329d8ed8ffcfd11a0e7",
+        "evidence_path": "evidence/reviewed/a405ee70c632bb938acb7ac5f210e814409b3760ea9d2329d8ed8ffcfd11a0e7.license"
+      }
+    }
+  ]
+}

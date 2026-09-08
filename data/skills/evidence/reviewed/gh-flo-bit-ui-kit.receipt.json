@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-flo-bit-ui-kit",
+  "reviewed_at": "2026-09-08T19:14:25.460953+00:00",
+  "advisory_sha256": "009ca3be9df1fa539efab15382f3cb311cc27c9ff2d47b76f2f560d3b86834d1",
+  "sources": [
+    {
+      "repository": "https://github.com/flo-bit/ui-kit",
+      "revision": "788f0080b0566f99d50673ed1eed6d00805d90d2",
+      "path": "README.md",
+      "sha256": "aa9382a3d37081455505133d1199a65693ef265e3c0b8141c15e31d4c9666c6c",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/aa9382a3d37081455505133d1199a65693ef265e3c0b8141c15e31d4c9666c6c.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "21d60bc4c6e5a6c47c42c30d7dcab825306e206ccc6969c7f1a523c5041b54b3",
+        "evidence_path": "evidence/reviewed/21d60bc4c6e5a6c47c42c30d7dcab825306e206ccc6969c7f1a523c5041b54b3.license"
+      }
+    }
+  ]
+}

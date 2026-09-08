@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-geoffrich-svelte-adapter-azure-swa",
+  "reviewed_at": "2026-09-08T19:14:25.492394+00:00",
+  "advisory_sha256": "6d29184d9968134eab8605e3ff79783813d3a2b13fa207f87ead4d9ae49009b0",
+  "sources": [
+    {
+      "repository": "https://github.com/geoffrich/svelte-adapter-azure-swa",
+      "revision": "6cc6af53dfdf964d38e17b0c9bf48aab53f0e7c3",
+      "path": "README.md",
+      "sha256": "da72a33a3f298145f56885bcbdddcaf29971cb82231ad8f2ebba240680c9bebc",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/da72a33a3f298145f56885bcbdddcaf29971cb82231ad8f2ebba240680c9bebc.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "7eb48c5e355c0e8853a1a1bcd3102914dbcf96aa383afaf240d050dddd6956a8",
+        "evidence_path": "evidence/reviewed/7eb48c5e355c0e8853a1a1bcd3102914dbcf96aa383afaf240d050dddd6956a8.license"
+      }
+    }
+  ]
+}

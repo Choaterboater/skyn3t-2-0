@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-alirezamika-autoscraper",
+  "reviewed_at": "2026-09-08T19:14:25.469003+00:00",
+  "advisory_sha256": "91cb96c9020003b6dd58188cc644024066ab6ed425d1baf0ee0143743e78f3df",
+  "sources": [
+    {
+      "repository": "https://github.com/alirezamika/autoscraper",
+      "revision": "68a818158c673bf320a8569da10a8b979c1d23fe",
+      "path": "README.md",
+      "sha256": "eaaaa7b82d797b43b7f8b9e8d9b875cdd299fd0ef04922f1fcc377ee8db1a35a",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/eaaaa7b82d797b43b7f8b9e8d9b875cdd299fd0ef04922f1fcc377ee8db1a35a.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "2bf957b69cadaff1fea15609739cfc78460148f69c616d5775a0293ddd2f1d66",
+        "evidence_path": "evidence/reviewed/2bf957b69cadaff1fea15609739cfc78460148f69c616d5775a0293ddd2f1d66.license"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-chocomeow-vocard",
+  "reviewed_at": "2026-09-08T19:14:25.476137+00:00",
+  "advisory_sha256": "72854bbf5dba7e458efe1963fadf239bb552a325952d6bf6d95abefc20f56318",
+  "sources": [
+    {
+      "repository": "https://github.com/chocomeow/vocard",
+      "revision": "9447b0a41075f53959ad0022d64808abc78732b3",
+      "path": "README.md",
+      "sha256": "2bd41829eb031a0c7f39cfc6acba1001071cd947321812a6cb4c504025f36f3d",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/2bd41829eb031a0c7f39cfc6acba1001071cd947321812a6cb4c504025f36f3d.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "afacb1981b53049e15b70b86a4fc0f0534f0a9480d52324526759e3b52c26df0",
+        "evidence_path": "evidence/reviewed/afacb1981b53049e15b70b86a4fc0f0534f0a9480d52324526759e3b52c26df0.license"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-formidablelabs-react-game-kit",
+  "reviewed_at": "2026-09-08T19:14:25.490304+00:00",
+  "advisory_sha256": "aa89b01b7224f68508d524c32cddf6edfb412436820b27deda6a159aaae12fc0",
+  "sources": [
+    {
+      "repository": "https://github.com/formidablelabs/react-game-kit",
+      "revision": "3c4eab99902ce071346edb8fe993c080e7880e4c",
+      "path": "README.md",
+      "sha256": "4b0308da42f956847af8fb50e6ab958ada4d204d8915d85f1c339bd2cc067b7e",
+      "license": "MIT",
+      "archived": true,
+      "evidence_path": "evidence/reviewed/4b0308da42f956847af8fb50e6ab958ada4d204d8915d85f1c339bd2cc067b7e.source",
+      "license_receipt": {
+        "path": "LICENSE.md",
+        "spdx_id": "MIT",
+        "sha256": "afd0bb103eb362cf78f40dfd13405299d304b83b3a5b1eaf955d69e521464eb4",
+        "evidence_path": "evidence/reviewed/afd0bb103eb362cf78f40dfd13405299d304b83b3a5b1eaf955d69e521464eb4.license"
+      }
+    }
+  ]
+}

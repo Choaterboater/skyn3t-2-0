@@ -1,3 +1,9 @@
 # Vite output embeds upstream GLSL template strings whose trailing spaces are
 # part of the generated artifact. Keep normal whitespace checks on source files.
 skyn3t/web/ui/dist/** -whitespace
+
+# Preserve the reviewed snapshot and immutable evidence across checkout platforms.
+data/skills/*.md text eol=lf -whitespace
+data/skills/*.json text eol=lf
+data/skills/evidence/** -text -whitespace
+docs/reports/*.csv text eol=lf

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "mcp-implementation-and-evaluation",
+  "reviewed_at": "2026-09-08T19:14:25.525114+00:00",
+  "advisory_sha256": "83288b09e882b6d870ee38f466e83db96bfc62ce0e55f68741ddea2643aee7a6",
+  "sources": [
+    {
+      "repository": "https://github.com/anthropics/skills",
+      "revision": "41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f",
+      "path": "skills/mcp-builder/SKILL.md",
+      "license": "Apache-2.0",
+      "license_path": "skills/mcp-builder/LICENSE.txt",
+      "id": "2bbe830fe832d22fc75bc05972c4c92606b486c8e32f5036e99ee21b56fe198e",
+      "checked_url": "https://raw.githubusercontent.com/anthropics/skills/41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f/skills/mcp-builder/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/anthropics/skills/41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f/skills/mcp-builder/SKILL.md",
+      "checked_at": "2026-09-08T17:51:17.425089+00:00",
+      "sha256": "0f4592dcb53cf2b5d6b7febee6b4152018b565551a1c29e3c612f57b218ab295",
+      "bytes": 9092,
+      "evidence_path": "evidence/reviewed/0f4592dcb53cf2b5d6b7febee6b4152018b565551a1c29e3c612f57b218ab295.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/anthropics/skills/41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f/skills/mcp-builder/LICENSE.txt",
+        "path": "skills/mcp-builder/LICENSE.txt",
+        "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+        "evidence_path": "evidence/reviewed/bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362.license"
+      }
+    },
+    {
+      "repository": "https://github.com/anthropics/skills",
+      "revision": "41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f",
+      "path": "skills/mcp-builder/reference/evaluation.md",
+      "license": "Apache-2.0",
+      "license_path": "skills/mcp-builder/LICENSE.txt",
+      "id": "347534d6729eb58fcdea22f0fdaad1d12b0cd5ee07cb6e83b2768d7db38f109a",
+      "checked_url": "https://raw.githubusercontent.com/anthropics/skills/41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f/skills/mcp-builder/reference/evaluation.md",
+      "resolved_url": "https://raw.githubusercontent.com/anthropics/skills/41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f/skills/mcp-builder/reference/evaluation.md",
+      "checked_at": "2026-09-08T17:51:17.964478+00:00",
+      "sha256": "8c99479f8a2d22a636c38e274537aac3610879e26f34e0709825077c4576f427",
+      "bytes": 21663,
+      "evidence_path": "evidence/reviewed/8c99479f8a2d22a636c38e274537aac3610879e26f34e0709825077c4576f427.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/anthropics/skills/41bbe19d1a1a7eaab5e7bb9050a417e5c6cffc8f/skills/mcp-builder/LICENSE.txt",
+        "path": "skills/mcp-builder/LICENSE.txt",
+        "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
+        "evidence_path": "evidence/reviewed/bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362.license"
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-johnpapa-shopathome",
+  "reviewed_at": "2026-09-08T19:14:25.500434+00:00",
+  "advisory_sha256": "815a30faa32de8817bda3b175ce48474c7d2e65a356e839d0b8fb28a57d33c13",
+  "sources": [
+    {
+      "repository": "https://github.com/johnpapa/shopathome",
+      "revision": "278bea0066529f0fd794db7cf611a5f6185fe103",
+      "path": "README.md",
+      "sha256": "54e8b7d821cf730b5765c0f565ee7f077bc828fe49eac7084e816a7772c1c7fd",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/54e8b7d821cf730b5765c0f565ee7f077bc828fe49eac7084e816a7772c1c7fd.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "1680e579140b1f23ef9530a43d50663ef58e31541c3016a404f8ed36f6285da7",
+        "evidence_path": "evidence/reviewed/1680e579140b1f23ef9530a43d50663ef58e31541c3016a404f8ed36f6285da7.license"
+      }
+    }
+  ]
+}

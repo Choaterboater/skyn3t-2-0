@@ -1,7 +1,7 @@
 # Credits
 
 SkyN3t borrows ideas — and in a few places, adapted prose and structure — from
-other open-source projects. Both projects below are MIT licensed, so this file
+other open-source projects. Both design comparisons below are MIT licensed, so this file
 reproduces their copyright and licence notices and records exactly what was
 taken and where it landed.
 
@@ -132,3 +132,27 @@ more rigorous version of the receipt idea independently.)
 Credit is recorded here because the evaluation genuinely shaped the design — the
 decision not to build a judging layer was informed by seeing what a good one
 looks like.
+
+---
+
+## Reviewed skill guidance and source evidence
+
+The reviewed snapshot in `data/skills/` includes curated advisory procedures and
+selected reference documents. Its exact publication inventory, source
+attributions, licenses and local-only evidence exceptions are recorded in
+`data/skills/.distribution.json` and the per-skill indexes under
+`data/skills/evidence/reviewed/`.
+
+Retained third-party documents keep their original licenses in the associated
+`.license` files, plus applicable notice files. They do not inherit SkyN3t's MIT
+license. Source URLs and pinned revisions identify the upstream work; advisory
+hashes identify the separately curated guidance. Raw content without established
+redistribution terms, and credential-shaped examples blocked by publication
+protection, are not included merely because a URL/hash was recorded during local
+review.
+
+The Hermes API response-semantics adaptation uses release commit
+`2237be355906fbe6065ce1815711eee52b2d646e`; its source and MIT notice are retained
+alongside the API skill's existing attribution. Other adopted guidance and the
+explicit historical RAG-source exception are described in
+`docs/reports/2026-09-08-skill-cleanup.md`.

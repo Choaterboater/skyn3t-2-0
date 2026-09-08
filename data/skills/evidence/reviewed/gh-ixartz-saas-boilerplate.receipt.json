@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-ixartz-saas-boilerplate",
+  "reviewed_at": "2026-09-08T19:14:25.497845+00:00",
+  "advisory_sha256": "79ec1647df0d2e938693aed32c6c1daa04b947fbc11d4fd86c061b0505b36bfc",
+  "sources": [
+    {
+      "repository": "https://github.com/ixartz/saas-boilerplate",
+      "revision": "e3952a7ed5b0ef172ac4363c4644b8c334d1094b",
+      "path": "README.md",
+      "sha256": "f27c0bd9423f920c3b3215d0406ad4ece8e0b3a565e54ba3790ba7619534ce7f",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/f27c0bd9423f920c3b3215d0406ad4ece8e0b3a565e54ba3790ba7619534ce7f.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "cc79352a90f66bb27020bc40cb7481e661de807875e4ece5533ee4d4d9d20616",
+        "evidence_path": "evidence/reviewed/cc79352a90f66bb27020bc40cb7481e661de807875e4ece5533ee4d4d9d20616.license"
+      }
+    }
+  ]
+}

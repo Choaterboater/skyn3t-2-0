@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "slug": "consolidate-quality-gates-on-ruff-mypy-pytest",
+  "reviewed_at": "2026-09-08T19:14:25.508896+00:00",
+  "advisory_sha256": "073f43c2d19fb111e827ebca1eff323f18adf30782b6bc6d13ee5ffff76dd49b",
+  "sources": [
+    {
+      "url": "https://github.com/astral-sh/ruff/blob/d38008443d04b3d0e7953328362b7d712f682ed8/README.md",
+      "repository": "https://github.com/astral-sh/ruff",
+      "revision": "d38008443d04b3d0e7953328362b7d712f682ed8",
+      "path": "README.md",
+      "license": "MIT",
+      "rationale": "Fetched 2026-09-08; verbatim states Ruff 'can be used to replace Flake8 ... Black, isort, pydocstyle, pyupgrade, autoflake' and shows the Black-equivalent default [format] settings, directly substantiating the skill's core claim (the prior citation did not).",
+      "id": "9772762cf17307bd9e4381fbb97bdf8739c35803b8e15d85f8ffa68727659e12",
+      "checked_url": "https://raw.githubusercontent.com/astral-sh/ruff/d38008443d04b3d0e7953328362b7d712f682ed8/README.md",
+      "resolved_url": "https://raw.githubusercontent.com/astral-sh/ruff/d38008443d04b3d0e7953328362b7d712f682ed8/README.md",
+      "checked_at": "2026-09-08T18:34:04.922987+00:00",
+      "sha256": "97d6051f421d49ef43b6e13da6794f562f448615e1487cf38085ed44d003cf14",
+      "bytes": 25233,
+      "evidence_path": "evidence/reviewed/97d6051f421d49ef43b6e13da6794f562f448615e1487cf38085ed44d003cf14.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "2597d854122b77ddc71971564ca2350a37608575ce324adc5650a2b2051c8f18",
+        "evidence_path": "evidence/reviewed/2597d854122b77ddc71971564ca2350a37608575ce324adc5650a2b2051c8f18.license"
+      }
+    },
+    {
+      "url": "https://docs.astral.sh/ruff/rules/",
+      "rationale": "Live official docs page enumerating Ruff's default vs opt-in rule categories, backing the 'start from the default set, add categories deliberately' guidance.",
+      "id": "d394b6cd956eabc397ab468d104cda8534de5f3b261d82d0ab7ed9cd2b202b94",
+      "checked_url": "https://docs.astral.sh/ruff/rules/",
+      "resolved_url": "https://docs.astral.sh/ruff/rules/",
+      "checked_at": "2026-09-08T18:34:05.742481+00:00",
+      "sha256": "d2b60d6fd9e0678c38fef9ab15eba76b8b12123d3dbe7ab33958b87698186a81",
+      "bytes": 738139,
+      "evidence_path": "evidence/reviewed/d2b60d6fd9e0678c38fef9ab15eba76b8b12123d3dbe7ab33958b87698186a81.source"
+    }
+  ]
+}

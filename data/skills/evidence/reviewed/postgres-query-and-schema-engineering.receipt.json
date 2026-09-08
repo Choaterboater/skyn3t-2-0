@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "slug": "postgres-query-and-schema-engineering",
+  "reviewed_at": "2026-09-08T19:14:25.526382+00:00",
+  "advisory_sha256": "6b8ea5f5cf6a5d57bfedb26a6431f0cce15e83f42b9eb9e02e59578c5d5322dd",
+  "sources": [
+    {
+      "repository": "https://github.com/supabase/agent-skills",
+      "revision": "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
+      "path": "skills/supabase-postgres-best-practices/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "f471805f780a41f768e7b7cc2f502de441cb351f9c5fd5ff5fba5e47e048cae9",
+      "checked_url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/skills/supabase-postgres-best-practices/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/skills/supabase-postgres-best-practices/SKILL.md",
+      "checked_at": "2026-09-08T17:51:18.052064+00:00",
+      "sha256": "ad65e776f45e761bafc609d3f506c77c1032225aa65e0c4c02f241b8071e5855",
+      "bytes": 3231,
+      "evidence_path": "evidence/reviewed/ad65e776f45e761bafc609d3f506c77c1032225aa65e0c4c02f241b8071e5855.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/LICENSE",
+        "path": "LICENSE",
+        "sha256": "b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c",
+        "evidence_path": "evidence/reviewed/b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c.license"
+      }
+    },
+    {
+      "repository": "https://github.com/supabase/agent-skills",
+      "revision": "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
+      "path": "skills/supabase-postgres-best-practices/references/conn-pooling.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "49bd1dc8a4d8ee3783916c920a0a26e0edec95985b4ae05b420b29d74269dced",
+      "checked_url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/skills/supabase-postgres-best-practices/references/conn-pooling.md",
+      "resolved_url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/skills/supabase-postgres-best-practices/references/conn-pooling.md",
+      "checked_at": "2026-09-08T17:51:18.320167+00:00",
+      "sha256": "88cf086bf98ba865d2e9d0579974e1366b14157619d6a93e7da77be91084e4a5",
+      "bytes": 1382,
+      "evidence_path": "evidence/reviewed/88cf086bf98ba865d2e9d0579974e1366b14157619d6a93e7da77be91084e4a5.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/LICENSE",
+        "path": "LICENSE",
+        "sha256": "b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c",
+        "evidence_path": "evidence/reviewed/b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c.license"
+      }
+    },
+    {
+      "repository": "https://github.com/supabase/agent-skills",
+      "revision": "8331f910845103c08d51f6ca1d86ebb7d1f745e3",
+      "path": "skills/supabase-postgres-best-practices/references/monitor-explain-analyze.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "57a6529734589f0c19feebe8163313d8b10f1b46ca20c9c84b96653425563344",
+      "checked_url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/skills/supabase-postgres-best-practices/references/monitor-explain-analyze.md",
+      "resolved_url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/skills/supabase-postgres-best-practices/references/monitor-explain-analyze.md",
+      "checked_at": "2026-09-08T17:51:18.817337+00:00",
+      "sha256": "4cb67ffbf8e57f2e5b380b0beb4242528b513723ce314a2c2ffcf083bd4203d7",
+      "bytes": 1441,
+      "evidence_path": "evidence/reviewed/4cb67ffbf8e57f2e5b380b0beb4242528b513723ce314a2c2ffcf083bd4203d7.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/supabase/agent-skills/8331f910845103c08d51f6ca1d86ebb7d1f745e3/LICENSE",
+        "path": "LICENSE",
+        "sha256": "b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c",
+        "evidence_path": "evidence/reviewed/b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c.license"
+      }
+    }
+  ]
+}

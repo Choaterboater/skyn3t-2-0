@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-benny-yahoo-ticker-symbol-downloader",
+  "reviewed_at": "2026-09-08T19:14:25.474331+00:00",
+  "advisory_sha256": "a0ecbf412dc69f24fbaecc60fe6c0fbd42e517403d8b0a399dedc3bad11a503b",
+  "sources": [
+    {
+      "repository": "https://github.com/benny-/yahoo-ticker-symbol-downloader",
+      "revision": "305835730773ae4000f38dc047bbe4cc41f782f4",
+      "path": "README.rst",
+      "sha256": "0ab0eea8fafa00b5fd27233b5d1a743f7b428e6e906b28362496655384e5a0f8",
+      "license": "BSD-3-Clause",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/0ab0eea8fafa00b5fd27233b5d1a743f7b428e6e906b28362496655384e5a0f8.source",
+      "license_receipt": {
+        "path": "LICENSE.txt",
+        "spdx_id": "BSD-3-Clause",
+        "sha256": "3c1bffb3b6746470efedd8289c761bbdd725f17f149e964e12fe02b711660e70",
+        "evidence_path": "evidence/reviewed/3c1bffb3b6746470efedd8289c761bbdd725f17f149e964e12fe02b711660e70.license"
+      }
+    }
+  ]
+}

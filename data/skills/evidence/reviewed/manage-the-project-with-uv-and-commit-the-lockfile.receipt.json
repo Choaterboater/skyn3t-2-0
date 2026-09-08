@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "slug": "manage-the-project-with-uv-and-commit-the-lockfile",
+  "reviewed_at": "2026-09-08T19:14:25.519956+00:00",
+  "advisory_sha256": "b490fce4cedb7286f7fcfc91cbd361c96ca866b4c3f50efab9bff70808862477",
+  "sources": [
+    {
+      "url": "https://docs.astral.sh/uv/concepts/projects/sync/",
+      "rationale": "Fetched 2026-09-08; live doc showing the literal `uv sync` command and its default 'exact sync removes non-lockfile packages' behavior, absent from the previously-cited overview page.",
+      "id": "d946ac0f11559d4190c5753c44ffa2ecb99f191d7abed19f6f3acb416778924e",
+      "checked_url": "https://docs.astral.sh/uv/concepts/projects/sync/",
+      "resolved_url": "https://docs.astral.sh/uv/concepts/projects/sync/",
+      "checked_at": "2026-09-08T18:34:10.690802+00:00",
+      "sha256": "4bd4a89338543bf671bd036a52bc666a295986c7c72ea175d95d1c2ac228e0cf",
+      "bytes": 81839,
+      "evidence_path": "evidence/reviewed/4bd4a89338543bf671bd036a52bc666a295986c7c72ea175d95d1c2ac228e0cf.source"
+    },
+    {
+      "url": "https://docs.astral.sh/uv/concepts/projects/run/",
+      "rationale": "Fetched 2026-09-08; live doc showing the literal `uv run <cmd>` usage and that uv ensures the environment is current before running.",
+      "id": "cf959e5da76329a3509bb2d10a24f83f2125fbf77fecfe2f5ce2427472e0c855",
+      "checked_url": "https://docs.astral.sh/uv/concepts/projects/run/",
+      "resolved_url": "https://docs.astral.sh/uv/concepts/projects/run/",
+      "checked_at": "2026-09-08T18:34:10.744343+00:00",
+      "sha256": "a2e34cb15233b001bf0d245fb49c9541dd8ce5498cfc5f222ea8fcecc4476398",
+      "bytes": 72738,
+      "evidence_path": "evidence/reviewed/a2e34cb15233b001bf0d245fb49c9541dd8ce5498cfc5f222ea8fcecc4476398.source"
+    },
+    {
+      "url": "https://docs.astral.sh/uv/concepts/projects/layout/",
+      "rationale": "Fetched 2026-09-08; live doc with the exact 'uv.lock ... universal or cross-platform lockfile ... should not be edited manually' wording.",
+      "id": "350104ea36d85669eabdc231b01722871846718c46bff822336c9a36a5af18e4",
+      "checked_url": "https://docs.astral.sh/uv/concepts/projects/layout/",
+      "resolved_url": "https://docs.astral.sh/uv/concepts/projects/layout/",
+      "checked_at": "2026-09-08T18:34:10.880242+00:00",
+      "sha256": "1703b8423762b9b3fe33c22c4269a96dfb8168a1224a42695313606d7c49b920",
+      "bytes": 72980,
+      "evidence_path": "evidence/reviewed/1703b8423762b9b3fe33c22c4269a96dfb8168a1224a42695313606d7c49b920.source"
+    },
+    {
+      "url": "https://docs.astral.sh/uv/concepts/projects/dependencies/",
+      "rationale": "Fetched 2026-09-08; live doc confirming the --group flag for dependency groups, replacing the previously uncited generic claim.",
+      "id": "fe55977ab55ca4bb70656f6a11d60d13f5865df27fde8f27d2e851ceca85cc50",
+      "checked_url": "https://docs.astral.sh/uv/concepts/projects/dependencies/",
+      "resolved_url": "https://docs.astral.sh/uv/concepts/projects/dependencies/",
+      "checked_at": "2026-09-08T18:34:10.948950+00:00",
+      "sha256": "f068eb97f5157b950824053fd0954e922e87e9202bf4bd102e8a9187ceab79f3",
+      "bytes": 169450,
+      "evidence_path": "evidence/reviewed/f068eb97f5157b950824053fd0954e922e87e9202bf4bd102e8a9187ceab79f3.source"
+    }
+  ]
+}

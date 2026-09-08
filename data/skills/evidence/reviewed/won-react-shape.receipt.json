@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "slug": "won-react-shape",
+  "reviewed_at": "2026-09-08T19:14:25.515517+00:00",
+  "advisory_sha256": "51edc3e515208cc7640d7438b8b5c646fc9b5f3aa28ed5d250eb423fed939ea7",
+  "sources": [
+    {
+      "url": "https://github.com/vitejs/vite/blob/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/index.html",
+      "repository": "https://github.com/vitejs/vite",
+      "revision": "e6f6b3e3119256daa837b2dc399058c8aa45b470",
+      "path": "packages/create-vite/template-react/index.html",
+      "license": "MIT",
+      "rationale": "Fetched 2026-09-08; Vite's official create-vite React template confirms index.html + src/main.jsx + src/App.jsx as the actual current entrypoint convention this record's structural guidance is grounded in.",
+      "id": "ed5f1b77e1e14b4e060c8ff891666448a8e146c7ee25ce4a5aaa1af77a305a72",
+      "checked_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/index.html",
+      "resolved_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/index.html",
+      "checked_at": "2026-09-08T18:34:09.526338+00:00",
+      "sha256": "5cb8980fedcf4a016fa1019a0719ff30929411f86930b40cb708d0cbe19f2cdc",
+      "bytes": 364,
+      "evidence_path": "evidence/reviewed/5cb8980fedcf4a016fa1019a0719ff30929411f86930b40cb708d0cbe19f2cdc.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
+        "evidence_path": "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license"
+      }
+    },
+    {
+      "url": "https://github.com/vitejs/vite/blob/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/src/main.jsx",
+      "repository": "https://github.com/vitejs/vite",
+      "revision": "e6f6b3e3119256daa837b2dc399058c8aa45b470",
+      "path": "packages/create-vite/template-react/src/main.jsx",
+      "license": "MIT",
+      "rationale": "Official client entrypoint imports and mounts App.jsx.",
+      "id": "97345951a48260ef31d9ce24ed11a64fc4cd700018a00623b8d4ef5b1cde19cd",
+      "checked_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/src/main.jsx",
+      "resolved_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/src/main.jsx",
+      "checked_at": "2026-09-08T18:50:49.111988+00:00",
+      "sha256": "4b4b864dbe45253425d0c925337180ec07e204295179f80f59551216f466f618",
+      "bytes": 229,
+      "evidence_path": "evidence/reviewed/4b4b864dbe45253425d0c925337180ec07e204295179f80f59551216f466f618.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
+        "evidence_path": "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license"
+      }
+    },
+    {
+      "url": "https://github.com/vitejs/vite/blob/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/src/App.jsx",
+      "repository": "https://github.com/vitejs/vite",
+      "revision": "e6f6b3e3119256daa837b2dc399058c8aa45b470",
+      "path": "packages/create-vite/template-react/src/App.jsx",
+      "license": "MIT",
+      "rationale": "Official root component; feature routing and API folders are optional local architectural guidance, not claims about the unmodified scaffold.",
+      "id": "ef69561b938e1a56f769b623ccff8f49ec70378b46ee82a41593893cb70e98ee",
+      "checked_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/src/App.jsx",
+      "resolved_url": "https://raw.githubusercontent.com/vitejs/vite/e6f6b3e3119256daa837b2dc399058c8aa45b470/packages/create-vite/template-react/src/App.jsx",
+      "checked_at": "2026-09-08T18:50:50.237472+00:00",
+      "sha256": "3226560e76fae0a061d973aee04d87fc5e3f4c4b41d94777ab622c4b19aa4067",
+      "bytes": 3646,
+      "evidence_path": "evidence/reviewed/3226560e76fae0a061d973aee04d87fc5e3f4c4b41d94777ab622c4b19aa4067.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
+        "evidence_path": "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license"
+      }
+    }
+  ]
+}

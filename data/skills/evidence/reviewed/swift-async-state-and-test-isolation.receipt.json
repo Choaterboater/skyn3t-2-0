@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "slug": "swift-async-state-and-test-isolation",
+  "reviewed_at": "2026-09-08T19:14:25.535485+00:00",
+  "advisory_sha256": "91c9bdae639d74a5a16643423efe701d023e286b75d53bf1bc9b00898b093802",
+  "sources": [
+    {
+      "repository": "https://github.com/avdlee/swift-testing-agent-skill",
+      "revision": "798e9b1a2bcac164d4f0c781908199e754f0bab6",
+      "path": "swift-testing-expert/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "15b104ecc0faa14ef4dc28451a3e94dd2a40de4196fbb21902c24a7d303c8391",
+      "checked_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/SKILL.md",
+      "checked_at": "2026-09-08T18:28:23.856378+00:00",
+      "sha256": "d039eb55cfbaa379d308ff42c1e459dea355edb869ec0a4d6f488759d2156aec",
+      "bytes": 4908,
+      "evidence_path": "evidence/reviewed/d039eb55cfbaa379d308ff42c1e459dea355edb869ec0a4d6f488759d2156aec.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/LICENSE",
+        "path": "LICENSE",
+        "sha256": "8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155",
+        "evidence_path": "evidence/reviewed/8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155.license"
+      }
+    },
+    {
+      "repository": "https://github.com/avdlee/swift-testing-agent-skill",
+      "revision": "798e9b1a2bcac164d4f0c781908199e754f0bab6",
+      "path": "swift-testing-expert/references/async-testing-and-waiting.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "4a2fc58508f683a0e54142aa83b68b4208b227edca62e53f22568269c49e3113",
+      "checked_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/references/async-testing-and-waiting.md",
+      "resolved_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/references/async-testing-and-waiting.md",
+      "checked_at": "2026-09-08T18:28:24.040507+00:00",
+      "sha256": "e5f7d016a95d976774d7f26a80be07acf204306aa874f60d6f501aec141c6ceb",
+      "bytes": 3243,
+      "evidence_path": "evidence/reviewed/e5f7d016a95d976774d7f26a80be07acf204306aa874f60d6f501aec141c6ceb.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/LICENSE",
+        "path": "LICENSE",
+        "sha256": "8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155",
+        "evidence_path": "evidence/reviewed/8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155.license"
+      }
+    },
+    {
+      "repository": "https://github.com/avdlee/swift-testing-agent-skill",
+      "revision": "798e9b1a2bcac164d4f0c781908199e754f0bab6",
+      "path": "swift-testing-expert/references/parallelization-and-isolation.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "db2aac6f1329592cb5b7754f412c8a1c4e7840905b008f05ca3308e2b477dc70",
+      "checked_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/references/parallelization-and-isolation.md",
+      "resolved_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/references/parallelization-and-isolation.md",
+      "checked_at": "2026-09-08T18:28:24.144010+00:00",
+      "sha256": "209cd458d3fbc8a2830265252714f5ac09abe93100b3b2582034fa7ea1a0568c",
+      "bytes": 2597,
+      "evidence_path": "evidence/reviewed/209cd458d3fbc8a2830265252714f5ac09abe93100b3b2582034fa7ea1a0568c.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/LICENSE",
+        "path": "LICENSE",
+        "sha256": "8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155",
+        "evidence_path": "evidence/reviewed/8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155.license"
+      }
+    },
+    {
+      "repository": "https://github.com/avdlee/swift-testing-agent-skill",
+      "revision": "798e9b1a2bcac164d4f0c781908199e754f0bab6",
+      "path": "swift-testing-expert/references/migration-from-xctest.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "1d583ed84f40c69deae2caa220562eec217207403b10c6a63181081ad3d70f28",
+      "checked_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/references/migration-from-xctest.md",
+      "resolved_url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/swift-testing-expert/references/migration-from-xctest.md",
+      "checked_at": "2026-09-08T18:28:24.263074+00:00",
+      "sha256": "f94a3bc08fb59358689a84d9d6a2838154dc96904e53457e068d00df5b0671ef",
+      "bytes": 3425,
+      "evidence_path": "evidence/reviewed/f94a3bc08fb59358689a84d9d6a2838154dc96904e53457e068d00df5b0671ef.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/avdlee/swift-testing-agent-skill/798e9b1a2bcac164d4f0c781908199e754f0bab6/LICENSE",
+        "path": "LICENSE",
+        "sha256": "8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155",
+        "evidence_path": "evidence/reviewed/8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155.license"
+      }
+    }
+  ]
+}

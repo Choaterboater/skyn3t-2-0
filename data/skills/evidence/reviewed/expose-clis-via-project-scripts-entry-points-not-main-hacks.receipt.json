@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "expose-clis-via-project-scripts-entry-points-not-main-hacks",
+  "reviewed_at": "2026-09-08T19:14:25.538823+00:00",
+  "advisory_sha256": "697316941a83167ed23df4862a8d2db254322227c7d2f492f6af2677f13f537e",
+  "sources": [
+    {
+      "url": "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/",
+      "checked_url": "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:12.646059+00:00",
+      "sha256": "f31c9fedc5c8bb80ad19f6c96ea219723567d6303addf9d1130856074053e57a",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/f31c9fedc5c8bb80ad19f6c96ea219723567d6303addf9d1130856074053e57a.source"
+    }
+  ]
+}
